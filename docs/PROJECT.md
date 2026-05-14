@@ -1,19 +1,14 @@
 # Data Governance for Kagenti — Architecture (v2)
 
-This document captures decisions reached through a design grilling session.
-It supersedes the open questions in `PROJECT.md` where they overlap.
-Decisions are listed in the order they were settled; later decisions may
-refine earlier ones.
+## Introduction
 
-## Goals (unchanged from PROJECT.md)
+The data governance service aims to ensure data is accurate, secure, and used responsibly throughout an organization. It serves to establish visibility and control over how data flows through agents, tools, and systems. 
 
-Provide the following for agents and tools deployed on Kagenti:
+The primary objectives of data governance are:
 
-1. Data flow
-2. Data lineage
-3. Data classification (via UDC)
-4. Data-related risks, explanations, suggestions
-5. Policy violation detection, explanations, enforcement suggestions
+- **Ensure data quality, transparency and traceability** — Maintain reliable information by tracking and recording how data flows through the system, and provide data lineage and classification so stakeholders understand how and what information moves through the system.
+- **Detect data-related vulnerabilities and risks** — Identify and alert on potential vulnerabilities and policy violations (before they impact operations).
+- **Enable compliance and remediation** - Provide clear explanations, remediation guidance and enforcement suggestions on policy violations.
 
 ## Guiding principles
 
