@@ -25,44 +25,46 @@ The primary objectives of data governance are:
 
 ## High-level architecture
 
+```mermaid
+flowchart TD
+    Sources["Sources (OTEL only for v1)"]
+    KagentiCP["Kagenti control plane"]
+
+    POtel["<b>P-otel-receiver</b><br/>OTLP endpoint<br/>writes spans, payloads,<br/>dropped_span_types,<br/>llms, external_services"]
+    PPoller["<b>P-kagenti-poller</b><br/>writes namespaces, users,<br/>agents, tools"]
+
+    subgraph Downstream["Downstream processors"]
+        direction TB
+        PInter["P-interactions"]
+        Deferred["(P-invocations, P-sessions,<br/>P-classification, P-lineage<br/>deferred to a later increment)"]
+    end
+
+    Retrieval["<b>Retrieval API (library)</b><br/>Read-only, typed methods<br/>+ SQL escape hatch.<br/>Consumed by processors<br/>and by UI backend."]
+
+    UIBackend["<b>UI backend (REST)</b><br/>Thin wrapper: auth (Keycloak),<br/>authz, composite resource-shaped<br/>endpoints, user-write CRUD to<br/>user-owned tables.<br/>Polling default; SSE push for live views."]
+
+    UI["<b>Data Governance UI</b><br/>Single unified UI;<br/>no plugin frontends."]
+
+    Sources --> POtel
+    KagentiCP --> PPoller
+    POtel --> Downstream
+    PPoller --> Downstream
+    Downstream --> Retrieval
+    Retrieval --> UIBackend
+    UIBackend --> UI
 ```
- Sources (OTEL only for v1)
-   │
-   ▼
- P-otel-receiver  ──────────┐       Trivial processor:
-   OTLP endpoint            │         - owns the OTLP socket
-   writes spans,            │         - class-filters incoming spans
-          payloads,         │         - logs dropped_span_types
-          dropped_span_types│         - extracts derived entities (llms,
-          llms,             │           external_services) at first sighting
-          external_services │
-                            │
- P-kagenti-poller  ─────────┤       Pulls authoritative entity info
-   writes namespaces,       │       from the Kagenti control plane.
-          users, agents,    │
-          tools             │
-                            │
- Downstream processors    ──┘       Realtime; read via retrieval API;
-   P-interactions                   mutate their own outputs when
-   P-invocations                    upstream rows change; cursor on
-   P-sessions                       `change_seq` (insert+update aware);
-                                    LISTEN/NOTIFY for push-latency.
-   (P-classification, P-lineage deferred to a later increment.)
-   │
-   ▼
- Retrieval API (library)     Read-only, typed methods + SQL escape
-                              hatch. Consumed by processors and by
-                              UI backend.
-   │
-   ▼
- UI backend (REST)            Thin wrapper: auth (Keycloak), authz,
-                              composite resource-shaped endpoints,
-                              user-write CRUD to user-owned tables.
-                              Polling default; SSE push for live views.
-   │
-   ▼
- Data Governance UI           Single unified UI; no plugin frontends.
-```
+
+`P-otel-receiver` is a trivial processor: it owns the OTLP socket,
+class-filters incoming spans, logs `dropped_span_types`, and extracts
+derived entities (`llms`, `external_services`) at first sighting.
+
+`P-kagenti-poller` pulls authoritative entity info from the Kagenti
+control plane.
+
+Downstream processors are realtime; they read via the retrieval API
+and mutate their own outputs when upstream rows change. Cursors are on
+`change_seq` (insert+update aware); LISTEN/NOTIFY provides
+push-latency.
 
 ## 1. Source and transport
 
@@ -194,12 +196,21 @@ without changing ingest.
 
 - Single append-only table: `spans`. (The earlier `raw_spans` /
   `computed_spans` split has been dropped.)
-- `spans(span_id PK, trace_id, parent_id NULL, class, kind, name,
-  service_name, started_at, ended_at, seq BIGINT, observed_at, ...)`.
-- `parent_id` is **nullable and not a foreign key**. It stores whatever
-  the OTEL span carried as `parent_span_id`, even if the referenced
-  span has not yet arrived (or never arrives). Out-of-order arrival is
-  absorbed naturally.
+- `spans(trace_id, span_id, parent_id NULL, class, kind, name,
+  service_name, started_at, ended_at, seq BIGINT, observed_at, ...,
+  PRIMARY KEY (trace_id, span_id))`.
+- **PK is composite `(trace_id, span_id)`**, not `span_id` alone.
+  OTEL `span_id` is 8 bytes and only locally unique within a trace;
+  two spans from different traces could in principle collide on
+  `span_id`. Silently dropping a span on PK conflict is the worst
+  failure mode (a class-1 span whose chain never resolves), so the
+  PK is composite. Across the schema, every reference to a span
+  carries `trace_id` alongside `span_id`.
+- `parent_id` is **nullable and not a foreign key**. It stores
+  whatever the OTEL span carried as `parent_span_id`, even if the
+  referenced span has not yet arrived (or never arrives).
+  Out-of-order arrival is absorbed naturally. The implicit
+  `(trace_id, parent_id)` referent is always within the same trace.
 - Only class-1 and class-2 spans are stored. Class-3 is dropped at
   ingest.
 - **`P-otel-receiver` is trivial:** append spans, upsert derived
@@ -209,10 +220,10 @@ without changing ingest.
 
 ### Indexes
 
+- `(trace_id, span_id)` — PK, implicit. Serves upward walks
+  (resolving a known `parent_id` within the same trace).
 - `spans(trace_id, parent_id)` — for downward walks (finding children
   of a given span within a trace).
-- `spans(trace_id, span_id)` — for upward walks (resolving a known
-  parent_id to the referenced span).
 
 ## 5. Retention
 
@@ -227,11 +238,51 @@ without changing ingest.
   normalized payload).
 - Every span that carries a payload stores `*_hash` columns
   (e.g., `prompt_hash`, `completion_hash`, `tool_input_hash`,
-  `tool_output_hash`) referencing `payloads.content_hash`.
-- `payloads(content_hash PK, content, size_bytes, first_seen_at)`.
-- Written by `P-otel-receiver` alongside `spans`.
-- Observability: log `size_bytes` on write during early development so
-  payload-size distribution informs later decisions.
+  `tool_output_hash`) referencing `payloads.content_hash`. **A
+  payload is a whole message** — the entire LLM prompt blob, the
+  entire tool input, the entire A2A message body — not a
+  decomposition into per-message parts. Per-message decomposition
+  is a future change (it would raise dedup hit rates and let
+  classification attribute findings to individual messages), but
+  v1 keeps the simpler one-blob-per-`*_hash` shape.
+- `payloads(content_hash PK, content, size_bytes, truncated_bytes
+  BIGINT NULL, first_seen_at)`. `truncated_bytes` is NULL for
+  payloads stored in full; otherwise it records the original
+  pre-truncation size in bytes.
+- Written by `P-otel-receiver` alongside `spans`, in the same
+  transaction.
+- **Normalization is byte-preserving.** When classification (§11)
+  lands, UDC returns findings as `(offset, length, entity_type)`
+  tuples into the stored `content`, so any normalization step must
+  not shift offsets. Concretely: if the payload arrives as JSON,
+  store it verbatim (no key-order canonicalization, no whitespace
+  stripping); content-hash is taken over the bytes as-stored. Two
+  semantically-equal payloads with different byte representations
+  get two `payloads` rows, which is acceptable — dedup is a size
+  optimization, not a correctness requirement.
+- **Per-payload size cap (v1): 100 KB.** A single oversized payload
+  must not blow ingest memory or pollute Postgres with multi-MB
+  rows. On overflow:
+  - Truncate to the first 100 KB and store that as `content`.
+  - Set `truncated_bytes` to the original byte length.
+  - `content_hash` is computed over the *truncated* bytes, so two
+    different oversized payloads that share their first 100 KB
+    will dedup — accepted; this is the same "byte-equality only"
+    posture as the rest of §6.
+  - Span keeps its `*_hash` column populated normally; consumers
+    detect truncation via `payloads.truncated_bytes IS NOT NULL`.
+  - When classification (§11) lands, findings on a truncated
+    payload are explicitly partial — UDC sees only the first
+    100 KB.
+- **Overflow observability.** First sighting of a truncation per
+  `(span_name, service_name)` is logged in
+  `payload_overflow_events(span_name, service_name, first_seen_at,
+  last_seen_at, count)` — same shape and treatment as
+  `dropped_span_types` (§3): admin notification on first sighting,
+  count-only thereafter.
+- The 100 KB cap is provisional. §6 logs `size_bytes` on write so
+  the distribution informs later tuning; raising or lowering the
+  cap is a config change, not a schema change.
 
 ## 7. Entities
 
@@ -268,6 +319,40 @@ unions them for cross-kind queries. Per-kind tables:
 - Span-derived entities (`llms`, `external_services`): `first_seen_at`,
   `last_seen_at`. These never "disappear" — the UI can fade inactive
   nodes as a rendering choice, but there is no disappear event.
+
+**Lifecycle model for K8s-sourced entities (versioned-row model):**
+
+- `entity_id` is a per-row surrogate (UUID), **not** a stable logical
+  identity. A delete-then-recreate of the same `(namespace, name)`
+  produces a **new row with a new `entity_id`** and leaves the old
+  row closed (`valid_until` set at the time of deletion).
+- A logical "agent X" therefore corresponds to one or more `agents`
+  rows ordered by `valid_from`. Joins from `interactions` always
+  pin to the *specific historical version* that was active when the
+  interaction occurred — chosen at write time by P-interactions
+  using the row whose `(valid_from, valid_until]` contains the
+  interaction's `request_at` (with NULL `valid_until` treated as
+  +∞).
+- Topology rendering merges versions by `(kind, namespace, name)` to
+  show a single logical node per agent/tool, while the side panel can
+  show per-version detail when a redeploy is interesting (e.g., for
+  attributing behavior to a specific image tag). The merge key is a
+  rendering choice in the UI, not a schema concept.
+- A redeploy that replaces a pod without deleting the Kagenti CR is
+  *not* a new row — that is a within-version observation. Only
+  CR-level lifecycle transitions (create / delete) generate row
+  boundaries. The discriminator P-kagenti-poller uses to detect
+  "same logical entity, new row vs. continuing row" is the CR's
+  resourceVersion-bracketed identity (`uid` from the K8s object
+  metadata): a fresh `uid` after a previous delete is a new row; a
+  stable `uid` across pod restarts is the same row.
+- Past `interactions` referencing a now-closed row remain valid
+  forever. `valid_until` is **not** a soft-delete; it does not hide
+  the row from joins.
+- Namespace deletion sets `valid_until` on the namespace row only.
+  Agents/tools within that namespace are closed by their own
+  observation when P-kagenti-poller next sees them gone — not
+  cascade-closed.
 
 **Target granularity (for `external_services` and resource-level
 analytics):**
@@ -309,10 +394,11 @@ resolver.
 | `T2E` | Tool → external service | tool | external_service |
 | `U2A` | UI / user → agent | user | agent |
 
-Because `T2A`'s destination is an agent, T2A interactions are
-**invocation roots** per §9 — a tool delegating to an agent opens a
-new invocation, and the enclosing agent-invocation (via the A2T that
-called the tool) becomes its `parent_invocation_id`.
+Because `T2A`'s destination is an agent, T2A interactions will
+become **invocation roots** when §9 is reintroduced — a tool
+delegating to an agent opens a new invocation, with the enclosing
+agent-invocation (via the A2T that called the tool) supplying
+`parent_invocation_id`.
 
 **A2E is defined for completeness.** The v1 demo does not exercise it
 (agents in the demo reach external services only via tools), but
@@ -505,9 +591,10 @@ span is **not** written to `interactions` and produces no
 `interaction_spans` row. Instead it is recorded in a separate
 anomaly table:
 
-- `interaction_anomalies(span_id PK, anchor_kind, emitter_entity_kind,
-  emitter_entity_id, dst_entity_kind, dst_entity_id, reason,
-  first_seen_at)`.
+- `interaction_anomalies(trace_id, span_id, anchor_kind,
+  emitter_entity_kind, emitter_entity_id, dst_entity_kind,
+  dst_entity_id, reason, first_seen_at,
+  PRIMARY KEY (trace_id, span_id))`.
 - Receives the same UI treatment as `dropped_span_types` (§3):
   first-sighting admin notification, count-only thereafter.
 - Detect-only. No recovery — an anomaly row is not retroactively
@@ -532,19 +619,24 @@ T2E. Operational mitigation: monitor `P-kagenti-poller` cursor lag
 ### Schema
 
 - `interactions(
-     interaction_id PK,
+     trace_id,
+     interaction_id,
      parent_interaction_id NULL,
      kind enum,
      src_entity_id references entities (by kind),
      dst_entity_id references entities (by kind),
-     trace_id,
      request_at,
      response_at NULL,
      request_payload_hash NULL references payloads(content_hash),
      response_payload_hash NULL references payloads(content_hash),
      details jsonb,
      change_seq BIGINT,
-     observed_at)`.
+     observed_at,
+     PRIMARY KEY (trace_id, interaction_id))`. Composite PK matches
+  §4: `interaction_id` is the creator's `span_id`, which is only
+  unique within `trace_id`, so the interactions PK carries `trace_id`
+  too. `parent_interaction_id` is implicitly within the same
+  `trace_id` (interactions never cross traces in v1).
 - `details jsonb` holds kind-specific scalars: A2A method name and
   contextId, A2L provider/model/tokens, A2T tool function name, T2E
   / A2E resource_kind/resource_id/status/operation, U2A session
@@ -554,8 +646,12 @@ T2E. Operational mitigation: monitor `P-kagenti-poller` cursor lag
 - **No per-kind tables.** A single `interactions` table serves all
   kinds. Payload hashes and timestamps are common columns because
   every kind has them; everything else is in `details`.
-- `interaction_spans(interaction_id, span_id PK, role, kind)` — link
-  table. Role and kind are orthogonal:
+- `interaction_spans(trace_id, interaction_id, span_id, role, kind,
+  PRIMARY KEY (trace_id, span_id))` — link table. PK is `(trace_id,
+  span_id)` matching §4 (a span belongs to at most one interaction;
+  the composite key prevents cross-trace span_id collisions).
+  `(trace_id, interaction_id)` references `interactions`. Role and
+  kind are orthogonal:
   - **`role ∈ {creator, enricher, connector}`** — what the span does
     to the interaction.
     - `creator` — class-1; this span triggered the creation of the
@@ -601,21 +697,34 @@ T2E. Operational mitigation: monitor `P-kagenti-poller` cursor lag
 ### Entity resolution and blocking
 
 P-interactions resolves `src_entity_id` and `dst_entity_id` via the
-span-entity resolver for each class-1 anchor. If a resolver returns
-an entity reference that does not yet exist in the relevant entity
-table (typically `agents` or `tools`, populated by
-`P-kagenti-poller`), the interaction is **not written**; the span is
-recorded in a pending set:
+span-entity resolver for each class-1 anchor. The resolver returns a
+**logical entity reference** — `(kind, namespace, name)` for K8s
+entities, `(provider, model_name)` for LLMs, `(service_kind,
+identifier)` for external services. P-interactions then picks the
+specific entity-row version that was active at `request_at`:
+`SELECT entity_id FROM <kind> WHERE (namespace, name) = ($1, $2)
+AND valid_from <= $request_at AND (valid_until IS NULL OR
+valid_until > $request_at)`. Span-derived entities (`llms`,
+`external_services`) are versionless; the same query collapses to a
+match on identity columns.
 
-- `interactions_pending(span_id PK, blocked_on_kind, blocked_on_key,
-  first_seen_at)` — owned by P-interactions.
+If no entity row matches (typically because `P-kagenti-poller` has
+not yet observed the agent/tool), the interaction is **not
+written**; the span is recorded in a pending set:
+
+- `interactions_pending(trace_id, span_id, blocked_on_kind,
+  blocked_on_key, first_seen_at,
+  PRIMARY KEY (trace_id, span_id))` — owned by P-interactions.
+  `blocked_on_key` carries the logical reference (e.g., `(namespace,
+  name)` for an agent), not an `entity_id` — `entity_id` is per-row
+  and would not be known until the row exists.
 
 P-interactions' execution model therefore has two triggers:
 
 1. New spans arrive → normal processing.
 2. New/updated entity rows in `agents`, `tools`, `namespaces`, or
    `users` → re-examine `interactions_pending` rows keyed by that
-   entity reference; retry resolution for each.
+   logical reference; retry resolution for each.
 
 Entities derived from spans (`llms`, `external_services`) are upserted
 by `P-otel-receiver` at first sighting in the same transaction as the
@@ -650,9 +759,10 @@ span. Blocking only applies to authoritative entities from
   chains whose member spans all exist in `spans`. Spans bridged by a
   missing parent remain unreachable from their counterparts and their
   chains will not resolve.
-- The "invocation tree" is reconstructed by walking
-  `parent_interaction_id`; no separate invocation-interactions link
-  table.
+- Causal-ancestry walks among interactions go through
+  `parent_interaction_id`; no separate link table. (The
+  invocation-tree view, when §9 is reintroduced, is a filtered walk
+  of this.)
 - Interactions don't "disappear" in the topology stream. They simply
   aren't emitted for windows in which they didn't occur.
 
@@ -736,189 +846,57 @@ yet resolved — is a full-trace walk bounded by trace size.
 
 ### Indexes
 
-- `interaction_spans(span_id)` — PK, implicit.
-- `interaction_spans(interaction_id)` — for "all spans of interaction X".
+- `interaction_spans(trace_id, span_id)` — PK, implicit.
+- `interaction_spans(trace_id, interaction_id)` — for "all spans of
+  interaction X within its trace".
 - `interactions_pending(blocked_on_kind, blocked_on_key)` — for the
   entity-arrival retry path.
 
 ## 9. Invocations
 
-An **invocation** is a scope corresponding to an interaction that
-represents an incoming request to an agent. Its children are every
-interaction causally descended from that root interaction.
+*Deferred.* `P-invocations` and the `invocations` table are not part
+of the v1 increment. Sketch carried forward for when it is
+reintroduced:
 
-- `invocations(interaction_id PK references interactions(interaction_id),
-  parent_invocation_id NULL references invocations(interaction_id),
-  change_seq BIGINT, ...)`.
-- **`invocations.interaction_id` is both the PK and the reference to
-  the root interaction.** Invocations are a strict filter over
-  interactions — every invocation *is* an interaction (one whose
-  `dst_entity_id` references an agent) — so the PKs align. Given an
-  invocation id, its interaction row (and via that, its timestamps,
-  payloads, and constituent spans) is one join away.
-- `parent_invocation_id` is filled in when the root interaction's
-  `parent_interaction_id` chain reaches another interaction that is
-  itself an invocation. Resolved at first write in v1: `interactions`
-  are written only when every class-1 member of the chain exists in
-  `spans` and an enclosing interaction (if any) is already written
-  (§8), so `parent_interaction_id` is final at insert time, and
-  `parent_invocation_id` — derived from it — is likewise final.
-  Never deleted.
-- No `session_id` column on `invocations` (see §10 — single-writer).
-
-### Invocation-root rule (v1)
-
-An interaction is an **invocation root** iff its `dst_entity_id`
-references an agent.
-
-That is all. With the interaction-kind enum (§8), this is equivalent
-to `kind ∈ {A2A, U2A}` today (the two kinds whose destination entity
-type is agent); future kinds whose destination is an agent become
-invocation roots automatically. No per-span-name list, no anchor
-flag — the predicate is a column read on `interactions`.
-
-The predicate lives in a shared module (e.g.,
-`invocation_rules.is_invocation_root_interaction(interaction)`).
-Currently only `P-invocations` imports it.
-
-### `P-invocations` behavior
-
-Reads from `interactions` via `change_seq`-aware cursor. On a new
-interaction whose `dst_entity_id` is an agent:
-
-- Write a new invocation row (PK = interaction_id). Resolve
-  `parent_invocation_id` by walking up `interactions.parent_interaction_id`
-  and at each hop checking whether the ancestor interaction's
-  `dst_entity_id` is an agent. The nearest such ancestor supplies
-  `parent_invocation_id`. If the walk reaches NULL or the top without
-  finding another invocation, `parent_invocation_id = NULL`.
-
-v1 assumes well-formed traces (§8), so the walk resolves at first
-write. There are no retroactive updates to `parent_invocation_id`.
-
-Never deletes invocation rows.
+- An **invocation** is a scope corresponding to an interaction that
+  represents an incoming request to an agent. Its children are every
+  interaction causally descended from that root interaction.
+- Invocations are a strict filter over `interactions` — every
+  invocation *is* an interaction whose `dst_entity_id` references an
+  agent. The intended PK is therefore the root interaction's
+  `interaction_id`, with `parent_invocation_id` derived by walking
+  up `interactions.parent_interaction_id` and pinning to the nearest
+  ancestor that is itself an invocation.
+- Until reintroduced, queries that need an invocation-shaped grouping
+  can be expressed directly over `interactions` using the predicate
+  "destination entity is an agent" — no separate table required for
+  ad-hoc analytics.
 
 ## 10. Sessions
 
-A **session** is a user's (or external A2A client's) continuous
-interaction with the system. A session may contain multiple sibling
-top-level invocations ("plan my trip", then "now book the hotel"),
-which **cannot** be reconstructed from span ancestry — session
-membership is external context, not a tree property. A session may
-also contain **sub-sessions** for agent-to-agent delegations that
-open their own conversational context (a distinct A2A contextId).
+*Deferred.* `P-sessions`, the `sessions` table, and
+`session_invocations` are not part of the v1 increment. The session
+boundary problem and its session-id signals (`session.id`,
+`gen_ai.conversation.id`, `gcp.vertex.agent.session_id`,
+`a2a.context_id`) remain on file as the design starting point when
+sessions are reintroduced. Notes preserved here for that:
 
-### Schema
-
-- `sessions(session_id PK, parent_session_id NULL references
-  sessions(session_id), user_id NULL, started_at, last_activity_at,
-  change_seq BIGINT, ...)`.
-- `session_invocations(session_id, invocation_id, change_seq BIGINT)`
-  — link table owned exclusively by `P-sessions`.
-- `parent_session_id` supports sub-sessions (agent A, handling
-  session S for a user, delegates to agent B under a distinct A2A
-  contextId; B's chain forms a sub-session of S). Nullable; NULL for
-  top-level sessions.
-- The single-writer invariant is preserved: `invocations` has no
-  `session_id` column.
-- Sessions are never deleted.
-
-### Observed session-id signals in the wild
-
-A scan of the dl_demo Phoenix traces confirms that **agent frameworks
-already emit session-id attributes under OpenTelemetry's GenAI
-semantic conventions**, without any Kagenti-specific patch. The
-signals actually observed were:
-
-- `session.id` — standard OTEL GenAI semconv.
-- `gen_ai.conversation.id` — newer OTEL GenAI semconv.
-- `gcp.vertex.agent.session_id` — Google ADK-specific.
-
-All three appeared on *LLM spans inside* the invocation (e.g.,
-`call_llm`), **not on an ancestor of the invocation's root span** as
-the earlier draft of §10 assumed. In the observed demo the driver is
-a Python script (no Kagenti backend in the trace), so the only
-span carrying a session ID is deep inside the invocation. The rule
-must accept session IDs from anywhere in the invocation — ancestor
-or descendant — not just from an ancestor chat-handler.
-
-### Platform changes and expectations for v1
-
-Kagenti's current state does not uniformly propagate a session ID
-P-sessions can group on. Two items cover the v1 increment:
-
-1. **Kagenti backend patch (mandatory when a Kagenti UI is used).**
-   Add OTEL instrumentation to the backend (FastAPI + httpx
-   instrumentors). On the chat-handler span, attach `session.id`
-   (the UI-minted value) as a span attribute, using the OTEL GenAI
-   semconv key so it is interchangeable with the agent-framework
-   signals listed above. httpx instrumentation propagates traceparent
-   headers into the A2A call, so agent-side spans sit underneath this
-   chat-handler span in the trace. This is the top-level-session
-   signal when a Kagenti UI mediates the request.
-2. **Agent framework expectation for sub-sessions (not a
-   data-governance patch).** An agent or agent framework initiating
-   an A2A call that opens its own conversational context is expected
-   to emit a wrapping span (around the A2A client call) that carries
-   `a2a.context_id` as a span attribute. This is the only supported
-   signal in v1.
-
-   The earlier draft's fallback (payload-parsing `contextId` out of
-   the A2A request body) is **dropped.** It does not work with the
-   current Python `a2a-sdk` instrumentation: the
-   `a2a.client.transports.jsonrpc.JsonRpcTransport.send_message_streaming`
-   span carries no attributes and no HTTP-body-capturing child span,
-   so there is no `payloads.content` to parse. Patching the SDK or
-   instrumenting httpx to capture the JSON-RPC body would be more
-   invasive than asking agent frameworks to emit one wrapping span.
-
-   **Agents that emit no wrapping span get no sub-session row;** the
-   invocation rolls up under the enclosing session per §10 rule 4
-   below.
-
-### v1 session-identity rules (P-sessions)
-
-For each invocation (root interaction whose `dst_entity_id` is an
-agent, per §9):
-
-1. **Resolve this invocation's contextId.** Scan spans belonging to
-   the invocation — the root span, its class-1 ancestors inside the
-   interaction, and immediate descendants that are part of the same
-   interaction — for an `a2a.context_id` attribute (the wrapping-span
-   signal described above). If found, this invocation has a
-   contextId. If not, contextId is unknown for this invocation.
-2. **Resolve the enclosing invocation's contextId** by the same
-   lookup, following `invocations.parent_invocation_id`.
-3. **Sub-session:** if this invocation's contextId exists and differs
-   from the enclosing invocation's contextId, this invocation opens a
-   sub-session. `session_id = hash(contextId)`. `parent_session_id =
-   enclosing invocation's session_id`. Write
-   `session_invocations(session_id, invocation_id)`.
-4. **Top-level session:** else, scan the invocation's spans
-   (ancestors *and* descendants within the invocation) for the
-   first-matching session-id attribute, in priority order:
-   `session.id`, then `gen_ai.conversation.id`, then
-   `gcp.vertex.agent.session_id`. If any matches, `session_id =
-   hash((attribute_key, attribute_value))` — including the key in
-   the hash disambiguates otherwise-colliding values across
-   frameworks — and `parent_session_id = NULL`. Write
-   `session_invocations(session_id, invocation_id)`.
-5. **No signal:** no session row. The UI shows the invocation as "no
-   session." No synthetic singleton.
-
-### v1 is append-only for P-sessions
-
-§8's free-neighbourhood re-evaluation guarantees that an `interactions`
-row is written only when every class-1 member of its chain is present
-in `spans` and its enclosing interaction (if any) is already written.
-Consequently `parent_interaction_id` and `parent_invocation_id` are
-final at insert time and never flip from NULL to non-NULL later.
-Session rows and `session_invocations` rows are therefore resolved
-correctly at first write; there is no stale-row scenario in v1.
-P-sessions outputs are **append-only.** No retraction mechanism is
-needed. If the scope later expands to cover gaps caused by genuinely
-missing spans (spans that never arrive), real retraction can be
-added then.
+- Top-level session signal: scan the invocation's spans for the
+  first-matching attribute in priority order: `session.id`, then
+  `gen_ai.conversation.id`, then `gcp.vertex.agent.session_id`. Hash
+  `(attribute_key, attribute_value)` to form `session_id` so values
+  do not collide across frameworks.
+- Sub-session signal: an `a2a.context_id` attribute on a wrapping
+  span around an A2A client call indicates a sub-session under the
+  enclosing session.
+- Both signals are observed in the wild on **LLM/tool spans inside
+  the invocation**, not just on the invocation's root span — the
+  scan must look anywhere within the invocation's span set.
+- Required platform change for v1+sessions (mandatory only when a
+  Kagenti UI is used): the Kagenti backend's chat-handler span must
+  carry `session.id`. The earlier payload-parsing fallback (reading
+  `contextId` from the A2A JSON-RPC body) is **dropped** because the
+  current Python `a2a-sdk` instrumentation captures no payload.
 
 ## 11. Classification
 
@@ -928,11 +906,31 @@ increment. Reintroduction:
 
 - **Classifier:** UDC (Unified Data Catalog). Runs as a library
   in-process with the classifier worker.
-- **Dedup: content-hash-keyed.** `classifications(content_hash,
-  classifier, labels jsonb, classified_at, classifier_version)`,
-  PK `(content_hash, classifier)`.
+- **UDC output shape: offset-based findings.** UDC detects a
+  predefined set of entity types (PII, secrets, etc.) and returns
+  their locations within the input. Per-payload output is therefore a
+  list of `(offset, length, entity_type, confidence?)` tuples, not a
+  flat label set. Schema:
+  `classifications(content_hash, classifier, classifier_version,
+  findings jsonb, classified_at)`, PK
+  `(content_hash, classifier, classifier_version)`. `findings` is an
+  array of objects shaped `{offset, length, entity_type, ...}`. A
+  derived label set (`distinct(entity_type for f in findings)`) is
+  what most queries and overlays need; if access patterns warrant,
+  promote it to a generated column or a denormalised `labels` array
+  later.
+- **Dedup: content-hash-keyed.** Two payloads with the same bytes
+  share a classification row; this is the same dedup property as the
+  earlier label-only design.
+- **Offsets are into the whole-message payload.** Each `payloads`
+  row is classified as one document; offsets in `findings`
+  reference bytes into that row's `content`. Payload storage is
+  byte-preserving (§6) so offsets stay valid. Re-classifying after
+  a UDC version bump produces a new
+  `(content_hash, classifier, classifier_version)` row; old
+  findings are kept for audit, not overwritten.
 - Async, cache-backed. Off the ingestion critical path. Append-only —
-  no special change_seq handling needed.
+  no special change_seq handling needed beyond the per-row insert.
 
 ## 12. Lineage
 
@@ -943,6 +941,9 @@ of scope.
 
 ## 13. Policy / risk analytics
 
+*Deferred.* Same posture as §11 and §12 — policy and risk analytics
+are out of the v1 increment. The intended shape when reintroduced:
+
 - **Plugin/processor-based architecture.** Policy and risk analytics
   are processors that read via the retrieval API and produce typed
   outputs (`violations`, etc.).
@@ -950,6 +951,13 @@ of scope.
   SQL-rule plugins are the second. The framework is engine-agnostic.
 - **Explanations and suggestions** come from the policy engine's
   decision log.
+- **Granularity:** policy rules query `interactions` rows directly,
+  with `details` predicates for resource-level conditions. The
+  topology node grain (`external_services` is coarse — one row per
+  host/server/mount, see §7) is a UI/analytics concern, not the
+  governance unit. This decision is recorded here so future policy
+  authors know not to model rules around `external_services`
+  identity.
 
 ## 14. Processor framework
 
@@ -957,25 +965,18 @@ of scope.
 
 | Processor | Input | Output | Notes |
 |-----------|-------|--------|-------|
-| `P-otel-receiver` | OTLP socket | `spans`, `payloads`, `dropped_span_types`, `llms`, `external_services` | Trivial: append-only writes, no parent computation, no interaction logic. |
-| `P-kagenti-poller` | Kagenti control plane | `namespaces`, `users`, `agents`, `tools` | Polls authoritative source. |
+| `P-otel-receiver` | OTLP socket | `spans`, `payloads`, `dropped_span_types`, `llms`, `external_services`, `payload_overflow_events` | Trivial: append-only writes, no parent computation, no interaction logic. |
+| `P-kagenti-poller` | Kagenti control plane | `namespaces`, `users`, `agents`, `tools` | Polls authoritative source. Versioned-row lifecycle per §7 — delete-then-recreate produces a new row with a new `entity_id`. |
 | `P-interactions` | `spans`; `agents`, `tools`, `llms`, `namespaces`, `users` for entity resolution and HTTP-client disambiguation | `interactions`, `interaction_spans`, `interactions_pending`, `interaction_anomalies` | Chain-catalog-driven creator/enricher/connector rule (§3, §8). On each span arrival, re-evaluates the free-span neighbourhood around the arriving span (free ancestors + free descendants, bounded by owned spans); chains resolve whenever their member spans all exist in `spans` and fit a chain root-first, so OTLP reordering is absorbed without quarantine. Blocks on unresolved entities (pending set); reactivates on entity writes. HTTP client spans disambiguated via emitter×dst matrix (§8); anomalous `(emitter, dst)` combinations go to `interaction_anomalies` instead of `interactions`. |
-| `P-invocations` | `interactions` | `invocations` | Invocation predicate: `dst_entity_id` references an agent. Walks `parent_interaction_id` to resolve `parent_invocation_id` at first write. |
-| `P-sessions` | `invocations`, `interactions`, `spans` | `sessions`, `session_invocations` | Session-boundary detection. v1 rules (§10): sub-session signal = `a2a.context_id` on a wrapping span around the A2A client call; top-level session signal = first-matching session-id attribute from a priority list (`session.id`, `gen_ai.conversation.id`, `gcp.vertex.agent.session_id`) anywhere within the invocation's spans — ancestor or descendant. Append-only in v1. |
 
-Prerequisite platform changes for v1 P-sessions (see §10): the
-Kagenti backend (when present) must instrument its chat-handler span
-with `session.id`. For sub-sessions, agent frameworks are expected
-— as a platform posture, not a data-governance patch — to emit a
-wrapping span around A2A client calls carrying `a2a.context_id`; the
-earlier payload-parsing fallback is dropped because the current
-`a2a-sdk` Python instrumentation captures no payload.
+Deferred to later increments: `P-invocations` (§9), `P-sessions`
+(§10), `P-classification` (§11), `P-lineage` (§12), policy
+processors (§13).
 
-Deferred to later increments: `P-classification`, `P-lineage`, policy
-processors.
-
-Sequence diagrams are rendered by the UI directly from `invocations`
-+ `interactions` — no `P-sequence` processor.
+In v1 the UI cannot render sequence diagrams that span an entire
+invocation (no `invocations` table to scope by); it can render
+trace-scoped sequences directly from `interactions` filtered by
+`trace_id`.
 
 ### Realtime mutation model (Path 1)
 
@@ -1004,8 +1005,6 @@ genuine mutation cases are confined to P-interactions itself:
 |-----------|--------------|-----|
 | `P-interactions` | `interactions_pending` row is removed and an `interactions` row is written | A previously-unresolved entity reference (agent or tool) has been populated by `P-kagenti-poller`, unblocking the span. |
 | `P-interactions` | An existing `interactions` row has previously-NULL columns filled (e.g., `dst_entity_id`, `response_payload_hash`, `response_at`) and its `change_seq` is bumped | A class-1 enricher span for an existing interaction has arrived after the creator. Possible under the free-neighbourhood algorithm when the enricher's arrival is the triggering span that first made the full chain assembleable, but the creator was written in an earlier round because a different chain anchored by the creator (topmost) span resolved first. |
-| `P-invocations` | None beyond first-write. | `parent_invocation_id` is resolved at first write; the free-neighbourhood guarantee means no late-flip path exists. |
-| `P-sessions` | None beyond first-write. | Sessions and `session_invocations` are append-only in v1. |
 
 **No hard deletes anywhere in the processor-output tables.** All
 state transitions are inserts (with `interactions_pending` being the
@@ -1018,13 +1017,13 @@ will be a `deleted_at timestamptz NULL` column whose write bumps
 ### Framework invariants
 
 - **Single writer per table.** No processor writes to another's output
-  table. (This is what forced `session_invocations` to exist.)
+  table. (When P-invocations / P-sessions are reintroduced, this is
+  what will force a separate `session_invocations` link table.)
 - **Idempotent writes with deterministic keys.** Every output row has
   a key derived deterministically from its inputs. For the v1
   processors the keys are borrowed directly: `interactions.interaction_id
-  = spans.span_id` (first class-1 span of the chain),
-  `invocations.interaction_id = interactions.interaction_id`. No
-  hashing, no surrogate IDs.
+  = spans.span_id` (creator span of the chain). No hashing, no
+  surrogate IDs.
 - **No per-row processor versioning.** Output rows do not carry
   `processor_version` / `processor_run_id` columns. A logic change
   that alters output semantics is handled by schema migration (drop
@@ -1035,7 +1034,24 @@ will be a `deleted_at timestamptz NULL` column whose write bumps
 - **No direct DB reads.** Processors read through the retrieval API.
 - **Explicit dependency declarations.** Processor declares its
   upstream dependencies.
-- **In-process v1.** All processors are Python modules in one service.
+- **In-process v1, concurrent tasks.** All processors are Python
+  modules in one service, but they run as **separate asyncio tasks**
+  with their own DB connections from a shared pool — *not*
+  sequentially on the OTLP-receive callback. Specifically:
+  - `P-otel-receiver` writes its outputs (spans, payloads, derived
+    entities, counters) in one transaction per OTLP batch and
+    returns to the socket immediately. Commit fires
+    `NOTIFY spans_changed`.
+  - `P-interactions` runs as a separate task that wakes on
+    `LISTEN spans_changed` (and `agents_changed` / `tools_changed`
+    for entity-blocking retries).
+  - **No synchronous backpressure from downstream processors to the
+    receiver.** If `P-interactions` lags, `spans` simply grows
+    ahead of `interactions`; the cursor-lag alert (below) is the
+    operational signal.
+  - Promoting any downstream processor to a separate OS process is
+    a deployment-only change — the table-as-message-bus design
+    already accommodates it.
 - **Monotonic integer seq for raw events.** `spans.seq BIGINT` assigned
   on ingest. All cursors are integers.
 
@@ -1061,10 +1077,11 @@ will be a `deleted_at timestamptz NULL` column whose write bumps
 - **Read-only.** Writes go through the processor framework (processors)
   or the UI backend (user inputs).
 - **Shape: typed methods + SQL escape hatch.** 95%-path methods like
-  `get_invocations(trace_id) -> list[Invocation]`,
+  `get_interactions(trace_id) -> list[Interaction]`,
   `iter_spans(cursor, limit)`, `get_flow_edges(trace_id)`. Escape
   hatch for genuinely ad-hoc needs; promote to typed method when used
-  twice.
+  twice. Invocation-shaped retrieval methods (`get_invocations`,
+  etc.) come back when §9 is reintroduced.
 - **Cursors are monotonic integers.** No opaque tokens. Methods over
   mutable tables cursor on `change_seq`; methods over append-only
   tables cursor on `seq`.
@@ -1098,8 +1115,9 @@ connector volume and means the data layer does not need a
 - **Thin REST wrapper.** Auth (Keycloak), authz, composite read
   endpoints, user-write CRUD. No business logic beyond auth/authz.
 - **Resource-shaped composite endpoints, not page-shaped.**
-  `GET /traces/{id}?include=invocations,classifications,violations` —
-  one round-trip per view of a resource.
+  `GET /traces/{id}?include=interactions` — one round-trip per view
+  of a resource. (Invocation, classification, and violation
+  includes return when §9, §11, §13 are reintroduced.)
 - **Expansion parameters** control depth; default sensibly, allow opt-out
   of heavy fields.
 - **Composite endpoints use the retrieval API internally.** Same read
@@ -1205,14 +1223,12 @@ output, consumed by the UI's topology view.
   surfaces matched-but-impossible anchor cases (tool → known-tool
   host, tool → known-LLM host). Similar shape to `dropped_span_types`
   but different actionability.
-- **`a2a.context_id` wrapping-span convention (§10).** Which agent
-  frameworks (LangGraph, Google ADK, A2A SDK wrappers, bespoke
-  agents) will actually emit a wrapping span around A2A client calls
-  with `a2a.context_id` as an attribute. Demo traces carry no such
-  span today; the v1 posture is "sub-sessions happen when a framework
-  emits it, otherwise invocations roll up under the enclosing
-  session." Worth tracking where this posture falls short in
-  practice.
+- **`a2a.context_id` wrapping-span convention (§10, deferred).**
+  Which agent frameworks (LangGraph, Google ADK, A2A SDK wrappers,
+  bespoke agents) will actually emit a wrapping span around A2A
+  client calls with `a2a.context_id` as an attribute. Demo traces
+  carry no such span today. Re-examined when §10 (sessions) is
+  reintroduced.
 - **Genuinely-missing spans** (deferred from v1): a class-1 span
   whose required chain-mate never arrives in `spans` at all (dropped
   in transit, lost on crash, never emitted due to a framework bug)
@@ -1223,10 +1239,16 @@ output, consumed by the UI's topology view.
   Related: the late-inventory case — a span whose destination agent
   is not yet registered resolves as T2E/A2E and stays that way even
   after the agent lands (§8 "Late-inventory caveat").
-- **Payload handling details:** size limits, normalization for content
-  hashing, what counts as a payload vs. metadata.
-- **Reintroduction schedule and design details** for
-  `P-classification` and `P-lineage`.
+- **What counts as a payload vs. metadata** per anchor — i.e.,
+  which span attributes the resolver pulls into a `*_hash` field
+  and which it leaves on `interactions.details`. (The orthogonal
+  questions are settled: size cap is 100 KB with truncation per §6;
+  normalization is byte-preserving per §6; v1 stores whole-message
+  payloads, not per-message parts.)
+- **Reintroduction schedule and design details** for the deferred
+  processors: `P-invocations` (§9), `P-sessions` (§10),
+  `P-classification` (§11), `P-lineage` (§12), policy processors
+  (§13).
 - **Concrete schemas for user-owned tables** (`user_reviews`,
   `violation_acknowledgments`, `classification_overrides`).
 - **Retrieval API concrete method surface** given the finalized table
