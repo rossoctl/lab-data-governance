@@ -39,10 +39,11 @@ flowchart TD
 ```
 
 **v1 ingestion is one processor.** `P-otel-receiver` owns the OTLP
-socket and writes every received span plus its payloads to Postgres.
-Nothing is filtered, classified, normalized into interactions, or
-correlated against an entity inventory. The v1 UI renders raw span
-trees grouped by `trace_id`, with payload inspection on click.
+socket and writes every received span to Postgres verbatim, with
+payloads left inline in `attributes`. Nothing is filtered,
+classified, normalized into interactions, or correlated against an
+entity inventory. The v1 UI renders raw span trees grouped by
+`trace_id`, with attribute inspection on click.
 
 ## 1. Source and transport
 
@@ -66,8 +67,7 @@ trees grouped by `trace_id`, with payload inspection on click.
 - Single append-only table: `spans`.
 - `spans(trace_id, span_id, parent_id NULL, kind, name, service_name,
   started_at, ended_at, status_code, status_message NULL,
-  openinference_span_kind NULL, attributes jsonb,
-  events jsonb, links jsonb,
+  attributes jsonb, events jsonb, links jsonb,
   seq BIGINT, observed_at,
   PRIMARY KEY (trace_id, span_id))`.
 - **PK is composite `(trace_id, span_id)`**, not `span_id` alone.
@@ -81,9 +81,10 @@ trees grouped by `trace_id`, with payload inspection on click.
   referenced span has not yet arrived (or never arrives).
   Out-of-order arrival is absorbed naturally. The implicit
   `(trace_id, parent_id)` referent is always within the same trace.
-- **`P-otel-receiver` is trivial:** append spans + payloads, applying
+- **`P-otel-receiver` is trivial:** append spans verbatim, applying
   only the blocklist filter (§3.1). No parent-chain computation, no
-  fix-pass, no cross-trace coordination.
+  fix-pass, no cross-trace coordination, no payload extraction or
+  hashing — payloads stay inline in `attributes` jsonb.
 - `seq BIGINT` is assigned monotonically on ingest for cursor-based
   retrieval over append-only spans.
 
@@ -105,21 +106,18 @@ row size lean for the common case.
 
 ### Promoted attributes
 
-Three attributes are promoted to dedicated columns because v1 UI
-grouping/coloring or filtering depends on them; everything else
-lives in the `attributes jsonb` blob and can be promoted later
-without breaking the schema.
+Two attributes are promoted to dedicated columns because the v1 UI
+filters on them; everything else lives in the `attributes jsonb`
+blob and can be promoted later without breaking the schema.
 
 - `status_code`, `status_message` — OTLP span status. Every span has
   a status; the UI marks errors based on it.
-- `openinference_span_kind` — populated from the
-  `openinference.span.kind` attribute when present, NULL otherwise.
-  Stable discriminator for LLM / TOOL / AGENT spans across the
-  framework jungle (see "Open questions"); the v1 UI uses it for
-  grouping and coloring.
 
 `service.name` is already a column (`service_name`). `service.namespace`,
-HTTP attributes, and everything else stay in `attributes jsonb` for v1.
+HTTP attributes, OpenInference / GenAI attributes, and everything
+else stay in `attributes jsonb` for v1. Recognising span semantics
+(LLM vs tool vs agent) is deliberately out of scope for v1 and
+left to a future classifier.
 
 ### Transactional unit
 
@@ -145,7 +143,7 @@ idempotent. No update path in v1.
 
 The receiver applies a hardcoded blocklist of span-name patterns
 before writing. Spans matching any pattern are dropped at the socket
-without touching `spans` or `payloads`.
+without touching `spans`.
 
 - **Pattern grammar:** exact names *or* `prefix*` glob — nothing
   else. Two-case grammar is easy to scan in PR review and makes the
@@ -169,68 +167,30 @@ without touching `spans` or `payloads`.
 
 ## 4. Payloads
 
-- Separate `payloads` table keyed by `content_hash` (SHA-256 of
-  payload bytes).
-- Every span carries two payload reference columns:
-  `request_payload_hash NULL` and `response_payload_hash NULL`,
-  each referencing `payloads.content_hash`. **A payload is a
-  whole message** — the entire LLM prompt blob, the entire tool
-  input, the entire A2A message body — not a decomposition into
-  per-message parts.
-- **Generic request/response, not span-kind-aware.** The receiver
-  does not interpret span semantics in v1: it locates payloads via
-  two hardcoded ordered lists of attribute names — one for
-  request-shaped attributes (e.g. `input.value`, `gen_ai.prompt`,
-  the A2A SDK's request attributes), one for response-shaped
-  (e.g. `output.value`, `gen_ai.completion`, the A2A response
-  attributes). The lists are reviewed by PR alongside the blocklist.
-  Mapping "prompt" vs "tool input" vs "A2A message" semantically is
-  the job of a future classifier; v1 only knows "this attribute
-  looked like a request body, that one looked like a response body".
-  Spans with no recognized payload attributes get NULL on both columns.
-- **Multiple matches per direction are wrapped in a JSON array.** If
-  a span carries more than one request-shaped attribute (e.g. both
-  `input.value` and `gen_ai.prompt`), the receiver collects the
-  matched values in list order and stores `[v1, v2, ...]` as the
-  payload `content`. Same rule for response-shaped attributes. The
-  array form is self-describing, decomposable downstream, and
-  consistent with the JSON-canonicalization pipeline below.
-  **For consistency, single matches are wrapped too** — a span with
-  one matched request attribute stores `[v1]`, not the bare value.
-  This costs one set of brackets per payload and pays back by
-  letting every consumer assume the same shape.
-- `payloads(content_hash PK, content, size_bytes, truncated_bytes
-  BIGINT NULL, first_seen_at)`. `truncated_bytes` is NULL for
-  payloads stored in full; otherwise it records the original
-  pre-truncation size in bytes.
-- Written by `P-otel-receiver` alongside the owning span, in the
-  same transaction.
-- **Hashing rule (v1):** the receiver attempts canonicalization
-  (parse as JSON, sort keys, minify) only when the input size is at
-  or below the per-payload cap; oversized inputs skip
-  canonicalization and take the byte-hash + truncate path.
-  Canonicalization is best-effort: parse failure falls back to the
-  byte-hash path silently. When canonicalization succeeds, `content`
-  stores the canonical form and the hash is over canonical bytes.
-  This bounds canonicalization cost to the cap, raises dedup hit
-  rates for the common case (LLM prompts, A2A message bodies), and
-  keeps the oversized path simple — a 5MB JSON blob doesn't get
-  parsed just to be truncated afterward.
-- **Per-payload size cap (v1): 10 KB.** A single oversized payload
-  must not blow ingest memory or pollute Postgres with multi-MB
-  rows. On overflow:
-  - Truncate to the first 10 KB and store the truncated raw bytes
-    as `content` (no canonicalization on the oversized path).
-  - Set `truncated_bytes` to the original byte length.
-  - `content_hash` is computed over the *truncated* bytes, so two
-    different oversized payloads that share their first 10 KB
-    will dedup — accepted; this is the same "byte-equality only"
-    posture as the rest of §4.
-  - Span keeps its `*_hash` column populated normally; consumers
-    detect truncation via `payloads.truncated_bytes IS NOT NULL`.
-- The 10 KB cap is provisional. `size_bytes` is logged on write so
-  the distribution informs later tuning; raising or lowering the cap
-  is a config change, not a schema change.
+- **No separate payloads table.** Payloads stay inline in
+  `spans.attributes` exactly as the OTLP span carried them. The
+  receiver does not extract, normalize, hash, dedup, or truncate
+  payload-shaped attributes in v1 — every attribute (payload or
+  otherwise) is written verbatim into the `attributes jsonb` blob.
+- **No content hashing.** v1 does not compute `content_hash` or any
+  cross-span payload identity. Two spans carrying identical prompt
+  text store that text twice. Storage cost is accepted in exchange
+  for a trivial receiver and a single-table schema; payload dedup
+  becomes a v2 design problem if the storage cost ever bites.
+- **No size cap, no truncation.** Whatever OTLP delivers is what
+  gets stored. Pathological inputs are bounded only by the upstream
+  OTLP-collector limits and Postgres row-size limits; this is
+  acceptable for a v1 development / demo deployment (see §5).
+- **Locating payloads is a read-side concern.** The UI and any
+  future processors find payload-shaped values by looking at
+  well-known attribute keys (e.g. `input.value`, `output.value`,
+  `gen_ai.prompt`, `gen_ai.completion`, the A2A SDK's request /
+  response attributes) directly inside `attributes`. v1 ships with
+  a small library helper that returns the request- and
+  response-shaped values for a given span using a hardcoded
+  ordered list of attribute names; the list is reviewed by PR.
+  Mapping "prompt" vs "tool input" vs "A2A message" semantically
+  remains a future-classifier job.
 
 ## 5. Retention
 
@@ -261,10 +221,6 @@ detail — the contract is pinned here so deployments can rely on it.
   - `spans_duplicate_total` — counter, ON CONFLICT DO NOTHING hits.
   - `span_insert_duration_seconds` — histogram of per-span insert
     latency.
-  - `payloads_inserted_total` / `payloads_duplicate_total` —
-    counterparts for the `payloads` table.
-  - `payload_truncations_total` — counter, payloads exceeding the
-    10 KB cap.
   - `db_errors_total{kind}` — counter, Postgres errors by kind
     (connection, integrity, other).
 
@@ -274,8 +230,10 @@ detail — the contract is pinned here so deployments can rely on it.
 - **Shape: typed methods + SQL escape hatch.** 95%-path methods like
   `iter_spans(cursor, limit)`, `get_trace(trace_id) -> list[Span]`,
   `list_recent_traces(time_from, time_to, limit, offset)`,
-  `get_payload(content_hash) -> Payload`. Escape hatch for genuinely
-  ad-hoc needs; promote to typed method when used twice.
+  `get_span_payloads(trace_id, span_id) -> {request, response}`
+  (the helper from §4 that pulls payload-shaped values out of
+  `attributes`). Escape hatch for genuinely ad-hoc needs; promote
+  to typed method when used twice.
 - **SQL escape hatch is library-only.** It is reachable from Python
   callers (the UI backend, future processors, ad-hoc analytics in a
   REPL or notebook) but is not exposed through the UI backend's
@@ -296,7 +254,8 @@ detail — the contract is pinned here so deployments can rely on it.
   `GET /traces/{id}` returns the trace's spans in one round-trip;
   `GET /traces` returns the recent-traces listing.
 - **Expansion parameters** control depth; default sensibly, allow
-  opt-out of heavy fields (notably payload bodies).
+  opt-out of heavy fields (notably the `attributes` blob, which
+  carries inline payload bodies).
 - **Composite endpoints use the retrieval API internally.**
 - **Live updates:** polling by default; SSE push for live-tail views
   (raw events) when needed.
@@ -381,11 +340,12 @@ The v1 UI is a single page with two views:
   traces whose listing root is a missing-parent orphan. Clicking a
   row opens the trace tree.
 - **Trace tree** — spans of a single trace grouped by `trace_id` and
-  linked by `parent_id`. Spans are colored by
-  `openinference_span_kind` when present, marked with an error icon
-  on non-OK `status_code`. Clicking a span opens a detail panel
-  showing its attributes, events, links, and any referenced
-  payloads (fetched by `content_hash`).
+  linked by `parent_id`. Spans are marked with an error icon on
+  non-OK `status_code`; no semantic coloring in v1. Clicking a span
+  opens a detail panel
+  showing its attributes (with request- and response-shaped
+  payload values surfaced as distinct sections via the §4 helper),
+  events, and links.
 
 No topology view, no sequence diagrams, no classification overlays —
 those return when the corresponding processors are designed in a
@@ -393,14 +353,11 @@ later increment.
 
 ## Open questions
 
-- **Per-payload size cap.** Provisional 10 KB; the cap is a backstop
-  against pathological inputs, not a tuned number. Observed
-  `size_bytes` distribution in production will inform adjustment.
-  Raising or lowering it is a config / single-line change, not a
-  schema change.
-- **`openinference.span.kind` reliability.** The promoted column
-  assumes this attribute is consistently emitted by Kagenti agent
-  frameworks. Demo traces support it, but spans from custom agents
-  or non-OpenInference instrumentation may leave the column NULL,
-  degrading the v1 UI's grouping. Acceptable for v1; reconsidered
-  if NULL rate is high in production.
+- **Inline-payload storage cost.** v1 stores payloads verbatim
+  inside `attributes` with no dedup, hashing, or truncation (§4).
+  This is fine for development / demo volumes but will not scale:
+  duplicated prompts, large tool outputs, and pathological inputs
+  all land in the row unmodified. Re-introducing a separate
+  payloads table (with content-addressed storage and a size cap)
+  is the obvious v2 move once observed row-size distribution
+  justifies the complexity.
