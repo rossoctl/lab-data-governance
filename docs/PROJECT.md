@@ -55,6 +55,23 @@ entity inventory. The v1 UI renders raw span trees grouped by
   forcing collector reconfiguration to point at us. Kagenti's OTEL
   collector adds an exporter targeting one of the endpoints; no
   other glue in the platform.
+- **OTLP message size pinned at 4 MB.** The receiver accepts the
+  OTel collector's default `max_recv_msg_size` (4 MiB on gRPC; the
+  matching HTTP body limit). Spans whose serialized batch exceeds
+  this are rejected at the transport layer by the sender's collector
+  before they reach us — i.e. 4 MB is the de facto per-batch payload
+  ceiling for v1. Operators who need larger batches raise the limit
+  on both sides; this is documented but not the default. Rationale:
+  most existing OTel collector setups are already calibrated to this
+  limit, and changing our default would force collector
+  reconfiguration upstream — contradicting "no other glue in the
+  platform."
+- **Deployment topology.** The receiver runs as a Deployment with
+  **2 replicas** behind a ClusterIP Service that the upstream OTel
+  collector targets. The receiver is stateless — all state lives in
+  Postgres — so replicas exist for rolling-update headroom and
+  modest throughput, not HA in any production sense. Postgres lives
+  in its own StatefulSet in the same namespace; see §3 and ADR-0005.
 
 ## 2. Storage
 
@@ -64,11 +81,17 @@ entity inventory. The v1 UI renders raw span trees grouped by
 
 ## 3. Spans table and parent linkage
 
-- Single append-only table: `spans`.
-- `spans(trace_id, span_id, parent_id NULL, kind, name, service_name,
-  started_at, ended_at, error BOOLEAN NULL, status_message NULL,
-  attributes jsonb, events jsonb, links jsonb, otlp jsonb NULL,
-  seq BIGINT, observed_at,
+- Single **append-and-finalize** table: `spans`. Rows are inserted
+  once and may be updated exactly once on completion (see §3.2 and
+  ADR-0004); they are never deleted in v1.
+- `spans(trace_id, span_id, parent_id NULL, kind, name,
+  service_name NULL, started_at timestamptz, ended_at timestamptz NULL,
+  error BOOLEAN NULL, status_message NULL,
+  attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
+  events jsonb NULL, links jsonb NULL, otlp jsonb NULL,
+  scope jsonb NULL, resource_attributes jsonb NULL,
+  seq BIGINT, arrival_seq BIGINT NOT NULL,
+  observed_at timestamptz,
   PRIMARY KEY (trace_id, span_id))`.
 - **PK is composite `(trace_id, span_id)`**, not `span_id` alone.
   OTEL `span_id` is 8 bytes and only locally unique within a trace;
@@ -81,20 +104,33 @@ entity inventory. The v1 UI renders raw span trees grouped by
   referenced span has not yet arrived (or never arrives).
   Out-of-order arrival is absorbed naturally. The implicit
   `(trace_id, parent_id)` referent is always within the same trace.
-- **`P-otel-receiver` is trivial:** append spans verbatim, applying
-  only the blocklist filter (§3.1). No parent-chain computation, no
+- **`P-otel-receiver` has a narrow surface:** append spans verbatim
+  (with conditional finalization on completion, §3.2), applying only
+  the blocklist filter (§3.1). No parent-chain computation, no
   fix-pass, no cross-trace coordination, no payload extraction or
-  hashing — payloads stay inline in `attributes` jsonb.
-- `seq BIGINT` is assigned monotonically on ingest for cursor-based
-  retrieval over append-only spans.
-- **Timestamp source matters.** `started_at` and `ended_at` are
+  hashing — payloads stay inline in `attributes` jsonb. The receiver
+  reaches Postgres through the layered `db` module described in
+  ADR-0005.
+- `seq BIGINT` is allocated monotonically from a sequence at insert
+  time, **and re-allocated on update** when a row finalizes
+  (ADR-0004). It is the cursor column for stream consumers and is a
+  watermark, not a per-row stable identifier.
+- `arrival_seq BIGINT NOT NULL` records the row's original `seq` at
+  INSERT and is **never updated**. Anything that needs a stable
+  per-row handle (recovery checkpoints, idempotence keys, "I observed
+  this exact row at this position" semantics) uses `arrival_seq` or
+  `(trace_id, span_id)`.
+- **Timestamp types.** All three time columns are `timestamptz`
+  (microsecond precision; UTC). `started_at` and `ended_at` are
   OTLP-supplied (the instrumented service's clock when the span
-  began and ended — *trace-clock*, subject to per-service skew).
-  `observed_at` is set by `P-otel-receiver` at insert time
-  (*receiver-clock*); kept for operator/debug queries ("did we see
-  anything in the last hour?") and not used for user-facing window
-  filtering in v1. All `(time_from, time_to)` window queries in §6
-  filter on `started_at`.
+  began and ended — *trace-clock*, subject to per-service skew);
+  OTLP nanoseconds are truncated to microseconds on ingest, which is
+  acceptable for v1 and below the resolution of most platforms'
+  monotonic clocks. `observed_at` is set by `P-otel-receiver` at
+  insert time (*receiver-clock*); kept for operator/debug queries
+  ("did we see anything in the last hour?") and not used for
+  user-facing window filtering in v1. All `(time_from, time_to)`
+  window queries in §6 filter on `started_at`.
 
 ### Attribute typing
 
@@ -110,7 +146,19 @@ the `events jsonb` column as an array of `{name, time_unix_nano,
 attributes}` objects. Span `Link` records are stored similarly in
 `links jsonb` as an array of `{trace_id, span_id, attributes}`
 objects. Both default to `NULL` when the span has none, which keeps
-row size lean for the common case.
+row size lean for the common case. The receiver always normalizes
+empty-or-absent OTLP events/links to SQL `NULL`; it never writes
+the JSON literal `[]`. Consumers should treat `events IS NULL` and
+`links IS NULL` as the canonical "no events / no links" check.
+
+### `attributes` defaults
+
+`attributes` is `NOT NULL DEFAULT '{}'::jsonb`. The receiver always
+writes a (possibly empty) JSON object, never SQL `NULL`. This is
+asymmetric with `events`/`links` deliberately: `attributes` is the
+catch-all dumping ground for span-level OTLP attributes, and a
+consistent shape (always an object) is friendlier to consumers than
+the NULL/empty distinction would be.
 
 ### Promoted columns
 
@@ -131,11 +179,42 @@ The promoted fields and their roles:
   semantics in §8 reduce to `error IS TRUE`. `status_message` is
   carried verbatim and is only meaningful when `error IS TRUE`.
 
-`service.name` is also already a column (`service_name`).
-`service.namespace`, HTTP attributes, OpenInference / GenAI
-attributes, and everything else stay in `attributes jsonb` for v1.
-Recognising richer span semantics (LLM vs tool vs agent) is
-deliberately out of scope for v1 and left to a future classifier.
+`service.name` is also already a column (`service_name`). It is
+sourced from the OTLP `Resource.attributes["service.name"]` of the
+`ResourceSpans` envelope (Resource-level, **not** span-level). The
+column is NULLable; the receiver writes `NULL` when the resource
+has no `service.name` attribute. The UI renders NULL as a placeholder
+("—" or "(no service)") — a UI choice, not a schema choice.
+
+HTTP attributes, OpenInference / GenAI attributes, and other
+span-level attributes stay in `attributes jsonb` for v1. Recognising
+richer span semantics (LLM vs tool vs agent) is deliberately out of
+scope for v1 and left to a future classifier.
+
+### Resource attributes envelope
+
+Non-`service.name` resource attributes (e.g. `service.namespace`,
+`service.version`, `deployment.environment`, K8s attributes) are
+stored verbatim in `resource_attributes jsonb NULL` — a sibling
+column to `attributes`. The receiver writes the OTLP
+`Resource.attributes` map (minus the promoted `service.name`)
+verbatim; `NULL` when only `service.name` is present or no resource
+attributes at all. Kept in a structurally distinct column so future
+processors can filter by resource-level metadata without conflating
+it with span-level attributes.
+
+### InstrumentationScope envelope
+
+OTLP `InstrumentationScope` (the `ScopeSpans` envelope: scope name,
+version, scope-level attributes) is stored verbatim in
+`scope jsonb NULL` as `{name, version, attributes}`. `NULL` when
+the OTLP scope is wholly absent (rare). The v1 UI does not read
+`scope`, but a future classifier almost certainly will (e.g.
+distinguishing OpenInference's OpenAI instrumentation from a generic
+HTTP span). Filter via `scope ->> 'name'` for now; promoting
+`scope_name` to its own TEXT column is reserved for v1.x if the
+filter pattern shows up frequently and the JSONB extraction cost
+bites.
 
 ### OTLP envelope column
 
@@ -154,28 +233,87 @@ that care about sampling (`flags`), W3C trace context propagation
 (`trace_state`), or upstream truncation (`dropped_*_count`) read
 this column.
 
+The receiver omits zero-valued / absent envelope fields when writing
+`otlp` — e.g. a span with `dropped_attributes_count = 0` does not
+get a `{"dropped_attributes_count": 0}` key. If every envelope field
+is at its default, `otlp` is `NULL`. This keeps the column lean for
+the common case (most spans carry no envelope content beyond
+defaults) and is mechanically forced by OTLP's protobuf encoding,
+which represents "absent" and "zero" identically for unsigned
+integer fields.
+
 ### Transactional unit
 
-**One transaction per span.** A poison span aborts only its own
-write; neighbours commit. Per-span commit overhead is acceptable at
-v1 volumes; this is reconsidered if profiling shows commit cost
-dominating ingest latency.
+**One Layer 1 transaction per span** (see ADR-0005 for what "Layer 1"
+means). A poison span aborts only its own write; neighbours commit.
+Per-span commit overhead is acceptable at v1 volumes; this is
+reconsidered if profiling shows commit cost dominating ingest
+latency.
 
-**Duplicate handling:** `INSERT ... ON CONFLICT (trace_id, span_id)
-DO NOTHING`. First writer wins; subsequent arrivals with the same
-`(trace_id, span_id)` are silently dropped. OTLP retries (which can
-re-deliver the same span after a network blip) are therefore
-idempotent. No update path in v1.
+### 3.2 Conflict policy: append-and-finalize
+
+`INSERT ... ON CONFLICT (trace_id, span_id)`:
+
+- **DO UPDATE** iff the incoming row has `ended_at IS NOT NULL`
+  AND the existing row has `ended_at IS NULL`. The UPDATE clause
+  overwrites every mutable column (`kind`, `name`, `attributes`,
+  `events`, `links`, `otlp`, `scope`, `resource_attributes`,
+  `error`, `status_message`, `ended_at`) and **assigns a fresh
+  `seq`** from the same sequence used for inserts. `arrival_seq`,
+  `started_at`, `parent_id`, `service_name`, `observed_at` are
+  preserved.
+- **DO NOTHING** otherwise. Idempotent for OTLP retries that
+  re-deliver an already-finalized span. Also drops "second
+  partial-flush before completion" cases (neither row has
+  `ended_at`, no clear winner) — accepted as a niche.
+
+The mechanism handles OTLP early-flush senders (start-then-end span
+emission) without silent data loss while keeping retries idempotent.
+**`seq` is a watermark, not a stable identifier** — a row's `seq`
+moves forward exactly once during its lifetime, when it finalizes.
+Stream consumers cursoring by `seq` see each row up to twice (once
+at INSERT, once at completion if it was originally partial) and
+must dedupe by `(trace_id, span_id)`, treating the second visit as
+the authoritative version. Consumers that need stable per-row
+identity use `arrival_seq`. See ADR-0004.
+
+### Stream consumer caveat
+
+Both the §6 retrieval API's `seq`-cursored callers (the recent-traces
+UI listing among them — see §6) and any future stream consumer must
+account for two sources of cursor non-monotonicity:
+
+- **Insert-allocation gaps.** `seq=N` allocated before `seq=N+1` may
+  commit after, briefly making N invisible while N+1 is visible.
+- **Update-allocation gaps.** A row's `seq` advancing from M to N
+  during finalization is similarly non-atomic — both M and N may be
+  briefly invisible to a reader.
+
+v1 has no persistent stream processor, so this is documented and
+deferred. v1.x will add a high-water-mark mechanism to `get_spans`
+that returns a "safe to resume from" cursor lagging `MAX(seq)` by
+the in-flight horizon. The recent-traces UI listing tolerates the
+gap because the user's reload (cursor=null) recovers any briefly-
+invisible trace.
 
 ### Indexes
 
 - `(trace_id, span_id)` — PK, implicit. Serves upward walks
   (resolving a known `parent_id` within the same trace).
 - `spans(trace_id, parent_id)` — for downward walks (finding children
-  of a given span within a trace).
+  of a given span within a trace) and for the listing-root
+  computation's `NOT EXISTS` orphan check (ADR-0001).
 - `spans(started_at)` — for the §7 recent-traces window query and any
   `(time_from, time_to)` filter through `get_spans`. Without this,
   every windowed query is a sequential scan.
+- `spans(seq)` — for cursor-based pagination over `seq`. Note `seq`
+  is mutable (§3.2 / ADR-0004); the index entry is rewritten on
+  finalization. At v1 volumes the rewrite cost is negligible.
+
+`arrival_seq` carries no v1 index. Its value to callers is as a
+stable identifier in returned `Span` objects, not as a query
+predicate; if a future consumer needs to look up rows by
+`arrival_seq` directly, an index can be added additively.
 
 ### Schema evolution
 
@@ -210,6 +348,15 @@ Postgres reachable" — it does not gate on migration completion,
 because the deployment topology is responsible for migration
 ordering.
 
+**Startup schema-version check (defence-in-depth).** On startup the
+receiver reads `alembic_version.version_num` from Postgres and
+compares it to the head revision compiled into the receiver image.
+On mismatch the receiver logs an actionable error and **exits
+non-zero**; k8s crash-loops the pod, surfacing the misconfiguration
+in `kubectl get pods`. This catches "wrong image deployed against
+this DB" / "init container forgotten in some non-k8s deployment"
+scenarios that the init container alone would not. See ADR-0002.
+
 **Why a real tool from day one.** Even at v1 scale, schema changes
 arrive (new promoted columns, new indexes), and starting with
 ad-hoc `CREATE TABLE IF NOT EXISTS` accumulates technical debt
@@ -239,6 +386,17 @@ without touching `spans`.
 - **Counts:** dropped spans are tallied in a small
   `blocked_span_counts(pattern, count, last_seen_at)` table for
   observability. No per-span row is kept.
+- **OTLP response.** Blocked spans are reported to the OTLP sender
+  as **silent successes** — the OTLP request returns OK as if they
+  were ingested, and they are not reported in the
+  `ExportTracePartialSuccess.rejected_spans` channel.
+  Visibility is internal-only via `blocked_span_counts` (this
+  section) and `spans_blocked_total{pattern}` (§5.1). Rationale:
+  blocking is the receiver's policy, not a sender failure;
+  conflating it with the §6 / ADR-0003 `rejected_spans` channel
+  would mix "your span was malformed" with "we don't want this
+  span." Operators who need cross-team visibility consult
+  `spans_blocked_total{pattern}`.
 - **Downstream invisibility.** Because blocked spans are never
   written, they are invisible to every `get_spans` query, every
   per-trace aggregate (§6 `counts`), and every listing-root
@@ -301,31 +459,49 @@ detail — the contract is pinned here so deployments can rely on it.
     received per transport (`grpc`/`http`).
   - `spans_blocked_total{pattern}` — counter, spans dropped by
     the §3.1 blocklist, labelled by matched pattern.
-  - `spans_inserted_total` — counter, spans successfully written.
-  - `spans_duplicate_total` — counter, ON CONFLICT DO NOTHING hits.
-  - `span_insert_duration_seconds` — histogram of per-span insert
-    latency.
+  - `spans_inserted_total` — counter, spans successfully written
+    via the INSERT path (initial arrivals).
+  - `spans_finalized_total` — counter, spans updated via the
+    finalization path (§3.2 / ADR-0004) — the start-then-end
+    completion case.
+  - `spans_duplicate_total` — counter, ON CONFLICT DO NOTHING hits
+    (idempotent retries and partial-on-partial drops).
+  - `span_insert_duration_seconds` — histogram of per-span write
+    latency, covering both INSERT and UPDATE paths.
+  - `span_row_bytes` — histogram of the serialized row size on
+    write. Lets operators see when payload-heavy spans start
+    arriving before the recent-traces UI gets sluggish.
   - `db_errors_total{kind}` — counter, Postgres errors by kind
-    (connection, integrity, other).
+    (`connection`, `integrity`, `other`). Classification follows
+    the SQLSTATE-to-OTLP-response policy in ADR-0003. PK conflicts
+    on `(trace_id, span_id)` are **not** errors and are tallied in
+    `spans_duplicate_total` instead.
 
 ## 6. Retrieval API
 
-- **Read-only.** v1 has no writers other than `P-otel-receiver`.
-- **Shape: typed methods + SQL escape hatch.** The 95%-path method is
+- **Read-only at the public surface.** The UI backend and any future
+  read-only consumer call only typed methods on the retrieval
+  library. v1's only writer is `P-otel-receiver`; future processors
+  that read+write reach Postgres through ADR-0005's Layer 1 wrapper
+  alongside the typed methods, not through a SQL escape hatch on
+  this API.
+- **Shape: typed methods only.** The 95%-path method is
   `get_spans(cursor, limit, trace_id, span_id, parent_id, time_from,
-  time_to, root_only: bool) -> list[Span]`. All filter parameters
-  default to `None`/`False`; the method returns spans within the given
-  window, cursored on `seq`. When `trace_id` is set the result is
-  restricted to that trace; when `span_id` is also set the result is
-  the single matching span. When `parent_id` is set, the result is
-  restricted to direct children of that parent within the given trace.
-  When `root_only` is set, the result is restricted to **listing
-  roots** of traces with activity in the window — see below. This
-  single method covers recent-spans pagination (processor stream),
-  fetching one trace's spans (UI trace tree), fetching one span by id,
-  expanding a subtree by parent (UI lazy expansion), and listing roots
-  (UI recent-traces listing). Escape hatch for genuinely ad-hoc needs;
-  promote to typed method when used twice.
+  time_to, root_only: bool, order: "asc" | "desc" | None = None)
+  -> GetSpansResult`. All filter parameters default to `None`/`False`;
+  the method returns spans within the given window, cursored on `seq`.
+  When `trace_id` is set the result is restricted to that trace; when
+  `span_id` is also set the result is the single matching span. When
+  `parent_id` is set, the result is restricted to direct children of
+  that parent within the given trace. When `root_only` is set, the
+  result is restricted to **listing roots** of traces with activity
+  in the window — see below. This single method covers fetching one
+  span by id, expanding a trace-tree subtree by parent (UI lazy
+  expansion, §8), listing roots (UI recent-traces view, §7), opening
+  a single trace by id (UI cold-open / deep-link, §7), and
+  recent-spans pagination for future processors. There is no SQL
+  escape hatch on this API; future processors that need bespoke SQL
+  use ADR-0005's Layer 1 directly.
 - **`root_only=True` returns listing roots, not just `parent_id IS
   NULL`.** A **listing root** of a trace is its earliest **real root**
   (`parent_id IS NULL`) if any exists, otherwise its earliest **orphan
@@ -337,10 +513,20 @@ detail — the contract is pinned here so deployments can rely on it.
   caller distinguishes the two cases by inspecting the returned span's
   `parent_id` (null = real root; non-null = orphan acting as listing
   root). Orphan-ness is computed at query time; see ADR-0001.
+- **`root_only=True` with `trace_id=T`** returns exactly that trace's
+  listing root (or empty if the trace has no spans at all). The
+  `(time_from, time_to)` window is **ignored** in this case — the
+  caller named the trace by id, the API always answers. Use case:
+  UI cold-open / deep-link to `/trace/T` (§7). Inherits eventual-
+  consistency from ADR-0001: a cold open during a listing-root flip
+  may see the orphan or the real root depending on timing; the UI
+  re-resolves on next interaction.
 - **Parameter compatibility.** `parent_id` requires `trace_id`
   (OTEL `span_id` is only locally unique within a trace, so a bare
   `parent_id` is ambiguous). `root_only=True` is incompatible with
-  `parent_id` and with `span_id`. Violations raise.
+  `parent_id` and with `span_id`; it **is** compatible with
+  `trace_id` (single-trace listing-root case, above). Violations
+  raise.
 - **`in_time_window` field on returned spans.** Each `Span` carries
   `in_time_window: bool`, true iff its `started_at` falls within the
   request's `(time_from, time_to)`. False on out-of-window spans
@@ -358,38 +544,55 @@ detail — the contract is pinned here so deployments can rely on it.
   fallback) on demand for `root_only=True` — this is the one piece of
   span-relationship logic in v1, deliberately localized to the
   retrieval API and documented above.
-- **SQL escape hatch is library-only.** It is reachable from Python
-  callers (the UI backend, future processors, ad-hoc analytics in a
-  REPL or notebook) but is not exposed through the UI backend's
-  REST surface. The UI backend uses only typed methods.
 - **Cursors are `seq`.** Always the `seq BIGINT` column on `spans`,
   no other column and no opaque token. Postgres `ctid` and `xmin`
   were considered and rejected: `ctid` is unstable across `VACUUM
   FULL` / `CLUSTER` / `pg_repack` and is not even monotonic on
   insert; `xmin` is not unique per row and is rewritten by VACUUM
-  freeze. `seq` from a `BIGSERIAL`/identity sequence is the
-  standard, stable, indexable choice and what every method's cursor
-  refers to.
+  freeze. `seq` from a sequence-allocated BIGINT is the standard,
+  stable-enough, indexable choice. Note `seq` is a watermark, not
+  a per-row stable identifier (§3.2 / ADR-0004): a row's `seq`
+  advances exactly once on finalization. Stream consumers cursoring
+  by `seq` see each row up to twice and dedupe by
+  `(trace_id, span_id)`; the second visit is the authoritative
+  version.
 - **`seq` orders by arrival at the receiver, not by `started_at`.**
   A child span may have lower `seq` than its parent if the parent
   arrives late; both are still delivered. Processors that need
   causal order do their own buffering — the retrieval API does not
   reorder.
-- **Concurrent-insert gaps (deferred to v1.x).** A `BIGSERIAL` `seq`
-  is allocated at insert time, not commit time. Two concurrent ingest
-  transactions can allocate `seq=N` and `seq=N+1` and commit in the
-  reverse order, briefly making row N invisible while N+1 is visible.
-  A processor that advances its cursor past N+1 before N commits would
-  miss N. v1's intra-receiver "one transaction per span" (§3) keeps
-  the window narrow but does not eliminate it. v1 has no persistent
-  stream consumer, so this is documented and deferred; v1.x will add a
-  high-water-mark mechanism to `get_spans` (return a "safe to resume
-  from" cursor that lags `MAX(seq)` by the in-flight horizon) when the
-  first real processor lands.
+- **Sort order varies by query shape (Path 3).** The cursor is
+  always `seq`; the **sort** depends on what the caller asked for:
+  - `root_only=True` → sort by listing-root `started_at desc`
+    (newest traces first; matches the universal "recent activity"
+    UI convention).
+  - `parent_id` set (subtree expansion) → sort by `started_at asc`
+    (oldest first, top-down — the trace-tree convention every span
+    UI uses).
+  - Otherwise (bare processor stream / `trace_id` only / `span_id`
+    only) → sort by `seq asc` (catch-up order). Callers that want
+    descending pass `order="desc"`.
+  Where sort and cursor disagree (`root_only=True`, `parent_id`),
+  the "duplicates possible, skips impossible" property from
+  ADR-0001 holds: a row may appear on two pages with different
+  anchor data as late spans arrive or finalize, but no row that
+  satisfies the filter is silently skipped. The UI dedupes by
+  `trace_id` (listing) or `(trace_id, span_id)` (subtree). Where
+  sort and cursor agree (`seq`-bucket), no duplicates are possible.
+- **Concurrent-insert and update-allocation gaps (deferred to v1.x).**
+  See §3 stream-consumer caveat for the failure mode. The recent-
+  traces UI listing in §7 is itself a `seq`-cursored consumer: a
+  trace whose listing root sits in the gap may be briefly invisible
+  to a given paginated session. User reload (cursor=null) recovers
+  it. v1.x will add a high-water-mark mechanism to `get_spans` when
+  the first persistent stream consumer lands.
 - **Time semantics:**
   - `(time_from, time_to)` filters on `started_at` (trace-clock,
     OTLP-supplied — see §3). `observed_at` is not exposed in
-    user-facing windowing in v1.
+    user-facing windowing in v1. Library accepts tz-aware
+    `datetime` or `int` (nanoseconds since epoch); REST encoding
+    is ISO-8601 with required `Z` or explicit offset (naive
+    datetimes are rejected).
   - `time_from = NULL` → "from the beginning of retained data."
   - `time_to = NULL` → "up until now."
   - Both NULL = no window filter, the whole `spans` table is in
@@ -403,22 +606,29 @@ detail — the contract is pinned here so deployments can rely on it.
     because it arrived late); a UI window query over its
     `started_at` sees it at its source-clock position. Both correct
     for their use cases.
-- **Default `limit` is 50.** Matches the recent-traces page size
-  (§7) and bounds the blast radius of a bare
-  `get_spans(cursor=None)` call returning the oldest spans in the
-  database under v1's keep-everything retention (§5).
+- **Default `limit` is 50; max is 500 (hard cap).** The default
+  bounds the blast radius of a bare `get_spans(cursor=None)` call
+  under v1's keep-everything retention (§5). The 500 cap is enforced
+  in the library and inherited by the REST surface (§7); callers
+  passing `limit > 500` raise. Bulk callers (analytics, backfills)
+  use ADR-0005's Layer 1 directly with their own cursor logic;
+  `get_spans` is shaped for interactive use.
 - **Per-trace counts on `root_only=True`.** When `root_only=True`,
   the method also returns a per-trace counts map keyed by
-  `trace_id`: `{trace_id: {total: int, in_window: int}}`. `total`
-  is the trace's full span count in `spans`; `in_window` is the
-  count of spans whose `started_at` falls within `(time_from,
-  time_to)` (excluding the listing root when the listing root is
-  itself out-of-window). The counts ride alongside the `list[Span]`
-  return value — concretely, `get_spans` returns a small wrapper:
+  `trace_id`: `{trace_id: {total: int, in_window: int,
+  error_count: int}}`. `total` is the trace's full span count in
+  `spans`; `in_window` is the count of spans whose `started_at`
+  falls within `(time_from, time_to)` (excluding the listing root
+  when the listing root is itself out-of-window); `error_count` is
+  the number of spans in the trace with `error IS TRUE` at query
+  time. The counts ride alongside the `list[Span]` return value —
+  concretely, `get_spans` returns a small wrapper:
   `GetSpansResult(spans: list[Span], counts: dict[str, TraceCounts]
   | None)`. `counts` is `None` when `root_only=False`. The shape
   intentionally avoids decorating `Span` with optional listing-root
-  fields, keeping `Span` as a plain OTLP span row.
+  fields, keeping `Span` as a plain OTLP span row. With the limit
+  hard-capped at 500, the per-row count cost (one `COUNT(*) FILTER`
+  / `EXISTS` / `COUNT(*)` per returned row) is bounded.
 - **Versioning per method, not per API.** Evolve one method at a time.
 
 ## 7. UI backend
@@ -426,7 +636,7 @@ detail — the contract is pinned here so deployments can rely on it.
 - **Thin REST wrapper.** One endpoint, `GET /spans`, that
   pass-throughs 1:1 to `get_spans` (§6). All `get_spans` parameters
   (`cursor`, `limit`, `trace_id`, `span_id`, `parent_id`,
-  `time_from`, `time_to`, `root_only`) are accepted as query
+  `time_from`, `time_to`, `root_only`, `order`) are accepted as query
   parameters; the response body is the JSON encoding of
   `GetSpansResult` — `{"spans": [...], "counts": {...} | null}`.
   No `GET /traces` resource: spans are the only first-class REST
@@ -437,20 +647,23 @@ detail — the contract is pinned here so deployments can rely on it.
 - **No expansion parameters in v1.** The `attributes` blob (with
   inline payloads) is always returned. If response size becomes a
   problem in practice, the typical remediation is a per-key opt-out
-  query parameter, but v1 doesn't speculate.
-- **Live updates:** polling by default; SSE push for live-tail views
-  (raw events) when needed. SSE is a separate contract from `GET
-  /spans` pagination — it streams new spans by `seq` as they arrive.
+  query parameter, but v1 doesn't speculate. The UI's listing page
+  size of 20 (below) does most of the heavy lifting on listing-page
+  bytes-per-page.
+- **Live updates: polling only.** v1 ships no push channel. SSE /
+  websocket live-tail is reserved for v1.x and depends on the §6
+  high-water-mark mechanism — a stream consumer can't be correct
+  under the §3 / §6 cursor-allocation gap without it.
 
 ### Recent-traces view (UI flow on `GET /spans`)
 
 The recent-traces view is rendered from
-`GET /spans?root_only=true&time_from=...&time_to=...&cursor=...`.
+`GET /spans?root_only=true&time_from=...&time_to=...&cursor=...&limit=20`.
 Each returned `Span` is a **listing root** of a trace with in-window
 activity, applying the **listing root fallback** (real root if any,
 else earliest orphan) — see §6 and ADR-0001. The response's
-`counts[trace_id]` carries `{total, in_window}` for the row's
-display.
+`counts[trace_id]` carries `{total, in_window, error_count}` for the
+row's display. The UI's default page size is **20** rows.
 
 The UI:
 
@@ -461,24 +674,46 @@ The UI:
 - Displays `in_window / total` from the per-trace counts so the
   user sees burst activity within the window against the trace's
   full size.
+- Renders an error badge with the count when
+  `counts[trace_id].error_count > 0` (§8).
 - **Dedupes by `trace_id` client-side.** A trace's listing root may
-  flip from an orphan to a real root as late spans arrive (ADR-0001).
-  Two pages of results may therefore both contain a row for the same
+  flip from an orphan to a real root as late spans arrive (ADR-0001),
+  or its `seq` may advance via finalization (§3.2 / ADR-0004). Two
+  pages of results may therefore both contain a row for the same
   `trace_id` with different anchor spans; the UI keeps the most
   recent (highest-`seq`) anchor and discards earlier ones. This is
   the price of cursor-by-`seq` simplicity over a server-side frozen
   snapshot.
 
-The trace tree view is rendered from
-`GET /spans?trace_id=T&cursor=...`, paginated until exhausted.
-Subtree expansion (rare) uses `GET /spans?trace_id=T&parent_id=P`.
+### Trace tree view (UI flow on `GET /spans`)
 
-The listing is **eventually consistent**: a trace's listing root may
-flip from "earliest orphan" to "real root" as late spans arrive, and
-its position in the ordering may shift accordingly. Cursors over
-`(root_started_at, trace_id)` may therefore produce occasional
-duplicates or skips at page boundaries. Accepted at v1 scale; see
-ADR-0001.
+Opening a trace from a listing row: the listing-root `Span` is
+already in hand from the recent-traces response. The UI uses it as
+the tree's root anchor with no extra fetch.
+
+Cold-open / deep-link to a single trace (e.g. user pastes a
+`/trace/T` URL): the UI fetches the trace's listing root via
+`GET /spans?root_only=true&trace_id=T`. Returns exactly one Span
+plus `counts[T]`; window parameters are ignored in this single-trace
+case (§6).
+
+Subtree expansion (every click that drills into a node): the UI
+fetches direct children via
+`GET /spans?trace_id=T&parent_id=P&cursor=...`. Pagination is by
+`seq`; a single parent with more than `limit` children paginates
+across multiple calls. Wide-fan-out parents (loops, batch jobs) are
+the realistic case where this matters.
+
+### Eventual consistency
+
+The listing is **eventually consistent**. A trace's listing root may
+flip from "earliest orphan" to "real root" as late spans arrive
+(ADR-0001), and its row may reorder in the listing accordingly —
+the listing is sorted by listing-root `started_at` descending (§6
+Path 3), and a real root and an orphan generally have different
+`started_at`. The cursor is `seq` (§6); the "skips impossible,
+duplicates possible" property from ADR-0001 holds, and the UI
+dedupes by `trace_id` as it accumulates pages.
 
 No `traces` summary table is maintained — the listing query runs
 over `spans` directly via `get_spans(root_only=True, ...)`. This is
@@ -499,20 +734,19 @@ running v1 outside an isolated cluster is unsupported.
 The v1 UI is a single page with two views:
 
 - **Recent traces** — paginated list rendered from
-  `GET /spans?root_only=true&time_from=...&time_to=...&cursor=...`
+  `GET /spans?root_only=true&time_from=...&time_to=...&cursor=...&limit=20`
   (see §7). Each row shows the listing root's `service_name`,
   `name`, `started_at`, the trace's `in_window / total` from the
-  response's per-trace counts, and a "missing parent" badge when
-  the listing root is an orphan (its `parent_id` is non-null).
-  Roots whose `started_at` is outside the requested window
-  (`in_time_window = false`) are rendered greyed out so the user can
-  see the trace exists without it claiming foreground attention. A
-  filter toggle lets the user hide traces whose listing root is a
-  missing-parent orphan. Clicking a row opens the trace tree. The
-  UI dedupes rows by `trace_id` as it accumulates pages — see §7.
-  No error indicator on the listing row in v1: error semantics live
-  in the trace tree view (below), where the UI has actually loaded
-  the spans that carry the status.
+  response's per-trace counts, an **error badge** showing
+  `counts[trace_id].error_count` when `> 0`, and a "missing parent"
+  badge when the listing root is an orphan (its `parent_id` is
+  non-null). Roots whose `started_at` is outside the requested
+  window (`in_time_window = false`) are rendered greyed out so the
+  user can see the trace exists without it claiming foreground
+  attention. A filter toggle lets the user hide traces whose listing
+  root is a missing-parent orphan. Clicking a row opens the trace
+  tree. The UI dedupes rows by `trace_id` as it accumulates pages —
+  see §7.
 - **Trace tree** — spans of a single trace grouped by `trace_id` and
   linked by `parent_id`. Each span renders with a per-`kind` icon
   (one of `INTERNAL`, `SERVER`, `CLIENT`, `PRODUCER`, `CONSUMER`),
@@ -526,7 +760,15 @@ The v1 UI is a single page with two views:
     error badge) on every ancestor of an `error IS TRUE` span —
     "something inside this span failed, drill in to find it."
     Computed client-side as the UI walks the loaded ancestor chain;
-    appears progressively as more spans are loaded into the tree.
+    appears progressively as the user expands subtrees. **v1
+    limitation:** the trace tree is lazy (§7), so an `error IS TRUE`
+    span inside a *collapsed* subtree does not propagate a badge to
+    its loaded ancestors — the user has no signal until they expand
+    the failing branch. The listing row's `error_count` badge (§7)
+    tells the user the trace has *some* error; finding it currently
+    requires expansion. A v1.x per-trace error summary (returning
+    `{span_id: has_descendant_error}` for the whole trace, fetched
+    on trace-open) is reserved for if this bites.
   No semantic coloring beyond these two badges in v1. The receiver
   and retrieval API do not interpret error semantics — they only
   project OTLP `Status.Code` into the `error` boolean. Richer error

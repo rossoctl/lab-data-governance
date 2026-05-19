@@ -10,6 +10,21 @@ for a UI and future processors. v1 is span-shaped only — semantic concepts
 **Span**:
 A single OTEL span row in the `spans` table, identified by the composite key
 `(trace_id, span_id)`. Stored verbatim with payloads inline in `attributes`.
+A row may be inserted once and updated exactly once on completion (see
+**Finalization**); the row is otherwise immutable.
+
+**Finalization**:
+The conditional UPDATE applied when an OTLP sender flushes a span before its
+end and later sends the completed version (same `(trace_id, span_id)`,
+populated `ended_at`). Mutable columns are overwritten; `seq` advances to a
+fresh sequence value; `arrival_seq`, `started_at`, `parent_id`,
+`service_name`, `observed_at` are preserved. See ADR-0004.
+
+**Arrival seq** (`arrival_seq`):
+The original `seq` value assigned to a **Span** at INSERT time. Stable per
+row — never updated, even on **Finalization**. Used by consumers that need a
+durable per-row identifier (recovery checkpoints, idempotence keys). Distinct
+from `seq`, which is a watermark and may advance once per row.
 
 **Trace**:
 The set of all **Spans** sharing a `trace_id`. Has no inherent root or boundary
@@ -60,16 +75,28 @@ correlation, or payload extraction.
 
 **Retrieval API**:
 The read-only Python library that consumers (UI backend, future processors)
-call to read **Spans**. Exposes typed methods plus a SQL escape hatch.
+call to read **Spans**. Exposes typed methods only — there is no SQL
+escape hatch. Built on the **db module** (Layer 1) per ADR-0005. Future
+processors that need bespoke SQL use the db module directly alongside the
+retrieval API.
+
+**db module** (Layer 1):
+The thin generic Postgres connection/transaction wrapper above
+psycopg 3 + psycopg_pool that owns connection lifecycle, transaction
+boundaries, and parameterized query execution. Consumed by domain
+functions (Layer 2): `write_span` (receiver), `get_spans` (UI backend
++ future processors), the §3.1 blocklist tally writer, and any future
+processor's storage operations. See ADR-0005.
 
 **TraceListingEntry**:
 One row of the recent-traces UI view — a derived display of a **Trace**,
 anchored on its current **Listing root**. Rendered from a `GET /spans` call
 with `root_only=true` (each returned `Span` is one trace's listing root).
 Eventually consistent: the listing root, and therefore the row's display
-fields, may change as late spans arrive. Identity is `trace_id`; everything
-else is derived. The UI dedupes by `trace_id` across paginated responses to
-collapse anchor flips into a single row.
+fields, may change as late spans arrive or **Finalization** advances a
+span's `seq`. Identity is `trace_id`; everything else is derived. The UI
+dedupes by `trace_id` across paginated responses to collapse anchor flips
+into a single row, keeping the highest-`seq` anchor.
 
 ## Relationships
 
