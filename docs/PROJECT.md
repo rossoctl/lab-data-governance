@@ -181,16 +181,13 @@ without touching `spans`.
   gets stored. Pathological inputs are bounded only by the upstream
   OTLP-collector limits and Postgres row-size limits; this is
   acceptable for a v1 development / demo deployment (see §5).
-- **Locating payloads is a read-side concern.** The UI and any
-  future processors find payload-shaped values by looking at
-  well-known attribute keys (e.g. `input.value`, `output.value`,
-  `gen_ai.prompt`, `gen_ai.completion`, the A2A SDK's request /
-  response attributes) directly inside `attributes`. v1 ships with
-  a small library helper that returns the request- and
-  response-shaped values for a given span using a hardcoded
-  ordered list of attribute names; the list is reviewed by PR.
-  Mapping "prompt" vs "tool input" vs "A2A message" semantically
-  remains a future-classifier job.
+- **No payload extraction in v1.** Neither the receiver, the
+  retrieval library, nor the UI backend interprets payload-shaped
+  attribute keys. The v1 UI renders the entire `attributes` blob
+  as pretty-printed JSON/YAML in the span detail panel and lets
+  the user read it directly. Surfacing prompts, tool inputs, A2A
+  messages, etc. as distinct fields requires knowing which keys
+  carry which semantics — a future-classifier job.
 
 ## 5. Retention
 
