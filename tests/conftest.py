@@ -6,6 +6,11 @@ driver, so a mocked test would only assert the mock. See ADR-0005.
 The Postgres container is session-scoped (one container for the whole test
 run); each test gets a fresh database via the `pg_dsn` fixture. That keeps
 the per-test cost down to a `CREATE DATABASE` rather than a container start.
+
+The end-to-end OTLP-in / spans-out test harness (issue #5) lives in
+``tests.harness`` and is registered as a pytest plugin below so its
+session-scoped + function-scoped fixtures (``otlp_harness``,
+``otlp_client``, ``span_rows``) are auto-discoverable from any test.
 """
 
 from __future__ import annotations
@@ -17,6 +22,11 @@ from collections.abc import Iterator
 import psycopg
 import pytest
 from testcontainers.postgres import PostgresContainer
+
+# Register the OTLP test harness as a pytest plugin. Tests can pull in
+# ``otlp_harness`` (and the session-scoped ``_harness_*`` fixtures it
+# composes) without importing anything from ``tests.harness`` directly.
+pytest_plugins = ["tests.harness.plugin", "tests.harness.fixtures"]
 
 # Local podman setups need the socket explicitly. Set this before testcontainers
 # imports its docker client. Honor an existing DOCKER_HOST (e.g. CI).
