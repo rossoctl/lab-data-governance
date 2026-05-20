@@ -1,17 +1,22 @@
-"""Relax `spans.kind` NOT NULL for the tracer-bullet write_span (issue #3).
+"""Make `spans.kind` permanently nullable so OTLP `SPAN_KIND_UNSPECIFIED` maps to SQL NULL.
 
-The minimal `write_span` introduced in issue #3 writes only the columns it
-needs to round-trip a span — `kind` is deliberately deferred to the
-schema-completion slice (#6) along with the other OTLP top-level fields
-(`ended_at`, `error`, `status_message`, `service_name`, `events`, `links`,
-`otlp`, `scope`, `resource_attributes`).
+The baseline schema declared `kind TEXT NOT NULL`, which is incompatible
+with OTLP's six-valued `SpanKind` enum: `SPAN_KIND_UNSPECIFIED` carries
+no information and has no SQL string representation worth inventing. The
+receiver's mapping (`_SPAN_KIND_NAMES.get(span.kind)`) returns ``None``
+for `SPAN_KIND_UNSPECIFIED`, and `write_span` writes that ``None`` through
+to the column unchanged.
 
-The baseline schema declared `kind TEXT NOT NULL`, which would force the
-tracer bullet either to invent a placeholder value or to populate `kind`
-out-of-band — both contradict the issue's "all other columns left
-NULL/default at this stage" requirement. Relaxing the column to nullable
-here is additive and reversible; #6 can re-tighten to NOT NULL once kind
-is always written by the receiver.
+Dropping ``NOT NULL`` here is therefore the steady-state shape of the
+column, not a transitional relaxation: ``kind IS NULL`` is the canonical
+SQL encoding of "the producer did not specify a kind". The five named
+kinds (``INTERNAL``/``SERVER``/``CLIENT``/``PRODUCER``/``CONSUMER``) are
+the only non-NULL values that ever land in this column.
+
+The ``downgrade()`` direction re-applies ``NOT NULL`` purely for revision
+symmetry; operators rolling back must first populate or drop the rows
+where ``kind IS NULL``, since those rows are valid by design under the
+current schema.
 
 Revision ID: 0002_relax_kind_not_null
 Revises: 0001_baseline
@@ -36,7 +41,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Re-tightening would fail if any rows have NULL kind, which is by design
-    # the state issue #3 intentionally produces. The downgrade exists for
-    # symmetry; operators rolling back must populate kind manually first.
+    # Re-tightening would fail if any rows have NULL kind, which is the
+    # canonical encoding of OTLP SPAN_KIND_UNSPECIFIED under the current
+    # schema. The downgrade exists for revision symmetry; operators rolling
+    # back must first populate or drop those rows.
     op.execute("ALTER TABLE spans ALTER COLUMN kind SET NOT NULL")

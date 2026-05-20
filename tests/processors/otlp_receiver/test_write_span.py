@@ -48,14 +48,29 @@ def _row_by_pk(dsn: str, trace_id: str, span_id: str) -> dict[str, object]:
 
 
 def _make_span(**overrides: object) -> SpanRow:
-    """Build a SpanRow with sensible defaults for tests."""
+    """Build a SpanRow with sensible defaults for tests.
+
+    Every ``SpanRow`` field is required (no dataclass defaults), so this
+    helper supplies the full v1 column set. Tests override only the fields
+    they care about via ``**overrides``.
+    """
     base: dict[str, object] = {
         "trace_id": "11111111111111111111111111111111",
         "span_id": "2222222222222222",
         "parent_id": None,
         "name": "test-span",
+        "kind": None,
         "started_at": dt.datetime(2026, 5, 20, 12, 0, 0, tzinfo=dt.timezone.utc),
+        "ended_at": None,
+        "error": None,
+        "status_message": None,
+        "service_name": None,
         "attributes": {},
+        "events": None,
+        "links": None,
+        "scope": None,
+        "resource_attributes": None,
+        "otlp": None,
     }
     base.update(overrides)
     return SpanRow(**base)  # type: ignore[arg-type]

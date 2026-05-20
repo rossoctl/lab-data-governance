@@ -26,11 +26,16 @@ from typing import Any
 import psycopg
 import pytest
 
+import grpc
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter as _GrpcExporter,
 )
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
     OTLPSpanExporter as _HttpExporter,
+)
+from opentelemetry.proto.collector.trace.v1 import (
+    trace_service_pb2,
+    trace_service_pb2_grpc,
 )
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -96,6 +101,24 @@ class OtlpClient:
             attributes=attributes,
             exporter=_GrpcExporter(endpoint=self._grpc_endpoint, insecure=True),
         )
+
+    def send_grpc_request(
+        self,
+        request: trace_service_pb2.ExportTraceServiceRequest,
+    ) -> None:
+        """Send a hand-built ``ExportTraceServiceRequest`` via OTLP gRPC.
+
+        Escape hatch for tests that need precise control over OTLP fields
+        the SDK exporter abstracts away — span ``kind``, ``Status`` (including
+        ``UNSET``), ``events``, ``links``, ``InstrumentationScope`` shape,
+        and the envelope-level ``trace_state`` / ``flags`` /
+        ``dropped_*_count`` fields. Issue #6's NULL-vs-empty acceptance
+        criteria are easiest to assert when the wire payload is built
+        directly rather than going through the OTel SDK's defaults.
+        """
+        with grpc.insecure_channel(self._grpc_endpoint) as channel:
+            stub = trace_service_pb2_grpc.TraceServiceStub(channel)
+            stub.Export(request)
 
     def send_http_span(
         self,
