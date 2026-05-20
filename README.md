@@ -11,11 +11,13 @@ data_governance/
     migrations/       # Alembic migrations (raw SQL, no ORM — ADR-0002)
       env.py
       versions/
-  receiver/           # P-otel-receiver (Layer 2 + transport, grown over many issues)
-    __main__.py       # `python -m data_governance.receiver migrate`
+  processors/
+    otlp_receiver/    # P-otel-receiver (Layer 2 + transport, grown over many issues)
+      __main__.py     # `python -m data_governance.processors.otlp_receiver migrate`
 tests/
-  test_db.py          # Layer 1 tests against real Postgres
-  test_migrations.py  # Baseline migration + migrate CLI tests
+  db/
+    test_db.py        # Layer 1 tests against real Postgres
+    test_migrations.py # Baseline migration + migrate CLI tests
 docs/                 # PROJECT.md, ADRs
 alembic.ini
 pyproject.toml
@@ -26,7 +28,7 @@ pyproject.toml
 - **Python 3.11+** (matches modern psycopg 3 / Alembic; Kagenti CI runs 3.11).
 - **Package manager / runner: `uv`.** `uv sync` installs runtime + dev
   dependencies into `.venv`. `uv run pytest` to test, `uv run python -m
-  data_governance.receiver migrate` to apply migrations.
+  data_governance.processors.otlp_receiver migrate` to apply migrations.
 - **Postgres driver: psycopg 3 + psycopg_pool** (per ADR-0005). Async is
   available in psycopg 3 but the v1 db module is sync — async is not yet
   needed and adding it speculatively widens the surface.
@@ -46,7 +48,7 @@ uv sync
 
 # apply migrations (assumes DATABASE_URL is set)
 export DATABASE_URL='postgresql://user:pass@host:5432/data_governance'
-uv run python -m data_governance.receiver migrate
+uv run python -m data_governance.processors.otlp_receiver migrate
 
 # tests (requires Docker / Podman socket for testcontainers)
 uv run pytest

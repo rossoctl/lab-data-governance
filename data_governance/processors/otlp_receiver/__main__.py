@@ -1,10 +1,10 @@
-"""Receiver CLI entry point.
+"""OTLP-receiver processor CLI entry point.
 
 Per PROJECT.md §3 "Schema evolution / Invocation" the receiver ships a single
-CLI: ``python -m data_governance.receiver migrate`` runs ``alembic upgrade
-head`` against the configured Postgres and exits zero on success. This is
-invoked in k8s as an init container before the receiver container starts and
-manually in non-k8s deployments (ADR-0002).
+CLI: ``python -m data_governance.processors.otlp_receiver migrate`` runs
+``alembic upgrade head`` against the configured Postgres and exits zero on
+success. This is invoked in k8s as an init container before the receiver
+container starts and manually in non-k8s deployments (ADR-0002).
 
 The receiver process itself (OTLP socket, span-write path) lands in
 subsequent issues — for now this module only knows about ``migrate``.
@@ -27,7 +27,7 @@ def _alembic_config() -> Config:
     CLI works regardless of the caller's working directory (k8s init
     containers, local dev runs).
     """
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[3]
     cfg_path = repo_root / "alembic.ini"
     cfg = Config(str(cfg_path))
     # Ensure script_location resolves correctly even when alembic.ini's
@@ -50,8 +50,8 @@ def _migrate(_args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m data_governance.receiver",
-        description="Data-governance receiver CLI.",
+        prog="python -m data_governance.processors.otlp_receiver",
+        description="Data-governance OTLP-receiver CLI.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
