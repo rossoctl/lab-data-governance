@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Data Governance — Spans</title>
+  <style>
+    body { font-family: monospace; margin: 2rem; background: #0e0e0e; color: #d4d4d4; }
+    h1 { font-size: 1.2rem; color: #9cdcfe; margin-bottom: 1rem; }
+    #status { color: #888; margin-bottom: 1rem; font-size: 0.85rem; }
+    #error { color: #f44; margin-bottom: 1rem; }
+    .span-row {
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.5rem;
+      background: #1a1a1a;
+    }
+    .span-meta { display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+    .label { color: #9cdcfe; font-size: 0.8rem; }
+    .value { color: #ce9178; }
+    .name-value { color: #dcdcaa; font-weight: bold; }
+    .attr-toggle {
+      color: #888;
+      font-size: 0.8rem;
+      cursor: pointer;
+      user-select: none;
+      margin-top: 0.25rem;
+      display: inline-block;
+    }
+    .attr-toggle:hover { color: #ccc; }
+    .attr-block {
+      margin-top: 0.5rem;
+      background: #111;
+      padding: 0.5rem;
+      border-radius: 3px;
+      white-space: pre;
+      overflow-x: auto;
+      font-size: 0.8rem;
+      color: #b5cea8;
+      display: none;
+    }
+    #load-more {
+      margin-top: 1rem;
+      background: #2a2a2a;
+      color: #9cdcfe;
+      border: 1px solid #444;
+      padding: 0.5rem 1.5rem;
+      cursor: pointer;
+      font-family: monospace;
+      border-radius: 3px;
+    }
+    #load-more:hover { background: #333; }
+    #load-more:disabled { color: #555; cursor: default; }
+  </style>
+</head>
+<body>
+  <h1>Spans</h1>
+  <div id="status">Loading...</div>
+  <div id="error"></div>
+  <div id="spans-list"></div>
+  <button id="load-more" style="display:none">Load more</button>
+
+  <script>
+    let cursor = null;
+    const limit = 50;
+    let totalLoaded = 0;
+    let lastResponseEmpty = false;
+
+    const statusEl = document.getElementById('status');
+    const errorEl = document.getElementById('error');
+    const listEl = document.getElementById('spans-list');
+    const loadMoreBtn = document.getElementById('load-more');
+
+    async function fetchSpans() {
+      const params = new URLSearchParams({ limit });
+      if (cursor !== null) params.set('cursor', cursor);
+
+      try {
+        const resp = await fetch('/spans?' + params.toString());
+        if (!resp.ok) {
+          const body = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${body}`);
+        }
+        const data = await resp.json();
+        return data;
+      } catch (err) {
+        throw err;
+      }
+    }
+
+    function renderSpan(span) {
+      const row = document.createElement('div');
+      row.className = 'span-row';
+
+      const meta = document.createElement('div');
+      meta.className = 'span-meta';
+
+      const fields = [
+        ['trace_id', span.trace_id],
+        ['span_id', span.span_id],
+        ['name', span.name, 'name-value'],
+        ['started_at', span.started_at],
+      ];
+      for (const [label, value, extraClass] of fields) {
+        const cell = document.createElement('div');
+        cell.innerHTML = `<span class="label">${label}</span><br><span class="value ${extraClass || ''}">${escapeHtml(String(value))}</span>`;
+        meta.appendChild(cell);
+      }
+      row.appendChild(meta);
+
+      const hasAttrs = span.attributes && Object.keys(span.attributes).length > 0;
+      const attrJson = JSON.stringify(span.attributes, null, 2);
+
+      const toggle = document.createElement('span');
+      toggle.className = 'attr-toggle';
+      toggle.textContent = hasAttrs ? '▶ attributes' : '(no attributes)';
+      row.appendChild(toggle);
+
+      if (hasAttrs) {
+        const attrBlock = document.createElement('pre');
+        attrBlock.className = 'attr-block';
+        attrBlock.textContent = attrJson;
+        row.appendChild(attrBlock);
+
+        toggle.addEventListener('click', () => {
+          const shown = attrBlock.style.display === 'block';
+          attrBlock.style.display = shown ? 'none' : 'block';
+          toggle.textContent = shown ? '▶ attributes' : '▼ attributes';
+        });
+      }
+
+      return row;
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    async function loadMore() {
+      loadMoreBtn.disabled = true;
+      errorEl.textContent = '';
+      try {
+        const data = await fetchSpans();
+        const spans = data.spans || [];
+
+        for (const span of spans) {
+          listEl.appendChild(renderSpan(span));
+        }
+        totalLoaded += spans.length;
+
+        if (spans.length > 0) {
+          cursor = spans[spans.length - 1].seq;
+        }
+
+        lastResponseEmpty = spans.length === 0;
+
+        statusEl.textContent = `${totalLoaded} span(s) loaded.` +
+          (lastResponseEmpty ? ' No more results.' : '');
+
+        loadMoreBtn.style.display = lastResponseEmpty ? 'none' : 'inline-block';
+        loadMoreBtn.disabled = false;
+      } catch (err) {
+        errorEl.textContent = 'Error: ' + err.message;
+        statusEl.textContent = '';
+        loadMoreBtn.disabled = false;
+      }
+    }
+
+    loadMoreBtn.addEventListener('click', loadMore);
+
+    // Initial load
+    loadMore();
+  </script>
+</body>
+</html>
