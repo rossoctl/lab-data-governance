@@ -32,7 +32,7 @@ def _alembic_config() -> Config:
     cfg = Config(str(cfg_path))
     # Ensure script_location resolves correctly even when alembic.ini's
     # relative path is interpreted from the wrong cwd.
-    migrations_dir = Path(__file__).resolve().parent / "migrations"
+    migrations_dir = repo_root / "data_governance" / "db" / "migrations"
     cfg.set_main_option("script_location", str(migrations_dir))
     return cfg
 

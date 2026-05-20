@@ -8,11 +8,11 @@ architecture and `CONTEXT.md` for the domain glossary.
 ```
 data_governance/
   db/                 # Layer 1: generic Postgres wrapper (ADR-0005)
-  receiver/           # P-otel-receiver (Layer 2 + transport, grown over many issues)
-    __main__.py       # `python -m data_governance.receiver migrate`
     migrations/       # Alembic migrations (raw SQL, no ORM — ADR-0002)
       env.py
       versions/
+  receiver/           # P-otel-receiver (Layer 2 + transport, grown over many issues)
+    __main__.py       # `python -m data_governance.receiver migrate`
 tests/
   test_db.py          # Layer 1 tests against real Postgres
   test_migrations.py  # Baseline migration + migrate CLI tests
