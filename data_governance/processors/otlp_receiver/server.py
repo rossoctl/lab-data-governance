@@ -28,6 +28,7 @@ SQLSTATE→OTLP mapping #8) sit on top of these two thin handlers.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -137,19 +138,35 @@ def _starlette_app() -> Starlette:
     )
 
 
-async def _traces_handler(request: Request) -> Response:
-    """OTLP/HTTP trace export endpoint.
+def _decode_and_write_spans(body: bytes) -> None:
+    """Blocking work for :func:`_traces_handler`: decode + Layer 1 writes.
 
-    Reads a serialised :class:`ExportTraceServiceRequest` protobuf body,
-    decodes it, and writes each span via :func:`write_span`. Reads up to
-    the configured 4 MiB body cap; bodies above the cap are rejected with
-    HTTP 413 by the wrapping ASGI layer (see :func:`run_http_server`).
+    Pulled out so :func:`_traces_handler` can dispatch it to the default
+    threadpool via :func:`asyncio.to_thread` — :func:`write_span` does
+    synchronous libpq round-trips and would otherwise stall uvicorn's
+    event loop under load.
     """
-    body = await request.body()
     req = trace_service_pb2.ExportTraceServiceRequest()
     req.ParseFromString(body)
     for row in request_to_span_rows(req):
         write_span(row)
+
+
+async def _traces_handler(request: Request) -> Response:
+    """OTLP/HTTP trace export endpoint.
+
+    Reads a serialised :class:`ExportTraceServiceRequest` protobuf body,
+    decodes it, and writes each span via :func:`write_span`. The decode
+    and DB writes are synchronous (libpq round-trips block), so they run
+    on the default asyncio threadpool to keep uvicorn's event loop free.
+
+    The request body is currently read in full with no size enforcement:
+    a real OTLP wire-side body cap (PROJECT.md §1's 4 MiB limit) is
+    deferred to a follow-up slice. ``h11_max_incomplete_event_size`` on
+    the uvicorn config bounds h11's header parser, not request bodies.
+    """
+    body = await request.body()
+    await asyncio.to_thread(_decode_and_write_spans, body)
     # OTLP/HTTP success response: serialised empty
     # ``ExportTraceServiceResponse`` with content-type application/x-protobuf.
     resp = trace_service_pb2.ExportTraceServiceResponse()
@@ -160,16 +177,26 @@ async def _traces_handler(request: Request) -> Response:
     )
 
 
+def _probe_postgres() -> None:
+    """Blocking ``SELECT 1`` against Postgres for :func:`_healthz_handler`.
+
+    Pulled out so the handler can dispatch it via :func:`asyncio.to_thread`
+    — :func:`db.transaction` does synchronous libpq round-trips.
+    """
+    with db.transaction() as tx:
+        tx.execute("SELECT 1")
+
+
 async def _healthz_handler(_request: Request) -> Response:
     """Per PROJECT.md §5.1: 200 iff OTLP is open AND Postgres is reachable.
 
     The fact that this handler ran proves the HTTP/protobuf transport is
-    open. We separately probe Postgres via the Layer 1 pool. Connection
-    errors surface as 503.
+    open. We separately probe Postgres via the Layer 1 pool, off the
+    event loop via :func:`asyncio.to_thread` (libpq is synchronous).
+    Connection errors surface as 503.
     """
     try:
-        with db.transaction() as tx:
-            tx.execute("SELECT 1")
+        await asyncio.to_thread(_probe_postgres)
     except Exception:  # noqa: BLE001 — broad on purpose
         return Response("not ready", status_code=503, media_type="text/plain")
     return Response("ok", status_code=200, media_type="text/plain")
@@ -208,10 +235,10 @@ class HttpOtlpServer:
             port=self.port,
             log_level="warning",
             limit_max_requests=None,
-            h11_max_incomplete_event_size=self.max_recv_bytes,
-            # Cap the request body at the OTLP wire limit. Starlette's
-            # ``request.body()`` will read up to whatever the ASGI server
-            # gives it; uvicorn's protocol layer enforces this.
+            # No request-body size cap is enforced at this stage. The OTLP
+            # wire-side 4 MiB cap (PROJECT.md §1) is deferred to a follow-up
+            # slice; ``self.max_recv_bytes`` is currently only consulted by
+            # the gRPC transport via ``grpc.max_receive_message_length``.
         )
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, daemon=True)
