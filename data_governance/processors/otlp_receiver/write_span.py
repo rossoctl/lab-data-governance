@@ -2,8 +2,9 @@
 
 Issue #3 introduced this with a tracer-bullet column set
 (``trace_id, span_id, parent_id, name, started_at, attributes`` plus
-``seq``/``arrival_seq``/``observed_at``). Issue #6 widens the write to
-populate the rest of the v1 ``spans`` schema:
+``seq``/``arrival_seq``/``observed_at``). Issue #6 widened the write to
+populate the rest of the v1 ``spans`` schema. Issue #7 implements
+ADR-0004's conditional finalization on top:
 
 - Promoted columns: ``kind``, ``ended_at``, ``error``, ``status_message``,
   ``service_name``.
@@ -22,10 +23,27 @@ The two NULL-vs-empty rules from the issue body are enforced here:
 Every call still opens its own Layer 1 transaction (ADR-0005), so a poison
 span aborts only its own write and never blocks a neighbour.
 
-**Out of scope here, by design:**
+**ADR-0004 finalization (issue #7).** ``ON CONFLICT (trace_id, span_id)``
+takes the conditional UPDATE branch iff the *incoming* ``ended_at`` is not
+null and the *existing* ``ended_at`` is null — i.e. exactly the
+"partial then completion" case. In every other case (completion-then-partial,
+partial-then-partial, end-version retry of an already-finalized row) the
+``WHERE`` predicate makes the UPDATE a no-op and the row is left untouched.
 
-- ADR-0004 conditional finalization. ON CONFLICT stays DO NOTHING for
-  now; the conditional UPDATE on ``ended_at`` arrives in issue #7.
+The UPDATE branch:
+
+- Overwrites every mutable column (``kind``, ``name``, ``attributes``,
+  ``events``, ``links``, ``otlp``, ``scope``, ``resource_attributes``,
+  ``error``, ``status_message``, ``ended_at``) from ``EXCLUDED.*``.
+- Assigns a fresh ``seq`` from ``nextval('spans_seq')`` so stream consumers
+  see the finalization as a watermark advance.
+- **Preserves** ``arrival_seq``, ``started_at``, ``parent_id``,
+  ``service_name``, ``observed_at`` by *omitting them from the SET clause*
+  (they keep their existing row values automatically). Defensive
+  ``col = spans.col`` writes are deliberately avoided.
+
+**Still out of scope here, by design:**
+
 - The §3.1 blocklist. That's issue #9.
 - The ADR-0003 SQLSTATE→OTLP error mapping. That's issue #8.
 """
@@ -127,7 +145,22 @@ _INSERT_SQL = """
         %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
         nextval('spans_seq'), currval('spans_seq'), %s
     )
-    ON CONFLICT (trace_id, span_id) DO NOTHING
+    ON CONFLICT (trace_id, span_id) DO UPDATE SET
+        kind                = EXCLUDED.kind,
+        name                = EXCLUDED.name,
+        attributes          = EXCLUDED.attributes,
+        events              = EXCLUDED.events,
+        links               = EXCLUDED.links,
+        otlp                = EXCLUDED.otlp,
+        scope               = EXCLUDED.scope,
+        resource_attributes = EXCLUDED.resource_attributes,
+        error               = EXCLUDED.error,
+        status_message      = EXCLUDED.status_message,
+        ended_at            = EXCLUDED.ended_at,
+        seq                 = nextval('spans_seq')
+    WHERE
+        EXCLUDED.ended_at IS NOT NULL
+        AND spans.ended_at IS NULL
 """
 
 
@@ -135,12 +168,17 @@ def write_span(span: SpanRow) -> None:
     """Write *span* to the ``spans`` table in its own Layer 1 transaction.
 
     Allocates a single value from ``spans_seq`` and uses it for both ``seq``
-    and ``arrival_seq`` (they are equal at initial INSERT; ADR-0004's
-    finalization that advances ``seq`` is deferred to issue #7).
+    and ``arrival_seq`` on initial INSERT (they are equal at first sight).
+    On the conditional UPDATE branch (ADR-0004 finalization), a fresh
+    ``seq`` is drawn from ``nextval('spans_seq')`` atomically with the
+    UPDATE; ``arrival_seq`` is left at its original value. ``arrival_seq``
+    is never updated by application code and is enforced ``NOT NULL`` by
+    the schema.
 
-    On a primary-key conflict the row is silently dropped per the
-    tracer-bullet ON CONFLICT DO NOTHING policy. The conditional finalization
-    rule from ADR-0004 lands in issue #7.
+    On a primary-key conflict the conditional UPSERT either UPDATEs (when
+    the incoming version finalizes a previously-partial row) or DOes
+    NOTHING (every other case: completion-then-partial, partial-then-partial,
+    end-version retry of an already-finalized row).
 
     The function intentionally does no error classification — any psycopg
     error escapes to the caller, where the OTLP server's default behaviour

@@ -250,6 +250,24 @@ class SpanRowInspector:
                 colnames = [d.name for d in cur.description]
         return dict(zip(colnames, row))
 
+    def fetch_one_value(
+        self, sql: str, params: tuple[Any, ...] | None = None
+    ) -> Any | None:
+        """Run a single-column, single-row SELECT and return the value.
+
+        Generic escape hatch for tests that need to assert on schema metadata
+        (e.g. ``information_schema.columns``) or other DB-level facts that
+        live outside the ``spans`` table. Routing such queries through the
+        inspector keeps test files homogeneous in how they reach the DB —
+        tests should prefer this over opening their own raw
+        ``psycopg.connect`` against ``otlp_harness.dsn``.
+        """
+        with psycopg.connect(self._dsn) as conn:
+            row = conn.execute(sql, params or ()).fetchone()
+        if row is None:
+            return None
+        return row[0]
+
 
 # --- OtlpHarness bundle ------------------------------------------------------
 
