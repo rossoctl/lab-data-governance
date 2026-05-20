@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-# CLI is invoked as `python -m data_governance.processors.otlp_receiver migrate`; no console script in v1.
+# Migration CLI is invoked as `python -m data_governance.db.migrate`; no console script in v1.
 
 [tool.hatch.build.targets.wheel]
 packages = ["data_governance"]

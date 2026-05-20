@@ -92,9 +92,9 @@ def _sequence_exists(dsn: str, name: str) -> bool:
 
 
 def _run_migrate_cli(dsn: str) -> subprocess.CompletedProcess[str]:
-    """Invoke ``python -m data_governance.processors.otlp_receiver migrate`` against *dsn*."""
+    """Invoke ``python -m data_governance.db.migrate`` against *dsn*."""
     return subprocess.run(
-        [sys.executable, "-m", "data_governance.processors.otlp_receiver", "migrate"],
+        [sys.executable, "-m", "data_governance.db.migrate"],
         env={"DATABASE_URL": dsn, "PATH": "/usr/bin:/bin"},
         check=False,
         capture_output=True,

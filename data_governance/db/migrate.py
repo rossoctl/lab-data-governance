@@ -1,13 +1,15 @@
-"""OTLP-receiver processor CLI entry point.
+"""Migration CLI for the data-governance schema.
 
-Per PROJECT.md §3 "Schema evolution / Invocation" the receiver ships a single
-CLI: ``python -m data_governance.processors.otlp_receiver migrate`` runs
-``alembic upgrade head`` against the configured Postgres and exits zero on
-success. This is invoked in k8s as an init container before the receiver
-container starts and manually in non-k8s deployments (ADR-0002).
+Per PROJECT.md §3 "Schema evolution / Invocation" the project ships a single
+migration CLI: ``python -m data_governance.db.migrate`` runs ``alembic upgrade
+head`` against the configured Postgres and exits zero on success. This is
+invoked in k8s as an init container before the OTLP-receiver container starts
+and manually in non-k8s deployments (ADR-0002).
 
-The receiver process itself (OTLP socket, span-write path) lands in
-subsequent issues — for now this module only knows about ``migrate``.
+The migration tooling lives next to the schema it manages — the Alembic
+migrations under ``data_governance/db/migrations/`` — rather than inside any
+one consumer (the OTLP receiver, future processors). Every consumer of the
+schema runs the same CLI.
 """
 
 from __future__ import annotations
@@ -27,17 +29,17 @@ def _alembic_config() -> Config:
     CLI works regardless of the caller's working directory (k8s init
     containers, local dev runs).
     """
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = Path(__file__).resolve().parents[2]
     cfg_path = repo_root / "alembic.ini"
     cfg = Config(str(cfg_path))
     # Ensure script_location resolves correctly even when alembic.ini's
     # relative path is interpreted from the wrong cwd.
-    migrations_dir = repo_root / "data_governance" / "db" / "migrations"
+    migrations_dir = Path(__file__).resolve().parent / "migrations"
     cfg.set_main_option("script_location", str(migrations_dir))
     return cfg
 
 
-def _migrate(_args: argparse.Namespace) -> int:
+def _upgrade(_args: argparse.Namespace) -> int:
     """Run ``alembic upgrade head`` and return 0 on success.
 
     Idempotent by virtue of Alembic's version table — running this twice in
@@ -50,17 +52,10 @@ def _migrate(_args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m data_governance.processors.otlp_receiver",
-        description="Data-governance OTLP-receiver CLI.",
+        prog="python -m data_governance.db.migrate",
+        description="Run Alembic migrations to head against $DATABASE_URL.",
     )
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    p_migrate = sub.add_parser(
-        "migrate",
-        help="Run Alembic migrations to head against $DATABASE_URL.",
-    )
-    p_migrate.set_defaults(func=_migrate)
-
+    parser.set_defaults(func=_upgrade)
     args = parser.parse_args(argv)
     return args.func(args)
 
