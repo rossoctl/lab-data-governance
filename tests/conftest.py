@@ -16,6 +16,8 @@ session-scoped + function-scoped fixtures (``otlp_harness``,
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import uuid
 from collections.abc import Iterator
 
@@ -77,3 +79,20 @@ def pg_dsn(_admin_dsn: str) -> Iterator[str]:
                 (dbname,),
             )
             conn.execute(f'DROP DATABASE IF EXISTS "{dbname}"')
+
+
+@pytest.fixture()
+def migrated_dsn(pg_dsn: str) -> str:
+    result = subprocess.run(
+        [sys.executable, "-m", "data_governance.db.migrate"],
+        env={"DATABASE_URL": pg_dsn, "PATH": "/usr/bin:/bin"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"migrate exited {result.returncode}\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    return pg_dsn
