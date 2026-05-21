@@ -19,6 +19,7 @@ dependencies = [
     "opentelemetry-proto>=1.25",
     "starlette>=0.37",
     "uvicorn>=0.30",
+    "prometheus-client>=0.20",
 ]
 
 [project.scripts]

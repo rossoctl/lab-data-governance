@@ -32,7 +32,9 @@ from testcontainers.postgres import PostgresContainer
 from data_governance.processors.otlp_receiver.server import (
     GrpcOtlpServer,
     HttpOtlpServer,
+    MetricsServer,
 )
+from data_governance.processors.otlp_receiver import metrics as _metrics
 
 
 def _free_port() -> int:
@@ -168,6 +170,19 @@ def _harness_servers(
 
 
 @pytest.fixture(scope="session")
+def _harness_metrics_server() -> Iterator[MetricsServer]:
+    """Boot the Prometheus metrics server on an ephemeral port."""
+    metrics_port = _free_port()
+    metrics_server = MetricsServer(host="127.0.0.1", port=metrics_port)
+    metrics_server.start()
+    try:
+        _wait_port_open("127.0.0.1", metrics_port)
+        yield metrics_server
+    finally:
+        metrics_server.stop(grace=1.0)
+
+
+@pytest.fixture(scope="session")
 def _harness_grpc_endpoint(
     _harness_servers: tuple[GrpcOtlpServer, HttpOtlpServer],
 ) -> str:
@@ -183,3 +198,9 @@ def _harness_http_endpoint(
     """OTLP HTTP/protobuf endpoint URL (without the ``/v1/traces`` suffix)."""
     _, http_server = _harness_servers
     return f"http://127.0.0.1:{http_server.port}"
+
+
+@pytest.fixture(scope="session")
+def _harness_metrics_endpoint(_harness_metrics_server: MetricsServer) -> str:
+    """Prometheus metrics server base URL (without the ``/metrics`` suffix)."""
+    return f"http://127.0.0.1:{_harness_metrics_server.port}"

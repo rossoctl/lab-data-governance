@@ -51,6 +51,7 @@ The UPDATE branch:
 from __future__ import annotations
 
 import datetime as dt
+import enum
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -58,7 +59,30 @@ from typing import Any
 from data_governance import db
 
 
-__all__ = ["SpanRow", "write_span"]
+__all__ = ["SpanRow", "WriteOutcome", "write_span"]
+
+
+class WriteOutcome(enum.Enum):
+    """Outcome of a single :func:`write_span` call.
+
+    ``INSERTED``
+        A new row was created (the common path for first-seen spans).
+
+    ``FINALIZED``
+        An existing partial row was updated to its completed version
+        (ADR-0004 finalization: incoming ``ended_at`` non-null, existing
+        ``ended_at`` was null).
+
+    ``DUPLICATE``
+        The ON CONFLICT clause fired but the WHERE predicate was false,
+        so DO NOTHING ran — the row was untouched.  Covers idempotent
+        retries, completion-then-partial, partial-then-partial, and
+        end-version retries of already-finalized rows.
+    """
+
+    INSERTED = "inserted"
+    FINALIZED = "finalized"
+    DUPLICATE = "duplicate"
 
 
 @dataclass(frozen=True)
@@ -161,28 +185,29 @@ _INSERT_SQL = """
     WHERE
         EXCLUDED.ended_at IS NOT NULL
         AND spans.ended_at IS NULL
+    RETURNING seq, arrival_seq
 """
 
 
-def write_span(span: SpanRow) -> None:
+def write_span(span: SpanRow) -> WriteOutcome:
     """Write *span* to the ``spans`` table in its own Layer 1 transaction.
 
-    Allocates a single value from ``spans_seq`` and uses it for both ``seq``
-    and ``arrival_seq`` on initial INSERT (they are equal at first sight).
-    On the conditional UPDATE branch (ADR-0004 finalization), a fresh
-    ``seq`` is drawn from ``nextval('spans_seq')`` atomically with the
-    UPDATE; ``arrival_seq`` is left at its original value. ``arrival_seq``
-    is never updated by application code and is enforced ``NOT NULL`` by
-    the schema.
+    Returns a :class:`WriteOutcome` indicating what happened:
 
-    On a primary-key conflict the conditional UPSERT either UPDATEs (when
-    the incoming version finalizes a previously-partial row) or DOes
-    NOTHING (every other case: completion-then-partial, partial-then-partial,
-    end-version retry of an already-finalized row).
+    - ``INSERTED`` — new row created (first sight of this span).
+    - ``FINALIZED`` — existing partial row updated to its completed version
+      (ADR-0004: incoming ``ended_at`` non-null, existing was null).
+    - ``DUPLICATE`` — ON CONFLICT DO NOTHING fired; the row was untouched.
 
-    The function intentionally does no error classification — any psycopg
-    error escapes to the caller, where the OTLP server's default behaviour
-    crashes the batch. The ADR-0003 SQLSTATE→OTLP mapping lands in issue #8.
+    The outcome is determined by inspecting the ``RETURNING seq, arrival_seq``
+    clause:
+
+    - No rows returned (rowcount == 0) → DO NOTHING → ``DUPLICATE``.
+    - Row returned with ``seq == arrival_seq`` → fresh INSERT → ``INSERTED``.
+    - Row returned with ``seq != arrival_seq`` → UPDATE finalization → ``FINALIZED``.
+
+    Any psycopg exception escapes to the caller for ADR-0003 classification
+    (see :mod:`classify_errors`).
     """
     started_at = _ensure_aware_utc(span.started_at)
     ended_at = (
@@ -191,7 +216,7 @@ def write_span(span: SpanRow) -> None:
     observed_at = dt.datetime.now(tz=dt.timezone.utc)
 
     with db.transaction() as tx:
-        tx.execute(
+        row = tx.fetch_one(
             _INSERT_SQL,
             (
                 span.trace_id,
@@ -213,6 +238,13 @@ def write_span(span: SpanRow) -> None:
                 observed_at,
             ),
         )
+
+    if row is None:
+        return WriteOutcome.DUPLICATE
+    seq, arrival_seq = row
+    if seq == arrival_seq:
+        return WriteOutcome.INSERTED
+    return WriteOutcome.FINALIZED
 
 
 def _ensure_aware_utc(ts: dt.datetime) -> dt.datetime:
