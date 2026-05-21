@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Iterator
 
 import psycopg
@@ -29,19 +30,51 @@ def raw_conn(configured_db: str):
 
 @pytest.fixture()
 def insert_span(raw_conn):
-    """Return a helper that inserts a minimal span row directly."""
-    def _insert(*, trace_id: str, span_id: str, name: str, parent_id=None):
-        raw_conn.execute(
-            """
-            INSERT INTO spans (
-                trace_id, span_id, parent_id, kind, name,
-                started_at, attributes, seq, arrival_seq, observed_at
-            ) VALUES (
-                %s, %s, %s, 'INTERNAL', %s,
-                now(), '{}'::jsonb, nextval('spans_seq'), currval('spans_seq'), now()
+    """Return a helper that inserts a minimal span row directly.
+
+    Optional ``started_at`` lets callers place the span at a specific
+    trace-clock time for window-filter tests; defaults to ``now()`` when
+    omitted (matching the issue-#4 fixture's behaviour). Optional
+    ``error`` populates the promoted error column.
+    """
+
+    def _insert(
+        *,
+        trace_id: str,
+        span_id: str,
+        name: str,
+        parent_id: str | None = None,
+        started_at: dt.datetime | None = None,
+        error: bool | None = None,
+    ) -> None:
+        if started_at is None:
+            raw_conn.execute(
+                """
+                INSERT INTO spans (
+                    trace_id, span_id, parent_id, kind, name,
+                    started_at, error, attributes, seq, arrival_seq, observed_at
+                ) VALUES (
+                    %s, %s, %s, 'INTERNAL', %s,
+                    now(), %s, '{}'::jsonb,
+                    nextval('spans_seq'), currval('spans_seq'), now()
+                )
+                """,
+                (trace_id, span_id, parent_id, name, error),
             )
-            """,
-            (trace_id, span_id, parent_id, name),
-        )
+        else:
+            raw_conn.execute(
+                """
+                INSERT INTO spans (
+                    trace_id, span_id, parent_id, kind, name,
+                    started_at, error, attributes, seq, arrival_seq, observed_at
+                ) VALUES (
+                    %s, %s, %s, 'INTERNAL', %s,
+                    %s, %s, '{}'::jsonb,
+                    nextval('spans_seq'), currval('spans_seq'), now()
+                )
+                """,
+                (trace_id, span_id, parent_id, name, started_at, error),
+            )
         raw_conn.commit()
+
     return _insert

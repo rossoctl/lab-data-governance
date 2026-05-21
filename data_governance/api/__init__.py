@@ -1,8 +1,13 @@
 """UI backend REST API — thin Starlette wrapper over the retrieval library.
 
-Issue #4 tracer-bullet: one endpoint ``GET /spans`` and a served UI shell.
-All ``get_spans`` parameters are accepted as query parameters; the response
-body is the JSON encoding of ``GetSpansResult``.
+The single endpoint ``GET /spans`` accepts every ``get_spans`` parameter as
+a query parameter and returns the JSON encoding of ``GetSpansResult``.
+
+Issue #4 shipped the tracer bullet (``cursor``, ``limit``, ``trace_id``,
+``span_id``, ``order``). Issue #12 extended the surface with
+``time_from`` / ``time_to`` (ISO-8601, naive datetimes rejected per
+PROJECT.md §6), ``root_only``, and ``parent_id`` (the latter only
+honoured for the parameter-compatibility raises until #13 lands).
 """
 
 from __future__ import annotations
@@ -39,15 +44,23 @@ def _json_default(obj: object) -> object:
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+def _counts_to_jsonable(
+    counts: dict[str, retrieval.TraceCounts] | None,
+) -> dict[str, dict[str, int]] | None:
+    if counts is None:
+        return None
+    return {tid: dataclasses.asdict(c) for tid, c in counts.items()}
+
+
 def _result_to_dict(result: retrieval.GetSpansResult) -> dict:
     return {
         "spans": [dataclasses.asdict(s) for s in result.spans],
-        "counts": result.counts,
+        "counts": _counts_to_jsonable(result.counts),
     }
 
 
 # ---------------------------------------------------------------------------
-# Request handlers
+# Query-parameter parsing
 # ---------------------------------------------------------------------------
 
 
@@ -60,6 +73,49 @@ def _parse_int(value: str | None, name: str) -> int | None:
         raise ValueError(f"'{name}' must be an integer, got {value!r}")
 
 
+def _parse_bool(value: str | None, name: str) -> bool:
+    """Lenient bool parser for query strings: ``"true"`` / ``"1"`` → True."""
+    if value is None:
+        return False
+    lowered = value.strip().lower()
+    if lowered in ("true", "1", "yes"):
+        return True
+    if lowered in ("false", "0", "no", ""):
+        return False
+    raise ValueError(f"'{name}' must be a boolean, got {value!r}")
+
+
+def _parse_iso_datetime(value: str | None, name: str) -> dt.datetime | None:
+    """Parse an ISO-8601 datetime; reject naive (no Z, no explicit offset).
+
+    ``datetime.fromisoformat`` in Python 3.11+ accepts ``Z`` as a synonym
+    for ``+00:00``, so this is the same parser the rest of the stdlib
+    uses. The naive-datetime rejection is enforced after parsing rather
+    than via a regex so we preserve all the format variants
+    ``fromisoformat`` already accepts (microseconds, fractional seconds,
+    space separator, etc.).
+    """
+    if value is None or value == "":
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"'{name}' must be ISO-8601 with Z or explicit offset, got {value!r}"
+        ) from exc
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        raise ValueError(
+            f"'{name}' must be ISO-8601 with Z or explicit offset; "
+            f"naive datetimes are rejected"
+        )
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# Request handlers
+# ---------------------------------------------------------------------------
+
+
 async def _spans_handler(request: Request) -> Response:
     """``GET /spans`` — pass-through to ``get_spans``."""
     params = request.query_params
@@ -69,7 +125,11 @@ async def _spans_handler(request: Request) -> Response:
         limit_raw = _parse_int(params.get("limit"), "limit")
         trace_id = params.get("trace_id") or None
         span_id = params.get("span_id") or None
+        parent_id = params.get("parent_id") or None
         order = params.get("order") or None
+        root_only = _parse_bool(params.get("root_only"), "root_only")
+        time_from = _parse_iso_datetime(params.get("time_from"), "time_from")
+        time_to = _parse_iso_datetime(params.get("time_to"), "time_to")
 
         kwargs: dict = {}
         if limit_raw is not None:
@@ -78,6 +138,10 @@ async def _spans_handler(request: Request) -> Response:
             cursor=cursor,
             trace_id=trace_id,
             span_id=span_id,
+            parent_id=parent_id,
+            time_from=time_from,
+            time_to=time_to,
+            root_only=root_only,
             order=order,
             **kwargs,
         )
