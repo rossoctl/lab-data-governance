@@ -58,9 +58,7 @@ def classify_error(exc: BaseException) -> ErrorKind:
             return "duplicate"
 
         if sqlstate is not None:
-            if sqlstate.startswith("23"):
-                return "integrity"
-            if sqlstate in _INTEGRITY_SQLSTATES:
+            if sqlstate.startswith("23") or sqlstate in _INTEGRITY_SQLSTATES:
                 return "integrity"
 
     return "other"

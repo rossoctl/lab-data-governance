@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
@@ -96,8 +97,6 @@ def _write_span_with_metrics(
       ``"connection"``, ``"integrity"``, ``"other"`` (never ``"duplicate"``
       — duplicates are returned as ``WriteOutcome.DUPLICATE``).
     """
-    import time
-
     # Approximate serialised row size for the histogram (repr is always safe).
     row_bytes = len(repr(row_data))
 
@@ -108,7 +107,9 @@ def _write_span_with_metrics(
         elapsed = time.perf_counter() - t0
         _metrics.span_insert_duration_seconds.observe(elapsed)
         kind = classify_error(exc)
-        if kind != "duplicate":
+        if kind == "duplicate":
+            _metrics.spans_duplicate_total.inc()
+        else:
             _metrics.db_errors_total.labels(kind=kind).inc()
         return None, kind
     elapsed = time.perf_counter() - t0
@@ -156,7 +157,7 @@ class _TraceServicer(trace_service_pb2_grpc.TraceServiceServicer):
                 return trace_service_pb2.ExportTraceServiceResponse()
             if error_kind == "integrity":
                 rejected += 1
-                _write_rejected_span(row.trace_id, row.span_id, f"integrity error")
+                _write_rejected_span(row.trace_id, row.span_id, "integrity error")
 
         if rejected:
             return trace_service_pb2.ExportTraceServiceResponse(
