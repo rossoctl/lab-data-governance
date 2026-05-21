@@ -47,6 +47,14 @@ class Span:
     ``started_at`` falls inside the request's ``(time_from, time_to)``,
     ``False`` only on out-of-window listing roots returned by
     ``root_only=True``. Defaults to ``True`` when no window was supplied.
+
+    ``kind``, ``error``, ``status_message``, ``events`` and ``links`` are
+    the trace-tree render columns landed by issue #14. ``error`` is the
+    OTLP ``Status.Code`` projection (``ERROR → True``, ``OK → False``,
+    ``UNSET → None``); ``status_message`` is only meaningful when
+    ``error IS TRUE``. ``events`` and ``links`` follow the PROJECT.md §3
+    NULL-vs-empty contract: the receiver writes SQL ``NULL`` for the
+    "no events / no links" case, so the dataclass surface uses ``None``.
     """
 
     seq: int
@@ -58,6 +66,11 @@ class Span:
     attributes: dict[str, Any]
     in_time_window: bool = True
     service_name: str | None = None
+    kind: str | None = None
+    error: bool | None = None
+    status_message: str | None = None
+    events: list[dict[str, Any]] | None = None
+    links: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +170,19 @@ def get_spans(
             time_to=time_to_dt,
         )
 
+    if parent_id is not None:
+        # Subtree expansion (issue #14, PROJECT.md §6 Path 3): direct
+        # children of P within T, sorted seq asc and cursored on seq
+        # (axes aligned — chronological by arrival, no skips/dups).
+        # Parameter compatibility (parent_id requires trace_id) was
+        # already enforced by _validate_params above.
+        return _query_subtree(
+            cursor=cursor,
+            limit=limit,
+            trace_id=trace_id,  # type: ignore[arg-type]
+            parent_id=parent_id,
+        )
+
     return _query_spans(
         cursor=cursor,
         limit=limit,
@@ -251,6 +277,11 @@ _COLUMNS = (
     "started_at",
     "attributes",
     "service_name",
+    "kind",
+    "error",
+    "status_message",
+    "events",
+    "links",
 )
 _SELECT_COLS = ", ".join(_COLUMNS)
 
@@ -329,6 +360,69 @@ def _build_query(
     )
     params.append(limit)
     return sql, params
+
+
+# ---------------------------------------------------------------------------
+# parent_id query path — direct children of P within T (issue #14)
+# ---------------------------------------------------------------------------
+
+
+def _query_subtree(
+    *,
+    cursor: int | None,
+    limit: int,
+    trace_id: str,
+    parent_id: str,
+) -> GetSpansResult:
+    """Return direct children of ``parent_id`` within ``trace_id``.
+
+    PROJECT.md §6 Path 3: ``parent_id`` set → sort by ``seq asc`` and
+    cursor on ``seq``. Sort and cursor axes agree, so neither
+    duplicates nor skips can occur on this path: each page advances
+    strictly forward in ``seq`` and every row that satisfies the
+    filter appears on exactly one page.
+
+    Within a single parent's children, ``seq asc`` is chronological by
+    arrival at the receiver — the property the trace-tree view
+    actually wants. ``started_at`` is the producer's clock and can be
+    skewed by async exporters, retries, and span buffering; sorting on
+    ``started_at`` while cursoring on ``seq`` would create a
+    cursor/sort-axis mismatch (a low-seq, late-started_at child can be
+    pushed past the cursor and silently skipped — see #30 for the same
+    bug class on the listing-roots path).
+
+    The window is intentionally not a parameter on this path: the trace
+    tree view always operates inside a single trace named by id, and the
+    listing-row error-count badge already tells the user the trace has
+    activity worth looking at. Filtering subtree expansion by window
+    would silently hide error spans whose ``started_at`` skewed outside
+    the listing window — exactly the failure the user is drilling in to
+    find.
+    """
+    conditions: list[str] = [
+        "trace_id = %s",
+        "parent_id = %s",
+    ]
+    params: list[Any] = [trace_id, parent_id]
+
+    if cursor is not None:
+        conditions.append("seq > %s")
+        params.append(cursor)
+
+    where = " WHERE " + " AND ".join(conditions)
+    sql = (
+        f"SELECT {_SELECT_COLS} FROM spans"
+        f"{where} ORDER BY seq ASC LIMIT %s"
+    )
+    params.append(limit)
+
+    with _repeatable_read() as tx:
+        rows = tx.fetch_all(sql, params)
+
+    # Subtree expansion never filters by window, so every returned row is
+    # considered in-window for the caller's purposes.
+    spans = [_row_to_span(r, in_time_window=True) for r in rows]
+    return GetSpansResult(spans=spans, counts=None)
 
 
 # ---------------------------------------------------------------------------
@@ -645,4 +739,11 @@ def _row_to_span(
         attributes=r["attributes"] or {},
         in_time_window=in_time_window,
         service_name=r.get("service_name"),
+        kind=r.get("kind"),
+        error=r.get("error"),
+        status_message=r.get("status_message"),
+        # events/links honour PROJECT.md §3 NULL contract: keep None
+        # distinct from an empty list.
+        events=r.get("events"),
+        links=r.get("links"),
     )

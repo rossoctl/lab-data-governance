@@ -159,10 +159,24 @@ async def _ui_handler(_request: Request) -> Response:
     return HTMLResponse(content=index.read_text())
 
 
+async def _trace_tree_handler(_request: Request) -> Response:
+    """Serve the trace-tree UI shell (issue #14).
+
+    Path is ``/trace/{trace_id}``. The trace_id is consumed by the
+    in-page JS (it reads ``window.location.pathname`` to learn the
+    target trace), so the server-side handler is the same static HTML
+    for any trace_id.
+    """
+    page = _UI_DIR / "trace_tree.html"
+    return HTMLResponse(content=page.read_text())
+
+
 # Static asset names allowed under ``/ui/`` — kept narrow on purpose so
 # this route never functions as a generic file-server. Add new entries
 # here as the UI grows.
-_UI_ASSETS: frozenset[str] = frozenset({"recent_traces_logic.js"})
+_UI_ASSETS: frozenset[str] = frozenset(
+    {"recent_traces_logic.js", "trace_tree_logic.js"}
+)
 
 
 async def _ui_asset_handler(request: Request) -> Response:
@@ -187,6 +201,11 @@ def build_app() -> Starlette:
     routes: list = [
         Route("/spans", endpoint=_spans_handler, methods=["GET"]),
         Route("/ui/{name:str}", endpoint=_ui_asset_handler, methods=["GET"]),
+        Route(
+            "/trace/{trace_id:str}",
+            endpoint=_trace_tree_handler,
+            methods=["GET"],
+        ),
         Route("/", endpoint=_ui_handler, methods=["GET"]),
     ]
     return Starlette(routes=routes)

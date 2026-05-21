@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Data Governance — Trace tree</title>
+  <style>
+    /* Trace-tree view (issue #14).
+       Visual decisions track docs/ui-design.md §1, §2, §3. The
+       PatternFly 5 incarnation ships in a future slice; this plain-
+       HTML shell encodes the same semantic structure (per-kind icon
+       glyph, red error badge, gold descendant-error badge, JSON
+       detail panel) so the design intent is testable today. */
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+        Roboto, sans-serif;
+      margin: 0;
+      background: #151515;
+      color: #f0f0f0;
+    }
+    header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid #2c2c2c;
+      display: flex;
+      align-items: baseline;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 1.1rem; margin: 0; color: #92c5f9; }
+    a.back { color: #92c5f9; font-size: 0.85rem; }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 1rem;
+      padding: 1rem 1.5rem;
+    }
+
+    #status { color: #888; margin-bottom: 0.75rem; font-size: 0.85rem; }
+    #error { color: #f85149; margin-bottom: 0.75rem; font-size: 0.9rem; }
+
+    /* Tree rows */
+    ul.tree, ul.tree ul {
+      list-style: none;
+      margin: 0;
+      padding-left: 1.25rem;
+      border-left: 1px dashed #2c2c2c;
+    }
+    ul.tree {
+      padding-left: 0;
+      border-left: none;
+    }
+    li.node {
+      padding: 0.25rem 0;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.2rem 0.4rem;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .row:hover, .row.selected {
+      background: #1c1c1c;
+    }
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.1rem;
+      color: #92c5f9;
+      font-family: monospace;
+      user-select: none;
+    }
+    .toggle.leaf { color: #444; cursor: default; }
+    .kind-icon {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #c9c9c9;
+      font-size: 0.85rem;
+      width: 1.5rem;
+      text-align: center;
+    }
+    .name-text {
+      font-weight: 600;
+      color: #e6e6e6;
+    }
+    .service-text {
+      color: #888;
+      font-size: 0.85rem;
+    }
+    .status-message {
+      font-size: 0.8em;
+      color: #c9c9c9;
+      margin-top: 2px;
+      margin-left: 3.4rem;  /* align with name (toggle + icon widths) */
+    }
+
+    /* Badges — match recent-traces palette so the error language is
+       shared (docs/ui-design.md §2, §3, §4). */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.05rem 0.5rem;
+      border-radius: 30px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .badge--error    { background: #b1380b; color: #ffffff; }
+    .badge--descendant { background: #fcf7de; color: #151515; }
+
+    /* Children loading / "load more" */
+    .more-btn {
+      background: #2a2a2a;
+      color: #92c5f9;
+      border: 1px solid #444;
+      padding: 0.25rem 0.75rem;
+      cursor: pointer;
+      font-family: inherit;
+      border-radius: 3px;
+      font-size: 0.8rem;
+      margin: 0.25rem 0 0.25rem 1.25rem;
+    }
+    .more-btn:hover { background: #333; }
+    .empty-children {
+      color: #666;
+      font-size: 0.8rem;
+      margin-left: 1.25rem;
+      font-style: italic;
+    }
+
+    /* Detail panel */
+    aside.detail {
+      background: #1a1a1a;
+      border: 1px solid #2c2c2c;
+      border-radius: 3px;
+      padding: 0.75rem 1rem;
+      font-size: 0.85rem;
+      align-self: start;
+      position: sticky;
+      top: 1rem;
+      max-height: calc(100vh - 2rem);
+      overflow: auto;
+    }
+    aside.detail h2 {
+      margin: 0 0 0.5rem 0;
+      font-size: 0.95rem;
+      color: #92c5f9;
+    }
+    aside.detail h3 {
+      margin: 0.75rem 0 0.25rem 0;
+      font-size: 0.85rem;
+      color: #c9c9c9;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    aside.detail pre {
+      background: #0d0d0d;
+      border: 1px solid #222;
+      padding: 0.5rem;
+      border-radius: 3px;
+      overflow: auto;
+      font-size: 0.78rem;
+      color: #d0d0d0;
+      max-height: 30vh;
+    }
+    .detail-empty {
+      color: #666;
+      font-style: italic;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="back" href="/">&larr; Recent traces</a>
+    <h1>Trace tree</h1>
+    <span id="trace-id-display" style="color:#888;font-size:0.85rem"></span>
+  </header>
+  <main>
+    <section>
+      <div id="status">Loading...</div>
+      <div id="error"></div>
+      <ul id="tree" class="tree"></ul>
+    </section>
+    <aside id="detail" class="detail">
+      <h2>Span detail</h2>
+      <div class="detail-empty" id="detail-empty">
+        Select a span to view its attributes, events, and links.
+      </div>
+      <div id="detail-body" style="display:none">
+        <h3 id="detail-name"></h3>
+        <h3>attributes</h3>
+        <pre id="detail-attributes"></pre>
+        <h3>events</h3>
+        <pre id="detail-events"></pre>
+        <h3>links</h3>
+        <pre id="detail-links"></pre>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/ui/trace_tree_logic.js"></script>
+  <script>
+    /* Trace-tree view (issue #14).
+       Endpoint: GET /spans?trace_id=T&parent_id=P&cursor=...
+       The listing-root Span is read out of sessionStorage on load —
+       see openTrace() in index.html (the recent-traces shell). */
+
+    const PAGE_SIZE = 50;
+
+    /* Per-kind icon glyph. The richer PatternFly version (docs/ui-design.md
+       §1) ships in a future slice; the glyph table here keeps the
+       visual cue distinguishable in the plain shell. */
+    const KIND_GLYPH = {
+      INTERNAL: '■',  // black square — generic building block
+      SERVER:   '≡',  // triple bar — server stack
+      CLIENT:   '→',  // rightwards arrow — outbound call
+      PRODUCER: '↑',  // upwards arrow — publishing
+      CONSUMER: '↓',  // downwards arrow — receiving
+    };
+
+    const statusEl = document.getElementById('status');
+    const errorEl = document.getElementById('error');
+    const treeEl = document.getElementById('tree');
+    const traceIdDisplay = document.getElementById('trace-id-display');
+    const detailEmptyEl = document.getElementById('detail-empty');
+    const detailBodyEl = document.getElementById('detail-body');
+    const detailNameEl = document.getElementById('detail-name');
+    const detailAttributesEl = document.getElementById('detail-attributes');
+    const detailEventsEl = document.getElementById('detail-events');
+    const detailLinksEl = document.getElementById('detail-links');
+
+    /* Pull trace_id from /trace/<trace_id>. */
+    const traceId = decodeURIComponent(
+      window.location.pathname.replace(/^\/trace\//, ''),
+    );
+    traceIdDisplay.textContent = traceId;
+
+    /* All loaded spans, keyed by (trace_id|span_id). The descendant-
+       error badge walker reads this set. */
+    const loadedSpans = [];
+    const childrenLoaded = new Set();   // span_ids whose children we fetched
+    const childCursors = {};            // span_id -> last seq we fetched
+    const childExhausted = new Set();   // span_ids with no more children
+
+    function key(s) { return s.trace_id + '|' + s.span_id; }
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function readListingRoot() {
+      try {
+        const raw = sessionStorage.getItem('dg.listingRoot.' + traceId);
+        if (!raw) return null;
+        return JSON.parse(raw);
+      } catch (_e) { return null; }
+    }
+
+    async function fetchChildren(parentSpanId) {
+      const params = new URLSearchParams({
+        trace_id: traceId,
+        parent_id: parentSpanId,
+        limit: String(PAGE_SIZE),
+      });
+      const cur = childCursors[parentSpanId];
+      if (cur !== undefined) params.set('cursor', String(cur));
+      const resp = await fetch('/spans?' + params.toString());
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error('HTTP ' + resp.status + ': ' + body);
+      }
+      return resp.json();
+    }
+
+    function renderRow(span) {
+      const li = document.createElement('li');
+      li.className = 'node';
+      li.dataset.key = key(span);
+
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.dataset.spanId = span.span_id;
+      row.tabIndex = 0;
+
+      const toggle = document.createElement('span');
+      toggle.className = 'toggle';
+      toggle.textContent = '▶';  // ▶
+      toggle.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        toggleNode(li, span);
+      });
+      row.appendChild(toggle);
+
+      const icon = document.createElement('span');
+      icon.className = 'kind-icon';
+      icon.textContent = KIND_GLYPH[span.kind] || KIND_GLYPH.INTERNAL;
+      icon.title = span.kind || 'INTERNAL';
+      row.appendChild(icon);
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'name-text';
+      nameSpan.textContent = span.name || '(unnamed)';
+      row.appendChild(nameSpan);
+
+      if (span.service_name) {
+        const svc = document.createElement('span');
+        svc.className = 'service-text';
+        svc.textContent = span.service_name;
+        row.appendChild(svc);
+      }
+
+      if (span.error === true) {
+        const e = document.createElement('span');
+        e.className = 'badge badge--error';
+        e.textContent = 'Error';
+        row.appendChild(e);
+      }
+
+      /* Reserved slot for the descendant-error badge. The walker fills
+         it in via refreshDescendantBadges() after each subtree-load. */
+      const descSlot = document.createElement('span');
+      descSlot.className = 'descendant-slot';
+      row.appendChild(descSlot);
+
+      row.addEventListener('click', () => selectSpan(span, row));
+      row.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          selectSpan(span, row);
+        }
+      });
+
+      li.appendChild(row);
+
+      if (span.error === true && span.status_message) {
+        const msg = document.createElement('div');
+        msg.className = 'status-message';
+        msg.textContent = span.status_message;
+        li.appendChild(msg);
+      }
+
+      const childrenUl = document.createElement('ul');
+      childrenUl.style.display = 'none';
+      li.appendChild(childrenUl);
+
+      return li;
+    }
+
+    function renderRoot(span) {
+      treeEl.innerHTML = '';
+      loadedSpans.length = 0;
+      loadedSpans.push(span);
+      const li = renderRow(span);
+      treeEl.appendChild(li);
+      // Auto-expand the root so the user sees the first level.
+      toggleNode(li, span);
+    }
+
+    async function toggleNode(li, span) {
+      const childrenUl = li.querySelector(':scope > ul');
+      const toggle = li.querySelector(':scope > .row > .toggle');
+      if (!childrenLoaded.has(span.span_id)) {
+        await loadChildren(li, span);
+      }
+      const open = childrenUl.style.display !== 'none';
+      childrenUl.style.display = open ? 'none' : '';
+      toggle.textContent = open ? '▶' : '▼';
+    }
+
+    async function loadChildren(li, span) {
+      try {
+        const data = await fetchChildren(span.span_id);
+        const children = data.spans || [];
+        const childrenUl = li.querySelector(':scope > ul');
+
+        for (const child of children) {
+          loadedSpans.push(child);
+          childrenUl.appendChild(renderRow(child));
+        }
+
+        if (children.length > 0) {
+          childCursors[span.span_id] = Math.max.apply(
+            null, children.map((s) => s.seq),
+          );
+        }
+        if (children.length < PAGE_SIZE) {
+          childExhausted.add(span.span_id);
+          if (children.length === 0 && !childrenLoaded.has(span.span_id)) {
+            const empty = document.createElement('li');
+            empty.className = 'empty-children';
+            empty.textContent = '(no children)';
+            childrenUl.appendChild(empty);
+          }
+        } else {
+          // Wide-fanout parent — render a "Load more" affordance the
+          // user (or the test) can click to advance the cursor.
+          const more = document.createElement('button');
+          more.className = 'more-btn';
+          more.dataset.parentId = span.span_id;
+          more.textContent = 'Load more children';
+          more.addEventListener('click', async () => {
+            more.remove();
+            await loadChildren(li, span);
+          });
+          childrenUl.appendChild(more);
+        }
+
+        childrenLoaded.add(span.span_id);
+        refreshDescendantBadges();
+      } catch (err) {
+        errorEl.textContent = 'Error loading children: ' + err.message;
+      }
+    }
+
+    function refreshDescendantBadges() {
+      /* Walk the loaded set, find ancestors of error spans, and stamp
+         the badge slot. v1 limitation: an error span inside an
+         unexpanded subtree contributes nothing — the walker only sees
+         loaded spans. */
+      const idx = window.TraceTree.buildParentIndex(loadedSpans);
+      const flagged = window.TraceTree.descendantErrorAncestors(
+        loadedSpans, idx,
+      );
+
+      for (const li of treeEl.querySelectorAll('li.node')) {
+        const k = li.dataset.key;
+        const slot = li.querySelector(':scope > .row > .descendant-slot');
+        if (!slot) continue;
+        slot.innerHTML = '';
+        if (flagged.has(k)) {
+          const b = document.createElement('span');
+          b.className = 'badge badge--descendant';
+          b.textContent = 'Child error';
+          slot.appendChild(b);
+        }
+      }
+    }
+
+    function selectSpan(span, row) {
+      for (const r of treeEl.querySelectorAll('.row.selected')) {
+        r.classList.remove('selected');
+      }
+      row.classList.add('selected');
+
+      detailEmptyEl.style.display = 'none';
+      detailBodyEl.style.display = '';
+
+      detailNameEl.textContent = span.name + ' (' + span.span_id + ')';
+      detailAttributesEl.textContent = JSON.stringify(
+        span.attributes || {}, null, 2,
+      );
+      detailEventsEl.textContent = span.events == null
+        ? '(none)' : JSON.stringify(span.events, null, 2);
+      detailLinksEl.textContent = span.links == null
+        ? '(none)' : JSON.stringify(span.links, null, 2);
+    }
+
+    async function init() {
+      let root = readListingRoot();
+      if (root === null) {
+        // Cold-open / pasted URL — fetch the listing root for this trace.
+        // root_only=true with trace_id ignores the window per PROJECT.md §6.
+        try {
+          const resp = await fetch(
+            '/spans?root_only=true&trace_id='
+            + encodeURIComponent(traceId),
+          );
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const data = await resp.json();
+          if (!data.spans || data.spans.length === 0) {
+            statusEl.textContent = 'Trace not found.';
+            return;
+          }
+          root = data.spans[0];
+        } catch (err) {
+          errorEl.textContent = 'Error loading trace: ' + err.message;
+          return;
+        }
+      }
+      statusEl.textContent = '';
+      renderRoot(root);
+    }
+
+    init();
+  </script>
+</body>
+</html>

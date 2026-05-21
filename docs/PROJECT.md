@@ -566,19 +566,28 @@ detail — the contract is pinned here so deployments can rely on it.
   - `root_only=True` → sort by listing-root `started_at desc`
     (newest traces first; matches the universal "recent activity"
     UI convention).
-  - `parent_id` set (subtree expansion) → sort by `started_at asc`
-    (oldest first, top-down — the trace-tree convention every span
-    UI uses).
+  - `parent_id` set (subtree expansion) → sort by `seq asc`. Within a
+    single parent's children this is chronological by arrival at the
+    receiver — what a top-down trace-tree view actually wants. The
+    sort axis matches the cursor axis, so neither duplicates nor
+    skips are possible on this path. (`started_at asc` was the
+    original spec, but it would create the same cursor/sort-axis
+    mismatch documented for `root_only=True` in #30 — a child with
+    low `seq` and late `started_at` can be silently skipped once the
+    cursor advances past `max(seq)` of a page.)
   - Otherwise (bare processor stream / `trace_id` only / `span_id`
     only) → sort by `seq asc` (catch-up order). Callers that want
     descending pass `order="desc"`.
-  Where sort and cursor disagree (`root_only=True`, `parent_id`),
-  the "duplicates possible, skips impossible" property from
-  ADR-0001 holds: a row may appear on two pages with different
+  Where sort and cursor disagree (`root_only=True`), the
+  "duplicates possible, skips impossible" property from ADR-0001
+  holds in principle: a row may appear on two pages with different
   anchor data as late spans arrive or finalize, but no row that
   satisfies the filter is silently skipped. The UI dedupes by
-  `trace_id` (listing) or `(trace_id, span_id)` (subtree). Where
-  sort and cursor agree (`seq`-bucket), no duplicates are possible.
+  `trace_id`. (#30 tracks the case where `seq` and `started_at` are
+  uncorrelated and skips do occur on the listing-roots path; the
+  fix is a path-shaped composite cursor.) Where sort and cursor
+  agree (`seq`-bucket and `parent_id`), no duplicates and no skips
+  are possible.
 - **Concurrent-insert and update-allocation gaps (deferred to v1.x).**
   See §3 stream-consumer caveat for the failure mode. The recent-
   traces UI listing in §7 is itself a `seq`-cursored consumer: a

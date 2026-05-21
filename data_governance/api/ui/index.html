@@ -311,16 +311,17 @@
     }
 
     function openTrace(row) {
-      /* Click-through. The trace tree view (a future slice) reads the
-         listing-root Span out of sessionStorage so it does not need to
-         re-fetch. The hash route is what the future tree view will
-         match on. */
+      /* Click-through. The trace-tree view (issue #14) reads the
+         listing-root Span out of sessionStorage so it does not need
+         to re-fetch its anchor; the URL carries the trace_id so a
+         pasted /trace/<id> link still works (cold-open is a future
+         slice). */
       try {
         sessionStorage.setItem(
           'dg.listingRoot.' + row.trace_id, JSON.stringify(row),
         );
       } catch (_e) { /* storage full / disabled — non-fatal */ }
-      window.location.hash = '#/trace/' + encodeURIComponent(row.trace_id);
+      window.location.href = '/trace/' + encodeURIComponent(row.trace_id);
     }
 
     function render() {

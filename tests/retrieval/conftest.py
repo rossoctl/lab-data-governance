@@ -35,8 +35,11 @@ def insert_span(raw_conn):
     Optional ``started_at`` lets callers place the span at a specific
     trace-clock time for window-filter tests; defaults to ``now()`` when
     omitted (matching the issue-#4 fixture's behaviour). Optional
-    ``error`` populates the promoted error column.
+    ``error`` populates the promoted error column. Optional ``kind``,
+    ``status_message``, ``events``, ``links`` populate the trace-tree
+    columns added by issue #14.
     """
+    import json as _json
 
     def _insert(
         *,
@@ -46,34 +49,50 @@ def insert_span(raw_conn):
         parent_id: str | None = None,
         started_at: dt.datetime | None = None,
         error: bool | None = None,
+        kind: str = "INTERNAL",
+        status_message: str | None = None,
+        events: list | None = None,
+        links: list | None = None,
     ) -> None:
+        events_json = _json.dumps(events) if events is not None else None
+        links_json = _json.dumps(links) if links is not None else None
         if started_at is None:
             raw_conn.execute(
                 """
                 INSERT INTO spans (
                     trace_id, span_id, parent_id, kind, name,
-                    started_at, error, attributes, seq, arrival_seq, observed_at
+                    started_at, error, status_message, events, links,
+                    attributes, seq, arrival_seq, observed_at
                 ) VALUES (
-                    %s, %s, %s, 'INTERNAL', %s,
-                    now(), %s, '{}'::jsonb,
+                    %s, %s, %s, %s, %s,
+                    now(), %s, %s, %s::jsonb, %s::jsonb,
+                    '{}'::jsonb,
                     nextval('spans_seq'), currval('spans_seq'), now()
                 )
                 """,
-                (trace_id, span_id, parent_id, name, error),
+                (
+                    trace_id, span_id, parent_id, kind, name,
+                    error, status_message, events_json, links_json,
+                ),
             )
         else:
             raw_conn.execute(
                 """
                 INSERT INTO spans (
                     trace_id, span_id, parent_id, kind, name,
-                    started_at, error, attributes, seq, arrival_seq, observed_at
+                    started_at, error, status_message, events, links,
+                    attributes, seq, arrival_seq, observed_at
                 ) VALUES (
-                    %s, %s, %s, 'INTERNAL', %s,
-                    %s, %s, '{}'::jsonb,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s::jsonb, %s::jsonb,
+                    '{}'::jsonb,
                     nextval('spans_seq'), currval('spans_seq'), now()
                 )
                 """,
-                (trace_id, span_id, parent_id, name, started_at, error),
+                (
+                    trace_id, span_id, parent_id, kind, name,
+                    started_at, error, status_message, events_json, links_json,
+                ),
             )
         raw_conn.commit()
 
