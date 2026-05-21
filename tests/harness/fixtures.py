@@ -44,6 +44,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from data_governance.processors.otlp_receiver.server import (
     GrpcOtlpServer,
     HttpOtlpServer,
+    MetricsServer,
 )
 
 
@@ -284,6 +285,8 @@ class OtlpHarness:
         grpc_endpoint: ``host:port`` of the OTLP gRPC server.
         http_endpoint: Base URL of the OTLP HTTP/protobuf server (no
             ``/v1/traces`` suffix).
+        metrics_endpoint: Base URL of the Prometheus metrics server (no
+            ``/metrics`` suffix).
         servers: The underlying server lifecycle handles, in case a test
             needs to restart or interrogate them. Provided as an escape
             hatch — most tests should not touch this.
@@ -294,6 +297,7 @@ class OtlpHarness:
     dsn: str
     grpc_endpoint: str
     http_endpoint: str
+    metrics_endpoint: str
     servers: tuple[GrpcOtlpServer, HttpOtlpServer]
 
 
@@ -306,6 +310,7 @@ def otlp_harness(
     _harness_servers: tuple[GrpcOtlpServer, HttpOtlpServer],
     _harness_grpc_endpoint: str,
     _harness_http_endpoint: str,
+    _harness_metrics_endpoint: str,
 ) -> Iterator[OtlpHarness]:
     """Per-test OTLP harness: pool reconfigured + tables truncated, then yield.
 
@@ -335,7 +340,7 @@ def otlp_harness(
     with psycopg.connect(_harness_pg_dsn) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "TRUNCATE TABLE spans, blocked_span_counts "
+                "TRUNCATE TABLE spans, blocked_span_counts, rejected_spans "
                 "RESTART IDENTITY CASCADE"
             )
         conn.commit()
@@ -350,6 +355,7 @@ def otlp_harness(
         dsn=_harness_pg_dsn,
         grpc_endpoint=_harness_grpc_endpoint,
         http_endpoint=_harness_http_endpoint,
+        metrics_endpoint=_harness_metrics_endpoint,
         servers=(grpc_server, http_server),
     )
 
