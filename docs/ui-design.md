@@ -46,7 +46,7 @@ import {
   InboxIcon,
 } from '@patternfly/react-icons';
 
-const ICONS: Record<string, React.ComponentType<{ color?: string; size?: string }>> = {
+const ICONS: Record<string, React.ComponentType<{ color?: string; style?: React.CSSProperties }>> = {
   INTERNAL: CubeIcon,
   SERVER:   ServerIcon,
   CLIENT:   ArrowRightIcon,
@@ -115,7 +115,7 @@ import { Label } from '@patternfly/react-core';
 import { ExclamationTriangleIcon } from '@patternfly/react-icons';
 
 // descendant-error badge
-<Label color="orange" icon={<ExclamationTriangleIcon />} isCompact>
+<Label color="gold" icon={<ExclamationTriangleIcon />} isCompact>
   Child error
 </Label>
 ```
@@ -162,8 +162,10 @@ import { ExclamationCircleIcon } from '@patternfly/react-icons';
 
 ## 5. Missing-parent badge (recent-traces view)
 
-Shown when the listing root is an orphan (`parent_id` IS NOT NULL — the real root
-has not arrived yet).
+Shown when the listing root is an orphan — specifically, a span whose `parent_id`
+is non-null but references a span **not present in the loaded set** (the real root
+has not arrived yet). This is distinct from a normal non-root span, which has a
+`parent_id` that resolves within the loaded set.
 
 ```tsx
 import { Label } from '@patternfly/react-core';
@@ -195,7 +197,8 @@ Applied to rows where `in_time_window = false`.
   opacity: 0.45;
 }
 
-.dg-row--out-of-window:hover {
+.dg-row--out-of-window:hover,
+.dg-row--out-of-window:focus-within {
   opacity: 0.7;
 }
 ```
@@ -203,8 +206,8 @@ Applied to rows where `in_time_window = false`.
 - **Opacity:** `0.45` — enough fade to push the row to background without making
   it unreadable. All columns (`service_name`, `name`, timestamps, badges) fade
   uniformly; the user can still read the trace exists.
-- **Hover:** raises to `0.7` so a user who deliberately hovers can inspect the
-  row comfortably.
+- **Hover / focus:** raises to `0.7` on `:hover` and `:focus-within` so both
+  pointer and keyboard users can inspect the row comfortably.
 - **No color shift:** opacity-only treatment; no hue desaturation. Keeps the
   implementation a single CSS class and avoids needing per-element overrides.
 - **Badges and text remain legible:** `0.45` opacity on a white/`#212427` table
@@ -256,7 +259,9 @@ Row height: PF5 default compact (`isCompact` on `Table`).
 Hover: `var(--pf-v5-c-table--tr--hover--BackgroundColor)` (already wired in
 `global.css`).  
 Clickable row: entire `<tr>` is a button (`onClick` on the row component) that
-opens the trace tree.  
+opens the trace tree. The `<tr>` must also carry `role="button"` and
+`tabIndex={0}` (or use PF5 `Tr` with `isClickable`) so keyboard users can reach
+and activate it.  
 Out-of-window rows: `.dg-row--out-of-window` class on `<tr>` (§6).
 
 ```tsx
@@ -264,7 +269,7 @@ Out-of-window rows: `.dg-row--out-of-window` class on `<tr>` (§6).
 <Th width={15}>Service</Th>
 <Th width={35}>Name</Th>
 <Th width={15}>Started</Th>
-<Th width={10} modifier="fitContent">Spans</Th>
+<Th width={10}>Spans</Th>
 <Th width={25}>Status</Th>
 ```
 
@@ -286,7 +291,8 @@ Out-of-window rows: `.dg-row--out-of-window` class on `<tr>` (§6).
   opacity: 0.45;
 }
 
-.dg-row--out-of-window:hover {
+.dg-row--out-of-window:hover,
+.dg-row--out-of-window:focus-within {
   opacity: 0.7;
 }
 
