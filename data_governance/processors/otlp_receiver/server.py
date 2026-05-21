@@ -95,13 +95,18 @@ _BLOCK_UPSERT_SQL = """
 
 
 def _record_blocked_span(pattern: str) -> None:
-    """Increment blocked_span_counts and the Prometheus counter for *pattern*."""
-    _metrics.spans_blocked_total.labels(pattern=pattern).inc()
+    """Increment blocked_span_counts and the Prometheus counter for *pattern*.
+
+    Prometheus is incremented first so the real-time signal is always up to
+    date even if the durable DB upsert fails; a partial failure is acceptable.
+    Both operations are best-effort and must not propagate exceptions to callers.
+    """
     try:
+        _metrics.spans_blocked_total.labels(pattern=pattern).inc()
         with db.transaction() as tx:
             tx.execute(_BLOCK_UPSERT_SQL, (pattern,))
     except Exception:
-        _log.exception("Failed to upsert blocked_span_counts for pattern %r", pattern)
+        _log.exception("Failed to record blocked span for pattern %r", pattern)
 
 
 # ---------------------------------------------------------------------------

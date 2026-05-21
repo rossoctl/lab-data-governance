@@ -72,6 +72,20 @@ def test_valid_patterns_accepted() -> None:
     _validate(("/metrics", "prefix*", "exact-name"))
 
 
+def test_star_only_pattern_rejected() -> None:
+    from data_governance.processors.otlp_receiver.blocklist import _validate
+
+    with pytest.raises(ValueError):
+        _validate(("*",))
+
+
+def test_empty_pattern_rejected() -> None:
+    from data_governance.processors.otlp_receiver.blocklist import _validate
+
+    with pytest.raises(ValueError):
+        _validate(("",))
+
+
 # ---------------------------------------------------------------------------
 # End-to-end harness tests
 # ---------------------------------------------------------------------------
@@ -89,18 +103,12 @@ def _blocked_count(dsn: str, pattern: str) -> tuple[int, object]:
     return int(row[0]), row[1]
 
 
-def _prometheus_blocked_count(
-    harness: OtlpHarness, pattern: str
-) -> float:
-    """Read spans_blocked_total{pattern=...} from the in-process registry."""
-    import requests
-
-    resp = requests.get(f"{harness.metrics_endpoint}/metrics", timeout=5)
-    resp.raise_for_status()
-    for line in resp.text.splitlines():
-        if line.startswith("spans_blocked_total") and f'pattern="{pattern}"' in line:
-            return float(line.split()[-1])
-    return 0.0
+def _prometheus_blocked_count(pattern: str) -> float:
+    """Return the current spans_blocked_total counter value for *pattern*."""
+    try:
+        return _metrics.spans_blocked_total.labels(pattern=pattern)._value.get()
+    except Exception:
+        return 0.0
 
 
 class TestBlocklistEndToEnd:
@@ -109,6 +117,7 @@ class TestBlocklistEndToEnd:
         trace_id, span_id = otlp_harness.client.send_grpc_span(name="/metrics")
         row = otlp_harness.rows.get(trace_id, span_id)
         assert row is None, "blocked span must not appear in spans"
+        assert _prometheus_blocked_count("/metrics") == 1.0
 
     def test_prefix_blocked_span_not_in_spans(self, otlp_harness: OtlpHarness) -> None:
         _metrics.make_registry()
@@ -117,6 +126,7 @@ class TestBlocklistEndToEnd:
         )
         row = otlp_harness.rows.get(trace_id, span_id)
         assert row is None, "prefix-blocked span must not appear in spans"
+        assert _prometheus_blocked_count("otlp_receiver/*") == 1.0
 
     def test_non_blocked_span_written_normally(self, otlp_harness: OtlpHarness) -> None:
         trace_id, span_id = otlp_harness.client.send_grpc_span(name="user.checkout")
