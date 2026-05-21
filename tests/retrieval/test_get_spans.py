@@ -2,31 +2,9 @@
 
 from __future__ import annotations
 
-import datetime as dt
-
-import psycopg
 import pytest
 
 from data_governance.retrieval import GetSpansResult, get_spans
-
-_UTC = dt.timezone.utc
-
-
-def _insert_span(conn, *, trace_id: str, span_id: str, name: str, parent_id=None):
-    """Insert a minimal span row directly, bypassing write_span."""
-    conn.execute(
-        """
-        INSERT INTO spans (
-            trace_id, span_id, parent_id, kind, name,
-            started_at, attributes, seq, arrival_seq, observed_at
-        ) VALUES (
-            %s, %s, %s, 'INTERNAL', %s,
-            now(), '{}'::jsonb, nextval('spans_seq'), currval('spans_seq'), now()
-        )
-        """,
-        (trace_id, span_id, parent_id, name),
-    )
-    conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -34,10 +12,10 @@ def _insert_span(conn, *, trace_id: str, span_id: str, name: str, parent_id=None
 # ---------------------------------------------------------------------------
 
 
-def test_no_filter_returns_all_asc(configured_db, raw_conn):
-    _insert_span(raw_conn, trace_id="aaa", span_id="s1", name="first")
-    _insert_span(raw_conn, trace_id="bbb", span_id="s2", name="second")
-    _insert_span(raw_conn, trace_id="ccc", span_id="s3", name="third")
+def test_no_filter_returns_all_asc(configured_db, insert_span):
+    insert_span(trace_id="aaa", span_id="s1", name="first")
+    insert_span(trace_id="bbb", span_id="s2", name="second")
+    insert_span(trace_id="ccc", span_id="s3", name="third")
 
     result = get_spans()
     assert isinstance(result, GetSpansResult)
@@ -45,19 +23,19 @@ def test_no_filter_returns_all_asc(configured_db, raw_conn):
     assert names == ["first", "second", "third"]
 
 
-def test_order_desc_flips_order(configured_db, raw_conn):
-    _insert_span(raw_conn, trace_id="aaa", span_id="s1", name="first")
-    _insert_span(raw_conn, trace_id="bbb", span_id="s2", name="second")
+def test_order_desc_flips_order(configured_db, insert_span):
+    insert_span(trace_id="aaa", span_id="s1", name="first")
+    insert_span(trace_id="bbb", span_id="s2", name="second")
 
     result = get_spans(order="desc")
     names = [s.name for s in result.spans]
     assert names == ["second", "first"]
 
 
-def test_trace_id_filter(configured_db, raw_conn):
-    _insert_span(raw_conn, trace_id="trace-A", span_id="s1", name="span-A1")
-    _insert_span(raw_conn, trace_id="trace-A", span_id="s2", name="span-A2")
-    _insert_span(raw_conn, trace_id="trace-B", span_id="s3", name="span-B1")
+def test_trace_id_filter(configured_db, insert_span):
+    insert_span(trace_id="trace-A", span_id="s1", name="span-A1")
+    insert_span(trace_id="trace-A", span_id="s2", name="span-A2")
+    insert_span(trace_id="trace-B", span_id="s3", name="span-B1")
 
     result = get_spans(trace_id="trace-A")
     names = [s.name for s in result.spans]
@@ -65,17 +43,17 @@ def test_trace_id_filter(configured_db, raw_conn):
     assert all(s.trace_id == "trace-A" for s in result.spans)
 
 
-def test_trace_id_and_span_id_returns_single_row(configured_db, raw_conn):
-    _insert_span(raw_conn, trace_id="trace-A", span_id="s1", name="span-A1")
-    _insert_span(raw_conn, trace_id="trace-A", span_id="s2", name="span-A2")
+def test_trace_id_and_span_id_returns_single_row(configured_db, insert_span):
+    insert_span(trace_id="trace-A", span_id="s1", name="span-A1")
+    insert_span(trace_id="trace-A", span_id="s2", name="span-A2")
 
     result = get_spans(trace_id="trace-A", span_id="s1")
     assert len(result.spans) == 1
     assert result.spans[0].span_id == "s1"
 
 
-def test_trace_id_and_span_id_no_match_returns_empty(configured_db, raw_conn):
-    _insert_span(raw_conn, trace_id="trace-A", span_id="s1", name="span-A1")
+def test_trace_id_and_span_id_no_match_returns_empty(configured_db, insert_span):
+    insert_span(trace_id="trace-A", span_id="s1", name="span-A1")
 
     result = get_spans(trace_id="trace-A", span_id="missing")
     assert result.spans == []
@@ -86,23 +64,28 @@ def test_limit_above_500_raises(configured_db):
         get_spans(limit=501)
 
 
-def test_limit_defaults_to_50(configured_db, raw_conn):
+def test_invalid_order_raises(configured_db):
+    with pytest.raises(ValueError, match="order"):
+        get_spans(order="invalid")  # type: ignore[arg-type]
+
+
+def test_limit_defaults_to_50(configured_db, insert_span):
     for i in range(60):
-        _insert_span(raw_conn, trace_id="t", span_id=f"s{i}", name=f"span-{i}")
+        insert_span(trace_id="t", span_id=f"s{i}", name=f"span-{i}")
 
     result = get_spans()
     assert len(result.spans) == 50
 
 
-def test_counts_always_none(configured_db, raw_conn):
-    _insert_span(raw_conn, trace_id="t", span_id="s1", name="x")
+def test_counts_always_none(configured_db, insert_span):
+    insert_span(trace_id="t", span_id="s1", name="x")
     result = get_spans()
     assert result.counts is None
 
 
-def test_cursor_pagination_asc(configured_db, raw_conn):
+def test_cursor_pagination_asc(configured_db, insert_span):
     for i in range(5):
-        _insert_span(raw_conn, trace_id="t", span_id=f"s{i}", name=f"span-{i}")
+        insert_span(trace_id="t", span_id=f"s{i}", name=f"span-{i}")
 
     page1 = get_spans(limit=3)
     assert len(page1.spans) == 3
@@ -113,9 +96,9 @@ def test_cursor_pagination_asc(configured_db, raw_conn):
     assert all(s.seq > last_seq for s in page2.spans)
 
 
-def test_cursor_pagination_desc(configured_db, raw_conn):
+def test_cursor_pagination_desc(configured_db, insert_span):
     for i in range(5):
-        _insert_span(raw_conn, trace_id="t", span_id=f"s{i}", name=f"span-{i}")
+        insert_span(trace_id="t", span_id=f"s{i}", name=f"span-{i}")
 
     page1 = get_spans(limit=3, order="desc")
     assert len(page1.spans) == 3

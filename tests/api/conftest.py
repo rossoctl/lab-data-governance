@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import socket
-import subprocess
-import sys
 import time
 from collections.abc import Iterator
 
@@ -13,23 +11,6 @@ import pytest
 
 from data_governance import db
 from data_governance.api import SpansApiServer
-
-
-@pytest.fixture()
-def migrated_dsn(pg_dsn: str) -> str:
-    result = subprocess.run(
-        [sys.executable, "-m", "data_governance.db.migrate"],
-        env={"DATABASE_URL": pg_dsn, "PATH": "/usr/bin:/bin"},
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, (
-        f"migrate exited {result.returncode}\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
-    return pg_dsn
 
 
 @pytest.fixture()
@@ -59,6 +40,26 @@ def _wait_port(host: str, port: int, timeout: float = 5.0) -> None:
             except OSError:
                 time.sleep(0.05)
     raise TimeoutError(f"port {host}:{port} did not open within {timeout}s")
+
+
+@pytest.fixture()
+def insert_span(configured_db: str):
+    """Return a helper that inserts a minimal span row directly."""
+    def _insert(conn, *, trace_id: str, span_id: str, name: str):
+        conn.execute(
+            """
+            INSERT INTO spans (
+                trace_id, span_id, parent_id, kind, name,
+                started_at, attributes, seq, arrival_seq, observed_at
+            ) VALUES (
+                %s, %s, NULL, 'INTERNAL', %s,
+                now(), '{}'::jsonb, nextval('spans_seq'), currval('spans_seq'), now()
+            )
+            """,
+            (trace_id, span_id, name),
+        )
+        conn.commit()
+    return _insert
 
 
 @pytest.fixture()

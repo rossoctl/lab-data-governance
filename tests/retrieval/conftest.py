@@ -2,31 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from collections.abc import Iterator
 
 import psycopg
 import pytest
 
 from data_governance import db
-
-
-@pytest.fixture()
-def migrated_dsn(pg_dsn: str) -> str:
-    result = subprocess.run(
-        [sys.executable, "-m", "data_governance.db.migrate"],
-        env={"DATABASE_URL": pg_dsn, "PATH": "/usr/bin:/bin"},
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, (
-        f"migrate exited {result.returncode}\n"
-        f"stdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
-    )
-    return pg_dsn
 
 
 @pytest.fixture()
@@ -44,3 +25,23 @@ def raw_conn(configured_db: str):
     """A direct psycopg connection for inserting test fixtures."""
     with psycopg.connect(configured_db) as conn:
         yield conn
+
+
+@pytest.fixture()
+def insert_span(raw_conn):
+    """Return a helper that inserts a minimal span row directly."""
+    def _insert(*, trace_id: str, span_id: str, name: str, parent_id=None):
+        raw_conn.execute(
+            """
+            INSERT INTO spans (
+                trace_id, span_id, parent_id, kind, name,
+                started_at, attributes, seq, arrival_seq, observed_at
+            ) VALUES (
+                %s, %s, %s, 'INTERNAL', %s,
+                now(), '{}'::jsonb, nextval('spans_seq'), currval('spans_seq'), now()
+            )
+            """,
+            (trace_id, span_id, parent_id, name),
+        )
+        raw_conn.commit()
+    return _insert

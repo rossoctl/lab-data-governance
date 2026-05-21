@@ -75,18 +75,12 @@
     async function fetchSpans() {
       const params = new URLSearchParams({ limit });
       if (cursor !== null) params.set('cursor', cursor);
-
-      try {
-        const resp = await fetch('/spans?' + params.toString());
-        if (!resp.ok) {
-          const body = await resp.text();
-          throw new Error(`HTTP ${resp.status}: ${body}`);
-        }
-        const data = await resp.json();
-        return data;
-      } catch (err) {
-        throw err;
+      const resp = await fetch('/spans?' + params.toString());
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${body}`);
       }
+      return resp.json();
     }
 
     function renderSpan(span) {
@@ -153,7 +147,7 @@
           cursor = spans[spans.length - 1].seq;
         }
 
-        lastResponseEmpty = spans.length === 0;
+        lastResponseEmpty = spans.length < limit;
 
         statusEl.textContent = `${totalLoaded} span(s) loaded.` +
           (lastResponseEmpty ? ' No more results.' : '');

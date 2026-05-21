@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from data_governance import db
 
@@ -54,7 +54,7 @@ def get_spans(
     limit: int = _LIMIT_DEFAULT,
     trace_id: str | None = None,
     span_id: str | None = None,
-    order: str | None = None,
+    order: Literal["asc", "desc"] | None = None,
 ) -> GetSpansResult:
     """Read spans from the database, cursor-paginated by ``seq``.
 
@@ -79,6 +79,8 @@ def get_spans(
         raise ValueError(
             f"limit {limit} exceeds the hard cap of {_LIMIT_MAX}"
         )
+    if span_id is not None and trace_id is None:
+        raise ValueError("span_id requires trace_id")
 
     effective_order = (order or "asc").lower()
     if effective_order not in ("asc", "desc"):
@@ -87,6 +89,7 @@ def get_spans(
     sql, params = _build_query(cursor, limit, trace_id, span_id, effective_order)
 
     with db.transaction() as tx:
+        # Must be the first statement in the transaction; db.transaction() guarantees no prior statements.
         tx.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         rows = tx.fetch_all(sql, params)
 
@@ -98,8 +101,9 @@ def get_spans(
 # Query builder
 # ---------------------------------------------------------------------------
 
-_SELECT = """
-    SELECT seq, trace_id, span_id, parent_id, name, started_at, attributes
+_COLUMNS = ("seq", "trace_id", "span_id", "parent_id", "name", "started_at", "attributes")
+_SELECT = f"""
+    SELECT {", ".join(_COLUMNS)}
     FROM spans
 """
 
@@ -136,15 +140,13 @@ def _build_query(
 
 
 def _row_to_span(row: tuple[Any, ...]) -> Span:
-    seq, trace_id, span_id, parent_id, name, started_at, attributes = row
-    if attributes is None:
-        attributes = {}
+    r = dict(zip(_COLUMNS, row))
     return Span(
-        seq=seq,
-        trace_id=trace_id,
-        span_id=span_id,
-        parent_id=parent_id,
-        name=name,
-        started_at=started_at,
-        attributes=attributes,
+        seq=r["seq"],
+        trace_id=r["trace_id"],
+        span_id=r["span_id"],
+        parent_id=r["parent_id"],
+        name=r["name"],
+        started_at=r["started_at"],
+        attributes=r["attributes"] or {},
     )

@@ -18,7 +18,6 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
-from starlette.staticfiles import StaticFiles
 
 from data_governance import retrieval
 
@@ -68,17 +67,19 @@ async def _spans_handler(request: Request) -> Response:
     try:
         cursor = _parse_int(params.get("cursor"), "cursor")
         limit_raw = _parse_int(params.get("limit"), "limit")
-        limit = limit_raw if limit_raw is not None else 50
         trace_id = params.get("trace_id") or None
         span_id = params.get("span_id") or None
         order = params.get("order") or None
 
+        kwargs: dict = {}
+        if limit_raw is not None:
+            kwargs["limit"] = limit_raw
         result = retrieval.get_spans(
             cursor=cursor,
-            limit=limit,
             trace_id=trace_id,
             span_id=span_id,
             order=order,
+            **kwargs,
         )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -90,6 +91,7 @@ async def _spans_handler(request: Request) -> Response:
 async def _ui_handler(_request: Request) -> Response:
     """Serve the UI shell ``index.html``."""
     index = _UI_DIR / "index.html"
+    # Read on every request intentionally — enables hot-reload during development.
     return HTMLResponse(content=index.read_text())
 
 

@@ -5,12 +5,7 @@ Send an OTLP span via gRPC → call GET /spans → assert the span is in the res
 
 from __future__ import annotations
 
-import socket
-import time
-from collections.abc import Iterator
-
 import httpx
-import pytest
 
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
@@ -19,25 +14,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from data_governance.api import SpansApiServer
 from data_governance.processors.otlp_receiver.server import GrpcOtlpServer
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _wait_port(host: str, port: int, timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(0.2)
-            try:
-                s.connect((host, port))
-                return
-            except OSError:
-                time.sleep(0.05)
-    raise TimeoutError(f"port {host}:{port} did not open")
+from tests.api.conftest import _free_port, _wait_port
 
 
 def test_otlp_span_visible_via_get_spans(configured_db: str) -> None:
