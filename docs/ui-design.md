@@ -169,9 +169,9 @@ has not arrived yet). This is distinct from a normal non-root span, which has a
 
 ```tsx
 import { Label } from '@patternfly/react-core';
-import { UnknownIcon } from '@patternfly/react-icons';
+import { QuestionCircleIcon } from '@patternfly/react-icons';
 
-<Label color="gold" icon={<UnknownIcon />} isCompact>
+<Label color="gold" icon={<QuestionCircleIcon />} isCompact>
   Missing parent
 </Label>
 ```
@@ -179,8 +179,9 @@ import { UnknownIcon } from '@patternfly/react-icons';
 - **Color:** `pf-m-gold` — same warning palette as the descendant-error badge, but
   a different icon and text so the two are never confused. Gold signals "something
   is incomplete / uncertain" without screaming "error".
-- **Icon:** `UnknownIcon` (question-mark circle) — conveys the root is unknown,
-  not that it failed.
+- **Icon:** `QuestionCircleIcon` (question-mark circle) — conveys the root is unknown,
+  not that it failed. (`UnknownIcon` was not available in `@patternfly/react-icons`
+  v5.4; `QuestionCircleIcon` is the FA5 equivalent and is already used in `ui-v2`.)
 - **Text:** `"Missing parent"`.
 - **Position:** after the error count badge in the listing row. If there is no
   error count badge the missing-parent badge occupies that slot.
@@ -316,7 +317,7 @@ Out-of-window rows: `.dg-row--out-of-window` class on `<tr>` (§6).
 - [x] Listing-row error count badge visual spec landed — same `pf-m-red` Label as
       per-span badge, count pluralised
 - [x] Missing-parent badge visual spec landed — `pf-m-gold` Label,
-      `UnknownIcon`, "Missing parent"
+      `QuestionCircleIcon`, "Missing parent"
 - [x] Greyed-out treatment specified — `opacity: 0.45`, raises to `0.7` on hover
 - [x] `in_window / total` display format chosen — `N / M`, tabular nums, muted color
 - [x] Listing row layout sketched — 5-column PF5 Table, column order and widths
