@@ -3,168 +3,401 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Data Governance — Spans</title>
+  <title>Data Governance — Recent traces</title>
   <style>
-    body { font-family: monospace; margin: 2rem; background: #0e0e0e; color: #d4d4d4; }
-    h1 { font-size: 1.2rem; color: #9cdcfe; margin-bottom: 1rem; }
-    #status { color: #888; margin-bottom: 1rem; font-size: 0.85rem; }
-    #error { color: #f44; margin-bottom: 1rem; }
-    .span-row {
-      border: 1px solid #333;
-      border-radius: 4px;
-      padding: 0.75rem 1rem;
-      margin-bottom: 0.5rem;
-      background: #1a1a1a;
+    /* Recent-traces view (issue #13).
+       Visual decisions track docs/ui-design.md §6, §7, §8, §9. The
+       project ships its richer PatternFly 5 incarnation in a future
+       slice; this plain-HTML shell encodes the same semantic structure
+       (5-column listing row, greyed-out treatment, badge palette) so
+       the design intent is testable today. */
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+        Roboto, sans-serif;
+      margin: 0;
+      background: #151515;
+      color: #f0f0f0;
     }
-    .span-meta { display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
-    .label { color: #9cdcfe; font-size: 0.8rem; }
-    .value { color: #ce9178; }
-    .name-value { color: #dcdcaa; font-weight: bold; }
-    .attr-toggle {
-      color: #888;
-      font-size: 0.8rem;
+    header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid #2c2c2c;
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 1.1rem; margin: 0; color: #92c5f9; }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .controls label {
+      font-size: 0.85rem;
+      color: #c9c9c9;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .controls select, .controls input[type=checkbox] {
       cursor: pointer;
-      user-select: none;
-      margin-top: 0.25rem;
-      display: inline-block;
     }
-    .attr-toggle:hover { color: #ccc; }
-    .attr-block {
-      margin-top: 0.5rem;
-      background: #111;
-      padding: 0.5rem;
-      border-radius: 3px;
-      white-space: pre;
-      overflow-x: auto;
-      font-size: 0.8rem;
-      color: #b5cea8;
-      display: none;
+    main { padding: 1rem 1.5rem; }
+    #status { color: #888; margin-bottom: 0.75rem; font-size: 0.85rem; }
+    #error { color: #f85149; margin-bottom: 0.75rem; font-size: 0.9rem; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
     }
+    thead th {
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+      color: #92c5f9;
+      font-weight: 600;
+      border-bottom: 1px solid #303030;
+    }
+    tbody tr {
+      border-bottom: 1px solid #1f1f1f;
+      cursor: pointer;
+    }
+    tbody tr:hover, tbody tr:focus-within {
+      background: #1c1c1c;
+    }
+    tbody td { padding: 0.5rem 0.75rem; vertical-align: top; }
+
+    /* Column widths from docs/ui-design.md §8. */
+    th.col-service, td.col-service { width: 15%; }
+    th.col-name,    td.col-name    { width: 35%; }
+    th.col-started, td.col-started { width: 15%; }
+    th.col-spans,   td.col-spans   { width: 10%; text-align: right; }
+    th.col-status,  td.col-status  { width: 25%; }
+
+    .name-text {
+      font-weight: 600;
+      color: #e6e6e6;
+    }
+
+    /* docs/ui-design.md §9 */
+    .dg-window-count {
+      font-variant-numeric: tabular-nums;
+      color: #c9c9c9;
+      font-size: 0.875em;
+    }
+    .dg-row--out-of-window {
+      opacity: 0.45;
+    }
+    .dg-row--out-of-window:hover,
+    .dg-row--out-of-window:focus-within {
+      opacity: 0.7;
+    }
+
+    /* Badges — match the §2/§4/§5 palette without pulling in
+       PatternFly. pf-m-red ≈ #b1380b on #ffffff text; pf-m-gold
+       ≈ #fcf7de on #151515 text. */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.1rem 0.55rem;
+      border-radius: 30px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1.2;
+      margin-right: 0.35rem;
+      white-space: nowrap;
+    }
+    .badge--error    { background: #b1380b; color: #ffffff; }
+    .badge--warn     { background: #fcf7de; color: #151515; }
+    .badge--neutral  { background: #2c2c2c; color: #c9c9c9; }
+
     #load-more {
       margin-top: 1rem;
       background: #2a2a2a;
-      color: #9cdcfe;
+      color: #92c5f9;
       border: 1px solid #444;
       padding: 0.5rem 1.5rem;
       cursor: pointer;
-      font-family: monospace;
+      font-family: inherit;
       border-radius: 3px;
     }
-    #load-more:hover { background: #333; }
+    #load-more:hover  { background: #333; }
     #load-more:disabled { color: #555; cursor: default; }
+    .empty {
+      padding: 2rem;
+      text-align: center;
+      color: #888;
+    }
   </style>
 </head>
 <body>
-  <h1>Spans</h1>
-  <div id="status">Loading...</div>
-  <div id="error"></div>
-  <div id="spans-list"></div>
-  <button id="load-more" style="display:none">Load more</button>
+  <header>
+    <h1>Recent traces</h1>
+    <div class="controls">
+      <label>
+        Window
+        <select id="time-window">
+          <option value="15m">Last 15 min</option>
+          <option value="1h" selected>Last hour</option>
+          <option value="6h">Last 6 hours</option>
+          <option value="24h">Last 24 hours</option>
+          <option value="all">All time</option>
+        </select>
+      </label>
+      <label>
+        <input type="checkbox" id="hide-missing-parent">
+        Hide missing-parent traces
+      </label>
+    </div>
+  </header>
+  <main>
+    <div id="status">Loading...</div>
+    <div id="error"></div>
+    <table id="traces-table">
+      <thead>
+        <tr>
+          <th class="col-service">Service</th>
+          <th class="col-name">Name</th>
+          <th class="col-started">Started</th>
+          <th class="col-spans">Spans</th>
+          <th class="col-status">Status</th>
+        </tr>
+      </thead>
+      <tbody id="traces-body"></tbody>
+    </table>
+    <button id="load-more" style="display:none">Load more</button>
+  </main>
 
+  <script src="/ui/recent_traces_logic.js"></script>
   <script>
-    let cursor = null;
-    const limit = 50;
-    let totalLoaded = 0;
-    let lastResponseEmpty = false;
+    /* Recent-traces view (issue #13).
+       Endpoint: GET /spans?root_only=true&time_from=...&time_to=...
+                 &cursor=...&limit=20
+       Each returned Span is one trace's listing root. */
+
+    const PAGE_SIZE = 20;
 
     const statusEl = document.getElementById('status');
     const errorEl = document.getElementById('error');
-    const listEl = document.getElementById('spans-list');
+    const bodyEl = document.getElementById('traces-body');
     const loadMoreBtn = document.getElementById('load-more');
+    const windowSelect = document.getElementById('time-window');
+    const hideMissingParentEl = document.getElementById('hide-missing-parent');
 
-    async function fetchSpans() {
-      const params = new URLSearchParams({ limit });
-      if (cursor !== null) params.set('cursor', cursor);
+    /* Across paginated calls in one window-session we accumulate the
+       raw rows and the per-trace counts; the dedupe-by-trace_id pass
+       runs over the accumulator on every render so that a flipped
+       anchor (orphan -> real root) is collapsed to a single row. */
+    let accumRows = [];
+    let accumCounts = {};
+    let cursor = null;
+    let exhausted = false;
+
+    function timeWindowParams(value) {
+      if (value === 'all') return {};
+      const minutes = { '15m': 15, '1h': 60, '6h': 360, '24h': 1440 }[value];
+      const now = new Date();
+      const from = new Date(now.getTime() - minutes * 60 * 1000);
+      return {
+        time_from: from.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        time_to: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      };
+    }
+
+    async function fetchPage() {
+      const params = new URLSearchParams({
+        root_only: 'true',
+        limit: String(PAGE_SIZE),
+        ...timeWindowParams(windowSelect.value),
+      });
+      if (cursor !== null) params.set('cursor', String(cursor));
       const resp = await fetch('/spans?' + params.toString());
       if (!resp.ok) {
         const body = await resp.text();
-        throw new Error(`HTTP ${resp.status}: ${body}`);
+        throw new Error('HTTP ' + resp.status + ': ' + body);
       }
       return resp.json();
     }
 
-    function renderSpan(span) {
-      const row = document.createElement('div');
-      row.className = 'span-row';
-
-      const meta = document.createElement('div');
-      meta.className = 'span-meta';
-
-      const fields = [
-        ['trace_id', span.trace_id],
-        ['span_id', span.span_id],
-        ['name', span.name, 'name-value'],
-        ['started_at', span.started_at],
-      ];
-      for (const [label, value, extraClass] of fields) {
-        const cell = document.createElement('div');
-        cell.innerHTML = `<span class="label">${label}</span><br><span class="value ${extraClass || ''}">${escapeHtml(String(value))}</span>`;
-        meta.appendChild(cell);
-      }
-      row.appendChild(meta);
-
-      const hasAttrs = span.attributes && Object.keys(span.attributes).length > 0;
-      const attrJson = JSON.stringify(span.attributes, null, 2);
-
-      const toggle = document.createElement('span');
-      toggle.className = 'attr-toggle';
-      toggle.textContent = hasAttrs ? '▶ attributes' : '(no attributes)';
-      row.appendChild(toggle);
-
-      if (hasAttrs) {
-        const attrBlock = document.createElement('pre');
-        attrBlock.className = 'attr-block';
-        attrBlock.textContent = attrJson;
-        row.appendChild(attrBlock);
-
-        toggle.addEventListener('click', () => {
-          const shown = attrBlock.style.display === 'block';
-          attrBlock.style.display = shown ? 'none' : 'block';
-          toggle.textContent = shown ? '▶ attributes' : '▼ attributes';
-        });
-      }
-
-      return row;
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
-    function escapeHtml(s) {
-      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    function fmtTime(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toISOString().slice(11, 19);  // HH:mm:ss UTC
+      } catch (_e) {
+        return iso;
+      }
+    }
+
+    function renderRow(row, counts) {
+      const tr = document.createElement('tr');
+      tr.tabIndex = 0;
+      tr.setAttribute('role', 'button');
+      tr.dataset.traceId = row.trace_id;
+
+      if (row.in_time_window === false) {
+        tr.classList.add('dg-row--out-of-window');
+      }
+
+      // Service
+      const tdService = document.createElement('td');
+      tdService.className = 'col-service';
+      tdService.textContent = row.service_name || '—';
+      tr.appendChild(tdService);
+
+      // Name
+      const tdName = document.createElement('td');
+      tdName.className = 'col-name';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'name-text';
+      nameSpan.textContent = row.name || '(unnamed)';
+      tdName.appendChild(nameSpan);
+      tr.appendChild(tdName);
+
+      // Started
+      const tdStarted = document.createElement('td');
+      tdStarted.className = 'col-started';
+      tdStarted.title = row.started_at;
+      tdStarted.textContent = fmtTime(row.started_at);
+      tr.appendChild(tdStarted);
+
+      // Spans (in_window / total)
+      const tdSpans = document.createElement('td');
+      tdSpans.className = 'col-spans';
+      const c = counts[row.trace_id] || { in_window: 0, total: 0 };
+      const span = document.createElement('span');
+      span.className = 'dg-window-count';
+      span.textContent = c.in_window + ' / ' + c.total;
+      tdSpans.appendChild(span);
+      tr.appendChild(tdSpans);
+
+      // Status — error count badge + missing-parent / real-root badge.
+      const tdStatus = document.createElement('td');
+      tdStatus.className = 'col-status';
+      if (c.error_count > 0) {
+        const e = document.createElement('span');
+        e.className = 'badge badge--error';
+        e.textContent = c.error_count + ' ' +
+          (c.error_count === 1 ? 'error' : 'errors');
+        tdStatus.appendChild(e);
+      }
+      const parentBadge = document.createElement('span');
+      if (row.parent_id === null || row.parent_id === undefined) {
+        parentBadge.className = 'badge badge--neutral';
+        parentBadge.textContent = 'Real root';
+      } else {
+        parentBadge.className = 'badge badge--warn';
+        parentBadge.textContent = 'Missing parent';
+      }
+      tdStatus.appendChild(parentBadge);
+      tr.appendChild(tdStatus);
+
+      tr.addEventListener('click', () => openTrace(row));
+      tr.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          openTrace(row);
+        }
+      });
+
+      return tr;
+    }
+
+    function openTrace(row) {
+      /* Click-through. The trace tree view (a future slice) reads the
+         listing-root Span out of sessionStorage so it does not need to
+         re-fetch. The hash route is what the future tree view will
+         match on. */
+      try {
+        sessionStorage.setItem(
+          'dg.listingRoot.' + row.trace_id, JSON.stringify(row),
+        );
+      } catch (_e) { /* storage full / disabled — non-fatal */ }
+      window.location.hash = '#/trace/' + encodeURIComponent(row.trace_id);
+    }
+
+    function render() {
+      const dedup = window.RecentTraces.dedupeByTraceId(accumRows);
+      const filtered = window.RecentTraces.applyMissingParentFilter(
+        dedup, hideMissingParentEl.checked,
+      );
+
+      bodyEl.innerHTML = '';
+      if (filtered.length === 0) {
+        const empty = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 5;
+        td.className = 'empty';
+        td.textContent = 'No traces in the selected window.';
+        empty.appendChild(td);
+        bodyEl.appendChild(empty);
+      } else {
+        for (const row of filtered) {
+          bodyEl.appendChild(renderRow(row, accumCounts));
+        }
+      }
+
+      statusEl.textContent =
+        filtered.length + ' trace(s) shown' +
+        (exhausted ? ' (no more)' : '');
+      loadMoreBtn.style.display = exhausted ? 'none' : 'inline-block';
     }
 
     async function loadMore() {
       loadMoreBtn.disabled = true;
       errorEl.textContent = '';
       try {
-        const data = await fetchSpans();
+        const data = await fetchPage();
         const spans = data.spans || [];
-
-        for (const span of spans) {
-          listEl.appendChild(renderSpan(span));
-        }
-        totalLoaded += spans.length;
+        accumRows = accumRows.concat(spans);
+        accumCounts = Object.assign({}, accumCounts, data.counts || {});
 
         if (spans.length > 0) {
-          cursor = spans[spans.length - 1].seq;
+          /* Cursor is listing-root seq; the server filters
+             ``seq < cursor`` while ordering by started_at DESC, so the
+             seq and sort axes are uncorrelated. Advancing with the
+             *max* seq from this page keeps the predicate monotonically
+             widening, so no listing root becomes unreachable. The
+             dedupe-by-trace_id pass below absorbs the duplicates this
+             introduces (PROJECT.md §6: "duplicates possible, skips
+             impossible"). */
+          const maxSeq = Math.max.apply(
+            null, spans.map((s) => s.seq),
+          );
+          cursor = maxSeq;
         }
+        if (spans.length < PAGE_SIZE) exhausted = true;
 
-        lastResponseEmpty = spans.length < limit;
-
-        statusEl.textContent = `${totalLoaded} span(s) loaded.` +
-          (lastResponseEmpty ? ' No more results.' : '');
-
-        loadMoreBtn.style.display = lastResponseEmpty ? 'none' : 'inline-block';
-        loadMoreBtn.disabled = false;
+        render();
       } catch (err) {
         errorEl.textContent = 'Error: ' + err.message;
-        statusEl.textContent = '';
+      } finally {
         loadMoreBtn.disabled = false;
       }
     }
 
-    loadMoreBtn.addEventListener('click', loadMore);
+    function resetAndReload() {
+      accumRows = [];
+      accumCounts = {};
+      cursor = null;
+      exhausted = false;
+      bodyEl.innerHTML = '';
+      statusEl.textContent = 'Loading...';
+      loadMore();
+    }
 
-    // Initial load
-    loadMore();
+    loadMoreBtn.addEventListener('click', loadMore);
+    windowSelect.addEventListener('change', resetAndReload);
+    hideMissingParentEl.addEventListener('change', render);
+
+    resetAndReload();
   </script>
 </body>
 </html>

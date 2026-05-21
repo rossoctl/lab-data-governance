@@ -57,6 +57,7 @@ class Span:
     started_at: dt.datetime
     attributes: dict[str, Any]
     in_time_window: bool = True
+    service_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -249,6 +250,7 @@ _COLUMNS = (
     "name",
     "started_at",
     "attributes",
+    "service_name",
 )
 _SELECT_COLS = ", ".join(_COLUMNS)
 
@@ -642,4 +644,5 @@ def _row_to_span(
         started_at=r["started_at"],
         attributes=r["attributes"] or {},
         in_time_window=in_time_window,
+        service_name=r.get("service_name"),
     )

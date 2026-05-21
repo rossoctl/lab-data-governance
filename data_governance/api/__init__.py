@@ -159,6 +159,24 @@ async def _ui_handler(_request: Request) -> Response:
     return HTMLResponse(content=index.read_text())
 
 
+# Static asset names allowed under ``/ui/`` — kept narrow on purpose so
+# this route never functions as a generic file-server. Add new entries
+# here as the UI grows.
+_UI_ASSETS: frozenset[str] = frozenset({"recent_traces_logic.js"})
+
+
+async def _ui_asset_handler(request: Request) -> Response:
+    """Serve a whitelisted static asset under ``/ui/<file>``."""
+    name = request.path_params.get("name", "")
+    if name not in _UI_ASSETS:
+        return Response(status_code=404)
+    asset = _UI_DIR / name
+    if not asset.is_file():
+        return Response(status_code=404)
+    media_type = "application/javascript" if name.endswith(".js") else "text/plain"
+    return Response(content=asset.read_text(), media_type=media_type, status_code=200)
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -168,6 +186,7 @@ def build_app() -> Starlette:
     """Build and return the Starlette application."""
     routes: list = [
         Route("/spans", endpoint=_spans_handler, methods=["GET"]),
+        Route("/ui/{name:str}", endpoint=_ui_asset_handler, methods=["GET"]),
         Route("/", endpoint=_ui_handler, methods=["GET"]),
     ]
     return Starlette(routes=routes)

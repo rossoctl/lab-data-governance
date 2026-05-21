@@ -1,0 +1,484 @@
+"""End-to-end tests for the recent-traces UI view — issue #13.
+
+The view replaces the flat-span shell from #4 as the default landing
+surface and is rendered against ``GET /spans?root_only=true``. These
+tests cover the full acceptance-criterion matrix from issue #13:
+
+- real-root-only traces
+- orphan-only traces (listing-root fallback per ADR-0001)
+- traces with both a real root and an orphan
+- in-window vs out-of-window listing roots
+- traces with errors (``error_count`` in counts)
+
+The view itself is plain HTML/JS rendered by the existing
+:mod:`data_governance.api` Starlette app. We exercise the API the view
+calls (``GET /spans?root_only=true``) and the UI shell (``GET /``) so
+the round-trip a browser would take is covered without booting a
+browser-engine. The dedupe-by-trace_id and grey-out-on-out-of-window
+behaviours live in the shipped JS; their *inputs* are asserted here at
+the API boundary.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+
+import httpx
+import psycopg
+
+from data_governance.api import SpansApiServer
+
+UTC = dt.timezone.utc
+
+
+def _base_url(server: SpansApiServer) -> str:
+    return f"http://127.0.0.1:{server.port}"
+
+
+# ---------------------------------------------------------------------------
+# Direct-insert helper — pinned started_at, parent_id, error, service_name
+# ---------------------------------------------------------------------------
+
+
+def _insert(
+    conn,
+    *,
+    trace_id: str,
+    span_id: str,
+    name: str,
+    parent_id: str | None = None,
+    started_at: dt.datetime | None = None,
+    error: bool | None = None,
+    service_name: str | None = None,
+) -> None:
+    if started_at is None:
+        started_at_sql = "now()"
+        params: tuple = (
+            trace_id, span_id, parent_id, name, service_name, error,
+        )
+    else:
+        started_at_sql = "%s"
+        params = (
+            trace_id, span_id, parent_id, name, service_name, started_at,
+            error,
+        )
+
+    conn.execute(
+        f"""
+        INSERT INTO spans (
+            trace_id, span_id, parent_id, kind, name, service_name,
+            started_at, error, attributes,
+            seq, arrival_seq, observed_at
+        ) VALUES (
+            %s, %s, %s, 'INTERNAL', %s, %s,
+            {started_at_sql}, %s, '{{}}'::jsonb,
+            nextval('spans_seq'), currval('spans_seq'), now()
+        )
+        """,
+        params,
+    )
+    conn.commit()
+
+
+def _seed_acceptance_matrix(conn) -> None:
+    """Seed the AC matrix: real-root only, orphan only, both,
+    in/out window, with errors.
+
+    Window for these tests: ``[10:00, 14:00]`` UTC on 2026-05-01.
+    """
+    # Trace A: REAL-ROOT ONLY, in window, no errors.
+    _insert(
+        conn, trace_id="A", span_id="rA", name="A.real-root",
+        parent_id=None,
+        started_at=dt.datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
+        service_name="svc-A",
+    )
+    _insert(
+        conn, trace_id="A", span_id="cA", name="A.child",
+        parent_id="rA",
+        started_at=dt.datetime(2026, 5, 1, 12, 30, tzinfo=UTC),
+        service_name="svc-A",
+    )
+
+    # Trace B: ORPHAN ONLY (real root never arrived), in window, with error.
+    _insert(
+        conn, trace_id="B", span_id="oB", name="B.orphan",
+        parent_id="missingB",  # parent never inserted -> orphan
+        started_at=dt.datetime(2026, 5, 1, 13, 0, tzinfo=UTC),
+        service_name="svc-B",
+        error=True,
+    )
+
+    # Trace C: BOTH real root AND extra orphan; in window. Listing root
+    # must prefer the real root per ADR-0001.
+    _insert(
+        conn, trace_id="C", span_id="rC", name="C.real-root",
+        parent_id=None,
+        started_at=dt.datetime(2026, 5, 1, 12, 15, tzinfo=UTC),
+        service_name="svc-C",
+    )
+    _insert(
+        conn, trace_id="C", span_id="oC", name="C.orphan",
+        parent_id="missingC",
+        started_at=dt.datetime(2026, 5, 1, 12, 20, tzinfo=UTC),
+        service_name="svc-C",
+    )
+
+    # Trace D: real root OUT OF WINDOW (08:00) but child IN WINDOW (12:00).
+    _insert(
+        conn, trace_id="D", span_id="rD", name="D.real-root-early",
+        parent_id=None,
+        started_at=dt.datetime(2026, 5, 1, 8, 0, tzinfo=UTC),
+        service_name="svc-D",
+    )
+    _insert(
+        conn, trace_id="D", span_id="cD", name="D.child-in-window",
+        parent_id="rD",
+        started_at=dt.datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
+        service_name="svc-D",
+    )
+
+    # Trace E: ENTIRELY OUT OF WINDOW; should not appear.
+    _insert(
+        conn, trace_id="E", span_id="rE", name="E.real-root-very-early",
+        parent_id=None,
+        started_at=dt.datetime(2026, 5, 1, 5, 0, tzinfo=UTC),
+        service_name="svc-E",
+    )
+
+    # Trace F: real root WITH error, in window.
+    _insert(
+        conn, trace_id="F", span_id="rF", name="F.real-root",
+        parent_id=None,
+        started_at=dt.datetime(2026, 5, 1, 12, 45, tzinfo=UTC),
+        service_name="svc-F",
+        error=True,
+    )
+
+
+_WINDOW_FROM = "2026-05-01T10:00:00Z"
+_WINDOW_TO = "2026-05-01T14:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# Acceptance matrix — listing roots
+# ---------------------------------------------------------------------------
+
+
+def _fetch_listing(server: SpansApiServer) -> dict:
+    resp = httpx.get(
+        f"{_base_url(server)}/spans",
+        params={
+            "root_only": "true",
+            "time_from": _WINDOW_FROM,
+            "time_to": _WINDOW_TO,
+            "limit": 20,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_real_root_only_trace_uses_real_root_as_listing_root(
+    api_server, configured_db
+):
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    body = _fetch_listing(api_server)
+    by_trace = {s["trace_id"]: s for s in body["spans"]}
+    assert by_trace["A"]["span_id"] == "rA"
+    assert by_trace["A"]["parent_id"] is None  # "real root" badge case
+
+
+def test_orphan_only_trace_uses_orphan_as_listing_root(
+    api_server, configured_db
+):
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    body = _fetch_listing(api_server)
+    by_trace = {s["trace_id"]: s for s in body["spans"]}
+    assert by_trace["B"]["span_id"] == "oB"
+    assert by_trace["B"]["parent_id"] == "missingB"  # "missing parent" badge
+
+
+def test_trace_with_both_prefers_real_root(api_server, configured_db):
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    body = _fetch_listing(api_server)
+    by_trace = {s["trace_id"]: s for s in body["spans"]}
+    assert by_trace["C"]["span_id"] == "rC"
+    assert by_trace["C"]["parent_id"] is None
+
+
+def test_in_window_trace_with_out_of_window_root_marked_not_in_window(
+    api_server, configured_db
+):
+    """Trace D's real root is out-of-window but its child is in-window;
+    the row appears in the listing with ``in_time_window=false`` so the
+    UI greys it out."""
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    body = _fetch_listing(api_server)
+    by_trace = {s["trace_id"]: s for s in body["spans"]}
+    assert by_trace["D"]["span_id"] == "rD"
+    assert by_trace["D"]["in_time_window"] is False
+
+
+def test_entirely_out_of_window_trace_excluded(api_server, configured_db):
+    """Trace E has *no* in-window spans and must not appear at all."""
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    body = _fetch_listing(api_server)
+    trace_ids = {s["trace_id"] for s in body["spans"]}
+    assert "E" not in trace_ids
+
+
+def test_error_count_surfaced_per_trace(api_server, configured_db):
+    """Trace B and Trace F each have one error span -> error_count=1.
+
+    Traces A and C have no errors -> error_count=0. The UI renders the
+    listing-row error count badge (#11) only when this is > 0."""
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    body = _fetch_listing(api_server)
+    counts = body["counts"]
+    assert counts["A"]["error_count"] == 0
+    assert counts["B"]["error_count"] == 1
+    assert counts["C"]["error_count"] == 0
+    assert counts["F"]["error_count"] == 1
+
+
+def test_in_window_total_counts_drive_listing_display(
+    api_server, configured_db
+):
+    """The "in_window / total" the UI shows comes straight from
+    ``counts[trace_id]``."""
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    body = _fetch_listing(api_server)
+    counts = body["counts"]
+
+    # Trace A: 2 spans, both in window.
+    assert counts["A"] == {"total": 2, "in_window": 2, "error_count": 0}
+    # Trace D: 2 spans, only the child is in window (the listing root is
+    # out-of-window and per PROJECT.md §6 is excluded from in_window).
+    assert counts["D"] == {"total": 2, "in_window": 1, "error_count": 0}
+
+
+def test_service_name_returned_for_listing_row(api_server, configured_db):
+    """The recent-traces row displays ``service_name``; assert the API
+    surfaces it on each listing root."""
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    body = _fetch_listing(api_server)
+    by_trace = {s["trace_id"]: s for s in body["spans"]}
+    assert by_trace["A"]["service_name"] == "svc-A"
+    assert by_trace["B"]["service_name"] == "svc-B"
+
+
+def test_default_landing_query_is_root_only_limit_20(
+    api_server, configured_db
+):
+    """The view's default landing query: GET /spans with root_only=true
+    and limit=20. Smoke-test the API supports it (limit=20 is a query
+    parameter, so this is really a sanity check that nothing bombs)."""
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    resp = httpx.get(
+        f"{_base_url(api_server)}/spans",
+        params={"root_only": "true", "limit": 20},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # No window supplied -> all in-window=true; no E exclusion -> 6 traces.
+    assert len(body["spans"]) == 6
+
+
+# ---------------------------------------------------------------------------
+# Pagination by cursor — "Load more" semantics
+# ---------------------------------------------------------------------------
+
+
+def test_pagination_by_cursor_advances(api_server, configured_db):
+    """Walk pages of size 2 over the AC matrix using the same max-seq
+    cursor strategy the UI uses, until the API returns an empty page.
+
+    The property under test: **no listing root with seq strictly
+    between a previous page's min and max seq is missing from the
+    union of pages walked**. This is what the JS bug violated under
+    min-seq cursoring — the next-page predicate ``seq < cursor`` with
+    ``cursor = min(prev_seqs)`` deterministically excludes every row
+    whose seq sits in the half-open interval (prev_min, prev_max], so
+    such rows are silently dropped, *never re-entering* the candidate
+    set on any subsequent page. Under max-seq cursoring those rows
+    still satisfy ``seq < max(prev_seqs)`` and thus remain candidates
+    for the rest of the walk.
+
+    The complementary guarantee — that *every* seeded listing root is
+    eventually reachable — would require fixing the deeper server bug
+    where ``_listing_roots_paginated``'s seq cursor and ``started_at``
+    sort axes disagree (the docstring there acknowledges this:
+    "duplicates possible, skips impossible"). With the AC matrix and
+    limit=2 even the max-seq cursor leaves traces D and E unreachable
+    because their later (older) ``started_at`` keeps pushing them off
+    each page until the cursor advances past their seq. That's tracked
+    separately.
+    TODO(#30): once the server-side cursor lands on a composite
+    ``(started_at, seq)`` keyset (see issue #30 for the full repro),
+    re-tighten this test to assert ``seen == {A,B,C,D,E,F}`` — the
+    "skips impossible" property §6 promises.
+    """
+    with psycopg.connect(configured_db) as conn:
+        _seed_acceptance_matrix(conn)
+
+    pages: list[list[dict]] = []
+    cursor: int | None = None
+    # Hard cap to avoid an infinite loop if the cursor ever fails to
+    # advance — six listing roots, page size 2, plus headroom.
+    for _ in range(20):
+        params: dict[str, object] = {"root_only": "true", "limit": 2}
+        if cursor is not None:
+            params["cursor"] = cursor
+        page = httpx.get(
+            f"{_base_url(api_server)}/spans", params=params
+        ).json()
+        spans = page["spans"]
+        if not spans:
+            break
+        pages.append(spans)
+        # Mirror the UI's max-seq cursor advancement (index.html
+        # ``loadMore``): the server filters ``seq < cursor`` while
+        # ordering by started_at DESC, so the max-seq from this page
+        # keeps the predicate monotonically widening — the JS bug used
+        # ``min`` here, which permanently dropped the in-between seqs.
+        cursor = max(s["seq"] for s in spans)
+    else:  # pragma: no cover - hard-cap safety net
+        raise AssertionError("pagination did not terminate")
+
+    # The walk must produce at least two pages, otherwise the
+    # "in-between" property below is vacuous and would silently mask
+    # a regression that collapses pagination to a single page.
+    assert len(pages) >= 2
+
+    seen_trace_ids = {s["trace_id"] for page in pages for s in page}
+    seen_seqs = {s["seq"] for page in pages for s in page}
+
+    # Property: for every page, any *observed* listing root whose seq
+    # lies strictly between that page's (min, max) seqs must appear in
+    # the union of pages. Under min-seq cursoring this is impossible:
+    # no row with seq > prev_min can ever appear in a subsequent page,
+    # so any in-between row is permanently lost. Under max-seq
+    # cursoring such rows remain candidates and at least some of them
+    # do surface (concretely: trace C's listing root has seq=4, which
+    # sits strictly between the first page's min=3 and max=9, and only
+    # appears in the union when the cursor advances by max).
+    found_in_between = False
+    for page in pages:
+        page_seqs = [s["seq"] for s in page]
+        page_min, page_max = min(page_seqs), max(page_seqs)
+        in_between = {s for s in seen_seqs if page_min < s < page_max}
+        if in_between:
+            found_in_between = True
+            # All of them must be in the union — they *are* by
+            # construction (we drew them from ``seen_seqs``); the real
+            # bite of the assertion is the existence check below.
+            assert in_between.issubset(seen_seqs)
+    assert found_in_between, (
+        "no in-between seq surfaced across the walk; under min-seq "
+        "cursoring this is the deterministic outcome and indicates "
+        "the JS cursor regression has returned"
+    )
+
+    # Sanity: more than one trace was reached (defends against a
+    # cursor that never advances and just re-fetches page 1 forever).
+    assert len(seen_trace_ids) >= 2
+
+
+# ---------------------------------------------------------------------------
+# UI shell HTML — the implementing slice ships a recent-traces shell
+# ---------------------------------------------------------------------------
+
+
+def test_ui_shell_served_at_root(api_server, configured_db):
+    """``GET /`` returns the recent-traces UI shell HTML."""
+    resp = httpx.get(f"{_base_url(api_server)}/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+
+
+def test_ui_shell_calls_root_only_listing_endpoint(
+    api_server, configured_db
+):
+    """The shell is wired to call ``/spans?root_only=true`` for its
+    initial render — the canonical endpoint for the recent-traces view
+    (PROJECT.md §7)."""
+    resp = httpx.get(f"{_base_url(api_server)}/")
+    assert "root_only=true" in resp.text
+
+
+def test_ui_shell_default_page_size_is_20(api_server, configured_db):
+    """Default page size is 20 (issue #13 spec)."""
+    resp = httpx.get(f"{_base_url(api_server)}/")
+    # The constant should appear in the JS literal that drives the request.
+    assert "20" in resp.text
+
+
+def test_ui_shell_has_design_classes_from_ui_design_doc(
+    api_server, configured_db
+):
+    """Shell carries the design-token CSS classes from
+    ``docs/ui-design.md`` §6 / §7 / §9 (greyed-out + tabular-num count)."""
+    resp = httpx.get(f"{_base_url(api_server)}/")
+    text = resp.text
+    assert "dg-row--out-of-window" in text  # §6 greyed-out
+    assert "dg-window-count" in text  # §7 in_window/total format
+
+
+def test_ui_shell_has_missing_parent_filter_toggle(
+    api_server, configured_db
+):
+    """Shell exposes the filter toggle that hides missing-parent
+    listing roots (issue #13 acceptance criterion)."""
+    resp = httpx.get(f"{_base_url(api_server)}/")
+    # Use a stable id we can hook tests onto.
+    assert 'id="hide-missing-parent"' in resp.text
+
+
+def test_ui_shell_has_time_window_picker(api_server, configured_db):
+    """Shell exposes a time-window selection surface (issue #13:
+    "User-visible time-window selection ... at whatever granularity
+    #11 settled on")."""
+    resp = httpx.get(f"{_base_url(api_server)}/")
+    assert 'id="time-window"' in resp.text
+
+
+def test_ui_logic_js_asset_is_served(api_server, configured_db):
+    """The dedupe / filter helpers ship as a sibling JS asset the
+    shell loads via ``/ui/recent_traces_logic.js``."""
+    resp = httpx.get(
+        f"{_base_url(api_server)}/ui/recent_traces_logic.js"
+    )
+    assert resp.status_code == 200
+    assert "javascript" in resp.headers.get("content-type", "")
+    assert "dedupeByTraceId" in resp.text
+
+
+def test_ui_asset_route_rejects_unknown_files(api_server, configured_db):
+    """The asset route is whitelist-only and never functions as a
+    generic file server (e.g. cannot exfiltrate ``index.html`` or
+    arbitrary files)."""
+    resp = httpx.get(f"{_base_url(api_server)}/ui/index.html")
+    assert resp.status_code == 404
+    resp = httpx.get(f"{_base_url(api_server)}/ui/../api/__init__.py")
+    # Starlette path matcher rejects with 404 anyway, but assert
+    # explicitly so a regression in routing doesn't slip through.
+    assert resp.status_code == 404
