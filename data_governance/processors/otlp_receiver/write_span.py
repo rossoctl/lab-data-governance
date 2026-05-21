@@ -207,7 +207,7 @@ def write_span(span: SpanRow) -> WriteOutcome:
     - Row returned with ``seq != arrival_seq`` → UPDATE finalization → ``FINALIZED``.
 
     Any psycopg exception escapes to the caller for ADR-0003 classification
-    (see :mod:`classify`).
+    (see :mod:`classify_errors`).
     """
     started_at = _ensure_aware_utc(span.started_at)
     ended_at = (

@@ -43,7 +43,7 @@ from starlette.routing import Route
 from data_governance import db
 
 from . import metrics as _metrics
-from .classify import classify_error
+from .classify_errors import classify_error
 from .translate import request_to_span_rows
 from .write_span import WriteOutcome, write_span
 
