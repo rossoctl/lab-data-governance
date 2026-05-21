@@ -43,6 +43,7 @@ from starlette.routing import Route
 from data_governance import db
 
 from . import metrics as _metrics
+from .blocklist import match as _blocklist_match
 from .classify_errors import classify_error
 from .translate import request_to_span_rows
 from .write_span import WriteOutcome, write_span
@@ -78,6 +79,29 @@ def _write_rejected_span(trace_id: str, span_id: str, error_message: str) -> Non
         _log.exception(
             "Failed to write rejected_span for (%s, %s)", trace_id, span_id
         )
+
+
+# ---------------------------------------------------------------------------
+# Blocklist helpers
+# ---------------------------------------------------------------------------
+
+_BLOCK_UPSERT_SQL = """
+    INSERT INTO blocked_span_counts (pattern, count, last_seen_at)
+    VALUES (%s, 1, now())
+    ON CONFLICT (pattern) DO UPDATE
+        SET count        = blocked_span_counts.count + 1,
+            last_seen_at = now()
+"""
+
+
+def _record_blocked_span(pattern: str) -> None:
+    """Increment blocked_span_counts and the Prometheus counter for *pattern*."""
+    _metrics.spans_blocked_total.labels(pattern=pattern).inc()
+    try:
+        with db.transaction() as tx:
+            tx.execute(_BLOCK_UPSERT_SQL, (pattern,))
+    except Exception:
+        _log.exception("Failed to upsert blocked_span_counts for pattern %r", pattern)
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +174,10 @@ class _TraceServicer(trace_service_pb2_grpc.TraceServiceServicer):
 
         rejected = 0
         for row in request_to_span_rows(request):
+            blocked_pattern = _blocklist_match(row.name)
+            if blocked_pattern is not None:
+                _record_blocked_span(blocked_pattern)
+                continue
             outcome, error_kind = _write_span_with_metrics(row, transport="grpc")
             if error_kind in ("connection", "other"):
                 context.set_code(grpc.StatusCode.UNAVAILABLE)
@@ -254,6 +282,10 @@ def _decode_and_write_spans(body: bytes, result: _HttpWriteResult) -> None:
     req = trace_service_pb2.ExportTraceServiceRequest()
     req.ParseFromString(body)
     for row in request_to_span_rows(req):
+        blocked_pattern = _blocklist_match(row.name)
+        if blocked_pattern is not None:
+            _record_blocked_span(blocked_pattern)
+            continue
         outcome, error_kind = _write_span_with_metrics(row, transport="http")
         if error_kind in ("connection", "other"):
             result.retryable_error = Exception(f"db error: {error_kind}")
