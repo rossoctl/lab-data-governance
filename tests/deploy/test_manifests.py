@@ -31,6 +31,7 @@ What they DO check:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,11 @@ from data_governance.processors.otlp_receiver import blocklist
 
 
 MANIFESTS_DIR = Path(__file__).resolve().parents[2] / "deploy" / "k8s"
+
+# `$(VAR)` matches an unescaped substitution. The negative lookbehind keeps us
+# from matching the literal-`$(...)` escape sequence `$$(VAR)` documented at
+# https://kubernetes.io/docs/tasks/inject-data-application/define-interdependent-environment-variables/.
+_PLACEHOLDER_RE = re.compile(r"(?<!\$)\$\(([A-Za-z_][A-Za-z0-9_]*)\)")
 
 
 def _load_all_docs() -> list[dict]:
@@ -71,6 +77,43 @@ def _by_kind(docs: list[dict], kind: str, name: str | None = None) -> list[dict]
     if name is not None:
         out = [d for d in out if d.get("metadata", {}).get("name") == name]
     return out
+
+
+def _iter_pod_specs(docs: list[dict]):
+    """Yield ``(doc_kind, doc_name, pod_spec_path, pod_spec)`` for every workload.
+
+    Covers Deployment / StatefulSet / DaemonSet / Job / CronJob — anything
+    whose ``spec.template.spec`` (or, for CronJob, ``jobTemplate.spec.template.spec``)
+    holds a Pod spec.
+    """
+    for doc in docs:
+        kind = doc.get("kind")
+        name = (doc.get("metadata") or {}).get("name", "<unnamed>")
+        if kind in ("Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"):
+            pod_spec = (
+                ((doc.get("spec") or {}).get("template") or {}).get("spec")
+            )
+            if pod_spec:
+                yield kind, name, "spec.template.spec", pod_spec
+        elif kind == "CronJob":
+            pod_spec = (
+                ((((doc.get("spec") or {}).get("jobTemplate") or {}).get("spec") or {})
+                 .get("template") or {}).get("spec")
+            )
+            if pod_spec:
+                yield kind, name, "spec.jobTemplate.spec.template.spec", pod_spec
+        elif kind == "Pod":
+            pod_spec = doc.get("spec")
+            if pod_spec:
+                yield kind, name, "spec", pod_spec
+
+
+def _iter_containers(pod_spec: dict):
+    """Yield ``(container_kind, container_dict)`` for init + main containers."""
+    for ic in pod_spec.get("initContainers") or []:
+        yield "initContainer", ic
+    for c in pod_spec.get("containers") or []:
+        yield "container", c
 
 
 # ---------------------------------------------------------------------------
@@ -446,3 +489,85 @@ def test_network_policy_covers_otlp_and_ui_ports(network_policies: list[dict]) -
     assert 8080 in ui_ports, (
         f"UI backend NetworkPolicy must allow 8080, got {ui_ports}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Container env-var ordering (issue #40)
+# ---------------------------------------------------------------------------
+#
+# Kubernetes ``$(VAR_NAME)`` substitution inside a container's ``env[].value``
+# only resolves variables that appear EARLIER in the same container's ``env``
+# list. References to later entries (or to entries that don't exist) are left
+# as the literal string ``$(VAR_NAME)`` and reach the container as-is. See
+# https://kubernetes.io/docs/tasks/inject-data-application/define-interdependent-environment-variables/
+#
+# That behaviour is easy to break by hand-edit (e.g. moving DATABASE_URL to
+# the top of the list "for readability"). The check below is generic — it
+# fires for any forward reference, not just DATABASE_URL — so the same class
+# of bug is caught for any future env construction.
+
+
+def test_container_env_placeholder_references_resolve_in_order(
+    docs: list[dict],
+) -> None:
+    """``$(VAR)`` inside any ``env[].value`` must reference a name defined earlier.
+
+    Kubernetes only substitutes ``$(VAR)`` against entries that appear earlier
+    in the same container's ``env`` list. A forward reference (or a reference
+    to a name that never appears in the list) reaches the container as the
+    literal string ``$(VAR)``.
+
+    Regression for issue #40, where ``DATABASE_URL`` was the first entry in
+    the receiver / migrate / UI env blocks even though its value embedded
+    ``$(POSTGRES_USER)`` / ``$(POSTGRES_PASSWORD)`` / ``$(POSTGRES_DB)``,
+    so the runtime DSN contained literal ``$(POSTGRES_USER)`` and Postgres
+    rejected the connection with ``password authentication failed for user
+    "$(POSTGRES_USER)"``.
+
+    Scope: walks every workload's container ``env[]`` entries that carry an
+    inline ``value:`` and reports any forward reference, regardless of
+    variable name. Names brought in via ``envFrom`` are not considered — they
+    are not currently used in this repo, and Kubernetes does not document a
+    stable substitution-ordering contract between ``envFrom`` and ``env[]``,
+    so a check that hard-codes one would be wrong.
+    """
+    failures: list[str] = []
+    # Workloads whose containers we expect to walk. If `_iter_pod_specs` yields
+    # nothing for one of these (e.g. someone misspells `kind:` and the iterator
+    # silently skips it) the test would otherwise pass vacuously and let the
+    # original bug back in. The expected names match `metadata.name` on the
+    # workloads in `deploy/k8s/`.
+    expected_workloads = {
+        "data-governance-receiver",
+        "data-governance-ui",
+    }
+    seen_workloads: set[str] = set()
+    for kind, name, path, pod_spec in _iter_pod_specs(docs):
+        seen_workloads.add(name)
+        for ctr_kind, ctr in _iter_containers(pod_spec):
+            env_list = ctr.get("env") or []
+            seen: set[str] = set()
+            for entry in env_list:
+                entry_name = entry.get("name")
+                value = entry.get("value")
+                if isinstance(value, str):
+                    for ref in _PLACEHOLDER_RE.findall(value):
+                        if ref not in seen:
+                            failures.append(
+                                f"{kind}/{name} ({path}) "
+                                f"{ctr_kind} {ctr.get('name')!r} env {entry_name!r}: "
+                                f"value references $({ref}) but {ref} is not defined "
+                                f"earlier in the same env list (k8s only substitutes "
+                                f"prior entries; a forward reference reaches the "
+                                f"container as literal '$( {ref} )')."
+                            )
+                if entry_name is not None:
+                    seen.add(entry_name)
+    missing = expected_workloads - seen_workloads
+    assert not missing, (
+        "env-ordering check did not walk expected workload(s): "
+        f"{sorted(missing)} — the iterator silently skipped them, which would "
+        "let the issue #40 bug class regress undetected. Check `kind:` "
+        "spellings in deploy/k8s/."
+    )
+    assert not failures, "env placeholder ordering violations:\n  " + "\n  ".join(failures)

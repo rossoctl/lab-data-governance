@@ -76,9 +76,14 @@ spec:
           image: data-governance/receiver:latest
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "data_governance.db.migrate"]
+          # Note: ``DATABASE_URL`` must come AFTER the POSTGRES_* entries it
+          # references. Kubernetes only substitutes ``$(VAR)`` against names
+          # defined earlier in the same env list — a forward reference
+          # reaches the container as literal ``$(VAR)`` and breaks DSN
+          # parsing (issue #40). The
+          # ``test_container_env_placeholder_references_resolve_in_order``
+          # regression test in tests/deploy/test_manifests.py pins this.
           env:
-            - name: DATABASE_URL
-              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef:
@@ -94,6 +99,8 @@ spec:
                 secretKeyRef:
                   name: data-governance-postgres
                   key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
           resources:
             requests:
               cpu: "50m"
@@ -109,9 +116,10 @@ spec:
           image: data-governance/receiver:latest
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "data_governance.processors.otlp_receiver"]
+          # See the ordering note on the migrate init container above —
+          # ``DATABASE_URL`` must come after the POSTGRES_* entries it
+          # references (issue #40).
           env:
-            - name: DATABASE_URL
-              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef:
@@ -127,6 +135,8 @@ spec:
                 secretKeyRef:
                   name: data-governance-postgres
                   key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
           ports:
             - name: otlp-grpc
               containerPort: 4317
