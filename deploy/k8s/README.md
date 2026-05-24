@@ -78,6 +78,37 @@ The receiver replicas crashloop until Postgres is reachable AND
 `alembic_version` matches the head revision compiled into the image. The
 init container drives both conditions to true.
 
+## Wire the kagenti collector to our receiver
+
+The data-governance receiver is reachable at
+`data-governance-receiver.data-governance.svc.cluster.local:4317` (gRPC),
+but the kagenti otel-collector ships without an exporter pointing here.
+That edit lives in the kagenti repo (issue #42's "Cross-repo
+coordination" section). Until that lands upstream, run the helper script
+after `kubectl apply -f deploy/k8s/`:
+
+```sh
+./deploy/patch-kagenti-collector.sh
+```
+
+It additively patches the live `kagenti-system/otel-collector-config`
+ConfigMap — adding an `otlp/data_governance` exporter and wiring it into
+the existing `traces/phoenix` pipeline (which already runs the
+OpenInference transform that the receiver expects) — and rolls
+`deploy/otel-collector`. The script is idempotent: re-running it after
+the patch is in place is a no-op. Re-run it after any cluster recreate or
+upstream re-apply of the kagenti collector ConfigMap.
+
+To remove the patch (e.g. before letting upstream own the integration),
+pass `--revert`:
+
+```sh
+./deploy/patch-kagenti-collector.sh --revert
+```
+
+`--revert` is also idempotent — running it when the exporter is already
+absent is a no-op and does not roll the collector.
+
 ## Out of scope for v1 (PROJECT.md §7 / issue #16)
 
 - TLS termination
