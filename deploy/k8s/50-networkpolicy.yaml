@@ -10,6 +10,14 @@
 # default `kubernetes.io/metadata.name` label every namespace gets, on
 # the two OTLP transport ports (4317 gRPC, 4318 HTTP/protobuf).
 #
+# Both `kagenti` and `kagenti-system` are accepted: PROJECT.md §7 refers
+# to "the Kagenti namespace" without pinning a literal name, and the
+# upstream platform's actual deployment uses `kagenti-system` (where the
+# otel-collector lives) on every cluster we target today. Admitting both
+# names via `matchExpressions` keeps the policy portable across upstream
+# topologies without weakening the boundary — neither name is one a
+# random unrelated workload would land in.
+#
 # Prometheus /metrics scraping is intentionally NOT opened by this policy
 # in v1. The receiver does serve /metrics on port 9090 (issue #36 wired
 # MetricsServer into the receiver __main__, and 30-receiver.yaml exposes
@@ -38,10 +46,17 @@ spec:
     - Ingress
   ingress:
     # Kagenti namespace: the OTel collector running there exports OTLP to us.
+    # `In: [kagenti, kagenti-system]` admits both upstream namespace names
+    # (see header comment) using the default `kubernetes.io/metadata.name`
+    # label every namespace carries.
     - from:
         - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kagenti
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  - kagenti
+                  - kagenti-system
       ports:
         - port: 4317
           protocol: TCP
@@ -69,10 +84,16 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # Same `kagenti` / `kagenti-system` admission as the receiver policy —
+    # see the receiver-policy header for the rationale.
     - from:
         - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kagenti
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  - kagenti
+                  - kagenti-system
       ports:
         - port: 8080
           protocol: TCP

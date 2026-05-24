@@ -468,6 +468,78 @@ def test_network_policy_allows_only_kagenti_namespace(network_policies: list[dic
                     )
 
 
+def _namespace_selector_admits(ns_sel: dict, ns_labels: dict[str, str]) -> bool:
+    """Return True iff a Kubernetes ``namespaceSelector`` admits a namespace
+    with the given labels.
+
+    Implements the subset of the LabelSelector semantics we exercise here:
+    ``matchLabels`` (all key/value pairs must be present) AND ``matchExpressions``
+    with operators ``In`` / ``NotIn`` / ``Exists`` / ``DoesNotExist``. An empty
+    selector admits everything (the k8s default).
+    """
+    match_labels = ns_sel.get("matchLabels") or {}
+    for k, v in match_labels.items():
+        if ns_labels.get(k) != v:
+            return False
+    for expr in ns_sel.get("matchExpressions") or []:
+        op = expr.get("operator")
+        key = expr.get("key")
+        values = expr.get("values") or []
+        if op == "In":
+            if ns_labels.get(key) not in values:
+                return False
+        elif op == "NotIn":
+            if ns_labels.get(key) in values:
+                return False
+        elif op == "Exists":
+            if key not in ns_labels:
+                return False
+        elif op == "DoesNotExist":
+            if key in ns_labels:
+                return False
+        else:
+            raise AssertionError(f"unsupported operator in matchExpressions: {op!r}")
+    return True
+
+
+def test_network_policy_admits_kagenti_system_namespace(
+    network_policies: list[dict],
+) -> None:
+    """Ingress from the kagenti-system namespace must be permitted (issue #42).
+
+    The kagenti otel-collector lives in the ``kagenti-system`` namespace on
+    every cluster we currently target — there is no namespace literally named
+    ``kagenti``. A v1 NetworkPolicy that only admits ``kubernetes.io/metadata.name=kagenti``
+    silently drops every span the collector tries to export to us. PROJECT.md §7
+    refers to "the Kagenti namespace" but does not pin the literal name, so the
+    policy must admit at least the actually-deployed name (``kagenti-system``)
+    on both the receiver and UI policies.
+    """
+    kagenti_system_labels = {"kubernetes.io/metadata.name": "kagenti-system"}
+    for target, ports_required in (
+        ("data-governance-receiver", {4317, 4318}),
+        ("data-governance-ui", {8080}),
+    ):
+        np = _matching_policy_for(network_policies, target)
+        assert np is not None, f"missing policy for {target}"
+        admitted_ports: set[int] = set()
+        for rule in np["spec"].get("ingress") or []:
+            for src in rule.get("from") or []:
+                ns_sel = src.get("namespaceSelector") or {}
+                if _namespace_selector_admits(ns_sel, kagenti_system_labels):
+                    for p in rule.get("ports") or []:
+                        admitted_ports.add(p["port"])
+                    break
+        missing = ports_required - admitted_ports
+        assert not missing, (
+            f"{target}: NetworkPolicy must admit ingress from the kagenti-system "
+            f"namespace on ports {sorted(ports_required)}; missing {sorted(missing)}. "
+            f"The kagenti otel-collector lives in `kagenti-system`; restricting "
+            f"the policy to a namespace literally named `kagenti` would drop every "
+            f"span the collector exports."
+        )
+
+
 def test_network_policy_covers_otlp_and_ui_ports(network_policies: list[dict]) -> None:
     """Receiver policy must allow 4317 + 4318; UI policy must allow 8080."""
     rx_np = _matching_policy_for(network_policies, "data-governance-receiver")
