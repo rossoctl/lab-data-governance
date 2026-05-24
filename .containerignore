@@ -1,0 +1,40 @@
+# Container build ignore file (issue #38 review feedback).
+#
+# Without this file, the build context picks up whatever transient state
+# happens to live in the contributor's checkout (Python bytecode caches,
+# local virtualenvs, pytest caches, build artefacts, the .git directory,
+# etc.). Combined with `UV_COMPILE_BYTECODE=1` in the Containerfile, that
+# turns "two clean checkouts" into "two different images" — exactly the
+# determinism failure mode issue #38 was meant to eliminate.
+#
+# Both docker and podman honour `.containerignore`; we pick one filename
+# and stay consistent with the OCI-neutral `Containerfile` spelling used
+# at the repo root.
+#
+# Patterns here apply to the build context root regardless of nesting
+# (i.e. `__pycache__` matches `data_governance/__pycache__/` and
+# `data_governance/db/__pycache__/` alike).
+
+# Python bytecode + caches
+__pycache__
+*.pyc
+*.pyo
+
+# Local virtualenv (developers commonly create `.venv/` for IDEs/uv)
+.venv
+
+# Test caches
+.pytest_cache
+
+# Editable / built distributions
+*.egg-info
+
+# VCS metadata — not needed by the runtime image and bloats the context
+.git
+
+# Tests are not exercised by the Containerfile and only inflate the
+# context. The Containerfile copies `data_governance/`, `alembic.ini`,
+# `pyproject.toml`, `uv.lock`, and `README.md` explicitly — `tests/` is
+# never copied into either build stage today, but excluding it from the
+# context keeps build inputs stable and the context small.
+tests

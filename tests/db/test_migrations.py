@@ -276,3 +276,31 @@ class TestMigrateCli:
     def test_alembic_version_table_is_present_after_migrate(self, pg_dsn: str) -> None:
         _run_migrate_cli(pg_dsn)
         assert _table_exists(pg_dsn, "alembic_version")
+
+    def test_migrate_accepts_postgres_scheme_dsn(self, pg_dsn: str) -> None:
+        """``DATABASE_URL`` with the ``postgres://`` scheme must work.
+
+        The v1 k8s manifests (``deploy/k8s/30-receiver.yaml``) construct
+        ``DATABASE_URL`` from the Postgres Secret as
+        ``postgres://$USER:$PWD@host:5432/$DB``. psycopg accepts this
+        scheme transparently, but SQLAlchemy (used by Alembic in env.py)
+        does not — it only knows ``postgresql://``. The init container that
+        runs the migrate CLI therefore needs env.py to canonicalise
+        ``postgres://`` -> ``postgresql+psycopg://`` before handing the URL
+        to SQLAlchemy.
+
+        Pinning this regression here ties the manifest's DSN style to the
+        migrate CLI's actual behaviour: a future change to env.py that
+        narrowed the scheme handling would silently break the init
+        container until somebody attempted a fresh `kubectl apply`.
+        """
+        # The pg_dsn fixture supplies a postgresql:// URL; flip the scheme
+        # to mirror what the manifests' env templating produces.
+        assert pg_dsn.startswith("postgresql://"), pg_dsn
+        postgres_dsn = "postgres://" + pg_dsn[len("postgresql://"):]
+        result = _run_migrate_cli(postgres_dsn)
+        assert result.returncode == 0, (
+            f"migrate CLI must accept `postgres://` scheme; "
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+        assert _table_exists(pg_dsn, "alembic_version")

@@ -37,7 +37,35 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
   unauthenticated cluster-internal: the NetworkPolicy IS the v1
   security boundary.
 
+## Prerequisite: build the image and load it into Kind
+
+The Deployments here reference `data-governance/receiver:latest` and
+`data-governance/ui:latest` with `imagePullPolicy: IfNotPresent`. Both tags
+are produced from a single repo-root `Containerfile` (see issue #38) — one
+image, two tags, two entry points. A fresh Kind cluster has neither tag,
+so applying these manifests without first building and loading the image
+results in `ErrImagePull` / `CrashLoopBackOff` on the receiver and UI pods.
+
+The `deploy/build-and-load.sh` helper does both steps in one shot:
+
+```sh
+./deploy/build-and-load.sh
+```
+
+It builds the image from `Containerfile` (multi-stage `uv sync --frozen`
+build), tags it as both `data-governance/receiver:latest` and
+`data-governance/ui:latest`, and `kind load docker-image`s both tags into
+the cluster named `kagenti`. Override the cluster name with
+`KIND_CLUSTER=...` and the tag with `IMAGE_TAG=...` if needed.
+
+The script is idempotent: re-running it rebuilds the image (cache permitting)
+and re-loads the tags. The image's compiled Alembic head matches what the
+init container will migrate the DB to and what the receiver's startup
+schema-version check (PROJECT.md §3 / ADR-0002) will validate.
+
 ## Apply
+
+After build + load, apply the manifests:
 
 ```sh
 kubectl apply -f deploy/k8s/

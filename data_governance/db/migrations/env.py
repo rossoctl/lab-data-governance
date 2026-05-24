@@ -28,6 +28,12 @@ def _resolve_url() -> str:
             "DATABASE_URL is not set; the migrate CLI requires a Postgres URL "
             "(e.g. postgresql://user:pass@host:5432/dbname)."
         )
+    # psycopg accepts both ``postgres://`` and ``postgresql://`` and the v1
+    # k8s manifests construct the DSN as ``postgres://...``. SQLAlchemy
+    # (used by Alembic here) only knows ``postgresql://``, so canonicalise
+    # the historical ``postgres://`` alias up front.
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
     # SQLAlchemy's default ``postgresql://`` dialect dispatches to psycopg2,
     # which we deliberately do not depend on (ADR-0005 pins psycopg 3). Force
     # the psycopg 3 driver so SQLAlchemy uses the same lib as the rest of
