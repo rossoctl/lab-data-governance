@@ -23,11 +23,16 @@ fields and ordering position — may change as late spans arrive.
 
 - **`TraceListingEntry` is eventually consistent.** A trace's listing root
   may flip from "earliest orphan" to "real root" when a late span arrives.
-  `GET /spans?root_only=true` paginates by span `seq`, so the late-arriving
-  real root is delivered on a subsequent page (never skipped) but the same
-  trace may appear with two different anchor spans across pages. The UI
-  dedupes by `trace_id` client-side. Skips are not possible under this
-  cursor scheme; duplicates are.
+  `GET /spans?root_only=true` paginates using a composite `(started_at,
+  span_id)` keyset cursor aligned with the `started_at DESC, span_id ASC`
+  sort, so every listing root that satisfies the filter appears on exactly
+  one page of a complete walk (skips impossible). The same trace may still
+  appear with two different anchor spans across pages if its listing root
+  flips between pages as late spans arrive; the UI dedupes by `trace_id`
+  client-side (duplicates possible, skips impossible). The REST `cursor`
+  parameter is always the `seq` of the last span on the previous page; the
+  server resolves it to `(started_at, span_id)` internally before applying
+  the composite predicate.
 - **`root_only=True` on the retrieval API requires a `NOT EXISTS` check** to
   identify orphans (parent referenced but not present). The
   `(trace_id, parent_id)` index from §3 makes this cheap; dropping it would

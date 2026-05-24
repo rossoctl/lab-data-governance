@@ -544,50 +544,46 @@ detail — the contract is pinned here so deployments can rely on it.
   fallback) on demand for `root_only=True` — this is the one piece of
   span-relationship logic in v1, deliberately localized to the
   retrieval API and documented above.
-- **Cursors are `seq`.** Always the `seq BIGINT` column on `spans`,
-  no other column and no opaque token. Postgres `ctid` and `xmin`
-  were considered and rejected: `ctid` is unstable across `VACUUM
-  FULL` / `CLUSTER` / `pg_repack` and is not even monotonic on
-  insert; `xmin` is not unique per row and is rewritten by VACUUM
+- **Cursor encoding is path-shaped.** The REST `cursor` parameter is
+  always a `seq BIGINT` from a returned `Span`. Postgres `ctid` and
+  `xmin` were considered and rejected: `ctid` is unstable across
+  `VACUUM FULL` / `CLUSTER` / `pg_repack` and is not even monotonic
+  on insert; `xmin` is not unique per row and is rewritten by VACUUM
   freeze. `seq` from a sequence-allocated BIGINT is the standard,
   stable-enough, indexable choice. Note `seq` is a watermark, not
   a per-row stable identifier (§3.2 / ADR-0004): a row's `seq`
   advances exactly once on finalization. Stream consumers cursoring
   by `seq` see each row up to twice and dedupe by
   `(trace_id, span_id)`; the second visit is the authoritative
-  version.
+  version. **How the server translates the caller's `seq` into a
+  predicate is path-dependent (see Sort order below).**
 - **`seq` orders by arrival at the receiver, not by `started_at`.**
   A child span may have lower `seq` than its parent if the parent
   arrives late; both are still delivered. Processors that need
   causal order do their own buffering — the retrieval API does not
   reorder.
-- **Sort order varies by query shape (Path 3).** The cursor is
-  always `seq`; the **sort** depends on what the caller asked for:
-  - `root_only=True` → sort by listing-root `started_at desc`
-    (newest traces first; matches the universal "recent activity"
-    UI convention).
-  - `parent_id` set (subtree expansion) → sort by `seq asc`. Within a
-    single parent's children this is chronological by arrival at the
-    receiver — what a top-down trace-tree view actually wants. The
+- **Sort order varies by query shape (Path 3).** The REST cursor is
+  always `seq`; the **sort and internal cursor predicate** depend on
+  what the caller asked for:
+  - `root_only=True` → sort by listing-root `started_at desc, span_id
+    asc` (newest traces first). The server resolves the caller's `seq`
+    to the span's `(started_at, span_id)` and applies a composite
+    keyset predicate `(started_at < cursor_started_at) OR
+    (started_at = cursor_started_at AND span_id > cursor_span_id)`.
+    Sort and cursor axes now agree, so the "skips impossible" property
+    holds unconditionally (issue #30 / ADR-0001). Duplicates remain
+    possible when a trace's listing root flips between pages as late
+    spans arrive; the UI dedupes by `trace_id`.
+  - `parent_id` set (subtree expansion) → sort by `seq asc`. The
     sort axis matches the cursor axis, so neither duplicates nor
     skips are possible on this path. (`started_at asc` was the
     original spec, but it would create the same cursor/sort-axis
-    mismatch documented for `root_only=True` in #30 — a child with
-    low `seq` and late `started_at` can be silently skipped once the
-    cursor advances past `max(seq)` of a page.)
+    mismatch — a child with low `seq` and late `started_at` can be
+    silently skipped once the cursor advances past `max(seq)` of a
+    page.)
   - Otherwise (bare processor stream / `trace_id` only / `span_id`
     only) → sort by `seq asc` (catch-up order). Callers that want
-    descending pass `order="desc"`.
-  Where sort and cursor disagree (`root_only=True`), the
-  "duplicates possible, skips impossible" property from ADR-0001
-  holds in principle: a row may appear on two pages with different
-  anchor data as late spans arrive or finalize, but no row that
-  satisfies the filter is silently skipped. The UI dedupes by
-  `trace_id`. (#30 tracks the case where `seq` and `started_at` are
-  uncorrelated and skips do occur on the listing-roots path; the
-  fix is a path-shaped composite cursor.) Where sort and cursor
-  agree (`seq`-bucket and `parent_id`), no duplicates and no skips
-  are possible.
+    descending pass `order="desc"`. Sort and cursor agree; no skips.
 - **Concurrent-insert and update-allocation gaps (deferred to v1.x).**
   See §3 stream-consumer caveat for the failure mode. The recent-
   traces UI listing in §7 is itself a `seq`-cursored consumer: a

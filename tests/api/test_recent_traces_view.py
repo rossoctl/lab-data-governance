@@ -309,41 +309,33 @@ def test_default_landing_query_is_root_only_limit_20(
 
 
 def test_pagination_by_cursor_advances(api_server, configured_db):
-    """Walk pages of size 2 over the AC matrix using the same max-seq
-    cursor strategy the UI uses, until the API returns an empty page.
+    """Walk pages of size 2 over the AC matrix using the max-seq cursor
+    strategy, until the API returns an empty page.
 
-    The property under test: **no listing root with seq strictly
-    between a previous page's min and max seq is missing from the
-    union of pages walked**. This is what the JS bug violated under
-    min-seq cursoring — the next-page predicate ``seq < cursor`` with
-    ``cursor = min(prev_seqs)`` deterministically excludes every row
-    whose seq sits in the half-open interval (prev_min, prev_max], so
-    such rows are silently dropped, *never re-entering* the candidate
-    set on any subsequent page. Under max-seq cursoring those rows
-    still satisfy ``seq < max(prev_seqs)`` and thus remain candidates
-    for the rest of the walk.
+    The key invariant (issue #30 AC): every listing root that satisfies the
+    filter must appear in the union of pages — "skips impossible". This holds
+    because ``_listing_roots_paginated`` now uses a composite ``(started_at,
+    span_id)`` keyset cursor aligned with the ``started_at DESC, span_id ASC``
+    sort. Each page advances strictly forward in the sort order, so no row can
+    be pushed past the cursor and silently excluded.
 
-    The complementary guarantee — that *every* seeded listing root is
-    eventually reachable — would require fixing the deeper server bug
-    where ``_listing_roots_paginated``'s seq cursor and ``started_at``
-    sort axes disagree (the docstring there acknowledges this:
-    "duplicates possible, skips impossible"). With the AC matrix and
-    limit=2 even the max-seq cursor leaves traces D and E unreachable
-    because their later (older) ``started_at`` keeps pushing them off
-    each page until the cursor advances past their seq. That's tracked
-    separately.
-    TODO(#30): once the server-side cursor lands on a composite
-    ``(started_at, seq)`` keyset (see issue #30 for the full repro),
-    re-tighten this test to assert ``seen == {A,B,C,D,E,F}`` — the
-    "skips impossible" property §6 promises.
+    The AC matrix has six traces (A–F) seeded with deliberately uncorrelated
+    ``seq`` and ``started_at`` values. With the old seq-only cursor, traces D
+    and E (whose listing roots have old ``started_at`` but high ``seq``) were
+    silently skipped once the cursor advanced past their seq. With the
+    composite cursor all six must appear.
     """
     with psycopg.connect(configured_db) as conn:
         _seed_acceptance_matrix(conn)
 
-    pages: list[list[dict]] = []
+    seen_trace_ids: set[str] = set()
     cursor: int | None = None
-    # Hard cap to avoid an infinite loop if the cursor ever fails to
-    # advance — six listing roots, page size 2, plus headroom.
+    # Hard cap: six listing roots, page size 2 → at most 3 pages, plus headroom.
+    # No time window: all six traces are in scope, including trace E whose
+    # started_at is entirely outside the [10:00, 14:00] window used elsewhere.
+    # This is exactly the repro from issue #30 — with a seq-only cursor, D and
+    # E were silently skipped because their old started_at kept pushing them
+    # off each page until the cursor advanced past their (relatively high) seq.
     for _ in range(20):
         params: dict[str, object] = {"root_only": "true", "limit": 2}
         if cursor is not None:
@@ -354,53 +346,21 @@ def test_pagination_by_cursor_advances(api_server, configured_db):
         spans = page["spans"]
         if not spans:
             break
-        pages.append(spans)
-        # Mirror the UI's max-seq cursor advancement (index.html
-        # ``loadMore``): the server filters ``seq < cursor`` while
-        # ordering by started_at DESC, so the max-seq from this page
-        # keeps the predicate monotonically widening — the JS bug used
-        # ``min`` here, which permanently dropped the in-between seqs.
-        cursor = max(s["seq"] for s in spans)
+        seen_trace_ids.update(s["trace_id"] for s in spans)
+        # Use the last span in sort order (spans[-1]) as the cursor anchor,
+        # not max(seq). The composite keyset cursor on the server resolves seq
+        # to (started_at, span_id) and uses the page boundary position in the
+        # started_at DESC, span_id ASC sort — the last element on the page.
+        cursor = spans[-1]["seq"]
     else:  # pragma: no cover - hard-cap safety net
         raise AssertionError("pagination did not terminate")
 
-    # The walk must produce at least two pages, otherwise the
-    # "in-between" property below is vacuous and would silently mask
-    # a regression that collapses pagination to a single page.
-    assert len(pages) >= 2
-
-    seen_trace_ids = {s["trace_id"] for page in pages for s in page}
-    seen_seqs = {s["seq"] for page in pages for s in page}
-
-    # Property: for every page, any *observed* listing root whose seq
-    # lies strictly between that page's (min, max) seqs must appear in
-    # the union of pages. Under min-seq cursoring this is impossible:
-    # no row with seq > prev_min can ever appear in a subsequent page,
-    # so any in-between row is permanently lost. Under max-seq
-    # cursoring such rows remain candidates and at least some of them
-    # do surface (concretely: trace C's listing root has seq=4, which
-    # sits strictly between the first page's min=3 and max=9, and only
-    # appears in the union when the cursor advances by max).
-    found_in_between = False
-    for page in pages:
-        page_seqs = [s["seq"] for s in page]
-        page_min, page_max = min(page_seqs), max(page_seqs)
-        in_between = {s for s in seen_seqs if page_min < s < page_max}
-        if in_between:
-            found_in_between = True
-            # All of them must be in the union — they *are* by
-            # construction (we drew them from ``seen_seqs``); the real
-            # bite of the assertion is the existence check below.
-            assert in_between.issubset(seen_seqs)
-    assert found_in_between, (
-        "no in-between seq surfaced across the walk; under min-seq "
-        "cursoring this is the deterministic outcome and indicates "
-        "the JS cursor regression has returned"
+    # All six listing roots must be reachable regardless of how seq and
+    # started_at correlate — the "skips impossible" property from PROJECT.md §6
+    # and ADR-0001, now enforced by the composite keyset cursor (issue #30).
+    assert seen_trace_ids == {"A", "B", "C", "D", "E", "F"}, (
+        f"some listing roots were skipped; seen: {seen_trace_ids!r}"
     )
-
-    # Sanity: more than one trace was reached (defends against a
-    # cursor that never advances and just re-fetches page 1 forever).
-    assert len(seen_trace_ids) >= 2
 
 
 # ---------------------------------------------------------------------------

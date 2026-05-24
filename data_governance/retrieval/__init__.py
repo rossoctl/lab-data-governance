@@ -515,9 +515,12 @@ def _listing_roots_paginated(
     - We pick traces with **at least one in-window span**, then materialise
       each trace's listing root via the same earliest-real-root /
       earliest-orphan rule used by the single-trace path.
-    - Sort is by listing-root ``started_at DESC``. Cursor is on the
-      listing-root ``seq``; the cursor and sort disagree on this path
-      (ADR-0001's "duplicates possible, skips impossible" property).
+    - Sort is by listing-root ``started_at DESC, span_id ASC``. Cursor is a
+      composite ``(started_at, span_id)`` keyset resolved from the caller's
+      ``seq`` value. Both sort and cursor axes now agree, making the
+      "skips impossible" property from ADR-0001 hold: every page advances
+      strictly forward in the sort order, and no listing root that satisfies
+      the filter can be excluded once the cursor is placed.
     - Counts are computed in a separate query over the same trace set;
       keeping it separate keeps the listing-root SQL readable.
     """
@@ -572,34 +575,47 @@ def _listing_roots_paginated(
         WHERE rn = 1
     """
 
-    # Outer wrap: cursor + ORDER BY listing-root started_at desc + LIMIT.
+    # Composite keyset cursor: resolve caller's seq to (started_at, span_id)
+    # inside the same REPEATABLE READ transaction as the main query so both
+    # see the same snapshot. This ensures sort and cursor agree so no listing
+    # root is silently skipped (issue #30).
+    #
+    # The cursor must be the seq of the *last span in sort order* on the
+    # previous page — i.e. spans[-1].seq (the span with the oldest started_at
+    # / highest span_id on the page), not max(seq). Using max(seq) would
+    # anchor the keyset at an interior row and exclude rows that should appear
+    # on the next page.
     outer_conditions: list[str] = []
     outer_params: list[Any] = list(window_params)
-    if cursor is not None:
-        # Cursor on seq. On a started_at-desc sort the cursor still serves
-        # the "skips impossible" property for the seq-cursored stream.
-        outer_conditions.append("seq < %s")
-        outer_params.append(cursor)
 
-    outer_where = (
-        " WHERE " + " AND ".join(outer_conditions) if outer_conditions else ""
-    )
-
-    final_sql = f"""
-        SELECT {_SELECT_COLS} FROM (
-            {listing_root_sql}
-        ) lr
-        {outer_where}
-        ORDER BY started_at DESC, span_id ASC
-        LIMIT %s
-    """
-    outer_params.append(limit)
-
-    # Listing-root SELECT and counts must observe the same snapshot,
-    # otherwise a span finalising between them can let total/error_count
-    # diverge from the selected listing root. Run both in one
-    # REPEATABLE READ transaction.
     with _repeatable_read() as tx:
+        if cursor is not None:
+            cursor_started_at, cursor_span_id = _resolve_cursor_seq_in_tx(
+                tx, cursor
+            )
+            # Strict descending keyset: rows strictly after the cursor position
+            # in (started_at DESC, span_id ASC) order.
+            outer_conditions.append(
+                "(started_at < %s OR (started_at = %s AND span_id > %s))"
+            )
+            outer_params.extend(
+                [cursor_started_at, cursor_started_at, cursor_span_id]
+            )
+
+        outer_where = (
+            " WHERE " + " AND ".join(outer_conditions) if outer_conditions else ""
+        )
+
+        final_sql = f"""
+            SELECT {_SELECT_COLS} FROM (
+                {listing_root_sql}
+            ) lr
+            {outer_where}
+            ORDER BY started_at DESC, span_id ASC
+            LIMIT %s
+        """
+        outer_params.append(limit)
+
         rows = tx.fetch_all(final_sql, outer_params)
 
         # Compute in_time_window per returned listing root: a listing root
@@ -617,6 +633,38 @@ def _listing_roots_paginated(
             tx, trace_ids, time_from=time_from, time_to=time_to
         )
     return GetSpansResult(spans=spans, counts=counts)
+
+
+def _resolve_cursor_seq_in_tx(
+    tx: db.Transaction,
+    seq: int,
+) -> tuple[dt.datetime, str]:
+    """Look up ``(started_at, span_id)`` of the span with ``seq`` within *tx*.
+
+    Running inside the caller's REPEATABLE READ transaction ensures the lookup
+    and the main listing-root query observe the same snapshot — critical because
+    a span's ``seq`` can advance on finalization (ADR-0004), so a lookup in a
+    separate transaction could resolve to a different span than the one the
+    caller is paginating past.
+
+    Raises ``ValueError`` when no row has the given ``seq``. In v1's
+    append-only model this should not happen: the client passes back the
+    ``seq`` of a span it received on a previous page, and spans are never
+    deleted. If a finalized span's ``seq`` was replaced by a new value
+    (ADR-0004 advancement), the old ``seq`` genuinely no longer exists and
+    the cursor is stale — surfacing this as an error is safer than silently
+    restarting pagination from page 1.
+    """
+    rows = tx.fetch_all(
+        "SELECT started_at, span_id FROM spans WHERE seq = %s LIMIT 1",
+        [seq],
+    )
+    if not rows:
+        raise ValueError(
+            f"cursor seq={seq} not found; the span may have been finalized "
+            "and its seq advanced (ADR-0004). Restart pagination from cursor=None."
+        )
+    return rows[0][0], rows[0][1]
 
 
 def _is_in_window(
