@@ -85,7 +85,7 @@ def _span_to_row(
     return SpanRow(
         trace_id=span.trace_id.hex(),
         span_id=span.span_id.hex(),
-        parent_id=span.parent_span_id.hex() if span.parent_span_id else None,
+        parent_id=span.parent_span_id.hex() if any(span.parent_span_id) else None,
         name=span.name,
         kind=_SPAN_KIND_NAMES.get(span.kind),
         started_at=_ns_to_dt(span.start_time_unix_nano),
