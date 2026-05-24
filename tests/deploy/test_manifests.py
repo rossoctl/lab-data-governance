@@ -377,6 +377,66 @@ def test_ui_deployment_has_probes(ui_deployment: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Gateway API routing (UI exposure on the kagenti shared Gateway)
+# ---------------------------------------------------------------------------
+#
+# The UI is exposed at http://dg.localtest.me:8080 via an HTTPRoute attached
+# to the kagenti-system/http Gateway, mirroring how phoenix and other
+# kagenti services are exposed. Because the route lives in kagenti-system
+# (the only namespace labelled shared-gateway-access=true) but targets a
+# Service in data-governance, a ReferenceGrant must permit that single
+# cross-namespace edge.
+
+
+def test_ui_httproute_exists_and_targets_ui_service(docs: list[dict]) -> None:
+    routes = _by_kind(docs, "HTTPRoute", "data-governance-ui")
+    assert len(routes) == 1, "expected one HTTPRoute named data-governance-ui"
+    route = routes[0]
+    assert route["metadata"]["namespace"] == "kagenti-system", (
+        "HTTPRoute must live in kagenti-system (the shared-gateway-access ns)"
+    )
+    hostnames = route["spec"].get("hostnames") or []
+    assert "dg.localtest.me" in hostnames, (
+        f"HTTPRoute must expose dg.localtest.me, got {hostnames}"
+    )
+    parents = route["spec"].get("parentRefs") or []
+    assert any(
+        p.get("name") == "http"
+        and p.get("namespace") == "kagenti-system"
+        and p.get("kind", "Gateway") == "Gateway"
+        for p in parents
+    ), f"HTTPRoute must attach to kagenti-system/http Gateway, got {parents}"
+    backends = [b for r in route["spec"].get("rules") or [] for b in r.get("backendRefs") or []]
+    assert any(
+        b.get("name") == "data-governance-ui"
+        and b.get("namespace") == "data-governance"
+        and b.get("port") == 8080
+        for b in backends
+    ), f"HTTPRoute must target data-governance/data-governance-ui:8080, got {backends}"
+
+
+def test_ui_referencegrant_permits_cross_namespace_route(docs: list[dict]) -> None:
+    grants = _by_kind(docs, "ReferenceGrant")
+    assert grants, "expected a ReferenceGrant for cross-ns HTTPRoute -> Service"
+    matching = [
+        g for g in grants
+        if g["metadata"].get("namespace") == "data-governance"
+        and any(
+            f.get("kind") == "HTTPRoute" and f.get("namespace") == "kagenti-system"
+            for f in g["spec"].get("from") or []
+        )
+        and any(
+            t.get("kind") == "Service" and t.get("name") == "data-governance-ui"
+            for t in g["spec"].get("to") or []
+        )
+    ]
+    assert matching, (
+        "expected a ReferenceGrant in data-governance permitting "
+        "HTTPRoutes from kagenti-system to target the data-governance-ui Service"
+    )
+
+
+# ---------------------------------------------------------------------------
 # NetworkPolicy
 # ---------------------------------------------------------------------------
 

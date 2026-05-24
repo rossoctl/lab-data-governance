@@ -1,0 +1,55 @@
+# Expose the data-governance UI on the kagenti shared Gateway at
+# http://dg.localtest.me:8080 — same pattern as phoenix.localtest.me et al.
+#
+# The HTTPRoute lives in kagenti-system because the Gateway's listener
+# selector requires the route's namespace to carry shared-gateway-access=true,
+# and only kagenti-system has that label. To allow the kagenti-system route
+# to target a Service in the data-governance namespace, a ReferenceGrant in
+# data-governance permits exactly this cross-namespace edge — no broader.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: data-governance-ui
+  namespace: kagenti-system
+  labels:
+    app.kubernetes.io/name: data-governance-ui
+    app.kubernetes.io/part-of: data-governance
+spec:
+  hostnames:
+  - dg.localtest.me
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: http
+    namespace: kagenti-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - group: ""
+      kind: Service
+      name: data-governance-ui
+      namespace: data-governance
+      port: 8080
+      weight: 1
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-kagenti-system-httproute-to-ui
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-ui
+    app.kubernetes.io/part-of: data-governance
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: kagenti-system
+  to:
+  - group: ""
+    kind: Service
+    name: data-governance-ui

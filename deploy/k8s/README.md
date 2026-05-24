@@ -11,6 +11,7 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `30-receiver.yaml`            | `Service` + `Deployment` for the OTLP receiver              |
 | `40-ui.yaml`                  | `Service` + `Deployment` for the UI backend                 |
 | `50-networkpolicy.yaml`       | `NetworkPolicy` for receiver, UI, and Postgres ingress      |
+| `60-ui-httproute.yaml`        | `HTTPRoute` + `ReferenceGrant` exposing the UI on the kagenti shared Gateway |
 
 ## Topology summary
 
@@ -109,6 +110,23 @@ pass `--revert`:
 `--revert` is also idempotent — running it when the exporter is already
 absent is a no-op and does not roll the collector.
 
+## UI access via the kagenti shared Gateway
+
+`60-ui-httproute.yaml` attaches an `HTTPRoute` (in `kagenti-system`,
+where the `shared-gateway-access=true` label lives) to the
+`kagenti-system/http` Gateway, exposing the UI at
+**http://dg.localtest.me:8080/**. The route's `backendRefs` target the
+`data-governance-ui` Service in `data-governance`; a `ReferenceGrant` in
+`data-governance` permits exactly that one cross-namespace edge. This
+mirrors how phoenix, mlflow, kagenti-ui, etc. are exposed on the same
+Gateway.
+
+The route is reachable because the Kind cluster maps host port 8080 to
+the gateway listener (NodePort 30080 → port 80 inside the cluster). No
+TLS, no auth — same v1 unauthenticated-cluster-internal posture as the
+NetworkPolicy boundary (PROJECT.md §7). For local dev access, no
+`kubectl port-forward` is needed.
+
 ## Out of scope for v1 (PROJECT.md §7 / issue #16)
 
 - TLS termination
@@ -132,10 +150,12 @@ checked manually against a fresh cluster:
 3. From a pod inside the Kagenti namespace, send an OTLP span to
    `data-governance-receiver.data-governance.svc:4317` (gRPC) or
    `:4318` (HTTP/protobuf).
-4. `kubectl port-forward svc/data-governance-ui 8080:8080 -n
-   data-governance` and open `http://localhost:8080/` — the trace's
-   listing root should appear in the recent-traces view, with the
-   sent span discoverable via the trace-tree drill-in.
+4. Open http://dg.localtest.me:8080/ — the trace's listing root should
+   appear in the recent-traces view, with the sent span discoverable
+   via the trace-tree drill-in. (As a fallback if the kagenti shared
+   Gateway is not present: `kubectl port-forward
+   svc/data-governance-ui 8080:8080 -n data-governance` and open
+   `http://localhost:8080/`.)
 
 Schema validity and NetworkPolicy structure are exercised automatically
 by `tests/deploy/test_manifests.py`.
