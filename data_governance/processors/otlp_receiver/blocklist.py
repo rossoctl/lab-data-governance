@@ -32,6 +32,10 @@ _PATTERNS: tuple[str, ...] = (
     # Prometheus /metrics scrape paths
     "GET /metrics",
     "/metrics",
+    # A2A agent-card discovery polling
+    "GET /.well-known/agent-card.json",
+    "GET /.well-known/agent-card.json http send",
+    "GET /.well-known/agent-card.json http receive",
     # Receiver self-spans (if the receiver instruments itself)
     "otlp_receiver/*",
 )
