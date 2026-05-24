@@ -1,17 +1,16 @@
 ---
-# Receiver Service — ClusterIP exposing OTLP gRPC and OTLP HTTP/healthz.
+# Receiver Service — ClusterIP exposing OTLP gRPC, OTLP HTTP/healthz, and
+# Prometheus /metrics.
 #
 # Per PROJECT.md §1 / §5.1:
 # - 4317  OTLP gRPC      — Kagenti's OTel collector exporter targets this.
 # - 4318  OTLP HTTP/protobuf + GET /healthz  (one Starlette app, two routes).
+# - 9090  Prometheus /metrics  — text-exposition format, served by
+#         ``MetricsServer`` (issue #36 wired this into the receiver __main__).
 #
-# Prometheus /metrics (port 9090) is intentionally absent from the v1
-# manifest: ``MetricsServer`` exists in the receiver codebase but the
-# receiver __main__ does not yet start it (see the follow-up issue in the
-# deploy/k8s/README.md "Out of scope for v1" list). Exposing the port on
-# the Service while no process listens on it would route scrape traffic
-# to a closed socket; the manifest will re-add 9090 once the server is
-# wired up.
+# Note: the v1 NetworkPolicy (50-networkpolicy.yaml) does NOT open 9090 —
+# v1 has no monitoring peer. Re-adding scraper ingress is a v2 concern
+# tracked alongside whatever monitoring stack lands.
 apiVersion: v1
 kind: Service
 metadata:
@@ -33,6 +32,11 @@ spec:
     - name: otlp-http
       port: 4318
       targetPort: otlp-http
+      protocol: TCP
+      appProtocol: http
+    - name: metrics
+      port: 9090
+      targetPort: metrics
       protocol: TCP
       appProtocol: http
 ---
@@ -129,6 +133,9 @@ spec:
               protocol: TCP
             - name: otlp-http
               containerPort: 4318
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
               protocol: TCP
           # /healthz is on the HTTP/protobuf port (4318) — see
           # data_governance.processors.otlp_receiver.server._healthz_handler.

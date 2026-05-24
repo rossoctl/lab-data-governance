@@ -10,12 +10,13 @@
 # default `kubernetes.io/metadata.name` label every namespace gets, on
 # the two OTLP transport ports (4317 gRPC, 4318 HTTP/protobuf).
 #
-# Prometheus /metrics scraping is out of scope for v1 on two fronts: the
-# receiver entry point does not yet start ``MetricsServer`` (so the
-# Service does not expose port 9090 — see issue #36 and 30-receiver.yaml),
-# and even once it does, scrapers will need to come from a separate
-# "monitoring" peer added here at that time. PROJECT.md §1 keeps
-# monitoring explicitly out of scope for v1.
+# Prometheus /metrics scraping is intentionally NOT opened by this policy
+# in v1. The receiver does serve /metrics on port 9090 (issue #36 wired
+# MetricsServer into the receiver __main__, and 30-receiver.yaml exposes
+# the port on the Service), but v1 has no monitoring peer in the cluster
+# — PROJECT.md §1 keeps cluster-level monitoring explicitly out of scope.
+# When a monitoring stack lands, add a scraper-namespace ingress rule
+# here alongside the existing OTLP rules.
 #
 # Kubelet probe traffic (liveness/readiness on /healthz) originates on
 # the node and is not subject to NetworkPolicy ingress filtering on every

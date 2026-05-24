@@ -19,8 +19,10 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
   `python -m data_governance.processors.otlp_receiver`. PROJECT.md §3 +
   ADR-0002.
 - **Receiver Service.** ClusterIP. Ports: 4317 (OTLP gRPC), 4318
-  (OTLP HTTP/protobuf and `/healthz`). Prometheus `/metrics` (port 9090)
-  is intentionally NOT in the v1 manifest — see "Out of scope" below.
+  (OTLP HTTP/protobuf and `/healthz`), 9090 (Prometheus `/metrics`,
+  PROJECT.md §5.1; issue #36 wired `MetricsServer` into the receiver
+  entry point). The v1 NetworkPolicy does NOT open 9090 — v1 has no
+  monitoring peer; adding a scraper ingress rule is a v2 concern.
 - **Postgres StatefulSet.** Single replica, 10Gi PVC. Same namespace as
   receiver. Production-grade Postgres operations (backup, replication,
   sizing) are out of scope for v1 (PROJECT.md §1, §5).
@@ -55,12 +57,10 @@ init container drives both conditions to true.
 - External auth / RBAC / mTLS
 - Cluster-level monitoring, log aggregation
 - Postgres backups, replication, or sizing tuning
-- `/metrics` scraping — `MetricsServer` exists in the receiver codebase
-  but the receiver entry point does not yet start it, so the v1 manifest
-  does NOT expose port 9090 on the Service or the container. Tracked in
-  https://github.com/s-and-p-team/data-governance/issues/36; once that
-  lands, the manifest re-adds 9090 and a v2 scraper peer must also be
-  added to the NetworkPolicy.
+- `/metrics` *scraping* — the receiver now exposes Prometheus `/metrics`
+  on port 9090 (issue #36), but v1 has no scraper peer in the cluster.
+  When a monitoring stack lands, a scraper-namespace ingress rule must
+  be added to the receiver NetworkPolicy alongside it.
 
 ## Verifying the OTLP path
 

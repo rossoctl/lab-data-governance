@@ -1,10 +1,11 @@
 """OTLP receiver entry point — ``python -m data_governance.processors.otlp_receiver``.
 
-Boots the gRPC server on 4317 and the HTTP/protobuf + ``/healthz`` server
-on 4318, and waits for SIGINT/SIGTERM. The DSN is read from
-``DATABASE_URL`` (matching the migrate CLI's convention in
-:mod:`data_governance.db.migrate`); pool sizing comes from ``DB_POOL_*``
-environment variables consumed by :func:`data_governance.db.configure`.
+Boots the gRPC server on 4317, the HTTP/protobuf + ``/healthz`` server
+on 4318, and the Prometheus ``/metrics`` server on 9090, and waits for
+SIGINT/SIGTERM. The DSN is read from ``DATABASE_URL`` (matching the
+migrate CLI's convention in :mod:`data_governance.db.migrate`); pool
+sizing comes from ``DB_POOL_*`` environment variables consumed by
+:func:`data_governance.db.configure`.
 
 Before binding any sockets the entry point runs the defence-in-depth
 schema-version check (issue #10, ADR-0002): it reads
@@ -32,8 +33,10 @@ from data_governance.db.schema_version import (
 from .server import (
     DEFAULT_GRPC_PORT,
     DEFAULT_HTTP_PORT,
+    DEFAULT_METRICS_PORT,
     GrpcOtlpServer,
     HttpOtlpServer,
+    MetricsServer,
 )
 
 
@@ -102,14 +105,22 @@ def main() -> int:
     http_server = HttpOtlpServer(
         port=_int_env("RECEIVER_HTTP_PORT", DEFAULT_HTTP_PORT),
     )
+    metrics_server = MetricsServer(
+        port=_int_env("RECEIVER_METRICS_PORT", DEFAULT_METRICS_PORT),
+    )
     grpc_server.start()
     http_server.start()
+    metrics_server.start()
     log.info(
-        "OTLP receiver listening: gRPC on %s:%d, HTTP/protobuf + /healthz on %s:%d",
+        "OTLP receiver listening: gRPC on %s:%d, "
+        "HTTP/protobuf + /healthz on %s:%d, "
+        "Prometheus /metrics on %s:%d",
         grpc_server.host,
         grpc_server.port,
         http_server.host,
         http_server.port,
+        metrics_server.host,
+        metrics_server.port,
     )
 
     stop_event = threading.Event()
@@ -122,6 +133,10 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _shutdown)
 
     stop_event.wait()
+    # Reverse start order on shutdown: stop the metrics surface first (it
+    # has no in-flight ingest writes), then the OTLP transports, then close
+    # the pool.
+    metrics_server.stop(grace=1.0)
     grpc_server.stop(grace=2.0)
     http_server.stop(grace=2.0)
     db.close_pool()

@@ -18,10 +18,9 @@ What they DO check:
 - The receiver Deployment has 2 replicas and the init-container shape PROJECT.md
   §3 calls for (``python -m data_governance.db.migrate`` to completion before
   the main container starts).
-- The receiver Service exposes 4317 / 4318 on ClusterIP. (The Prometheus
-  /metrics port 9090 is deferred until ``MetricsServer`` is wired into the
-  receiver entry point — see the follow-up issue referenced in the
-  deploy/k8s/README.md "Out of scope" section.)
+- The receiver Service exposes 4317 / 4318 / 9090 on ClusterIP, and the
+  receiver container declares matching ``containerPort`` entries — flipping
+  either side of that pairing must fail the test (issue #36).
 - The Postgres StatefulSet lives in the same namespace as the receiver.
 - The UI backend Deployment + Service are present and wired to port 8080.
 - The NetworkPolicy targets receiver + UI workloads, allows ingress only from
@@ -217,21 +216,33 @@ def test_receiver_service_is_clusterip(receiver_service: dict) -> None:
     assert receiver_service["spec"].get("type", "ClusterIP") == "ClusterIP"
 
 
-def test_receiver_service_exposes_otlp_and_http_surface(receiver_service: dict) -> None:
-    """OTLP gRPC 4317 and OTLP HTTP/protobuf + /healthz on 4318.
+def test_receiver_service_exposes_otlp_and_http_surface(
+    receiver_service: dict, receiver_deployment: dict
+) -> None:
+    """OTLP gRPC 4317, OTLP HTTP/protobuf + /healthz on 4318, /metrics on 9090.
 
-    The Prometheus /metrics port (9090) is intentionally NOT exposed by the
-    v1 manifest: ``MetricsServer`` exists in the codebase but is not yet
-    started by the receiver entry point. Re-adding the port on the Service
-    while no process listens on it would route traffic to a closed socket.
-    See the follow-up tracked in deploy/k8s/README.md ("Out of scope for v1").
+    Issue #36 wired ``MetricsServer`` into the receiver entry point, so the
+    v1 manifest re-adds 9090 to the Service and the receiver container.
+    Both halves of that pairing must hold: a Service port without a
+    matching ``containerPort`` would route scrape traffic to a closed
+    socket; a ``containerPort`` without a Service port would expose the
+    surface only to in-pod traffic.
     """
     ports = {p["port"]: p for p in receiver_service["spec"]["ports"]}
     assert 4317 in ports, "Service must expose OTLP gRPC on 4317"
     assert 4318 in ports, "Service must expose OTLP HTTP/protobuf + /healthz on 4318"
-    assert 9090 not in ports, (
-        "Service must NOT expose 9090 until MetricsServer is started by the "
-        "receiver __main__ — see follow-up issue."
+    assert 9090 in ports, "Service must expose Prometheus /metrics on 9090"
+
+    # Pin the Service-port-vs-containerPort pairing for /metrics. Removing
+    # the containerPort declaration on the receiver container without also
+    # removing the Service port would silently route scrape traffic at a
+    # closed socket — the failure mode that motivated the temporary strip
+    # in PR #34 in the first place.
+    main = receiver_deployment["spec"]["template"]["spec"]["containers"][0]
+    container_ports = {p["containerPort"] for p in main.get("ports") or []}
+    assert 9090 in container_ports, (
+        "receiver container must declare containerPort 9090 to back the "
+        "Service's /metrics port"
     )
 
 
