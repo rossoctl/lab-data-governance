@@ -1,0 +1,15 @@
+---
+# Data Governance namespace.
+#
+# v1 runs cluster-internal under a dedicated namespace. The NetworkPolicy in
+# 50-networkpolicy.yaml restricts ingress to the Kagenti namespace; nothing
+# else may reach the OTLP receiver or the UI backend. PROJECT.md §7
+# "Authentication and exposure" is the load-bearing rationale: v1 is
+# unauthenticated and the namespace-level NetworkPolicy IS the security
+# boundary.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-governance
+  labels:
+    app.kubernetes.io/part-of: data-governance

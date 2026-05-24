@@ -1,0 +1,104 @@
+---
+# Receiver NetworkPolicy.
+#
+# PROJECT.md §7 "Authentication and exposure":
+#   v1 is unauthenticated and intended cluster-internal […] running it
+#   outside an isolated cluster is unsupported.
+#
+# The NetworkPolicy IS the v1 security boundary. Ingress to the receiver
+# is allowed only from the upstream Kagenti namespace, matched by the
+# default `kubernetes.io/metadata.name` label every namespace gets, on
+# the two OTLP transport ports (4317 gRPC, 4318 HTTP/protobuf).
+#
+# Prometheus /metrics scraping is out of scope for v1 on two fronts: the
+# receiver entry point does not yet start ``MetricsServer`` (so the
+# Service does not expose port 9090 — see issue #36 and 30-receiver.yaml),
+# and even once it does, scrapers will need to come from a separate
+# "monitoring" peer added here at that time. PROJECT.md §1 keeps
+# monitoring explicitly out of scope for v1.
+#
+# Kubelet probe traffic (liveness/readiness on /healthz) originates on
+# the node and is not subject to NetworkPolicy ingress filtering on every
+# CNI we target — exempting the kubelet explicitly is unnecessary and
+# would weaken the boundary.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: data-governance-receiver-ingress
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-receiver
+    app.kubernetes.io/part-of: data-governance
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-receiver
+  policyTypes:
+    - Ingress
+  ingress:
+    # Kagenti namespace: the OTel collector running there exports OTLP to us.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagenti
+      ports:
+        - port: 4317
+          protocol: TCP
+        - port: 4318
+          protocol: TCP
+---
+# UI backend NetworkPolicy.
+#
+# Same security boundary: allow ingress only from the Kagenti namespace
+# (the cluster-internal consumer of the UI in v1 is whatever surface
+# Kagenti operators reach the UI from — typically a port-forward or a
+# Kagenti-namespace bastion / portal).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: data-governance-ui-ingress
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-ui
+    app.kubernetes.io/part-of: data-governance
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-ui
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagenti
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Postgres NetworkPolicy.
+#
+# Postgres is reachable only from inside the data-governance namespace —
+# the receiver and UI backend are the only legitimate clients in v1.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: data-governance-postgres-ingress
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-postgres
+    app.kubernetes.io/part-of: data-governance
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data-governance
+      ports:
+        - port: 5432
+          protocol: TCP

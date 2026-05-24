@@ -1,0 +1,103 @@
+---
+# UI backend Service — ClusterIP exposing :8080.
+#
+# `data_governance.api` serves both `GET /spans` and the static UI shell
+# (index.html / trace_tree.html / whitelisted JS assets). Port 8080 matches
+# `data_governance.api.DEFAULT_PORT`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-governance-ui
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-ui
+    app.kubernetes.io/part-of: data-governance
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: data-governance-ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+      appProtocol: http
+---
+# UI backend Deployment.
+#
+# v1 ships the UI shell (HTML/CSS/JS) from the same process that serves the
+# REST `GET /spans`. A separate static-asset deployment is left as
+# implementer's discretion within v1's "single unified UI" framing
+# (issue #16); colocated with the REST surface keeps the deployment topology
+# minimal.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-governance-ui
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-ui
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-governance-ui
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      containers:
+        - name: ui
+          image: data-governance/ui:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.api"]
+          env:
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "512Mi"

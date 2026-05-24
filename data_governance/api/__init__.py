@@ -12,6 +12,7 @@ honoured for the parameter-compatibility raises until #13 lands).
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import datetime as dt
 import json
@@ -24,7 +25,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
-from data_governance import retrieval
+from data_governance import db, retrieval
 
 __all__ = ["SpansApiServer", "build_app"]
 
@@ -152,6 +153,33 @@ async def _spans_handler(request: Request) -> Response:
     return Response(content=body, media_type="application/json", status_code=200)
 
 
+def _probe_postgres() -> None:
+    """Blocking ``SELECT 1`` against Postgres for :func:`_healthz_handler`.
+
+    Pulled out so the handler can dispatch it via :func:`asyncio.to_thread`
+    — ``db.transaction`` does synchronous libpq round-trips. Mirrors the
+    receiver's ``server._probe_postgres`` for symmetry; the v1 UI backend's
+    only job is to serve ``GET /spans``, which fans out to Postgres, so
+    "Postgres reachable" is the right liveness signal.
+    """
+    with db.transaction() as tx:
+        tx.execute("SELECT 1")
+
+
+async def _healthz_handler(_request: Request) -> Response:
+    """Liveness/readiness endpoint for the k8s manifests in ``deploy/k8s/``.
+
+    Returns 200 when Postgres is reachable, 503 otherwise. The probe path
+    is on the §3.1 ingest blocklist (issue #9), so probe-shaped spans
+    never reach ``spans``.
+    """
+    try:
+        await asyncio.to_thread(_probe_postgres)
+    except Exception:  # noqa: BLE001 — broad on purpose
+        return Response("not ready", status_code=503, media_type="text/plain")
+    return Response("ok", status_code=200, media_type="text/plain")
+
+
 async def _ui_handler(_request: Request) -> Response:
     """Serve the UI shell ``index.html``."""
     index = _UI_DIR / "index.html"
@@ -199,6 +227,7 @@ async def _ui_asset_handler(request: Request) -> Response:
 def build_app() -> Starlette:
     """Build and return the Starlette application."""
     routes: list = [
+        Route("/healthz", endpoint=_healthz_handler, methods=["GET"]),
         Route("/spans", endpoint=_spans_handler, methods=["GET"]),
         Route("/ui/{name:str}", endpoint=_ui_asset_handler, methods=["GET"]),
         Route(

@@ -1,0 +1,159 @@
+---
+# Receiver Service — ClusterIP exposing OTLP gRPC and OTLP HTTP/healthz.
+#
+# Per PROJECT.md §1 / §5.1:
+# - 4317  OTLP gRPC      — Kagenti's OTel collector exporter targets this.
+# - 4318  OTLP HTTP/protobuf + GET /healthz  (one Starlette app, two routes).
+#
+# Prometheus /metrics (port 9090) is intentionally absent from the v1
+# manifest: ``MetricsServer`` exists in the receiver codebase but the
+# receiver __main__ does not yet start it (see the follow-up issue in the
+# deploy/k8s/README.md "Out of scope for v1" list). Exposing the port on
+# the Service while no process listens on it would route scrape traffic
+# to a closed socket; the manifest will re-add 9090 once the server is
+# wired up.
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-governance-receiver
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-receiver
+    app.kubernetes.io/part-of: data-governance
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: data-governance-receiver
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+      protocol: TCP
+      appProtocol: grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+      protocol: TCP
+      appProtocol: http
+---
+# Receiver Deployment — 2 replicas, init container migrates schema, main
+# container runs the OTLP receiver. PROJECT.md §1: replicas exist for
+# rolling-update headroom and modest throughput, not HA.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-governance-receiver
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-receiver
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-receiver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-governance-receiver
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      initContainers:
+        # ADR-0002: each pod runs `python -m data_governance.db.migrate` to
+        # head before the receiver container starts. Alembic's version table
+        # makes this idempotent — running it from every replica is safe and
+        # avoids an out-of-band migrate Job for v1's scale.
+        - name: migrate
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.db.migrate"]
+          env:
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"
+      containers:
+        # PROJECT.md §3: the receiver container itself does NOT run Alembic;
+        # the init container is the schema-ordering gate, the receiver only
+        # performs a defence-in-depth schema-version check on startup
+        # (issue #10) and exits non-zero on mismatch.
+        - name: receiver
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.processors.otlp_receiver"]
+          env:
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+          # /healthz is on the HTTP/protobuf port (4318) — see
+          # data_governance.processors.otlp_receiver.server._healthz_handler.
+          # The §3.1 blocklist already drops `/healthz` and `GET /healthz`
+          # span names so probe traffic does not flood `spans` (issue #9).
+          # `test_receiver_probe_path_is_on_blocklist` pins the cross-link.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: otlp-http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: otlp-http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              memory: "1Gi"
