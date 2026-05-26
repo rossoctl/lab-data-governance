@@ -79,6 +79,31 @@ The receiver replicas crashloop until Postgres is reachable AND
 `alembic_version` matches the head revision compiled into the image. The
 init container drives both conditions to true.
 
+## Re-deploying after a code change
+
+For an existing cluster where the manifests are already applied and you
+just want the receiver / UI to pick up new code from `main`:
+
+```sh
+git pull --ff-only
+./deploy/build-and-load.sh
+kubectl apply -f deploy/k8s/                                        # usually a no-op; safe to skip if no manifest changes
+kubectl -n data-governance rollout restart \
+  deployment/data-governance-receiver deployment/data-governance-ui
+kubectl -n data-governance rollout status deployment/data-governance-receiver --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-ui --timeout=120s
+```
+
+The `rollout restart` is the step that's easy to forget: the manifests
+pin `:latest` with `imagePullPolicy: IfNotPresent`, so `kubectl apply`
+alone will NOT cycle pods onto the freshly-loaded image — kubelet sees
+the same tag it already has and keeps the old running pods. Restarting
+the Deployments forces new pods, which then pick up the just-loaded
+image from the node's image store.
+
+Postgres (the StatefulSet) does not need restarting — it only holds
+data, not code from this repo.
+
 ## Wire the kagenti collector to our receiver
 
 The data-governance receiver is reachable at

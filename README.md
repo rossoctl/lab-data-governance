@@ -54,6 +54,26 @@ uv run python -m data_governance.db.migrate
 uv run pytest
 ```
 
+## Deploying to the local Kind cluster
+
+The full procedure (first-time deploy, re-deploy after a code change,
+collector wiring, UI access) lives in
+[`deploy/k8s/README.md`](deploy/k8s/README.md). Quick re-deploy from a
+clean working tree on `main`:
+
+```sh
+git pull --ff-only
+./deploy/build-and-load.sh
+kubectl apply -f deploy/k8s/
+kubectl -n data-governance rollout restart \
+  deployment/data-governance-receiver deployment/data-governance-ui
+```
+
+The `rollout restart` is required: manifests pin `:latest` with
+`imagePullPolicy: IfNotPresent`, so `apply` alone will not cycle pods
+onto the newly-loaded image. See `deploy/k8s/README.md` for the full
+explanation and the `rollout status` waits.
+
 ## Configuration
 
 - `DATABASE_URL` — Postgres DSN. Required for the `migrate` CLI and any
