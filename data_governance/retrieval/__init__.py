@@ -17,6 +17,9 @@ Slice history:
   counts, ``in_time_window`` field, parameter-compatibility raises.
 - Issue #13 (future): ``parent_id`` query path. Compatibility raises for
   ``parent_id`` land here in #12 so the surface is closed.
+- Issue #49 (this slice): ``Span`` widened to the full row per ADR-0006;
+  adds ``ended_at``, ``observed_at``, ``arrival_seq``, ``otlp``,
+  ``scope``, ``resource_attributes``.
 """
 
 from __future__ import annotations
@@ -43,18 +46,52 @@ _LIMIT_MAX = 500
 class Span:
     """A single row from the ``spans`` table as returned by ``get_spans``.
 
-    ``in_time_window`` is a query-time projection: ``True`` iff the span's
-    ``started_at`` falls inside the request's ``(time_from, time_to)``,
-    ``False`` only on out-of-window listing roots returned by
-    ``root_only=True``. Defaults to ``True`` when no window was supplied.
+    Per ADR-0006, ``Span`` carries every column of the ``spans`` table.
 
-    ``kind``, ``error``, ``status_message``, ``events`` and ``links`` are
-    the trace-tree render columns landed by issue #14. ``error`` is the
-    OTLP ``Status.Code`` projection (``ERROR → True``, ``OK → False``,
-    ``UNSET → None``); ``status_message`` is only meaningful when
-    ``error IS TRUE``. ``events`` and ``links`` follow the PROJECT.md §3
-    NULL-vs-empty contract: the receiver writes SQL ``NULL`` for the
-    "no events / no links" case, so the dataclass surface uses ``None``.
+    **Core identity fields**
+
+    ``seq`` — cursor-pagination watermark; may advance once on span
+    finalization (ADR-0004). ``trace_id``, ``span_id`` — composite
+    primary key (span_id is only unique within a trace). ``parent_id``
+    — ``None`` for root spans; set for child spans. ``name`` — OTLP
+    span name. ``started_at`` — producer-clock span start (UTC).
+    ``attributes`` — OTLP span attributes as a dict; never ``None``
+    (empty dict when the row has no attributes).
+    ``service_name`` — promoted from ``resource.service.name``; ``None``
+    when absent.
+
+    **Query-time projection**
+
+    ``in_time_window`` is ``True`` iff the span's ``started_at`` falls
+    inside the request's ``(time_from, time_to)``, ``False`` only on
+    out-of-window listing roots returned by ``root_only=True``. Defaults
+    to ``True`` when no window was supplied.
+
+    **Trace-tree render columns** (issue #14)
+
+    ``kind`` — OTLP span kind string (``INTERNAL``, ``SERVER``,
+    ``CLIENT``, ``PRODUCER``, ``CONSUMER``); ``None`` when absent.
+    ``error`` — OTLP ``Status.Code`` projection (``ERROR → True``,
+    ``OK → False``, ``UNSET → None``). ``status_message`` — only
+    meaningful when ``error IS TRUE``; ``None`` otherwise.
+    ``events`` and ``links`` follow the PROJECT.md §3 NULL-vs-empty
+    contract: the receiver writes SQL ``NULL`` for the "no events /
+    no links" case, so the dataclass surface uses ``None``.
+
+    **Full-row fields** (issue #49 / ADR-0006)
+
+    ``ended_at`` — span end time; ``None`` until the row is finalized
+    (ADR-0004). ``observed_at`` — receiver wall-clock at INSERT time;
+    ``NOT NULL`` in the schema, always a real datetime. ``arrival_seq``
+    — stable per-row identifier drawn from ``spans_seq`` at INSERT;
+    never updated even when ``seq`` advances on finalization;
+    ``NOT NULL`` in the schema, always an integer. ``otlp`` — envelope
+    of ``trace_state``, ``flags``,
+    ``dropped_attributes_count``, ``dropped_events_count``,
+    ``dropped_links_count``; ``None`` when absent. ``scope`` —
+    instrumentation scope ``{name, version, ...}``; ``None`` when
+    absent. ``resource_attributes`` — Resource attributes minus the
+    promoted ``service.name``; ``None`` when absent.
     """
 
     seq: int
@@ -64,6 +101,8 @@ class Span:
     name: str
     started_at: dt.datetime
     attributes: dict[str, Any]
+    observed_at: dt.datetime
+    arrival_seq: int
     in_time_window: bool = True
     service_name: str | None = None
     kind: str | None = None
@@ -71,6 +110,10 @@ class Span:
     status_message: str | None = None
     events: list[dict[str, Any]] | None = None
     links: list[dict[str, Any]] | None = None
+    ended_at: dt.datetime | None = None
+    otlp: dict[str, Any] | None = None
+    scope: dict[str, Any] | None = None
+    resource_attributes: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +325,12 @@ _COLUMNS = (
     "status_message",
     "events",
     "links",
+    "ended_at",
+    "observed_at",
+    "arrival_seq",
+    "otlp",
+    "scope",
+    "resource_attributes",
 )
 _SELECT_COLS = ", ".join(_COLUMNS)
 
@@ -794,4 +843,10 @@ def _row_to_span(
         # distinct from an empty list.
         events=r.get("events"),
         links=r.get("links"),
+        ended_at=r.get("ended_at"),
+        observed_at=r["observed_at"],
+        arrival_seq=r["arrival_seq"],
+        otlp=r.get("otlp"),
+        scope=r.get("scope"),
+        resource_attributes=r.get("resource_attributes"),
     )

@@ -173,6 +173,23 @@
       font-style: italic;
       font-size: 0.8rem;
     }
+    dl.detail-dl {
+      margin: 0 0 0.5rem 0;
+    }
+    dl.detail-dl dt {
+      color: #888;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-top: 0.35rem;
+    }
+    dl.detail-dl dd {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.8rem;
+      color: #e0e0e0;
+      word-break: break-all;
+    }
   </style>
 </head>
 <body>
@@ -190,15 +207,26 @@
     <aside id="detail" class="detail">
       <h2>Span detail</h2>
       <div class="detail-empty" id="detail-empty">
-        Select a span to view its attributes, events, and links.
+        Select a span to view its details.
       </div>
       <div id="detail-body" style="display:none">
-        <h3 id="detail-name"></h3>
-        <h3>attributes</h3>
+        <h3>Identity</h3>
+        <dl class="detail-dl" id="detail-identity"></dl>
+        <h3>Timing</h3>
+        <dl class="detail-dl" id="detail-timing"></dl>
+        <h3>Status</h3>
+        <div id="detail-status" style="font-size:0.85rem;margin-bottom:0.5rem"></div>
+        <h3>Resource</h3>
+        <pre id="detail-resource"></pre>
+        <h3>Scope</h3>
+        <pre id="detail-scope"></pre>
+        <h3>OTLP envelope</h3>
+        <pre id="detail-otlp"></pre>
+        <h3>Attributes</h3>
         <pre id="detail-attributes"></pre>
-        <h3>events</h3>
+        <h3>Events</h3>
         <pre id="detail-events"></pre>
-        <h3>links</h3>
+        <h3>Links</h3>
         <pre id="detail-links"></pre>
       </div>
     </aside>
@@ -230,7 +258,12 @@
     const traceIdDisplay = document.getElementById('trace-id-display');
     const detailEmptyEl = document.getElementById('detail-empty');
     const detailBodyEl = document.getElementById('detail-body');
-    const detailNameEl = document.getElementById('detail-name');
+    const detailIdentityEl = document.getElementById('detail-identity');
+    const detailTimingEl = document.getElementById('detail-timing');
+    const detailStatusEl = document.getElementById('detail-status');
+    const detailResourceEl = document.getElementById('detail-resource');
+    const detailScopeEl = document.getElementById('detail-scope');
+    const detailOtlpEl = document.getElementById('detail-otlp');
     const detailAttributesEl = document.getElementById('detail-attributes');
     const detailEventsEl = document.getElementById('detail-events');
     const detailLinksEl = document.getElementById('detail-links');
@@ -443,6 +476,19 @@
       }
     }
 
+    function _dd(dl, label, value) {
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      dl.appendChild(dt);
+      const dd = document.createElement('dd');
+      dd.textContent = value == null ? '—' : String(value);
+      dl.appendChild(dd);
+    }
+
+    function _jsonPre(el, value) {
+      el.textContent = value == null ? '(none)' : JSON.stringify(value, null, 2);
+    }
+
     function selectSpan(span, row) {
       for (const r of treeEl.querySelectorAll('.row.selected')) {
         r.classList.remove('selected');
@@ -452,14 +498,50 @@
       detailEmptyEl.style.display = 'none';
       detailBodyEl.style.display = '';
 
-      detailNameEl.textContent = span.name + ' (' + span.span_id + ')';
+      /* Identity */
+      detailIdentityEl.innerHTML = '';
+      _dd(detailIdentityEl, 'trace_id', span.trace_id);
+      _dd(detailIdentityEl, 'span_id', span.span_id);
+      _dd(detailIdentityEl, 'parent_id', span.parent_id);
+      _dd(detailIdentityEl, 'kind', span.kind);
+      _dd(detailIdentityEl, 'service_name', span.service_name);
+      _dd(detailIdentityEl, 'seq', span.seq);
+      _dd(detailIdentityEl, 'arrival_seq', span.arrival_seq);
+
+      /* Timing */
+      detailTimingEl.innerHTML = '';
+      _dd(detailTimingEl, 'started_at', span.started_at);
+      _dd(detailTimingEl, 'ended_at',
+        span.ended_at == null ? '(not finalized)' : span.ended_at);
+      if (span.ended_at != null && span.started_at != null) {
+        const ms = (
+          new Date(span.ended_at) - new Date(span.started_at)
+        ).toFixed(3);
+        _dd(detailTimingEl, 'duration', ms + ' ms');
+      }
+      _dd(detailTimingEl, 'observed_at', span.observed_at);
+
+      /* Status */
+      if (span.error === true) {
+        detailStatusEl.textContent =
+          'Error: ' + (span.status_message || '');
+      } else if (span.error === false) {
+        detailStatusEl.textContent = 'OK';
+      } else {
+        detailStatusEl.textContent = 'Unset';
+      }
+
+      /* Resource / Scope / OTLP envelope */
+      _jsonPre(detailResourceEl, span.resource_attributes);
+      _jsonPre(detailScopeEl, span.scope);
+      _jsonPre(detailOtlpEl, span.otlp);
+
+      /* Attributes / Events / Links */
       detailAttributesEl.textContent = JSON.stringify(
         span.attributes || {}, null, 2,
       );
-      detailEventsEl.textContent = span.events == null
-        ? '(none)' : JSON.stringify(span.events, null, 2);
-      detailLinksEl.textContent = span.links == null
-        ? '(none)' : JSON.stringify(span.links, null, 2);
+      _jsonPre(detailEventsEl, span.events);
+      _jsonPre(detailLinksEl, span.links);
     }
 
     async function init() {

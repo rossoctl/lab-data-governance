@@ -61,6 +61,7 @@ def _insert(
     name: str,
     parent_id: str | None = None,
     started_at: dt.datetime | None = None,
+    ended_at: dt.datetime | None = None,
     error: bool | None = None,
     status_message: str | None = None,
     kind: str = "INTERNAL",
@@ -68,32 +69,41 @@ def _insert(
     events: list | None = None,
     links: list | None = None,
     attributes: dict | None = None,
+    otlp: dict | None = None,
+    scope: dict | None = None,
+    resource_attributes: dict | None = None,
 ) -> None:
     events_json = json.dumps(events) if events is not None else None
     links_json = json.dumps(links) if links is not None else None
     attrs_json = json.dumps(attributes) if attributes is not None else "{}"
+    otlp_json = json.dumps(otlp) if otlp is not None else None
+    scope_json = json.dumps(scope) if scope is not None else None
+    res_json = json.dumps(resource_attributes) if resource_attributes is not None else None
     if started_at is None:
         ts_sql = "now()"
         params: tuple = (
             trace_id, span_id, parent_id, kind, name, service_name,
-            error, status_message, events_json, links_json, attrs_json,
+            ended_at, error, status_message, events_json, links_json,
+            attrs_json, otlp_json, scope_json, res_json,
         )
     else:
         ts_sql = "%s"
         params = (
             trace_id, span_id, parent_id, kind, name, service_name,
-            started_at, error, status_message, events_json, links_json,
-            attrs_json,
+            started_at, ended_at, error, status_message, events_json,
+            links_json, attrs_json, otlp_json, scope_json, res_json,
         )
     conn.execute(
         f"""
         INSERT INTO spans (
             trace_id, span_id, parent_id, kind, name, service_name,
-            started_at, error, status_message, events, links, attributes,
+            started_at, ended_at, error, status_message, events, links,
+            attributes, otlp, scope, resource_attributes,
             seq, arrival_seq, observed_at
         ) VALUES (
             %s, %s, %s, %s, %s, %s,
-            {ts_sql}, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb,
+            {ts_sql}, %s, %s, %s, %s::jsonb, %s::jsonb,
+            %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
             nextval('spans_seq'), currval('spans_seq'), now()
         )
         """,

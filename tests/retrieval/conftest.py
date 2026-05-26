@@ -48,52 +48,53 @@ def insert_span(raw_conn):
         name: str,
         parent_id: str | None = None,
         started_at: dt.datetime | None = None,
+        ended_at: dt.datetime | None = None,
         error: bool | None = None,
         kind: str = "INTERNAL",
         status_message: str | None = None,
         events: list | None = None,
         links: list | None = None,
+        otlp: dict | None = None,
+        scope: dict | None = None,
+        resource_attributes: dict | None = None,
     ) -> None:
         events_json = _json.dumps(events) if events is not None else None
         links_json = _json.dumps(links) if links is not None else None
-        if started_at is None:
-            raw_conn.execute(
-                """
-                INSERT INTO spans (
-                    trace_id, span_id, parent_id, kind, name,
-                    started_at, error, status_message, events, links,
-                    attributes, seq, arrival_seq, observed_at
-                ) VALUES (
-                    %s, %s, %s, %s, %s,
-                    now(), %s, %s, %s::jsonb, %s::jsonb,
-                    '{}'::jsonb,
-                    nextval('spans_seq'), currval('spans_seq'), now()
-                )
-                """,
-                (
-                    trace_id, span_id, parent_id, kind, name,
-                    error, status_message, events_json, links_json,
-                ),
+        otlp_json = _json.dumps(otlp) if otlp is not None else None
+        scope_json = _json.dumps(scope) if scope is not None else None
+        res_json = (
+            _json.dumps(resource_attributes)
+            if resource_attributes is not None
+            else None
+        )
+        ts_expr = "now()" if started_at is None else "%s"
+        extra_params = (
+            ()
+            if started_at is None
+            else (started_at,)
+        )
+        raw_conn.execute(
+            f"""
+            INSERT INTO spans (
+                trace_id, span_id, parent_id, kind, name,
+                started_at, ended_at, error, status_message, events, links,
+                otlp, scope, resource_attributes,
+                attributes, seq, arrival_seq, observed_at
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                {ts_expr}, %s, %s, %s, %s::jsonb, %s::jsonb,
+                %s::jsonb, %s::jsonb, %s::jsonb,
+                '{{}}'::jsonb,
+                nextval('spans_seq'), currval('spans_seq'), now()
             )
-        else:
-            raw_conn.execute(
-                """
-                INSERT INTO spans (
-                    trace_id, span_id, parent_id, kind, name,
-                    started_at, error, status_message, events, links,
-                    attributes, seq, arrival_seq, observed_at
-                ) VALUES (
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s::jsonb, %s::jsonb,
-                    '{}'::jsonb,
-                    nextval('spans_seq'), currval('spans_seq'), now()
-                )
-                """,
-                (
-                    trace_id, span_id, parent_id, kind, name,
-                    started_at, error, status_message, events_json, links_json,
-                ),
-            )
+            """,
+            (
+                trace_id, span_id, parent_id, kind, name,
+                *extra_params,
+                ended_at, error, status_message, events_json, links_json,
+                otlp_json, scope_json, res_json,
+            ),
+        )
         raw_conn.commit()
 
     return _insert
