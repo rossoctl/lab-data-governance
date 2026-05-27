@@ -215,16 +215,78 @@
     <a class="back" href="/">&larr; Recent traces</a>
     <h1>Trace tree</h1>
     <span id="trace-id-display" style="color:#888;font-size:0.85rem"></span>
+    <span style="flex:1"></span>
+    <span id="view-switcher" style="font-size:0.85rem">
+      <button id="view-tree-btn" class="view-btn active" data-view="tree">Span tree</button>
+      <button id="view-flow-btn" class="view-btn" data-view="flow">Execution flow (proto)</button>
+    </span>
   </header>
+  <style>
+    .view-btn {
+      background: #1c1c1c; color: #92c5f9; border: 1px solid #2c2c2c;
+      padding: 0.25rem 0.6rem; cursor: pointer; font-size: 0.8rem;
+    }
+    .view-btn.active { background: #2c2c2c; color: #f0f0f0; }
+    .flow-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+    .flow-table th, .flow-table td {
+      text-align: left; padding: 0.35rem 0.5rem;
+      border-bottom: 1px solid #2c2c2c;
+    }
+    .flow-table th { color: #888; font-weight: normal; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .flow-table tr:hover { background: #1c1c1c; cursor: pointer; }
+    .flow-table tr.selected { background: #2c2c2c; }
+    .ent-pill {
+      display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
+      font-size: 0.75rem; margin-right: 0.3rem;
+      background: #2c2c2c; color: #c9c9c9;
+    }
+    .ent-pill.user { background: #4a3c1a; color: #ffd479; }
+    .ent-pill.external_client { background: #3c2a4a; color: #d49bff; }
+    .ent-pill.agent { background: #1a3c4a; color: #79d4ff; }
+    .ent-pill.tool { background: #1a4a2a; color: #79ffaa; }
+    .ent-pill.external_service { background: #4a1a1a; color: #ff9b9b; }
+    .ent-pill.llm { background: #2a2a4a; color: #b0b0ff; }
+    #flow-section h3 { color: #92c5f9; margin: 1rem 0 0.5rem; font-size: 0.9rem; }
+    #flow-section { display: none; }
+    .err-cell { color: #f85149; }
+    .ok-cell { color: #6acf6a; }
+    .pl-link { color: #92c5f9; text-decoration: underline dotted; cursor: pointer; }
+    .span-link { color: #92c5f9; text-decoration: underline dotted; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }
+    .span-link:hover { color: #b8d8ff; }
+    .spans-table { font-size: 0.78rem; margin-top: 0.25rem; }
+    .spans-table td { word-break: break-all; }
+    .spans-table .anchor-cell { width: 1rem; color: #ffd479; text-align: center; }
+    /* When the detail panel shows an interaction, hide tree-only sections. */
+    aside.detail.flow-mode .span-only { display: none !important; }
+  </style>
   <main>
     <section>
       <div id="status">Loading...</div>
       <div id="error"></div>
       <ul id="tree" class="tree"></ul>
+      <div id="flow-section">
+        <h3>Entities</h3>
+        <table class="flow-table" id="entities-table">
+          <thead><tr><th>Kind</th><th>Display name</th><th>Detected from</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <h3>Interactions</h3>
+        <table class="flow-table" id="interactions-table">
+          <thead><tr>
+            <th>Started</th><th>Caller</th><th>→ Callee</th>
+            <th>Status</th><th>Req</th><th>Resp</th><th>Spans</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="flow-empty" style="display:none;color:#888;padding:1rem 0">
+          No interaction data for this trace. Run the prototype CLI:<br>
+          <code style="color:#c9c9c9">python -m data_governance.processors.p_interactions_proto.cli &lt;trace_id&gt;</code>
+        </div>
+      </div>
     </section>
     <aside id="detail" class="detail">
       <div class="detail-header">
-        <h2>Span detail</h2>
+        <h2 id="detail-title">Span detail</h2>
         <button id="refresh-btn" class="refresh-btn" style="display:none" title="Re-fetch this span">Refresh</button>
       </div>
       <div class="detail-empty" id="detail-empty">
@@ -235,20 +297,26 @@
         <dl class="detail-dl" id="detail-identity"></dl>
         <h3>Timing</h3>
         <dl class="detail-dl" id="detail-timing"></dl>
-        <h3>Status</h3>
-        <div id="detail-status" style="font-size:0.85rem;margin-bottom:0.5rem"></div>
-        <h3>Resource</h3>
-        <pre id="detail-resource"></pre>
-        <h3>Scope</h3>
-        <pre id="detail-scope"></pre>
-        <h3>OTLP envelope</h3>
-        <pre id="detail-otlp"></pre>
-        <h3>Attributes</h3>
+        <h3 class="span-only">Status</h3>
+        <div id="detail-status" class="span-only" style="font-size:0.85rem;margin-bottom:0.5rem"></div>
+        <h3 class="span-only">Resource</h3>
+        <pre id="detail-resource" class="span-only"></pre>
+        <h3 class="span-only">Scope</h3>
+        <pre id="detail-scope" class="span-only"></pre>
+        <h3 class="span-only">OTLP envelope</h3>
+        <pre id="detail-otlp" class="span-only"></pre>
+        <h3 id="detail-attributes-h">Attributes</h3>
         <pre id="detail-attributes"></pre>
-        <h3>Events</h3>
-        <pre id="detail-events"></pre>
-        <h3>Links</h3>
-        <pre id="detail-links"></pre>
+        <table class="flow-table spans-table" id="detail-spans-table" style="display:none">
+          <thead><tr>
+            <th></th><th>Span</th><th>Parent</th><th>Kind</th><th>Service</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <h3 class="span-only">Events</h3>
+        <pre id="detail-events" class="span-only"></pre>
+        <h3 class="span-only">Links</h3>
+        <pre id="detail-links" class="span-only"></pre>
       </div>
     </aside>
   </main>
@@ -614,6 +682,66 @@
       _jsonPre(detailLinksEl, span.links);
     }
 
+    /* Navigation API for the Execution-flow proto view: load a span's
+       ancestor chain, expand each level, then select the target span. */
+    async function fetchSpan(spanId) {
+      const params = new URLSearchParams({
+        trace_id: traceId, span_id: spanId,
+      });
+      const resp = await fetch('/spans?' + params.toString());
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      return (data.spans && data.spans[0]) || null;
+    }
+
+    async function selectSpanByIdInTree(spanId) {
+      // Already loaded? Just expand ancestors and select.
+      let target = loadedSpans.find((s) => s.span_id === spanId);
+      const chain = [];  // from target up to root
+      if (!target) {
+        target = await fetchSpan(spanId);
+        if (!target) throw new Error('span not found: ' + spanId);
+        chain.push(target);
+        let pid = target.parent_id;
+        while (pid) {
+          const existing = loadedSpans.find((s) => s.span_id === pid);
+          if (existing) { chain.push(existing); break; }
+          const ancestor = await fetchSpan(pid);
+          if (!ancestor) break;
+          chain.push(ancestor);
+          pid = ancestor.parent_id;
+        }
+        chain.reverse();  // root-most first
+      }
+      // Expand each ancestor (top-down) so the target's row exists in DOM.
+      for (const ancestor of chain) {
+        const li = treeEl.querySelector(
+          'li.node[data-key="' + ancestor.trace_id + '|' + ancestor.span_id + '"]',
+        );
+        if (!li) continue;
+        const childrenUl = li.querySelector(':scope > ul');
+        const toggle = li.querySelector(':scope > .row > .toggle');
+        if (childrenUl.style.display === 'none') {
+          if (!childrenLoaded.has(ancestor.span_id)) {
+            await loadChildren(li, ancestor);
+          }
+          childrenUl.style.display = '';
+          toggle.textContent = '▼';
+        }
+      }
+      const targetLi = treeEl.querySelector(
+        'li.node[data-key="' + target.trace_id + '|' + target.span_id + '"]',
+      );
+      if (targetLi) {
+        const row = targetLi.querySelector(':scope > .row');
+        const fresh = loadedSpans.find((s) => s.span_id === spanId) || target;
+        selectSpan(fresh, row);
+        row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    }
+
+    window.TraceTreeNav = { selectSpanByIdInTree };
+
     async function init() {
       let root = readListingRoot();
       if (root === null) {
@@ -642,5 +770,6 @@
 
     init();
   </script>
+  <script src="/ui/execution_flow_logic.js"></script>
 </body>
 </html>
