@@ -225,21 +225,23 @@ async def _proto_interactions_handler(request: Request) -> Response:
                 "WHERE table_name = 'proto_interactions'"
             )
             if exists is None:
-                return {"entities": [], "interactions": [], "spans_by_interaction": {}}
+                return {"entities": [], "interactions": [], "spans_by_interaction": {}, "spans_by_entity": {}}
             entities = tx.fetch_all(
                 "SELECT id::text, kind, natural_key, display_name, detected_from "
-                "FROM proto_entities WHERE trace_id = %s ORDER BY kind, display_name",
+                "FROM proto_entities WHERE trace_id = %s AND retracted_at IS NULL "
+                "ORDER BY kind, display_name",
                 (trace_id,),
             )
             interactions = tx.fetch_all(
                 "SELECT id::text, caller_entity_id::text, callee_entity_id::text, "
                 "started_at, ended_at, error, request_payload_hash, "
-                "response_payload_hash, summary "
-                "FROM proto_interactions WHERE trace_id = %s ORDER BY started_at",
+                "response_payload_hash, summary, parent_interaction_id::text "
+                "FROM proto_interactions WHERE trace_id = %s AND retracted_at IS NULL "
+                "ORDER BY started_at",
                 (trace_id,),
             )
             ev = tx.fetch_all(
-                "SELECT pis.interaction_id::text, pis.span_id, pis.is_anchor, "
+                "SELECT pis.interaction_id::text, pis.span_id, pis.role, "
                 "s.parent_id, s.kind, s.service_name "
                 "FROM proto_interaction_spans pis "
                 "LEFT JOIN spans s "
@@ -248,11 +250,31 @@ async def _proto_interactions_handler(request: Request) -> Response:
                 (trace_id,),
             )
             spans_by_ix: dict[str, list[dict]] = {}
-            for ix_id, span_id, is_anchor, parent_id, kind, service_name in ev:
+            for ix_id, span_id, role, parent_id, kind, service_name in ev:
                 spans_by_ix.setdefault(ix_id, []).append(
                     {
                         "span_id": span_id,
-                        "is_anchor": is_anchor,
+                        "role": role,
+                        "parent_id": parent_id,
+                        "kind": kind,
+                        "service_name": service_name,
+                    }
+                )
+            ent_ev = tx.fetch_all(
+                "SELECT pes.entity_id::text, pes.span_id, pes.role, "
+                "s.parent_id, s.kind, s.service_name "
+                "FROM proto_entity_spans pes "
+                "LEFT JOIN spans s "
+                "  ON s.trace_id = pes.trace_id AND s.span_id = pes.span_id "
+                "WHERE pes.trace_id = %s",
+                (trace_id,),
+            )
+            spans_by_entity: dict[str, list[dict]] = {}
+            for ent_id, span_id, role, parent_id, kind, service_name in ent_ev:
+                spans_by_entity.setdefault(ent_id, []).append(
+                    {
+                        "span_id": span_id,
+                        "role": role,
                         "parent_id": parent_id,
                         "kind": kind,
                         "service_name": service_name,
@@ -275,10 +297,12 @@ async def _proto_interactions_handler(request: Request) -> Response:
                         "request_payload_hash": r[6],
                         "response_payload_hash": r[7],
                         "summary": r[8],
+                        "parent_interaction_id": r[9],
                     }
                     for r in interactions
                 ],
                 "spans_by_interaction": spans_by_ix,
+                "spans_by_entity": spans_by_entity,
             }
 
     try:

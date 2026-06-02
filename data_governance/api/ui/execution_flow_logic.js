@@ -28,6 +28,41 @@
 
   let flowLoaded = false;
   let flowData = null;
+  let currentHighlightSpanIds = [];
+
+  // Role glyph maps for the shared spans table.
+  const IX_ROLE = (role) =>
+    role === 'anchor'    ? { glyph: '⚓', title: 'anchor span' } :
+    role === 'connector' ? { glyph: '↳', title: 'connector span', dim: true } :
+    role === 'info'      ? { glyph: 'i', title: 'info span', dim: true } :
+                           { glyph: '', title: '' };
+
+  const ENTITY_ROLE = (role) =>
+    role === 'discovered_via' ? { glyph: '✦', title: 'discovered via' } :
+    role === 'identified_via' ? { glyph: '·', title: 'identified via', dim: true } :
+                                { glyph: '', title: role || '' };
+
+  // "Highlight on tree" button — created lazily in JS so we don't touch markup.
+  // Shared by the interaction & entity panels. It is parented into the SPANS
+  // section header (#detail-attributes-h) by renderSpansTable on every call,
+  // because the sibling code paths set that header's text via `textContent`,
+  // which destroys any child nodes. See renderSpansTable / setView / showPayload.
+  let highlightBtn = document.getElementById('highlight-tree-btn');
+  if (!highlightBtn && detailAttrsHeader) {
+    highlightBtn = document.createElement('button');
+    highlightBtn.id = 'highlight-tree-btn';
+    highlightBtn.className = 'refresh-btn';
+    highlightBtn.textContent = 'Highlight on tree';
+    highlightBtn.style.display = 'none';
+    highlightBtn.addEventListener('click', async () => {
+      const ids = currentHighlightSpanIds;
+      if (!ids || !ids.length) return;
+      setView('tree');
+      if (window.TraceTreeNav && window.TraceTreeNav.highlightSpansInTree) {
+        try { await window.TraceTreeNav.highlightSpansInTree(ids); } catch (_e) {}
+      }
+    });
+  }
 
   function getTraceId() {
     const m = window.location.pathname.match(/^\/trace\/([0-9a-f]+)/i);
@@ -43,8 +78,11 @@
       detailAside.classList.remove('flow-mode');
       detailTitle.textContent = 'Span detail';
       detailAttrsHeader.textContent = 'Attributes';
+      detailAttrsHeader.classList.remove('detail-attrs-h--with-btn');
       detailSpansTable.style.display = 'none';
       detailAttrsPre.style.display = '';
+      const hb = document.getElementById('highlight-tree-btn');
+      if (hb) hb.style.display = 'none';
     } else {
       treeBtn.classList.remove('active');
       flowBtn.classList.add('active');
@@ -99,13 +137,28 @@
       tr.appendChild(kindTd);
       tr.appendChild(nameTd);
       tr.appendChild(detTd);
+      tr.dataset.entityId = e.id;
+      const evidence = (flowData.spans_by_entity && flowData.spans_by_entity[e.id]) || [];
+      tr.addEventListener('click', () => selectEntity(e, evidence));
       entitiesTbody.appendChild(tr);
     });
 
     interactionsTbody.innerHTML = '';
+
+    // Compute depth for each interaction by walking parent links.
+    // Interactions are ordered by started_at; parents always start before children,
+    // so a single forward pass suffices.
+    const depthById = new Map();
+    flowData.interactions.forEach(ix => {
+      const pid = ix.parent_interaction_id;
+      const d = (pid && depthById.has(pid)) ? depthById.get(pid) + 1 : 0;
+      depthById.set(ix.id, d);
+    });
+
     flowData.interactions.forEach(ix => {
       const tr = document.createElement('tr');
       tr.dataset.interactionId = ix.id;
+      const depth = depthById.get(ix.id) || 0;
 
       const tStarted = document.createElement('td');
       tStarted.style.color = '#888';
@@ -117,6 +170,13 @@
       const callee = entById.get(ix.callee_entity_id);
 
       const tCaller = document.createElement('td');
+      if (depth > 0) {
+        const indent = document.createElement('span');
+        indent.style.color = '#555';
+        indent.style.fontFamily = 'ui-monospace, monospace';
+        indent.textContent = '│ '.repeat(depth - 1) + '└─ ';
+        tCaller.appendChild(indent);
+      }
       if (caller) {
         const p = document.createElement('span');
         p.className = 'ent-pill ' + caller.kind;
@@ -181,7 +241,7 @@
       const tSpans = document.createElement('td');
       tSpans.style.color = '#888';
       const evidence = flowData.spans_by_interaction[ix.id] || [];
-      const anchorCount = evidence.filter(e => e.is_anchor).length;
+      const anchorCount = evidence.filter(e => e.role === 'anchor').length;
       tSpans.textContent = `${evidence.length} (${anchorCount} anchor)`;
       tr.appendChild(tSpans);
 
@@ -203,9 +263,11 @@
     document.getElementById('detail-empty').style.display = 'none';
     document.getElementById('detail-body').style.display = '';
     detailAttrsHeader.textContent = 'Content';
+    detailAttrsHeader.classList.remove('detail-attrs-h--with-btn');
     detailAttrsPre.style.display = '';
     detailAttrsPre.textContent = JSON.stringify(data.content, null, 2);
     detailSpansTable.style.display = 'none';
+    if (highlightBtn) highlightBtn.style.display = 'none';
 
     const dl = document.getElementById('detail-identity');
     dl.innerHTML = '';
@@ -247,6 +309,42 @@
     return td;
   }
 
+  function renderSpansTable(evidence, roleFor) {
+    detailAttrsHeader.textContent = 'Spans';
+    // Re-parent the button into the SPANS header on every call: the line above
+    // sets textContent, which clears the header's children. Right-alignment and
+    // the flex layout come from the --with-btn class (see trace_tree.html).
+    if (highlightBtn) {
+      detailAttrsHeader.classList.add('detail-attrs-h--with-btn');
+      detailAttrsHeader.appendChild(highlightBtn);
+    }
+    detailAttrsPre.style.display = 'none';
+    detailSpansTable.style.display = '';
+    const tbody = detailSpansTable.querySelector('tbody');
+    tbody.innerHTML = '';
+    evidence.forEach(ev => {
+      const tr = document.createElement('tr');
+      const tAnchor = document.createElement('td');
+      tAnchor.className = 'anchor-cell';
+      const r = roleFor(ev.role);          // { glyph, title, dim }
+      tAnchor.textContent = r.glyph;
+      tAnchor.title = r.title;
+      if (r.dim) tAnchor.style.color = '#888';
+      tr.appendChild(tAnchor);
+      tr.appendChild(spanLinkCell(ev.span_id));
+      tr.appendChild(spanLinkCell(ev.parent_id));
+      const tKind = document.createElement('td');
+      tKind.textContent = ev.kind || '—';
+      tKind.style.color = ev.kind ? '#c9c9c9' : '#666';
+      tr.appendChild(tKind);
+      const tSvc = document.createElement('td');
+      tSvc.textContent = ev.service_name || '—';
+      tSvc.style.color = ev.service_name ? '#c9c9c9' : '#666';
+      tr.appendChild(tSvc);
+      tbody.appendChild(tr);
+    });
+  }
+
   function selectInteraction(ix, evidence) {
     document.querySelectorAll('#interactions-table tr.selected').forEach(r => r.classList.remove('selected'));
     const row = document.querySelector(`#interactions-table tr[data-interaction-id="${ix.id}"]`);
@@ -263,7 +361,7 @@
     const fields = [
       ['summary', ix.summary],
       ['interaction_id', ix.id],
-      ['anchor span(s)', evidence.filter(e => e.is_anchor).map(e => e.span_id).join(', ')],
+      ['anchor span(s)', evidence.filter(e => e.role === 'anchor').map(e => e.span_id).join(', ')],
       ['evidence spans', String(evidence.length)],
     ];
     fields.forEach(([k, v]) => {
@@ -280,32 +378,43 @@
       tdl.appendChild(dt); tdl.appendChild(dd);
     });
 
-    detailAttrsHeader.textContent = 'Spans';
-    detailAttrsPre.style.display = 'none';
-    detailSpansTable.style.display = '';
-    const tbody = detailSpansTable.querySelector('tbody');
-    tbody.innerHTML = '';
-    evidence.forEach(ev => {
-      const tr = document.createElement('tr');
-      const tAnchor = document.createElement('td');
-      tAnchor.className = 'anchor-cell';
-      if (ev.is_anchor) {
-        tAnchor.textContent = '⚓';
-        tAnchor.title = 'anchor span';
-      }
-      tr.appendChild(tAnchor);
-      tr.appendChild(spanLinkCell(ev.span_id));
-      tr.appendChild(spanLinkCell(ev.parent_id));
-      const tKind = document.createElement('td');
-      tKind.textContent = ev.kind || '—';
-      tKind.style.color = ev.kind ? '#c9c9c9' : '#666';
-      tr.appendChild(tKind);
-      const tSvc = document.createElement('td');
-      tSvc.textContent = ev.service_name || '—';
-      tSvc.style.color = ev.service_name ? '#c9c9c9' : '#666';
-      tr.appendChild(tSvc);
-      tbody.appendChild(tr);
+    renderSpansTable(evidence, IX_ROLE);
+
+    currentHighlightSpanIds = evidence.map(e => e.span_id).filter(Boolean);
+    if (highlightBtn) highlightBtn.style.display = '';
+  }
+
+  function selectEntity(entity, evidence) {
+    document.querySelectorAll('#entities-table tr.selected').forEach(r => r.classList.remove('selected'));
+    const row = document.querySelector(`#entities-table tr[data-entity-id="${entity.id}"]`);
+    if (row) row.classList.add('selected');
+
+    detailAside.classList.add('flow-mode');
+    detailTitle.textContent = 'Entity details';
+    document.getElementById('detail-empty').style.display = 'none';
+    document.getElementById('detail-body').style.display = '';
+
+    const dl = document.getElementById('detail-identity');
+    dl.innerHTML = '';
+    [
+      ['display_name', entity.display_name],
+      ['kind', entity.kind],
+      ['natural_key', entity.natural_key],
+      ['entity_id', entity.id],
+      ['detected_from', entity.detected_from],
+    ].forEach(([k, v]) => {
+      const dt = document.createElement('dt'); dt.textContent = k;
+      const dd = document.createElement('dd'); dd.textContent = v == null ? '—' : String(v);
+      dl.appendChild(dt); dl.appendChild(dd);
     });
+
+    // No timing for entities.
+    document.getElementById('detail-timing').innerHTML = '';
+
+    renderSpansTable(evidence, ENTITY_ROLE);
+
+    currentHighlightSpanIds = evidence.map(e => e.span_id).filter(Boolean);
+    if (highlightBtn) highlightBtn.style.display = '';
   }
 
   treeBtn.addEventListener('click', () => setView('tree'));
