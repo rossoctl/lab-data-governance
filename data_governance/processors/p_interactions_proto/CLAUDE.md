@@ -77,7 +77,7 @@ running the CLI, diff its output against those two documents — they
 were derived independently from the dl-demo source code and are the
 regression target.
 
-The DB tables `proto_entities` and `proto_interactions` carry
+The DB tables `entities` and `interactions` carry
 `retracted_at` tombstones (ADR-0011 §3); default views (`_print_report`
 in `cli.py` and the `/proto/interactions/<trace_id>` endpoint in the
 API) filter `retracted_at IS NULL`. To inspect tombstoned rows, query
@@ -88,7 +88,7 @@ kubectl --context kind-kagenti -n data-governance exec \
   data-governance-postgres-0 -- \
   psql -U data_governance -d data_governance -c \
   "SELECT kind, natural_key, retracted_at IS NOT NULL AS retracted
-   FROM proto_entities ORDER BY kind, natural_key;"
+   FROM entities ORDER BY kind, natural_key;"
 ```
 
 ## Don't

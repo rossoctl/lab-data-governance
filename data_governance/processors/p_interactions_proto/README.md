@@ -39,17 +39,17 @@ prototype.
 
 ## Schema
 
-The CLI's DDL drops + recreates these `proto_*` scratch tables on each
+The CLI's DDL drops + recreates these scratch tables on each
 run (mirroring Q21 / ADR-0007 with ENUMs stored as `text` to avoid
 alembic friction):
 
-- `proto_entities`
-- `proto_entity_spans` (role: `discovered_via` | `identified_via`)
-- `proto_interactions` (`parent_interaction_id`, `seq`, `anchor_rule`
+- `entities`
+- `entity_spans` (role: `discovered_via` | `identified_via`)
+- `interactions` (`parent_interaction_id`, `seq`, `anchor_rule`
   debug column)
-- `proto_interaction_spans` (role: `anchor` | `info` | `connector`)
-- `proto_interaction_payloads` (content-addressed)
-- `proto_processor_state` (cursor: `last_processed_seq`)
+- `interaction_spans` (role: `anchor` | `info` | `connector`)
+- `interaction_payloads` (content-addressed)
+- `processor_state` (cursor: `last_processed_seq`)
 
 ## Run
 
@@ -98,7 +98,7 @@ from data_governance import db
 db.configure(os.environ["DATABASE_URL"])
 with db.transaction() as txn:
     print(txn.fetch_all(
-        "SELECT kind, count(*) FROM proto_entities GROUP BY kind ORDER BY 1"
+        "SELECT kind, count(*) FROM entities GROUP BY kind ORDER BY 1"
     ))
 ```
 

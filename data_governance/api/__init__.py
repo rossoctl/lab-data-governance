@@ -222,13 +222,13 @@ async def _proto_interactions_handler(request: Request) -> Response:
             # Tables may not exist yet if the CLI hasn't run.
             exists = tx.fetch_one(
                 "SELECT 1 FROM information_schema.tables "
-                "WHERE table_name = 'proto_interactions'"
+                "WHERE table_name = 'interactions'"
             )
             if exists is None:
                 return {"entities": [], "interactions": [], "spans_by_interaction": {}, "spans_by_entity": {}}
             entities = tx.fetch_all(
                 "SELECT id::text, kind, natural_key, display_name, detected_from "
-                "FROM proto_entities WHERE trace_id = %s AND retracted_at IS NULL "
+                "FROM entities WHERE trace_id = %s AND retracted_at IS NULL "
                 "ORDER BY kind, display_name",
                 (trace_id,),
             )
@@ -236,14 +236,14 @@ async def _proto_interactions_handler(request: Request) -> Response:
                 "SELECT id::text, caller_entity_id::text, callee_entity_id::text, "
                 "started_at, ended_at, error, request_payload_hash, "
                 "response_payload_hash, summary, parent_interaction_id::text "
-                "FROM proto_interactions WHERE trace_id = %s AND retracted_at IS NULL "
+                "FROM interactions WHERE trace_id = %s AND retracted_at IS NULL "
                 "ORDER BY started_at",
                 (trace_id,),
             )
             ev = tx.fetch_all(
                 "SELECT pis.interaction_id::text, pis.span_id, pis.role, "
                 "s.parent_id, s.kind, s.service_name "
-                "FROM proto_interaction_spans pis "
+                "FROM interaction_spans pis "
                 "LEFT JOIN spans s "
                 "  ON s.trace_id = pis.trace_id AND s.span_id = pis.span_id "
                 "WHERE pis.trace_id = %s",
@@ -263,7 +263,7 @@ async def _proto_interactions_handler(request: Request) -> Response:
             ent_ev = tx.fetch_all(
                 "SELECT pes.entity_id::text, pes.span_id, pes.role, "
                 "s.parent_id, s.kind, s.service_name "
-                "FROM proto_entity_spans pes "
+                "FROM entity_spans pes "
                 "LEFT JOIN spans s "
                 "  ON s.trace_id = pes.trace_id AND s.span_id = pes.span_id "
                 "WHERE pes.trace_id = %s",
@@ -322,7 +322,7 @@ async def _proto_payload_handler(request: Request) -> Response:
         with db.transaction() as tx:
             row = tx.fetch_one(
                 "SELECT content_hash, content_kind, content, byte_size "
-                "FROM proto_interaction_payloads WHERE content_hash = %s",
+                "FROM interaction_payloads WHERE content_hash = %s",
                 (h,),
             )
             if row is None:
