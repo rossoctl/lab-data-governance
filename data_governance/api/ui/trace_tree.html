@@ -79,16 +79,74 @@
     .row.selected:hover {
       background: #455778;
     }
-    .row.highlighted {
-      background: #4a3c12;
-      box-shadow: inset 0 0 0 1px #ffd479;
+    /* Multi-set highlight stripes. Highlight is carried ENTIRELY by the
+       left-edge stripe gutter — selection keeps the row background, so a
+       row can be both selected (blue) and highlighted (stripes) with no
+       clash. The gutter is always present (even when empty) so row text
+       never shifts as sets are pinned/unpinned. One stripe per pinned set
+       the row's span belongs to, in slot order; no cap. Every gutter is
+       sized to the most-striped row (--stripe-gutter-w, set imperatively
+       by updateGutterWidth) so the text column stays aligned. Stripe color
+       is an inline background (colorForSlot); slots ≥4 are HSL-generated,
+       so they can't be enumerated as classes. */
+    .stripe-gutter {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: stretch;
+      gap: 1px;
+      width: var(--stripe-gutter-w, 0px);
+      align-self: stretch;
     }
-    .row.highlighted.selected {
-      /* selection + highlight on the same row — keep both legible */
-      background: #4a4326;
-      box-shadow: inset 0 0 0 1px #ffd479;
+    .stripe {
+      width: 3px;
+      border-radius: 1px;
     }
-    .row.highlighted:hover { background: #5a4a1a; }
+    /* Highlight legend: floating key on the tree view. */
+    #highlight-legend {
+      display: none;            /* shown only when ≥1 pin is active */
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      margin: 0 0 0.5rem 0;
+      padding: 0.4rem 0.5rem;
+      background: #1b1b1b;
+      border: 1px solid #2c2c2c;
+      border-radius: 4px;
+      font-size: 0.8rem;
+    }
+    #highlight-legend .legend-title {
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 0.7rem;
+      margin-bottom: 0.3rem;
+    }
+    #highlight-legend .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.1rem 0;
+    }
+    #highlight-legend .legend-swatch {
+      flex: 0 0 auto;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+    }
+    #highlight-legend .legend-label {
+      flex: 1 1 auto;
+      color: #c9c9c9;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #highlight-legend .legend-remove {
+      flex: 0 0 auto;
+      color: #888;
+      cursor: pointer;
+      padding: 0 0.2rem;
+    }
+    #highlight-legend .legend-remove:hover { color: #fff; }
     .toggle {
       display: inline-flex;
       align-items: center;
@@ -193,6 +251,21 @@
       font-size: 0.75rem;
     }
     .refresh-btn:hover { background: #333; }
+    .refresh-btn:disabled {
+      color: #666;
+      border-color: #333;
+      cursor: default;
+      background: #222;
+    }
+    /* Color chip inside the Add/Unpin button previewing the slot color. */
+    #highlight-tree-btn .btn-swatch {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      border-radius: 2px;
+      margin-right: 0.35rem;
+      vertical-align: -1px;
+    }
     aside.detail h3 {
       margin: 0.75rem 0 0.25rem 0;
       font-size: 0.85rem;
@@ -269,6 +342,11 @@
     .flow-table tr:hover { background: #2a2a2a; cursor: pointer; }
     .flow-table tr.selected { background: #3a4a66; color: #ffffff; }
     .flow-table tr.selected:hover { background: #455778; }
+    /* Flow pin marker: a slot-color dot in a dedicated column, marking which
+       entity/interaction rows are pinned (one dot per row). Mirrors the tree
+       stripe gutter; filled by repaintFlowDots from TraceTreeNav.getPins(). */
+    td.flow-pin-cell { width: 1.2rem; text-align: center; }
+    .flow-pin-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
     .ent-pill {
       display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
       font-size: 0.75rem; margin-right: 0.3rem;
@@ -297,17 +375,21 @@
     <section>
       <div id="status">Loading...</div>
       <div id="error"></div>
+      <div id="highlight-legend">
+        <div class="legend-title">Highlighted sets</div>
+        <div id="highlight-legend-rows"></div>
+      </div>
       <ul id="tree" class="tree"></ul>
       <div id="flow-section">
         <h3>Entities</h3>
         <table class="flow-table" id="entities-table">
-          <thead><tr><th>Kind</th><th>Display name</th><th>Detected from</th></tr></thead>
+          <thead><tr><th>Kind</th><th></th><th>Display name</th><th>Detected from</th></tr></thead>
           <tbody></tbody>
         </table>
         <h3>Interactions</h3>
         <table class="flow-table" id="interactions-table">
           <thead><tr>
-            <th>Started</th><th>Caller</th><th>→ Callee</th>
+            <th>Started</th><th></th><th>Caller</th><th>→ Callee</th>
             <th>Status</th><th>Req</th><th>Resp</th><th>Spans</th>
           </tr></thead>
           <tbody></tbody>
@@ -486,6 +568,12 @@
       row.className = 'row';
       row.dataset.spanId = span.span_id;
       row.tabIndex = 0;
+
+      // Left-edge stripe gutter — always present so text stays aligned.
+      // addPin/removePin fill/clear it with .stripe bars (slot-colored).
+      const gutter = document.createElement('span');
+      gutter.className = 'stripe-gutter';
+      row.appendChild(gutter);
 
       const toggle = document.createElement('span');
       toggle.className = 'toggle';
@@ -797,47 +885,184 @@
       }
     }
 
-    function clearHighlights() {
-      for (const r of treeEl.querySelectorAll('.row.highlighted')) {
-        r.classList.remove('highlighted');
+    // ── Multi-set highlight: any number of pinned sets, each in a slot. ──
+    // A pin is a frozen snapshot { key, slot, label, spanIds }. Highlight is
+    // rendered as left-edge stripes (slot color), independent of selection.
+    // Slots 0–3 use the hand-tuned palette; slots ≥4 are generated by the
+    // golden-angle so an arbitrary number of pins stay visually distinct.
+    const HIGHLIGHT_PALETTE = ['#ffd479', '#7fd1ff', '#b48eff', '#7fe0a3'];
+    const pins = [];                 // ordered list of active pins
+    const legendEl = document.getElementById('highlight-legend');
+    const legendRowsEl = document.getElementById('highlight-legend-rows');
+
+    function pinFor(key) { return pins.find((p) => p.key === key) || null; }
+    function isPinned(key) { return !!pinFor(key); }
+    function colorForSlot(slot) {
+      return slot < HIGHLIGHT_PALETTE.length
+        ? HIGHLIGHT_PALETTE[slot]
+        : 'hsl(' + ((slot * 137.5) % 360) + ' 65% 65%)';
+    }
+    function slotColorFor(key) {
+      const p = pinFor(key);
+      return p ? colorForSlot(p.slot) : null;
+    }
+    // Lowest free integer slot, no upper bound. Reusing freed slots keeps a
+    // set's color stable across unpins of other sets.
+    function nextFreeSlot() {
+      for (let s = 0; ; s++) {
+        if (!pins.some((p) => p.slot === s)) return s;
+      }
+    }
+    function nextFreeColor() {
+      return colorForSlot(nextFreeSlot());
+    }
+
+    // Insert a stripe into a row's gutter, keeping stripes in slot order.
+    // Color is inline (slots ≥4 are HSL-generated, not enumerable as classes);
+    // data-slot carries the slot for ordering + removal.
+    function addStripeToRow(row, slot) {
+      const gutter = row.querySelector(':scope > .stripe-gutter');
+      if (!gutter) return;
+      if (gutter.querySelector(':scope > .stripe[data-slot="' + slot + '"]')) return;  // already there
+      const stripe = document.createElement('span');
+      stripe.className = 'stripe';
+      stripe.dataset.slot = slot;
+      stripe.style.background = colorForSlot(slot);
+      // keep ascending slot order so a color is always in the same column
+      let before = null;
+      for (const existing of gutter.children) {
+        if (Number(existing.dataset.slot) > slot) { before = existing; break; }
+      }
+      gutter.insertBefore(stripe, before);
+    }
+
+    function removeStripesForSlot(slot) {
+      for (const s of treeEl.querySelectorAll('.stripe-gutter > .stripe[data-slot="' + slot + '"]')) {
+        s.remove();
       }
     }
 
-    // Best-effort: reveal + highlight each span in the set. Returns
-    // {highlighted, missing} counts. Scrolls to the first highlighted row.
-    async function highlightSpansInTree(spanIds) {
-      clearHighlights();
-      let first = null, ok = 0, missing = 0;
+    // Size every gutter to the most-striped row (uniform width keeps the text
+    // column aligned). One CSS var on #tree restyles all gutters in one write.
+    // 3px per stripe + 1px gaps between them; 0px when nothing is pinned.
+    function updateGutterWidth() {
+      let max = 0;
+      for (const g of treeEl.querySelectorAll('.stripe-gutter')) {
+        const n = g.querySelectorAll(':scope > .stripe').length;
+        if (n > max) max = n;
+      }
+      const w = max === 0 ? 0 : max * 3 + (max - 1);
+      treeEl.style.setProperty('--stripe-gutter-w', w + 'px');
+    }
+
+    function renderLegend() {
+      legendRowsEl.innerHTML = '';
+      if (pins.length === 0) {
+        legendEl.style.display = 'none';
+        return;
+      }
+      legendEl.style.display = '';
+      // Show in slot order so the legend matches stripe column order.
+      [...pins].sort((a, b) => a.slot - b.slot).forEach((p) => {
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'legend-row';
+        const sw = document.createElement('span');
+        sw.className = 'legend-swatch';
+        sw.style.background = colorForSlot(p.slot);
+        const lbl = document.createElement('span');
+        lbl.className = 'legend-label';
+        lbl.textContent = p.label;
+        lbl.title = p.label;
+        const rm = document.createElement('span');
+        rm.className = 'legend-remove';
+        rm.textContent = '✕';
+        rm.title = 'Unpin';
+        rm.addEventListener('click', () => { removePin(p.key); });
+        rowDiv.appendChild(sw);
+        rowDiv.appendChild(lbl);
+        rowDiv.appendChild(rm);
+        legendRowsEl.appendChild(rowDiv);
+      });
+    }
+
+    // Pin a set: reveal each span (force-expand ancestors), stripe its row in
+    // the lowest free slot, render the legend, scroll to the first member.
+    // Returns { added, slot, located, missing } (added=false if already pinned).
+    async function addPin({ key, label, spanIds }) {
+      if (isPinned(key)) return { added: false, reason: 'duplicate' };
+      const slot = nextFreeSlot();
+      const pin = { key, slot, label, spanIds: spanIds.slice() };
+      pins.push(pin);
+      let first = null, located = 0, missing = 0;
       for (const sid of spanIds) {
         let row = null;
         try { row = await revealSpanInTree(sid); } catch (_e) { row = null; }
         if (row) {
-          row.classList.add('highlighted');
-          ok++;
+          addStripeToRow(row, slot);
+          located++;
           if (!first) first = row;
         } else {
           missing++;
         }
       }
+      updateGutterWidth();
+      renderLegend();
       if (first) first.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      // Status line (best-effort summary)
-      let msg = 'Highlighted ' + ok + ' related span' + (ok === 1 ? '' : 's');
+      let msg = 'Highlighted ' + located + ' span' + (located === 1 ? '' : 's')
+        + ' for "' + label + '"';
       if (missing > 0) msg += ' (' + missing + ' not located)';
       statusEl.textContent = msg;
-      return { highlighted: ok, missing };
+      return { added: true, slot, located, missing };
+    }
+
+    // Remove a pin: free its slot, strip its color from every row, no scroll.
+    function removePin(key) {
+      const idx = pins.findIndex((p) => p.key === key);
+      if (idx === -1) return false;
+      const [pin] = pins.splice(idx, 1);
+      removeStripesForSlot(pin.slot);
+      updateGutterWidth();
+      renderLegend();
+      if (typeof onPinsChanged === 'function') onPinsChanged();
+      return true;
+    }
+
+    // Drop every pin (Esc on the tree view).
+    function clearAllPins() {
+      pins.length = 0;
+      for (const s of treeEl.querySelectorAll('.stripe-gutter > .stripe')) s.remove();
+      updateGutterWidth();
+      renderLegend();
+      if (typeof onPinsChanged === 'function') onPinsChanged();
+    }
+
+    // Hook the flow panel registers so its button can refresh after legend-
+    // driven changes (✕ / Esc) it didn't initiate.
+    let onPinsChanged = null;
+    function setOnPinsChanged(fn) { onPinsChanged = fn; }
+
+    // Read-only view of the active pins for other views (e.g. flow dots).
+    function getPins() {
+      return pins.map((p) => ({ key: p.key, color: colorForSlot(p.slot), label: p.label }));
     }
 
     document.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape' && treeEl.style.display !== 'none') {
-        clearHighlights();
+        clearAllPins();
         statusEl.textContent = '';
       }
     });
 
     window.TraceTreeNav = {
       selectSpanByIdInTree,
-      highlightSpansInTree,
-      clearHighlights,
+      addPin,
+      removePin,
+      clearAllPins,
+      isPinned,
+      slotColorFor,
+      nextFreeColor,
+      getPins,
+      setOnPinsChanged,
     };
 
     async function init() {

@@ -28,7 +28,9 @@
 
   let flowLoaded = false;
   let flowData = null;
-  let currentHighlightSpanIds = [];
+  // The currently-selected flow item, as a pin descriptor — or null in pure
+  // span-detail mode. Drives the Add/Unpin button state. See refreshHighlightBtn.
+  let currentSelection = null;   // { key, label, spanIds }
 
   // Role glyph maps for the shared spans table.
   const IX_ROLE = (role) =>
@@ -42,26 +44,75 @@
     role === 'identified_via' ? { glyph: '·', title: 'identified via', dim: true } :
                                 { glyph: '', title: role || '' };
 
-  // "Highlight on tree" button — created lazily in JS so we don't touch markup.
+  // Add/Unpin highlight button — created lazily in JS so we don't touch markup.
   // Shared by the interaction & entity panels. It is parented into the SPANS
   // section header (#detail-attributes-h) by renderSpansTable on every call,
   // because the sibling code paths set that header's text via `textContent`,
   // which destroys any child nodes. See renderSpansTable / setView / showPayload.
+  //
+  // It acts on the CURRENT selection (single-select) and reflects that item's
+  // pin state against the shared tree-side pin store (TraceTreeNav):
+  //   - already pinned  → "Unpin" in the pin's color
+  //   - not pinned      → "Add to highlights" previewing the next color
+  // There is no cap — any number of sets can be pinned at once.
   let highlightBtn = document.getElementById('highlight-tree-btn');
   if (!highlightBtn && detailAttrsHeader) {
     highlightBtn = document.createElement('button');
     highlightBtn.id = 'highlight-tree-btn';
     highlightBtn.className = 'refresh-btn';
-    highlightBtn.textContent = 'Highlight on tree';
     highlightBtn.style.display = 'none';
     highlightBtn.addEventListener('click', async () => {
-      const ids = currentHighlightSpanIds;
-      if (!ids || !ids.length) return;
-      setView('tree');
-      if (window.TraceTreeNav && window.TraceTreeNav.highlightSpansInTree) {
-        try { await window.TraceTreeNav.highlightSpansInTree(ids); } catch (_e) {}
+      const sel = currentSelection;
+      const nav = window.TraceTreeNav;
+      if (!sel || !nav) return;
+      if (nav.isPinned(sel.key)) {
+        nav.removePin(sel.key);          // unpin in place — stay in flow view
+        return;                          // removePin fires onPinsChanged (refresh + repaint)
       }
+      setView('tree');
+      try { await nav.addPin(sel); } catch (_e) {}
+      // addPin does NOT fire onPinsChanged, so refresh + repaint explicitly.
+      refreshHighlightBtn();
+      repaintFlowDots();
     });
+  }
+
+  // Set a swatch + text on the button in one shot (swatch optional).
+  function setHighlightBtn(text, color, disabled) {
+    if (!highlightBtn) return;
+    highlightBtn.textContent = '';
+    if (color) {
+      const sw = document.createElement('span');
+      sw.className = 'btn-swatch';
+      sw.style.background = color;
+      highlightBtn.appendChild(sw);
+    }
+    highlightBtn.appendChild(document.createTextNode(text));
+    highlightBtn.disabled = !!disabled;
+  }
+
+  // Reconcile the button with currentSelection + the tree-side pin store.
+  function refreshHighlightBtn() {
+    if (!highlightBtn) return;
+    const sel = currentSelection;
+    const nav = window.TraceTreeNav;
+    if (!sel || !nav) { highlightBtn.style.display = 'none'; return; }
+    highlightBtn.style.display = '';
+    if (nav.isPinned(sel.key)) {
+      setHighlightBtn('Unpin', nav.slotColorFor(sel.key), false);
+    } else {
+      setHighlightBtn('Add to highlights', nav.nextFreeColor(), false);
+    }
+  }
+
+  // Let legend-✕ / Esc (which the tree owns) refresh our button AND repaint the
+  // flow dots afterwards — both are views of the same pin store.
+  function onPinsChanged() {
+    refreshHighlightBtn();
+    repaintFlowDots();
+  }
+  if (window.TraceTreeNav && window.TraceTreeNav.setOnPinsChanged) {
+    window.TraceTreeNav.setOnPinsChanged(onPinsChanged);
   }
 
   function getTraceId() {
@@ -83,6 +134,8 @@
       detailAttrsPre.style.display = '';
       const hb = document.getElementById('highlight-tree-btn');
       if (hb) hb.style.display = 'none';
+      // Left flow-detail mode; no flow item is "current" for the button now.
+      currentSelection = null;
     } else {
       treeBtn.classList.remove('active');
       flowBtn.classList.add('active');
@@ -129,12 +182,15 @@
       pill.className = 'ent-pill ' + e.kind;
       pill.textContent = e.kind;
       kindTd.appendChild(pill);
+      const markerTd = document.createElement('td');
+      markerTd.className = 'flow-pin-cell';
       const nameTd = document.createElement('td');
       nameTd.textContent = e.display_name;
       const detTd = document.createElement('td');
       detTd.style.color = '#888';
       detTd.textContent = e.detected_from;
       tr.appendChild(kindTd);
+      tr.appendChild(markerTd);
       tr.appendChild(nameTd);
       tr.appendChild(detTd);
       tr.dataset.entityId = e.id;
@@ -165,6 +221,10 @@
       tStarted.style.fontFamily = 'ui-monospace, monospace';
       tStarted.textContent = ix.started_at ? ix.started_at.split('T')[1].slice(0, 12) : '';
       tr.appendChild(tStarted);
+
+      const markerTd = document.createElement('td');
+      markerTd.className = 'flow-pin-cell';
+      tr.appendChild(markerTd);
 
       const caller = entById.get(ix.caller_entity_id);
       const callee = entById.get(ix.callee_entity_id);
@@ -248,6 +308,37 @@
       tr.addEventListener('click', () => selectInteraction(ix, evidence));
 
       interactionsTbody.appendChild(tr);
+    });
+
+    repaintFlowDots();
+  }
+
+  // Paint a slot-color dot in each pinned row's marker cell (one per row),
+  // reading the tree-side pin store. The marker column is always present, so
+  // toggling a dot never shifts layout. Called after every flow render and on
+  // every pin change (see onPinsChanged) to keep the views in sync.
+  function repaintFlowDots() {
+    const nav = window.TraceTreeNav;
+    const colorByKey = new Map();
+    if (nav && nav.getPins) {
+      nav.getPins().forEach(p => colorByKey.set(p.key, p.color));
+    }
+    const paint = (tr, key) => {
+      const cell = tr.querySelector('.flow-pin-cell');
+      if (!cell) return;
+      cell.textContent = '';
+      const color = colorByKey.get(key);
+      if (!color) return;
+      const dot = document.createElement('span');
+      dot.className = 'flow-pin-dot';
+      dot.style.background = color;
+      cell.appendChild(dot);
+    };
+    entitiesTbody.querySelectorAll('tr').forEach(tr => {
+      paint(tr, 'entity:' + tr.dataset.entityId);
+    });
+    interactionsTbody.querySelectorAll('tr').forEach(tr => {
+      paint(tr, 'interaction:' + tr.dataset.interactionId);
     });
   }
 
@@ -380,8 +471,12 @@
 
     renderSpansTable(evidence, IX_ROLE);
 
-    currentHighlightSpanIds = evidence.map(e => e.span_id).filter(Boolean);
-    if (highlightBtn) highlightBtn.style.display = '';
+    currentSelection = {
+      key: 'interaction:' + ix.id,
+      label: ix.summary || ix.id,
+      spanIds: evidence.map(e => e.span_id).filter(Boolean),
+    };
+    refreshHighlightBtn();
   }
 
   function selectEntity(entity, evidence) {
@@ -413,8 +508,12 @@
 
     renderSpansTable(evidence, ENTITY_ROLE);
 
-    currentHighlightSpanIds = evidence.map(e => e.span_id).filter(Boolean);
-    if (highlightBtn) highlightBtn.style.display = '';
+    currentSelection = {
+      key: 'entity:' + entity.id,
+      label: entity.display_name || entity.id,
+      spanIds: evidence.map(e => e.span_id).filter(Boolean),
+    };
+    refreshHighlightBtn();
   }
 
   treeBtn.addEventListener('click', () => setView('tree'));
