@@ -175,6 +175,40 @@ span's `seq`. Identity is `trace_id`; everything else is derived. The UI
 dedupes by `trace_id` across paginated responses to collapse anchor flips
 into a single row, keeping the highest-`seq` anchor.
 
+**Span role**:
+The abstract protocol classification assigned to a **Span** by a scope-specific
+classifier within `P-interactions`. One of three values:
+- **Send** — the span represents the sender side of a cross-entity call (local entity initiates, remote entity receives).
+- **Receive** — the span represents the receiver side of a cross-entity call (remote entity called, local entity handles).
+- **Internal** — the span represents local work within a single entity; no cross-entity boundary is crossed. Unknown spans with no recognisable semantics are always classified Internal.
+_Avoid_: "call event", "non-call event" — those are the algorithm doc's construction-time terms, not the domain vocabulary. Use Send / Receive / Internal.
+
+**Scope graph**:
+The directed graph built by `P-interactions` for a single OTel instrumentation
+scope (e.g. the starlette+httpx HTTP layer, or the openinference+a2a agentic
+layer). Nodes are entity nodes and event nodes; edges are gray (ordering within
+an entity) or black (cross-entity call). Black edges partition the graph into
+entity subgraphs: every node reachable within a subgraph (connected only by
+gray edges) belongs to the same entity and collapses to a single entity node in
+Step 1.b. No key matching is needed — entity boundaries are structural, defined
+solely by black edges. Built from **Span role** classifications — one graph per
+scope layer. See also **Layered graphs**, **Cross-scope merge**.
+
+**Layered graphs**:
+The collection of **Scope graphs**, one per instrumentation scope, produced from
+the same **Trace** before cross-scope merging. Each layer may capture a
+different protocol view of the same underlying calls (e.g. HTTP layer vs
+agentic layer). Intermediate output of `P-interactions`; persisted to scratch
+tables for evaluation.
+
+**Cross-scope merge**:
+The Step 2 operation in `P-interactions` that unifies nodes across **Layered
+graphs** into a single merged graph. Primary signal is graph structure
+similarity (Send nodes merge with Send nodes, Receive with Receive — never
+Send with Receive); secondary signal is shared attributes (URL, host, address).
+Nodes that exist in only one scope layer are retained as-is. The merged graph
+is the source from which final **Entities** and **Interactions** are derived.
+
 ## Relationships
 
 - A **Trace** contains one or more **Spans**, all sharing its `trace_id`.

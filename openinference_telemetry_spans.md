@@ -193,3 +193,62 @@ Source: `python/instrumentation/openinference-instrumentation-mcp/src/openinfere
 | **Total distinct span types** | **7** | **3** | **4** | **3** | **1** | **7** |
 
 **Grand total: 18 span types + 7 context-propagation instrumentation points across 5 packages.**
+
+---
+
+## Send / Receive Classification per Framework
+
+> **Receive** — the agent is being called (inbound boundary).
+> **Send** — the agent is calling out (outbound boundary).
+> **Internal** — processing within a single entity; no protocol boundary.
+> **Not observed** — the framework does not emit a span for this side.
+
+### OpenAI Agents (`openinference-instrumentation-openai-agents`)
+
+| Span name | Role | remote_label | Notes |
+|---|---|---|---|
+| `{trace.name}` (AGENT root) | Internal | — | Covers the entire run; not a protocol boundary |
+| `{AgentSpanData.name}` (AGENT) | Internal | — | Within-process agent activation |
+| `ResponseSpanData` / `GenerationSpanData` (LLM) | **Send** | `llm:<model>` from `llm.model_name` | Agent calling an LLM |
+| `FunctionSpanData` (TOOL) | **Send** | `tool:<span.name>` | Agent invoking a local function tool |
+| `"handoff to {target}"` (TOOL) | **Send** | `agent:<target>` from span name | Agent handing off to another agent; `target` is embedded in span name |
+| `mcp_list_tools` (CHAIN) | **Send** | `mcp-server` (stub) | MCP tool-discovery call; no address attribute available |
+| `GuardrailSpanData` (GUARDRAIL) | Internal | — | In-process safety check |
+| `CustomSpanData` (CHAIN) | Internal | — | User-defined span; no protocol boundary |
+
+### Claude Agent SDK (`openinference-instrumentation-claude-agent-sdk`)
+
+| Span name | Role | remote_label | Notes |
+|---|---|---|---|
+| `ClaudeAgentSDK.query` (AGENT) | **Send** | `llm:claude` (from `llm.model_name`) | Root query to Claude; agent calling the Claude API |
+| `ClaudeAgentSDK.ClaudeSDKClient.receive_response` (AGENT) | **Send** | `llm:claude` (from `llm.model_name`) | Per-turn stateful call to Claude |
+| `ClaudeAgentSDK.{tool_name}` / `ClaudeAgentSDK.Subagent` (AGENT) | **Send** | `agent:<tool_name>` from `agent.name` | Sub-agent invocation launched via a tool call |
+| `{tool_name}` (TOOL) | **Send** | `tool:<tool_name>` from `tool.name` | Local tool invocation |
+
+### Google ADK (`openinference-instrumentation-google-adk`)
+
+| Span name | Role | remote_label | Notes |
+|---|---|---|---|
+| `"invocation [{app_name}]"` (CHAIN) | Internal | — | Top-level runner; not itself a protocol boundary |
+| `"agent_run [{agent.name}]"` (AGENT) | Internal | — | Within-pipeline agent activation |
+| _(ADK LLM span, augmented)_ (LLM) | **Send** | `llm:<model>` from `llm.model_name` | Agent calling Gemini or compatible model |
+| _(ADK tool span, augmented)_ (TOOL) | **Send** | `tool:<name>` from `tool.name` | Agent invoking a tool function |
+
+### Strands Agents (`openinference-instrumentation-strands-agents`)
+
+| Span name | Role | remote_label | Notes |
+|---|---|---|---|
+| `invoke_agent` (AGENT) | Internal | — | Top-level agent span; not a protocol boundary |
+| `execute_event_loop_cycle` (CHAIN) | Internal | — | One reasoning iteration; internal structure |
+| `chat` (LLM) | **Send** | `llm:<model>` from `llm.model_name` | Agent calling Bedrock Converse (or compatible) |
+| `execute_tool {tool_name}` (TOOL) | **Send** | `tool:<tool_name>` from `tool.name` | Agent invoking a Strands tool |
+
+### MCP (`openinference-instrumentation-mcp`)
+
+No application spans emitted. Context propagation only — the HTTP SERVER span from `opentelemetry-instrumentation-starlette` provides the **Receive** boundary on the MCP server side; the HTTP CLIENT span from `opentelemetry-instrumentation-httpx` provides the **Send** boundary on the client side.
+
+---
+
+## Receive gaps
+
+None of the openinference packages emit a **Receive** span. Inbound boundaries are always covered by the HTTP layer (`starlette` SERVER span). If an agent framework is deployed without HTTP instrumentation, the receive side will be missing and the trace graph will be split at that boundary.
