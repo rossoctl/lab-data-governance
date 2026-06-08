@@ -86,19 +86,33 @@
     entitiesTbody.innerHTML = '';
     flowData.entities.forEach(e => {
       const tr = document.createElement('tr');
+
+      const phaseTd = document.createElement('td');
+      const phasePill = document.createElement('span');
+      phasePill.className = 'scope-pill';
+      const scopeLabel = (e.scope_name || '—').replace(/^opentelemetry\.instrumentation\./, 'otel.').replace(/^openinference\.instrumentation\./, 'oi.');
+      phasePill.textContent = scopeLabel;
+      phasePill.title = e.scope_name || '';
+      phaseTd.appendChild(phasePill);
+
       const kindTd = document.createElement('td');
       const pill = document.createElement('span');
       pill.className = 'ent-pill ' + e.kind;
       pill.textContent = e.kind;
       kindTd.appendChild(pill);
+
       const nameTd = document.createElement('td');
       nameTd.textContent = e.display_name;
+
       const detTd = document.createElement('td');
       detTd.style.color = '#888';
       detTd.textContent = e.detected_from;
+
+      tr.appendChild(phaseTd);
       tr.appendChild(kindTd);
       tr.appendChild(nameTd);
       tr.appendChild(detTd);
+      tr.appendChild(spanLinkCell(e.anchor_span_id || null));
       entitiesTbody.appendChild(tr);
     });
 

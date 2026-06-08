@@ -207,6 +207,7 @@ _UI_ASSETS: frozenset[str] = frozenset(
         "recent_traces_logic.js",
         "trace_tree_logic.js",
         "execution_flow_logic.js",  # P-interactions prototype (throwaway)
+        "graph_view_logic.js",      # P-interactions graph prototype (throwaway)
     }
 )
 
@@ -227,8 +228,8 @@ async def _proto_interactions_handler(request: Request) -> Response:
             if exists is None:
                 return {"entities": [], "interactions": [], "spans_by_interaction": {}}
             entities = tx.fetch_all(
-                "SELECT id::text, kind, natural_key, display_name, detected_from "
-                "FROM proto_entities WHERE trace_id = %s ORDER BY kind, display_name",
+                "SELECT id::text, kind, natural_key, display_name, detected_from, scope_name, anchor_span_id "
+                "FROM proto_entities WHERE trace_id = %s ORDER BY scope_name, kind, display_name",
                 (trace_id,),
             )
             interactions = tx.fetch_all(
@@ -263,6 +264,7 @@ async def _proto_interactions_handler(request: Request) -> Response:
                     {
                         "id": r[0], "kind": r[1], "natural_key": r[2],
                         "display_name": r[3], "detected_from": r[4],
+                        "scope_name": r[5], "anchor_span_id": r[6],
                     }
                     for r in entities
                 ],
@@ -317,6 +319,154 @@ async def _proto_payload_handler(request: Request) -> Response:
     return JSONResponse(data)
 
 
+async def _proto_graphs_handler(request: Request) -> Response:
+    """Graph prototype endpoint — reads graph scratch tables. THROWAWAY.
+
+    Returns three graph stages from the new algorithm:
+      - base:    Step 1 white base graph (one node per span; traceparent edges)
+      - colored: Step 2.a / 2.b colored base graph (Gray/Black, additive edge
+                 colors, combined-span duplicates, between-boundary flags)
+      - entity:  Step 2.c entity graph (one node per connected component)
+    """
+    trace_id = request.path_params.get("trace_id")
+    if not trace_id:
+        return JSONResponse({"error": "trace_id required"}, status_code=400)
+
+    def _query() -> dict:
+        empty = {
+            "base": {"nodes": [], "edges": []},
+            "colored": {"nodes": [], "edges": []},
+            "entity": {"nodes": [], "edges": []},
+        }
+        with db.transaction() as tx:
+            exists = tx.fetch_one(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'proto_base_nodes'"
+            )
+            if exists is None:
+                return empty
+
+            # --- Step 1 base graph ---
+            base_node_rows = tx.fetch_all(
+                "SELECT id, span_id, scope, attributes "
+                "FROM proto_base_nodes WHERE trace_id = %s "
+                "ORDER BY scope, span_id",
+                (trace_id,),
+            )
+            base_nodes = [
+                {
+                    "id": r[0],
+                    "scope": r[2],
+                    "node_type": "span",
+                    "color": "white",
+                    "label": None,
+                    "attributes": r[3],
+                    "span_ids": [r[1]] if r[1] else [],
+                    "is_boundary": False,
+                    "is_target_duplicate": False,
+                    "flagged": False,
+                }
+                for r in base_node_rows
+            ]
+            base_edge_rows = tx.fetch_all(
+                "SELECT id, from_node_id, to_node_id "
+                "FROM proto_base_edges WHERE trace_id = %s",
+                (trace_id,),
+            )
+            base_edges = [
+                {"id": r[0], "from": r[1], "to": r[2], "kind": "white", "colors": "white"}
+                for r in base_edge_rows
+            ]
+
+            # --- Step 2.a / 2.b colored graph ---
+            colored_node_rows = tx.fetch_all(
+                "SELECT id, span_id, scope, color, is_boundary, is_target_duplicate, "
+                "       flagged, label, attributes "
+                "FROM proto_colored_nodes WHERE trace_id = %s "
+                "ORDER BY color, scope, span_id",
+                (trace_id,),
+            )
+            colored_nodes = [
+                {
+                    "id": r[0],
+                    "scope": r[2],
+                    "node_type": "span",
+                    "color": r[3],
+                    "is_boundary": r[4],
+                    "is_target_duplicate": r[5],
+                    "flagged": r[6],
+                    "label": r[7],
+                    "attributes": r[8],
+                    "span_ids": [r[1]] if r[1] else [],
+                }
+                for r in colored_node_rows
+            ]
+            colored_edge_rows = tx.fetch_all(
+                "SELECT id, from_node_id, to_node_id, colors, kind "
+                "FROM proto_colored_edges WHERE trace_id = %s ORDER BY kind",
+                (trace_id,),
+            )
+            colored_edges = [
+                {
+                    "id": r[0], "from": r[1], "to": r[2],
+                    "colors": r[3], "kind": r[4],
+                }
+                for r in colored_edge_rows
+            ]
+
+            # --- Step 2.c entity graph ---
+            entity_node_rows = tx.fetch_all(
+                "SELECT n.id, n.label, n.attributes, n.contains_boundary, "
+                "       n.contains_black, n.contains_gray, n.scopes, "
+                "       array_agg(ns.span_id ORDER BY ns.span_id) "
+                "         FILTER (WHERE ns.span_id IS NOT NULL) "
+                "FROM proto_entity_nodes n "
+                "LEFT JOIN proto_entity_node_spans ns ON ns.node_id = n.id "
+                "WHERE n.trace_id = %s "
+                "GROUP BY n.id, n.label, n.attributes, n.contains_boundary, "
+                "         n.contains_black, n.contains_gray, n.scopes "
+                "ORDER BY n.label",
+                (trace_id,),
+            )
+            entity_nodes = [
+                {
+                    "id": r[0],
+                    "scope": r[6],
+                    "node_type": "entity",
+                    "color": "black" if r[4] else ("gray" if r[5] else "white"),
+                    "label": r[1],
+                    "attributes": r[2],
+                    "contains_boundary": r[3],
+                    "span_ids": r[7] or [],
+                    "is_boundary": r[3],
+                    "is_target_duplicate": False,
+                    "flagged": False,
+                }
+                for r in entity_node_rows
+            ]
+            entity_edge_rows = tx.fetch_all(
+                "SELECT id, from_node_id, to_node_id "
+                "FROM proto_entity_edges WHERE trace_id = %s",
+                (trace_id,),
+            )
+            entity_edges = [
+                {"id": r[0], "from": r[1], "to": r[2], "kind": "black", "colors": "black"}
+                for r in entity_edge_rows
+            ]
+
+            return {
+                "base": {"nodes": base_nodes, "edges": base_edges},
+                "colored": {"nodes": colored_nodes, "edges": colored_edges},
+                "entity": {"nodes": entity_nodes, "edges": entity_edges},
+            }
+
+    try:
+        data = await asyncio.to_thread(_query)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(data)
+
+
 async def _ui_asset_handler(request: Request) -> Response:
     """Serve a whitelisted static asset under ``/ui/<file>``."""
     name = request.path_params.get("name", "")
@@ -354,6 +504,11 @@ def build_app() -> Starlette:
         Route(
             "/proto/payload/{content_hash:str}",
             endpoint=_proto_payload_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/proto/graphs/{trace_id:str}",
+            endpoint=_proto_graphs_handler,
             methods=["GET"],
         ),
         Route("/", endpoint=_ui_handler, methods=["GET"]),

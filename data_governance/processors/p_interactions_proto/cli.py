@@ -1,28 +1,37 @@
-"""CLI driver for the P-interactions prototype. THROWAWAY.
+"""CLI driver for the P-interactions graph prototype. THROWAWAY.
 
 Usage:
   python -m data_governance.processors.p_interactions_proto.cli <trace_id>
 
-Reads spans for the given trace from Postgres in seq order, runs the
-extractor, drops + recreates scratch tables (proto_*) and inserts results.
+Reads spans for the given trace from Postgres, runs the graph-based extractor,
+drops + recreates scratch tables (proto_*) and inserts results.
+
+Scratch tables written:
+  Intermediate graphs (for evaluation):
+    proto_base_nodes, proto_base_edges
+        — base graph after Step 1 (white nodes + traceparent edges)
+    proto_colored_nodes, proto_colored_edges
+        — colored base graph after Step 2.a / 2.b
+          (Gray/Black nodes, additive edge colors, combined-span duplicates,
+          between-boundary flag annotations)
+    proto_entity_nodes, proto_entity_edges
+        — entity graph after Step 2.c
+
+  Final output (same shape as linear-pass prototype for comparison):
+    proto_entities
+    proto_interaction_payloads
+    proto_interactions
+    proto_interaction_spans
 """
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import sys
 
 from data_governance import db, retrieval
 
-from .extractor import (
-    ExtractResult,
-    ProtoEntity,
-    ProtoInteraction,
-    ProtoInteractionSpan,
-    ProtoPayload,
-    extract,
-)
+from .extractor import ExtractResult, extract
 
 
 _DDL = """
@@ -31,13 +40,101 @@ DROP TABLE IF EXISTS proto_interactions CASCADE;
 DROP TABLE IF EXISTS proto_interaction_payloads CASCADE;
 DROP TABLE IF EXISTS proto_entities CASCADE;
 
-CREATE TABLE proto_entities (
-  id           uuid PRIMARY KEY,
-  kind         text NOT NULL,
-  natural_key  text NOT NULL UNIQUE,
-  display_name text NOT NULL,
-  detected_from text NOT NULL,
+DROP TABLE IF EXISTS proto_entity_edges CASCADE;
+DROP TABLE IF EXISTS proto_entity_node_spans CASCADE;
+DROP TABLE IF EXISTS proto_entity_nodes CASCADE;
+
+DROP TABLE IF EXISTS proto_colored_edges CASCADE;
+DROP TABLE IF EXISTS proto_colored_nodes CASCADE;
+
+DROP TABLE IF EXISTS proto_base_edges CASCADE;
+DROP TABLE IF EXISTS proto_base_nodes CASCADE;
+
+-- Legacy table cleanup (replaced by proto_base_*, proto_colored_*, proto_entity_*).
+DROP TABLE IF EXISTS proto_xscope_node_spans CASCADE;
+DROP TABLE IF EXISTS proto_xscope_edges CASCADE;
+DROP TABLE IF EXISTS proto_xscope_nodes CASCADE;
+DROP TABLE IF EXISTS proto_merged_node_spans CASCADE;
+DROP TABLE IF EXISTS proto_merged_edges CASCADE;
+DROP TABLE IF EXISTS proto_merged_nodes CASCADE;
+DROP TABLE IF EXISTS proto_graph_node_spans CASCADE;
+DROP TABLE IF EXISTS proto_graph_edges CASCADE;
+DROP TABLE IF EXISTS proto_graph_nodes CASCADE;
+
+-- Step 1 base graph (white)
+CREATE TABLE proto_base_nodes (
+  id         text PRIMARY KEY,
+  span_id    text NOT NULL,
+  scope      text NOT NULL,
+  attributes jsonb NOT NULL DEFAULT '{}',
+  trace_id   text NOT NULL
+);
+
+CREATE TABLE proto_base_edges (
+  id           text PRIMARY KEY,
+  from_node_id text NOT NULL REFERENCES proto_base_nodes(id),
+  to_node_id   text NOT NULL REFERENCES proto_base_nodes(id),
   trace_id     text NOT NULL
+);
+
+-- Step 2.a / 2.b colored base graph
+CREATE TABLE proto_colored_nodes (
+  id                  text PRIMARY KEY,
+  span_id             text NOT NULL,
+  scope               text NOT NULL,
+  color               text NOT NULL,            -- white | gray | black
+  is_boundary         boolean NOT NULL DEFAULT false,
+  is_target_duplicate boolean NOT NULL DEFAULT false,
+  flagged             boolean NOT NULL DEFAULT false,
+  label               text NULL,
+  attributes          jsonb NOT NULL DEFAULT '{}',
+  trace_id            text NOT NULL
+);
+
+CREATE TABLE proto_colored_edges (
+  id           text PRIMARY KEY,
+  from_node_id text NOT NULL REFERENCES proto_colored_nodes(id),
+  to_node_id   text NOT NULL REFERENCES proto_colored_nodes(id),
+  colors       text NOT NULL,                   -- comma-joined subset of {white,gray,black}
+  kind         text NOT NULL,                   -- highest applied color (for display)
+  trace_id     text NOT NULL
+);
+
+-- Step 2.c entity graph
+CREATE TABLE proto_entity_nodes (
+  id                 text PRIMARY KEY,
+  label              text NULL,
+  attributes         jsonb NOT NULL DEFAULT '{}',
+  contains_boundary  boolean NOT NULL DEFAULT false,
+  contains_black     boolean NOT NULL DEFAULT false,
+  contains_gray      boolean NOT NULL DEFAULT false,
+  scopes             text NOT NULL DEFAULT '',
+  trace_id           text NOT NULL
+);
+
+CREATE TABLE proto_entity_node_spans (
+  node_id text NOT NULL REFERENCES proto_entity_nodes(id),
+  span_id text NOT NULL,
+  PRIMARY KEY (node_id, span_id)
+);
+
+CREATE TABLE proto_entity_edges (
+  id           text PRIMARY KEY,
+  from_node_id text NOT NULL REFERENCES proto_entity_nodes(id),
+  to_node_id   text NOT NULL REFERENCES proto_entity_nodes(id),
+  trace_id     text NOT NULL
+);
+
+-- Final output
+CREATE TABLE proto_entities (
+  id             text PRIMARY KEY,
+  kind           text NOT NULL,
+  natural_key    text NOT NULL,
+  display_name   text NOT NULL,
+  detected_from  text NOT NULL,
+  scope_name     text NOT NULL,
+  anchor_span_id text NULL,
+  trace_id       text NOT NULL
 );
 
 CREATE TABLE proto_interaction_payloads (
@@ -48,9 +145,9 @@ CREATE TABLE proto_interaction_payloads (
 );
 
 CREATE TABLE proto_interactions (
-  id                     uuid PRIMARY KEY,
-  caller_entity_id       uuid NOT NULL REFERENCES proto_entities(id),
-  callee_entity_id       uuid NOT NULL REFERENCES proto_entities(id),
+  id                     text PRIMARY KEY,
+  caller_entity_id       text NOT NULL REFERENCES proto_entities(id),
+  callee_entity_id       text NOT NULL REFERENCES proto_entities(id),
   started_at             timestamptz NOT NULL,
   ended_at               timestamptz NULL,
   error                  boolean NULL,
@@ -62,7 +159,7 @@ CREATE TABLE proto_interactions (
 CREATE INDEX ON proto_interactions(trace_id);
 
 CREATE TABLE proto_interaction_spans (
-  interaction_id uuid NOT NULL REFERENCES proto_interactions(id) ON DELETE CASCADE,
+  interaction_id text NOT NULL REFERENCES proto_interactions(id) ON DELETE CASCADE,
   trace_id       text NOT NULL,
   span_id        text NOT NULL,
   is_anchor      boolean NOT NULL DEFAULT false,
@@ -73,13 +170,10 @@ CREATE INDEX ON proto_interaction_spans(trace_id, span_id);
 
 
 def _fetch_trace_spans(trace_id: str) -> list[retrieval.Span]:
-    """Fetch all spans for a trace, paginating by seq."""
     out: list[retrieval.Span] = []
     cursor: int | None = None
     while True:
-        result = retrieval.get_spans(
-            cursor=cursor, limit=500, trace_id=trace_id, order="asc"
-        )
+        result = retrieval.get_spans(cursor=cursor, limit=500, trace_id=trace_id, order="asc")
         if not result.spans:
             break
         out.extend(result.spans)
@@ -89,44 +183,113 @@ def _fetch_trace_spans(trace_id: str) -> list[retrieval.Span]:
     return out
 
 
-def _write_results(trace_id: str, result: ExtractResult) -> None:
+def _scopes_for_entity(entity_node, span_by_id) -> str:
+    scopes: list[str] = []
+    for sid in entity_node.span_ids:
+        s = span_by_id.get(sid)
+        if s is None:
+            continue
+        scope = (s.scope or {}).get("name") or ""
+        if scope and scope not in scopes:
+            scopes.append(scope)
+    return ",".join(scopes)
+
+
+def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
     with db.transaction() as txn:
-        # Run DDL — split on ';' since execute() expects single statements is fine
-        # in psycopg 3 actually; pass the whole script.
         txn.execute(_DDL)
+
+        # --- Step 1 base graph ---
+        for node in result.base_graph.nodes:
+            txn.execute(
+                "INSERT INTO proto_base_nodes(id, span_id, scope, attributes, trace_id) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (node.id, node.span_id, node.scope,
+                 json.dumps(node.attributes, default=str), trace_id),
+            )
+        for edge in result.base_graph.edges:
+            txn.execute(
+                "INSERT INTO proto_base_edges(id, from_node_id, to_node_id, trace_id) "
+                "VALUES (%s, %s, %s, %s)",
+                (edge.id, edge.from_node_id, edge.to_node_id, trace_id),
+            )
+
+        # --- Step 2.a / 2.b colored graph ---
+        for node in result.colored_graph.nodes:
+            txn.execute(
+                "INSERT INTO proto_colored_nodes("
+                "id, span_id, scope, color, is_boundary, is_target_duplicate, "
+                "flagged, label, attributes, trace_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (node.id, node.span_id, node.scope, node.color,
+                 node.is_boundary, node.is_target_duplicate, node.flagged,
+                 node.label, json.dumps(node.attributes, default=str), trace_id),
+            )
+        for edge in result.colored_graph.edges:
+            colors_csv = ",".join(sorted(edge.colors))
+            txn.execute(
+                "INSERT INTO proto_colored_edges("
+                "id, from_node_id, to_node_id, colors, kind, trace_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (edge.id, edge.from_node_id, edge.to_node_id,
+                 colors_csv, edge.kind, trace_id),
+            )
+
+        # --- Step 2.c entity graph ---
+        for node in result.entity_graph.nodes:
+            scopes = _scopes_for_entity(node, span_by_id)
+            txn.execute(
+                "INSERT INTO proto_entity_nodes("
+                "id, label, attributes, contains_boundary, contains_black, "
+                "contains_gray, scopes, trace_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (node.id, node.label, json.dumps(node.attributes, default=str),
+                 node.contains_boundary, node.contains_black, node.contains_gray,
+                 scopes, trace_id),
+            )
+            for sid in node.span_ids:
+                txn.execute(
+                    "INSERT INTO proto_entity_node_spans(node_id, span_id) VALUES (%s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    (node.id, sid),
+                )
+        for edge in result.entity_graph.edges:
+            txn.execute(
+                "INSERT INTO proto_entity_edges(id, from_node_id, to_node_id, trace_id) "
+                "VALUES (%s, %s, %s, %s)",
+                (edge.id, edge.from_node_id, edge.to_node_id, trace_id),
+            )
+
+        # --- Final output ---
         for e in result.entities:
             txn.execute(
-                "INSERT INTO proto_entities(id, kind, natural_key, display_name, detected_from, trace_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (e.id, e.kind, e.natural_key, e.display_name, e.detected_from, trace_id),
+                "INSERT INTO proto_entities("
+                "id, kind, natural_key, display_name, detected_from, "
+                "scope_name, anchor_span_id, trace_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (e.id, e.kind, e.natural_key, e.display_name, e.detected_from,
+                 e.scope_name, e.anchor_span_id, trace_id),
             )
         for p in result.payloads:
             txn.execute(
-                "INSERT INTO proto_interaction_payloads(content_hash, content_kind, content, byte_size) "
+                "INSERT INTO proto_interaction_payloads("
+                "content_hash, content_kind, content, byte_size) "
                 "VALUES (%s, %s, %s, %s) ON CONFLICT (content_hash) DO NOTHING",
                 (p.content_hash, p.content_kind, json.dumps(p.content, default=str), p.byte_size),
             )
         for ix in result.interactions:
             txn.execute(
-                "INSERT INTO proto_interactions(id, caller_entity_id, callee_entity_id, "
-                "started_at, ended_at, error, request_payload_hash, response_payload_hash, "
-                "summary, trace_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                (
-                    ix.id,
-                    ix.caller_entity_id,
-                    ix.callee_entity_id,
-                    ix.started_at,
-                    ix.ended_at,
-                    ix.error,
-                    ix.request_payload_hash,
-                    ix.response_payload_hash,
-                    ix.summary,
-                    trace_id,
-                ),
+                "INSERT INTO proto_interactions("
+                "id, caller_entity_id, callee_entity_id, started_at, ended_at, "
+                "error, request_payload_hash, response_payload_hash, summary, trace_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (ix.id, ix.caller_entity_id, ix.callee_entity_id, ix.started_at, ix.ended_at,
+                 ix.error, ix.request_payload_hash, ix.response_payload_hash, ix.summary, trace_id),
             )
         for ev in result.interaction_spans:
             txn.execute(
-                "INSERT INTO proto_interaction_spans(interaction_id, trace_id, span_id, is_anchor) "
+                "INSERT INTO proto_interaction_spans("
+                "interaction_id, trace_id, span_id, is_anchor) "
                 "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
                 (ev.interaction_id, ev.trace_id, ev.span_id, ev.is_anchor),
             )
@@ -149,18 +312,31 @@ def main() -> int:
         spans = _fetch_trace_spans(trace_id)
         print(f"  fetched {len(spans)} spans")
 
-        print("running extractor...")
+        print("running graph extractor...")
         result = extract(spans)
+        span_by_id = {s.span_id: s for s in spans}
 
-        print("\n--- entities ---")
-        for e in result.entities:
-            print(f"  [{e.kind:16}] {e.display_name:40} ({e.detected_from})")
+        print(f"\n--- base graph ---")
+        print(f"  {len(result.base_graph.nodes)} nodes  {len(result.base_graph.edges)} edges")
+
+        print(f"\n--- colored graph ---")
+        n_gray = sum(1 for n in result.colored_graph.nodes if n.color == "gray")
+        n_black = sum(1 for n in result.colored_graph.nodes if n.color == "black")
+        n_dup = sum(1 for n in result.colored_graph.nodes if n.is_target_duplicate)
+        n_flag = sum(1 for n in result.colored_graph.nodes if n.flagged)
+        print(f"  {n_gray} gray, {n_black} black ({n_dup} target duplicates)  "
+              f"{len(result.colored_graph.edges)} edges  {n_flag} flagged")
+
+        print(f"\n--- entity graph ---")
+        print(f"  {len(result.entity_graph.nodes)} entities  "
+              f"{len(result.entity_graph.edges)} edges")
+
+        print(f"\n--- entities ({len(result.entities)}) ---")
+        for e in sorted(result.entities, key=lambda x: (x.kind, x.display_name)):
+            print(f"  [{e.kind:16}] {e.display_name:40} scopes={e.scope_name}")
 
         print(f"\n--- interactions ({len(result.interactions)}) ---")
         for ix in sorted(result.interactions, key=lambda r: r.started_at):
-            ent_by_id = {e.id: e for e in result.entities}
-            caller = ent_by_id.get(ix.caller_entity_id)
-            callee = ent_by_id.get(ix.callee_entity_id)
             err = "ERR" if ix.error else "ok " if ix.error is False else "?  "
             print(f"  {err}  {ix.summary}")
 
@@ -169,14 +345,14 @@ def main() -> int:
         for p in result.payloads:
             kind_counts[p.content_kind] = kind_counts.get(p.content_kind, 0) + 1
         for k, v in sorted(kind_counts.items()):
-            print(f"  {k:24} {v}")
+            print(f"  {k:30} {v}")
 
         print("\n--- notes ---")
         for n in result.notes:
             print(f"  - {n}")
 
         print("\nwriting scratch tables...")
-        _write_results(trace_id, result)
+        _write_results(trace_id, result, span_by_id)
         print("done.")
     finally:
         db.close_pool()

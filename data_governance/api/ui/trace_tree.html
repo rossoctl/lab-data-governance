@@ -219,6 +219,7 @@
     <span id="view-switcher" style="font-size:0.85rem">
       <button id="view-tree-btn" class="view-btn active" data-view="tree">Span tree</button>
       <button id="view-flow-btn" class="view-btn" data-view="flow">Execution flow (proto)</button>
+      <button id="view-graph-btn" class="view-btn" data-view="graph">Graphs (proto)</button>
     </span>
   </header>
   <style>
@@ -241,18 +242,53 @@
       background: #2c2c2c; color: #c9c9c9;
     }
     .ent-pill.user { background: #4a3c1a; color: #ffd479; }
-    .ent-pill.external_client { background: #3c2a4a; color: #d49bff; }
     .ent-pill.agent { background: #1a3c4a; color: #79d4ff; }
     .ent-pill.tool { background: #1a4a2a; color: #79ffaa; }
-    .ent-pill.external_service { background: #4a1a1a; color: #ff9b9b; }
     .ent-pill.llm { background: #2a2a4a; color: #b0b0ff; }
+    .scope-pill { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px; font-size: 0.75rem; font-family: ui-monospace, monospace; background: #1e2a35; color: #7ec8d8; letter-spacing: 0.02em; cursor: default; }
     #flow-section h3 { color: #92c5f9; margin: 1rem 0 0.5rem; font-size: 0.9rem; }
     #flow-section { display: none; }
+    #graph-section { display: none; }
+    .node-type-pill {
+      display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
+      font-size: 0.75rem; font-family: ui-monospace, monospace;
+      background: #2a2a2a; color: #c9c9c9;
+    }
+    .nt-span         { background: #2a2a2a; color: #c9c9c9; }
+    .nt-entity       { background: #1a1a3c; color: #b0b0ff; }
+    .color-pill {
+      display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
+      font-size: 0.75rem; font-family: ui-monospace, monospace;
+    }
+    .col-white { background: #2a2a2a; color: #aaaaaa; border: 1px solid #3a3a3a; }
+    .col-gray  { background: #1c2a3a; color: #79c8ff; }
+    .col-black { background: #1c1c1c; color: #f0f0f0; border: 1px solid #444; }
+    .marker-pill {
+      display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
+      font-size: 0.7rem; font-family: ui-monospace, monospace;
+      margin-left: 0.25rem;
+    }
+    .marker-boundary { background: #1a3c1a; color: #79ffaa; }
+    .marker-target   { background: #2a1a3c; color: #cc79ff; }
+    .marker-flagged  { background: #4a3000; color: #ffcc55; }
+    .edge-kind-pill {
+      display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
+      font-size: 0.75rem; font-family: ui-monospace, monospace;
+    }
+    .ek-white { background: #2a2a2a; color: #aaaaaa; border: 1px solid #3a3a3a; }
+    .ek-gray  { background: #1c2a3a; color: #79c8ff; }
+    .ek-black { background: #1c1c1c; color: #f0f0f0; border: 1px solid #444; }
     .err-cell { color: #f85149; }
     .ok-cell { color: #6acf6a; }
     .pl-link { color: #92c5f9; text-decoration: underline dotted; cursor: pointer; }
     .span-link { color: #92c5f9; text-decoration: underline dotted; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }
     .span-link:hover { color: #b8d8ff; }
+    .graph-subtab-btn {
+      background: #1c1c1c; color: #92c5f9; border: 1px solid #2c2c2c;
+      padding: 0.25rem 0.75rem; cursor: pointer; font-size: 0.8rem;
+      margin-right: 0.25rem; border-radius: 3px 3px 0 0;
+    }
+    .graph-subtab-btn.active { background: #2c2c2c; color: #f0f0f0; border-bottom-color: #2c2c2c; }
     .spans-table { font-size: 0.78rem; margin-top: 0.25rem; }
     .spans-table td { word-break: break-all; }
     .spans-table .anchor-cell { width: 1rem; color: #ffd479; text-align: center; }
@@ -267,7 +303,7 @@
       <div id="flow-section">
         <h3>Entities</h3>
         <table class="flow-table" id="entities-table">
-          <thead><tr><th>Kind</th><th>Display name</th><th>Detected from</th></tr></thead>
+          <thead><tr><th>Scope</th><th>Kind</th><th>Display name</th><th>Detected from</th><th>Anchor span</th></tr></thead>
           <tbody></tbody>
         </table>
         <h3>Interactions</h3>
@@ -281,6 +317,37 @@
         <div id="flow-empty" style="display:none;color:#888;padding:1rem 0">
           No interaction data for this trace. Run the prototype CLI:<br>
           <code style="color:#c9c9c9">python -m data_governance.processors.p_interactions_proto.cli &lt;trace_id&gt;</code>
+        </div>
+      </div>
+      <div id="graph-section" style="display:none">
+        <div id="graph-empty" style="display:none;color:#888;padding:1rem 0">
+          No graph data for this trace. Run the prototype CLI:<br>
+          <code style="color:#c9c9c9">python -m data_governance.processors.p_interactions_proto.cli &lt;trace_id&gt;</code>
+        </div>
+        <div id="graph-content" style="display:none">
+          <div id="graph-subtab-bar" style="margin:0.75rem 0 1rem">
+            <button class="graph-subtab-btn active" data-subtab="base">Step 1 — Base <span id="graph-base-summary" style="color:#888;font-weight:normal;font-size:0.75rem"></span></button>
+            <button class="graph-subtab-btn" data-subtab="colored">Step 2.a/b — Colored <span id="graph-colored-summary" style="color:#888;font-weight:normal;font-size:0.75rem"></span></button>
+            <button class="graph-subtab-btn" data-subtab="entity">Step 2.c — Entities <span id="graph-entity-summary" style="color:#888;font-weight:normal;font-size:0.75rem"></span></button>
+          </div>
+          <div id="graph-subtab-base">
+            <table class="flow-table" id="graph-base-nodes-table">
+              <thead><tr><th>Scope</th><th>Color</th><th>Label / Target</th><th>Span IDs</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="graph-subtab-colored" style="display:none">
+            <table class="flow-table" id="graph-colored-nodes-table">
+              <thead><tr><th>Scope</th><th>Color / Markers</th><th>Label / Target</th><th>Span IDs</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="graph-subtab-entity" style="display:none">
+            <table class="flow-table" id="graph-entity-nodes-table">
+              <thead><tr><th>Scopes</th><th>Color</th><th>Label / Target</th><th>Span IDs</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
@@ -641,6 +708,7 @@
       _dd(detailIdentityEl, 'trace_id', span.trace_id);
       _dd(detailIdentityEl, 'span_id', span.span_id);
       _dd(detailIdentityEl, 'parent_id', span.parent_id);
+      _dd(detailIdentityEl, 'name', span.name);
       _dd(detailIdentityEl, 'kind', span.kind);
       _dd(detailIdentityEl, 'service_name', span.service_name);
       _dd(detailIdentityEl, 'seq', span.seq);
@@ -771,5 +839,6 @@
     init();
   </script>
   <script src="/ui/execution_flow_logic.js"></script>
+  <script src="/ui/graph_view_logic.js"></script>
 </body>
 </html>
