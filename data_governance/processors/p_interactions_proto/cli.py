@@ -85,6 +85,10 @@ CREATE TABLE proto_colored_nodes (
   color               text NOT NULL,            -- white | gray | black
   is_boundary         boolean NOT NULL DEFAULT false,
   is_target_duplicate boolean NOT NULL DEFAULT false,
+  -- Set by Step 2.c on the materialised unobserved-peer stub.
+  -- Per ADR-0007: this column is the sole sanctioned signal for "synthetic
+  -- peer"; do not parse the `label` column for that purpose.
+  is_synthetic        boolean NOT NULL DEFAULT false,
   flagged             boolean NOT NULL DEFAULT false,
   label               text NULL,
   attributes          jsonb NOT NULL DEFAULT '{}',
@@ -108,6 +112,10 @@ CREATE TABLE proto_entity_nodes (
   contains_boundary  boolean NOT NULL DEFAULT false,
   contains_black     boolean NOT NULL DEFAULT false,
   contains_gray      boolean NOT NULL DEFAULT false,
+  -- Per ADR-0007 Step 3.a: true iff every absorbed Black node was synthetic.
+  -- This column is the sole sanctioned signal for "synthetic entity"; do not
+  -- parse the `label` column for that purpose.
+  synthetic          boolean NOT NULL DEFAULT false,
   scopes             text NOT NULL DEFAULT '',
   trace_id           text NOT NULL
 );
@@ -128,12 +136,19 @@ CREATE TABLE proto_entity_edges (
 -- Final output
 CREATE TABLE proto_entities (
   id             text PRIMARY KEY,
-  kind           text NOT NULL,
+  -- natural_key carries the kind as a typed prefix (`llm:` / `tool:` /
+  -- `agent:`) per ADR-0007 "Natural-key prefixes are part of the public
+  -- algorithm vocabulary." Consumers split on `:` rather than reading a
+  -- separate kind column.
   natural_key    text NOT NULL,
   display_name   text NOT NULL,
   detected_from  text NOT NULL,
   scope_name     text NOT NULL,
   anchor_span_id text NULL,
+  -- Per ADR-0007: synthetic identity is a typed boolean, never inferred
+  -- from label/natural_key parsing. UI and downstream queries filter on
+  -- this column.
+  synthetic      boolean NOT NULL DEFAULT false,
   trace_id       text NOT NULL
 );
 
@@ -219,11 +234,12 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
             txn.execute(
                 "INSERT INTO proto_colored_nodes("
                 "id, span_id, scope, color, is_boundary, is_target_duplicate, "
-                "flagged, label, attributes, trace_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "is_synthetic, flagged, label, attributes, trace_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (node.id, node.span_id, node.scope, node.color,
-                 node.is_boundary, node.is_target_duplicate, node.flagged,
-                 node.label, json.dumps(node.attributes, default=str), trace_id),
+                 node.is_boundary, node.is_target_duplicate, node.is_synthetic,
+                 node.flagged, node.label,
+                 json.dumps(node.attributes, default=str), trace_id),
             )
         for edge in result.colored_graph.edges:
             colors_csv = ",".join(sorted(edge.colors))
@@ -241,11 +257,11 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
             txn.execute(
                 "INSERT INTO proto_entity_nodes("
                 "id, label, attributes, contains_boundary, contains_black, "
-                "contains_gray, scopes, trace_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                "contains_gray, synthetic, scopes, trace_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (node.id, node.label, json.dumps(node.attributes, default=str),
                  node.contains_boundary, node.contains_black, node.contains_gray,
-                 scopes, trace_id),
+                 node.synthetic, scopes, trace_id),
             )
             for sid in node.span_ids:
                 txn.execute(
@@ -264,11 +280,11 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
         for e in result.entities:
             txn.execute(
                 "INSERT INTO proto_entities("
-                "id, kind, natural_key, display_name, detected_from, "
-                "scope_name, anchor_span_id, trace_id) "
+                "id, natural_key, display_name, detected_from, "
+                "scope_name, anchor_span_id, synthetic, trace_id) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                (e.id, e.kind, e.natural_key, e.display_name, e.detected_from,
-                 e.scope_name, e.anchor_span_id, trace_id),
+                (e.id, e.natural_key, e.display_name, e.detected_from,
+                 e.scope_name, e.anchor_span_id, e.synthetic, trace_id),
             )
         for p in result.payloads:
             txn.execute(
@@ -323,8 +339,10 @@ def main() -> int:
         n_gray = sum(1 for n in result.colored_graph.nodes if n.color == "gray")
         n_black = sum(1 for n in result.colored_graph.nodes if n.color == "black")
         n_dup = sum(1 for n in result.colored_graph.nodes if n.is_target_duplicate)
+        n_synth = sum(1 for n in result.colored_graph.nodes if n.is_synthetic)
         n_flag = sum(1 for n in result.colored_graph.nodes if n.flagged)
-        print(f"  {n_gray} gray, {n_black} black ({n_dup} target duplicates)  "
+        print(f"  {n_gray} gray, {n_black} black "
+              f"({n_dup} target duplicates, {n_synth} synthetic)  "
               f"{len(result.colored_graph.edges)} edges  {n_flag} flagged")
 
         print(f"\n--- entity graph ---")
@@ -332,8 +350,9 @@ def main() -> int:
               f"{len(result.entity_graph.edges)} edges")
 
         print(f"\n--- entities ({len(result.entities)}) ---")
-        for e in sorted(result.entities, key=lambda x: (x.kind, x.display_name)):
-            print(f"  [{e.kind:16}] {e.display_name:40} scopes={e.scope_name}")
+        for e in sorted(result.entities, key=lambda x: x.natural_key):
+            synth = " (synthetic)" if e.synthetic else ""
+            print(f"  {e.natural_key:40}{synth} scopes={e.scope_name}")
 
         print(f"\n--- interactions ({len(result.interactions)}) ---")
         for ix in sorted(result.interactions, key=lambda r: r.started_at):

@@ -31,6 +31,7 @@ from typing import Any
 
 from data_governance.retrieval import Span
 
+from .adapters import extract_facts, payload_shapes_for_facts
 from .builder import (
     build_base_graph,
     build_entity_graph,
@@ -51,12 +52,21 @@ from .graph import BaseGraph, EntityGraph
 @dataclasses.dataclass
 class ProtoEntity:
     id: str
-    kind: str
+    # natural_key is the classifier-derived label with a typed prefix:
+    # `llm:<model>` | `tool:<name>` | `agent:<name>`. The prefix doubles
+    # as the coarse kind (consumers split on `:` when they need it) — see
+    # ADR-0007 "Natural-key prefixes are part of the public algorithm
+    # vocabulary." There is no separate `kind` column.
     natural_key: str
     display_name: str
     detected_from: str
     scope_name: str
     anchor_span_id: str | None
+    # True iff every base-graph node absorbed into this entity was a Step 2.c
+    # synthetic peer. Per ADR-0007 this is the sole sanctioned signal for
+    # "unobserved-peer stub" — the UI must filter on this boolean, never on
+    # the label/natural_key string.
+    synthetic: bool = False
 
 
 @dataclasses.dataclass
@@ -110,10 +120,6 @@ class ExtractResult:
 # ---------------------------------------------------------------------------
 
 
-def _attr(span: Span, key: str) -> Any:
-    return (span.attributes or {}).get(key)
-
-
 def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, default=str).encode("utf-8")
 
@@ -122,67 +128,22 @@ def _hash_payload(canonical: bytes) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def _extract_llm_messages(span: Span, prefix: str) -> list[dict[str, Any]] | None:
-    attrs = span.attributes or {}
-    msgs: dict[int, dict[str, Any]] = {}
-    full_prefix = f"{prefix}."
-    for key, value in attrs.items():
-        if not key.startswith(full_prefix):
-            continue
-        rest = key[len(full_prefix):]
-        parts = rest.split(".", 1)
-        if len(parts) != 2 or not parts[0].isdigit():
-            continue
-        idx = int(parts[0])
-        msgs.setdefault(idx, {})[parts[1]] = value
-    if not msgs:
+# Payload-shape selection (LLM messages vs. tool/agent input.value/output.value)
+# lives in `adapters.payload_shapes_for_facts`, keyed off `SpanFacts.kind`.
+# This module only owns hashing and `ProtoPayload` construction.
+
+
+def _proto_payload(shape: tuple[str, Any] | None) -> ProtoPayload | None:
+    if shape is None:
         return None
-    return [msgs[i] for i in sorted(msgs)]
-
-
-def _payload_for_llm_call(span: Span) -> tuple[ProtoPayload | None, ProtoPayload | None]:
-    req_msgs = _extract_llm_messages(span, "llm.input_messages")
-    resp_msgs = _extract_llm_messages(span, "llm.output_messages")
-    req = None
-    resp = None
-    if req_msgs is not None:
-        canon = _canonical_bytes({"messages": req_msgs})
-        req = ProtoPayload(_hash_payload(canon), "llm_chat_prompt", {"messages": req_msgs}, len(canon))
-    if resp_msgs is not None:
-        canon = _canonical_bytes({"messages": resp_msgs})
-        resp = ProtoPayload(_hash_payload(canon), "llm_completion", {"messages": resp_msgs}, len(canon))
-    return req, resp
-
-
-def _payload_for_tool_call(span: Span) -> tuple[ProtoPayload | None, ProtoPayload | None]:
-    iv = _attr(span, "input.value")
-    ov = _attr(span, "output.value")
-    req = None
-    resp = None
-    if iv is not None:
-        canon = _canonical_bytes(iv)
-        req = ProtoPayload(_hash_payload(canon), "tool_call_arguments", iv, len(canon))
-    if ov is not None:
-        canon = _canonical_bytes(ov)
-        resp = ProtoPayload(_hash_payload(canon), "tool_call_result", ov, len(canon))
-    return req, resp
+    content_kind, content = shape
+    canon = _canonical_bytes(content)
+    return ProtoPayload(_hash_payload(canon), content_kind, content, len(canon))
 
 
 # ---------------------------------------------------------------------------
 # Entity + interaction derivation from the EntityGraph
 # ---------------------------------------------------------------------------
-
-
-def _kind_from_label(label: str | None) -> str:
-    if not label:
-        return "service"
-    if label.startswith("llm:"):
-        return "llm"
-    if label.startswith("tool:"):
-        return "tool"
-    if label.startswith("agent:"):
-        return "agent"
-    return "service"
 
 
 def _scopes_for_entity(entity_node, span_by_id: dict[str, Span]) -> str:
@@ -202,16 +163,17 @@ def _derive_entities(
 ) -> list[ProtoEntity]:
     """Build ProtoEntity rows from the post-Step-3.b entity graph.
 
-    Step 3.c per ADR-0007: every entity gets the literal ID 'unknown'.
-    Richer naming (hostname / service.name / framework attributes) is
-    deferred to the cross-scope enrichment stage. We keep the classifier-
-    derived `kind` (llm / tool / agent / service) so payload extraction in
-    `_derive_interactions` can still pick the right schema; that's an
-    interaction-routing concern, not an entity ID.
+    Step 3.c per ADR-0007: every entity gets the literal display_name
+    'unknown'. Richer naming (hostname / service.name / framework
+    attributes) is deferred to the cross-scope enrichment stage.
+
+    The classifier-derived natural key (`tool:<name>`, `llm:<model>`,
+    `agent:<name>`) is propagated as-is so prototype consumers can tell
+    entities apart, and so payload-routing in `_derive_interactions` can
+    split on the prefix.
     """
     out = []
     for n in entity_graph.nodes:
-        kind = _kind_from_label(n.label)
         anchor = n.span_ids[0] if n.span_ids else None
         if n.synthetic:
             detected = "synthetic"
@@ -219,14 +181,15 @@ def _derive_entities(
             detected = "observed"
         else:
             detected = "inferred stub"
+        natural_key = n.label or "unknown"
         out.append(ProtoEntity(
             id=n.id,
-            kind=kind,
-            natural_key="unknown",
+            natural_key=natural_key,
             display_name="unknown",
             detected_from=detected,
             scope_name=_scopes_for_entity(n, span_by_id),
             anchor_span_id=anchor,
+            synthetic=n.synthetic,
         ))
     return out
 
@@ -269,17 +232,18 @@ def _derive_interactions(
             else (False if any(s.error is False for s in edge_spans) else None)
         )
 
-        req_hash = None
-        resp_hash = None
-        if callee.kind == "llm":
-            req_p, resp_p = _payload_for_llm_call(anchor_span)
-            req_hash = _ensure(req_p)
-            resp_hash = _ensure(resp_p)
-        elif callee.kind == "tool":
-            req_p, resp_p = _payload_for_tool_call(anchor_span)
-            req_hash = _ensure(req_p)
-            resp_hash = _ensure(resp_p)
+        # Payload shape is chosen by the adapter from `SpanFacts.kind` — the
+        # extractor neither inspects raw attributes nor branches on the
+        # natural-key prefix string.
+        req_shape, resp_shape = payload_shapes_for_facts(extract_facts(anchor_span))
+        req_hash = _ensure(_proto_payload(req_shape))
+        resp_hash = _ensure(_proto_payload(resp_shape))
 
+        # Step 3.c keeps display_name as "unknown" until richer naming
+        # lands; the natural_key carries the classifier label, which is
+        # the most informative thing we have.
+        caller_label = caller.natural_key or caller.display_name
+        callee_label = callee.natural_key or callee.display_name
         ix_id = str(uuid.uuid4())
         interactions.append(ProtoInteraction(
             id=ix_id,
@@ -290,7 +254,7 @@ def _derive_interactions(
             error=error,
             request_payload_hash=req_hash,
             response_payload_hash=resp_hash,
-            summary=f"{caller.display_name} → {callee.display_name}",
+            summary=f"{caller_label} → {callee_label}",
         ))
 
         for span in edge_spans:
@@ -336,7 +300,7 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     # Step 2.a → 2.c — coloring on a working copy
     color_agentic(working, span_by_id)
     duplicate_combined_nodes(working)
-    synthesize_missing_peers(working)
+    synthesize_missing_peers(working, span_by_id)
     flag_between_boundaries(working)
     colored_snapshot = _snapshot(working)
 

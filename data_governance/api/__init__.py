@@ -228,8 +228,10 @@ async def _proto_interactions_handler(request: Request) -> Response:
             if exists is None:
                 return {"entities": [], "interactions": [], "spans_by_interaction": {}}
             entities = tx.fetch_all(
-                "SELECT id::text, kind, natural_key, display_name, detected_from, scope_name, anchor_span_id "
-                "FROM proto_entities WHERE trace_id = %s ORDER BY scope_name, kind, display_name",
+                "SELECT id::text, natural_key, display_name, detected_from, "
+                "scope_name, anchor_span_id, synthetic "
+                "FROM proto_entities WHERE trace_id = %s "
+                "ORDER BY scope_name, natural_key",
                 (trace_id,),
             )
             interactions = tx.fetch_all(
@@ -262,9 +264,10 @@ async def _proto_interactions_handler(request: Request) -> Response:
             return {
                 "entities": [
                     {
-                        "id": r[0], "kind": r[1], "natural_key": r[2],
-                        "display_name": r[3], "detected_from": r[4],
-                        "scope_name": r[5], "anchor_span_id": r[6],
+                        "id": r[0], "natural_key": r[1],
+                        "display_name": r[2], "detected_from": r[3],
+                        "scope_name": r[4], "anchor_span_id": r[5],
+                        "synthetic": bool(r[6]),
                     }
                     for r in entities
                 ],
@@ -364,6 +367,7 @@ async def _proto_graphs_handler(request: Request) -> Response:
                     "span_ids": [r[1]] if r[1] else [],
                     "is_boundary": False,
                     "is_target_duplicate": False,
+                    "is_synthetic": False,
                     "flagged": False,
                 }
                 for r in base_node_rows
@@ -381,7 +385,7 @@ async def _proto_graphs_handler(request: Request) -> Response:
             # --- Step 2.a / 2.b colored graph ---
             colored_node_rows = tx.fetch_all(
                 "SELECT id, span_id, scope, color, is_boundary, is_target_duplicate, "
-                "       flagged, label, attributes "
+                "       is_synthetic, flagged, label, attributes "
                 "FROM proto_colored_nodes WHERE trace_id = %s "
                 "ORDER BY color, scope, span_id",
                 (trace_id,),
@@ -394,9 +398,10 @@ async def _proto_graphs_handler(request: Request) -> Response:
                     "color": r[3],
                     "is_boundary": r[4],
                     "is_target_duplicate": r[5],
-                    "flagged": r[6],
-                    "label": r[7],
-                    "attributes": r[8],
+                    "is_synthetic": r[6],
+                    "flagged": r[7],
+                    "label": r[8],
+                    "attributes": r[9],
                     "span_ids": [r[1]] if r[1] else [],
                 }
                 for r in colored_node_rows
@@ -417,29 +422,34 @@ async def _proto_graphs_handler(request: Request) -> Response:
             # --- Step 2.c entity graph ---
             entity_node_rows = tx.fetch_all(
                 "SELECT n.id, n.label, n.attributes, n.contains_boundary, "
-                "       n.contains_black, n.contains_gray, n.scopes, "
+                "       n.contains_black, n.contains_gray, n.synthetic, n.scopes, "
                 "       array_agg(ns.span_id ORDER BY ns.span_id) "
                 "         FILTER (WHERE ns.span_id IS NOT NULL) "
                 "FROM proto_entity_nodes n "
                 "LEFT JOIN proto_entity_node_spans ns ON ns.node_id = n.id "
                 "WHERE n.trace_id = %s "
                 "GROUP BY n.id, n.label, n.attributes, n.contains_boundary, "
-                "         n.contains_black, n.contains_gray, n.scopes "
+                "         n.contains_black, n.contains_gray, n.synthetic, n.scopes "
                 "ORDER BY n.label",
                 (trace_id,),
             )
             entity_nodes = [
                 {
                     "id": r[0],
-                    "scope": r[6],
+                    "scope": r[7],
                     "node_type": "entity",
                     "color": "black" if r[4] else ("gray" if r[5] else "white"),
                     "label": r[1],
                     "attributes": r[2],
                     "contains_boundary": r[3],
-                    "span_ids": r[7] or [],
+                    "span_ids": r[8] or [],
                     "is_boundary": r[3],
                     "is_target_duplicate": False,
+                    # Step 3.a/b marker: surfaced as `is_synthetic` on the wire
+                    # so the UI uses one boolean shape across base / colored /
+                    # entity graphs. Source column on the entity row is
+                    # `synthetic` (no `is_` prefix) — see ADR-0007.
+                    "is_synthetic": r[6],
                     "flagged": False,
                 }
                 for r in entity_node_rows
