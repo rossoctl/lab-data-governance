@@ -1,0 +1,922 @@
+[
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "affde6a4edacca71",
+    "parent_id": null,
+    "name": "POST",
+    "kind": "CLIENT",
+    "service_name": "agent-examples-snp-create_booking",
+    "started_at": "2026-06-07T09:36:49.511654+00:00",
+    "attributes": {
+      "http.url": "http://payment-agent:8080/",
+      "http.method": "POST",
+      "http.status_code": 200
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "653685e170af579c",
+    "parent_id": "affde6a4edacca71",
+    "name": "POST /",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.512099+00:00",
+    "attributes": {
+      "http.url": "http://payment-agent:8080/",
+      "http.host": "10.244.0.98:8080",
+      "http.route": "/",
+      "http.flavor": "1.1",
+      "http.method": "POST",
+      "http.scheme": "http",
+      "http.target": "/",
+      "net.peer.ip": "10.244.0.88",
+      "net.host.port": 8080,
+      "net.peer.port": 33254,
+      "http.user_agent": "python-httpx/0.28.1",
+      "http.server_name": "payment-agent:8080",
+      "http.status_code": 200
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "cc9e9863933772a0",
+    "parent_id": "653685e170af579c",
+    "name": "POST / http receive",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.512172+00:00",
+    "attributes": {
+      "asgi.event.type": "http.request"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "03d3fe5029a17d2b",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.jsonrpc_handler.JSONRPCHandler.on_message_send_stream",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.512474+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "0491913b72acc199",
+    "parent_id": "653685e170af579c",
+    "name": "POST / http send",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.512774+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.start",
+      "http.status_code": 200
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "5a34c570a2d6326e",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler.on_message_send_stream",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.512949+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "460fccdfd5177297",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._setup_message_execution",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.513001+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "cfbdc1a228bd6e10",
+    "parent_id": "460fccdfd5177297",
+    "name": "a2a.server.events.in_memory_queue_manager.InMemoryQueueManager.create_or_tap",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.513084+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "6d2af27e96a59fe8",
+    "parent_id": "460fccdfd5177297",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._register_producer",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.513147+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "24b51c2810f24554",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_consumer.EventConsumer.consume_all",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.513187+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "f3e11e8d9705931c",
+    "parent_id": "653685e170af579c",
+    "name": "POST / http receive",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.513255+00:00",
+    "attributes": {
+      "asgi.event.type": "http.disconnect"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "c7fc08f954415b9a",
+    "parent_id": "460fccdfd5177297",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._run_event_stream",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.513287+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "9a1bdd4db1ef5ed3",
+    "parent_id": "c7fc08f954415b9a",
+    "name": "a2a.server.events.event_queue.EventQueue.enqueue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.51333+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "f26644251b71d529",
+    "parent_id": "c7fc08f954415b9a",
+    "name": "a2a.server.events.event_queue.EventQueue.enqueue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.5134+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "cc312f8e4e3faf7a",
+    "parent_id": "c7fc08f954415b9a",
+    "name": "Agent workflow",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.513604+00:00",
+    "attributes": {
+      "openinference.span.kind": "AGENT"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "a2abc37fe8413ff3",
+    "parent_id": "cc312f8e4e3faf7a",
+    "name": "Agent workflow",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.513969+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "ccab5c045a2607e4",
+    "parent_id": "a2abc37fe8413ff3",
+    "name": "mcp_tools",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.514417+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "output.value": "[\"get_payment_info\"]",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "8af59cd98a9fadf2",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.514691+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "8407aff492b3b1b2",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.task_done",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.514866+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "a2302ca60c6f13df",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._validate_task_id_match",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.514915+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "b65bbe1f5668cc8d",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._send_push_notification_if_needed",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.514939+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "7da62ae778a3b6e9",
+    "parent_id": "653685e170af579c",
+    "name": "POST / http send",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.515051+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "a878c7ef1b207416",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.515476+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "ad3450c26f6e4c00",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.task_done",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.515734+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "9c84882f5371988d",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._send_push_notification_if_needed",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.5158+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "8e962f735a712bd8",
+    "parent_id": "653685e170af579c",
+    "name": "POST / http send",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.515981+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "c1734550de4ca77b",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.516141+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "d0bdfbe15f7de3d7",
+    "parent_id": "a2abc37fe8413ff3",
+    "name": "mcp_tools",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.520083+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "output.value": "[\"charge_card\"]",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "b7e409100af3c021",
+    "parent_id": "a2abc37fe8413ff3",
+    "name": "payment-agent",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.524964+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "graph.node.id": "payment-agent",
+      "openinference.span.kind": "AGENT"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "853dfe4c523d00c6",
+    "parent_id": "b7e409100af3c021",
+    "name": "turn",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.525072+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "3d9a07ea9151ab5d",
+    "parent_id": "853dfe4c523d00c6",
+    "name": "generation",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.525497+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "input.value": "[{\"content\": \"You are a Payment Agent. You have exactly TWO tools, used\\nin this order, on every request: get_payment_info, then charge_card.\\n\\nRules:\\n- Call get_payment_info ONCE with the account_id from the request, e.g.\\n  account_id=\\\"acct_001\\\". This returns the card details.\\n- Then call charge_card ONCE with that card's pan, expiry, cvv, the\\n  amount in cents (multiply dollars by 100), and merchant=\\\"travel-advisor\\\".\\n- Reply with EXACTLY one sentence:\\n  \\\"Charge complete: <auth_code> on card ending <last4>.\\\"\\n  Then STOP — no more tool calls.\\n\\nInputs you will be given on the message:\\n- booking reference (e.g. \\\"BK-AB12CD\\\")\\n- account_id (e.g. \\\"acct_001\\\")\\n- amount in dollars (e.g. 3200)\\n\\nDo NOT improvise card details. Do NOT skip get_payment_info. Do NOT\\ncall any tool more than once.\\n\", \"role\": \"system\"}, {\"role\": \"user\", \"content\": \"Process payment for booking BK-47AD28, account acct_001, amount 3200.\"}]",
+      "output.value": "[{\"content\": \"\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": null, \"audio\": null, \"function_call\": null, \"tool_calls\": [{\"id\": \"tooluse_gONbiAgBwfs8kRdi2Nopc9\", \"function\": {\"arguments\": \"{\\\"account_id\\\": \\\"acct_001\\\"}\", \"name\": \"get_payment_info\"}, \"type\": \"function\", \"index\": 0}]}]",
+      "llm.model_name": "claude-haiku-4-5-20251001",
+      "input.mime_type": "application/json",
+      "output.mime_type": "application/json",
+      "llm.token_count.prompt": 1015,
+      "openinference.span.kind": "LLM",
+      "llm.invocation_parameters": "{\"temperature\": 0.0, \"base_url\": \"https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/\"}",
+      "llm.token_count.completion": 61,
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.1.message.role": "user",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.input_messages.0.message.content": "You are a Payment Agent. You have exactly TWO tools, used\nin this order, on every request: get_payment_info, then charge_card.\n\nRules:\n- Call get_payment_info ONCE with the account_id from the request, e.g.\n  account_id=\"acct_001\". This returns the card details.\n- Then call charge_card ONCE with that card's pan, expiry, cvv, the\n  amount in cents (multiply dollars by 100), and merchant=\"travel-advisor\".\n- Reply with EXACTLY one sentence:\n  \"Charge complete: <auth_code> on card ending <last4>.\"\n  Then STOP — no more tool calls.\n\nInputs you will be given on the message:\n- booking reference (e.g. \"BK-AB12CD\")\n- account_id (e.g. \"acct_001\")\n- amount in dollars (e.g. 3200)\n\nDo NOT improvise card details. Do NOT skip get_payment_info. Do NOT\ncall any tool more than once.\n",
+      "llm.input_messages.1.message.content": "Process payment for booking BK-47AD28, account acct_001, amount 3200.",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "tooluse_gONbiAgBwfs8kRdi2Nopc9",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "get_payment_info",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"account_id\": \"acct_001\"}"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "efa76881780a2c81",
+    "parent_id": "3d9a07ea9151ab5d",
+    "name": "POST",
+    "kind": "CLIENT",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:49.615286+00:00",
+    "attributes": {
+      "http.url": "https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/chat/completions",
+      "http.method": "POST",
+      "http.status_code": 200
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "f5c915b467dd6801",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:50.017545+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "241835e9a852e2fd",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:50.518636+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "debe3be87116b7ab",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:51.019948+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "fd8cafcb88f007ad",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:51.521441+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "42f1cd624db77faa",
+    "parent_id": "853dfe4c523d00c6",
+    "name": "get_payment_info",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:52.002042+00:00",
+    "attributes": {
+      "tool.name": "get_payment_info",
+      "llm.system": "openai",
+      "input.value": "{\"account_id\": \"acct_001\"}",
+      "output.value": "{\"type\": \"text\", \"text\": \"{\\n  \\\"account_id\\\": \\\"acct_001\\\",\\n  \\\"guest_name\\\": \\\"Maya Park\\\",\\n  \\\"pan\\\": \\\"4111 1111 1111 1234\\\",\\n  \\\"expiry\\\": \\\"12/27\\\",\\n  \\\"cvv\\\": \\\"123\\\",\\n  \\\"billing_address\\\": \\\"123 Sakura St, Tokyo, JP\\\",\\n  \\\"card_brand\\\": \\\"Visa\\\"\\n}\"}",
+      "input.mime_type": "application/json",
+      "openinference.span.kind": "TOOL"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "d7815d9e1a35e81d",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:52.022293+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "bcf9c0d608d477e2",
+    "parent_id": "b7e409100af3c021",
+    "name": "mcp_tools",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:52.049152+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "output.value": "[\"get_payment_info\"]",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "0d9baf9001d1c52f",
+    "parent_id": "b7e409100af3c021",
+    "name": "mcp_tools",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:52.049328+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "output.value": "[\"charge_card\"]",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "ff9fb385b16fdc5d",
+    "parent_id": "b7e409100af3c021",
+    "name": "turn",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:52.049443+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "4ef495cf65536763",
+    "parent_id": "ff9fb385b16fdc5d",
+    "name": "generation",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:52.049766+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "input.value": "[{\"content\": \"You are a Payment Agent. You have exactly TWO tools, used\\nin this order, on every request: get_payment_info, then charge_card.\\n\\nRules:\\n- Call get_payment_info ONCE with the account_id from the request, e.g.\\n  account_id=\\\"acct_001\\\". This returns the card details.\\n- Then call charge_card ONCE with that card's pan, expiry, cvv, the\\n  amount in cents (multiply dollars by 100), and merchant=\\\"travel-advisor\\\".\\n- Reply with EXACTLY one sentence:\\n  \\\"Charge complete: <auth_code> on card ending <last4>.\\\"\\n  Then STOP — no more tool calls.\\n\\nInputs you will be given on the message:\\n- booking reference (e.g. \\\"BK-AB12CD\\\")\\n- account_id (e.g. \\\"acct_001\\\")\\n- amount in dollars (e.g. 3200)\\n\\nDo NOT improvise card details. Do NOT skip get_payment_info. Do NOT\\ncall any tool more than once.\\n\", \"role\": \"system\"}, {\"role\": \"user\", \"content\": \"Process payment for booking BK-47AD28, account acct_001, amount 3200.\"}, {\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"tooluse_gONbiAgBwfs8kRdi2Nopc9\", \"type\": \"function\", \"function\": {\"name\": \"get_payment_info\", \"arguments\": \"{\\\"account_id\\\": \\\"acct_001\\\"}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"tooluse_gONbiAgBwfs8kRdi2Nopc9\", \"content\": [{\"type\": \"text\", \"text\": \"{\\n  \\\"account_id\\\": \\\"acct_001\\\",\\n  \\\"guest_name\\\": \\\"Maya Park\\\",\\n  \\\"pan\\\": \\\"4111 1111 1111 1234\\\",\\n  \\\"expiry\\\": \\\"12/27\\\",\\n  \\\"cvv\\\": \\\"123\\\",\\n  \\\"billing_address\\\": \\\"123 Sakura St, Tokyo, JP\\\",\\n  \\\"card_brand\\\": \\\"Visa\\\"\\n}\"}]}]",
+      "output.value": "[{\"content\": \"Now I'll charge the card with the retrieved payment information:\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": null, \"audio\": null, \"function_call\": null, \"tool_calls\": [{\"id\": \"tooluse_R4rJJsLAvPEtmzZFIsyz6t\", \"function\": {\"arguments\": \"{\\\"pan\\\": \\\"4111 1111 1111 1234\\\", \\\"expiry\\\": \\\"12/27\\\", \\\"cvv\\\": \\\"123\\\", \\\"amount_cents\\\": 320000, \\\"merchant\\\": \\\"travel-advisor\\\"}\", \"name\": \"charge_card\"}, \"type\": \"function\", \"index\": 1}]}]",
+      "llm.model_name": "claude-haiku-4-5-20251001",
+      "input.mime_type": "application/json",
+      "output.mime_type": "application/json",
+      "llm.token_count.prompt": 1181,
+      "openinference.span.kind": "LLM",
+      "llm.invocation_parameters": "{\"temperature\": 0.0, \"base_url\": \"https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/\"}",
+      "llm.token_count.completion": 153,
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.2.message.role": "assistant",
+      "llm.input_messages.3.message.role": "tool",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.input_messages.0.message.content": "You are a Payment Agent. You have exactly TWO tools, used\nin this order, on every request: get_payment_info, then charge_card.\n\nRules:\n- Call get_payment_info ONCE with the account_id from the request, e.g.\n  account_id=\"acct_001\". This returns the card details.\n- Then call charge_card ONCE with that card's pan, expiry, cvv, the\n  amount in cents (multiply dollars by 100), and merchant=\"travel-advisor\".\n- Reply with EXACTLY one sentence:\n  \"Charge complete: <auth_code> on card ending <last4>.\"\n  Then STOP — no more tool calls.\n\nInputs you will be given on the message:\n- booking reference (e.g. \"BK-AB12CD\")\n- account_id (e.g. \"acct_001\")\n- amount in dollars (e.g. 3200)\n\nDo NOT improvise card details. Do NOT skip get_payment_info. Do NOT\ncall any tool more than once.\n",
+      "llm.input_messages.1.message.content": "Process payment for booking BK-47AD28, account acct_001, amount 3200.",
+      "llm.output_messages.0.message.content": "Now I'll charge the card with the retrieved payment information:",
+      "llm.input_messages.3.message.tool_call_id": "tooluse_gONbiAgBwfs8kRdi2Nopc9",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "tooluse_gONbiAgBwfs8kRdi2Nopc9",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.id": "tooluse_R4rJJsLAvPEtmzZFIsyz6t",
+      "llm.input_messages.3.message.contents.0.message_content.text": "{\n  \"account_id\": \"acct_001\",\n  \"guest_name\": \"Maya Park\",\n  \"pan\": \"4111 1111 1111 1234\",\n  \"expiry\": \"12/27\",\n  \"cvv\": \"123\",\n  \"billing_address\": \"123 Sakura St, Tokyo, JP\",\n  \"card_brand\": \"Visa\"\n}",
+      "llm.input_messages.3.message.contents.0.message_content.type": "text",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "get_payment_info",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "charge_card",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"account_id\": \"acct_001\"}",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"pan\": \"4111 1111 1111 1234\", \"expiry\": \"12/27\", \"cvv\": \"123\", \"amount_cents\": 320000, \"merchant\": \"travel-advisor\"}"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "31bba409f2128ba0",
+    "parent_id": "4ef495cf65536763",
+    "name": "POST",
+    "kind": "CLIENT",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:52.05142+00:00",
+    "attributes": {
+      "http.url": "https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/chat/completions",
+      "http.method": "POST",
+      "http.status_code": 200
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "7547c2e54231fcb8",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:52.52348+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "8daf60b1308b80f8",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:53.024967+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "7f735b4fba0ec2dd",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:53.526218+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "81328549d6b98525",
+    "parent_id": "ff9fb385b16fdc5d",
+    "name": "charge_card",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:53.745812+00:00",
+    "attributes": {
+      "tool.name": "charge_card",
+      "llm.system": "openai",
+      "input.value": "{\"pan\": \"4111 1111 1111 1234\", \"expiry\": \"12/27\", \"cvv\": \"123\", \"amount_cents\": 320000, \"merchant\": \"travel-advisor\"}",
+      "output.value": "{\"type\": \"text\", \"text\": \"{\\n  \\\"auth_code\\\": \\\"AUTH-8E6F12\\\",\\n  \\\"charge_id\\\": \\\"CHG-6A8390C2\\\",\\n  \\\"status\\\": \\\"approved\\\",\\n  \\\"amount_cents\\\": 320000,\\n  \\\"last4\\\": \\\"1234\\\",\\n  \\\"card_brand\\\": \\\"Visa\\\"\\n}\"}",
+      "input.mime_type": "application/json",
+      "openinference.span.kind": "TOOL"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "6a3e3654408933b6",
+    "parent_id": "b7e409100af3c021",
+    "name": "mcp_tools",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:53.788499+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "output.value": "[\"get_payment_info\"]",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "2c92c3dca5df3503",
+    "parent_id": "b7e409100af3c021",
+    "name": "mcp_tools",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:53.788675+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "output.value": "[\"charge_card\"]",
+      "output.mime_type": "application/json",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "a0262253e9910f5c",
+    "parent_id": "b7e409100af3c021",
+    "name": "turn",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:53.788788+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "24c73b7b979f6d1c",
+    "parent_id": "a0262253e9910f5c",
+    "name": "generation",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:53.789122+00:00",
+    "attributes": {
+      "llm.system": "openai",
+      "input.value": "[{\"content\": \"You are a Payment Agent. You have exactly TWO tools, used\\nin this order, on every request: get_payment_info, then charge_card.\\n\\nRules:\\n- Call get_payment_info ONCE with the account_id from the request, e.g.\\n  account_id=\\\"acct_001\\\". This returns the card details.\\n- Then call charge_card ONCE with that card's pan, expiry, cvv, the\\n  amount in cents (multiply dollars by 100), and merchant=\\\"travel-advisor\\\".\\n- Reply with EXACTLY one sentence:\\n  \\\"Charge complete: <auth_code> on card ending <last4>.\\\"\\n  Then STOP — no more tool calls.\\n\\nInputs you will be given on the message:\\n- booking reference (e.g. \\\"BK-AB12CD\\\")\\n- account_id (e.g. \\\"acct_001\\\")\\n- amount in dollars (e.g. 3200)\\n\\nDo NOT improvise card details. Do NOT skip get_payment_info. Do NOT\\ncall any tool more than once.\\n\", \"role\": \"system\"}, {\"role\": \"user\", \"content\": \"Process payment for booking BK-47AD28, account acct_001, amount 3200.\"}, {\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"tooluse_gONbiAgBwfs8kRdi2Nopc9\", \"type\": \"function\", \"function\": {\"name\": \"get_payment_info\", \"arguments\": \"{\\\"account_id\\\": \\\"acct_001\\\"}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"tooluse_gONbiAgBwfs8kRdi2Nopc9\", \"content\": [{\"type\": \"text\", \"text\": \"{\\n  \\\"account_id\\\": \\\"acct_001\\\",\\n  \\\"guest_name\\\": \\\"Maya Park\\\",\\n  \\\"pan\\\": \\\"4111 1111 1111 1234\\\",\\n  \\\"expiry\\\": \\\"12/27\\\",\\n  \\\"cvv\\\": \\\"123\\\",\\n  \\\"billing_address\\\": \\\"123 Sakura St, Tokyo, JP\\\",\\n  \\\"card_brand\\\": \\\"Visa\\\"\\n}\"}]}, {\"role\": \"assistant\", \"content\": \"Now I'll charge the card with the retrieved payment information:\", \"tool_calls\": [{\"id\": \"tooluse_R4rJJsLAvPEtmzZFIsyz6t\", \"type\": \"function\", \"function\": {\"name\": \"charge_card\", \"arguments\": \"{\\\"pan\\\": \\\"4111 1111 1111 1234\\\", \\\"expiry\\\": \\\"12/27\\\", \\\"cvv\\\": \\\"123\\\", \\\"amount_cents\\\": 320000, \\\"merchant\\\": \\\"travel-advisor\\\"}\"}}]}, {\"role\": \"tool\", \"tool_call_id\": \"tooluse_R4rJJsLAvPEtmzZFIsyz6t\", \"content\": [{\"type\": \"text\", \"text\": \"{\\n  \\\"auth_code\\\": \\\"AUTH-8E6F12\\\",\\n  \\\"charge_id\\\": \\\"CHG-6A8390C2\\\",\\n  \\\"status\\\": \\\"approved\\\",\\n  \\\"amount_cents\\\": 320000,\\n  \\\"last4\\\": \\\"1234\\\",\\n  \\\"card_brand\\\": \\\"Visa\\\"\\n}\"}]}]",
+      "output.value": "[{\"content\": \"Charge complete: AUTH-8E6F12 on card ending 1234.\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": null, \"audio\": null, \"function_call\": null, \"tool_calls\": null}]",
+      "llm.model_name": "claude-haiku-4-5-20251001",
+      "input.mime_type": "application/json",
+      "output.mime_type": "application/json",
+      "llm.token_count.prompt": 1421,
+      "openinference.span.kind": "LLM",
+      "llm.invocation_parameters": "{\"temperature\": 0.0, \"base_url\": \"https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/\"}",
+      "llm.token_count.completion": 22,
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.2.message.role": "assistant",
+      "llm.input_messages.3.message.role": "tool",
+      "llm.input_messages.4.message.role": "assistant",
+      "llm.input_messages.5.message.role": "tool",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.input_messages.0.message.content": "You are a Payment Agent. You have exactly TWO tools, used\nin this order, on every request: get_payment_info, then charge_card.\n\nRules:\n- Call get_payment_info ONCE with the account_id from the request, e.g.\n  account_id=\"acct_001\". This returns the card details.\n- Then call charge_card ONCE with that card's pan, expiry, cvv, the\n  amount in cents (multiply dollars by 100), and merchant=\"travel-advisor\".\n- Reply with EXACTLY one sentence:\n  \"Charge complete: <auth_code> on card ending <last4>.\"\n  Then STOP — no more tool calls.\n\nInputs you will be given on the message:\n- booking reference (e.g. \"BK-AB12CD\")\n- account_id (e.g. \"acct_001\")\n- amount in dollars (e.g. 3200)\n\nDo NOT improvise card details. Do NOT skip get_payment_info. Do NOT\ncall any tool more than once.\n",
+      "llm.input_messages.1.message.content": "Process payment for booking BK-47AD28, account acct_001, amount 3200.",
+      "llm.input_messages.4.message.content": "Now I'll charge the card with the retrieved payment information:",
+      "llm.output_messages.0.message.content": "Charge complete: AUTH-8E6F12 on card ending 1234.",
+      "llm.input_messages.3.message.tool_call_id": "tooluse_gONbiAgBwfs8kRdi2Nopc9",
+      "llm.input_messages.5.message.tool_call_id": "tooluse_R4rJJsLAvPEtmzZFIsyz6t",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "tooluse_gONbiAgBwfs8kRdi2Nopc9",
+      "llm.input_messages.4.message.tool_calls.1.tool_call.id": "tooluse_R4rJJsLAvPEtmzZFIsyz6t",
+      "llm.input_messages.3.message.contents.0.message_content.text": "{\n  \"account_id\": \"acct_001\",\n  \"guest_name\": \"Maya Park\",\n  \"pan\": \"4111 1111 1111 1234\",\n  \"expiry\": \"12/27\",\n  \"cvv\": \"123\",\n  \"billing_address\": \"123 Sakura St, Tokyo, JP\",\n  \"card_brand\": \"Visa\"\n}",
+      "llm.input_messages.3.message.contents.0.message_content.type": "text",
+      "llm.input_messages.5.message.contents.0.message_content.text": "{\n  \"auth_code\": \"AUTH-8E6F12\",\n  \"charge_id\": \"CHG-6A8390C2\",\n  \"status\": \"approved\",\n  \"amount_cents\": 320000,\n  \"last4\": \"1234\",\n  \"card_brand\": \"Visa\"\n}",
+      "llm.input_messages.5.message.contents.0.message_content.type": "text",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "get_payment_info",
+      "llm.input_messages.4.message.tool_calls.1.tool_call.function.name": "charge_card",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"account_id\": \"acct_001\"}",
+      "llm.input_messages.4.message.tool_calls.1.tool_call.function.arguments": "{\"pan\": \"4111 1111 1111 1234\", \"expiry\": \"12/27\", \"cvv\": \"123\", \"amount_cents\": 320000, \"merchant\": \"travel-advisor\"}"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "1dd05b02a0799e22",
+    "parent_id": "24c73b7b979f6d1c",
+    "name": "POST",
+    "kind": "CLIENT",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:53.790835+00:00",
+    "attributes": {
+      "http.url": "https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/chat/completions",
+      "http.method": "POST",
+      "http.status_code": 200
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "a53594d95cf63166",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.027134+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "8807047e30f91c39",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.52823+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "7c37c3cd49e21998",
+    "parent_id": "c7fc08f954415b9a",
+    "name": "a2a.server.events.event_queue.EventQueue.enqueue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885095+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "819eff802d3407a2",
+    "parent_id": "c7fc08f954415b9a",
+    "name": "a2a.server.events.event_queue.EventQueue.enqueue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885181+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "9a2b82d45938c64a",
+    "parent_id": "c7fc08f954415b9a",
+    "name": "a2a.server.events.event_queue.EventQueue.close",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885215+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "9b20e9348e8a436b",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.task_done",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885297+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "66d67593d682ee3b",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.utils.helpers.append_artifact_to_task",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885337+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "f7b0efd1414c6391",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._send_push_notification_if_needed",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885391+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "3e1a8c11f5927f85",
+    "parent_id": "653685e170af579c",
+    "name": "POST / http send",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885556+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "e2f2c970ca1935ee",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885706+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "0d4d102aa549422a",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.task_done",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885759+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "ec5eb615bcb0f7ec",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._send_push_notification_if_needed",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.8858+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "643815ba7d0fcdaf",
+    "parent_id": "653685e170af579c",
+    "name": "POST / http send",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.885864+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    }
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "387bdf7e8cf007a0",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.88593+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "f3ecb94effd37d82",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_queue.EventQueue.is_closed",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.887178+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "f392e3e2326e5dba",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._track_background_task",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.887584+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "0f03a6017e3e00a0",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.events.event_consumer.EventConsumer.agent_task_callback",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.887666+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "ed286d5954f1a12b",
+    "parent_id": "653685e170af579c",
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._cleanup_producer",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.8877+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "bfb326e2e1c4e75f",
+    "parent_id": "ed286d5954f1a12b",
+    "name": "a2a.server.events.in_memory_queue_manager.InMemoryQueueManager.close",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.887724+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "a77c80d307fa19c2",
+    "parent_id": "bfb326e2e1c4e75f",
+    "name": "a2a.server.events.event_queue.EventQueue.close",
+    "kind": "SERVER",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.887751+00:00",
+    "attributes": {}
+  },
+  {
+    "trace_id": "fc9282b2a10ffb023b0fc4bdd69782ce",
+    "span_id": "b7ec8b9114d0303c",
+    "parent_id": "653685e170af579c",
+    "name": "POST / http send",
+    "kind": "INTERNAL",
+    "service_name": "agent-examples-snp-payment-agent",
+    "started_at": "2026-06-07T09:36:54.887796+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    }
+  }
+]
