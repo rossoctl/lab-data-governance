@@ -31,7 +31,18 @@ from typing import Any, Iterator, Literal
 
 from data_governance import db
 
-__all__ = ["GetSpansResult", "Span", "TraceCounts", "get_spans"]
+__all__ = [
+    "Edge",
+    "Entity",
+    "GetEdgesResult",
+    "GetEntitiesResult",
+    "GetSpansResult",
+    "Span",
+    "TraceCounts",
+    "get_edges",
+    "get_entities",
+    "get_spans",
+]
 
 _LIMIT_DEFAULT = 50
 _LIMIT_MAX = 500
@@ -141,6 +152,68 @@ class GetSpansResult:
 
     spans: list[Span]
     counts: dict[str, TraceCounts] | None = None
+
+
+@dataclass(frozen=True)
+class Edge:
+    """One row of the ``edges`` table (issue #57 / ADR-0007), keyed by the
+    child span ``(trace_id, span_id)``.
+
+    Per-edge timing (``started_at``, ``ended_at``) is **joined from the child
+    ``spans`` row**, not read from the ``edges`` table — ADR-0006's join-back
+    discipline means ``edges`` carries no denormalized time columns. The full
+    payload that crossed the edge is reachable the same way, via the
+    ``(trace_id, span_id)`` pointer into ``get_spans``.
+
+    ``edge_seq`` is the stable, sequence-allocated cursor axis: ``get_edges``
+    both sorts and keysets on it, so the read cursor never skews (the #30
+    lesson). ``from_entity`` is ``None`` for an orphan boundary; ``edge_kind``
+    is then ``UNKNOWN_<to>``.
+    """
+
+    edge_seq: int
+    trace_id: str
+    span_id: str
+    parent_id: str
+    to_entity: str
+    from_entity: str | None
+    edge_kind: str | None
+    started_at: dt.datetime
+    ended_at: dt.datetime | None
+
+
+@dataclass(frozen=True)
+class GetEdgesResult:
+    """Return value of ``get_edges``."""
+
+    edges: list[Edge]
+
+
+@dataclass(frozen=True)
+class Entity:
+    """One row of the ``entities`` table (issue #57 / ADR-0007).
+
+    Identity is ``(service_name, semantic_kind, sub_kind)`` behind the opaque
+    ``entity_id``; ``display_name`` is the human label. ``service_name`` and
+    ``sub_kind`` may be ``None`` (encoded via a sentinel inside ``entity_id``).
+    ``attributes`` is optional identity extras and may be ``None``.
+    """
+
+    entity_id: str
+    service_name: str | None
+    semantic_kind: str
+    sub_kind: str | None
+    display_name: str | None
+    attributes: dict[str, Any] | None
+    first_seen_at: dt.datetime | None
+    last_seen_at: dt.datetime | None
+
+
+@dataclass(frozen=True)
+class GetEntitiesResult:
+    """Return value of ``get_entities``."""
+
+    entities: list[Entity]
 
 
 # ---------------------------------------------------------------------------
@@ -849,4 +922,178 @@ def _row_to_span(
         otlp=r.get("otlp"),
         scope=r.get("scope"),
         resource_attributes=r.get("resource_attributes"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Derived graph reads — get_edges / get_entities (issue #57 / ADR-0007)
+# ---------------------------------------------------------------------------
+
+
+# edge_seq, ... come from the `edges` table; started_at/ended_at are JOINed in
+# from the child `spans` row (ADR-0006 — edges has no time columns).
+_EDGE_COLUMNS = (
+    "edge_seq",
+    "trace_id",
+    "span_id",
+    "parent_id",
+    "to_entity",
+    "from_entity",
+    "edge_kind",
+    "started_at",
+    "ended_at",
+)
+_EDGE_SELECT = (
+    "e.edge_seq, e.trace_id, e.span_id, e.parent_id, "
+    "e.to_entity, e.from_entity, e.edge_kind, s.started_at, s.ended_at"
+)
+
+_ENTITY_COLUMNS = (
+    "entity_id",
+    "service_name",
+    "semantic_kind",
+    "sub_kind",
+    "display_name",
+    "attributes",
+    "first_seen_at",
+    "last_seen_at",
+)
+_ENTITY_SELECT = ", ".join(_ENTITY_COLUMNS)
+
+
+def _validate_read(*, limit: int, order: str | None) -> None:
+    """Shared limit/order validation for the derived-graph read methods."""
+    if limit > _LIMIT_MAX:
+        raise ValueError(f"limit {limit} exceeds the hard cap of {_LIMIT_MAX}")
+    if order is not None and order.lower() not in ("asc", "desc"):
+        raise ValueError(f"order must be 'asc' or 'desc', got {order!r}")
+
+
+def get_edges(
+    cursor: int | None = None,
+    limit: int = _LIMIT_DEFAULT,
+    trace_id: str | None = None,
+    order: Literal["asc", "desc"] | None = None,
+) -> GetEdgesResult:
+    """Read edges, cursor-paginated by ``edge_seq``.
+
+    Mirrors ``get_spans``: one REPEATABLE READ transaction, frozen dataclasses,
+    default limit 50 / hard cap 500. The **sort axis equals the cursor axis**
+    (``edge_seq``), so a full forward walk yields every edge on exactly one page
+    — no skips even when the child spans' ``started_at`` is clock-skewed across
+    services (the #30 lesson the trace-clock paths had to fight).
+
+    Parameters
+    ----------
+    cursor:
+        Exclusive lower bound on ``edge_seq`` (asc) or upper bound (desc).
+    limit:
+        Maximum rows; defaults to 50, hard-capped at 500.
+    trace_id:
+        Restrict to one trace (the per-trace overlay / drill-down case).
+    order:
+        ``"asc"`` (default) or ``"desc"`` over ``edge_seq``.
+    """
+    _validate_read(limit=limit, order=order)
+    effective_order = (order or "asc").lower()
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    if cursor is not None:
+        conditions.append(
+            "e.edge_seq > %s" if effective_order == "asc" else "e.edge_seq < %s"
+        )
+        params.append(cursor)
+    if trace_id is not None:
+        conditions.append("e.trace_id = %s")
+        params.append(trace_id)
+
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = (
+        f"SELECT {_EDGE_SELECT} FROM edges e "
+        "JOIN spans s ON s.trace_id = e.trace_id AND s.span_id = e.span_id"
+        f"{where} ORDER BY e.edge_seq {effective_order} LIMIT %s"
+    )
+    params.append(limit)
+
+    with _repeatable_read() as tx:
+        rows = tx.fetch_all(sql, params)
+    return GetEdgesResult(edges=[_row_to_edge(r) for r in rows])
+
+
+def get_entities(
+    cursor: str | None = None,
+    limit: int = _LIMIT_DEFAULT,
+    semantic_kind: str | None = None,
+    order: Literal["asc", "desc"] | None = None,
+) -> GetEntitiesResult:
+    """Read entities, cursor-paginated by ``entity_id``.
+
+    ``entity_id`` is the table's stable unique PK, so it doubles as the keyset
+    cursor axis (sort axis == cursor axis, no skew). Optionally filter by
+    ``semantic_kind``.
+
+    Parameters
+    ----------
+    cursor:
+        Exclusive lower bound on ``entity_id`` (asc) or upper bound (desc).
+    limit:
+        Maximum rows; defaults to 50, hard-capped at 500.
+    semantic_kind:
+        Restrict to one kind (e.g. ``"LLM"``, ``"TOOL"``).
+    order:
+        ``"asc"`` (default) or ``"desc"`` over ``entity_id``.
+    """
+    _validate_read(limit=limit, order=order)
+    effective_order = (order or "asc").lower()
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    if cursor is not None:
+        conditions.append(
+            "entity_id > %s" if effective_order == "asc" else "entity_id < %s"
+        )
+        params.append(cursor)
+    if semantic_kind is not None:
+        conditions.append("semantic_kind = %s")
+        params.append(semantic_kind)
+
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = (
+        f"SELECT {_ENTITY_SELECT} FROM entities"
+        f"{where} ORDER BY entity_id {effective_order} LIMIT %s"
+    )
+    params.append(limit)
+
+    with _repeatable_read() as tx:
+        rows = tx.fetch_all(sql, params)
+    return GetEntitiesResult(entities=[_row_to_entity(r) for r in rows])
+
+
+def _row_to_edge(row: tuple[Any, ...]) -> Edge:
+    r = dict(zip(_EDGE_COLUMNS, row))
+    return Edge(
+        edge_seq=r["edge_seq"],
+        trace_id=r["trace_id"],
+        span_id=r["span_id"],
+        parent_id=r["parent_id"],
+        to_entity=r["to_entity"],
+        from_entity=r["from_entity"],
+        edge_kind=r["edge_kind"],
+        started_at=r["started_at"],
+        ended_at=r["ended_at"],
+    )
+
+
+def _row_to_entity(row: tuple[Any, ...]) -> Entity:
+    r = dict(zip(_ENTITY_COLUMNS, row))
+    return Entity(
+        entity_id=r["entity_id"],
+        service_name=r["service_name"],
+        semantic_kind=r["semantic_kind"],
+        sub_kind=r["sub_kind"],
+        display_name=r["display_name"],
+        attributes=r["attributes"],
+        first_seen_at=r["first_seen_at"],
+        last_seen_at=r["last_seen_at"],
     )
