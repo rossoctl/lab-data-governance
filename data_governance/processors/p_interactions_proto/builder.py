@@ -37,6 +37,7 @@ from typing import Any
 
 from data_governance.retrieval import Span
 
+from .adapters import Kind, extract_facts
 from .classifiers import (
     AgenticClassification,
     get_agentic_classifier,
@@ -293,48 +294,25 @@ def flag_between_boundaries(graph: BaseGraph) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _peer_match_key(node: Node) -> str | None:
+def _peer_match_key(node: Node, spans_by_id: dict[str, Span]) -> str | None:
     """Identifying attribute of the boundary span — used as the merge key in
     Step 3.b. Two synthetic peers stubbing the same real callee from
     different sources end up with the same key.
 
     Per ADR-0007, the key is "the source-span identifying attribute used by
-    the originating boundary's classifier" — for openinference TOOL spans
-    that's `tool.name` (or the span name, which equals the tool name in the
-    OpenAI Agents SDK convention); for LLM spans it's `llm.model_name`
-    (with `gen_ai.request.model` as a fallback, matching `_llm_model` in
-    classifiers.py). Returns None when no identifying attribute is
-    available — Step 3.b leaves keyless synthetics distinct.
+    the originating boundary's classifier". The actual attribute lookup
+    lives in `adapters.py`, dispatched on (scope, framework, version);
+    here we just ask the matching adapter for `SpanFacts.natural_key`.
+    Returns None when no identifying attribute is available — Step 3.b
+    leaves keyless synthetics distinct.
     """
-    attrs = node.attributes or {}
-    oi_kind = attrs.get("openinference.span.kind")
-    if oi_kind == "TOOL":
-        tool_name = attrs.get("tool.name")
-        # OpenAI Agents emits FunctionSpanData where span name == tool name;
-        # fall back to the span name when tool.name is absent. We don't have
-        # span.name here directly, but the boundary node's label already
-        # incorporates it via the classifier — fall back to that.
-        if tool_name:
-            return f"tool:{tool_name}"
-        if node.label and not node.label.startswith("(unobserved"):
-            return f"tool:{node.label}"
+    span = spans_by_id.get(node.span_id)
+    if span is None:
         return None
-    if oi_kind == "LLM":
-        model = attrs.get("llm.model_name") or attrs.get("gen_ai.request.model")
-        if isinstance(model, str) and "/" in model:
-            model = model.split("/", 1)[1]
-        if model:
-            return f"llm:{model}"
-        return None
-    if oi_kind == "AGENT":
-        agent_name = attrs.get("agent.name") or attrs.get("gen_ai.agent.name")
-        if agent_name:
-            return f"agent:{agent_name}"
-        return None
-    return None
+    return extract_facts(span).natural_key
 
 
-def synthesize_missing_peers(graph: BaseGraph) -> None:
+def synthesize_missing_peers(graph: BaseGraph, spans_by_id: dict[str, Span]) -> None:
     """For every Black boundary node with no Black edges, create a synthetic
     Black peer (is_synthetic=True) referencing the same span and add
     bidirectional Black edges between them.
@@ -373,13 +351,19 @@ def synthesize_missing_peers(graph: BaseGraph) -> None:
         peer = Node.make(span_id=node.span_id, scope=node.scope, color=BLACK)
         peer.is_boundary = True
         peer.is_synthetic = True
-        peer.label = f"(unobserved peer of {node.label})" if node.label else "(unobserved peer)"
         # Step 3.b uses this key to merge synthetic peers stubbing the same
-        # real callee from multiple sources. Built from the boundary span's
-        # identifying attribute (tool.name / llm.model_name / agent.name)
-        # rather than the classifier's display label, since the latter can
-        # collapse to service.name when no specific identifier is present.
-        peer.peer_match_key = _peer_match_key(node)
+        # real callee from multiple sources. The adapter computes it from
+        # the boundary span's identifying attribute, normalised by kind.
+        peer.peer_match_key = _peer_match_key(node, spans_by_id)
+        # The synthetic peer represents the callee, not the emitter. The
+        # natural-key (e.g. `tool:get_weather`) IS the callee's identity,
+        # so it's the right thing to show. Fall back to the generic
+        # "unobserved peer of X" only when no key was extractable —
+        # those cases stay distinct in 3.b too, so a generic label is
+        # honest about the missing information.
+        peer.label = peer.peer_match_key or (
+            f"(unobserved peer of {node.label})" if node.label else "(unobserved peer)"
+        )
         # Pool attributes so the synthetic entity has something to display.
         peer.attributes = dict(node.attributes)
         peer.attributes.pop("_combined", None)
@@ -489,8 +473,16 @@ def merge_synthetic_peers(entity_graph: EntityGraph) -> int:
     `peer_match_key` (set in Step 2.c from the originating boundary's
     classifier label). When N synthetic entities share a key, all but one
     are dropped; every entity edge that referenced a dropped peer is
-    rewritten to point at the surviving peer. Edges that become self-loops
-    or duplicates after rewriting are removed.
+    rewritten to point at the surviving peer.
+
+    All edges and interactions are preserved across the merge (ADR-0007 Step
+    3.b): every entity edge incident on any merged peer survives as a
+    distinct edge on the surviving entity — no dedup by endpoint pair, no
+    collapsing. Each pre-merge edge represents a distinct observed call site,
+    so the count and provenance of calls to the unobserved peer survives.
+    Self-loops created by the rewrite (would only arise if two synthetic
+    peers with the same key were directly connected — not produced by
+    Step 2.c today) are still dropped.
 
     Observed entities are never merged — only `entity.synthetic == True`
     nodes participate.
@@ -529,29 +521,15 @@ def merge_synthetic_peers(entity_graph: EntityGraph) -> int:
     if not drop_ids:
         return 0
 
-    # Rewrite edges; drop self-loops and duplicates that arise from the
-    # rewrite.
+    # Rewrite edges in place; preserve every edge as a distinct edge per
+    # ADR-0007 Step 3.b. Self-loops (would only arise if two synthetic peers
+    # with the same key were connected directly) are dropped.
     rewritten: list[EntityEdge] = []
-    seen_pairs: set[tuple[str, str]] = set()
     for edge in entity_graph.edges:
         src = redirect.get(edge.from_node_id, edge.from_node_id)
         dst = redirect.get(edge.to_node_id, edge.to_node_id)
         if src == dst:
-            # Self-loop after rewriting (e.g. a synthetic peer that fed back
-            # to itself via a duplicate). Drop.
             continue
-        key = (src, dst)
-        if key in seen_pairs:
-            # Duplicate edge after rewriting — fold span_ids onto the kept
-            # one.
-            for prev in rewritten:
-                if prev.from_node_id == src and prev.to_node_id == dst:
-                    for sid in edge.span_ids:
-                        if sid not in prev.span_ids:
-                            prev.span_ids.append(sid)
-                    break
-            continue
-        seen_pairs.add(key)
         edge.from_node_id = src
         edge.to_node_id = dst
         rewritten.append(edge)

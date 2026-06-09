@@ -270,6 +270,7 @@
     }
     .marker-boundary { background: #1a3c1a; color: #79ffaa; }
     .marker-target   { background: #2a1a3c; color: #cc79ff; }
+    .marker-synth    { background: #1a2a3c; color: #79c8ff; border: 1px dashed #79c8ff; }
     .marker-flagged  { background: #4a3000; color: #ffcc55; }
     .edge-kind-pill {
       display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
@@ -315,7 +316,8 @@
           <tbody></tbody>
         </table>
         <div id="flow-empty" style="display:none;color:#888;padding:1rem 0">
-          No interaction data for this trace. Run the prototype CLI:<br>
+          No entities or interactions for this trace. Either the prototype CLI hasn't run yet,
+          or the trace has no agentic-scope spans. Run the prototype CLI:<br>
           <code style="color:#c9c9c9">python -m data_governance.processors.p_interactions_proto.cli &lt;trace_id&gt;</code>
         </div>
       </div>

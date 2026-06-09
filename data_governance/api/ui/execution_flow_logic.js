@@ -34,6 +34,16 @@
     return m ? m[1] : null;
   }
 
+  // The natural-key prefix IS the coarse kind (`llm:` / `tool:` /
+  // `agent:`) per ADR-0007 "Natural-key prefixes are part of the public
+  // algorithm vocabulary." Derived here so the API row stays minimal.
+  function kindFromNaturalKey(naturalKey) {
+    if (!naturalKey) return 'service';
+    const i = naturalKey.indexOf(':');
+    if (i <= 0) return 'service';
+    return naturalKey.slice(0, i);
+  }
+
   function setView(view) {
     if (view === 'tree') {
       treeBtn.classList.add('active');
@@ -74,7 +84,8 @@
   }
 
   function renderFlow() {
-    if (!flowData || flowData.interactions.length === 0) {
+    if (!flowData
+        || (flowData.entities.length === 0 && flowData.interactions.length === 0)) {
       flowEmpty.style.display = '';
       return;
     }
@@ -96,13 +107,34 @@
       phaseTd.appendChild(phasePill);
 
       const kindTd = document.createElement('td');
+      const kind = kindFromNaturalKey(e.natural_key);
       const pill = document.createElement('span');
-      pill.className = 'ent-pill ' + e.kind;
-      pill.textContent = e.kind;
+      pill.className = 'ent-pill ' + kind;
+      pill.textContent = kind;
       kindTd.appendChild(pill);
+      // Synthetic-peer marker — sourced from the typed boolean per
+      // ADR-0007 ("Synthetic identity is a boolean field, not a label
+      // convention"); never inferred from natural_key text.
+      if (e.synthetic) {
+        const synthPill = document.createElement('span');
+        synthPill.className = 'marker-pill marker-synth';
+        synthPill.textContent = 'synth';
+        synthPill.title = 'Synthetic peer (Step 2.c) — unobserved side of a one-sided protocol call.';
+        kindTd.appendChild(synthPill);
+      }
 
       const nameTd = document.createElement('td');
-      nameTd.textContent = e.display_name;
+      // display_name is "unknown" until Step 3.c lands richer naming; the
+      // natural_key (e.g. tool:get_weather) is the most informative thing
+      // we currently have.
+      const nameLabel = e.natural_key && e.natural_key !== 'unknown'
+        ? e.natural_key
+        : e.display_name;
+      nameTd.textContent = nameLabel;
+      if (e.synthetic) {
+        nameTd.style.fontStyle = 'italic';
+        nameTd.style.color = '#9ec5e6';
+      }
 
       const detTd = document.createElement('td');
       detTd.style.color = '#888';
@@ -124,35 +156,14 @@
       const tStarted = document.createElement('td');
       tStarted.style.color = '#888';
       tStarted.style.fontFamily = 'ui-monospace, monospace';
-      tStarted.textContent = ix.started_at ? ix.started_at.split('T')[1].slice(0, 12) : '';
+      tStarted.textContent = formatStartedAt(ix.started_at);
       tr.appendChild(tStarted);
 
       const caller = entById.get(ix.caller_entity_id);
       const callee = entById.get(ix.callee_entity_id);
 
-      const tCaller = document.createElement('td');
-      if (caller) {
-        const p = document.createElement('span');
-        p.className = 'ent-pill ' + caller.kind;
-        p.textContent = caller.kind;
-        tCaller.appendChild(p);
-        tCaller.appendChild(document.createTextNode(caller.display_name));
-      } else {
-        tCaller.textContent = '?';
-      }
-      tr.appendChild(tCaller);
-
-      const tCallee = document.createElement('td');
-      if (callee) {
-        const p = document.createElement('span');
-        p.className = 'ent-pill ' + callee.kind;
-        p.textContent = callee.kind;
-        tCallee.appendChild(p);
-        tCallee.appendChild(document.createTextNode(callee.display_name));
-      } else {
-        tCallee.textContent = '?';
-      }
-      tr.appendChild(tCallee);
+      tr.appendChild(entityCell(caller));
+      tr.appendChild(entityCell(callee));
 
       const tStatus = document.createElement('td');
       if (ix.error === true) { tStatus.textContent = 'ERROR'; tStatus.className = 'err-cell'; }
@@ -240,6 +251,44 @@
         // best-effort — leave the user in tree view
       }
     }
+  }
+
+  function entityCell(entity) {
+    const td = document.createElement('td');
+    if (!entity) {
+      td.textContent = '?';
+      return td;
+    }
+    const kind = kindFromNaturalKey(entity.natural_key);
+    const kindPill = document.createElement('span');
+    kindPill.className = 'ent-pill ' + kind;
+    kindPill.textContent = kind;
+    td.appendChild(kindPill);
+    if (entity.synthetic) {
+      const synthPill = document.createElement('span');
+      synthPill.className = 'marker-pill marker-synth';
+      synthPill.textContent = 'synth';
+      synthPill.title = 'Synthetic peer (Step 2.c).';
+      td.appendChild(synthPill);
+    }
+    const label = entity.natural_key && entity.natural_key !== 'unknown'
+      ? entity.natural_key
+      : entity.display_name;
+    const labelSpan = document.createElement('span');
+    labelSpan.textContent = label;
+    if (entity.synthetic) {
+      labelSpan.style.fontStyle = 'italic';
+      labelSpan.style.color = '#9ec5e6';
+    }
+    td.appendChild(labelSpan);
+    return td;
+  }
+
+  function formatStartedAt(iso) {
+    if (!iso || typeof iso !== 'string') return '';
+    const t = iso.indexOf('T');
+    if (t < 0) return iso;
+    return iso.slice(t + 1, t + 13);
   }
 
   function spanLinkCell(spanId) {
