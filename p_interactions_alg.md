@@ -42,7 +42,7 @@ this is the base graph, were nodes and edges are "white"
 
 #### Step 2 - Agentic scope
 
-Give her a shy book of all a khashand ha man say that Matalan assault The the algorithm begins by handling the agentic scope, Specifically open inference spans.
+The algorithm begins by handling the agentic scope, Specifically open inference spans.
 
 based on this scope we will build the agentic graph.
 
@@ -60,10 +60,10 @@ deferred to later steps.
 5. A Black edge representing a source/target across agentic entities/ components/ Containers
 
 
-Some agentic scope spans represent a source (client) or a target (server) of agentic protocols
+Some agentic scope spans represent a source (client) or a target (server) (or both) of agentic protocols
 for example: 
-- A source or caller side span: a2a.client.transports.jsonrpc.JsonRpcTransport.send_message
-- The related target or receiver side span: a2a.server.request_handlers.default_request_handler_v2.DefaultRequestHandlerV2.on_message_send 
+TODO: chhange! - micha
+- A source and target span: openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query - A span covers the agentic conversation including input and output.
 
 
 
@@ -75,7 +75,7 @@ Requires: openinference_telemetry_spans.md
 1. Traverse the base graph, And identify all nodes related to the agentic scope. 
 2. Mark each agentic scope node as "Gray" 
 3. connect consecutive "Gray" nodes with "Gray" edges. Essentially if there is a path (of white edges) between two Gray nodes (Without going through a Gray node in between) Create a Gray edge.
-4. Identify Gray nodes representing a boundary and color them "Black". A boundary is node source calling an agent a tool an LLM or another service, or a target such a call
+4. Identify Gray nodes *representing a abentic boundary* and color them "Black". A boundary is node source *calling* an agent a tool an LLM or another service, or a *target* of such a call
 5. If there is a Gray edge between Black nodes - Color the edge black.
 
 #### Step 2.b - handling Special cases 
@@ -93,7 +93,7 @@ in some cases spans may be missing from the execution flow - This may be due to 
 
 we can detect some of those cases. specifically an agentic source without a target or vice versa. Whenever we detect a black node without black edges we basically miss some instrumentation.
 
-For every black node without black edges we should create a new black node an unobserved peer - pointing to the same span - representing the target or source. Then we should add black edge from the source to the target and from the target to the source as appropriate.
+For every black node without black edges we should create a new black node an unobserved, synthetic peer - pointing to the same span - representing the target or source. Then we should add black edge from the source to the target and from the target to the source as appropriate.
 
 
 #### Step 3 - agentic entity Graph
@@ -119,7 +119,9 @@ note: this step must be performed on separate subgraphs
 In the previous step an unobserved peer was created as a target  node when an explicit node and Edge were missing.
 
 In this step we compare the unobserved nodes and identify similar ones based on the source span attributes. For example: tool name.
-Next we Merge all identical unobserved nodes Keeping the same attributes. All edges are kept - the triginal un observed peer node is replaced with an observed peer merged node. 
+Next we Merge all identical unobserved nodes Keeping the same attributes. 
+
+Important: We want to preserve all interactions - for this reason all edges are kept - the edge source or target -  the original-unobserved peer node is replaced with an observed peer merged node. 
 
 #### Step 3.c - Naming nodes
 
@@ -130,7 +132,11 @@ If the key is not clear we can call it unknown.
 
 
 
+### Step 4
+Deffered
 
+- And verify and handle synthetic peers Generated from A span even though the subgraph exists
+- Align names across different executions
 
 #### Guide
 - All attributes used in the code should be validated. The otel-span-table can generate a table with all the span attributes given URL .
