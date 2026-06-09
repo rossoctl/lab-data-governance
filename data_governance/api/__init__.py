@@ -8,6 +8,10 @@ Issue #4 shipped the tracer bullet (``cursor``, ``limit``, ``trace_id``,
 ``time_from`` / ``time_to`` (ISO-8601, naive datetimes rejected per
 PROJECT.md §6), ``root_only``, and ``parent_id`` (the latter only
 honoured for the parameter-compatibility raises until #13 lands).
+
+Issue #58 adds ``GET /graph`` — the derived entity/edge graph (ADR-0007),
+a thin pass-through to ``get_entities`` + ``get_edges`` returning
+``{"entities": [...], "edges": [...]}``.
 """
 
 from __future__ import annotations
@@ -57,6 +61,23 @@ def _result_to_dict(result: retrieval.GetSpansResult) -> dict:
     return {
         "spans": [dataclasses.asdict(s) for s in result.spans],
         "counts": _counts_to_jsonable(result.counts),
+    }
+
+
+def _graph_to_dict(
+    entities: retrieval.GetEntitiesResult,
+    edges: retrieval.GetEdgesResult,
+) -> dict:
+    """JSON-able body for ``GET /graph``: the graph's nodes and links.
+
+    ``entities`` are the nodes and ``edges`` the links; the UI (issue #59)
+    aggregates them client-side (``GROUP BY from_entity, to_entity``). Each
+    list element is the ``asdict`` of its retrieval dataclass, so the wire
+    shape tracks :class:`retrieval.Entity` / :class:`retrieval.Edge` exactly.
+    """
+    return {
+        "entities": [dataclasses.asdict(e) for e in entities.entities],
+        "edges": [dataclasses.asdict(e) for e in edges.edges],
     }
 
 
@@ -153,6 +174,42 @@ async def _spans_handler(request: Request) -> Response:
     return Response(content=body, media_type="application/json", status_code=200)
 
 
+async def _graph_handler(request: Request) -> Response:
+    """``GET /graph`` — the derived entity/edge graph (issue #58).
+
+    Thin pass-through to ``get_entities`` + ``get_edges``, returning
+    ``{"entities": [...], "edges": [...]}``. Query params:
+
+    - ``cursor`` / ``limit`` / ``trace_id`` / ``order`` scope the **edges**
+      (``cursor`` is an ``edge_seq``; ``trace_id`` restricts to one trace).
+    - ``limit`` / ``semantic_kind`` / ``order`` scope the **entities**
+      (entity pagination is not exposed in v1 — the node set is small).
+    """
+    params = request.query_params
+
+    try:
+        cursor = _parse_int(params.get("cursor"), "cursor")
+        limit_raw = _parse_int(params.get("limit"), "limit")
+        trace_id = params.get("trace_id") or None
+        order = params.get("order") or None
+        semantic_kind = params.get("semantic_kind") or None
+
+        kwargs: dict = {}
+        if limit_raw is not None:
+            kwargs["limit"] = limit_raw
+        entities = retrieval.get_entities(
+            semantic_kind=semantic_kind, order=order, **kwargs
+        )
+        edges = retrieval.get_edges(
+            cursor=cursor, trace_id=trace_id, order=order, **kwargs
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    body = json.dumps(_graph_to_dict(entities, edges), default=_json_default)
+    return Response(content=body, media_type="application/json", status_code=200)
+
+
 def _probe_postgres() -> None:
     """Blocking ``SELECT 1`` against Postgres for :func:`_healthz_handler`.
 
@@ -229,6 +286,7 @@ def build_app() -> Starlette:
     routes: list = [
         Route("/healthz", endpoint=_healthz_handler, methods=["GET"]),
         Route("/spans", endpoint=_spans_handler, methods=["GET"]),
+        Route("/graph", endpoint=_graph_handler, methods=["GET"]),
         Route("/ui/{name:str}", endpoint=_ui_asset_handler, methods=["GET"]),
         Route(
             "/trace/{trace_id:str}",
