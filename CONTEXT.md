@@ -98,6 +98,50 @@ span's `seq`. Identity is `trace_id`; everything else is derived. The UI
 dedupes by `trace_id` across paginated responses to collapse anchor flips
 into a single row, keeping the highest-`seq` anchor.
 
+**Entity**:
+A derived node in the lineage graph: one row in the `entities` table per
+distinct `(service_name, semantic_kind, sub_kind)` tuple. Derived from **Spans**
+by the **Graph-builder**, not supplied by the source. Identity is a
+deterministic `entity_id` over the tuple, so re-derivation is idempotent. See
+ADR-0007.
+
+**Edge**:
+A derived directed boundary in the lineage graph: one row in the `edges` table
+per cross-entity parent→child **Span** boundary (caller→callee). Keyed by the
+**child** `(trace_id, span_id)`, so a **Span** has at most one edge.
+Same-**Entity** parent/child pairs and **Real roots** produce no edge. Carries
+no timing or payload — those join back to the child **Span** (ADR-0006). See
+ADR-0007.
+
+**Semantic kind**:
+The classification of a **Span**'s **Entity** — `LLM`, `TOOL`, `AGENT`,
+`CHAIN`, `RETRIEVER`, `SERVER`/`CLIENT`, `PRODUCER`/`CONSUMER`, or `UNKNOWN` —
+derived by a fixed ladder (`openinference.span.kind` → any `llm.*` key present →
+any `gen_ai.*` key → OTLP span `kind` → `UNKNOWN`).
+_Avoid_: conflating it with the OTLP `kind` column, which is only the ladder's
+fallback rung.
+
+**Sub-kind**:
+The refinement discriminator on an **Entity**: the model name when **Semantic
+kind** is `LLM`, the tool name when `TOOL`, else `NULL`. Keeps distinct models
+and distinct tools from collapsing into one **Entity**.
+
+**Graph-builder**:
+The Layer-2 processor that reads **Spans** via the **db module** and writes
+**Entities** and **Edges** idempotently — the planned read+write processor of
+ADR-0005 / PROJECT.md §6. Separate from **P-otel-receiver**, which stays
+semantically unaware. See ADR-0007.
+_Avoid_: implying the receiver classifies spans — derivation is the
+**Graph-builder**'s job, not the receiver's.
+
+**Orphan boundary**:
+An **Edge** whose parent **Span** is absent at derivation time (an **Orphan
+span**'s boundary), recorded with `from_entity = NULL` and `edge_kind =
+UNKNOWN_*` rather than dropped. **Eventually consistent**: the next
+**Graph-builder** pass flips `from_entity` to the real **Entity** when the
+parent arrives. The graph view renders it as a single `(external / uncaptured)`
+source node. Mirrors the **Listing root fallback** for orphans.
+
 ## Relationships
 
 - A **Trace** contains one or more **Spans**, all sharing its `trace_id`.
@@ -111,6 +155,14 @@ into a single row, keeping the highest-`seq` anchor.
   current **Listing root**.
 - The **Retrieval API** is the only sanctioned read path over **Spans**; the UI
   backend composes its REST endpoints from it.
+- A **Span** maps to exactly one **Entity** (by its `(service_name,
+  semantic_kind, sub_kind)`); an **Entity** aggregates many **Spans**.
+- An **Edge** connects two **Entities** (`from_entity` → `to_entity`), derived
+  from one child **Span**'s boundary with its parent; an **Orphan boundary** has
+  a NULL `from_entity`.
+- The **Graph-builder** derives **Entities** and **Edges** from **Spans**, just
+  as the **Retrieval API** reads **Spans** — both are Layer-2 consumers of the
+  **db module** (ADR-0005), and the **Graph-builder** is also a writer.
 
 ## Example dialogue
 

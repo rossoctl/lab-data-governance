@@ -785,7 +785,14 @@ The v1 UI is a single page with two views:
 
 No topology view, no sequence diagrams, no classification overlays —
 those return when the corresponding processors are designed in a
-later increment.
+later increment. The first of those increments is now scoped: a
+derived **entity/edge graph**, materialized by a second Layer-2
+processor (the graph-builder) that reads `spans` and writes
+`entities` + `edges`, with a marks layer (`edge_annotations`)
+decorating edges for classification/policy/taint. The structural
+decision and the entity/edge contract are pinned in ADR-0007; the
+marks model follows in ADR-0008. The receiver and the `spans` schema
+are untouched.
 
 ## Open questions
 
