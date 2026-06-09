@@ -14,6 +14,8 @@ import sys
 import psycopg
 import pytest
 
+from data_governance.db import schema_version
+
 
 # --- helpers -----------------------------------------------------------------
 
@@ -64,6 +66,28 @@ def _index_column_lists(dsn: str, table: str) -> set[tuple[str, ...]]:
             JOIN pg_class i ON i.oid = ix.indexrelid
             JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
             WHERE t.relname = %s
+            GROUP BY i.relname
+            """,
+            (table,),
+        ).fetchall()
+    return {tuple(cols) for _, cols in rows}
+
+
+def _unique_index_column_lists(dsn: str, table: str) -> set[tuple[str, ...]]:
+    """Index column-tuples (ordered) for the UNIQUE indexes on *table*.
+
+    Includes the PK index (which is unique). Used to assert the direct-mark
+    uniqueness index actually enforces uniqueness, not just presence."""
+    with psycopg.connect(dsn) as conn:
+        rows = conn.execute(
+            """
+            SELECT i.relname,
+                   array_agg(a.attname ORDER BY array_position(ix.indkey, a.attnum))
+            FROM pg_class t
+            JOIN pg_index ix ON ix.indrelid = t.oid
+            JOIN pg_class i ON i.oid = ix.indexrelid
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+            WHERE t.relname = %s AND ix.indisunique
             GROUP BY i.relname
             """,
             (table,),
@@ -304,3 +328,210 @@ class TestMigrateCli:
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
         assert _table_exists(pg_dsn, "alembic_version")
+
+
+# --- migration #0004: derived entity/edge graph (issue #55 / ADR-0007) -------
+
+
+class TestEntitiesTable:
+    def test_entities_table_exists(self, migrated_dsn: str) -> None:
+        assert _table_exists(migrated_dsn, "entities")
+
+    def test_entities_pk_is_entity_id(self, migrated_dsn: str) -> None:
+        assert _pk_columns(migrated_dsn, "entities") == ["entity_id"]
+
+    def test_entities_columns_match_adr_0007(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "entities")
+        expected = {
+            "entity_id",
+            "service_name",
+            "semantic_kind",
+            "sub_kind",
+            "display_name",
+            "attributes",
+            "first_seen_at",
+            "last_seen_at",
+        }
+        assert expected <= set(cols), f"missing columns: {expected - set(cols)}"
+
+    def test_semantic_kind_is_not_null(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "entities")
+        assert cols["semantic_kind"]["is_nullable"] == "NO"
+
+    def test_service_name_and_sub_kind_are_nullable(self, migrated_dsn: str) -> None:
+        # Grain components may be NULL (service-less span; no sub_kind
+        # discriminator); the entity_id encodes NULL via a sentinel.
+        cols = _columns(migrated_dsn, "entities")
+        assert cols["service_name"]["is_nullable"] == "YES"
+        assert cols["sub_kind"]["is_nullable"] == "YES"
+
+    def test_seen_at_columns_are_timestamptz(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "entities")
+        for c in ("first_seen_at", "last_seen_at"):
+            assert cols[c]["data_type"] == "timestamp with time zone", c
+
+    def test_attributes_is_jsonb(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "entities")
+        assert cols["attributes"]["data_type"] == "jsonb"
+
+
+class TestEdgesTable:
+    def test_edges_table_exists(self, migrated_dsn: str) -> None:
+        assert _table_exists(migrated_dsn, "edges")
+
+    def test_edges_pk_is_trace_id_span_id(self, migrated_dsn: str) -> None:
+        # Mirrors spans: one parent per child => at most one edge per child span.
+        assert _pk_columns(migrated_dsn, "edges") == ["trace_id", "span_id"]
+
+    def test_edges_columns_match_adr_0007(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "edges")
+        expected = {
+            "trace_id",
+            "span_id",
+            "parent_id",
+            "to_entity",
+            "from_entity",
+            "edge_kind",
+            "edge_seq",
+        }
+        assert expected <= set(cols), f"missing columns: {expected - set(cols)}"
+
+    def test_from_entity_is_nullable(self, migrated_dsn: str) -> None:
+        # The orphan-boundary contract: a child whose parent span is absent at
+        # derivation time gets from_entity = NULL (ADR-0007).
+        cols = _columns(migrated_dsn, "edges")
+        assert cols["from_entity"]["is_nullable"] == "YES"
+
+    def test_to_entity_and_parent_id_are_not_null(self, migrated_dsn: str) -> None:
+        # to_entity (the callee) is always known; parent_id is always set
+        # because a real root (span.parent_id IS NULL) produces no edge.
+        cols = _columns(migrated_dsn, "edges")
+        assert cols["to_entity"]["is_nullable"] == "NO"
+        assert cols["parent_id"]["is_nullable"] == "NO"
+
+    def test_edge_seq_is_bigint_not_null_with_sequence_default(
+        self, migrated_dsn: str
+    ) -> None:
+        cols = _columns(migrated_dsn, "edges")
+        assert cols["edge_seq"]["data_type"] == "bigint"
+        assert cols["edge_seq"]["is_nullable"] == "NO"
+        default = str(cols["edge_seq"]["column_default"])
+        assert "nextval" in default and "edges_seq" in default, default
+
+    def test_no_denormalized_time_columns(self, migrated_dsn: str) -> None:
+        # ADR-0006 join-back discipline: timing comes from spans, never copied.
+        cols = _columns(migrated_dsn, "edges")
+        assert "started_at" not in cols
+        assert "ended_at" not in cols
+
+    def test_edge_seq_default_is_monotonic(self, migrated_dsn: str) -> None:
+        """edge_seq drawn from edges_seq must be strictly increasing across
+        inserts that omit it, so it is usable as a keyset cursor without the
+        builder managing allocation. Insert entities first to satisfy the FK."""
+        with psycopg.connect(migrated_dsn) as conn:
+            conn.execute(
+                "INSERT INTO entities (entity_id, semantic_kind) VALUES (%s, %s)",
+                ("e1", "AGENT"),
+            )
+            # The child spans the edges reference must exist (edges FK -> spans).
+            for i in range(3):
+                conn.execute(
+                    "INSERT INTO spans "
+                    "(trace_id, span_id, kind, name, started_at, arrival_seq) "
+                    "VALUES (%s, %s, %s, %s, now(), %s)",
+                    ("t", f"s{i}", "INTERNAL", "n", i + 1),
+                )
+                conn.execute(
+                    "INSERT INTO edges (trace_id, span_id, parent_id, to_entity) "
+                    "VALUES (%s, %s, %s, %s)",
+                    ("t", f"s{i}", "p", "e1"),
+                )
+            seqs = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT edge_seq FROM edges ORDER BY span_id"
+                ).fetchall()
+            ]
+        assert seqs == sorted(seqs)
+        assert len(set(seqs)) == 3
+
+
+class TestEdgeAnnotationsTable:
+    def test_edge_annotations_table_exists(self, migrated_dsn: str) -> None:
+        assert _table_exists(migrated_dsn, "edge_annotations")
+
+    def test_edge_annotations_pk_is_id(self, migrated_dsn: str) -> None:
+        assert _pk_columns(migrated_dsn, "edge_annotations") == ["id"]
+
+    def test_edge_annotations_columns_match_adr_0007(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "edge_annotations")
+        expected = {
+            "id",
+            "trace_id",
+            "span_id",
+            "mark_type",
+            "mark_key",
+            "value",
+            "origin",
+            "derived",
+            "derived_from",
+            "created_at",
+        }
+        assert expected <= set(cols), f"missing columns: {expected - set(cols)}"
+
+    def test_mark_type_and_origin_are_not_null(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "edge_annotations")
+        assert cols["mark_type"]["is_nullable"] == "NO"
+        assert cols["origin"]["is_nullable"] == "NO"
+
+    def test_derived_defaults_false(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "edge_annotations")
+        assert cols["derived"]["is_nullable"] == "NO"
+        assert "false" in str(cols["derived"]["column_default"]).lower()
+
+
+class TestDerivedGraphIndexes:
+    def test_edges_required_indexes_exist(self, migrated_dsn: str) -> None:
+        index_cols = _index_column_lists(migrated_dsn, "edges")
+        assert ("trace_id", "span_id") in index_cols  # PK
+        assert ("from_entity",) in index_cols
+        assert ("to_entity",) in index_cols
+        assert ("trace_id",) in index_cols
+        assert ("edge_seq",) in index_cols
+
+    def test_edge_annotations_required_indexes_exist(self, migrated_dsn: str) -> None:
+        index_cols = _index_column_lists(migrated_dsn, "edge_annotations")
+        assert ("trace_id", "span_id") in index_cols
+        assert ("mark_type", "mark_key") in index_cols
+
+    def test_direct_mark_uniqueness_index_is_unique(self, migrated_dsn: str) -> None:
+        # Idempotent re-classification depends on this index actually being
+        # UNIQUE, not just present.
+        unique_cols = _unique_index_column_lists(migrated_dsn, "edge_annotations")
+        assert (
+            "trace_id",
+            "span_id",
+            "mark_type",
+            "mark_key",
+            "origin",
+        ) in unique_cols
+
+
+class TestEdgesSeqSequence:
+    def test_edges_seq_exists(self, migrated_dsn: str) -> None:
+        assert _sequence_exists(migrated_dsn, "edges_seq")
+
+
+class TestHeadAdvancedToEntitiesEdges:
+    def test_compiled_head_is_revision_0004(self, migrated_dsn: str) -> None:
+        # Adding this migration must advance the single Alembic head to 0004.
+        head = schema_version.compiled_head()
+        assert head.startswith("0004"), head
+
+    def test_db_version_equals_compiled_head(self, migrated_dsn: str) -> None:
+        with psycopg.connect(migrated_dsn) as conn:
+            row = conn.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == schema_version.compiled_head()
