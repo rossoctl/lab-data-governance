@@ -76,3 +76,18 @@ def load_trace_spans(name: str) -> list[Span]:
 def canonical_trace_spans() -> list[Span]:
     """Spans of the canonical travel-advisor trace (ADR-0007 examples)."""
     return load_trace_spans("trace_8ae1f64d")
+
+
+# A second travel-advisor trace, captured the same way (verbatim from the
+# `spans` table). Unlike the canonical trace it is a *single clarifying turn*:
+# the agent makes exactly one LLM call and then asks the user for more detail,
+# so no tool is ever invoked. The three `mcp_tools` spans present are
+# framework-internal tool *discovery* (kagenti.node.type=framework-internal),
+# not calls — so the only entities/interactions are the agent and its LLM.
+CLARIFYING_TURN_TRACE_ID = "186b5703acde0532adc6940e9eda3cb1"
+
+
+@pytest.fixture()
+def clarifying_turn_trace_spans() -> list[Span]:
+    """Spans of a single-LLM-call travel-advisor trace (no tool invoked)."""
+    return load_trace_spans("trace_186b5703")
