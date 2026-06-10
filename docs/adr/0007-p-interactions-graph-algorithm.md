@@ -481,6 +481,17 @@ focused on agentic-scope semantics over a single base graph.
   flag annotations), and the entity graph (after Step 3, including synthetic-
   peer merging). All three are surfaced in the "Graphs (proto)" tab of the
   trace-tree UI.
+- A trace captured only as a test fixture (the extractor's tests run it as a
+  pure function over `fixtures/*.json`, never touching Postgres) is not
+  visible in the UI, because the CLI sources its spans *from* the `spans`
+  table. The throwaway helper
+  `data_governance.processors.p_interactions_proto.load_fixture` bridges this:
+  it inserts a fixture's spans into `spans` (via the receiver's own
+  `write_span`, so insertion is idempotent) and then runs the normal CLI
+  processor over that trace, populating `proto_*` *and* satisfying the UI's
+  `proto_interaction_spans → spans` evidence join. It mutates whatever
+  `DATABASE_URL` points at, so it is disabled by default and refuses to run
+  unless `PI_LOAD_FIXTURE_CONFIRM=1` is set (see its module docstring).
 - The colored-base-graph node row (`proto_colored_nodes`) carries an
   `is_synthetic boolean NOT NULL DEFAULT false` column, and the entity-node
   row (`proto_entity_nodes`) carries a `synthetic boolean NOT NULL DEFAULT
