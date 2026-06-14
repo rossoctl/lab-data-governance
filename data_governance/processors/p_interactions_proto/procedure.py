@@ -328,6 +328,164 @@ class Processor:
         self._role_by_span: dict[str, str] = {}
 
     # ------------------------------------------------------------------
+    # Lineage walks (the lineage-scoped replacement for trace-global scans).
+    #
+    # ADR-0012 productization: large traces require the per-arrival recompute
+    # to be bounded by S's lineage (ancestors ∪ descendants), never a scan of
+    # all arrived spans. The grill proved the driver's reach is EXACTLY
+    # ancestors(S) ∪ descendants(S) — no sibling effect — because every
+    # service's OI AGENT span nests inside that service's inbound SERVER span
+    # (the AGENT-nests-in-SERVER invariant), so "match by service_name" is
+    # equivalent to a same-service lineage walk.
+    # ------------------------------------------------------------------
+
+    def _parent_of(self, span: Span) -> Span | None:
+        if not span.parent_id:
+            return None
+        return self.spans_by_id.get((span.trace_id, span.parent_id))
+
+    def _ancestors(self, span: Span):
+        """Yield span's ancestors, innermost first (parent, grandparent, …),
+        among arrived spans. Stops at the first missing parent (orphan)."""
+        cur = self._parent_of(span)
+        while cur is not None:
+            yield cur
+            cur = self._parent_of(cur)
+
+    def _crosses_service(self, a: Span, b: Span) -> bool:
+        """True iff a and b are on different canonical services — the shared
+        boundary predicate used by every lineage walk (identity, territory,
+        caller). Mirrors the cross-service guards the trace-global code used
+        inline (`_innermost_owner_for`, `_resolve_caller_around_oi_span`)."""
+        ca = canonical_service_name(a)
+        cb = canonical_service_name(b)
+        return bool(ca and cb and ca != cb)
+
+    def _is_service_entry_server(self, server: Span) -> bool:
+        """True iff `server` is a service's INBOUND business entry SERVER (an
+        agent's `POST /`, an instrumented service's `GET /weather`, …) rather
+        than a deployed-tool `/mcp` transport SERVER. The `/mcp` SERVER is the
+        transport leg of a deployed-tool call and does NOT start a new sub-agent
+        territory; a `POST /`-style entry does. Used by the external-http
+        ancestor walk to stop at sub-agent boundaries while still crossing
+        `/mcp` transport to reach a deployed tool's owning OI TOOL span."""
+        if server.kind != "SERVER":
+            return False
+        name = (server.name or "").upper()
+        return not name.startswith("POST /MCP")
+
+    def _service_entry_server(self, server: Span) -> Span:
+        """Climb to the service's INBOUND entry SERVER: the topmost same-service
+        SERVER reachable by an unbroken same-service ancestor chain from
+        `server`. The AGENT-nests-in-SERVER invariant is that a service's OI
+        AGENT span nests under this entry point (the `POST /` handler), not under
+        the internal a2a SERVER spans (`_register_producer`, `_run_event_stream`,
+        …) that are themselves descendants of it. Resolving identity from any
+        internal SERVER must first climb to the entry SERVER so the bounded
+        subtree walk starts from the span that actually encloses the AGENT."""
+        svc = server.service_name
+        entry = server
+        for anc in self._ancestors(server):
+            if anc.kind == "SERVER" and anc.service_name == svc:
+                entry = anc
+            elif anc.service_name != svc:
+                break  # left the service — entry is the topmost same-service SERVER
+        return entry
+
+    def _same_service_agent_in_subtree(self, server: Span) -> Span | None:
+        """The service's OI AGENT span, found by walking the service's ENTRY
+        SERVER's arrived subtree and stopping descent at the first cross-service
+        SERVER boundary (don't claim a sub-agent's AGENT span). Lineage-scoped
+        replacement for `_agent_identity_from_agent_span`'s trace-global
+        `service_name` scan.
+
+        Asserts the AGENT-nests-in-SERVER invariant: if a same-service AGENT
+        span exists that is NOT in the entry server's bounded subtree, it is an
+        instrumentation anomaly — surfaced as a note, never silently used
+        (fail-closed, matching ADR-0012)."""
+        svc = server.service_name
+        if not svc:
+            return None
+        entry = self._service_entry_server(server)
+        return self._find_agent_below(entry, svc)
+        # NB: a None return here is NOT an invariant violation — under streaming
+        # the entry SERVER or the intervening spans may simply not have arrived
+        # yet, so the bounded walk transiently misses the AGENT and the
+        # per-arrival retry re-attempts. The AGENT-nests-in-SERVER invariant is
+        # checked ONCE over the fully-arrived set in `_check_agent_nesting`
+        # (called from `result()`), never per-arrival, so transient
+        # non-convergence is not misreported as an anomaly.
+
+    def _find_agent_below(self, root: Span, svc: str | None) -> Span | None:
+        """Bounded BFS from `root` for a same-service OI AGENT span, pruning at
+        cross-service SERVER boundaries. Pure descendant walk. Returns the first
+        such AGENT (sufficient for identity — all same-service AGENT spans yield
+        the same `agent:(project,canonical)` key)."""
+        stack = list(self.children.get(root.span_id, []))
+        while stack:
+            s = stack.pop()
+            if s.kind == "SERVER" and self._crosses_service(root, s):
+                continue  # sub-agent territory — its AGENT is not ours
+            if _is_oi_kind(s, "AGENT") and s.service_name == svc:
+                return s
+            stack.extend(self.children.get(s.span_id, []))
+        return None
+
+    def _agent_reachable_below(self, root: Span, agent: Span) -> bool:
+        """True iff `agent` is in `root`'s bounded subtree (pruning cross-service
+        SERVER boundaries). Used by the one-shot invariant check to test a
+        SPECIFIC agent span's reachability (not just first-match)."""
+        stack = list(self.children.get(root.span_id, []))
+        while stack:
+            s = stack.pop()
+            if s.kind == "SERVER" and self._crosses_service(root, s):
+                continue
+            if s.span_id == agent.span_id:
+                return True
+            stack.extend(self.children.get(s.span_id, []))
+        return False
+
+    def _check_agent_nesting(self) -> None:
+        """One-shot AGENT-nests-in-SERVER invariant check over the FULLY-ARRIVED
+        set (called from `result()`, never per-arrival). For every arrived OI
+        AGENT span, confirm it is reachable by the bounded subtree walk from its
+        service's entry SERVER. A miss here — with all spans present — is a
+        genuine instrumentation anomaly: surfaced as an instrumentation-signal
+        note, fail-closed (ADR-0012). This is the productization-honest place
+        for the assert: in a streaming run a transient miss is normal, only the
+        converged final state can witness a real violation."""
+        # Index entry servers by service from the arrived set.
+        for agent in self.spans_by_id.values():
+            if not _is_oi_kind(agent, "AGENT"):
+                continue
+            svc = agent.service_name
+            if not svc:
+                continue
+            # Find the service's entry SERVER by climbing the AGENT's ancestors.
+            entry = None
+            for anc in self._ancestors(agent):
+                if anc.kind == "SERVER" and anc.service_name == svc:
+                    entry = self._service_entry_server(anc)
+                    break
+            reachable = entry is not None and self._agent_reachable_below(
+                entry, agent
+            )
+            if not reachable:
+                # The AGENT is not reachable from any same-service entry SERVER's
+                # bounded subtree — invariant violated for this trace.
+                if entry is None:
+                    detail = "no same-service entry SERVER ancestor"
+                else:
+                    detail = f"not in bounded subtree of entry SERVER {entry.span_id}"
+                note = (
+                    f"instrumentation-signal: AGENT span {agent.span_id} on "
+                    f"service {svc!r} {detail} (AGENT-nests-in-SERVER invariant "
+                    f"violated)"
+                )
+                if note not in self.notes:
+                    self.notes.append(note)
+
+    # ------------------------------------------------------------------
     # Visibility helpers (default-view query facsimile)
     # ------------------------------------------------------------------
 
@@ -522,22 +680,42 @@ class Processor:
         )
 
     def _emit_external_http_on_client(self, client: Span) -> None:
-        """external-http edge anchored on `client`: look UP for the owning OI
-        TOOL ancestor and, if the destination host qualifies, emit
-        `tool → service:<host>`. Both `client` and its OI TOOL ancestor are in
-        the arrived set when this runs (retried every arrival), so it is
-        order-independent — no separate on-tool entry needed."""
+        """external-http edge anchored on `client`: look UP for the NEAREST
+        enclosing OI span and emit `tool → service:<host>` only if that nearest
+        OI span is a TOOL. If the nearest enclosing OI span is an LLM, the
+        egress is the LLM call's own transport (the `ete-litellm` gateway POST
+        is a direct child of its OI LLM span) — absorb, never external-http.
+
+        This nearest-OI-span rule is the lineage-local positive signal that
+        replaces the dropped trace-global `_llm_gateway_hosts` exclusion: rather
+        than collecting every LLM host trace-wide and excluding it, we observe
+        that an LLM egress is *structurally* nested directly under its OI LLM
+        span, so stopping the ancestor walk at the first OI span of EITHER kind
+        distinguishes the two without a scan. Both `client` and its enclosing OI
+        span are in the arrived set when this runs (retried every arrival), so
+        it stays order-independent."""
         if self._external_http_host(client) is None:
             return
-        cur = client
-        while cur.parent_id:
-            parent = self.spans_by_id.get((cur.trace_id, cur.parent_id))
-            if parent is None:
-                break
+        for parent in self._ancestors(client):
+            # Stop at an inbound `POST /` SERVER — a sub-agent service entry.
+            # Crossing it means we have walked OUT of the egress's own service
+            # into a PARENT that delegated here, so any OI TOOL above is the
+            # delegate primitive, not this egress's owner. This distinguishes:
+            #   - research-agent's `ete-litellm` egress, which sits under
+            #     research-agent's inbound `POST /` (a sub-agent boundary) — its
+            #     own LLM-gateway traffic, NOT the parent's `delegate_*` tool's
+            #     egress → absorb; from
+            #   - `charge_card`'s `psp-mock` egress, which crosses only a
+            #     deployed-tool `/mcp` SERVER (NOT a `POST /` entry) to reach its
+            #     owning OI TOOL `charge_card` on payment-agent → genuine
+            #     external-http.
+            if parent.kind == "SERVER" and self._is_service_entry_server(parent):
+                return  # walked into a sub-agent's territory — not our egress
+            if _is_oi_kind(parent, "LLM"):
+                return  # LLM-gateway transport — absorbed, not external-http
             if _is_oi_kind(parent, "TOOL"):
                 self._emit_external_http(client=client, tool_span=parent)
                 return
-            cur = parent
 
     # ------------------------------------------------------------------
     # Step 3: entity evidence
@@ -594,29 +772,19 @@ class Processor:
             return None
         if span.service_name in self._mcp_services:
             return deployed_tool_identity(span)
-        # A service that owns an OpenInference AGENT-kind span IS an agent, and
-        # its identity is sourced from that AGENT span — order-independent,
-        # arrived-view scan. If no AGENT span has arrived for this service yet,
-        # we cannot finally decide the identity, so emit nothing.
-        agent_ident = self._agent_identity_from_agent_span(span.service_name)
-        if agent_ident is not None:
-            return agent_ident
         # `span` itself carries the framework marker (e.g. resolving a parent
-        # OI span's service): fall through to the canonical agent/tool identity.
+        # OI span's service): its own attrs are sufficient, no walk needed.
         if _is_oi_kind(span, "AGENT", "LLM", "CHAIN", "TOOL"):
             return caller_inference._agent_or_deployed_tool_from_service(span)
-        return None
-
-    def _agent_identity_from_agent_span(self, service_name: str) -> Identity | None:
-        """If `service_name` owns an OpenInference AGENT-kind span among arrived
-        spans, build its `agent:(project,service)` Identity from that span.
-        Order-independent: the result is sourced from the AGENT span, not from
-        the span that triggered resolution."""
-        for s in self.spans_by_id.values():
-            if s.service_name != service_name:
-                continue
-            if _is_oi_kind(s, "AGENT"):
-                return caller_inference._agent_or_deployed_tool_from_service(s)
+        # Otherwise `span` is a bare SERVER (e.g. a `POST /` inbound): a service
+        # that owns an OI AGENT span IS an agent, identity sourced from that
+        # AGENT span. LINEAGE-SCOPED: walk span's own bounded subtree (stopping
+        # at cross-service SERVER boundaries) rather than scanning all spans.
+        # If no AGENT span is reachable yet, we cannot finally decide, emit
+        # nothing (the per-arrival region recompute re-attempts).
+        agent_span = self._same_service_agent_in_subtree(span)
+        if agent_span is not None:
+            return caller_inference._agent_or_deployed_tool_from_service(agent_span)
         return None
 
     def _resolve_caller_around_oi_span(self, span: Span) -> Identity | None:
@@ -640,18 +808,6 @@ class Processor:
                         )
             cur = parent
         return self._resolve_service_side_identity(span)
-
-    def _matching_mcp_tool_span(self, span: Span) -> Span | None:
-        logical = _tool_logical_name(span)
-        for s in self.spans_by_id.values():
-            if (
-                s.kind == "SERVER"
-                and s.service_name
-                and s.service_name in self._mcp_services
-                and canonical_service_name(s) == (logical or None)
-            ):
-                return s
-        return None
 
     # ------------------------------------------------------------------
     # Step 5b: interaction-tree parent (ADR-0008)
@@ -843,48 +999,57 @@ class Processor:
 
     def _external_http_host(self, client: Span) -> str | None:
         """The destination host of a CLIENT POST that qualifies as an
-        UNINSTRUMENTED external service (`service:<host>`), else None. Gates
-        (all judged over the ARRIVED span set, which is correct because the
-        edge is anchored on the OI TOOL span — a leaf tool egress can have no
-        future SERVER child):
+        UNINSTRUMENTED external service (`service:<host>`), else None.
 
-          1. the egress is not MCP transport (URL path is not `/mcp`),
-          2. no in-trace SERVER child (callee is uninstrumented),
-          3. host resolves via `_http_host`, and
-          4. host not already owned by another entity — not in
-             `known_canonicals`, not an LLM-gateway host, not a known
-             agent / `/mcp` host.
+        POSITIVE-ANCHORED, LINEAGE-LOCAL gates only (ADR-0012 productization).
+        The former design excluded a host if it was owned by *any other entity*
+        — a trace-global NEGATIVE that required scanning all LLM/CLIENT spans
+        (`_llm_gateway_hosts`, `_non_service_hosts`). The grill proved that on
+        the live trace the discriminators are entirely CLIENT-local + direct-
+        child, so both global scans are dropped:
 
-        Gate 1 is the order-independent discriminator between a deployed-MCP
-        tool's transport egress (`http://get-weather-mcp:8000/mcp` — absorbed,
-        already represented by the deployed-tool OI TOOL edge) and a genuine
-        uninstrumented external call (`http://psp-mock:9091/charge`). It reads
-        only the CLIENT span's own URL, so it never depends on arrival order —
-        unlike a "is the destination a known deployed-tool service?" check,
-        which would flip with the arrival of the callee's `/mcp` SERVER span.
+          1. the egress URL path is not a well-known non-business convention —
+             `/mcp` (deployed-MCP transport) or `/.well-known/*` (agent-card
+             discovery probe). Both are read from the CLIENT span's OWN url.
+          2. the CLIENT has no in-trace SERVER child (the callee is
+             uninstrumented — an instrumented agent/tool/service would emit a
+             SERVER child). Direct-children only, already local.
+          3. the host resolves via `_http_host`.
+
+        The LLM-gateway exclusion is structurally redundant under the
+        OI-TOOL-ancestor requirement in `_emit_external_http_on_client`: an LLM
+        egress is a child of an OI LLM span, never of an OI TOOL span, so this
+        path never reaches it. The `known_canonicals` / agent-host exclusions
+        are subsumed by gate 2 (an instrumented service has a SERVER child).
+
+        Gap accepted (per "let the prototype decide"): a future business egress
+        to a host that is ALSO an LLM/instrumented host reached elsewhere in the
+        same trace would no longer be excluded. New-fixture requirement when one
+        exists — same stance ADR-0012 takes for the dropped bare-SERVER rung.
         """
-        # Gate 1: MCP transport (`POST .../mcp`) is never external-http — it is
-        # the deployed-tool edge's transport, absorbed structurally.
+        # Gate 1: well-known non-business egress paths are never external-http.
+        #   - `POST .../mcp`         — deployed-tool transport (absorbed)
+        #   - `GET .../.well-known/` — agent-card discovery probe (absorbed;
+        #     this is the case the old trace-global `_non_service_hosts` caught,
+        #     now a CLIENT-local path signal)
         url = caller_inference._attr(client, "http.url") or caller_inference._attr(
             client, "url.full"
         )
         if isinstance(url, str):
             from urllib.parse import urlparse
 
-            path = urlparse(url).path or ""
-            if path.rstrip("/").endswith("/mcp"):
+            path = (urlparse(url).path or "").rstrip("/")
+            if path.endswith("/mcp"):
                 return None
+            if "/.well-known/" in path + "/" or path.endswith("/.well-known"):
+                return None
+        # Gate 2: an in-trace SERVER child means the callee is instrumented
+        # (agent / deployed-tool / instrumented service) — not external-http.
         children = self.children.get(client.span_id, [])
         if any(c.kind == "SERVER" for c in children):
             return None
         host = caller_inference._http_host(client)
         if not host:
-            return None
-        if host in self.known_canonicals:
-            return None
-        if host in self._llm_gateway_hosts():
-            return None
-        if host in self._non_service_hosts():
             return None
         return host
 
@@ -922,39 +1087,6 @@ class Processor:
             anchor_span_ids=(client.span_id,),
             anchor_rule="external-http",
         )
-
-    def _llm_gateway_hosts(self) -> set[str]:
-        """Hosts seen on any OI LLM span (the LLM gateway). These are owned by
-        an `llm:` entity, never a span's own `service.name`, so they are NOT in
-        `known_canonicals`; exclude them explicitly from external-http."""
-        hosts: set[str] = set()
-        for s in self.spans_by_id.values():
-            if _is_oi_kind(s, "LLM"):
-                h = caller_inference._llm_host_from_invocation(s)
-                if h:
-                    hosts.add(h)
-        return hosts
-
-    def _non_service_hosts(self) -> set[str]:
-        """Destination hosts owned by an agent / deployed-tool entity (the
-        agent-card probe target, A2A peers, `/mcp` transports). A service that
-        emits an OI framework span is an agent/tool; its caller-facing host is
-        the canonical name a CLIENT reaches it at. Excluded explicitly because
-        the destination host is never the span-owner's own `service.name`, so
-        `known_canonicals` may not cover it (e.g. agent-card probe)."""
-        hosts: set[str] = set()
-        for s in self.spans_by_id.values():
-            if s.kind != "CLIENT":
-                continue
-            child_ids = self.children.get(s.span_id, [])
-            if not any(c.kind == "SERVER" for c in child_ids):
-                continue
-            # This CLIENT reaches an in-trace SERVER (an instrumented agent /
-            # tool). Its destination host names that entity — register it.
-            h = caller_inference._http_host(s)
-            if h:
-                hosts.add(h)
-        return hosts
 
     def _tool_transport_signal(self, tool_span: Span) -> str | None:
         """Classify an OI TOOL span's transport by walking its ARRIVED subtree
@@ -999,11 +1131,12 @@ class Processor:
         if _is_oi_kind(span, "TOOL"):
             signal = self._tool_transport_signal(span)
             if signal == "deployed":
-                # Prefer the matching `/mcp` SERVER by canonical name for the
-                # identity (trace-global), else the in-subtree transport span.
-                mcp_server = self._matching_mcp_tool_span(span)
-                if mcp_server is not None:
-                    return deployed_tool_identity(mcp_server)
+                # LINEAGE-SCOPED: the deployed-tool identity comes from the
+                # `/mcp` SERVER in this OI TOOL span's OWN subtree (the same
+                # subtree `_tool_transport_signal` already walked to decide
+                # "deployed"). The former trace-global `_matching_mcp_tool_span`
+                # scan-by-canonical-name is redundant — the transport SERVER is
+                # always a descendant of the tool span that drove the egress.
                 for ev in _walk_descendants(self.children, span):
                     if ev.kind == "SERVER" and (ev.name or "").upper().startswith(
                         "POST /MCP"
@@ -1081,6 +1214,10 @@ class Processor:
     # ------------------------------------------------------------------
 
     def result(self) -> ExtractResult:
+        # One-shot AGENT-nests-in-SERVER invariant check over the fully-arrived
+        # set (read-only; not derivation). In production this moves to the
+        # AGENT span's own arrival, checked against its then-current lineage.
+        self._check_agent_nesting()
         active_ix = self._active_interactions()
         active_entities = [e for e in self.entities.values() if e.retracted_at is None]
         self.notes.append(
