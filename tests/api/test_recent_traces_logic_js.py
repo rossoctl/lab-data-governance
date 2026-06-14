@@ -127,3 +127,17 @@ def test_missing_parent_filter_on_hides_orphan_listing_roots():
     )
     kept = json.loads(out)
     assert [r["trace_id"] for r in kept] == ["A", "C"]
+
+
+def test_format_time_24_utc_uses_zero_padded_24_hour_clock():
+    out = _run_js(
+        """
+        const samples = [
+          M.formatTime24Utc('2026-05-01T00:05:09Z'),
+          M.formatTime24Utc('2026-05-01T13:45:30.123456+00:00'),
+          M.formatTime24Utc('not-a-date'),
+        ];
+        process.stdout.write(JSON.stringify(samples));
+        """
+    )
+    assert json.loads(out) == ["00:05:09", "13:45:30", "not-a-date"]

@@ -157,8 +157,9 @@ def _client_from_span(span: Span) -> Identity | None:
 
     Preference (per Natural-key term):
       1. peer.service
-      2. client.address as hostname
-      3. client.address as IP
+      2. client.address as hostname / IP
+      3. net.peer.name (hostname) / net.peer.ip (IP) — the OTel-semconv
+         fallback some instrumentors emit instead of client.address.
     """
     peer = _attr(span, "peer.service")
     if isinstance(peer, str) and peer:
@@ -169,16 +170,19 @@ def _client_from_span(span: Span) -> Identity | None:
             project_name=None,
             detected_from="peer.service",
         )
-    addr = _attr(span, "client.address")
-    if isinstance(addr, str) and addr:
-        # Heuristic: IP if starts with digit, else hostname.
-        return Identity(
-            kind="client",
-            natural_key=f"client:{addr}",
-            display_name=addr,
-            project_name=None,
-            detected_from="client.address",
-        )
+    # client.address, then the net.peer.* semconv pair, in preference order.
+    # All resolve to the same `client:<host-or-ip>` shape; only the
+    # `detected_from` note differs by which rung fired.
+    for key in ("client.address", "net.peer.name", "net.peer.ip"):
+        val = _attr(span, key)
+        if isinstance(val, str) and val:
+            return Identity(
+                kind="client",
+                natural_key=f"client:{val}",
+                display_name=val,
+                project_name=None,
+                detected_from=key,
+            )
     return None
 
 
@@ -238,7 +242,9 @@ def in_process_tool_identity(
     """
     if not _is_oi_kind(tool_span, "TOOL"):
         return None
-    name = tool_span.name or "(unnamed tool)"
+    # Prefer the undecorated `tool.name` attr over the span name (frameworks
+    # decorate the span name, e.g. google_sdk's `execute_tool <name>`).
+    name = _attr(tool_span, "tool.name") or tool_span.name or "(unnamed tool)"
     return Identity(
         kind="tool",
         natural_key=f"tool:{owning_agent_nk}:{name}",

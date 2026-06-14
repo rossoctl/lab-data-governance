@@ -33,7 +33,7 @@ prototype.
 | `caller_inference.py` | Pure entity-kind ladder. Span attributes → `(kind, natural_key, display_name)`. |
 | `anchor_rules.py` | Five structural anchor rules per ADR-0009. Pure functions of span structure. |
 | `procedure.py` | Per-span 9-step `Processor`. Stateful in-memory state machine; idempotent on re-process. |
-| `cli.py` | Driver: fetches a trace's spans, runs `extract`, prints a forest report, writes `proto_*` scratch tables. |
+| `cli.py` | Driver: fetches a trace's spans (or every trace if no id is passed), runs `extract`, prints a report, writes the scratch tables. |
 | `extractor.py` | Compatibility shim re-exporting from `procedure`. |
 | `NOTES.md` | Round 1 / 2 / 3 history + verdicts. |
 
@@ -71,6 +71,16 @@ kubectl --context kind-kagenti -n data-governance cp \
 kubectl --context kind-kagenti -n data-governance exec $POD -- \
   python -m data_governance.processors.p_interactions_proto.cli \
   05c6095d1f863dcb3b209ef4761829e1
+```
+
+Omit the trace_id to run over **every** trace in the DB. The scratch
+tables are reset once, then each trace is extracted and accumulated;
+per-trace failures are logged and skipped, with a final ok/failed
+summary.
+
+```bash
+kubectl --context kind-kagenti -n data-governance exec $POD -- \
+  python -m data_governance.processors.p_interactions_proto.cli
 ```
 
 Re-copy the directory after every edit; pods don't auto-sync.

@@ -120,6 +120,16 @@
     return m ? m[1] : null;
   }
 
+  function formatTime24Utc(iso) {
+    try {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return iso;
+      return d.toISOString().slice(11, 19);
+    } catch (_e) {
+      return iso;
+    }
+  }
+
   function setView(view) {
     if (view === 'tree') {
       treeBtn.classList.add('active');
@@ -219,7 +229,7 @@
       const tStarted = document.createElement('td');
       tStarted.style.color = '#888';
       tStarted.style.fontFamily = 'ui-monospace, monospace';
-      tStarted.textContent = ix.started_at ? ix.started_at.split('T')[1].slice(0, 12) : '';
+      tStarted.textContent = ix.started_at ? formatTime24Utc(ix.started_at) : '';
       tr.appendChild(tStarted);
 
       const markerTd = document.createElement('td');

@@ -1,55 +1,45 @@
-"""Per-span 9-step procedure for P-interactions.
+"""Pure-streaming per-span procedure for P-interactions.
 
 THROWAWAY prototype (still batch — consumes a list of spans in seq order).
 The procedure shape is what will run inside one transaction per span when
 the streaming driver lands.
 
-Per Q14 / ADR-0007, the per-span work is:
+An interaction is the **span chain between two entity-bearing spans**,
+materialised the instant BOTH endpoints exist. The processor relies solely on
+streaming: emit-on-each-span, park until the second endpoint arrives, emit-once,
+**no end-of-trace flush fixups and no retraction**. (Order-independence is the
+acceptance gate: scrambled span order must produce the same active graph.)
 
-  1. Fetch the span (provided as input here).
-  2. Resolve in-trace parent from local state (None if late).
-  3. Identify entities the span evidences (callee for SERVER, caller for
-     CLIENT, the LLM/tool entity for OI spans, etc.). Upsert into the
-     entity index; record entity_spans rows.
-  4. Fire all five anchor rules; gather AnchorDecisions.
-  5. For each decision, build or mutate an interaction:
-       a. Resolve caller + callee identities.
-       b. Compute parent_interaction_id by walking the primary anchor's
-          parent chain (ADR-0008).
-       c. Attach all spans the rule covers as interaction_spans (anchor /
-          info / connector roles).
-  6. Late-parent re-evaluation: if this span is the parent of a previously-
-     anchored orphan-server interaction, re-fire cross-service on the child
-     (the orphan's anchor span) and demote/swap the interaction's caller
-     entity if a better one is now derivable.
-  6b. Interaction reconciliation (ADR-0011): pair newly-arrived OI LLM
-      spans with descendant CLIENT POSTs, or newly-arrived CLIENT POSTs
-      with ancestor OI LLM interactions. Sibling-case fallback when
-      no descendant pairing matches.
-  7. Aggregate updates: started_at / ended_at / error / payload hashes on
-     interactions whose evidence set changed.
-  8. Payload extraction: per attached span, pull request/response payloads
-     (LLM messages, tool input.value/output.value, HTTP bodies). Hash and
-     dedup.
-  9. Cursor advance (for the prototype: just record last seq seen).
+Per-span work (`process` -> `_process_chain`):
 
-State lives in-memory as Python dicts. The CLI driver flushes at the end.
+  1. Store the span; index it under its parent_id.
+  2. Bookkeeping: track canonical service names, `/mcp` SERVER services
+     (deployed tools), and `mcp_tools`-advertised tool names.
+  3. Classify the span as a *callee endpoint* and emit its chain, by kind:
+       - OI LLM / OI TOOL  -> caller = enclosing in-process tool, else the
+         service-agent (`_resolve_caller_around_oi_span`); single anchor.
+       - SERVER, parent on a different canonical service -> cross-service;
+         caller = the parent's service identity; two anchors. Same-service
+         parent (a2a handler internals, `/mcp` transport) is absorbed. A
+         deployed-tool callee is absorbed (the openinference-tool edge already
+         represents it — ADR-0010 collapse, structural).
+       - SERVER, no in-trace parent -> orphan-server.
+       - CLIENT -> pure transport, never an endpoint.
+     A SERVER whose cross-service parent hasn't arrived yet is parked
+     (`_pending_callees`) and retried when the ancestor streams in; any still
+     parked at end-of-trace are emitted as orphan-server.
+  4. Payload extraction + started_at/ended_at/error aggregation are inline on
+     the emitted interaction.
 
-ADR-0011 model (in-memory facsimile of the production schema):
+`result()` does NO correction — only streaming-compatible stabilisation: flush
+still-parked SERVER callees as orphan-server, roll up info/connector descendants,
+and recompute the ADR-0008 interaction tree.
 
-  - `retracted_at` is a tombstone column on ProtoInteraction and ProtoEntity.
-    Default views filter `retracted_at IS None`. `_active_*` helpers are
-    the prototype's stand-in for the default-view query.
-  - `original_seq` is preserved on creation; mirrors ADR-0004's
-    `arrival_seq` one layer up.
-  - `_owners_by_span` is the in-memory facsimile of the
-    `UNIQUE (trace_id, span_id)` constraint on `interaction_spans`. Each
-    (trace_id, span_id) maps to at most one non-retracted interaction.
-    Anchor-rule firing checks this before emitting; reconciliation
-    transfers ownership in the same transaction it retracts.
-  - Reconciliation queries the in-memory state (which would be the
-    durable `interactions`/`spans` tables in production) per span
-    arrival; the lookup shape is per-span, not scan-all.
+State lives in-memory as Python dicts. `_owners_by_span` is the in-memory
+facsimile of the `UNIQUE (trace_id, span_id)` constraint on `interaction_spans`
+(each span belongs to at most one interaction) and enforces emit-once.
+`retracted_at` / `_active_*` survive as schema-faithful scaffolding but, with no
+retraction path, every emitted row stays active.
 """
 
 from __future__ import annotations
@@ -63,8 +53,7 @@ from typing import Any
 
 from data_governance.retrieval import Span
 
-from . import anchor_rules, caller_inference
-from .anchor_rules import AnchorDecision
+from . import caller_inference
 from .caller_inference import (
     Identity,
     canonical_service_name,
@@ -72,7 +61,6 @@ from .caller_inference import (
     in_process_tool_identity,
     infer_caller_for_orphan_server,
     llm_identity,
-    service_identity_from_client,
 )
 
 
@@ -161,6 +149,18 @@ def _attr(span: Span, key: str) -> Any:
 
 def _is_oi_kind(span: Span, *kinds: str) -> bool:
     return _attr(span, "openinference.span.kind") in kinds
+
+
+def _tool_logical_name(span: Span) -> str | None:
+    """The tool's logical name, preferring the `tool.name` attribute over the
+    span name. Frameworks decorate the span name (e.g. google_sdk emits
+    `execute_tool <name>`); `tool.name` carries the undecorated name. Used so
+    deployed-MCP matching and in-process tool keys stay clean regardless of
+    framework span-name conventions."""
+    name = _attr(span, "tool.name")
+    if isinstance(name, str) and name:
+        return name
+    return span.name
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -302,10 +302,18 @@ class Processor:
         # (trace_id, span_id).
         self._owners_by_span: dict[str, str] = {}
 
-        # SERVER spans whose parent_id is set but parent hasn't arrived yet.
-        # Re-processed when the parent shows up; if still unresolvable at
-        # `result()` time, they're treated as genuine orphan-server anchors.
-        self._deferred_spans: set[str] = set()
+        # Pure-streaming parking: awaited_parent_span_id -> callee span_ids held
+        # waiting for that ancestor to stream in. A SERVER callee whose
+        # cross-service parent hasn't arrived yet is parked here and drained in
+        # `_reattempt_parked_on_new_ancestor` when the ancestor arrives; any
+        # still parked at end-of-trace are emitted as orphan-server in
+        # `result()` (their caller proved unobservable).
+        self._pending_callees: dict[str, list[str]] = {}
+
+        # CLIENT spans deferred to flush for the external-http decision. The
+        # exclusion gates depend on the full span set, so we collect candidate
+        # CLIENT span_ids here and resolve them once in `result()`.
+        self._pending_external_http: list[str] = []
 
     # ------------------------------------------------------------------
     # Visibility helpers (default-view query facsimile)
@@ -364,35 +372,14 @@ class Processor:
             for tn in tool_names:
                 self._mcp_tool_names.setdefault(tn, project)
 
-        # Step 3: lightweight discovery only — no automatic agent/tool
-        # registration. Entities are pulled in by anchor handlers.
+        # Pure-streaming chain emit: classify this span as a call-graph
+        # endpoint; if it is, resolve its caller (by callee kind) and emit the
+        # chain the instant both endpoints exist, else park until the awaited
+        # ancestor streams in. Emit-once, no flush, no retraction.
+        if not is_finalization:
+            self._process_chain(span)
 
-        # Step 4: fire anchor rules. Don't fire orphan-server speculatively
-        # for SERVER spans whose parent_id is set but parent is not yet seen.
-        in_trace_children = list(self.children.get(span.span_id, []))
-        if (
-            span.kind == "SERVER"
-            and span.parent_id is not None
-            and parent is None
-            and not is_finalization
-        ):
-            self._deferred_spans.add(span.span_id)
-        else:
-            decisions = anchor_rules.fire_all(
-                span, parent, in_trace_children, self.known_canonicals
-            )
-            for d in decisions:
-                self._handle_decision(d, span, parent)
-
-        # Step 6: late-parent re-evaluation.
-        self._reevaluate_late_children(span)
-        self._reprocess_resolved_deferred(span)
-
-        # Step 6b: ADR-0011 reconciliation — per-newly-arrived-span pairing
-        # search (D15). Replaces the old scan-all-every-tick approach.
-        self._reconcile_on_span_arrival(span)
-
-        # Step 7-8: aggregate updates + payloads — inline.
+        # Payload + aggregate updates are inline in the emit path.
 
         # Step 9: cursor advance.
         self.last_processed_seq = max(self.last_processed_seq, span.seq)
@@ -419,10 +406,8 @@ class Processor:
             )
             self.entities[identity.natural_key] = e
         elif e.retracted_at is not None:
-            # Reviving a previously-retracted entity (e.g. unresolved-LLM
-            # entity that gets a new attached interaction). Production
-            # would create a fresh row; here we lift the tombstone and
-            # bump seq.
+            # Reviving a previously-retracted entity. Production would create a
+            # fresh row; here we lift the tombstone and bump seq.
             e.retracted_at = None
             e.seq = max(e.seq, span.seq)
         # entity_spans (only on the active row)
@@ -436,538 +421,6 @@ class Processor:
                 ProtoEntitySpan(e.id, span.trace_id, span.span_id, "identified_via")
             )
         return e
-
-    # ------------------------------------------------------------------
-    # ADR-0011 reconciliation: per-newly-arrived-span pairing (D15)
-    # ------------------------------------------------------------------
-
-    def _reconcile_on_span_arrival(self, span: Span) -> None:
-        """ADR-0011 §2 LLM/HTTP-transport pairing.
-
-        Two structural triggers, dispatched by the just-arrived span's shape:
-
-          - CLIENT POST: walk ancestors. If exactly one ancestor anchors an
-            unresolved (or already-host-known) OI LLM interaction, pair.
-          - OI LLM: scan already-arrived descendant spans for CLIENT POSTs
-            anchoring an `external-http` interaction. If exactly one, pair.
-          - Sibling-case fallback: when no descendant pairing matches and
-            the just-arrived span is one of the two shapes above.
-
-        Pairing is structural-first; the sibling case is consulted only
-        when no descendant match exists. On multi-match in the sibling
-        case, fail closed.
-
-        ADR-0011 §6: lookups go against the durable `interactions`/`spans`
-        tables. The prototype's in-memory dicts (`interactions_by_anchor`,
-        `spans_by_id`) are the in-memory facsimile.
-        """
-        from .caller_inference import _http_host
-
-        # CLIENT POST trigger
-        if span.kind == "CLIENT" and _http_host(span):
-            self._reconcile_client_post(span)
-            return
-
-        # OI LLM trigger
-        if _is_oi_kind(span, "LLM"):
-            self._reconcile_oi_llm(span)
-            return
-
-    def _reconcile_client_post(self, client_span: Span) -> None:
-        """CLIENT POST arrived. Walk ancestors; pair against an OI LLM
-        interaction anchored on an ancestor span."""
-        from .caller_inference import _http_host
-
-        host = _http_host(client_span)
-        if not host:
-            return
-
-        # Walk ancestors collecting OI LLM interactions.
-        candidates: list[ProtoInteraction] = []
-        cur = client_span
-        while cur.parent_id:
-            parent = self.spans_by_id.get((cur.trace_id, cur.parent_id))
-            if parent is None:
-                break
-            ix = self.interactions_by_anchor.get(parent.span_id)
-            if (
-                ix is not None
-                and ix.anchor_rule == "openinference-llm"
-                and self._is_active_interaction(ix)
-            ):
-                candidates.append(ix)
-            cur = parent
-
-        if len(candidates) == 1:
-            self._pair_llm_with_client(candidates[0], client_span, host)
-            return
-        if len(candidates) > 1:
-            # Multiple OI LLM ancestors — fail closed.
-            return
-
-        # No descendant/ancestor structural match; try sibling fallback.
-        self._reconcile_sibling_fallback(client_span, host)
-
-    def _reconcile_oi_llm(self, llm_span: Span) -> None:
-        """OI LLM arrived. Scan already-arrived descendants for a CLIENT
-        POST anchoring an `external-http` interaction."""
-        from .caller_inference import _http_host
-
-        ix = self.interactions_by_anchor.get(llm_span.span_id)
-        if ix is None or not self._is_active_interaction(ix):
-            return
-        if ix.anchor_rule != "openinference-llm":
-            return
-
-        # Descendant scan
-        candidates: list[tuple[Span, str]] = []
-        for ev in _walk_descendants(self.children, llm_span):
-            if ev.span_id == llm_span.span_id:
-                continue
-            if ev.kind != "CLIENT":
-                continue
-            host = _http_host(ev)
-            if not host:
-                continue
-            ext_ix = self.interactions_by_anchor.get(ev.span_id)
-            if (
-                ext_ix is not None
-                and ext_ix.anchor_rule == "external-http"
-                and self._is_active_interaction(ext_ix)
-            ):
-                candidates.append((ev, host))
-
-        if len(candidates) == 1:
-            client_span, host = candidates[0]
-            self._pair_llm_with_client(ix, client_span, host)
-            return
-        if len(candidates) > 1:
-            # Ambiguous descendant — fail closed.
-            return
-
-        # No descendant match; try sibling fallback for *this* OI LLM.
-        self._reconcile_sibling_fallback_for_llm(ix, llm_span)
-
-    def _reconcile_sibling_fallback(self, client_span: Span, host: str) -> None:
-        """A CLIENT POST arrived without a structural OI LLM ancestor.
-        Look for an OI LLM on the same canonical-service whose time-window
-        uniquely contains the CLIENT.
-
-        On multi-match (parallel calls), fail closed.
-        """
-        if client_span.started_at is None or client_span.ended_at is None:
-            return
-        svc = client_span.service_name
-        if not svc:
-            return
-
-        containing_llms: list[ProtoInteraction] = []
-        for ix in self._active_interactions():
-            if ix.anchor_rule != "openinference-llm":
-                continue
-            llm_span = self._span_by_id(ix.primary_anchor_span_id)
-            if llm_span is None or llm_span.service_name != svc:
-                continue
-            if llm_span.started_at is None or llm_span.ended_at is None:
-                continue
-            if (
-                client_span.started_at >= llm_span.started_at
-                and client_span.ended_at <= llm_span.ended_at
-            ):
-                containing_llms.append(ix)
-        if len(containing_llms) != 1:
-            return
-        # Uniqueness check across other LLMs on the same service.
-        winner = containing_llms[0]
-        winner_span = self._span_by_id(winner.primary_anchor_span_id)
-        if winner_span is None:
-            return
-        rivals = 0
-        for ix in self._active_interactions():
-            if ix.id == winner.id:
-                continue
-            if ix.anchor_rule != "openinference-llm":
-                continue
-            other_span = self._span_by_id(ix.primary_anchor_span_id)
-            if other_span is None or other_span.service_name != svc:
-                continue
-            if other_span.started_at is None or other_span.ended_at is None:
-                continue
-            if (
-                client_span.started_at >= other_span.started_at
-                and client_span.ended_at <= other_span.ended_at
-            ):
-                rivals += 1
-        if rivals > 0:
-            return
-        self._pair_llm_with_client(winner, client_span, host)
-
-    def _reconcile_sibling_fallback_for_llm(
-        self, ix: ProtoInteraction, llm_span: Span
-    ) -> None:
-        """An OI LLM arrived. Look for a sibling CLIENT POST on the same
-        canonical-service whose time-window is uniquely contained in this
-        LLM's window, and that no other in-service LLM also contains.
-        """
-        from .caller_inference import _http_host
-
-        if llm_span.started_at is None or llm_span.ended_at is None:
-            return
-        svc = llm_span.service_name
-        if not svc:
-            return
-
-        # Candidate CLIENT POSTs on this service that are contained in our window.
-        contained: list[tuple[Span, str]] = []
-        for s in self.spans_by_id.values():
-            if s.kind != "CLIENT" or s.service_name != svc:
-                continue
-            if s.started_at is None or s.ended_at is None:
-                continue
-            host = _http_host(s)
-            if not host:
-                continue
-            if s.started_at >= llm_span.started_at and s.ended_at <= llm_span.ended_at:
-                contained.append((s, host))
-        if len(contained) != 1:
-            return
-        client_span, host = contained[0]
-
-        # Uniqueness: no other in-service LLM also contains this CLIENT.
-        rivals = 0
-        for other_ix in self._active_interactions():
-            if other_ix.id == ix.id:
-                continue
-            if other_ix.anchor_rule != "openinference-llm":
-                continue
-            other = self._span_by_id(other_ix.primary_anchor_span_id)
-            if other is None or other.service_name != svc:
-                continue
-            if other.started_at is None or other.ended_at is None:
-                continue
-            if (
-                client_span.started_at >= other.started_at
-                and client_span.ended_at <= other.ended_at
-            ):
-                rivals += 1
-        if rivals > 0:
-            return
-        self._pair_llm_with_client(ix, client_span, host)
-
-    # ------------------------------------------------------------------
-    # Pairing: the actual mutation
-    # ------------------------------------------------------------------
-
-    def _pair_llm_with_client(
-        self,
-        llm_ix: ProtoInteraction,
-        client_span: Span,
-        host: str,
-    ) -> None:
-        """Implement ADR-0011 §2 steps 1-5 for a confirmed pairing.
-
-          1. Retarget the OI LLM's callee onto `llm:<host>/<model>`.
-          2. Destructively retract the `external-http` interaction
-             anchored on the CLIENT POST.
-          3. Transfer the CLIENT POST span ownership to the surviving OI
-             LLM interaction. Role from `_has_payload_or_error()` (D5).
-          4. Repair the interaction tree for children of the retracted
-             external-http interaction (D4).
-          5. GC orphaned entities: the now-empty unresolved LLM entity,
-             the orphan `service:<host>` (D7 universal retract).
-        """
-        if self._owners_by_span.get(client_span.span_id) == llm_ix.id:
-            return  # ADR-0011: already paired this OI LLM with this CLIENT POST
-
-        # Step 1: per-interaction retarget (D2)
-        callee_entity = self._entity_by_id(llm_ix.callee_entity_id)
-        if callee_entity is None:
-            return
-
-        unknown_nk_prefix = "llm:(unknown)/"
-        is_unknown = callee_entity.natural_key.startswith(unknown_nk_prefix)
-        if is_unknown:
-            model = callee_entity.natural_key[len(unknown_nk_prefix):]
-            target_nk = f"llm:{host}/{model}"
-            target = self._upsert_or_revive_llm_entity(
-                target_nk, host, model, client_span
-            )
-            self._retarget_interaction_callee(llm_ix, target, client_span)
-        else:
-            target = callee_entity
-            # entity_spans: record the CLIENT as identified_via on the
-            # already-resolved LLM entity.
-            self.entity_spans.append(
-                ProtoEntitySpan(
-                    target.id, client_span.trace_id, client_span.span_id, "identified_via"
-                )
-            )
-
-        # Step 2: retract the external-http interaction on this CLIENT span.
-        ext_ix = self.interactions_by_anchor.get(client_span.span_id)
-        external_callee_entity_id: str | None = None
-        children_to_repair: list[ProtoInteraction] = []
-        if ext_ix is not None and self._is_active_interaction(ext_ix):
-            external_callee_entity_id = ext_ix.callee_entity_id
-            children_to_repair = [
-                ix
-                for ix in self.interactions_by_anchor.values()
-                if ix.parent_interaction_id == ext_ix.id
-                and self._is_active_interaction(ix)
-            ]
-            self._retract_interaction(ext_ix, client_span.seq)
-
-        # Step 3: transfer the CLIENT POST onto the surviving LLM interaction
-        # with role derived from payload/error presence (D5).
-        role = "info" if self._has_payload_or_error(client_span) else "connector"
-        self._attach_span(llm_ix, client_span.span_id, role)
-
-        # Step 4: tree repair (D4).
-        for child in children_to_repair:
-            child.parent_interaction_id = self._compute_parent_interaction(
-                child.primary_anchor_span_id
-            )
-            child.seq = max(child.seq, client_span.seq)
-
-        # Step 5: GC orphaned entities (D7 universal destructive retract).
-        if is_unknown:
-            self._gc_entity_if_orphan(callee_entity, client_span.seq)
-        if external_callee_entity_id is not None:
-            ext_callee = self._entity_by_id(external_callee_entity_id)
-            if ext_callee is not None:
-                self._gc_entity_if_orphan(ext_callee, client_span.seq)
-
-        self._update_aggregates(llm_ix)
-        self.notes.append(
-            f"reconciled OI LLM (anchor {llm_ix.primary_anchor_span_id}) with "
-            f"CLIENT {client_span.span_id} -> {target.natural_key}"
-        )
-
-    def _upsert_or_revive_llm_entity(
-        self, target_nk: str, host: str, model: str, source_span: Span
-    ) -> ProtoEntity:
-        target = self.entities.get(target_nk)
-        if target is None:
-            target = ProtoEntity(
-                id=str(uuid.uuid4()),
-                kind="llm",
-                natural_key=target_nk,
-                display_name=f"{model} @ {host}",
-                project_name=None,
-                detected_from="resolved via paired CLIENT POST (ADR-0011)",
-                first_seen_seq=source_span.seq,
-                seq=source_span.seq,
-                original_seq=source_span.seq,
-            )
-            self.entities[target_nk] = target
-            self.entity_spans.append(
-                ProtoEntitySpan(
-                    target.id, source_span.trace_id, source_span.span_id, "discovered_via"
-                )
-            )
-            self._entity_first_span.add(target.id)
-        elif target.retracted_at is not None:
-            target.retracted_at = None
-            target.seq = max(target.seq, source_span.seq)
-        return target
-
-    def _retarget_interaction_callee(
-        self,
-        ix: ProtoInteraction,
-        new_callee: ProtoEntity,
-        evidence_span: Span,
-    ) -> None:
-        """ADR-0011 §2 step 1: per-interaction retarget. Mutates ix's
-        callee_entity_id only — does NOT loop over other interactions.
-        """
-        if ix.callee_entity_id == new_callee.id:
-            return
-        ix.callee_entity_id = new_callee.id
-        ix.seq = max(ix.seq, evidence_span.seq)
-        caller = self._entity_by_id(ix.caller_entity_id)
-        if caller is not None:
-            ix.summary = f"{caller.display_name} → {new_callee.display_name}"
-        # entity_spans on the new callee — the CLIENT span carried the host.
-        self.entity_spans.append(
-            ProtoEntitySpan(
-                new_callee.id,
-                evidence_span.trace_id,
-                evidence_span.span_id,
-                "identified_via",
-            )
-        )
-
-    def _retract_interaction(self, ix: ProtoInteraction, retract_seq: int) -> None:
-        """ADR-0011 §3: tombstone retract. Mutates `retracted_at`, advances
-        `seq`. Releases (trace_id, span_id) ownership for spans that were
-        owned by this interaction (D12: caller is responsible for
-        re-attaching them in the same transaction).
-        """
-        if ix.retracted_at is not None:
-            return
-        ix.retracted_at = _dt.datetime.now(tz=_dt.timezone.utc)
-        ix.seq = max(ix.seq, retract_seq) + 1  # advance for the retract event
-        # Release span ownership for spans that this interaction owned.
-        attached = self._attached_span_ids.get(ix.id, set())
-        for sid in list(attached):
-            owner = self._owners_by_span.get(sid)
-            if owner == ix.id:
-                del self._owners_by_span[sid]
-        # Drop interaction_spans rows (the surviving interaction will
-        # re-attach what it claims).
-        self.interaction_spans = [
-            r for r in self.interaction_spans if r.interaction_id != ix.id
-        ]
-        self._attached_span_ids.pop(ix.id, None)
-
-    def _gc_entity_if_orphan(self, entity: ProtoEntity, retract_seq: int) -> None:
-        """D7 universal destructive retract. Tombstone the entity if no
-        active (non-retracted) interaction references it as caller or
-        callee. In production this is a cross-trace check; the prototype
-        is single-trace so the in-memory check suffices.
-        """
-        if entity.retracted_at is not None:
-            return
-        for ix in self._active_interactions():
-            if ix.caller_entity_id == entity.id or ix.callee_entity_id == entity.id:
-                return
-        entity.retracted_at = _dt.datetime.now(tz=_dt.timezone.utc)
-        entity.seq = max(entity.seq, retract_seq) + 1
-
-    # ------------------------------------------------------------------
-    # Step 5: handle a single anchor decision
-    # ------------------------------------------------------------------
-
-    def _handle_decision(
-        self,
-        d: AnchorDecision,
-        span: Span,
-        parent: Span | None,
-    ) -> None:
-        existing = self.interactions_by_anchor.get(d.primary_anchor_span_id)
-
-        # ADR-0011 §5: pre-emission ownership check (D9, D10).
-        # If a non-retracted interaction already owns any proposed anchor
-        # span, skip emission.
-        if existing is None or not self._is_active_interaction(existing):
-            # ADR-0011 §5: widened from primary to all anchor spans (cross-service has 2)
-            check_span_ids = d.anchor_span_ids or (d.primary_anchor_span_id,)
-            for asid in check_span_ids:
-                owner = self._owners_by_span.get(asid)
-                if owner is not None:
-                    # A different interaction owns this span (e.g. external-http
-                    # CLIENT POST that reconciliation already transferred onto
-                    # an OI LLM interaction; or a cross-service secondary anchor
-                    # — the parent CLIENT — already owned by another interaction).
-                    # Suppress.
-                    self.notes.append(
-                        f"suppress {d.rule} on {asid}: "
-                        f"already owned by interaction {owner}"
-                    )
-                    return
-
-        # Resolve caller + callee per rule.
-        caller: Identity | None
-        callee: Identity | None
-        anchor_rule = d.rule
-
-        if anchor_rule == "cross-service":
-            assert parent is not None
-            caller = self._resolve_service_side_identity(parent)
-            callee = self._resolve_service_side_identity(span)
-        elif anchor_rule == "orphan-server":
-            caller = infer_caller_for_orphan_server(span)
-            callee = self._resolve_service_side_identity(span)
-        elif anchor_rule == "openinference-llm":
-            caller = self._resolve_caller_around_oi_span(span)
-            # D3: drop fire-time descendant lookup. Always emit unresolved
-            # if the OI LLM span doesn't itself carry the host; let
-            # reconciliation resolve.
-            callee = llm_identity(span)
-        elif anchor_rule == "openinference-tool":
-            caller = self._resolve_caller_around_oi_span(span)
-            mcp_server = self._matching_mcp_tool_span(span)
-            if mcp_server is not None:
-                callee = deployed_tool_identity(mcp_server)
-            elif span.name in self._mcp_tool_names:
-                # Tool name was advertised via an `mcp_tools` CHAIN span on
-                # this trace — the tool is deployed-MCP even though no
-                # in-trace SERVER span proves the transport (openai_agents'
-                # MCPServerStreamableHttp path doesn't produce HTTPX CLIENT
-                # spans, so the deployed-tool service never gets a parent
-                # context to start a SERVER span on).
-                proj = self._mcp_tool_names.get(span.name) or ""
-                callee = Identity(
-                    kind="tool",
-                    natural_key=f"tool:({proj},{span.name})",
-                    display_name=span.name,
-                    project_name=proj or None,
-                    detected_from="advertised by mcp_tools span",
-                )
-            else:
-                owning_nk = caller.natural_key if caller is not None else "(unknown)"
-                callee = in_process_tool_identity(span, owning_nk)
-        elif anchor_rule == "external-http":
-            caller = self._resolve_caller_around_oi_span(span)
-            callee = service_identity_from_client(span)
-        else:
-            self.notes.append(f"unknown rule {anchor_rule}")
-            return
-
-        if caller is None or callee is None:
-            self.notes.append(
-                f"SKIP {anchor_rule} on {span.span_id}: caller={caller is not None}, callee={callee is not None}"
-            )
-            return
-
-        caller_entity = self._upsert_entity(caller, span, "identified_via")
-        callee_entity = self._upsert_entity(callee, span, "identified_via")
-
-        if anchor_rule == "openinference-tool":
-            self._tool_anchor_entity_by_span[span.span_id] = callee_entity.id
-
-        if existing is None or not self._is_active_interaction(existing):
-            ix = ProtoInteraction(
-                id=str(uuid.uuid4()),
-                trace_id=span.trace_id,
-                parent_interaction_id=None,  # filled below
-                caller_entity_id=caller_entity.id,
-                callee_entity_id=callee_entity.id,
-                started_at=span.started_at,
-                ended_at=span.ended_at,
-                error=span.error,
-                request_payload_hash=None,
-                response_payload_hash=None,
-                summary=f"{caller_entity.display_name} → {callee_entity.display_name}",
-                seq=span.seq,
-                original_seq=span.seq,
-                anchor_rule=anchor_rule,
-                primary_anchor_span_id=d.primary_anchor_span_id,
-            )
-            ix.parent_interaction_id = self._compute_parent_interaction(
-                d.primary_anchor_span_id
-            )
-            self.interactions_by_anchor[d.primary_anchor_span_id] = ix
-            self._attached_span_ids[ix.id] = set()
-            for asid in d.anchor_span_ids:
-                self._attach_span(ix, asid, "anchor")
-            self._extract_payloads(ix, span)
-            self._update_aggregates(ix)
-        else:
-            # ADR-0011 §4: identity invariant. Anchor rules set identity on
-            # creation only; re-fires on Finalization do not re-assert.
-            # Identity mutates only by a more-informed anchor (cross-service
-            # late-parent retarget) or by reconciliation. For same-rule
-            # re-fire (D13) we just re-attach span(s) idempotently and
-            # re-aggregate.
-            for asid in d.anchor_span_ids:
-                self._attach_span(existing, asid, "anchor")
-            # Late caller retarget on cross-service (more-informed parent).
-            if anchor_rule == "cross-service" and existing.caller_entity_id != caller_entity.id:
-                existing.caller_entity_id = caller_entity.id
-                existing.summary = f"{caller_entity.display_name} → {callee_entity.display_name}"
-                existing.seq = max(existing.seq, span.seq)
-            self._update_aggregates(existing)
 
     # ------------------------------------------------------------------
     # Step 5a helpers: identity resolution at the service / OI-span level
@@ -992,7 +445,69 @@ class Processor:
                     project_name=project,
                     detected_from="service emits only CLIENT/INTERNAL spans",
                 )
+        # A service that owns an OpenInference AGENT-kind span IS an agent, and
+        # its identity must be sourced from that AGENT span — not from whatever
+        # span happened to trigger this resolution. The orphan-server edge for
+        # an agent anchors on the bare `POST /` root SERVER span (no
+        # openinference.span.kind, and missing the openinference.project.name
+        # resource attr the AGENT span carries). Building the agent Identity off
+        # that root makes the project/canonical (and hence natural_key) depend
+        # on which span streamed in first, and the bare-host `service` rung
+        # below would mint a stray `service:travel-advisor` whenever the AGENT
+        # span hasn't streamed in yet. Resolve the AGENT span authoritatively
+        # first so `agent:(project,service)` is deterministic regardless of
+        # arrival order.
+        agent_ident = self._agent_identity_from_agent_span(span.service_name)
+        if agent_ident is not None:
+            return agent_ident
+        # A service reached via a SERVER span but running no agent framework
+        # (no OpenInference AGENT/LLM/CHAIN/TOOL span anywhere across the
+        # trace) is a plain HTTP service, not an agent. Key it on the host it
+        # was reached at (per CONTEXT.md `service:<hostname>`), which its OWN
+        # SERVER span carries on its HTTP attributes (http.server_name /
+        # http.url) — the caller-facing DNS name, not the bare service.name.
+        #
+        # Restricted to SERVER spans: a plain service is only ever identified
+        # from its own inbound SERVER span. On a CLIENT span `_http_host`
+        # returns the *destination* host, which is not this span-owner's
+        # identity — so never apply this rung to the caller side.
+        if span.kind == "SERVER" and not self._service_emits_oi_framework_span(
+            span.service_name
+        ):
+            host = caller_inference._http_host(span)
+            if host:
+                return Identity(
+                    kind="service",
+                    natural_key=f"service:{host}",
+                    display_name=host,
+                    project_name=None,
+                    detected_from="HTTP service (no agent-framework spans)",
+                )
         return caller_inference._agent_or_deployed_tool_from_service(span)
+
+    def _agent_identity_from_agent_span(self, service_name: str) -> Identity | None:
+        """If `service_name` owns an OpenInference AGENT-kind span anywhere in
+        the trace, build its `agent:(project,service)` Identity from that span.
+        Order-independent: scans all spans and the result is sourced from the
+        AGENT span, not from the span that triggered resolution."""
+        for s in self.spans_by_id.values():
+            if s.service_name != service_name:
+                continue
+            if _is_oi_kind(s, "AGENT"):
+                return caller_inference._agent_or_deployed_tool_from_service(s)
+        return None
+
+    def _service_emits_oi_framework_span(self, service_name: str) -> bool:
+        """True if any span owned by `service_name` carries an OpenInference
+        framework span kind (the structural marker of an agent runtime). Plain
+        HTTP fixtures emit only SERVER/CLIENT/INTERNAL spans with no
+        `openinference.span.kind`."""
+        for s in self.spans_by_id.values():
+            if s.service_name != service_name:
+                continue
+            if _is_oi_kind(s, "AGENT", "LLM", "CHAIN", "TOOL"):
+                return True
+        return False
 
     def _resolve_caller_around_oi_span(self, span: Span) -> Identity | None:
         cur = span
@@ -1017,12 +532,13 @@ class Processor:
         return self._resolve_service_side_identity(span)
 
     def _matching_mcp_tool_span(self, span: Span) -> Span | None:
+        logical = _tool_logical_name(span)
         for s in self.spans_by_id.values():
             if (
                 s.kind == "SERVER"
                 and s.service_name
                 and s.service_name in self._mcp_services
-                and canonical_service_name(s) == (span.name or None)
+                and canonical_service_name(s) == (logical or None)
             ):
                 return s
         return None
@@ -1061,11 +577,16 @@ class Processor:
                 return s
         return None
 
-    def _entity_by_id(self, entity_id: str) -> ProtoEntity | None:
-        for e in self.entities.values():
-            if e.id == entity_id:
-                return e
-        return None
+    def _span_depth(self, span_id: str) -> int:
+        """Number of in-trace ancestors of `span_id` (root = 0). Used to order
+        interactions innermost-first so subtree-territory claims are
+        arrival-order-independent."""
+        s = self._span_by_id(span_id)
+        depth = 0
+        while s is not None and s.parent_id is not None:
+            s = self.spans_by_id.get((s.trace_id, s.parent_id))
+            depth += 1
+        return depth
 
     # ------------------------------------------------------------------
     # Step 5c: attach spans
@@ -1172,49 +693,6 @@ class Processor:
         return False
 
     # ------------------------------------------------------------------
-    # Step 6: late-parent re-evaluation
-    # ------------------------------------------------------------------
-
-    def _reprocess_resolved_deferred(self, parent_now: Span) -> None:
-        for child in list(self.children.get(parent_now.span_id, [])):
-            if child.span_id not in self._deferred_spans:
-                continue
-            self._deferred_spans.discard(child.span_id)
-            in_trace_children = list(self.children.get(child.span_id, []))
-            decisions = anchor_rules.fire_all(
-                child, parent_now, in_trace_children, self.known_canonicals
-            )
-            for d in decisions:
-                self._handle_decision(d, child, parent_now)
-
-    def _reevaluate_late_children(self, parent_now: Span) -> None:
-        children_of_parent = self.children.get(parent_now.span_id, [])
-        for child in children_of_parent:
-            existing = self.interactions_by_anchor.get(child.span_id)
-            if existing is None or not self._is_active_interaction(existing):
-                continue
-            if existing.anchor_rule != "orphan-server":
-                continue
-            d = anchor_rules.cross_service(child, parent_now)
-            if d is None:
-                continue
-            new_caller = self._resolve_service_side_identity(parent_now)
-            if new_caller is None:
-                continue
-            new_caller_entity = self._upsert_entity(new_caller, parent_now, "identified_via")
-            existing.caller_entity_id = new_caller_entity.id
-            existing.anchor_rule = "cross-service"
-            existing.seq = max(existing.seq, parent_now.seq)
-            self._attach_span(existing, parent_now.span_id, "anchor")
-            existing.parent_interaction_id = self._compute_parent_interaction(
-                existing.primary_anchor_span_id
-            )
-            self.notes.append(
-                f"late-parent: orphan-server {child.span_id} demoted to cross-service "
-                f"({new_caller.display_name} → ...)"
-            )
-
-    # ------------------------------------------------------------------
     # Step 7: aggregate updates
     # ------------------------------------------------------------------
 
@@ -1247,93 +725,428 @@ class Processor:
             self.payloads.setdefault(resp.content_hash, resp)
             ix.response_payload_hash = resp.content_hash
 
-    # ------------------------------------------------------------------
-    # Misfired-external-http batch fixup
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Pure-streaming "span chain between two entities" emit.
+    #
+    # An interaction is the span chain between two entity-bearing spans,
+    # materialised the instant BOTH endpoints exist. Emit-on-each-span, park
+    # until the second endpoint arrives, emit-once, no retraction, no
+    # end-of-trace fixups. See ~/.claude/plans/pure-streaming-chain-rewrite.md.
+    # ==================================================================
 
-    def _retract_misfired_external_http(self) -> None:
-        """Streaming external-http misfires: a CLIENT span whose host had no
-        matching canonical-service entity at fire time, but a later-arriving
-        span on that host registers it as an agent/tool. The Interaction
-        becomes wrong (callee = service:host instead of agent:(...,host)).
+    def _process_chain(self, span: Span) -> None:
+        """The per-span chain emit. Called from `process()`.
 
-        For the prototype we fix this up at flush time. Per ADR-0011 §3,
-        retract by tombstone, not hard delete.
+        A span anchors an interaction only as a *callee endpoint*, and the
+        caller is resolved by callee kind (not by "nearest endpoint ancestor" —
+        an LLM is a leaf that never calls a tool, so the caller of a tool nested
+        under an LLM is still the enclosing agent, not the LLM):
+
+          - OI LLM / OI TOOL span -> caller = enclosing in-process tool, else
+            the service-agent it runs on (`_resolve_caller_around_oi_span`).
+            Single anchor (the OI span). Mirrors the legacy openinference-* rules.
+          - SERVER span whose in-trace parent is on a DIFFERENT canonical
+            service -> cross-service: caller = the parent's service identity.
+            Two anchors (parent + callee). Mirrors the legacy cross-service rule.
+          - SERVER span with no in-trace parent (root, or unresolvable) ->
+            orphan-server: caller synthesised from the SERVER span itself.
+          - CLIENT span -> pure transport, never an endpoint (no edge).
+
+        Parking: a SERVER callee whose cross-service parent hasn't streamed in
+        yet is held in `_pending_callees`, keyed on the awaited parent span_id,
+        and retried when that ancestor arrives (step C).
         """
-        canonicals = self.known_canonicals
-        bad_keys: set[str] = set()
-        for nk, e in list(self.entities.items()):
-            if e.kind != "service" or e.retracted_at is not None:
-                continue
-            host = nk[len("service:") :]
-            if host in canonicals:
-                bad_keys.add(nk)
-        if not bad_keys:
+        # --- SERVER callee: cross-service or orphan-server -----------------
+        if span.kind == "SERVER":
+            if span.parent_id is None:
+                # Orphan-server (trace root). Park to flush rather than emitting
+                # eagerly: the callee identity is resolved at flush time, when
+                # all spans are present, so a root that is really an agent (it
+                # owns an OI AGENT span elsewhere in the trace) is classified
+                # from that AGENT span regardless of arrival order. Emitting
+                # eagerly here would, in some arrival orders, resolve the bare
+                # `POST /` root to a stray `service:<host>` before the AGENT
+                # span streamed in. Park under the span's own id (nothing
+                # arrives on it) so `result()` flushes it once. Use a sentinel
+                # awaited-key no real span_id can match, so the step-C reattempt
+                # at the end of this method does not immediately un-park it.
+                self._park_pending_callee(span.span_id, "__orphan_root__")
+            else:
+                parent = self.spans_by_id.get((span.trace_id, span.parent_id))
+                if parent is None:
+                    # Parent not yet arrived — park (generalises _deferred_spans).
+                    self._park_pending_callee(span.span_id, span.parent_id)
+                else:
+                    self._emit_chain_server(span, parent=parent, orphan=False)
+
+        # --- OI LLM / OI TOOL callee: agent->llm / agent->tool -------------
+        elif _is_oi_kind(span, "LLM", "TOOL"):
+            self._emit_chain_oi(span)
+
+        # --- CLIENT callee: external-http to an UNINSTRUMENTED service -----
+        # A CLIENT POST to a host that has no in-trace SERVER child and is not
+        # otherwise represented (own service / weather / LLM-gateway / agent
+        # host) is the only window onto an uninstrumented external service
+        # (e.g. charge_card -> psp-mock). All other childless HTTP CLIENTs in
+        # this trace are destinations ALREADY owned by another entity — the
+        # 11 LLM-gateway POSTs (openinference-llm edges) and the agent-card
+        # probe to the known payment-agent — and are excluded in
+        # `_emit_chain_external_http`. Instrumented callees are reached via
+        # their SERVER span (cross-service); the redundant 2nd weather edge the
+        # 2026-06-08 blanket-drop targeted is still suppressed because
+        # weather-service is in `known_canonicals`.
+        elif span.kind == "CLIENT":
+            # Park to flush: the exclusion gates (LLM-gateway hosts, agent/MCP
+            # hosts, known_canonicals) depend on spans that may not have
+            # streamed in yet, so resolving eagerly would, in some arrival
+            # orders, leak a gateway host before its OI LLM span arrived.
+            # Defer to `result()`, when all spans are present, so the decision
+            # is arrival-order-independent. Sentinel awaited-key (no real span
+            # arrives on it) so step C never un-parks it early.
+            self._park_external_http_client(span.span_id)
+
+        # C. this span may unblock callees parked on it as their ancestor.
+        self._reattempt_parked_on_new_ancestor(span)
+
+    # ------------------------------------------------------------------
+    # Emit paths, one per callee kind
+    # ------------------------------------------------------------------
+
+    def _emit_chain_oi(self, span: Span) -> None:
+        """OI LLM / OI TOOL callee. callee = the llm/tool entity; caller = the
+        enclosing in-process tool or service-agent."""
+        callee_ident = self._classify_oi_endpoint(span)
+        if callee_ident is None:
             return
-        bad_eids = {self.entities[nk].id for nk in bad_keys}
-        retract_seq = self.last_processed_seq
-        # Collect anchor span_ids of retracted external-http interactions so
-        # we can re-evaluate cross-service on their SERVER children once
-        # ownership is released.
-        released_client_span_ids: set[str] = set()
-        for ix in list(self.interactions_by_anchor.values()):
-            if not self._is_active_interaction(ix):
-                continue
-            if ix.callee_entity_id in bad_eids or ix.caller_entity_id in bad_eids:
-                if ix.anchor_rule == "external-http":
-                    released_client_span_ids.add(ix.primary_anchor_span_id)
-                self._retract_interaction(ix, retract_seq)
-        for nk in bad_keys:
-            e = self.entities[nk]
-            self._gc_entity_if_orphan(e, retract_seq)
-        # Re-fire anchor rules on SERVER children of released CLIENT spans.
-        # The cross-service rule was suppressed earlier (D9 widening) because
-        # the CLIENT parent was owned by the now-retracted external-http
-        # interaction; with that ownership released, cross-service should now
-        # produce the proper agent→agent / agent→tool interaction.
-        for client_sid in released_client_span_ids:
-            for child in self.children.get(client_sid, []):
-                if child.kind != "SERVER":
-                    continue
-                parent = self.spans_by_id.get((child.trace_id, child.parent_id)) if child.parent_id else None
-                in_trace_children = list(self.children.get(child.span_id, []))
-                decisions = anchor_rules.fire_all(
-                    child, parent, in_trace_children, self.known_canonicals,
-                )
-                for d in decisions:
-                    self._handle_decision(d, child, parent)
-        self.notes.append(
-            f"retracted {len(bad_keys)} misfired external-http service entities "
-            f"(matched a known canonical service): {sorted(bad_keys)}"
+        callee_entity = self._upsert_entity(callee_ident, span, "identified_via")
+        if _is_oi_kind(span, "TOOL"):
+            self._tool_anchor_entity_by_span[span.span_id] = callee_entity.id
+        caller_ident = self._resolve_caller_around_oi_span(span)
+        if caller_ident is None:
+            return
+        caller_entity = self._upsert_entity(caller_ident, span, "identified_via")
+        rule = "openinference-llm" if _is_oi_kind(span, "LLM") else "openinference-tool"
+        self._materialise(
+            primary_span=span,
+            caller_entity=caller_entity,
+            callee_entity=callee_entity,
+            anchor_span_ids=(span.span_id,),
+            anchor_rule=rule,
         )
+
+    def _emit_chain_server(
+        self, span: Span, parent: Span | None, orphan: bool
+    ) -> None:
+        """SERVER callee. Cross-service when the in-trace parent is on a
+        different canonical service; orphan-server when there is no in-trace
+        parent. A same-service parent (a2a handler internals, `POST /mcp`
+        transport SERVER under its own OI TOOL) is absorbed — no edge."""
+        callee_ident = self._resolve_service_side_identity(span)
+        if callee_ident is None:
+            return
+
+        if orphan or parent is None:
+            callee_entity = self._upsert_entity(callee_ident, span, "identified_via")
+            caller_ident = infer_caller_for_orphan_server(span)
+            caller_entity = self._upsert_entity(caller_ident, span, "identified_via")
+            self._materialise(
+                primary_span=span,
+                caller_entity=caller_entity,
+                callee_entity=callee_entity,
+                anchor_span_ids=(span.span_id,),
+                anchor_rule="orphan-server",
+            )
+            return
+
+        # Cross-service only fires across a canonical-service boundary.
+        sp_canon = canonical_service_name(parent)
+        sn_canon = canonical_service_name(span)
+        if sp_canon is None or sn_canon is None or sp_canon == sn_canon:
+            return  # same-service parent — absorbed, no edge
+
+        caller_ident = self._resolve_service_side_identity(parent)
+        if caller_ident is None:
+            return
+        # Self-edge guard: a deployed-tool SERVER under its own OI TOOL/CLIENT
+        # transport resolves to the same entity as the caller side — absorb.
+        if caller_ident.natural_key == callee_ident.natural_key:
+            return
+        # Deployed-tool transport absorb (ADR-0010 collapse, structural form):
+        # a deployed-MCP tool is legitimately reached only via its
+        # payload-bearing openinference-tool edge. Its `POST /mcp` transport
+        # SERVER spans — both the `tools/call` (nested under the OI TOOL span)
+        # and the `tools/list` (nested under the agent's `mcp_tools` CHAIN) —
+        # resolve to the same deployed-tool callee and carry no payload, so the
+        # cross-service edge they would anchor is redundant. Suppress it. The
+        # callee is a deployed tool exactly when its service has a `/mcp` SERVER
+        # (`_resolve_service_side_identity` returns kind=tool via `_mcp_services`).
+        # Order-independent (no edge-existence lookup). Structural replacement
+        # for `_collapse_deployed_tool_transport`.
+        if callee_ident.kind == "tool" and callee_ident.natural_key.startswith(
+            "tool:("
+        ):
+            return
+        callee_entity = self._upsert_entity(callee_ident, span, "identified_via")
+        caller_entity = self._upsert_entity(caller_ident, parent, "identified_via")
+        self._materialise(
+            primary_span=span,
+            caller_entity=caller_entity,
+            callee_entity=callee_entity,
+            anchor_span_ids=(parent.span_id, span.span_id),
+            anchor_rule="cross-service",
+        )
+
+    def _emit_chain_external_http(self, span: Span) -> None:
+        """CLIENT callee -> external `service` edge to an UNINSTRUMENTED host.
+
+        Fires ONLY when every gate holds (so the 11 LLM-gateway POSTs and the
+        agent-card probe to the known payment-agent do NOT mint stray
+        `service:` entities — those hosts are destinations owned by an llm /
+        agent entity, never a span's own `service.name`, so `known_canonicals`
+        alone would not exclude them):
+
+          1. no in-trace SERVER child (the callee is uninstrumented),
+          2. host resolves via `_http_host`, and
+          3. host is not already owned by another entity:
+               - not in `known_canonicals` (our own services / weather / the
+                 agent-card probe whose host == the agent's canonical name),
+               - not an LLM-gateway host seen on any OI LLM span,
+               - not a known agent / `/mcp` deployed-tool host (guard; those
+                 reached over HTTP carry a SERVER child so gate #1 already
+                 covers them).
+
+        callee = `service:<host>` (psp-mock); caller = the CLIENT span's OWNER
+        service identity (the `charge_card` deployed tool), resolved from the
+        span's service_name — NOT from `_http_host`, which on a CLIENT span is
+        the DESTINATION. Single anchor (the CLIENT span), emit-once, no
+        retraction. Nests under the owning openinference-tool edge via the
+        ADR-0008 parent walk.
+        """
+        # Gate 1: no in-trace SERVER child.
+        children = self.children.get(span.span_id, [])
+        if any(c.kind == "SERVER" for c in children):
+            return
+        # Gate 2: destination host resolves.
+        host = caller_inference._http_host(span)
+        if not host:
+            return
+        # Gate 3: host not already represented by another entity.
+        if host in self.known_canonicals:
+            return
+        if host in self._llm_gateway_hosts():
+            return
+        if host in self._non_service_hosts():
+            return
+        callee_ident = caller_inference.service_identity_from_client(span)
+        if callee_ident is None:
+            return
+        # Caller = the CLIENT span's OWNER service identity (deployed tool /
+        # agent that owns the span), resolved from service_name — never from
+        # the destination host.
+        caller_ident = self._resolve_service_side_identity(span)
+        if caller_ident is None:
+            return
+        if caller_ident.natural_key == callee_ident.natural_key:
+            return
+        caller_entity = self._upsert_entity(caller_ident, span, "identified_via")
+        callee_entity = self._upsert_entity(callee_ident, span, "identified_via")
+        self._materialise(
+            primary_span=span,
+            caller_entity=caller_entity,
+            callee_entity=callee_entity,
+            anchor_span_ids=(span.span_id,),
+            anchor_rule="external-http",
+        )
+
+    def _park_external_http_client(self, span_id: str) -> None:
+        self._pending_external_http.append(span_id)
+
+    def _llm_gateway_hosts(self) -> set[str]:
+        """Hosts seen on any OI LLM span (the LLM gateway). These are owned by
+        an `llm:` entity, never a span's own `service.name`, so they are NOT in
+        `known_canonicals`; exclude them explicitly from external-http."""
+        hosts: set[str] = set()
+        for s in self.spans_by_id.values():
+            if _is_oi_kind(s, "LLM"):
+                h = caller_inference._llm_host_from_invocation(s)
+                if h:
+                    hosts.add(h)
+        return hosts
+
+    def _non_service_hosts(self) -> set[str]:
+        """Destination hosts owned by an agent / deployed-tool entity (the
+        agent-card probe target, A2A peers, `/mcp` transports). A service that
+        emits an OI framework span is an agent/tool; its caller-facing host is
+        the canonical name a CLIENT reaches it at. Excluded explicitly because
+        the destination host is never the span-owner's own `service.name`, so
+        `known_canonicals` may not cover it (e.g. agent-card probe)."""
+        hosts: set[str] = set()
+        for s in self.spans_by_id.values():
+            if s.kind != "CLIENT":
+                continue
+            child_ids = self.children.get(s.span_id, [])
+            if not any(c.kind == "SERVER" for c in child_ids):
+                continue
+            # This CLIENT reaches an in-trace SERVER (an instrumented agent /
+            # tool). Its destination host names that entity — register it.
+            h = caller_inference._http_host(s)
+            if h:
+                hosts.add(h)
+        return hosts
+
+    def _classify_oi_endpoint(self, span: Span) -> Identity | None:
+        """The llm/tool identity an OI LLM/TOOL span presents as a callee."""
+        if _is_oi_kind(span, "LLM"):
+            return llm_identity(span)
+        if _is_oi_kind(span, "TOOL"):
+            logical_name = _tool_logical_name(span)
+            mcp_server = self._matching_mcp_tool_span(span)
+            if mcp_server is not None:
+                return deployed_tool_identity(mcp_server)
+            if logical_name in self._mcp_tool_names:
+                proj = self._mcp_tool_names.get(logical_name) or ""
+                return Identity(
+                    kind="tool",
+                    natural_key=f"tool:({proj},{logical_name})",
+                    display_name=logical_name,
+                    project_name=proj or None,
+                    detected_from="advertised by mcp_tools span",
+                )
+            owning = self._resolve_caller_around_oi_span(span)
+            owning_nk = owning.natural_key if owning is not None else "(unknown)"
+            return in_process_tool_identity(span, owning_nk)
+        return None
+
+    def _materialise(
+        self,
+        primary_span: Span,
+        caller_entity: ProtoEntity,
+        callee_entity: ProtoEntity,
+        anchor_span_ids: tuple[str, ...],
+        anchor_rule: str,
+    ) -> None:
+        """Create (or idempotently re-touch) the interaction anchored on
+        `primary_span`. Emit-once: if the primary anchor is already owned by an
+        active interaction, re-attach anchors and re-aggregate; never duplicate."""
+        existing = self.interactions_by_anchor.get(primary_span.span_id)
+        if existing is not None and self._is_active_interaction(existing):
+            for asid in anchor_span_ids:
+                self._attach_span(existing, asid, "anchor")
+            self._update_aggregates(existing)
+            return
+        # Ownership guard (emit-once across anchor spans).
+        for asid in anchor_span_ids:
+            owner = self._owners_by_span.get(asid)
+            if owner is not None:
+                return
+
+        ix = ProtoInteraction(
+            id=str(uuid.uuid4()),
+            trace_id=primary_span.trace_id,
+            parent_interaction_id=None,
+            caller_entity_id=caller_entity.id,
+            callee_entity_id=callee_entity.id,
+            started_at=primary_span.started_at,
+            ended_at=primary_span.ended_at,
+            error=primary_span.error,
+            request_payload_hash=None,
+            response_payload_hash=None,
+            summary=f"{caller_entity.display_name} → {callee_entity.display_name}",
+            seq=primary_span.seq,
+            original_seq=primary_span.seq,
+            anchor_rule=anchor_rule,
+            primary_anchor_span_id=primary_span.span_id,
+        )
+        self.interactions_by_anchor[primary_span.span_id] = ix
+        self._attached_span_ids[ix.id] = set()
+        for asid in anchor_span_ids:
+            self._attach_span(ix, asid, "anchor")
+        self._extract_payloads(ix, primary_span)
+        ix.parent_interaction_id = self._compute_parent_interaction(
+            primary_span.span_id
+        )
+        self._update_aggregates(ix)
+
+    def _park_pending_callee(
+        self, callee_span_id: str, awaited_parent_span_id: str
+    ) -> None:
+        self._pending_callees.setdefault(awaited_parent_span_id, []).append(
+            callee_span_id
+        )
+
+    def _reattempt_parked_on_new_ancestor(self, span: Span) -> None:
+        """`span` just arrived; any callee parked on it can now resume. Currently
+        only SERVER callees park (on their cross-service parent)."""
+        parked = self._pending_callees.pop(span.span_id, [])
+        for callee_span_id in parked:
+            callee_span = self._span_by_id(callee_span_id)
+            if callee_span is None or callee_span.kind != "SERVER":
+                continue
+            parent = (
+                self.spans_by_id.get((callee_span.trace_id, callee_span.parent_id))
+                if callee_span.parent_id
+                else None
+            )
+            if parent is None:
+                if callee_span.parent_id is not None:
+                    self._park_pending_callee(callee_span_id, callee_span.parent_id)
+                else:
+                    self._emit_chain_server(callee_span, parent=None, orphan=True)
+            else:
+                self._emit_chain_server(callee_span, parent=parent, orphan=False)
 
     # ------------------------------------------------------------------
     # Result snapshot
     # ------------------------------------------------------------------
 
     def result(self) -> ExtractResult:
-        # Flush remaining deferred spans.
-        for sid in list(self._deferred_spans):
-            for (_, k), s in self.spans_by_id.items():
-                if k != sid:
+        # A SERVER callee still parked at end-of-trace has a parent_id that
+        # refers to a span not in the trace (the caller is genuinely
+        # unobservable) — emit it as orphan-server, mirroring the legacy
+        # `_deferred_spans` flush. This is the one streaming-compatible flush:
+        # it materialises chains whose awaited ancestor proved never to arrive,
+        # not an after-the-fact correction.
+        for callee_span_ids in list(self._pending_callees.values()):
+            for callee_span_id in callee_span_ids:
+                callee_span = self._span_by_id(callee_span_id)
+                if callee_span is None or callee_span.kind != "SERVER":
                     continue
-                in_trace_children = list(self.children.get(s.span_id, []))
-                decisions = anchor_rules.fire_all(
-                    s, None, in_trace_children, self.known_canonicals,
-                    parent_id_known_unresolvable=True,
+                if self._owners_by_span.get(callee_span.span_id) is not None:
+                    continue
+                callee_ident = self._resolve_service_side_identity(callee_span)
+                if callee_ident is None:
+                    continue
+                callee_entity = self._upsert_entity(
+                    callee_ident, callee_span, "identified_via"
                 )
-                for d in decisions:
-                    self._handle_decision(d, s, None)
-                break
-        self._deferred_spans.clear()
+                self._emit_chain_server(callee_span, parent=None, orphan=True)
+        self._pending_callees.clear()
 
-        self._retract_misfired_external_http()
+        # External-http: now that all spans are present, the exclusion gates
+        # (known_canonicals, LLM-gateway hosts, agent/MCP hosts) are complete,
+        # so the decision is arrival-order-independent. Emit-once via
+        # `_materialise`.
+        for client_span_id in self._pending_external_http:
+            client_span = self._span_by_id(client_span_id)
+            if client_span is None or client_span.kind != "CLIENT":
+                continue
+            self._emit_chain_external_http(client_span)
+        self._pending_external_http.clear()
 
         # After all spans, attach descendants of every active anchor and
         # (for cross-service) the caller-side connector chain.
-        for ix in list(self.interactions_by_anchor.values()):
-            if not self._is_active_interaction(ix):
-                continue
+        #
+        # Process innermost-first (deepest primary-anchor span first) so an
+        # inner interaction claims its subtree territory before an enclosing
+        # one — making `_attach_descendants_as_info_or_connector`'s
+        # "stop at spans owned by other interactions" boundary, and the error
+        # aggregation that follows, INDEPENDENT of span arrival order.
+        ordered_ix = sorted(
+            (ix for ix in self.interactions_by_anchor.values() if self._is_active_interaction(ix)),
+            key=lambda ix: self._span_depth(ix.primary_anchor_span_id),
+            reverse=True,
+        )
+        for ix in ordered_ix:
             anchor_span = self._span_by_id(ix.primary_anchor_span_id)
             if anchor_span is None:
                 continue

@@ -4,7 +4,9 @@
 # the pod first.
 #
 # Usage:
-#   run-proto-cli.sh <trace_id> [--scramble] [--rebuild-ui]
+#   run-proto-cli.sh [<trace_id>] [--scramble] [--rebuild-ui]
+#
+# Omit <trace_id> to run the CLI over every trace in the DB.
 #
 # Flags:
 #   --scramble     Pass through to the CLI: torture-test the late-parent
@@ -60,12 +62,18 @@ usage() {
 trace_id=""
 scramble=0
 rebuild_ui=0
+since=""
 
 while (($#)); do
     case "$1" in
         -h|--help) usage 0 ;;
         --scramble) scramble=1; shift ;;
         --rebuild-ui) rebuild_ui=1; shift ;;
+        --since)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --since requires a duration (e.g. 24h)" >&2; usage 2
+            fi
+            since="$2"; shift 2 ;;
         --) shift; break ;;
         -*) echo "error: unknown flag: $1" >&2; usage 2 ;;
         *)
@@ -80,10 +88,7 @@ while (($#)); do
     esac
 done
 
-if [[ -z "$trace_id" ]]; then
-    echo "error: trace_id is required" >&2
-    usage 2
-fi
+# trace_id is optional: when omitted, the CLI runs over every trace.
 
 # --- pod lookup -------------------------------------------------------------
 
@@ -115,12 +120,18 @@ done
 
 # --- run the CLI ------------------------------------------------------------
 
-cli_args=("$trace_id")
+cli_args=()
+if [[ -n "$trace_id" ]]; then
+    cli_args+=("$trace_id")
+fi
 if (( scramble )); then
     cli_args+=("--scramble")
 fi
+if [[ -n "$since" ]]; then
+    cli_args+=("--since" "$since")
+fi
 
-echo ">> running CLI: python -m ${PROC_REL//\//.}.cli ${cli_args[*]}"
+echo ">> running CLI: python -m ${PROC_REL//\//.}.cli ${cli_args[*]:-(all traces)}"
 echo
 kubectl --context "$CTX" -n "$NS" exec "$receiver_pod" -c receiver -- \
     python -m "${PROC_REL//\//.}.cli" "${cli_args[@]}"

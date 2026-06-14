@@ -228,12 +228,7 @@
     }
 
     function fmtTime(iso) {
-      try {
-        const d = new Date(iso);
-        return d.toISOString().slice(11, 19);  // HH:mm:ss UTC
-      } catch (_e) {
-        return iso;
-      }
+      return window.RecentTraces.formatTime24Utc(iso);
     }
 
     function renderRow(row, counts) {
