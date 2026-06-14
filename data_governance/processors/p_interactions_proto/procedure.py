@@ -281,6 +281,9 @@ class Processor:
     def __init__(self) -> None:
         # All spans seen so far, by composite id.
         self.spans_by_id: dict[tuple[str, str], Span] = {}
+        # span_id -> Span index (single-trace prototype). Makes `_span_by_id` an
+        # O(1) point-lookup; in production this is `WHERE trace_id=? AND span_id=?`.
+        self._span_by_id_index: dict[str, Span] = {}
         # Children index, by parent_id (None bucket = roots).
         self.children: dict[str | None, list[Span]] = {}
 
@@ -328,164 +331,6 @@ class Processor:
         self._role_by_span: dict[str, str] = {}
 
     # ------------------------------------------------------------------
-    # Lineage walks (the lineage-scoped replacement for trace-global scans).
-    #
-    # ADR-0012 productization: large traces require the per-arrival recompute
-    # to be bounded by S's lineage (ancestors ∪ descendants), never a scan of
-    # all arrived spans. The grill proved the driver's reach is EXACTLY
-    # ancestors(S) ∪ descendants(S) — no sibling effect — because every
-    # service's OI AGENT span nests inside that service's inbound SERVER span
-    # (the AGENT-nests-in-SERVER invariant), so "match by service_name" is
-    # equivalent to a same-service lineage walk.
-    # ------------------------------------------------------------------
-
-    def _parent_of(self, span: Span) -> Span | None:
-        if not span.parent_id:
-            return None
-        return self.spans_by_id.get((span.trace_id, span.parent_id))
-
-    def _ancestors(self, span: Span):
-        """Yield span's ancestors, innermost first (parent, grandparent, …),
-        among arrived spans. Stops at the first missing parent (orphan)."""
-        cur = self._parent_of(span)
-        while cur is not None:
-            yield cur
-            cur = self._parent_of(cur)
-
-    def _crosses_service(self, a: Span, b: Span) -> bool:
-        """True iff a and b are on different canonical services — the shared
-        boundary predicate used by every lineage walk (identity, territory,
-        caller). Mirrors the cross-service guards the trace-global code used
-        inline (`_innermost_owner_for`, `_resolve_caller_around_oi_span`)."""
-        ca = canonical_service_name(a)
-        cb = canonical_service_name(b)
-        return bool(ca and cb and ca != cb)
-
-    def _is_service_entry_server(self, server: Span) -> bool:
-        """True iff `server` is a service's INBOUND business entry SERVER (an
-        agent's `POST /`, an instrumented service's `GET /weather`, …) rather
-        than a deployed-tool `/mcp` transport SERVER. The `/mcp` SERVER is the
-        transport leg of a deployed-tool call and does NOT start a new sub-agent
-        territory; a `POST /`-style entry does. Used by the external-http
-        ancestor walk to stop at sub-agent boundaries while still crossing
-        `/mcp` transport to reach a deployed tool's owning OI TOOL span."""
-        if server.kind != "SERVER":
-            return False
-        name = (server.name or "").upper()
-        return not name.startswith("POST /MCP")
-
-    def _service_entry_server(self, server: Span) -> Span:
-        """Climb to the service's INBOUND entry SERVER: the topmost same-service
-        SERVER reachable by an unbroken same-service ancestor chain from
-        `server`. The AGENT-nests-in-SERVER invariant is that a service's OI
-        AGENT span nests under this entry point (the `POST /` handler), not under
-        the internal a2a SERVER spans (`_register_producer`, `_run_event_stream`,
-        …) that are themselves descendants of it. Resolving identity from any
-        internal SERVER must first climb to the entry SERVER so the bounded
-        subtree walk starts from the span that actually encloses the AGENT."""
-        svc = server.service_name
-        entry = server
-        for anc in self._ancestors(server):
-            if anc.kind == "SERVER" and anc.service_name == svc:
-                entry = anc
-            elif anc.service_name != svc:
-                break  # left the service — entry is the topmost same-service SERVER
-        return entry
-
-    def _same_service_agent_in_subtree(self, server: Span) -> Span | None:
-        """The service's OI AGENT span, found by walking the service's ENTRY
-        SERVER's arrived subtree and stopping descent at the first cross-service
-        SERVER boundary (don't claim a sub-agent's AGENT span). Lineage-scoped
-        replacement for `_agent_identity_from_agent_span`'s trace-global
-        `service_name` scan.
-
-        Asserts the AGENT-nests-in-SERVER invariant: if a same-service AGENT
-        span exists that is NOT in the entry server's bounded subtree, it is an
-        instrumentation anomaly — surfaced as a note, never silently used
-        (fail-closed, matching ADR-0012)."""
-        svc = server.service_name
-        if not svc:
-            return None
-        entry = self._service_entry_server(server)
-        return self._find_agent_below(entry, svc)
-        # NB: a None return here is NOT an invariant violation — under streaming
-        # the entry SERVER or the intervening spans may simply not have arrived
-        # yet, so the bounded walk transiently misses the AGENT and the
-        # per-arrival retry re-attempts. The AGENT-nests-in-SERVER invariant is
-        # checked ONCE over the fully-arrived set in `_check_agent_nesting`
-        # (called from `result()`), never per-arrival, so transient
-        # non-convergence is not misreported as an anomaly.
-
-    def _find_agent_below(self, root: Span, svc: str | None) -> Span | None:
-        """Bounded BFS from `root` for a same-service OI AGENT span, pruning at
-        cross-service SERVER boundaries. Pure descendant walk. Returns the first
-        such AGENT (sufficient for identity — all same-service AGENT spans yield
-        the same `agent:(project,canonical)` key)."""
-        stack = list(self.children.get(root.span_id, []))
-        while stack:
-            s = stack.pop()
-            if s.kind == "SERVER" and self._crosses_service(root, s):
-                continue  # sub-agent territory — its AGENT is not ours
-            if _is_oi_kind(s, "AGENT") and s.service_name == svc:
-                return s
-            stack.extend(self.children.get(s.span_id, []))
-        return None
-
-    def _agent_reachable_below(self, root: Span, agent: Span) -> bool:
-        """True iff `agent` is in `root`'s bounded subtree (pruning cross-service
-        SERVER boundaries). Used by the one-shot invariant check to test a
-        SPECIFIC agent span's reachability (not just first-match)."""
-        stack = list(self.children.get(root.span_id, []))
-        while stack:
-            s = stack.pop()
-            if s.kind == "SERVER" and self._crosses_service(root, s):
-                continue
-            if s.span_id == agent.span_id:
-                return True
-            stack.extend(self.children.get(s.span_id, []))
-        return False
-
-    def _check_agent_nesting(self) -> None:
-        """One-shot AGENT-nests-in-SERVER invariant check over the FULLY-ARRIVED
-        set (called from `result()`, never per-arrival). For every arrived OI
-        AGENT span, confirm it is reachable by the bounded subtree walk from its
-        service's entry SERVER. A miss here — with all spans present — is a
-        genuine instrumentation anomaly: surfaced as an instrumentation-signal
-        note, fail-closed (ADR-0012). This is the productization-honest place
-        for the assert: in a streaming run a transient miss is normal, only the
-        converged final state can witness a real violation."""
-        # Index entry servers by service from the arrived set.
-        for agent in self.spans_by_id.values():
-            if not _is_oi_kind(agent, "AGENT"):
-                continue
-            svc = agent.service_name
-            if not svc:
-                continue
-            # Find the service's entry SERVER by climbing the AGENT's ancestors.
-            entry = None
-            for anc in self._ancestors(agent):
-                if anc.kind == "SERVER" and anc.service_name == svc:
-                    entry = self._service_entry_server(anc)
-                    break
-            reachable = entry is not None and self._agent_reachable_below(
-                entry, agent
-            )
-            if not reachable:
-                # The AGENT is not reachable from any same-service entry SERVER's
-                # bounded subtree — invariant violated for this trace.
-                if entry is None:
-                    detail = "no same-service entry SERVER ancestor"
-                else:
-                    detail = f"not in bounded subtree of entry SERVER {entry.span_id}"
-                note = (
-                    f"instrumentation-signal: AGENT span {agent.span_id} on "
-                    f"service {svc!r} {detail} (AGENT-nests-in-SERVER invariant "
-                    f"violated)"
-                )
-                if note not in self.notes:
-                    self.notes.append(note)
-
-    # ------------------------------------------------------------------
     # Visibility helpers (default-view query facsimile)
     # ------------------------------------------------------------------
 
@@ -506,6 +351,7 @@ class Processor:
         key = (span.trace_id, span.span_id)
         is_finalization = key in self.spans_by_id
         self.spans_by_id[key] = span
+        self._span_by_id_index[span.span_id] = span
         if not is_finalization:
             self.children.setdefault(span.parent_id, []).append(span)
 
@@ -541,30 +387,69 @@ class Processor:
     # ------------------------------------------------------------------
 
     def _dispatch(self, span: Span) -> None:
-        """Emit every edge whose sufficient set is now complete, then repair the
-        derived tree/attachment against the arrived set.
+        """Emit every edge `span`'s arrival now completes, then repair the
+        derived tree/attachment — both SCOPED TO `span`'s LINEAGE (its ancestors,
+        itself, and its descendants), never the whole arrived trace.
 
-        Both steps read only the arrived span set (`spans_by_id`, which holds
-        arrived spans only — we never pre-load) and are re-run on EVERY arrival.
-        An endpoint's identity can be completed by any later span (most notably
-        its service's OI AGENT span, which finalizes near max-seq), so rather
-        than special-casing each completing-span kind, we retry all pending
-        endpoints every time. Emit-once makes retries idempotent; the work is
-        trace-bounded (prototype scale). This is what makes the emitted graph
-        independent of arrival order — the `--scramble` acceptance gate."""
-        # --- Emit: retry every not-yet-emitted endpoint --------------------
-        self._retry_pending_endpoints()
+        Lineage-scoped recompute (ADR-0012, the entity-bounded-region driver). A
+        span S's arrival can only change derived state along S's own lineage:
 
-        # --- Arrival-driven repair (order-independence) --------------------
-        # `parent_interaction_id` and info/connector ownership are pure
-        # functions of (arrived anchors, ancestry). A span arriving now may be
-        # the missing enclosing anchor of an earlier interaction, or a new
-        # member of an existing interaction's territory. Re-derive both against
-        # the current arrived set so the result does not depend on whether the
-        # enclosing interaction emitted before or after its descendants
-        # (the root SERVER, for one, finalizes near max-seq and so arrives
-        # FIRST under --scramble — long before the spans in its territory).
-        self._repair_after_arrival()
+          - EMISSION. S completes a pending endpoint E iff S is a member of E's
+            sufficient set, and every sufficient set is {the anchor} ∪
+            {ancestors and/or descendants of the anchor}. So S can only complete
+            an endpoint anchored at S, at an ancestor of S, or at a descendant of
+            S — never a sibling. We retry pending endpoints over exactly that
+            lineage set.
+          - ATTACHMENT / PARENT. A span's innermost owner and an interaction's
+            `parent_interaction_id` are both "nearest enclosing anchor on the
+            ancestor chain". S can change those only for spans/interactions in
+            S's SUBTREE (S may be a new enclosing anchor for them), plus S itself
+            (which needs an owner). Re-derive over S's descendants ∪ {S}.
+
+        This replaces the former full-`spans_by_id` scan on every arrival. The
+        reach is exactly ancestors(S) ∪ descendants(S) (no sibling effect — see
+        the grill analysis); convergence is preserved because a closer enclosing
+        anchor emitting LATER re-derives its own (smaller) region on ITS arrival.
+        The root SERVER arriving FIRST under --scramble only owns its topmost
+        region; it does not re-scan the trace."""
+        lineage = self._lineage_spans(span)
+        # --- Emit: retry pending endpoints anchored within `span`'s lineage ---
+        anchors_before = set(self.interactions_by_anchor)
+        self._retry_pending_endpoints(lineage)
+        new_anchor_ids = set(self.interactions_by_anchor) - anchors_before
+        # --- Arrival-driven repair ----------------------------------------
+        # Repair the union of (a) `span`'s own subtree — where `span` may be a new
+        # enclosing anchor — and (b) the subtree of every interaction that JUST
+        # emitted in this dispatch. (b) is required because an interaction can be
+        # anchored on an ANCESTOR of `span` (e.g. `span` is the OI AGENT span that
+        # completes its service's orphan-server / cross-service edge; the edge's
+        # anchor is the enclosing root/SERVER). That interaction's territory spans
+        # are below ITS anchor, not necessarily below `span`, so re-deriving only
+        # `span`'s subtree would leave them unattached under --scramble.
+        repair_roots = [span]
+        for asid in new_anchor_ids:
+            anchor_span = self._span_by_id(asid)
+            if anchor_span is not None and anchor_span.span_id != span.span_id:
+                repair_roots.append(anchor_span)
+        self._repair_after_arrival(repair_roots)
+
+    def _lineage_spans(self, span: Span) -> list[Span]:
+        """`span`'s lineage among arrived spans: its ancestor chain, itself, and
+        its whole subtree. The set over which `span`'s arrival can complete a
+        pending endpoint (a sufficient set is always anchor ∪ ancestors/descendants
+        of the anchor)."""
+        seen: dict[str, Span] = {}
+        # Ancestors + self.
+        cur: Span | None = span
+        while cur is not None:
+            seen[cur.span_id] = cur
+            if cur.parent_id is None:
+                break
+            cur = self.spans_by_id.get((cur.trace_id, cur.parent_id))
+        # Descendants (subtree).
+        for s in _walk_descendants(self.children, span):
+            seen[s.span_id] = s
+        return list(seen.values())
 
     # ------------------------------------------------------------------
     # Emit paths, one per completing event
@@ -596,16 +481,16 @@ class Processor:
             anchor_rule=rule,
         )
 
-    def _retry_pending_endpoints(self) -> None:
-        """Re-attempt every endpoint that has not yet emitted its interaction,
-        against the full arrived set. An endpoint's identity (and its caller's)
-        can be completed by ANY later span — most importantly the service's OI
-        AGENT span, which finalizes near max-seq and so arrives LAST in-order
-        and FIRST under `--scramble`. Rather than special-case each
-        completing-span kind, retry all pending endpoints on every arrival;
-        emit-once (via `interactions_by_anchor`) makes this idempotent, and the
-        endpoint count is trace-bounded (prototype scale)."""
-        for (_, _sid), s in list(self.spans_by_id.items()):
+    def _retry_pending_endpoints(self, candidates: list[Span]) -> None:
+        """Re-attempt every not-yet-emitted endpoint among `candidates` — the
+        arriving span's lineage (ancestors ∪ self ∪ descendants), NOT the full
+        arrived set. An endpoint's sufficient set is always {anchor} ∪
+        {ancestors/descendants of the anchor}, so the just-arrived span can only
+        complete an endpoint anchored within its own lineage; a sibling endpoint
+        is untouched by this arrival and will be (re)tried when one of ITS own
+        lineage spans arrives. Emit-once (via `interactions_by_anchor`) makes the
+        retry idempotent."""
+        for s in candidates:
             if s.span_id in self.interactions_by_anchor:
                 continue  # already emitted on this anchor (emit-once)
             if _is_oi_kind(s, "LLM", "TOOL"):
@@ -680,42 +565,63 @@ class Processor:
         )
 
     def _emit_external_http_on_client(self, client: Span) -> None:
-        """external-http edge anchored on `client`: look UP for the NEAREST
-        enclosing OI span and emit `tool → service:<host>` only if that nearest
-        OI span is a TOOL. If the nearest enclosing OI span is an LLM, the
-        egress is the LLM call's own transport (the `ete-litellm` gateway POST
-        is a direct child of its OI LLM span) — absorb, never external-http.
+        """external-http edge anchored on `client`: look UP for the INNERMOST
+        enclosing OI endpoint and, if it is a TOOL (and the destination host
+        qualifies), emit `tool → service:<host>`. Both `client` and its OI TOOL
+        ancestor are in the arrived set when this runs (retried every arrival),
+        so it is order-independent — no separate on-tool entry needed.
 
-        This nearest-OI-span rule is the lineage-local positive signal that
-        replaces the dropped trace-global `_llm_gateway_hosts` exclusion: rather
-        than collecting every LLM host trace-wide and excluding it, we observe
-        that an LLM egress is *structurally* nested directly under its OI LLM
-        span, so stopping the ancestor walk at the first OI span of EITHER kind
-        distinguishes the two without a scan. Both `client` and its enclosing OI
-        span are in the arrived set when this runs (retried every arrival), so
-        it stays order-independent."""
+        The egress belongs to its innermost enclosing OI endpoint: if that is an
+        OI LLM span, the CLIENT is the LLM call's own gateway transport (e.g. the
+        `ete-litellm` `/v1/chat/completions` egress under a `generation` LLM
+        span) — absorbed by the agent→llm edge, NOT external-http. Stopping at the
+        nearest OI LLM/TOOL ancestor is a LINEAGE-LOCAL replacement for the former
+        trace-global LLM-gateway host exclusion: an LLM-gateway egress is
+        recognised by its enclosing LLM span, not by collecting every LLM host in
+        the trace."""
         if self._external_http_host(client) is None:
             return
-        for parent in self._ancestors(client):
-            # Stop at an inbound `POST /` SERVER — a sub-agent service entry.
-            # Crossing it means we have walked OUT of the egress's own service
-            # into a PARENT that delegated here, so any OI TOOL above is the
-            # delegate primitive, not this egress's owner. This distinguishes:
-            #   - research-agent's `ete-litellm` egress, which sits under
-            #     research-agent's inbound `POST /` (a sub-agent boundary) — its
-            #     own LLM-gateway traffic, NOT the parent's `delegate_*` tool's
-            #     egress → absorb; from
-            #   - `charge_card`'s `psp-mock` egress, which crosses only a
-            #     deployed-tool `/mcp` SERVER (NOT a `POST /` entry) to reach its
-            #     owning OI TOOL `charge_card` on payment-agent → genuine
-            #     external-http.
-            if parent.kind == "SERVER" and self._is_service_entry_server(parent):
-                return  # walked into a sub-agent's territory — not our egress
-            if _is_oi_kind(parent, "LLM"):
-                return  # LLM-gateway transport — absorbed, not external-http
+        cur = client
+        while cur.parent_id:
+            parent = self.spans_by_id.get((cur.trace_id, cur.parent_id))
+            if parent is None:
+                break
             if _is_oi_kind(parent, "TOOL"):
                 self._emit_external_http(client=client, tool_span=parent)
                 return
+            if _is_oi_kind(parent, "LLM"):
+                # Innermost OI endpoint is an LLM — this egress is LLM-gateway
+                # transport, absorbed. Do not climb past it to an outer TOOL.
+                return
+            # Stop at an A2A SUB-AGENT boundary, but NOT at a `/mcp` tool-transport
+            # boundary. Climbing must reach the OI TOOL that OWNS this egress:
+            #   - A genuine external-http egress originates inside a DEPLOYED MCP
+            #     tool's own service (e.g. `charge_card`) and its owning OI TOOL
+            #     span lives in the CALLING agent's service (`payment-agent`),
+            #     reached UP THROUGH the `/mcp` transport SERVER. That boundary
+            #     crossing is legitimate — keep climbing.
+            #   - A sub-agent's OWN egress (e.g. research-agent's `ete-litellm`
+            #     LLM call) crosses an A2A `POST /` SERVER into the parent service;
+            #     climbing past it would wrongly attribute the egress to the
+            #     parent's delegate tool. Stop there.
+            # Discriminator: we are about to climb OUT of `cur` into `parent` on a
+            # different service. If `cur` is an A2A sub-agent inbound SERVER (a
+            # non-`/mcp` `POST /`), that crossing is a sub-agent boundary → stop.
+            # A `/mcp` transport SERVER crossing (the deployed-tool case) is fine.
+            cur_canon = canonical_service_name(cur)
+            par_canon = canonical_service_name(parent)
+            crossing_service = (
+                cur_canon is not None
+                and par_canon is not None
+                and cur_canon != par_canon
+            )
+            if (
+                crossing_service
+                and cur.kind == "SERVER"
+                and not (cur.name or "").upper().startswith("POST /MCP")
+            ):
+                return
+            cur = parent
 
     # ------------------------------------------------------------------
     # Step 3: entity evidence
@@ -772,19 +678,98 @@ class Processor:
             return None
         if span.service_name in self._mcp_services:
             return deployed_tool_identity(span)
+        # A service that owns an OpenInference AGENT-kind span IS an agent, and
+        # its identity is sourced from that AGENT span. Lineage-scoped: the AGENT
+        # span is a DESCENDANT of this service's inbound SERVER span (the agent
+        # framework runs inside the request handler), so we walk `span`'s subtree
+        # rather than scanning all arrived spans. If no AGENT span has arrived in
+        # the subtree yet, we cannot finally decide the identity, so emit nothing.
+        agent_ident = self._agent_identity_in_lineage(span)
+        if agent_ident is not None:
+            return agent_ident
         # `span` itself carries the framework marker (e.g. resolving a parent
-        # OI span's service): its own attrs are sufficient, no walk needed.
+        # OI span's service): fall through to the canonical agent/tool identity.
         if _is_oi_kind(span, "AGENT", "LLM", "CHAIN", "TOOL"):
             return caller_inference._agent_or_deployed_tool_from_service(span)
-        # Otherwise `span` is a bare SERVER (e.g. a `POST /` inbound): a service
-        # that owns an OI AGENT span IS an agent, identity sourced from that
-        # AGENT span. LINEAGE-SCOPED: walk span's own bounded subtree (stopping
-        # at cross-service SERVER boundaries) rather than scanning all spans.
-        # If no AGENT span is reachable yet, we cannot finally decide, emit
-        # nothing (the per-arrival region recompute re-attempts).
-        agent_span = self._same_service_agent_in_subtree(span)
-        if agent_span is not None:
-            return caller_inference._agent_or_deployed_tool_from_service(agent_span)
+        return None
+
+    def _agent_identity_in_lineage(self, span: Span) -> Identity | None:
+        """Build the `agent:(project,service)` Identity for `span`'s service from
+        the OI AGENT span on the SAME service found in `span`'s LINEAGE — its own
+        subtree (the callee-SERVER case: the agent framework runs inside the
+        inbound request handler, so its AGENT span is a descendant) or its
+        ancestor chain (the caller case: a CLIENT egress is enclosed by its
+        caller agent's AGENT span). Lineage-scoped, order-independent: the result
+        is sourced from the AGENT span, not from the triggering span.
+
+        Both walks stay on the same service and stop at a cross-service SERVER
+        boundary, so a nested sub-agent's AGENT span is never claimed. Per the
+        AGENT-in-lineage structural invariant on the gate trace: a service's
+        AGENT span is always an ancestor-or-descendant of any same-service span
+        that needs the service's identity.
+
+        Returns None when no same-service AGENT is reachable in `span`'s lineage
+        yet; the per-arrival retry re-attempts once the connecting spans arrive.
+        We deliberately do NOT assert the invariant here — "no AGENT in this
+        lineage" is an absence conclusion, undecidable per-arrival under streaming
+        (an entry SERVER can arrive before the spans connecting it to an
+        already-arrived AGENT), and asserting it re-introduces the order-dependent
+        negative conclusion ADR-0012 removes."""
+        found = self._first_same_service_agent_in_subtree(span)
+        if found is None:
+            found = self._first_same_service_agent_in_ancestors(span)
+        if found is not None:
+            return caller_inference._agent_or_deployed_tool_from_service(found)
+        # No same-service AGENT reachable in `span`'s lineage YET. We deliberately
+        # emit NO instrumentation-signal here: "no AGENT will ever appear in this
+        # lineage" is a NEGATIVE/absence conclusion with no triggering event, and
+        # under streaming it is genuinely undecidable per-arrival — an entry SERVER
+        # can arrive before the intermediate spans that connect it to an
+        # already-arrived AGENT, transiently breaking the lineage path without any
+        # invariant being violated. Asserting it here re-introduces exactly the
+        # order-dependent negative conclusion ADR-0012 removes (the --scramble gate
+        # flags it immediately). The per-arrival retry re-attempts once the
+        # connecting spans arrive; the structural output is the proof the walk is
+        # correct on the complete trace.
+        return None
+
+    def _first_same_service_agent_in_subtree(self, root: Span) -> Span | None:
+        """First OI AGENT span on `root`'s service within `root`'s subtree, not
+        descending past a cross-service SERVER boundary."""
+        root_canon = canonical_service_name(root)
+        stack = list(self.children.get(root.span_id, []))
+        while stack:
+            s = stack.pop()
+            # Stop descent at a nested sub-agent's own territory.
+            if (
+                s.kind == "SERVER"
+                and canonical_service_name(s) not in (None, root_canon)
+            ):
+                continue
+            if s.service_name == root.service_name and _is_oi_kind(s, "AGENT"):
+                return s
+            stack.extend(self.children.get(s.span_id, []))
+        return None
+
+    def _first_same_service_agent_in_ancestors(self, span: Span) -> Span | None:
+        """First OI AGENT span on `span`'s service found by walking `span`'s
+        ancestor chain, stopping when the chain leaves `span`'s canonical service
+        (a cross-service boundary upward)."""
+        span_canon = canonical_service_name(span)
+        cur: Span | None = span
+        while cur is not None:
+            if cur.service_name == span.service_name and _is_oi_kind(cur, "AGENT"):
+                return cur
+            if cur.parent_id is None:
+                break
+            parent = self.spans_by_id.get((cur.trace_id, cur.parent_id))
+            if parent is None:
+                break
+            # Stop at the boundary where the chain leaves this service.
+            p_canon = canonical_service_name(parent)
+            if p_canon is not None and span_canon is not None and p_canon != span_canon:
+                break
+            cur = parent
         return None
 
     def _resolve_caller_around_oi_span(self, span: Span) -> Identity | None:
@@ -808,6 +793,23 @@ class Processor:
                         )
             cur = parent
         return self._resolve_service_side_identity(span)
+
+    def _matching_mcp_tool_span_in_subtree(self, span: Span) -> Span | None:
+        """The `/mcp` SERVER in `span`'s OWN subtree whose canonical service name
+        matches this tool's logical name. Lineage-scoped replacement for the
+        former trace-global scan: a deployed-MCP tool's `/mcp` transport SERVER is
+        reached only via the CLIENT egress beneath its own OI TOOL span, so the
+        matching SERVER is always a descendant of `span`."""
+        logical = _tool_logical_name(span)
+        for s in _walk_descendants(self.children, span):
+            if (
+                s.kind == "SERVER"
+                and s.service_name
+                and s.service_name in self._mcp_services
+                and canonical_service_name(s) == (logical or None)
+            ):
+                return s
+        return None
 
     # ------------------------------------------------------------------
     # Step 5b: interaction-tree parent (ADR-0008)
@@ -838,10 +840,7 @@ class Processor:
         return None
 
     def _span_by_id(self, span_id: str) -> Span | None:
-        for (_, sid), s in self.spans_by_id.items():
-            if sid == span_id:
-                return s
-        return None
+        return self._span_by_id_index.get(span_id)
 
     # ------------------------------------------------------------------
     # Step 5c: attach spans
@@ -910,22 +909,34 @@ class Processor:
             cur = self.spans_by_id.get((cur.trace_id, cur.parent_id))
         return None
 
-    def _repair_after_arrival(self) -> None:
+    def _repair_after_arrival(self, roots: list[Span]) -> None:
         """Re-derive the two arrival-order-dependent quantities — `interaction_
-        span` ownership (info/connector) and `parent_interaction_id` — against
-        the CURRENT arrived set. Both are pure functions of (arrived anchors,
-        ancestry), so recomputing them after every span arrival makes the final
-        graph independent of arrival order. Anchor rows are emit-once and never
-        touched. Bounded by trace size (prototype scale).
+        span` ownership (info/connector) and `parent_interaction_id` — SCOPED to
+        the union of `roots`' SUBTREES, not the whole trace. `roots` is the
+        arriving span plus the anchors of any interactions that just emitted in
+        this dispatch (see `_dispatch`).
 
-        This is the per-arrival convergence trigger: an interaction's territory
-        is re-derived whenever a span enters it OR a new enclosing anchor
-        appears, not only when the interaction itself emits — necessary because
-        the root SERVER finalizes near max-seq and so arrives FIRST under
-        `--scramble`, before any of the spans in its territory."""
-        # 1. Re-derive non-anchor ownership: every arrived non-root span goes to
-        #    its innermost current owner (clears any prior, looser claim).
-        for (_, _sid), s in self.spans_by_id.items():
+        Both quantities are "nearest enclosing anchor on the ancestor chain", so
+        an arrival can only change them for spans/interactions in the subtree of
+        the arriving span (a new enclosing anchor) or in the subtree of a
+        just-emitted interaction's anchor (its territory). A span outside every
+        such subtree has the same ancestor chain it had before, so its owner and
+        any interaction it anchors are unchanged — no need to re-touch them.
+
+        Convergence under --scramble is preserved without a full scan: if a span
+        later gets a CLOSER enclosing anchor (an inner interaction emitting
+        afterwards), that inner interaction's anchor is a root in ITS dispatch and
+        re-derives its (smaller) subtree region, stealing the span to the tighter
+        owner. Anchor rows are emit-once and never touched."""
+        # 1. Re-derive non-anchor ownership for the union of the roots' subtrees:
+        #    each span goes to its innermost current owner (clears any prior,
+        #    looser claim).
+        seen: dict[str, Span] = {}
+        for root in roots:
+            for s in _walk_descendants(self.children, root):
+                seen[s.span_id] = s
+        subtree = list(seen.values())
+        for s in subtree:
             if s.parent_id is None:
                 continue  # trace root never attached
             if self._role_by_span.get(s.span_id) == "anchor":
@@ -937,17 +948,37 @@ class Processor:
                 continue
             role = "info" if self._has_payload_or_error(s) else "connector"
             self._attach_span(owner, s.span_id, role)
-        # 2. Re-point parent_interaction_id for every active interaction.
-        for ix in self.interactions_by_anchor.values():
+        # 2. Re-point parent_interaction_id for interactions anchored in `span`'s
+        #    subtree (where `span` may be a new enclosing parent). Collect the
+        #    touched interactions for the aggregate pass.
+        subtree_ids = {s.span_id for s in subtree}
+        touched: list[ProtoInteraction] = []
+        for asid, ix in self.interactions_by_anchor.items():
             if not self._is_active_interaction(ix):
                 continue
-            ix.parent_interaction_id = self._compute_parent_interaction(
-                ix.primary_anchor_span_id
-            )
-        # 3. Re-aggregate every active interaction over its current attachments.
-        for ix in self.interactions_by_anchor.values():
+            if asid in subtree_ids:
+                ix.parent_interaction_id = self._compute_parent_interaction(
+                    ix.primary_anchor_span_id
+                )
+                touched.append(ix)
+        # 3. Re-aggregate the interactions whose territory may have changed:
+        #    those anchored in the subtree, plus the owners of every span we just
+        #    (re)attached above.
+        for s in subtree:
+            owner_id = self._owners_by_span.get(s.span_id)
+            if owner_id is not None:
+                ix = self._interaction_by_id(owner_id)
+                if ix is not None and ix not in touched:
+                    touched.append(ix)
+        for ix in touched:
             if self._is_active_interaction(ix):
                 self._update_aggregates(ix)
+
+    def _interaction_by_id(self, ix_id: str) -> ProtoInteraction | None:
+        for ix in self.interactions_by_anchor.values():
+            if ix.id == ix_id:
+                return ix
+        return None
 
     def _has_payload_or_error(self, span: Span) -> bool:
         attrs = span.attributes or {}
@@ -966,8 +997,12 @@ class Processor:
 
     def _update_aggregates(self, ix: ProtoInteraction) -> None:
         attached_ids = self._attached_span_ids.get(ix.id, set())
+        # Read only this interaction's attached spans (bounded by its territory),
+        # via the span_id index — not a scan of the whole arrived trace.
         attached_spans = [
-            s for (_, sid), s in self.spans_by_id.items() if sid in attached_ids
+            s
+            for sid in attached_ids
+            if (s := self._span_by_id_index.get(sid)) is not None
         ]
         if not attached_spans:
             return
@@ -1001,37 +1036,34 @@ class Processor:
         """The destination host of a CLIENT POST that qualifies as an
         UNINSTRUMENTED external service (`service:<host>`), else None.
 
-        POSITIVE-ANCHORED, LINEAGE-LOCAL gates only (ADR-0012 productization).
-        The former design excluded a host if it was owned by *any other entity*
-        — a trace-global NEGATIVE that required scanning all LLM/CLIENT spans
-        (`_llm_gateway_hosts`, `_non_service_hosts`). The grill proved that on
-        the live trace the discriminators are entirely CLIENT-local + direct-
-        child, so both global scans are dropped:
+        POSITIVE-ANCHORED (ADR-0012): every gate is a CLIENT-LOCAL or
+        DIRECT-CHILD signal — none scans the whole trace for a negative
+        ("this host is owned by no other entity"). This is correct because the
+        edge is anchored on the OI TOOL span, and a leaf tool egress can have no
+        future SERVER child, so the arrived-set view is final at the CLIENT
+        span's arrival:
 
           1. the egress URL path is not a well-known non-business convention —
-             `/mcp` (deployed-MCP transport) or `/.well-known/*` (agent-card
-             discovery probe). Both are read from the CLIENT span's OWN url.
-          2. the CLIENT has no in-trace SERVER child (the callee is
-             uninstrumented — an instrumented agent/tool/service would emit a
-             SERVER child). Direct-children only, already local.
-          3. the host resolves via `_http_host`.
+             `/mcp` (deployed-tool MCP transport) or `.well-known/*` (agent-card
+             probe and friends). Both are CLIENT-local URL signals.
+          2. no in-trace SERVER child (the callee is uninstrumented — a direct-
+             child check; an instrumented agent/tool/service egress has a SERVER
+             child and is absorbed as a cross-service edge instead).
+          3. host resolves via `_http_host`.
 
-        The LLM-gateway exclusion is structurally redundant under the
-        OI-TOOL-ancestor requirement in `_emit_external_http_on_client`: an LLM
-        egress is a child of an OI LLM span, never of an OI TOOL span, so this
-        path never reaches it. The `known_canonicals` / agent-host exclusions
-        are subsumed by gate 2 (an instrumented service has a SERVER child).
-
-        Gap accepted (per "let the prototype decide"): a future business egress
-        to a host that is ALSO an LLM/instrumented host reached elsewhere in the
-        same trace would no longer be excluded. New-fixture requirement when one
-        exists — same stance ADR-0012 takes for the dropped bare-SERVER rung.
+        The former trace-global owned-host exclusions (`_llm_gateway_hosts`,
+        `_non_service_hosts`, and the `known_canonicals` membership test) are
+        DROPPED: gate 1 + gate 2 already absorb every non-business egress on the
+        gate trace. The LLM-gateway exclusion is structurally redundant —
+        external-http only fires under an OI TOOL ancestor
+        (`_emit_external_http_on_client`), but an LLM-gateway egress is a child
+        of an OI LLM span, never an OI TOOL span, so it is never reached here.
+        See `proto-lineage-scoped-rewrite-target` and the exclusion-gap caveat.
         """
         # Gate 1: well-known non-business egress paths are never external-http.
-        #   - `POST .../mcp`         — deployed-tool transport (absorbed)
-        #   - `GET .../.well-known/` — agent-card discovery probe (absorbed;
-        #     this is the case the old trace-global `_non_service_hosts` caught,
-        #     now a CLIENT-local path signal)
+        # `/mcp` is the deployed-tool MCP transport (absorbed by the OI TOOL
+        # edge); `.well-known/*` is the agent-card probe (and similar discovery
+        # endpoints), which has no SERVER child so gate 2 cannot catch it.
         url = caller_inference._attr(client, "http.url") or caller_inference._attr(
             client, "url.full"
         )
@@ -1039,12 +1071,10 @@ class Processor:
             from urllib.parse import urlparse
 
             path = (urlparse(url).path or "").rstrip("/")
-            if path.endswith("/mcp"):
+            if path.endswith("/mcp") or "/.well-known/" in (path + "/"):
                 return None
-            if "/.well-known/" in path + "/" or path.endswith("/.well-known"):
-                return None
-        # Gate 2: an in-trace SERVER child means the callee is instrumented
-        # (agent / deployed-tool / instrumented service) — not external-http.
+        # Gate 2: an instrumented callee (agent / tool / service) emits a SERVER
+        # span as a direct child of this CLIENT egress — absorbed as cross-service.
         children = self.children.get(client.span_id, [])
         if any(c.kind == "SERVER" for c in children):
             return None
@@ -1131,12 +1161,16 @@ class Processor:
         if _is_oi_kind(span, "TOOL"):
             signal = self._tool_transport_signal(span)
             if signal == "deployed":
-                # LINEAGE-SCOPED: the deployed-tool identity comes from the
-                # `/mcp` SERVER in this OI TOOL span's OWN subtree (the same
-                # subtree `_tool_transport_signal` already walked to decide
-                # "deployed"). The former trace-global `_matching_mcp_tool_span`
-                # scan-by-canonical-name is redundant — the transport SERVER is
-                # always a descendant of the tool span that drove the egress.
+                # Source the deployed-tool identity from the `/mcp` SERVER in
+                # this OI TOOL span's OWN subtree (lineage-scoped). Prefer the
+                # SERVER whose canonical name matches this tool's logical name
+                # (`_matching_mcp_tool_span` did this trace-globally; the deployed
+                # tool's `/mcp` transport is always under its own OI TOOL span, so
+                # the subtree walk finds the same SERVER); fall back to the first
+                # `/mcp` SERVER in the subtree.
+                mcp_server = self._matching_mcp_tool_span_in_subtree(span)
+                if mcp_server is not None:
+                    return deployed_tool_identity(mcp_server)
                 for ev in _walk_descendants(self.children, span):
                     if ev.kind == "SERVER" and (ev.name or "").upper().startswith(
                         "POST /MCP"
@@ -1214,10 +1248,6 @@ class Processor:
     # ------------------------------------------------------------------
 
     def result(self) -> ExtractResult:
-        # One-shot AGENT-nests-in-SERVER invariant check over the fully-arrived
-        # set (read-only; not derivation). In production this moves to the
-        # AGENT span's own arrival, checked against its then-current lineage.
-        self._check_agent_nesting()
         active_ix = self._active_interactions()
         active_entities = [e for e in self.entities.values() if e.retracted_at is None]
         self.notes.append(
