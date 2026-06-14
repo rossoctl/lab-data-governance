@@ -126,11 +126,35 @@ def _llm_host_from_invocation(span: Span) -> str | None:
 def _llm_model(span: Span) -> str | None:
     raw = _attr(span, "llm.model_name") or _attr(span, "gen_ai.request.model")
     if not isinstance(raw, str):
+        # GoogleADK (e.g. booking-agent) emits no `llm.model_name` /
+        # `gen_ai.request.model`; the model is in the response body's
+        # `output.value.model_version`. Falling back to it avoids minting a
+        # stray `llm:(unknown)/...` entity that duplicates the real
+        # `llm:<host>/<model>` other runtimes resolve directly.
+        raw = _model_version_from_output(span)
+    if not isinstance(raw, str):
         return None
     # Strip litellm provider prefix (openai/<model>) — provider is routing, not identity.
     if "/" in raw:
         raw = raw.split("/", 1)[1]
     return raw
+
+
+def _model_version_from_output(span: Span) -> str | None:
+    """`output.value.model_version` — the model on an OI LLM span whose
+    standard model attributes are absent (GoogleADK response shape).
+    `output.value` may be a JSON string or an already-parsed dict."""
+    ov = _attr(span, "output.value")
+    if isinstance(ov, str):
+        try:
+            ov = json.loads(ov)
+        except Exception:  # noqa: BLE001
+            return None
+    if isinstance(ov, dict):
+        mv = ov.get("model_version")
+        if isinstance(mv, str) and mv:
+            return mv
+    return None
 
 
 # ---------------------------------------------------------------------------

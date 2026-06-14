@@ -241,7 +241,9 @@ identity). Stored on `entity_spans.role`. A single span can produce
 entity_spans rows for multiple entities (e.g. a SERVER span identifying
 both its caller and its callee).
 
-**Provisional entity**:
+**Provisional entity** _(legacy under **Sufficiency-gated emission**,
+ADR-0012 — that model never emits a provisional entity, since identity is
+decided only when final)_:
 An **Entity** synthesised when the streaming model anchors an
 **Interaction** before complete identity information is available — for
 example, a SERVER span that arrives before its parent CLIENT span. The
@@ -253,7 +255,25 @@ foreign key swaps to the better entity and the provisional entity is
 **destructively retracted** if no other interaction references it
 (ADR-0011, superseding ADR-0007's earlier "left orphaned" stance).
 
-**Interaction reconciliation**:
+**Sufficiency-gated emission**:
+The emission discipline by which `P-interactions` materialises an
+**Entity** or **Interaction** *only* at the arrival of the **Span** that
+makes the already-arrived span set sufficient to decide it **finally** —
+no future span can change it. Emit-once-when-decidable: never an eager
+emit that is later corrected, and never an end-of-trace pass. Every anchor
+rule fires on a *positive* completing span (an OpenInference
+`AGENT`/`LLM`/`CHAIN`/`TOOL` span, a `/mcp` `SERVER` span, a paired
+endpoint), because a *negative* conclusion ("no such span will ever
+arrive") has no triggering event. A late parent resolves on the parent's
+own arrival by look-back over already-arrived spans. Per ADR-0012;
+production-directional, superseding **Interaction reconciliation**'s
+emit-then-retract model.
+_Avoid_: conflating with **Interaction reconciliation** — that is the
+superseded eager-emit-then-retract pass; this is the lazy
+emit-when-decidable discipline that makes retraction unnecessary.
+
+**Interaction reconciliation** _(superseded by **Sufficiency-gated
+emission**, ADR-0012)_:
 A streaming post-anchor pass over already-emitted **Interactions** that
 recognises when two **Anchor rules** fired on different spans for the
 same logical call and collapses the redundancy. Distinct from the
@@ -286,7 +306,9 @@ LLM/HTTP-transport pairing — an `openinference-llm` interaction and an
 to one (ADR-0011). Future members: in-process-tool / deployed-tool
 merge (left open by ADR-0010).
 
-**Destructive retract**:
+**Destructive retract** _(legacy under **Sufficiency-gated emission**,
+ADR-0012 — that model emits only final rows, so the retract path is never
+exercised)_:
 The mechanism by which an already-emitted **Interaction** or
 **Provisional entity** is removed from the consumer-visible world. Wire
 format is a tombstone: a nullable `retracted_at TIMESTAMP` column on

@@ -1,4 +1,19 @@
+---
+status: partially superseded by ADR-0012
+---
+
 # LLM and HTTP transport are one interaction; LLM identity may resolve via streaming reconciliation
+
+> **Partially superseded by ADR-0012 (emission model only).** ADR-0012
+> replaces this ADR's *emit-then-retract* reconciliation discipline with
+> **sufficiency-gated emission**: an interaction is materialised only when
+> the arrived-span set is sufficient to decide it finally, so there is
+> nothing to retract or reconcile. The schema additions below
+> (`retracted_at`, `original_seq`, `UNIQUE (trace_id, span_id)`) remain
+> valid; the **Interaction reconciliation** layer, **destructive retract**
+> path, and `llm:(unknown)/<model>` provisional-entity flow are not
+> exercised under ADR-0012. This supersession is production-directional,
+> not prototype-scoped.
 
 When an OpenInference-instrumented agent calls an LLM over HTTP, two
 anchor rules fire on overlapping spans:
