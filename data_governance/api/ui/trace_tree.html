@@ -213,6 +213,7 @@
 <body>
   <header>
     <a class="back" href="/">&larr; Recent traces</a>
+    <a class="back" id="forest-link" href="#">Execution forest</a>
     <h1>Trace tree</h1>
     <span id="trace-id-display" style="color:#888;font-size:0.85rem"></span>
   </header>
@@ -336,6 +337,8 @@
       window.location.pathname.replace(/^\/trace\//, ''),
     );
     traceIdDisplay.textContent = traceId;
+    document.getElementById('forest-link').href =
+      '/forest/' + encodeURIComponent(traceId);
 
     /* All loaded spans, keyed by (trace_id|span_id). The descendant-
        error badge walker reads this set. */

@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Data Governance — Execution forest</title>
+  <style>
+    /* Execution-forest view (ADR-0009).
+       The unified per-invocation forest U -> A -> { L, tools } derived from
+       spans by forest_logic.js. Shares the trace-tree's dark palette and
+       span-detail panel so payload-on-click behaves identically; the tree
+       body is flat (anchor + its children), not the raw parent_id nesting. */
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0; background: #151515; color: #f0f0f0;
+    }
+    header {
+      padding: 1rem 1.5rem; border-bottom: 1px solid #2c2c2c;
+      display: flex; align-items: baseline; gap: 1.5rem; flex-wrap: wrap;
+    }
+    h1 { font-size: 1.1rem; margin: 0; color: #92c5f9; }
+    a.nav { color: #92c5f9; font-size: 0.85rem; text-decoration: none; }
+    a.nav:hover { text-decoration: underline; }
+    main {
+      display: grid; grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 1rem; padding: 1rem 1.5rem;
+    }
+    #status { color: #888; margin-bottom: 0.75rem; font-size: 0.85rem; }
+    #error { color: #f85149; margin-bottom: 0.75rem; font-size: 0.9rem; }
+
+    ul.tree, ul.tree ul {
+      list-style: none; margin: 0; padding-left: 1.25rem;
+      border-left: 1px dashed #2c2c2c;
+    }
+    ul.tree { padding-left: 0; border-left: none; }
+    li.node { padding: 0.25rem 0; }
+    .row {
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.2rem 0.4rem; border-radius: 3px; cursor: pointer;
+    }
+    .row:hover, .row.selected { background: #1c1c1c; }
+    .kind-icon {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #c9c9c9; font-size: 0.85rem; width: 1.5rem; text-align: center;
+    }
+    .name-text { font-weight: 600; color: #e6e6e6; }
+    .src-tag {
+      color: #888; font-size: 0.72rem; border: 1px solid #2c2c2c;
+      border-radius: 3px; padding: 0 0.3rem;
+    }
+    .preview {
+      color: #8a8a8a; font-size: 0.78rem; font-family: ui-monospace, Menlo, monospace;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40ch;
+    }
+    .notes {
+      margin: 1rem 0 0; padding: 0.75rem 1rem; background: #1a1a1a;
+      border: 1px solid #2c2c2c; border-radius: 3px; font-size: 0.8rem; color: #b8b8b8;
+    }
+    .notes h3 { margin: 0 0 0.4rem; font-size: 0.8rem; color: #92c5f9;
+      text-transform: uppercase; letter-spacing: 0.05em; }
+    .notes li { margin: 0.15rem 0; }
+
+    aside.detail {
+      background: #1a1a1a; border: 1px solid #2c2c2c; border-radius: 3px;
+      padding: 0.75rem 1rem; font-size: 0.85rem; align-self: start;
+      position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto;
+    }
+    aside.detail h2 { margin: 0 0 0.5rem; font-size: 0.95rem; color: #92c5f9; }
+    aside.detail h3 {
+      margin: 0.75rem 0 0.25rem; font-size: 0.85rem; color: #c9c9c9;
+      text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    aside.detail pre {
+      background: #0d0d0d; border: 1px solid #222; padding: 0.5rem;
+      border-radius: 3px; overflow: auto; font-size: 0.78rem; color: #d0d0d0; max-height: 30vh;
+    }
+    .detail-empty { color: #666; font-style: italic; font-size: 0.8rem; }
+    dl.detail-dl { margin: 0 0 0.5rem; }
+    dl.detail-dl dt {
+      color: #888; font-size: 0.75rem; text-transform: uppercase;
+      letter-spacing: 0.04em; margin-top: 0.35rem;
+    }
+    dl.detail-dl dd {
+      margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.8rem; color: #e0e0e0; word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="nav" href="/">&larr; Recent traces</a>
+    <a class="nav" id="tree-link" href="#">Trace tree</a>
+    <h1>Execution forest</h1>
+    <span id="trace-id-display" style="color:#888;font-size:0.85rem"></span>
+  </header>
+  <main>
+    <section>
+      <div id="status">Loading…</div>
+      <div id="error"></div>
+      <ul id="forest" class="tree"></ul>
+      <div class="notes" id="notes" style="display:none">
+        <h3>Known / expected (ADR-0009)</h3>
+        <ul>
+          <li id="note-loop"></li>
+          <li>No datastore nodes — the tool→datastore hop is uncaptured
+            today; the forest stops at the tool boundary.</li>
+          <li>U→A is the in-process <code>POST /</code> root; the sidecar
+            <code>a2a</code> span is self-referential and in its own trace.</li>
+        </ul>
+      </div>
+    </section>
+    <aside id="detail" class="detail">
+      <h2>Span detail</h2>
+      <div class="detail-empty" id="detail-empty">Select a node to view its span.</div>
+      <div id="detail-body" style="display:none">
+        <h3>Identity</h3>
+        <dl class="detail-dl" id="detail-identity"></dl>
+        <h3>Timing</h3>
+        <dl class="detail-dl" id="detail-timing"></dl>
+        <h3>Attributes (payload)</h3>
+        <pre id="detail-attributes"></pre>
+        <h3>Events</h3>
+        <pre id="detail-events"></pre>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/ui/forest_logic.js"></script>
+  <script>
+    /* Execution-forest view (ADR-0009).
+       Endpoint: GET /spans?trace_id=T&limit=500&order=asc (all spans of the
+       trace; the unifier needs the whole tree at once). forest_logic.js does
+       the U->A->{L,tools} derivation; this shell renders it + the detail panel. */
+
+    const FETCH_LIMIT = 500;
+
+    const statusEl = document.getElementById('status');
+    const errorEl = document.getElementById('error');
+    const forestEl = document.getElementById('forest');
+    const notesEl = document.getElementById('notes');
+    const noteLoopEl = document.getElementById('note-loop');
+    const traceIdDisplay = document.getElementById('trace-id-display');
+    const detailEmptyEl = document.getElementById('detail-empty');
+    const detailBodyEl = document.getElementById('detail-body');
+    const detailIdentityEl = document.getElementById('detail-identity');
+    const detailTimingEl = document.getElementById('detail-timing');
+    const detailAttributesEl = document.getElementById('detail-attributes');
+    const detailEventsEl = document.getElementById('detail-events');
+
+    const traceId = decodeURIComponent(
+      window.location.pathname.replace(/^\/forest\//, ''),
+    );
+    traceIdDisplay.textContent = traceId;
+    document.getElementById('tree-link').href =
+      '/trace/' + encodeURIComponent(traceId);
+
+    async function fetchAllSpans() {
+      const all = [];
+      let cursor = null;
+      for (let page = 0; page < 40; page++) {  // 40*500 = 20k-span safety cap
+        const params = new URLSearchParams({
+          trace_id: traceId, limit: String(FETCH_LIMIT), order: 'asc',
+        });
+        if (cursor !== null) params.set('cursor', String(cursor));
+        const resp = await fetch('/spans?' + params.toString());
+        if (!resp.ok) {
+          throw new Error('HTTP ' + resp.status + ': ' + (await resp.text()));
+        }
+        const data = await resp.json();
+        const spans = data.spans || [];
+        for (const s of spans) all.push(s);
+        if (spans.length < FETCH_LIMIT) break;
+        cursor = spans[spans.length - 1].seq;
+      }
+      return all;
+    }
+
+    function bodyPreview(span) {
+      const a = span.attributes || {};
+      let v = a['llm.output_messages.0.message.content']
+        || a['input.value'] || a['output.value'] || '';
+      v = String(v).replace(/\s+/g, ' ').trim();
+      return v.length > 80 ? v.slice(0, 79) + '…' : v;
+    }
+
+    function makeRow(opts) {
+      // opts: { icon, name, store, src, preview, span }
+      const row = document.createElement('div');
+      row.className = 'row';
+
+      const icon = document.createElement('span');
+      icon.className = 'kind-icon';
+      icon.textContent = opts.icon;
+      row.appendChild(icon);
+
+      const name = document.createElement('span');
+      name.className = 'name-text';
+      name.textContent = opts.name;
+      row.appendChild(name);
+
+      if (opts.src) {
+        const tag = document.createElement('span');
+        tag.className = 'src-tag';
+        tag.textContent = opts.src;
+        row.appendChild(tag);
+      }
+      if (opts.preview) {
+        const p = document.createElement('span');
+        p.className = 'preview';
+        p.textContent = opts.preview;
+        row.appendChild(p);
+      }
+      if (opts.span) {
+        row.tabIndex = 0;
+        const select = () => selectSpan(opts.span, row);
+        row.addEventListener('click', select);
+        row.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); select(); }
+        });
+      } else {
+        row.style.cursor = 'default';
+      }
+      return row;
+    }
+
+    function li(row) {
+      const el = document.createElement('li');
+      el.className = 'node';
+      el.appendChild(row);
+      return el;
+    }
+
+    function render(forest) {
+      forestEl.innerHTML = '';
+      if (!forest.ok || !forest.agent) {
+        statusEl.textContent =
+          'No agent span found in this trace — not an execution forest.';
+        return;
+      }
+      statusEl.textContent = '';
+
+      // A and its flat children
+      const agentRow = makeRow({
+        icon: 'A',
+        name: forest.agent.name,
+        src: forest.agent.attributes && forest.agent.attributes.source,
+        span: forest.agent,
+      });
+      const agentLi = li(agentRow);
+      const childUl = document.createElement('ul');
+      agentLi.appendChild(childUl);
+
+      // flat children (L + tools), in true started_at order
+      for (const c of forest.children) {
+        let row;
+        if (c.role === 'L') {
+          row = makeRow({
+            icon: 'L', name: 'generation',
+            src: c.span.attributes && c.span.attributes.source,
+            preview: bodyPreview(c.span), span: c.span,
+          });
+        } else {
+          row = makeRow({
+            icon: '⚙', name: c.name, src: c.source,
+            preview: bodyPreview(c.span), span: c.span,
+          });
+        }
+        childUl.appendChild(li(row));
+      }
+
+      // U is the inbound request span above the agent (absent if A is the root).
+      if (forest.user) {
+        const userRow = makeRow({
+          icon: 'U', name: forest.user.name,
+          src: forest.user.attributes && forest.user.attributes.source,
+          span: forest.user,
+        });
+        const userLi = li(userRow);
+        const userUl = document.createElement('ul');
+        userUl.appendChild(agentLi);
+        userLi.appendChild(userUl);
+        forestEl.appendChild(userLi);
+      } else {
+        forestEl.appendChild(agentLi);
+      }
+
+      noteLoopEl.innerHTML =
+        '<strong>' + forest.llmCount + '</strong> L (generation) spans shown '
+        + 'flat — the real tool-use loop, not collapsed to one.';
+      notesEl.style.display = '';
+    }
+
+    function _dd(dl, label, value) {
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      dl.appendChild(dt);
+      const dd = document.createElement('dd');
+      dd.textContent = value == null ? '—' : String(value);
+      dl.appendChild(dd);
+    }
+
+    function selectSpan(span, row) {
+      for (const r of forestEl.querySelectorAll('.row.selected')) {
+        r.classList.remove('selected');
+      }
+      if (row) row.classList.add('selected');
+      if (!span) return;
+
+      detailEmptyEl.style.display = 'none';
+      detailBodyEl.style.display = '';
+
+      detailIdentityEl.innerHTML = '';
+      _dd(detailIdentityEl, 'trace_id', span.trace_id);
+      _dd(detailIdentityEl, 'span_id', span.span_id);
+      _dd(detailIdentityEl, 'parent_id', span.parent_id);
+      _dd(detailIdentityEl, 'span.kind', span.attributes
+        && span.attributes['openinference.span.kind']);
+      _dd(detailIdentityEl, 'source', span.attributes && span.attributes.source);
+      _dd(detailIdentityEl, 'service_name', span.service_name);
+
+      detailTimingEl.innerHTML = '';
+      _dd(detailTimingEl, 'started_at', span.started_at);
+      _dd(detailTimingEl, 'ended_at', span.ended_at);
+
+      detailAttributesEl.textContent = JSON.stringify(span.attributes || {}, null, 2);
+      detailEventsEl.textContent = span.events == null
+        ? '(none)' : JSON.stringify(span.events, null, 2);
+    }
+
+    async function init() {
+      try {
+        const spans = await fetchAllSpans();
+        if (spans.length === 0) {
+          statusEl.textContent = 'Trace not found.';
+          return;
+        }
+        render(window.Forest.buildForest(spans));
+      } catch (err) {
+        errorEl.textContent = 'Error loading forest: ' + err.message;
+        statusEl.textContent = '';
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

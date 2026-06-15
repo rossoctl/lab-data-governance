@@ -12,6 +12,11 @@ honoured for the parameter-compatibility raises until #13 lands).
 Issue #58 adds ``GET /graph`` — the derived entity/edge graph (ADR-0007),
 a thin pass-through to ``get_entities`` + ``get_edges`` returning
 ``{"entities": [...], "edges": [...]}``.
+
+ADR-0009 adds ``GET /forest/{trace_id}`` — the execution-forest UI shell. The
+unified per-invocation forest (``U -> A -> {L, tools}``) is derived client-side
+by ``ui/forest_logic.js`` over the same ``GET /spans`` read path; no new
+endpoint data and no schema change.
 """
 
 from __future__ import annotations
@@ -256,11 +261,22 @@ async def _trace_tree_handler(_request: Request) -> Response:
     return HTMLResponse(content=page.read_text())
 
 
+async def _forest_handler(_request: Request) -> Response:
+    """Serve the execution-forest UI shell (ADR-0009).
+
+    Path is ``/forest/{trace_id}``. Like the trace-tree shell, the trace_id is
+    consumed by the in-page JS (it reads ``window.location.pathname``), so the
+    server-side handler returns the same static HTML for any trace_id.
+    """
+    page = _UI_DIR / "forest.html"
+    return HTMLResponse(content=page.read_text())
+
+
 # Static asset names allowed under ``/ui/`` — kept narrow on purpose so
 # this route never functions as a generic file-server. Add new entries
 # here as the UI grows.
 _UI_ASSETS: frozenset[str] = frozenset(
-    {"recent_traces_logic.js", "trace_tree_logic.js"}
+    {"recent_traces_logic.js", "trace_tree_logic.js", "forest_logic.js"}
 )
 
 
@@ -291,6 +307,11 @@ def build_app() -> Starlette:
         Route(
             "/trace/{trace_id:str}",
             endpoint=_trace_tree_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/forest/{trace_id:str}",
+            endpoint=_forest_handler,
             methods=["GET"],
         ),
         Route("/", endpoint=_ui_handler, methods=["GET"]),

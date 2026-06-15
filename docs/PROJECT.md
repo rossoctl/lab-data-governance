@@ -709,6 +709,30 @@ fetches direct children via
 across multiple calls. Wide-fan-out parents (loops, batch jobs) are
 the realistic case where this matters.
 
+### Execution forest view (UI flow on `GET /spans`) — ADR-0009
+
+A curated alternative to the raw trace tree, for Kagenti agents
+(`openai_agents` + the lineage sidecar): the **unified per-invocation
+execution forest** `U → A → { L, tools }` — flat siblings under the
+agent (`demo-patent-app/scenario.md` §7).
+
+Opening `/forest/T` fetches the whole trace at once —
+`GET /spans?trace_id=T&limit=500&order=asc` (cursor-paged past 500) —
+because the unifier needs every span together. The derivation runs
+client-side in `ui/forest_logic.js` (Node-testable, like
+`trace_tree_logic.js`): anchor on the inner `AGENT` span, re-parent the
+`LLM` spans flat, dedup the in-process `TOOL` vs the sidecar
+`agent_to_tool` span for one call (preferring the sidecar's wire view +
+`lineage.*`), and drop the framework wrappers, httpx/starlette plumbing,
+and MCP-handshake noise. A pure derivation over `spans` (ADR-0001) — no
+new table, every node a real `(trace_id, span_id)`.
+
+**Distinct from the aggregate entity-graph** (§8 / ADR-0007), which
+collapses invocations into one node per
+`(service_name, semantic_kind, sub_kind)`; the forest keeps each
+invocation distinct. Two graphs, two layers — the forest is rendered
+from `spans`, never from `entities`/`edges`.
+
 ### Eventual consistency
 
 The listing is **eventually consistent**. A trace's listing root may
