@@ -17,9 +17,15 @@
 #   KIND_CLUSTER     Kind cluster name to load into (default: kagenti)
 #   IMAGE_REPO       Image repo prefix (default: data-governance)
 #   IMAGE_TAG        Image tag (default: latest)
-#   CONTAINER_TOOL   docker | podman (default: auto-detect, prefers docker)
+#   CONTAINER_TOOL   build/tag tool (default: podman). This repo is
+#                    podman-only; setting this to anything else is rejected.
 
 set -euo pipefail
+
+# podman-only. Build/tag with podman and drive `kind` through its podman
+# provider so nothing in this script ever talks to a docker daemon (mirrors
+# the podman-only posture of agent-examples-snp/deploy.sh).
+export KIND_EXPERIMENTAL_PROVIDER=podman
 
 KIND_CLUSTER="${KIND_CLUSTER:-kagenti}"
 IMAGE_REPO="${IMAGE_REPO:-data-governance}"
@@ -44,17 +50,19 @@ UI_DOCKERIO="docker.io/${UI_IMAGE}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-# Pick a container tool: explicit override wins, then docker, then podman.
-# Both the upstream Kagenti `kind` cluster and this repo are tested against
-# both runtimes; on this dev machine `docker` is a podman shim.
-if [[ -n "${CONTAINER_TOOL:-}" ]]; then
-    : # caller-provided
-elif command -v docker >/dev/null 2>&1; then
-    CONTAINER_TOOL=docker
-elif command -v podman >/dev/null 2>&1; then
-    CONTAINER_TOOL=podman
-else
-    echo "error: no container tool found; install docker or podman" >&2
+# podman-only by design. The `docker` CLI on this setup is just a thin client
+# pointed at the podman engine, and its default buildx `docker-container`
+# builder silently leaves the build in the cache (not the image store) unless
+# handed --load -- which makes the `kind load` below a no-op that ships stale
+# code. Using podman directly sidesteps that whole class of silent-no-op
+# deploys, and there is deliberately no docker fallback.
+CONTAINER_TOOL="${CONTAINER_TOOL:-podman}"
+if [[ "${CONTAINER_TOOL}" != "podman" ]]; then
+    echo "error: this repo is podman-only; refusing CONTAINER_TOOL=${CONTAINER_TOOL}" >&2
+    exit 1
+fi
+if ! command -v podman >/dev/null 2>&1; then
+    echo "error: 'podman' is not on PATH; install it from https://podman.io" >&2
     exit 1
 fi
 
@@ -74,14 +82,20 @@ echo ">> Tagging ${RECEIVER_IMAGE} as ${UI_IMAGE} and as docker.io/* aliases"
 "${CONTAINER_TOOL}" tag "${RECEIVER_IMAGE}" "${RECEIVER_DOCKERIO}"
 "${CONTAINER_TOOL}" tag "${RECEIVER_IMAGE}" "${UI_DOCKERIO}"
 
-# Load the docker.io-prefixed names: that's how containerd will resolve the
-# bare references in deploy/k8s/*.yaml, so loading under those names
-# guarantees a hit at pod-create time.
-echo ">> Loading ${RECEIVER_DOCKERIO} into Kind cluster '${KIND_CLUSTER}'"
-kind load docker-image "${RECEIVER_DOCKERIO}" --name "${KIND_CLUSTER}"
+# Load via `podman save` + `kind load image-archive`, NOT `kind load
+# docker-image`. Under the podman provider, kind (v0.31) still shells out to
+# `docker image inspect` to resolve the image id for `load docker-image`, so
+# that path breaks on a docker-free host. Saving the tar with podman and
+# importing the archive keeps the entire load on podman. Both docker.io-
+# prefixed tags go into ONE archive — that's how containerd resolves the bare
+# references in deploy/k8s/*.yaml, so the node gets a hit at pod-create time.
+ARCHIVE="$(mktemp)"
+trap 'rm -f "${ARCHIVE}"' EXIT
+echo ">> Saving ${RECEIVER_DOCKERIO} + ${UI_DOCKERIO} to an archive"
+"${CONTAINER_TOOL}" save -o "${ARCHIVE}" "${RECEIVER_DOCKERIO}" "${UI_DOCKERIO}"
 
-echo ">> Loading ${UI_DOCKERIO} into Kind cluster '${KIND_CLUSTER}'"
-kind load docker-image "${UI_DOCKERIO}" --name "${KIND_CLUSTER}"
+echo ">> Loading the archive into Kind cluster '${KIND_CLUSTER}'"
+kind load image-archive "${ARCHIVE}" --name "${KIND_CLUSTER}"
 
 cat <<EOF
 
