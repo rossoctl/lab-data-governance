@@ -93,4 +93,6 @@ forest from `spans` — a client-side derivation alongside the trace-tree
 - D/F absence and the ~3-`LLM`-spans loop are documented, expected, and visible —
   not bugs to hide. The cross-session / clean-vs-confidential story the forest
   *cannot* tell is the designed blindness motivating the data graph (the §8 /
-  `edge_annotations` layer), not this view's job.
+  `edge_annotations` layer), not this view's job. A demo-only overlay that *does*
+  draw D/F store nodes (from tool-call args, explicitly outside this agnostic
+  core and behind a toggle) is recorded separately in **ADR-0010**.

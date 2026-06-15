@@ -7,77 +7,186 @@
   <style>
     /* Execution-forest view (ADR-0009).
        The unified per-invocation forest U -> A -> { L, tools } derived from
-       spans by forest_logic.js. Shares the trace-tree's dark palette and
-       span-detail panel so payload-on-click behaves identically; the tree
-       body is flat (anchor + its children), not the raw parent_id nesting. */
+       spans by forest_logic.js, drawn as a left-to-right TREE-GRAPH: nodes are
+       cards (inline-SVG type icon + label), edges are SVG bezier curves colored
+       per child type. Shares the trace-tree's dark palette + span-detail panel.
+
+       Layout matches the data contract from forest_logic.js exactly:
+       {user?, agent, children:[]} => columns U | A | children. Deeper
+       delegation forests (A -> sub-agent) are a documented future case
+       (ADR-0009 single-agent scope).
+
+       DATASTORE NODES are an OPT-IN, DEMO-ONLY scenario overlay (ADR-0010),
+       computed by forest_scenario_overlay.js — NOT forest_logic.js, which stays
+       scenario-agnostic and synthesizes nothing. Overlay nodes render as a
+       dashed 4th column with a "demo overlay" label so they are never mistaken
+       for captured spans. */
+    :root {
+      --bg: #151515; --panel: #1a1a1a; --panel-2: #1f1f1f; --ink: #0d0d0d;
+      --line: #2c2c2c; --line-soft: #3a3a3a; --fg: #f0f0f0; --fg-dim: #b8b8b8;
+      --muted: #888; --accent: #92c5f9; --danger: #f85149;
+      --c-user: #d2a8ff; --c-agent: #92c5f9; --c-llm: #e3b341;
+      --c-tool: #7ee787; --c-datastore: #ffa657;
+    }
+    * { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      margin: 0; background: #151515; color: #f0f0f0;
+      margin: 0; background: var(--bg); color: var(--fg);
     }
+
+    /* ---- header / tab bar ---- */
     header {
-      padding: 1rem 1.5rem; border-bottom: 1px solid #2c2c2c;
-      display: flex; align-items: baseline; gap: 1.5rem; flex-wrap: wrap;
+      padding: 0.85rem 1.5rem 0; border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;
     }
-    h1 { font-size: 1.1rem; margin: 0; color: #92c5f9; }
-    a.nav { color: #92c5f9; font-size: 0.85rem; text-decoration: none; }
-    a.nav:hover { text-decoration: underline; }
+    .brand { font-size: 0.95rem; font-weight: 700; color: var(--accent);
+      margin-right: 0.5rem; }
+    nav.tabs { display: flex; gap: 0.25rem; }
+    nav.tabs a {
+      color: var(--fg-dim); font-size: 0.85rem; text-decoration: none;
+      padding: 0.45rem 0.8rem; border-radius: 6px 6px 0 0;
+      border: 1px solid transparent; border-bottom: none;
+    }
+    nav.tabs a:hover { color: var(--fg); background: var(--panel-2); }
+    nav.tabs a.active {
+      color: var(--accent); background: var(--bg); font-weight: 600;
+      border-color: var(--line); position: relative; top: 1px;
+    }
+    .trace-id {
+      margin-left: auto; color: var(--muted); font-size: 0.78rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    /* ---- legend + overlay toggle ---- */
+    .legend {
+      display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;
+      padding: 0.6rem 1.5rem; border-bottom: 1px solid var(--line);
+      font-size: 0.74rem; color: var(--muted);
+    }
+    .legend .item { display: inline-flex; align-items: center; gap: 0.35rem; }
+    .overlay-toggle {
+      margin-left: auto; display: inline-flex; align-items: center; gap: 0.4rem;
+      color: var(--fg-dim); cursor: pointer; font-size: 0.74rem;
+    }
+    .overlay-toggle input { accent-color: var(--c-datastore); }
+    .demo-tag {
+      color: var(--c-datastore); font-size: 0.66rem;
+      border: 1px solid color-mix(in srgb, var(--c-datastore) 45%, transparent);
+      border-radius: 999px; padding: 0.02rem 0.42rem;
+    }
+
     main {
       display: grid; grid-template-columns: minmax(0, 1fr) 360px;
-      gap: 1rem; padding: 1rem 1.5rem;
+      gap: 1.25rem; padding: 1.1rem 1.5rem;
     }
-    #status { color: #888; margin-bottom: 0.75rem; font-size: 0.85rem; }
-    #error { color: #f85149; margin-bottom: 0.75rem; font-size: 0.9rem; }
+    #status { color: var(--muted); margin-bottom: 0.75rem; font-size: 0.85rem; }
+    #error { color: var(--danger); margin-bottom: 0.75rem; font-size: 0.9rem; }
 
-    ul.tree, ul.tree ul {
-      list-style: none; margin: 0; padding-left: 1.25rem;
-      border-left: 1px dashed #2c2c2c;
+    /* ---- icon badges ---- */
+    .badge {
+      flex: 0 0 auto; width: 30px; height: 30px; border-radius: 8px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: color-mix(in srgb, currentColor 16%, transparent);
+      border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
     }
-    ul.tree { padding-left: 0; border-left: none; }
-    li.node { padding: 0.25rem 0; }
-    .row {
-      display: flex; align-items: center; gap: 0.5rem;
-      padding: 0.2rem 0.4rem; border-radius: 3px; cursor: pointer;
+    .badge .ic {
+      width: 17px; height: 17px; fill: none; stroke: currentColor;
+      stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
     }
-    .row:hover, .row.selected { background: #1c1c1c; }
-    .kind-icon {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      color: #c9c9c9; font-size: 0.85rem; width: 1.5rem; text-align: center;
+    .badge-user { color: var(--c-user); }
+    .badge-agent { color: var(--c-agent); }
+    .badge-llm { color: var(--c-llm); }
+    .badge-tool { color: var(--c-tool); }
+    .badge-datastore { color: var(--c-datastore); }
+
+    /* ---- tree-graph ---- */
+    .graph {
+      position: relative; overflow: auto; padding: 0.5rem 0.25rem;
+      min-height: 200px;
     }
-    .name-text { font-weight: 600; color: #e6e6e6; }
+    .columns {
+      position: relative; display: flex; align-items: center;
+      gap: 90px; width: max-content; min-width: 100%;
+    }
+    .col {
+      display: flex; flex-direction: column; justify-content: center;
+      gap: 14px; position: relative; z-index: 1;
+    }
+    svg.edges {
+      position: absolute; top: 0; left: 0; z-index: 0;
+      pointer-events: none; overflow: visible;
+    }
+    .edge { fill: none; stroke-width: 1.8; stroke-opacity: 0.6; }
+
+    .node-card {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.55rem 0.7rem; border-radius: 10px;
+      background: var(--panel); border: 1px solid var(--line);
+      cursor: pointer; max-width: 340px; position: relative; z-index: 1;
+      transition: border-color .1s, box-shadow .1s, transform .1s;
+    }
+    .node-card:hover {
+      border-color: var(--line-soft);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35); transform: translateY(-1px);
+    }
+    .node-card.selected {
+      border-color: currentColor;
+      box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 50%, transparent);
+    }
+    .node-card.t-user { color: var(--c-user); }
+    .node-card.t-agent { color: var(--c-agent); }
+    .node-card.t-llm { color: var(--c-llm); }
+    .node-card.t-tool { color: var(--c-tool); }
+    /* datastore cards are the demo overlay — dashed + non-interactive */
+    .node-card.store-card {
+      color: var(--c-datastore); border-style: dashed; cursor: default;
+      background: color-mix(in srgb, var(--c-datastore) 7%, var(--panel));
+    }
+    .node-card.store-card:hover { transform: none; box-shadow: none;
+      border-color: color-mix(in srgb, var(--c-datastore) 60%, transparent); }
+    .node-card .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .node-card .name-text { font-weight: 600; color: #ececec; font-size: 0.9rem;
+      white-space: nowrap; }
+    .node-card .sub { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
     .src-tag {
-      color: #888; font-size: 0.72rem; border: 1px solid #2c2c2c;
-      border-radius: 3px; padding: 0 0.3rem;
+      color: var(--muted); font-size: 0.66rem; border: 1px solid var(--line);
+      border-radius: 999px; padding: 0.02rem 0.4rem; letter-spacing: 0.02em;
+      flex: 0 0 auto;
     }
     .preview {
-      color: #8a8a8a; font-size: 0.78rem; font-family: ui-monospace, Menlo, monospace;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40ch;
+      color: #8a8a8a; font-size: 0.74rem;
+      font-family: ui-monospace, Menlo, monospace;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+
     .notes {
-      margin: 1rem 0 0; padding: 0.75rem 1rem; background: #1a1a1a;
-      border: 1px solid #2c2c2c; border-radius: 3px; font-size: 0.8rem; color: #b8b8b8;
+      margin: 1.1rem 0 0; padding: 0.75rem 1rem; background: var(--panel);
+      border: 1px solid var(--line); border-radius: 8px;
+      font-size: 0.8rem; color: var(--fg-dim);
     }
-    .notes h3 { margin: 0 0 0.4rem; font-size: 0.8rem; color: #92c5f9;
+    .notes h3 { margin: 0 0 0.4rem; font-size: 0.78rem; color: var(--accent);
       text-transform: uppercase; letter-spacing: 0.05em; }
     .notes li { margin: 0.15rem 0; }
 
     aside.detail {
-      background: #1a1a1a; border: 1px solid #2c2c2c; border-radius: 3px;
-      padding: 0.75rem 1rem; font-size: 0.85rem; align-self: start;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+      padding: 0.85rem 1rem; font-size: 0.85rem; align-self: start;
       position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto;
     }
-    aside.detail h2 { margin: 0 0 0.5rem; font-size: 0.95rem; color: #92c5f9; }
+    aside.detail h2 { margin: 0 0 0.5rem; font-size: 0.95rem; color: var(--accent); }
     aside.detail h3 {
       margin: 0.75rem 0 0.25rem; font-size: 0.85rem; color: #c9c9c9;
       text-transform: uppercase; letter-spacing: 0.05em;
     }
     aside.detail pre {
-      background: #0d0d0d; border: 1px solid #222; padding: 0.5rem;
-      border-radius: 3px; overflow: auto; font-size: 0.78rem; color: #d0d0d0; max-height: 30vh;
+      background: var(--ink); border: 1px solid #222; padding: 0.5rem;
+      border-radius: 6px; overflow: auto; font-size: 0.78rem; color: #d0d0d0;
+      max-height: 30vh;
     }
     .detail-empty { color: #666; font-style: italic; font-size: 0.8rem; }
     dl.detail-dl { margin: 0 0 0.5rem; }
     dl.detail-dl dt {
-      color: #888; font-size: 0.75rem; text-transform: uppercase;
+      color: var(--muted); font-size: 0.75rem; text-transform: uppercase;
       letter-spacing: 0.04em; margin-top: 0.35rem;
     }
     dl.detail-dl dd {
@@ -87,23 +196,72 @@
   </style>
 </head>
 <body>
+  <!-- Inline-SVG type-icon sprite (Lucide-style line icons, themed by
+       currentColor on the enclosing .badge-*). Reusable across views. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-user" viewBox="0 0 24 24">
+      <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+      <circle cx="12" cy="7" r="4"/>
+    </symbol>
+    <symbol id="i-agent" viewBox="0 0 24 24">
+      <path d="M12 8V4H8"/>
+      <rect x="4" y="8" width="16" height="12" rx="2"/>
+      <path d="M2 14h2"/><path d="M20 14h2"/>
+      <path d="M9 13v2"/><path d="M15 13v2"/>
+    </symbol>
+    <symbol id="i-llm" viewBox="0 0 24 24">
+      <path d="M12 3l1.9 5.7L20 11l-6.1 2.3L12 19l-1.9-5.7L4 11l6.1-2.3z"/>
+    </symbol>
+    <symbol id="i-tool" viewBox="0 0 24 24">
+      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+    </symbol>
+    <symbol id="i-datastore" viewBox="0 0 24 24">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/>
+      <path d="M3 5v14a9 3 0 0 0 18 0V5"/>
+      <path d="M3 12a9 3 0 0 0 18 0"/>
+    </symbol>
+  </svg>
+
   <header>
-    <a class="nav" href="/">&larr; Recent traces</a>
-    <a class="nav" id="tree-link" href="#">Trace tree</a>
-    <h1>Execution forest</h1>
-    <span id="trace-id-display" style="color:#888;font-size:0.85rem"></span>
+    <span class="brand">Data Governance</span>
+    <nav class="tabs">
+      <a href="/">&larr; Recent traces</a>
+      <a id="tree-link" href="#">Trace tree</a>
+      <a class="active" aria-current="page">Execution forest</a>
+    </nav>
+    <span class="trace-id" id="trace-id-display"></span>
   </header>
+  <div class="legend" id="legend">
+    <span class="item"><span class="badge badge-user"><svg class="ic"><use href="#i-user"/></svg></span> User</span>
+    <span class="item"><span class="badge badge-agent"><svg class="ic"><use href="#i-agent"/></svg></span> Agent</span>
+    <span class="item"><span class="badge badge-llm"><svg class="ic"><use href="#i-llm"/></svg></span> LLM</span>
+    <span class="item"><span class="badge badge-tool"><svg class="ic"><use href="#i-tool"/></svg></span> Tool</span>
+    <span class="item"><span class="badge badge-datastore"><svg class="ic"><use href="#i-datastore"/></svg></span> Datastore</span>
+    <label class="overlay-toggle" title="Demo-only: maps patent-app tool calls to D/F store nodes (ADR-0010). Off = pure ADR-0009 forest.">
+      <input type="checkbox" id="overlay-cb" checked> Data stores
+      <span class="demo-tag">demo overlay</span>
+    </label>
+  </div>
   <main>
     <section>
       <div id="status">Loading…</div>
       <div id="error"></div>
-      <ul id="forest" class="tree"></ul>
+      <div id="graph" class="graph">
+        <svg id="edges" class="edges">
+          <defs>
+            <marker id="arrow" markerWidth="7" markerHeight="7" refX="6"
+                    refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" fill="context-stroke"/>
+            </marker>
+          </defs>
+        </svg>
+        <div id="columns" class="columns"></div>
+      </div>
       <div class="notes" id="notes" style="display:none">
         <h3>Known / expected (ADR-0009)</h3>
         <ul>
           <li id="note-loop"></li>
-          <li>No datastore nodes — the tool→datastore hop is uncaptured
-            today; the forest stops at the tool boundary.</li>
+          <li id="note-stores"></li>
           <li>U→A is the in-process <code>POST /</code> root; the sidecar
             <code>a2a</code> span is self-referential and in its own trace.</li>
         </ul>
@@ -126,19 +284,29 @@
   </main>
 
   <script src="/ui/forest_logic.js"></script>
+  <script src="/ui/forest_scenario_overlay.js"></script>
   <script>
-    /* Execution-forest view (ADR-0009).
-       Endpoint: GET /spans?trace_id=T&limit=500&order=asc (all spans of the
-       trace; the unifier needs the whole tree at once). forest_logic.js does
-       the U->A->{L,tools} derivation; this shell renders it + the detail panel. */
-
+    /* Execution-forest view (ADR-0009) + opt-in store overlay (ADR-0010).
+       Endpoint: GET /spans?trace_id=T&limit=500&order=asc (whole trace).
+       forest_logic.js derives U->A->{L,tools}; forest_scenario_overlay.js maps
+       the patent-app tool calls to D/F store nodes (demo-only). This shell lays
+       it out as a tree-graph (cards + SVG edges) and drives the detail panel. */
+    const SVGNS = 'http://www.w3.org/2000/svg';
     const FETCH_LIMIT = 500;
+    const TYPE_COLOR = {
+      user: '#d2a8ff', agent: '#92c5f9', llm: '#e3b341',
+      tool: '#7ee787', datastore: '#ffa657',
+    };
 
     const statusEl = document.getElementById('status');
     const errorEl = document.getElementById('error');
-    const forestEl = document.getElementById('forest');
+    const graphEl = document.getElementById('graph');
+    const columnsEl = document.getElementById('columns');
+    const edgesSvg = document.getElementById('edges');
     const notesEl = document.getElementById('notes');
     const noteLoopEl = document.getElementById('note-loop');
+    const noteStoresEl = document.getElementById('note-stores');
+    const overlayCb = document.getElementById('overlay-cb');
     const traceIdDisplay = document.getElementById('trace-id-display');
     const detailEmptyEl = document.getElementById('detail-empty');
     const detailBodyEl = document.getElementById('detail-body');
@@ -146,6 +314,12 @@
     const detailTimingEl = document.getElementById('detail-timing');
     const detailAttributesEl = document.getElementById('detail-attributes');
     const detailEventsEl = document.getElementById('detail-events');
+
+    let _edges = [];          // base (captured) edges: [{from, to, color, dashed?}]
+    let _overlayEdges = [];   // demo store edges (ADR-0010)
+    let _forest = null;       // last buildForest() result, for overlay re-render
+    let _childEls = new Map();// childKey ("trace|span") -> rendered tool card
+    let _raf = 0;
 
     const traceId = decodeURIComponent(
       window.location.pathname.replace(/^\/forest\//, ''),
@@ -180,58 +354,182 @@
       let v = a['llm.output_messages.0.message.content']
         || a['input.value'] || a['output.value'] || '';
       v = String(v).replace(/\s+/g, ' ').trim();
-      return v.length > 80 ? v.slice(0, 79) + '…' : v;
+      return v.length > 64 ? v.slice(0, 63) + '…' : v;
     }
 
-    function makeRow(opts) {
-      // opts: { icon, name, store, src, preview, span }
-      const row = document.createElement('div');
-      row.className = 'row';
+    function spanKey(span) { return span.trace_id + '|' + span.span_id; }
 
-      const icon = document.createElement('span');
-      icon.className = 'kind-icon';
-      icon.textContent = opts.icon;
-      row.appendChild(icon);
+    function iconBadge(type) {
+      const b = document.createElement('span');
+      b.className = 'badge badge-' + type;
+      const svg = document.createElementNS(SVGNS, 'svg');
+      svg.setAttribute('class', 'ic');
+      const use = document.createElementNS(SVGNS, 'use');
+      use.setAttribute('href', '#i-' + type);
+      svg.appendChild(use);
+      b.appendChild(svg);
+      return b;
+    }
 
+    /* A tree-graph node card. opts: { type, name, src, preview, span } */
+    function makeCard(opts) {
+      const card = document.createElement('div');
+      card.className = 'node-card t-' + opts.type;
+      card.appendChild(iconBadge(opts.type));
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
       const name = document.createElement('span');
       name.className = 'name-text';
       name.textContent = opts.name;
-      row.appendChild(name);
+      meta.appendChild(name);
 
-      if (opts.src) {
-        const tag = document.createElement('span');
-        tag.className = 'src-tag';
-        tag.textContent = opts.src;
-        row.appendChild(tag);
+      if (opts.src || opts.preview) {
+        const sub = document.createElement('span');
+        sub.className = 'sub';
+        if (opts.src) {
+          const tag = document.createElement('span');
+          tag.className = 'src-tag';
+          tag.textContent = opts.src;
+          sub.appendChild(tag);
+        }
+        if (opts.preview) {
+          const p = document.createElement('span');
+          p.className = 'preview';
+          p.textContent = opts.preview;
+          sub.appendChild(p);
+        }
+        meta.appendChild(sub);
       }
-      if (opts.preview) {
-        const p = document.createElement('span');
-        p.className = 'preview';
-        p.textContent = opts.preview;
-        row.appendChild(p);
-      }
+      card.appendChild(meta);
+
       if (opts.span) {
-        row.tabIndex = 0;
-        const select = () => selectSpan(opts.span, row);
-        row.addEventListener('click', select);
-        row.addEventListener('keydown', (ev) => {
+        card.tabIndex = 0;
+        const select = () => selectSpan(opts.span, card);
+        card.addEventListener('click', select);
+        card.addEventListener('keydown', (ev) => {
           if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); select(); }
         });
       } else {
-        row.style.cursor = 'default';
+        card.style.cursor = 'default';
       }
-      return row;
+      return card;
     }
 
-    function li(row) {
-      const el = document.createElement('li');
-      el.className = 'node';
-      el.appendChild(row);
-      return el;
+    /* A datastore card (demo overlay, ADR-0010): dashed, non-interactive, with
+       a tooltip making its derived/uncaptured nature explicit. */
+    function makeStoreCard(store) {
+      const card = document.createElement('div');
+      card.className = 'node-card store-card';
+      card.appendChild(iconBadge('datastore'));
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const name = document.createElement('span');
+      name.className = 'name-text';
+      name.textContent = store.label;
+      meta.appendChild(name);
+      const sub = document.createElement('span');
+      sub.className = 'sub';
+      const tag = document.createElement('span');
+      tag.className = 'src-tag';
+      tag.textContent = store.kind + ' · ' + store.ops.join('/');
+      sub.appendChild(tag);
+      meta.appendChild(sub);
+      card.appendChild(meta);
+      card.title = 'Demo-only scenario overlay (ADR-0010): derived from the '
+        + 'tool call args, not a captured store span.';
+      return card;
     }
+
+    function makeCol(cards) {
+      const col = document.createElement('div');
+      col.className = 'col';
+      for (const c of cards) col.appendChild(c);
+      return col;
+    }
+
+    /* Smooth left-to-right bezier from one card's right-center to another's
+       left-center, in coordinates relative to the (covering) edges svg. */
+    function drawEdge(e) {
+      const o = edgesSvg.getBoundingClientRect();
+      const a = e.from.getBoundingClientRect();
+      const b = e.to.getBoundingClientRect();
+      const x1 = a.right - o.left, y1 = a.top - o.top + a.height / 2;
+      const x2 = b.left - o.left,  y2 = b.top - o.top + b.height / 2;
+      const dx = Math.max(28, (x2 - x1) * 0.5);
+      const p = document.createElementNS(SVGNS, 'path');
+      p.setAttribute('class', 'edge');
+      p.setAttribute('stroke', e.color);
+      if (e.dashed) p.setAttribute('stroke-dasharray', '5 4');
+      p.setAttribute('marker-end', 'url(#arrow)');
+      p.setAttribute('d',
+        'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', '
+        + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2);
+      edgesSvg.appendChild(p);
+    }
+
+    function layoutEdges() {
+      edgesSvg.setAttribute('width', columnsEl.scrollWidth);
+      edgesSvg.setAttribute('height', columnsEl.scrollHeight);
+      for (const p of edgesSvg.querySelectorAll('path.edge')) p.remove();
+      for (const e of _edges) drawEdge(e);
+      for (const e of _overlayEdges) drawEdge(e);
+    }
+
+    function scheduleLayout() {
+      cancelAnimationFrame(_raf);
+      _raf = requestAnimationFrame(layoutEdges);
+    }
+    window.addEventListener('resize', scheduleLayout);
+
+    /* Build/refresh the demo store column (ADR-0010) per the toggle state.
+       Removes any prior store column + overlay edges first, so it is a clean
+       no-op when toggled off — the base ADR-0009 forest is untouched. */
+    function applyOverlay() {
+      const prev = document.getElementById('store-col');
+      if (prev) prev.remove();
+      _overlayEdges = [];
+
+      const on = overlayCb.checked;
+      noteStoresEl.textContent = on
+        ? 'Datastore nodes (D / F) are a DEMO-ONLY scenario overlay (ADR-0010): '
+          + 'derived from each tool call’s args, not captured spans. The real '
+          + 'tool→datastore hop is still uncaptured.'
+        : 'No datastore nodes — the tool→datastore hop is uncaptured today; '
+          + 'the forest stops at the tool boundary.';
+
+      if (on && _forest && window.ForestOverlay) {
+        const ov = window.ForestOverlay.storeOverlay(_forest);
+        if (ov.stores.length) {
+          const storeEls = new Map();
+          const cards = ov.stores.map((s) => {
+            const card = makeStoreCard(s);
+            storeEls.set(s.id, card);
+            return card;
+          });
+          const col = makeCol(cards);
+          col.id = 'store-col';
+          columnsEl.appendChild(col);
+          for (const lk of ov.links) {
+            const from = _childEls.get(lk.childKey);
+            const to = storeEls.get(lk.storeId);
+            if (from && to) {
+              _overlayEdges.push(
+                { from, to, color: TYPE_COLOR.datastore, dashed: true });
+            }
+          }
+        }
+      }
+      scheduleLayout();
+    }
+    overlayCb.addEventListener('change', applyOverlay);
 
     function render(forest) {
-      forestEl.innerHTML = '';
+      columnsEl.innerHTML = '';
+      _edges = [];
+      _overlayEdges = [];
+      _childEls = new Map();
+      _forest = forest;
       if (!forest.ok || !forest.agent) {
         statusEl.textContent =
           'No agent span found in this trace — not an execution forest.';
@@ -239,55 +537,51 @@
       }
       statusEl.textContent = '';
 
-      // A and its flat children
-      const agentRow = makeRow({
-        icon: 'A',
-        name: forest.agent.name,
+      const agentCard = makeCard({
+        type: 'agent', name: forest.agent.name,
         src: forest.agent.attributes && forest.agent.attributes.source,
         span: forest.agent,
       });
-      const agentLi = li(agentRow);
-      const childUl = document.createElement('ul');
-      agentLi.appendChild(childUl);
 
-      // flat children (L + tools), in true started_at order
-      for (const c of forest.children) {
-        let row;
-        if (c.role === 'L') {
-          row = makeRow({
-            icon: 'L', name: 'generation',
-            src: c.span.attributes && c.span.attributes.source,
-            preview: bodyPreview(c.span), span: c.span,
-          });
-        } else {
-          row = makeRow({
-            icon: '⚙', name: c.name, src: c.source,
-            preview: bodyPreview(c.span), span: c.span,
-          });
-        }
-        childUl.appendChild(li(row));
-      }
+      const childCards = forest.children.map((c) => {
+        const card = (c.role === 'L')
+          ? makeCard({
+              type: 'llm', name: 'generation',
+              src: c.span.attributes && c.span.attributes.source,
+              preview: bodyPreview(c.span), span: c.span })
+          : makeCard({
+              type: 'tool', name: c.name, src: c.source,
+              preview: bodyPreview(c.span), span: c.span });
+        _childEls.set(spanKey(c.span), card);
+        return card;
+      });
 
-      // U is the inbound request span above the agent (absent if A is the root).
+      // columns: [U?] [A] [children]  (store column added by applyOverlay)
       if (forest.user) {
-        const userRow = makeRow({
-          icon: 'U', name: forest.user.name,
+        const userCard = makeCard({
+          type: 'user', name: forest.user.name,
           src: forest.user.attributes && forest.user.attributes.source,
           span: forest.user,
         });
-        const userLi = li(userRow);
-        const userUl = document.createElement('ul');
-        userUl.appendChild(agentLi);
-        userLi.appendChild(userUl);
-        forestEl.appendChild(userLi);
-      } else {
-        forestEl.appendChild(agentLi);
+        columnsEl.appendChild(makeCol([userCard]));
+        _edges.push({ from: userCard, to: agentCard, color: TYPE_COLOR.agent });
       }
+      columnsEl.appendChild(makeCol([agentCard]));
+      columnsEl.appendChild(makeCol(childCards));
+      forest.children.forEach((c, i) => {
+        _edges.push({
+          from: agentCard, to: childCards[i],
+          color: c.role === 'L' ? TYPE_COLOR.llm : TYPE_COLOR.tool,
+        });
+      });
 
       noteLoopEl.innerHTML =
-        '<strong>' + forest.llmCount + '</strong> L (generation) spans shown '
+        '<strong>' + forest.llmCount + '</strong> L (generation) nodes shown '
         + 'flat — the real tool-use loop, not collapsed to one.';
       notesEl.style.display = '';
+
+      applyOverlay();                          // adds the demo store column if on
+      requestAnimationFrame(scheduleLayout);   // re-measure after layout settles
     }
 
     function _dd(dl, label, value) {
@@ -299,11 +593,11 @@
       dl.appendChild(dd);
     }
 
-    function selectSpan(span, row) {
-      for (const r of forestEl.querySelectorAll('.row.selected')) {
-        r.classList.remove('selected');
+    function selectSpan(span, card) {
+      for (const c of columnsEl.querySelectorAll('.node-card.selected')) {
+        c.classList.remove('selected');
       }
-      if (row) row.classList.add('selected');
+      if (card) card.classList.add('selected');
       if (!span) return;
 
       detailEmptyEl.style.display = 'none';

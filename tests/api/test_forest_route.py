@@ -41,3 +41,11 @@ def test_forest_logic_asset_is_whitelisted_and_served():
     assert resp.status_code == 200
     assert "application/javascript" in resp.headers.get("content-type", "")
     assert "buildForest" in resp.text
+
+
+def test_forest_scenario_overlay_asset_is_whitelisted_and_served():
+    """/ui/forest_scenario_overlay.js serves the demo store overlay (ADR-0010)."""
+    resp = _client().get("/ui/forest_scenario_overlay.js")
+    assert resp.status_code == 200
+    assert "application/javascript" in resp.headers.get("content-type", "")
+    assert "storeOverlay" in resp.text

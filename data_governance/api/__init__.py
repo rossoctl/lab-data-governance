@@ -276,7 +276,12 @@ async def _forest_handler(_request: Request) -> Response:
 # this route never functions as a generic file-server. Add new entries
 # here as the UI grows.
 _UI_ASSETS: frozenset[str] = frozenset(
-    {"recent_traces_logic.js", "trace_tree_logic.js", "forest_logic.js"}
+    {
+        "recent_traces_logic.js",
+        "trace_tree_logic.js",
+        "forest_logic.js",
+        "forest_scenario_overlay.js",  # demo-only store overlay (ADR-0010)
+    }
 )
 
 
