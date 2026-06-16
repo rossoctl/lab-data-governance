@@ -4,11 +4,14 @@
 #
 # The kagenti collector ConfigMap is owned by the kagenti repo. This script
 # additively patches the live in-cluster object: it adds an
-# `otlp/data_governance` exporter and wires it into the `traces/phoenix`
-# pipeline (which already runs the OpenInference transform that
-# data-governance is designed to consume). Both edits are idempotent — the
-# script is safe to re-run, and an upstream re-apply of the kagenti
-# ConfigMap simply requires re-running this script to re-add the patch.
+# `otlp/data_governance` exporter and a DEDICATED `traces/data_governance`
+# pipeline (tapping the same OTLP receiver the platform already uses) that
+# fans the raw span stream to the DG receiver. This is version-independent:
+# it does not depend on the platform's LLM-trace pipeline name (older kagenti
+# used `traces/phoenix`; newer uses `traces/mlflow`). Span source-tagging
+# (in-process / sidecar) is done by the producers (observe/ + authbridge),
+# not here. Both edits are idempotent — safe to re-run, and an upstream
+# re-apply of the kagenti ConfigMap simply requires re-running this script.
 #
 # Run from anywhere; paths are resolved relative to this file.
 #
@@ -86,13 +89,13 @@ fi
 
 # Edit the YAML in Python so we preserve structure and stay idempotent.
 #
-# Apply mode: add exporters['otlp/data_governance'] (if missing) and append
-# it to service.pipelines['traces/phoenix'].exporters (if not already
-# listed).
+# Apply mode: add exporters['otlp/data_governance'] (if missing) and a
+# dedicated service.pipelines['traces/data_governance'] that fans the OTLP
+# trace stream to it (idempotent).
 #
-# Revert mode: remove exporters['otlp/data_governance'] (if present) and
-# remove it from service.pipelines['traces/phoenix'].exporters (if listed).
-# Other exporters and pipelines are left untouched.
+# Revert mode: remove exporters['otlp/data_governance'] and the
+# traces/data_governance pipeline (if present). Other exporters and pipelines
+# are left untouched.
 CHANGE_STATE="$(
     MODE="${MODE}" \
     RECEIVER_ENDPOINT="${RECEIVER_ENDPOINT}" \
@@ -112,16 +115,18 @@ with open(orig_path) as f:
     cfg = yaml.safe_load(f)
 
 EXPORTER_NAME = "otlp/data_governance"
-PIPELINE_NAME = "traces/phoenix"
+# A DEDICATED traces pipeline for data-governance — version-independent.
+# Older kagenti collectors named the LLM-trace pipeline "traces/phoenix";
+# newer ones use "traces/mlflow" (and the structure differs). Rather than
+# depend on either, we add our own pipeline that taps the same OTLP receiver
+# and fans the raw span stream to the DG receiver. Span source-tagging
+# (in-process / sidecar) is done by the producers (observe/ + authbridge),
+# not here, so no transform processor is needed.
+PIPELINE_NAME = "traces/data_governance"
 
 exporters = cfg.setdefault("exporters", {})
-pipelines = cfg.get("service", {}).get("pipelines", {})
-if PIPELINE_NAME not in pipelines:
-    sys.stderr.write(
-        f"pipeline '{PIPELINE_NAME}' not found in collector config\n"
-    )
-    sys.exit(2)
-pipeline_exporters = pipelines[PIPELINE_NAME].setdefault("exporters", [])
+service = cfg.setdefault("service", {})
+pipelines = service.setdefault("pipelines", {})
 
 changed = False
 
@@ -132,15 +137,29 @@ if mode == "apply":
             "tls": {"insecure": True},
         }
         changed = True
-    if EXPORTER_NAME not in pipeline_exporters:
-        pipeline_exporters.append(EXPORTER_NAME)
+    if PIPELINE_NAME not in pipelines:
+        # Reuse the receivers of an existing traces pipeline (so we ingest the
+        # exact OTLP stream the platform already collects); fall back to otlp.
+        existing = [p for n, p in pipelines.items() if n.startswith("traces")]
+        receivers = existing[0].get("receivers", ["otlp"]) if existing else ["otlp"]
+        procs = ["batch"] if "batch" in cfg.get("processors", {}) else []
+        pipelines[PIPELINE_NAME] = {
+            "receivers": list(receivers),
+            "processors": procs,
+            "exporters": [EXPORTER_NAME],
+        }
         changed = True
+    else:
+        pe = pipelines[PIPELINE_NAME].setdefault("exporters", [])
+        if EXPORTER_NAME not in pe:
+            pe.append(EXPORTER_NAME)
+            changed = True
 elif mode == "revert":
     if EXPORTER_NAME in exporters:
         del exporters[EXPORTER_NAME]
         changed = True
-    if EXPORTER_NAME in pipeline_exporters:
-        pipeline_exporters.remove(EXPORTER_NAME)
+    if PIPELINE_NAME in pipelines:
+        del pipelines[PIPELINE_NAME]
         changed = True
 else:
     sys.stderr.write(f"unknown MODE: {mode}\n")
@@ -160,7 +179,7 @@ fi
 
 if [[ "${CHANGE_STATE}" == "UNCHANGED" ]]; then
     if [[ "${MODE}" == "apply" ]]; then
-        echo ">> ConfigMap already patched (otlp/data_governance present in traces/phoenix); nothing to do."
+        echo ">> ConfigMap already patched (traces/data_governance pipeline present); nothing to do."
     else
         echo ">> ConfigMap already reverted (otlp/data_governance absent); nothing to do."
     fi
@@ -183,12 +202,13 @@ kubectl -n "${COLLECTOR_NAMESPACE}" rollout status "deploy/${COLLECTOR_DEPLOY}" 
 if [[ "${MODE}" == "apply" ]]; then
     cat <<EOF
 
-Done. The kagenti otel-collector now exports traces/phoenix-pipeline spans
-to ${RECEIVER_ENDPOINT}, in addition to its existing phoenix target.
+Done. The kagenti otel-collector now fans its OTLP trace stream to
+${RECEIVER_ENDPOINT} via a dedicated traces/data_governance pipeline,
+alongside the platform's own LLM-trace pipeline.
 
 This patch is NOT persisted in the kagenti repo. If the kagenti collector
 ConfigMap is re-applied from upstream, re-run this script to re-add the
-exporter. Until the patch lands in the kagenti repo (issue #42 cross-repo
+pipeline. Until the patch lands in the kagenti repo (issue #42 cross-repo
 half), this script is the durable way to restore the integration after a
 cluster recreate or kagenti upgrade.
 
