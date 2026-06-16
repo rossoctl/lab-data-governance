@@ -1073,6 +1073,25 @@ class Processor:
             path = (urlparse(url).path or "").rstrip("/")
             if path.endswith("/mcp") or "/.well-known/" in (path + "/"):
                 return None
+            # Gate 0 (A2A agent-call shape): a CLIENT POST to the bare root path
+            # `/` is an A2A sub-agent invocation (the a2a SDK posts JSON-RPC to
+            # the agent's root), never an uninstrumented external HTTP service.
+            # It is the cross-service rule's job (its `POST /` SERVER child
+            # resolves to an `agent:`), so external-http must decline it. This is
+            # a POSITIVE, CLIENT-LOCAL signal: it decides on the egress's OWN URL,
+            # not on the ABSENCE of a (possibly late-arriving) SERVER child — so
+            # it is order-independent, where gate 2 alone is not. Without it, an
+            # A2A egress whose SERVER child has not yet arrived (e.g.
+            # `create_booking → payment-agent:8080/` originating inside an MCP
+            # tool's service, reached up through the `/mcp` boundary) wrongly
+            # fires external-http under emit-once-final and never re-derives.
+            # Exclusion-gap caveat (same stance as ADR-0012's dropped rungs): a
+            # genuine external service mounted at the bare root path would be
+            # mis-declined here; revisit when such a fixture exists. The `method`
+            # check keeps GET-root probes from matching the POST-only convention.
+            method = (caller_inference._attr(client, "http.method") or "").upper()
+            if path == "" and method == "POST":
+                return None
         # Gate 2: an instrumented callee (agent / tool / service) emits a SERVER
         # span as a direct child of this CLIENT egress — absorbed as cross-service.
         children = self.children.get(client.span_id, [])
@@ -1119,9 +1138,9 @@ class Processor:
         )
 
     def _tool_transport_signal(self, tool_span: Span) -> str | None:
-        """Classify an OI TOOL span's transport by walking its ARRIVED subtree
-        for the first SERVER it reaches — the order-independent deployed-vs-
-        in-process discriminator (ADR-0012):
+        """Classify an OI TOOL span's transport by the NEAREST SERVER it reaches
+        on each downward branch — the order-independent deployed-vs-in-process
+        discriminator (ADR-0012):
 
           - a `POST /mcp` SERVER  ⟹ "deployed" (MCP `tools/call` transport);
           - any other SERVER on a DIFFERENT service (a sub-agent's `POST /`,
@@ -1131,22 +1150,38 @@ class Processor:
             in. Both decisive answers are POSITIVE (a SERVER that arrived), so
             the classification converges regardless of arrival order; only the
             "neither has arrived yet" gap defers, never a negative conclusion.
-        """
-        servers = [
-            ev
-            for ev in _walk_descendants(self.children, tool_span)
-            if ev.span_id != tool_span.span_id and ev.kind == "SERVER"
-        ]
-        # Deployed takes precedence: a `/mcp` transport SERVER anywhere in the
-        # subtree means the tool is a deployed MCP server, regardless of what
-        # other SERVERs are also reached.
-        if any((s.name or "").upper().startswith("POST /MCP") for s in servers):
+
+        The walk stops descending at the FIRST SERVER on each branch — the tool's
+        OWN transport boundary. It must NOT look deeper: the nearest SERVER is the
+        tool's transport, but the spans BELOW it belong to the callee's territory.
+        A delegate FunctionTool's nearest SERVER is its A2A sub-agent's `POST /`
+        (in-process); that sub-agent then makes its OWN downstream `/mcp` tool
+        calls, whose `POST /mcp` SERVERs sit DEEPER in the subtree. The previous
+        "a `/mcp` SERVER anywhere in the subtree ⟹ deployed (deployed wins)" rule
+        mis-attributed those downstream `/mcp` calls to the delegate tool, so
+        `delegate_to_booking_agent` flipped to a deployed `create_booking`
+        depending on which SERVERs had arrived — an order-dependence the
+        --scramble gate catches. Classifying on the FRONTIER (nearest) SERVERs
+        alone separates the two cleanly without a global precedence rule."""
+        # Frontier SERVERs: the nearest SERVER on each downward branch. Stop
+        # descending once a branch hits a SERVER (everything below it is the
+        # callee's territory, not this tool's transport).
+        frontier: list[Span] = []
+        stack = list(self.children.get(tool_span.span_id, []))
+        while stack:
+            s = stack.pop()
+            if s.kind == "SERVER":
+                frontier.append(s)
+                continue  # do not descend past the transport boundary
+            stack.extend(self.children.get(s.span_id, []))
+        # A `/mcp` frontier SERVER is this tool's own MCP transport ⟹ deployed.
+        if any((s.name or "").upper().startswith("POST /MCP") for s in frontier):
             return "deployed"
-        # Otherwise a SERVER on a DIFFERENT service is the A2A sub-agent a
-        # delegate FunctionTool consulted — positive in-process marker.
+        # A frontier SERVER on a DIFFERENT service is the A2A sub-agent a delegate
+        # FunctionTool consulted — positive in-process marker.
         if any(
             s.service_name and s.service_name != tool_span.service_name
-            for s in servers
+            for s in frontier
         ):
             return "in-process"
         return None
