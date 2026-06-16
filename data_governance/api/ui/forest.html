@@ -198,6 +198,195 @@
       margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 0.8rem; color: #e0e0e0; word-break: break-all;
     }
+
+    /* ════════════ data-graph (mocked) view — ADR-0012 ════════════
+       The lineage view beside the tracing forest. Nodes + edges are colored by
+       data CLASSIFICATION (clean vs confidential) — that verdict is the point.
+       Everything here is HARDCODED from scenario.md §8 (see data_graph_mock.js).
+       A single left-to-right "river": D → A → L(d→d′) → fork {F1,F2} ┊ A → web. */
+    :root {
+      --c-clean: #3fb950; --c-clean-2: #56d364; --c-conf: #f85149; --c-conf-2: #ff7b72;
+      --c-transform: #e3b341; --c-identity: #bc8cff; --c-file: #79c0ff;
+    }
+
+    /* view switch: Execution forest | Data graph */
+    .view-switch { display: flex; gap: 0; padding: 0.7rem 1.5rem 0.1rem; align-items: center; }
+    .view-switch .seg {
+      background: var(--panel); border: 1px solid var(--line); color: var(--fg-dim);
+      font-size: 0.82rem; padding: 0.42rem 1rem; cursor: pointer; font-weight: 600;
+      transition: background .12s, color .12s, border-color .12s;
+    }
+    .view-switch .seg:first-of-type { border-radius: 8px 0 0 8px; }
+    .view-switch .seg:last-of-type  { border-radius: 0 8px 8px 0; border-left: none; }
+    .view-switch .seg:hover:not(.active) { color: var(--fg); background: var(--panel-2); }
+    .view-switch .seg.active { color: #0b1f12; background: var(--accent); border-color: var(--accent); }
+    .view-switch .seg.dg.active {
+      color: #0b1f12;
+      background: linear-gradient(135deg, var(--c-clean-2), var(--c-clean));
+      border-color: var(--c-clean);
+    }
+    .view-switch .mock-pill {
+      margin-left: 0.75rem; color: var(--c-conf-2); font-size: 0.66rem; font-weight: 800;
+      letter-spacing: 0.12em; border: 1px solid color-mix(in srgb, var(--c-conf) 55%, transparent);
+      background: color-mix(in srgb, var(--c-conf) 12%, transparent);
+      border-radius: 999px; padding: 0.12rem 0.6rem; text-transform: uppercase;
+    }
+
+    #datagraph { display: none; }
+    body.mode-datagraph #graph,
+    body.mode-datagraph #notes,
+    body.mode-datagraph #legend { display: none; }
+    body.mode-datagraph #datagraph { display: block; animation: dgfade .25s ease; }
+    @keyframes dgfade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+    /* data graph uses the FULL width (the forest's span panel isn't needed); the
+       lineage rationale shows as a floating card on click. */
+    body.mode-datagraph main { grid-template-columns: minmax(0, 1fr); }
+    body.mode-datagraph aside.detail { display: none; }
+    #dg-detail {
+      position: fixed; right: 1.4rem; bottom: 1.4rem; width: 340px; z-index: 30;
+      background: color-mix(in srgb, var(--panel) 90%, #000);
+      border: 1px solid var(--line-soft); border-radius: 13px;
+      padding: 0.95rem 1.1rem 1.05rem; box-shadow: 0 14px 48px rgba(0,0,0,.6);
+      max-height: 64vh; overflow: auto; display: none; animation: dgfade .18s ease;
+    }
+    #dg-detail h2 { margin: 0 0 0.15rem; font-size: 1rem; }
+    #dg-detail h3 { margin: 0.65rem 0 0.3rem; font-size: 0.7rem; color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.06em; }
+    #dg-detail .close {
+      position: absolute; top: 0.55rem; right: 0.75rem; cursor: pointer;
+      color: var(--muted); font-size: 1.15rem; line-height: 1; border: none;
+      background: none; padding: 0.1rem 0.3rem; border-radius: 6px;
+    }
+    #dg-detail .close:hover { color: var(--fg); background: var(--panel-2); }
+
+    .dg-title { font-size: 1rem; font-weight: 700; color: var(--fg); margin: 0.1rem 0 0.6rem; }
+    .dg-title .sub { font-weight: 400; color: var(--muted); font-size: 0.82rem; }
+    .dg-banner {
+      position: relative; padding: 0.65rem 0.95rem 0.65rem 1.1rem; margin-bottom: 0.85rem;
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--c-conf) 13%, var(--panel)), var(--panel) 70%);
+      border: 1px solid color-mix(in srgb, var(--c-conf) 32%, transparent);
+      border-radius: 9px; font-size: 0.8rem; color: var(--fg-dim); line-height: 1.5;
+    }
+    .dg-banner::before {
+      content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+      border-radius: 9px 0 0 9px; background: var(--c-conf);
+    }
+    .dg-banner b { color: var(--c-conf-2); letter-spacing: 0.08em; }
+
+    .dg-legend { display: flex; gap: 1.3rem; flex-wrap: wrap; align-items: center;
+      font-size: 0.74rem; color: var(--fg-dim); margin: 0 0 0.4rem; }
+    .dg-legend .item { display: inline-flex; align-items: center; gap: 0.45rem; }
+    .dg-legend .swatch { width: 26px; height: 0; border-top: 3px solid currentColor;
+      display: inline-block; border-radius: 2px; }
+    .dg-legend .swatch.dash { border-top-style: dashed; }
+    .dg-legend .dot { width: 11px; height: 11px; border-radius: 3px;
+      background: currentColor; box-shadow: 0 0 8px currentColor; }
+    .dg-legend .clean { color: var(--c-clean-2); }
+    .dg-legend .conf  { color: var(--c-conf-2); }
+    .dg-legend .ident { color: var(--c-identity); }
+
+    /* the graph canvas — soft radial depth */
+    #dg-graph {
+      border: 1px solid var(--line); border-radius: 12px;
+      background:
+        radial-gradient(1200px 380px at 18% 0%, color-mix(in srgb, var(--c-clean) 7%, transparent), transparent 60%),
+        radial-gradient(1200px 420px at 88% 100%, color-mix(in srgb, var(--c-conf) 8%, transparent), transparent 60%),
+        var(--ink);
+      padding: 0.4rem 0.8rem 1rem;
+    }
+
+    /* the river: one aligned grid of column-stacks */
+    .dg-stack {
+      position: relative; display: grid;
+      grid-template-columns: repeat(var(--dg-cols, 6), minmax(128px, 196px));
+      align-items: center; justify-items: center;
+      column-gap: 50px; row-gap: 28px; width: max-content; margin: 0 auto;
+      padding: 50px 14px 58px;
+    }
+    .dg-colstack { display: flex; flex-direction: column; gap: 30px; z-index: 1; }
+    /* zone captions floating above the bands */
+    .dg-zone {
+      position: absolute; top: 16px; font-size: 0.66rem; font-weight: 700;
+      letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted);
+      white-space: nowrap; z-index: 1;
+    }
+    .dg-zone.t1 { color: color-mix(in srgb, var(--c-clean-2) 70%, var(--muted)); }
+    .dg-zone.t2 { color: color-mix(in srgb, var(--c-conf-2) 70%, var(--muted)); }
+
+    /* data-graph node card: verdict-tinted, soft outer glow, gradient fill */
+    .node-card.dg-card {
+      border-radius: 12px; padding: 0.6rem 0.8rem; min-width: 124px;
+      background: linear-gradient(160deg,
+        color-mix(in srgb, currentColor 13%, var(--panel)),
+        color-mix(in srgb, currentColor 5%, var(--panel-2)));
+      border: 1px solid color-mix(in srgb, currentColor 55%, var(--line));
+      box-shadow: 0 1px 3px rgba(0,0,0,.4),
+        0 0 18px color-mix(in srgb, currentColor 16%, transparent);
+    }
+    .node-card.dg-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(0,0,0,.5),
+        0 0 24px color-mix(in srgb, currentColor 30%, transparent);
+    }
+    .node-card.dg-card .badge { width: 32px; height: 32px; }
+    .node-card.v-clean { color: var(--c-clean-2); }
+    .node-card.v-confidential { color: var(--c-conf-2); }
+    .node-card.v-mixed { color: var(--c-agent); }
+    .node-card.dg-card.transform {
+      color: var(--c-transform);
+      background: linear-gradient(160deg,
+        color-mix(in srgb, var(--c-transform) 22%, var(--panel)),
+        color-mix(in srgb, var(--c-transform) 7%, var(--ink)));
+      box-shadow: 0 1px 3px rgba(0,0,0,.4),
+        0 0 26px color-mix(in srgb, var(--c-transform) 30%, transparent);
+    }
+    .node-card.dg-card.leak {
+      animation: leakpulse 1.7s ease-in-out infinite;
+    }
+    @keyframes leakpulse {
+      0%,100% { box-shadow: 0 1px 3px rgba(0,0,0,.4), 0 0 16px color-mix(in srgb, var(--c-conf) 30%, transparent); }
+      50%     { box-shadow: 0 1px 3px rgba(0,0,0,.4), 0 0 30px color-mix(in srgb, var(--c-conf) 60%, transparent); }
+    }
+    .node-card .vtag {
+      font-size: 0.6rem; font-weight: 700; border-radius: 999px; padding: 0.04rem 0.42rem;
+      border: 1px solid currentColor; flex: 0 0 auto; letter-spacing: 0.04em;
+    }
+    .node-card .vtag.leakbadge { background: var(--c-conf); color: #1a0c0b; border-color: var(--c-conf); }
+
+    /* edge label chips (drawn in SVG as <g>: rounded rect + text) */
+    .dg-elabel-bg { fill: var(--ink); stroke: var(--line); stroke-width: 1; }
+    .dg-elabel-tx { font-family: ui-monospace, Menlo, monospace; font-size: 11px; font-weight: 600;
+      dominant-baseline: middle; text-anchor: middle; }
+    .dg-elabel-tx.clean { fill: var(--c-clean-2); }
+    .dg-elabel-tx.confidential { fill: var(--c-conf-2); }
+    .dg-elabel-tx.recall { fill: var(--c-identity); }
+    .dg-boundary-line { stroke: var(--line-soft); stroke-width: 1.5; stroke-dasharray: 3 5; }
+    .dg-boundary-tx { fill: var(--muted); font-size: 10px; letter-spacing: 0.12em;
+      text-anchor: middle; text-transform: uppercase; }
+    .dg-flow { stroke-dasharray: 8 6; animation: dgflow .7s linear infinite; }
+    @keyframes dgflow { to { stroke-dashoffset: -28; } }
+
+    /* metamorphosis callout */
+    .dg-meta {
+      margin-top: 1.1rem; padding: 0.9rem 1.1rem; border-radius: 11px;
+      background: var(--panel); border: 1px solid var(--line); font-size: 0.82rem;
+      color: var(--fg-dim); display: grid; align-items: stretch;
+      grid-template-columns: 1fr auto 1fr; gap: 1rem;
+    }
+    .dg-meta h3 { grid-column: 1 / -1; margin: 0; font-size: 0.78rem; color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.06em; }
+    .dg-meta .pane { padding: 0.6rem 0.75rem; border-radius: 9px; background: var(--ink);
+      border: 1px solid var(--line); line-height: 1.5; }
+    .dg-meta .pane.forest { border-left: 3px solid var(--c-agent); }
+    .dg-meta .pane.fork   { border-left: 3px solid var(--c-clean-2); }
+    .dg-meta .pane h4 { margin: 0 0 0.3rem; font-size: 0.74rem; text-transform: uppercase;
+      letter-spacing: 0.05em; }
+    .dg-meta .pane.forest h4 { color: var(--c-agent); }
+    .dg-meta .pane.fork h4   { color: var(--c-clean-2); }
+    .dg-meta .arrow { align-self: center; font-size: 1.5rem; color: var(--muted); }
+    .dg-notes { margin: 0.85rem 0 0; padding-left: 1.1rem; font-size: 0.76rem; color: var(--muted); }
+    .dg-notes li { margin: 0.22rem 0; line-height: 1.45; }
   </style>
 </head>
 <body>
@@ -225,6 +414,18 @@
       <path d="M3 5v14a9 3 0 0 0 18 0V5"/>
       <path d="M3 12a9 3 0 0 0 18 0"/>
     </symbol>
+    <!-- data-graph (ADR-0012) node types: file F, transform L (d->d'), external egress -->
+    <symbol id="i-file" viewBox="0 0 24 24">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+      <path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>
+    </symbol>
+    <symbol id="i-transform" viewBox="0 0 24 24">
+      <path d="M3 8h13l-3-3"/><path d="M21 16H8l3 3"/>
+    </symbol>
+    <symbol id="i-external" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9"/><path d="M3 12h18"/>
+      <path d="M12 3a14 14 0 0 0 0 18a14 14 0 0 0 0-18"/>
+    </symbol>
   </svg>
 
   <header>
@@ -236,6 +437,11 @@
     </nav>
     <span class="trace-id" id="trace-id-display"></span>
   </header>
+  <div class="view-switch" role="tablist" aria-label="Graph view">
+    <button class="seg active" id="seg-forest" role="tab" aria-selected="true">Execution forest</button>
+    <button class="seg dg" id="seg-datagraph" role="tab" aria-selected="false">Data graph</button>
+    <span class="mock-pill" id="dg-mock-pill" style="display:none">mocked</span>
+  </div>
   <div class="legend" id="legend">
     <span class="item"><span class="badge badge-user"><svg class="ic"><use href="#i-user"/></svg></span> User</span>
     <span class="item"><span class="badge badge-agent"><svg class="ic"><use href="#i-agent"/></svg></span> Agent</span>
@@ -271,6 +477,31 @@
             <code>a2a</code> span is self-referential and in its own trace.</li>
         </ul>
       </div>
+
+      <!-- ════ data-graph (mocked) view — ADR-0012 ════
+           The lineage view: data-identity edges, the d→d′ transform, the
+           clean/confidential fork, and the cross-session leak back to D.
+           Hidden until the view switch flips body.mode-datagraph on.
+           Head/legend/footer are built by JS from data_graph_mock.js. -->
+      <div id="datagraph">
+        <div id="dg-head"></div>
+        <div id="dg-graph" class="graph">
+          <svg id="dg-edges" class="edges">
+            <defs>
+              <marker id="dg-arrow" markerWidth="8" markerHeight="8" refX="6.5"
+                      refY="3" orient="auto">
+                <path d="M0,0 L6,3 L0,6 Z" fill="context-stroke"/>
+              </marker>
+              <filter id="dg-glow" x="-40%" y="-40%" width="180%" height="180%">
+                <feGaussianBlur stdDeviation="2.2" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+          </svg>
+          <div id="dg-columns" class="dg-stack"></div>
+        </div>
+        <div id="dg-foot"></div>
+      </div>
     </section>
     <aside id="detail" class="detail">
       <h2>Span detail</h2>
@@ -290,6 +521,7 @@
 
   <script src="/ui/forest_logic.js"></script>
   <script src="/ui/forest_scenario_overlay.js"></script>
+  <script src="/ui/data_graph_mock.js"></script>
   <script>
     /* Execution-forest view (ADR-0009) + opt-in store overlay (ADR-0010).
        Endpoint: GET /spans?trace_id=T&limit=500&order=asc (whole trace).
@@ -697,6 +929,245 @@
         errorEl.textContent = 'Error loading forest: ' + err.message;
         statusEl.textContent = '';
       }
+    }
+
+    /* ════════════════ data-graph (mocked) view — ADR-0012 ════════════════
+       The lineage view: a single left-to-right river drawn HARDCODED from
+       scenario.md §8 (data_graph_mock.js). Reuses the page's dark palette +
+       detail panel; renders lazily on first switch. Nothing here touches the
+       forest path — it is purely additive and removable. */
+    const DG = (window.DataGraphMock && window.DataGraphMock.dataGraph()) || null;
+    const dgColumnsEl = document.getElementById('dg-columns');
+    const dgEdgesSvg = document.getElementById('dg-edges');
+    const dgHeadEl = document.getElementById('dg-head');
+    const dgFootEl = document.getElementById('dg-foot');
+    const segForest = document.getElementById('seg-forest');
+    const segData = document.getElementById('seg-datagraph');
+    const mockPill = document.getElementById('dg-mock-pill');
+    const detailH2 = document.querySelector('#detail h2');
+    const VCOL = { clean: '#56d364', confidential: '#ff7b72', mixed: '#92c5f9',
+                   recall: '#bc8cff', transform: '#e3b341' };
+    let _dgBuilt = false, _dgEls = new Map(), _dgRaf = 0, _dgDetail = null;
+
+    /* one verdict-colored node card (its own badge so the icon takes the
+       card's verdict color, not a per-type color). */
+    function dgCard(node) {
+      const card = document.createElement('div');
+      card.className = 'node-card dg-card v-' + node.verdict
+        + (node.type === 'transform' ? ' transform' : '')
+        + (node.leak ? ' leak' : '');
+      const b = document.createElement('span');
+      b.className = 'badge';
+      const svg = document.createElementNS(SVGNS, 'svg'); svg.setAttribute('class', 'ic');
+      const use = document.createElementNS(SVGNS, 'use'); use.setAttribute('href', '#i-' + node.type);
+      svg.appendChild(use); b.appendChild(svg); card.appendChild(b);
+      const meta = document.createElement('div'); meta.className = 'meta';
+      const name = document.createElement('span'); name.className = 'name-text';
+      name.textContent = node.label; meta.appendChild(name);
+      const sub = document.createElement('span'); sub.className = 'sub';
+      if (node.tag) {
+        const t = document.createElement('span');
+        t.className = 'vtag' + (node.leak ? ' leakbadge' : '');
+        t.textContent = node.tag; sub.appendChild(t);
+      }
+      const s = document.createElement('span'); s.className = 'src-tag'; s.textContent = node.sub;
+      sub.appendChild(s); meta.appendChild(sub); card.appendChild(meta);
+      card.tabIndex = 0;
+      const sel = () => dgSelect(node, card);
+      card.addEventListener('click', sel);
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sel(); } });
+      return card;
+    }
+
+    function dgBuildHeadFoot() {
+      // head: title + MOCKED banner + legend
+      const legend = DG.legend.map((l) =>
+        l.cls === 'ident'
+          ? '<span class="item ident"><span class="swatch dash"></span>' + l.label + '</span>'
+          : '<span class="item ' + l.cls + '"><span class="dot"></span>' + l.label + '</span>'
+      ).join('');
+      dgHeadEl.innerHTML =
+        '<div class="dg-title">' + DG.title +
+        ' <span class="sub">— the lineage view (mocked)</span></div>' +
+        '<div class="dg-banner"><b>MOCKED</b> — ' + DG.notes[0].replace(/^MOCKED[^—]*— ?/, '') +
+        ' This is the <em>desired target</em> the execution forest cannot draw, not a computed result.</div>' +
+        '<div class="dg-legend">' + legend + '</div>';
+      // foot: metamorphosis + notes
+      const m = DG.metamorphosis;
+      dgFootEl.innerHTML =
+        '<div class="dg-meta"><h3>' + m.title + '</h3>' +
+        '<div class="pane forest"><h4>Execution forest</h4>' + m.forest + '</div>' +
+        '<div class="arrow">→</div>' +
+        '<div class="pane fork"><h4>Data graph</h4>' + m.datagraph + '</div></div>' +
+        '<ul class="dg-notes">' + DG.notes.slice(1).map((n) => '<li>' + n + '</li>').join('') + '</ul>';
+    }
+
+    function dgBuild() {
+      dgColumnsEl.style.setProperty('--dg-cols', DG.columns);
+      dgColumnsEl.innerHTML = '';
+      _dgEls = new Map();
+      const byCol = new Map();
+      for (const n of DG.nodes) { (byCol.get(n.col) || byCol.set(n.col, []).get(n.col)).push(n); }
+      for (let c = 0; c < DG.columns; c++) {
+        const cell = document.createElement('div'); cell.className = 'dg-colstack';
+        for (const n of (byCol.get(c) || [])) { const card = dgCard(n); _dgEls.set(n.id, card); cell.appendChild(card); }
+        dgColumnsEl.appendChild(cell);
+      }
+      // zone captions (positioned in dgLayout)
+      const z1 = document.createElement('span'); z1.className = 'dg-zone t1'; z1.id = 'dg-zone-t1';
+      z1.textContent = 'T1 · process patent — precision';
+      const z2 = document.createElement('span'); z2.className = 'dg-zone t2'; z2.id = 'dg-zone-t2';
+      z2.textContent = 'T2 · prior-art search — recall';
+      dgColumnsEl.appendChild(z1); dgColumnsEl.appendChild(z2);
+    }
+
+    function _center(el, side) {
+      const o = dgEdgesSvg.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const y = r.top - o.top + r.height / 2;
+      if (side === 'r') return [r.right - o.left, y];
+      if (side === 'l') return [r.left - o.left, y];
+      if (side === 'b') return [r.left - o.left + r.width / 2, r.bottom - o.top];
+      return [r.left - o.left + r.width / 2, y];
+    }
+
+    function _dgLabel(x, y, text, cls) {
+      const g = document.createElementNS(SVGNS, 'g');
+      const t = document.createElementNS(SVGNS, 'text');
+      t.setAttribute('class', 'dg-elabel-tx ' + cls);
+      t.setAttribute('x', x); t.setAttribute('y', y); t.textContent = text;
+      g.appendChild(t); dgEdgesSvg.appendChild(t);
+      const bb = t.getBBox();
+      const r = document.createElementNS(SVGNS, 'rect');
+      r.setAttribute('class', 'dg-elabel-bg');
+      r.setAttribute('x', bb.x - 6); r.setAttribute('y', bb.y - 3);
+      r.setAttribute('width', bb.width + 12); r.setAttribute('height', bb.height + 6);
+      r.setAttribute('rx', 5);
+      dgEdgesSvg.insertBefore(r, t);
+    }
+
+    function _dgPath(d, color, opts) {
+      const p = document.createElementNS(SVGNS, 'path');
+      p.setAttribute('class', 'edge' + (opts.flow ? ' dg-flow' : ''));
+      p.setAttribute('d', d); p.setAttribute('stroke', color);
+      p.setAttribute('fill', 'none');
+      p.setAttribute('stroke-width', opts.width || 2.2);
+      if (opts.dashed && !opts.flow) p.setAttribute('stroke-dasharray', '6 5');
+      p.setAttribute('stroke-opacity', opts.opacity || 0.85);
+      p.setAttribute('marker-end', 'url(#dg-arrow)');
+      if (opts.glow) p.setAttribute('filter', 'url(#dg-glow)');
+      dgEdgesSvg.appendChild(p);
+    }
+
+    function dgLayout() {
+      const W = dgColumnsEl.scrollWidth, H = dgColumnsEl.scrollHeight;
+      dgEdgesSvg.setAttribute('width', W); dgEdgesSvg.setAttribute('height', H);
+      while (dgEdgesSvg.childNodes.length > 1) dgEdgesSvg.removeChild(dgEdgesSvg.lastChild); // keep <defs>
+
+      // session/trace boundary — vertical dashed rule after the files column
+      const afterCol = DG.boundaryAfter;
+      const leftN = DG.nodes.find((n) => n.col === afterCol);
+      const rightN = DG.nodes.find((n) => n.col === afterCol + 1);
+      if (leftN && rightN && _dgEls.get(leftN.id) && _dgEls.get(rightN.id)) {
+        const lr = _center(_dgEls.get(leftN.id), 'r')[0];
+        const rl = _center(_dgEls.get(rightN.id), 'l')[0];
+        const bx = (lr + rl) / 2;
+        const line = document.createElementNS(SVGNS, 'line');
+        line.setAttribute('class', 'dg-boundary-line');
+        line.setAttribute('x1', bx); line.setAttribute('y1', 30);
+        line.setAttribute('x2', bx); line.setAttribute('y2', H - 30);
+        dgEdgesSvg.appendChild(line);
+        const bt = document.createElementNS(SVGNS, 'text');
+        bt.setAttribute('class', 'dg-boundary-tx');
+        bt.setAttribute('x', bx); bt.setAttribute('y', 22);
+        bt.textContent = DG.boundaryLabel; dgEdgesSvg.appendChild(bt);
+      }
+
+      // solid data-flow edges, colored by verdict, with a label chip
+      for (const e of DG.edges) {
+        const fe = _dgEls.get(e.from), te = _dgEls.get(e.to);
+        if (!fe || !te) continue;
+        const [x1, y1] = _center(fe, 'r'), [x2, y2] = _center(te, 'l');
+        const dx = Math.max(34, (x2 - x1) * 0.45);
+        const d = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', '
+          + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2;
+        _dgPath(d, VCOL[e.verdict] || VCOL.mixed,
+          { width: e.fork ? 2.6 : 2.2, flow: !!e.leak, glow: !!e.leak });
+        _dgLabel((x1 + x2) / 2, (y1 + y2) / 2, e.data, e.verdict);
+      }
+
+      // recall data-identity edge(s): a sweeping dashed arc under the river,
+      // from the leak back to its origin D — the edge a trace cannot have.
+      for (const e of DG.identity) {
+        const fe = _dgEls.get(e.from), te = _dgEls.get(e.to);
+        if (!fe || !te) continue;
+        const [x1, y1] = _center(fe, 'b'), [x2, y2] = _center(te, 'b');
+        const bow = Math.min(H - 16, Math.max(y1, y2) + 96);
+        const d = 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + bow + ', '
+          + x2 + ' ' + bow + ', ' + x2 + ' ' + y2;
+        _dgPath(d, VCOL.recall, { dashed: true, flow: true, glow: true, width: 2.4, opacity: 0.95 });
+        _dgLabel((x1 + x2) / 2, bow - 4, e.label, 'recall');
+      }
+
+      // zone captions over their bands
+      const zt1 = document.getElementById('dg-zone-t1'), zt2 = document.getElementById('dg-zone-t2');
+      if (zt1 && _dgEls.get('D')) zt1.style.left = _dgEls.get('D').offsetLeft + 'px';
+      if (zt2 && _dgEls.get('A2')) zt2.style.left = _dgEls.get('A2').offsetLeft + 'px';
+    }
+
+    function dgScheduleLayout() {
+      cancelAnimationFrame(_dgRaf);
+      _dgRaf = requestAnimationFrame(dgLayout);
+    }
+
+    function dgSelect(node, card) {
+      for (const c of dgColumnsEl.querySelectorAll('.node-card.selected')) c.classList.remove('selected');
+      if (card) card.classList.add('selected');
+      const color = VCOL[node.verdict] || VCOL.mixed;
+      const verdictLabel = node.verdict === 'mixed' ? 'fresh trace (mixed)'
+        : node.verdict + (node.tag ? ' · ' + node.tag : '');
+      _dgDetail.innerHTML =
+        '<button class="close" aria-label="Close">×</button>' +
+        '<h2 style="color:' + color + '">' + node.label + '</h2>' +
+        '<div style="margin:-0.1rem 0 0.6rem;font-size:0.78rem;color:var(--muted)">' + node.sub + '</div>' +
+        '<span style="display:inline-block;font-size:0.7rem;font-weight:700;color:' + color +
+        ';border:1px solid ' + color + ';border-radius:999px;padding:0.1rem 0.6rem">'
+        + verdictLabel + '</span>' +
+        '<h3>Why · mocked lineage</h3>' +
+        '<p style="font-size:0.82rem;line-height:1.55;color:var(--fg-dim);margin:0">' + node.why + '</p>';
+      _dgDetail.querySelector('.close').addEventListener('click', () => { _dgDetail.style.display = 'none'; });
+      _dgDetail.style.display = 'block';
+    }
+
+    function setMode(mode) {
+      const dg = mode === 'datagraph';
+      if (dg && !_dgBuilt) {
+        if (!DG) { return; }
+        dgBuildHeadFoot(); dgBuild();
+        _dgDetail = document.createElement('div'); _dgDetail.id = 'dg-detail';
+        document.body.appendChild(_dgDetail);   // floating overlay card
+        _dgBuilt = true;
+      }
+      document.body.classList.toggle('mode-datagraph', dg);
+      segData.classList.toggle('active', dg); segData.setAttribute('aria-selected', String(dg));
+      segForest.classList.toggle('active', !dg); segForest.setAttribute('aria-selected', String(!dg));
+      mockPill.style.display = dg ? '' : 'none';
+      if (!dg && _dgDetail) _dgDetail.style.display = 'none';  // hide the floating card in forest mode
+      if (dg) requestAnimationFrame(() => requestAnimationFrame(dgLayout));
+      else scheduleLayout();
+    }
+    segForest.addEventListener('click', () => setMode('forest'));
+    segData.addEventListener('click', () => setMode('datagraph'));
+    window.addEventListener('resize', () => {
+      if (document.body.classList.contains('mode-datagraph')) dgScheduleLayout();
+    });
+    // Deep-link / screenshot hook: /forest/<id>?view=datagraph (or #data) opens
+    // the mocked data graph directly.
+    if (DG && (/[?&]view=data/i.test(location.search) || /^#data/i.test(location.hash))) {
+      setMode('datagraph');
+      const nm = (location.search.match(/[?&]node=([A-Za-z0-9]+)/) || [])[1];
+      if (nm) { const n = DG.nodes.find((x) => x.id === nm); if (n && _dgEls.get(nm)) dgSelect(n, _dgEls.get(nm)); }
     }
 
     init();

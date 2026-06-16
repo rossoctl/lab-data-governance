@@ -281,6 +281,7 @@ _UI_ASSETS: frozenset[str] = frozenset(
         "trace_tree_logic.js",
         "forest_logic.js",
         "forest_scenario_overlay.js",  # demo-only store overlay (ADR-0010)
+        "data_graph_mock.js",  # mocked lineage data-graph view (ADR-0012)
     }
 )
 
