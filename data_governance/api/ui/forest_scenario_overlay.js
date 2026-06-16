@@ -85,6 +85,16 @@ function _args(span) {
 
 function _spanKey(span) { return span.trace_id + '|' + span.span_id; }
 
+/* Collect every tool node in the (possibly nested) forest. Tools can live under
+   delegated sub-agents — a role:'agent' child carries its own children
+   (ADR-0011) — so the walk recurses rather than scanning only the top level. */
+function _collectTools(children, out) {
+  for (const c of (children || [])) {
+    if (c.role === 'tool') out.push(c);
+    else if (c.role === 'agent') _collectTools(c.children, out);
+  }
+}
+
 /* Derive the patent-app store nodes + tool->store links for one forest.
    Stores are de-duplicated by id within the trace, so multiple calls to the
    same store converge on one node (e.g. both write_file calls -> one `F`). */
@@ -94,8 +104,9 @@ function storeOverlay(forest) {
   if (!forest || !forest.ok || !Array.isArray(forest.children)) {
     return { stores: [], links: [] };
   }
-  for (const c of forest.children) {
-    if (c.role !== 'tool') continue;
+  const tools = [];
+  _collectTools(forest.children, tools);
+  for (const c of tools) {
     const rule = STORE_RULES[_normTool(c.name)];
     if (!rule) continue;  // unmapped tool (e.g. web_search) -> no store node
 

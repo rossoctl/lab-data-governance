@@ -123,3 +123,34 @@ def test_unmapped_tool_and_non_forest_yield_nothing():
         " al:a.links.length, b:b.stores.length }));"
     )
     assert json.loads(out) == {"a": 0, "al": 0, "b": 0}
+
+
+def test_tools_under_sub_agents_are_collected_recursively():
+    """Multi-agent (ADR-0011): tools nested under role:'agent' children — at any
+    depth — are mapped, not just the top level. read_patent at top, read_file one
+    level down, write_file two levels down."""
+    forest = (
+        "const forest = { ok:true, agent:{}, children:["
+        + _tool("read_patent", "T", "rp", '{"patent_id":1}') + ","
+        + "{ role:'agent', name:'sub', span:{trace_id:'T',span_id:'a1'}, children:["
+        + _tool("read_file", "T", "rf", '{"name":"summary"}') + ","
+        + "{ role:'agent', name:'subsub', span:{trace_id:'T',span_id:'a2'}, children:["
+        + _tool("write_file", "T", "wf", '{"content":"x"}')
+        + "] }"
+        + "] }"
+        + "] };"
+    )
+    out = _run_js(
+        forest
+        + "const o = M.storeOverlay(forest);"
+        "process.stdout.write(JSON.stringify({"
+        " stores: o.stores.map((s)=>s.id),"
+        " links: o.links.map((l)=>({k:l.childKey,s:l.storeId})) }));"
+    )
+    res = json.loads(out)
+    assert res["stores"] == ["D", "F/summary", "F"]
+    assert res["links"] == [
+        {"k": "T|rp", "s": "D"},
+        {"k": "T|rf", "s": "F/summary"},
+        {"k": "T|wf", "s": "F"},
+    ]

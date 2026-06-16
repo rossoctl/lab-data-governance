@@ -11,10 +11,12 @@
        cards (inline-SVG type icon + label), edges are SVG bezier curves colored
        per child type. Shares the trace-tree's dark palette + span-detail panel.
 
-       Layout matches the data contract from forest_logic.js exactly:
-       {user?, agent, children:[]} => columns U | A | children. Deeper
-       delegation forests (A -> sub-agent) are a documented future case
-       (ADR-0009 single-agent scope).
+       Layout follows the forest_logic.js contract: {user?, agent, children:[]}
+       where a child may be role 'L' | 'tool' | 'agent'. A role:'agent' child is
+       a delegated sub-agent carrying its own nested children, rendered
+       recursively as agent -> sub-agent subtrees (the multi-agent delegation
+       forest, ADR-0011). Single-agent traces have only 'L'/'tool' children and
+       render as the flat U -> A -> {L, tools}.
 
        DATASTORE NODES are an OPT-IN, DEMO-ONLY scenario overlay (ADR-0010),
        computed by forest_scenario_overlay.js — NOT forest_logic.js, which stays
@@ -112,6 +114,9 @@
       display: flex; flex-direction: column; justify-content: center;
       gap: 14px; position: relative; z-index: 1;
     }
+    /* nested delegation subtree (ADR-0011): agent card | column of child subtrees */
+    .subtree { display: flex; align-items: center; gap: 90px; }
+    .children { display: flex; flex-direction: column; justify-content: center; gap: 14px; }
     svg.edges {
       position: absolute; top: 0; left: 0; z-index: 0;
       pointer-events: none; overflow: visible;
@@ -448,6 +453,71 @@
       return col;
     }
 
+    function el(tag, cls) {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      return e;
+    }
+    function leaf(card) { const s = el('div', 'subtree'); s.appendChild(card); return s; }
+    const ROLE_TYPE = { L: 'llm', tool: 'tool', agent: 'agent' };
+
+    /* Recursively build an agent's subtree: [agent card | column of child
+       subtrees], nesting role:'agent' children (ADR-0011 delegation forest).
+       Registers each tool card in _childEls so the store overlay can attach to
+       tools at ANY depth. Pushes one parent->child edge per child.
+       info: { span, name, source, children }. Returns { el, card }. */
+    function buildAgentSubtree(info) {
+      const card = makeCard({
+        type: 'agent', name: info.name, src: info.source, span: info.span });
+      const subtree = el('div', 'subtree');
+      subtree.appendChild(card);
+      const kids = info.children || [];
+      if (kids.length) {
+        const col = el('div', 'children');
+        for (const c of kids) {
+          let childCard;
+          let childSubtree;
+          if (c.role === 'agent') {
+            const r = buildAgentSubtree({
+              span: c.span, name: c.name, source: c.source, children: c.children });
+            childCard = r.card;
+            childSubtree = r.el;
+          } else if (c.role === 'L') {
+            childCard = makeCard({
+              type: 'llm', name: 'generation',
+              src: c.span.attributes && c.span.attributes.source,
+              preview: bodyPreview(c.span), span: c.span });
+            childSubtree = leaf(childCard);
+          } else {
+            childCard = makeCard({
+              type: 'tool', name: c.name, src: c.source,
+              preview: bodyPreview(c.span), span: c.span });
+            _childEls.set(spanKey(c.span), childCard);
+            childSubtree = leaf(childCard);
+          }
+          col.appendChild(childSubtree);
+          _edges.push({ from: card, to: childCard, color: TYPE_COLOR[ROLE_TYPE[c.role]] });
+        }
+        subtree.appendChild(col);
+      }
+      return { el: subtree, card };
+    }
+
+    /* Totals across the whole (possibly nested) forest, for the note line. */
+    function countTree(children) {
+      let agents = 0, llm = 0, tool = 0;
+      for (const c of (children || [])) {
+        if (c.role === 'L') llm += 1;
+        else if (c.role === 'tool') tool += 1;
+        else if (c.role === 'agent') {
+          agents += 1;
+          const sub = countTree(c.children);
+          agents += sub.agents; llm += sub.llm; tool += sub.tool;
+        }
+      }
+      return { agents, llm, tool };
+    }
+
     /* Smooth left-to-right bezier from one card's right-center to another's
        left-center, in coordinates relative to the (covering) edges svg. */
     function drawEdge(e) {
@@ -537,47 +607,41 @@
       }
       statusEl.textContent = '';
 
-      const agentCard = makeCard({
-        type: 'agent', name: forest.agent.name,
-        src: forest.agent.attributes && forest.agent.attributes.source,
+      // Top agent's subtree; its children come from the top-level result and
+      // sub-agents nest recursively as role:'agent' children (ADR-0011).
+      const top = buildAgentSubtree({
         span: forest.agent,
+        name: forest.agent.name,
+        source: forest.agent.attributes && forest.agent.attributes.source,
+        children: forest.children,
       });
 
-      const childCards = forest.children.map((c) => {
-        const card = (c.role === 'L')
-          ? makeCard({
-              type: 'llm', name: 'generation',
-              src: c.span.attributes && c.span.attributes.source,
-              preview: bodyPreview(c.span), span: c.span })
-          : makeCard({
-              type: 'tool', name: c.name, src: c.source,
-              preview: bodyPreview(c.span), span: c.span });
-        _childEls.set(spanKey(c.span), card);
-        return card;
-      });
-
-      // columns: [U?] [A] [children]  (store column added by applyOverlay)
+      // columns: [U?] [top-agent subtree]  (store column added by applyOverlay)
       if (forest.user) {
         const userCard = makeCard({
           type: 'user', name: forest.user.name,
           src: forest.user.attributes && forest.user.attributes.source,
           span: forest.user,
         });
-        columnsEl.appendChild(makeCol([userCard]));
-        _edges.push({ from: userCard, to: agentCard, color: TYPE_COLOR.agent });
+        const root = el('div', 'subtree');
+        root.appendChild(userCard);
+        const col = el('div', 'children');
+        col.appendChild(top.el);
+        root.appendChild(col);
+        columnsEl.appendChild(root);
+        _edges.push({ from: userCard, to: top.card, color: TYPE_COLOR.agent });
+      } else {
+        columnsEl.appendChild(top.el);
       }
-      columnsEl.appendChild(makeCol([agentCard]));
-      columnsEl.appendChild(makeCol(childCards));
-      forest.children.forEach((c, i) => {
-        _edges.push({
-          from: agentCard, to: childCards[i],
-          color: c.role === 'L' ? TYPE_COLOR.llm : TYPE_COLOR.tool,
-        });
-      });
 
-      noteLoopEl.innerHTML =
-        '<strong>' + forest.llmCount + '</strong> L (generation) nodes shown '
-        + 'flat — the real tool-use loop, not collapsed to one.';
+      const total = countTree(forest.children);
+      noteLoopEl.innerHTML = total.agents > 0
+        ? 'Nested delegation forest: <strong>' + (total.agents + 1) + '</strong> '
+          + 'agents, ' + total.llm + ' LLM + ' + total.tool + ' tool calls — each '
+          + 'L/tool re-parented onto the agent that made it; sub-agents nest under '
+          + 'their delegator (ADR-0011).'
+        : '<strong>' + forest.llmCount + '</strong> L (generation) nodes shown '
+          + 'flat — the real tool-use loop, not collapsed to one.';
       notesEl.style.display = '';
 
       applyOverlay();                          // adds the demo store column if on
