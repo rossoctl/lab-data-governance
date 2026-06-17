@@ -188,6 +188,55 @@
       border-radius: 6px; overflow: auto; font-size: 0.78rem; color: #d0d0d0;
       max-height: 30vh;
     }
+
+    /* ─── rich span detail: readable LLM conversation + tool wire bodies ─── */
+    #detail-rich { margin: 0 0 0.4rem; }
+    #detail-rich:empty { display: none; }
+    .rich-h { font-size: 0.64rem; font-weight: 800; text-transform: uppercase;
+      letter-spacing: 0.09em; color: var(--accent); margin: 0.75rem 0 0.4rem; }
+    .rich-h:first-child { margin-top: 0; }
+    .rich-hop { font-family: ui-monospace, Menlo, monospace; font-size: 0.7rem;
+      color: var(--muted); margin: 0 0 0.55rem; word-break: break-word; }
+    .rich-hop b { color: var(--fg-dim); font-weight: 600; }
+    .msg { border: 1px solid var(--line); border-radius: 9px; padding: 0.45rem 0.6rem;
+      margin: 0 0 0.4rem; background: color-mix(in srgb, currentColor 6%, var(--ink)); }
+    .msg-role { display: inline-block; font-size: 0.55rem; font-weight: 800;
+      letter-spacing: 0.07em; text-transform: uppercase; padding: 0.05rem 0.42rem;
+      border: 1px solid currentColor; border-radius: 999px; margin-bottom: 0.34rem; }
+    .msg-body { font-size: 0.8rem; line-height: 1.5; color: var(--fg);
+      white-space: pre-wrap; word-break: break-word; }
+    .msg-system { color: #9aa4b2; }
+    .msg-user { color: var(--c-file); }
+    .msg-assistant { color: var(--c-clean-2); }
+    .msg-tool { color: var(--c-transform); }
+    .msg.msg-system > summary { cursor: pointer; list-style: none;
+      display: flex; align-items: center; gap: 0.45rem; }
+    .msg.msg-system > summary::-webkit-details-marker { display: none; }
+    .msg.msg-system > summary .msg-role { margin-bottom: 0; }
+    .msg-sys-hint { font-family: ui-monospace, Menlo, monospace; font-size: 0.62rem; color: var(--muted); }
+    .msg.msg-system > summary::after { content: "▸"; margin-left: auto; color: var(--muted); font-size: 0.62rem; }
+    .msg.msg-system[open] > summary::after { content: "▾"; }
+    .msg.msg-system[open] > summary { margin-bottom: 0.34rem; }
+    .msg-call { margin-top: 0.35rem; font-family: ui-monospace, Menlo, monospace;
+      font-size: 0.73rem; color: var(--c-transform); word-break: break-word; }
+    .msg-call .args { color: var(--fg-dim); }
+    .rich-foot { font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem;
+      color: var(--muted); margin: 0.1rem 0 0.2rem; }
+    .rich-pre { background: var(--ink); border: 1px solid var(--line); border-radius: 8px;
+      padding: 0.5rem 0.6rem; font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem;
+      line-height: 1.45; white-space: pre-wrap; word-break: break-word; color: var(--fg-dim);
+      margin: 0 0 0.5rem; max-height: 42vh; overflow: auto; }
+    .rich-pre.err { color: var(--c-conf-2);
+      border-color: color-mix(in srgb, var(--c-conf) 45%, var(--line));
+      background: color-mix(in srgb, var(--c-conf) 7%, var(--ink)); }
+    .rich-status { font-size: 0.56rem; font-weight: 800; border-radius: 999px;
+      padding: 0.04rem 0.42rem; border: 1px solid currentColor; margin-left: 0.45rem; }
+    .rich-status.ok { color: var(--c-clean-2); }
+    .rich-status.err { color: var(--c-conf-2); }
+    .rich-empty { font-size: 0.75rem; color: #666; font-style: italic; margin: 0 0 0.4rem; }
+    details.detail-raw { margin-top: 0.7rem; }
+    details.detail-raw > summary { cursor: pointer; font-size: 0.66rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700; }
     .detail-empty { color: #666; font-style: italic; font-size: 0.8rem; }
     dl.detail-dl { margin: 0 0 0.5rem; }
     dl.detail-dl dt {
@@ -513,14 +562,16 @@
       <h2>Span detail</h2>
       <div class="detail-empty" id="detail-empty">Select a node to view its span.</div>
       <div id="detail-body" style="display:none">
+        <div id="detail-rich"></div>
         <h3>Identity</h3>
         <dl class="detail-dl" id="detail-identity"></dl>
         <h3>Timing</h3>
         <dl class="detail-dl" id="detail-timing"></dl>
-        <h3>Attributes (payload)</h3>
-        <pre id="detail-attributes"></pre>
-        <h3>Events</h3>
-        <pre id="detail-events"></pre>
+        <details class="detail-raw">
+          <summary>Raw span — attributes &amp; events</summary>
+          <pre id="detail-attributes"></pre>
+          <pre id="detail-events"></pre>
+        </details>
       </div>
     </aside>
   </main>
@@ -557,6 +608,8 @@
     const detailTimingEl = document.getElementById('detail-timing');
     const detailAttributesEl = document.getElementById('detail-attributes');
     const detailEventsEl = document.getElementById('detail-events');
+    const detailRichEl = document.getElementById('detail-rich');
+    const _spanCards = new Map();   // span_id -> { span, card } (for ?span= deep-link)
 
     let _edges = [];          // base (captured) edges: [{from, to, color, dashed?}]
     let _overlayEdges = [];   // demo store edges (ADR-0010)
@@ -648,6 +701,8 @@
 
       if (opts.span) {
         card.tabIndex = 0;
+        card.dataset.spanId = opts.span.span_id;
+        _spanCards.set(opts.span.span_id, { span: opts.span, card });
         const select = () => selectSpan(opts.span, card);
         card.addEventListener('click', select);
         card.addEventListener('keydown', (ev) => {
@@ -884,6 +939,7 @@
 
       applyOverlay();                          // adds the demo store column if on
       requestAnimationFrame(scheduleLayout);   // re-measure after layout settles
+      _applySpanDeepLink();                    // ?span=<id> auto-opens a node's detail
     }
 
     function _dd(dl, label, value) {
@@ -895,6 +951,91 @@
       dl.appendChild(dd);
     }
 
+    // ─── rich span detail: readable LLM conversation + tool wire bodies ───
+    function _esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"]/g,
+        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    }
+    function _prettyJSON(s) { try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return String(s); } }
+    // collect attrs[`${prefix}.${i}.message.*`] into ordered messages
+    function _msgsFrom(attrs, prefix) {
+      const out = [];
+      for (let i = 0; ; i++) {
+        const role = attrs[prefix + '.' + i + '.message.role'];
+        const content = attrs[prefix + '.' + i + '.message.content'];
+        const tc0 = attrs[prefix + '.' + i + '.message.tool_calls.0.tool_call.function.name'];
+        if (role === undefined && content === undefined && tc0 === undefined) break;
+        const calls = [];
+        for (let j = 0; ; j++) {
+          const nm = attrs[prefix + '.' + i + '.message.tool_calls.' + j + '.tool_call.function.name'];
+          if (nm === undefined) break;
+          calls.push({ name: nm, args: attrs[prefix + '.' + i + '.message.tool_calls.' + j + '.tool_call.function.arguments'] || '' });
+        }
+        out.push({ role: role || '', content: content || '', calls });
+      }
+      return out;
+    }
+    // fallback: input.value / output.value as a JSON messages array
+    function _msgsFallback(val) {
+      try {
+        const arr = JSON.parse(val);
+        if (!Array.isArray(arr)) return null;
+        return arr.map((m) => ({
+          role: m.role || '',
+          content: typeof m.content === 'string' ? m.content : (m.content == null ? '' : JSON.stringify(m.content)),
+          calls: (m.tool_calls || []).map((t) => ({ name: (t.function || t).name || '', args: (t.function || t).arguments || '' })),
+        }));
+      } catch (e) { return null; }
+    }
+    function _renderMsg(m) {
+      const role = (m.role || 'msg').toLowerCase();
+      const calls = (m.calls || []).map((c) =>
+        '<div class="msg-call">🔧 ' + _esc(c.name) + (c.args ? ' <span class="args">' + _esc(c.args) + '</span>' : '') + '</div>').join('');
+      const body = m.content ? '<div class="msg-body">' + _esc(m.content) + '</div>' : '';
+      if (role === 'system') {  // boilerplate — collapsed by default, one click to read in full
+        return '<details class="msg msg-system"><summary><span class="msg-role">system</span>'
+          + '<span class="msg-sys-hint">' + _esc(String((m.content || '').length)) + ' chars</span>'
+          + '</summary>' + body + calls + '</details>';
+      }
+      return '<div class="msg msg-' + _esc(role) + '"><span class="msg-role">' + _esc(role) + '</span>' + body + calls + '</div>';
+    }
+    function _renderLLM(a) {
+      let inp = _msgsFrom(a, 'llm.input_messages'); if (!inp.length) inp = _msgsFallback(a['input.value']) || [];
+      let outp = _msgsFrom(a, 'llm.output_messages'); if (!outp.length) outp = _msgsFallback(a['output.value']) || [];
+      let h = '<div class="rich-h">Prompt</div>';
+      h += inp.length ? inp.map(_renderMsg).join('') : '<div class="rich-empty">(no prompt captured)</div>';
+      h += '<div class="rich-h">Response</div>';
+      h += outp.length ? outp.map(_renderMsg).join('') : '<div class="rich-empty">(no response captured)</div>';
+      const model = a['llm.model_name'], pt = a['llm.token_count.prompt'], ct = a['llm.token_count.completion'];
+      if (model || pt != null || ct != null) {
+        h += '<div class="rich-foot">' + _esc(model || '')
+          + ((pt != null || ct != null) ? (' · ' + _esc(pt != null ? pt : '?') + '→' + _esc(ct != null ? ct : '?') + ' tok') : '') + '</div>';
+      }
+      return h;
+    }
+    function _renderTool(a) {
+      const req = a['input.value'], resp = a['output.value'], status = a['http.status_code'];
+      const isErr = (status != null && String(status) !== '200') || /^\s*error/i.test(String(resp || ''));
+      const src = a['lineage.source.id'] || a['trust.source_id'], tgt = a['lineage.target.id'] || a['trust.target_id'];
+      let h = '';
+      if (src || tgt) {
+        h += '<div class="rich-hop"><b>' + _esc(src || '?') + '</b> → <b>' + _esc(tgt || '?') + '</b>'
+          + (a['lineage.protocol'] ? ' · ' + _esc(a['lineage.protocol']) : '')
+          + (a['lineage.outcome'] ? ' · ' + _esc(a['lineage.outcome']) : '')
+          + (a.source ? ' · ' + _esc(a.source) : '') + '</div>';
+      }
+      const badge = status != null ? '<span class="rich-status ' + (String(status) === '200' ? 'ok' : 'err') + '">' + _esc(status) + '</span>' : '';
+      h += '<div class="rich-h">Request</div><pre class="rich-pre">' + _esc(req != null ? _prettyJSON(String(req)) : '(none)') + '</pre>';
+      h += '<div class="rich-h">Response' + badge + '</div><pre class="rich-pre' + (isErr ? ' err' : '') + '">' + _esc(resp != null ? _prettyJSON(String(resp)) : '(none)') + '</pre>';
+      return h;
+    }
+    function _applySpanDeepLink() {
+      const m = location.search.match(/[?&]span=([^&]+)/);
+      if (!m) return;
+      const e = _spanCards.get(decodeURIComponent(m[1]));
+      if (e) { selectSpan(e.span, e.card); try { e.card.scrollIntoView({ block: 'center' }); } catch (_) {} }
+    }
+
     function selectSpan(span, card) {
       for (const c of columnsEl.querySelectorAll('.node-card.selected')) {
         c.classList.remove('selected');
@@ -904,6 +1045,10 @@
 
       detailEmptyEl.style.display = 'none';
       detailBodyEl.style.display = '';
+
+      const _kind = (span.attributes || {})['openinference.span.kind'];
+      detailRichEl.innerHTML = _kind === 'LLM' ? _renderLLM(span.attributes || {})
+        : _kind === 'TOOL' ? _renderTool(span.attributes || {}) : '';
 
       detailIdentityEl.innerHTML = '';
       _dd(detailIdentityEl, 'trace_id', span.trace_id);
