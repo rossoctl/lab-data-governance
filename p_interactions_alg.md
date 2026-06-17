@@ -38,7 +38,10 @@ for example:
 openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query - A span covers the agentic conversation including input and output.
 
 
-#### Step 1 - Base (white) graph
+#### Step 1 - Base (white) execution flow graph
+
+this step essentially creates an execution flow graph from the spans.
+Should look similar to what is shown in Phoenix or MLflow
 
 the algorithm construct a node for each span.
 in addition it constructs an edge from its parent node to itself.
@@ -58,7 +61,7 @@ deferred to later steps.
 
 
 
-#### Step 2.a - Enrich agentic nodes
+#### Step 2.a - Enrich agentic (Execution graph) nodes
 in this step we enrich the base graph with agentic semantics:
 
 Requires: Open inference telemetry (openinference_telemetry_spans.md, openinference_openai_agents_v1.4.1_telemetry_spans.md, openinference_anthropic_v1.0.6_telemetry_spans.md)
@@ -69,7 +72,7 @@ Requires: Open inference telemetry (openinference_telemetry_spans.md, openinfere
 
 
 
-#### Step 2.b - Inferred nodes 
+#### Step 2.b - Inferred (execution graph) nodes 
 In some cases agentic spans may describe or represent additional entities - In those cases we will create inferred nodes
 
 Examples:
@@ -93,29 +96,41 @@ This can be based on:
 1 proximity in the trace - It is reasonable to assume that an observed node will be close by to the inferred node. it can be a sibling an ancestor etc.
 2 similarity of attributes - e.g. identical tool names identical  values 
 
-#### Step 2.c - agentic boundaries 
+#### Step 2.d - agentic (execution graph) boundaries 
 In this step we identify agentic boundaries 
 
 1. Identify Gray nodes *representing a abentic boundary* and color them "Black".
 2. If there is a Gray edge between Black nodes - Color the edge black.
 
 
+
+
+
+
 #### Step 3 - agentic entity Graph
 
-In this step we are going to create a new graph representing agentic entities and interactions 
+In this step we are going to create a new graph representing agentic entities and interactions
+In this step multiple nodes Representing the same entity in the execution flow graph are combined 
 
 
 The agentic entity graph is going to be used for two things
 1. Identify the entities
 2. Identify the interactions 
 
-#### Step 3.a - Creating the graph
-Consider the Gray and black nodes and edges in the base graph.
+#### Step 3.a - Creating the Entity graph
+Consider the Gray and black nodes and edges in the execution flow graph.
 The black edges represent connections between entities 
 
-First we are going to create subgraphs by simply ignoring the black edges.  
-Next, each sub graph represented by connected Gray and black nodes will become a new node in the entity graph
-The nodes (entities) the in the new graph are connected with new edges matching the black edges 
+First we are going to create subgraphs of execution graph nodes by simply ignoring the black edges. 
+
+Next, each sub graph represented by connected Gray and black nodes will become a new node in the entity graph - Effectively combining all nodes from the Execution flow subgraph into a single entity node.
+The subgraph could contain inferred nodes, observed nodes Or both. 
+
+Note that the edges should be maintained: The nodes (entities) the in the new graph are connected with new edges matching the black edges 
+
+Next Combine multiple entity graph nodes representing the same entity.
+Those entity graph nodes should be combined based on an identifying attribute (such as tool name).
+Again, The edges should be maintained
 
 #### Step 3.b - Naming nodes
 
@@ -126,17 +141,15 @@ If the key is not clear we can call it unknown.
 
 
 
-### Step 4 
-Deffered
-
-- And verify and handle synthetic peers Generated from A span even though the subgraph exists
-- Align names across different executions
-
+### Step 4 - system graph
+Deferred 
 
 #### Inter trace merging
 In this step we apply heuristics to merge pairs of nodes where one node is inferred and the other is observed while they reside in different traces (this may happen for example where when Traceparent is not properly bust) 
 
 Deferred 
+
+- Align names across different executions
 
 
 #### Guide
