@@ -171,8 +171,10 @@ late-arriving CLIENT parent retargeting the caller, ADR-0007) or by
 callee, ADR-0011). The general invariant: more-informed values are
 never replaced with less-informed ones.
 
-**Interaction leg** (`direction`):
-A single directed call (**Interaction**) is recorded as **two rows**, not
+**Interaction leg** (`direction`) _(deferred — not implemented in v2; the
+shipped `interactions` schema is single-row, see ADR-0013)_:
+The intended-future model in which a single directed call (**Interaction**)
+is recorded as **two rows**, not
 one: a `request` leg and a `response` leg, sharing one logical `id` and
 keyed `(id, direction)`. Both legs carry the *same* orientation —
 `caller_entity_id` and `callee_entity_id` are identical on both, since a
@@ -332,7 +334,10 @@ distinct `llm:<host>/<model>` row, not by mutating the unresolved row.
 The processor that reads stored **Spans** and derives **Entities**,
 **Interactions**, and **Payloads**, writing them to the `entities`,
 `entity_spans`, `interactions`, `interaction_spans`, and
-`interaction_payloads` tables. Runs after `P-otel-receiver`; semantically
+`interaction_payloads` tables. Implemented by the
+`data_governance.processors.interactions` module (the module name drops the
+`P-` prefix, mirroring how `P-otel-receiver` is the `otlp_receiver` module).
+Runs after `P-otel-receiver`; semantically
 aware where the receiver is not. Out of scope for v1 ingestion; introduced
 as a later increment (v2-shaped — it crosses PROJECT.md §4's "no payload
 extraction in v1" line deliberately). Streaming consumer of `spans`
@@ -370,7 +375,13 @@ response bodies, (2) canonicalizes each into a normalized form per its
 The semantic shape of a **Payload**. Closed enum defined by `P-interactions`
 (initial members: `llm_chat_prompt`, `llm_completion`, `tool_call_arguments`,
 `tool_call_result`, `http_request_body`, `http_response_body`,
-`agent_message`, `unknown`); adding a kind is a code + migration change. Each
+`agent_message`, `unknown`); adding a kind is a code change. Unlike the three
+structural enums (**Entity** `kind`, **Entity-span role**, **Interaction-span
+role**), which are domain-fixed and stored as Postgres `ENUM` types so a bad
+value is rejected at write, `content_kind` is `TEXT`: the payload classifier
+churns as it matures and `unknown` already covers the open-world case, so the
+closed set is enforced in code by the **Payload extraction rule** rather than
+by a DB type (see ADR-0014). Each
 non-`unknown` kind has its own canonicalization rule under the
 **Payload extraction rule**. `unknown` is reserved for payload-shaped
 attributes the processor did not recognise: the **Payload** is still stored
