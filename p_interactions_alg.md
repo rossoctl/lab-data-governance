@@ -3,35 +3,42 @@ This document should only be changed With explicit human permission
 
 This document describes the algorithm of p_interactions Walking on top of standard OTEL spans as well as assumptions made 
 
-### The algorithm From 10,000 feet 
+### goal 
 The goal of the algorithm is to identify *agentic* entities and their interactions. 
 Entities may include tools, agents, llm calls etc. Some of these may be mapped to kubernetes entities such as services while others maybe implemented inside a single container (e.g. internal tool) 
 
 The input to the algorithm are events (e.g. Otel spans arriving from different standard scopes such as openinference, a2a, etc.).
 The output are entities and interactions.
 
-
-### Observations
-when monitoring protocol events, We should expect to see - Assuming all events are received - A send event from one entity and a matching receiving event from another entity.
-Importantly, we expect to see these two events to be *consecutive* in the trace (Otherwise we should be able to identify and flag the semantics of the event in between)
-
-Note there may be cases such as Google ADK - LLM Spans were a single span represents both the send and receive.
-
-We may be receiving events for multiple sources such as a2a and httpx, and - assuming tracesparent is on - those events will be interleaved. For example:
-a2a tool call -> http send -> ... -> http recieve -> a2a call recieve. Importantly both a2a call and http send events represent the same entity While both receive events represent another entity. 
-
-In case a component does not produce any events our trace will be broken. We will only have the one side of the interaction. The graph will be split.
-Another case may be where only partial sources of events are emmiting events in a given component. For example a receiving side may not have a2a events resulting in:
-a2a tool call -> http send -> ... -> http recieve | 
-Note that in such a case traceparent will not be forwarded resulting in two traces and a split graph
-
-Lastly note that all events between receive and send essentially belong to the same entity.
+### Assumptions
+1. Our focus is on agents and agent interactions 
+2. OTEL may be incomplete 
 
 ### Details
 
 The algorithm begins by creating a common graph for spans. next it handles each scope separately accounting for its semantics. Since we are looking for agentic semantics - the a2a and openinference scope are most important. other scopes are used for enrichment.
+Along the stages of graph construction we may create inferred nodes. these nodes will be merged using heuristics. 
 
-#### Step 1 - Base graph
+
+
+
+#### Definitions:
+1. Event node representing a local entity
+2. Source / Target nodes representing a local and remote entity.
+3. A white edge representing parent child relationship based on trace parent.
+4. A Gray edge representing the order of events - The (grand-)parent child relationship in agentic scoped events.
+5. agentic boundary - A boundary is (node) source *calling* an agent, a tool, an LLM or another service, or a *target* of such a call
+6. A Black edge representing a source/target across agentic entities/ components/ Containers
+7. Inferred node - a node in the graph we know should exist although we don't have a span emitted representing that node. for example, LLM output requires a call to a tool can produce an inferred node representing that tool.
+8. merge - the process of collapsing inferred nodes with real nodes - this process can be based on heuristics.
+
+
+Some agentic scope spans represent a source (client) or a target (server) (or both) of agentic protocols
+for example: 
+openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query - A span covers the agentic conversation including input and output.
+
+
+#### Step 1 - Base (white) graph
 
 the algorithm construct a node for each span.
 in addition it constructs an edge from its parent node to itself.
@@ -40,7 +47,7 @@ This graph should reflect the traceparent span connectivity.
 this is the base graph, were nodes and edges are "white" 
 
 
-#### Step 2 - Agentic scope
+#### Step 2 - Agentic (gray) scope
 
 The algorithm begins by handling the agentic scope, Specifically open inference spans.
 
@@ -51,49 +58,46 @@ deferred to later steps.
 
 
 
-
-#### Definitions:
-1. Event node representing a local entity
-2. Source / Target nodes representing a local and remote entity.
-3. A white edge representing parent child relationship based on trace parent.
-4. A Gray edge representing the order of events - The (grand-)parent child considerin agentic scoped events.
-5. A Black edge representing a source/target across agentic entities/ components/ Containers
-
-
-Some agentic scope spans represent a source (client) or a target (server) (or both) of agentic protocols
-for example: 
-TODO: chhange! - micha
-- A source and target span: openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query - A span covers the agentic conversation including input and output.
-
-
-
 #### Step 2.a - Enrich agentic nodes
 in this step we enrich the base graph with agentic semantics:
 
-Requires: openinference_telemetry_spans.md 
+Requires: Open inference telemetry (openinference_telemetry_spans.md, openinference_openai_agents_v1.4.1_telemetry_spans.md, openinference_anthropic_v1.0.6_telemetry_spans.md)
 
 1. Traverse the base graph, And identify all nodes related to the agentic scope. 
 2. Mark each agentic scope node as "Gray" 
-3. connect consecutive "Gray" nodes with "Gray" edges. Essentially if there is a path (of white edges) between two Gray nodes (Without going through a Gray node in between) Create a Gray edge.
-4. Identify Gray nodes *representing a abentic boundary* and color them "Black". A boundary is node source *calling* an agent a tool an LLM or another service, or a *target* of such a call
-5. If there is a Gray edge between Black nodes - Color the edge black.
+3. connect consecutive "Gray" nodes using "Gray" edges iff there is a path (of white edges) between two Gray nodes (Without going through a Gray node in between).
 
-#### Step 2.b - handling Special cases 
-In some cases agentic spans may represent both the source and the target. For example:
-openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query
-This span represents both the source and the target as it includes both the information outgoing and ingoing.
 
-For these cases we will modify the graph.
-When such a "black" node is encountered We will create an additional black node pointing To the same span.
-The original black node will represent The source entity while the new black node will represent the target entity
-Two black edges will need to be added from the source entity to the target entity and back.
 
-#### Step 2.c - Handling missing spans / call targets
-in some cases spans may be missing from the execution flow - This may be due to a Bug, incorrect Otel instrumentation or just missing instrumentation.
+#### Step 2.b - Inferred nodes 
+In some cases agentic spans may describe or represent additional entities - In those cases we will create inferred nodes
 
-we can detect some of those cases. specifically an agentic source without a target or vice versa. Whenever we detect a black node without black edges we basically miss some instrumentation.
+Examples:
+1. openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query
+This span represents a call to an LLM. While the span represents the current node - the agent (source), we can infer a new node representing the LLM (target). The spans includes information on both the current and inferred nodes as well as the data flowing between them.
 
-For every black node without black edges we should create a new black node an unobserved, synthetic peer - pointing to the same span - representing the target or source. Then we should add black edge from the source to the target and from the target to the source as appropriate.
+2. "llm.output_messages.0.message.tool_calls.0.tool_call. function.arguments": "{\"action\": \"store\", \"name\": \"keywords.2.txt\", ..}"
+Similarly The complete span represents a call to the LLM - however this specific attribute includes information on a tool.
+We can therefore infer two nodes: The first represents the tool call (The source) while the second represents the tool itself (target)
+In this case we will also infer several edges:
+1. between the current span and the tool call 
+2. Between the tool call and the tool itself (The target)
+3. Between the tool itself and the tool call (Reverse edge)
+
+#### Step 2.c Intra trace merging
+In this step we apply heuristics to merge pairs of nodes where one node is inferred and the other is observed (real) and both reside in the same trace
+Merging of nodes will also entail merging of edges as well as merging of attributes 
+
+the process of merging Can be viewed as a set of heuristics identifying nodes representing the same entity 
+This can be based on:
+1 proximity in the trace - It is reasonable to assume that an observed node will be close by to the inferred node. it can be a sibling an ancestor etc.
+2 similarity of attributes - e.g. identical tool names identical  values 
+
+#### Step 2.c - agentic boundaries 
+In this step we identify agentic boundaries 
+
+1. Identify Gray nodes *representing a abentic boundary* and color them "Black".
+2. If there is a Gray edge between Black nodes - Color the edge black.
 
 
 #### Step 3 - agentic entity Graph
@@ -113,17 +117,7 @@ First we are going to create subgraphs by simply ignoring the black edges.
 Next, each sub graph represented by connected Gray and black nodes will become a new node in the entity graph
 The nodes (entities) the in the new graph are connected with new edges matching the black edges 
 
-#### Step 3.b - Merging of identical unobserved peers
-note: this step must be performed on separate subgraphs
-
-In the previous step an unobserved peer was created as a target  node when an explicit node and Edge were missing.
-
-In this step we compare the unobserved nodes and identify similar ones based on the source span attributes. For example: tool name.
-Next we Merge all identical unobserved nodes Keeping the same attributes. 
-
-Important: We want to preserve all interactions - for this reason all edges are kept - the edge source or target -  the original-unobserved peer node is replaced with an observed peer merged node. 
-
-#### Step 3.c - Naming nodes
+#### Step 3.b - Naming nodes
 
 Goal: Each node in the entity graph should be given a key. 
 
@@ -132,11 +126,18 @@ If the key is not clear we can call it unknown.
 
 
 
-### Step 4
+### Step 4 
 Deffered
 
 - And verify and handle synthetic peers Generated from A span even though the subgraph exists
 - Align names across different executions
+
+
+#### Inter trace merging
+In this step we apply heuristics to merge pairs of nodes where one node is inferred and the other is observed while they reside in different traces (this may happen for example where when Traceparent is not properly bust) 
+
+Deferred 
+
 
 #### Guide
 - All attributes used in the code should be validated. The otel-span-table can generate a table with all the span attributes given URL .
@@ -144,4 +145,20 @@ Deffered
 
 
 
+
+### Observations
+when monitoring protocol events, We should expect to see - Assuming all events are received - A send event from one entity and a matching receiving event from another entity.
+Importantly, we expect to see these two events to be *consecutive* in the trace (Otherwise we should be able to identify and flag the semantics of the event in between)
+
+Note there may be cases such as Google ADK - LLM Spans were a single span represents both the send and receive.
+
+We may be receiving events for multiple sources such as a2a and httpx, and - assuming tracesparent is on - those events will be interleaved. For example:
+a2a tool call -> http send -> ... -> http recieve -> a2a call recieve. Importantly both a2a call and http send events represent the same entity While both receive events represent another entity. 
+
+In case a component does not produce any events our trace will be broken. We will only have the one side of the interaction. The graph will be split.
+Another case may be where only partial sources of events are emmiting events in a given component. For example a receiving side may not have a2a events resulting in:
+a2a tool call -> http send -> ... -> http recieve | 
+Note that in such a case traceparent will not be forwarded resulting in two traces and a split graph
+
+Lastly note that all events between receive and send essentially belong to the same entity.
 
