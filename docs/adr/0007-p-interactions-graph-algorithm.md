@@ -10,13 +10,19 @@ approach pushes structural decisions into a cross-scope merge step that is hard
 to inspect. A single colored base graph makes both the trace structure and the
 agentic semantics explicit and inspectable in one place.
 
+This ADR records the design as it tracks `p_interactions_alg.md` (the
+human-owned algorithm spec). Where the current implementation realises only a
+subset of the spec, the text says so explicitly: the algorithm vocabulary and
+step ordering below follow the spec, and per-section notes flag what the code
+implements today versus what is deferred.
+
 ## Definitions
 
 The algorithm uses two orthogonal vocabularies for nodes — one describes the
 **role** the node plays in an interaction, the other describes the
-**structural** origin of the node in the graph. A third vocabulary —
-`SpanFacts` — sits between the raw spans and the algorithm and is described
-under "Adapter layer" below.
+**provenance** of the node (was it recorded by a real span, or inferred from
+one). A third vocabulary — `SpanFacts` — sits between the raw spans and the
+algorithm and is described under "Adapter layer" below.
 
 **Roles** (what the node represents):
 - **Event node** — a node representing a local entity, recorded by an
@@ -31,22 +37,41 @@ on `SpanFacts.role` (`SOURCE` / `TARGET` / `BOTH` / `NONE`). `NONE` means
 the span is not a call boundary — typically a wrapper / runner /
 per-activation span that lacks the specific call evidence (target
 identity, request/response payload, or a framework-specific span-name
-signal) needed to assert one side of a call. The Step 2.a.3 promotion to
+signal) needed to assert one side of a call. The Step 2.d promotion to
 Black is driven by `role`, **not** by `Kind` (see "Boundary promotion is
 role-driven, not kind-driven" under Key decisions).
 
-**Structural descriptors** (how the node was produced):
-- **Boundary node** — a Black node whose underlying span was classified as a
-  protocol boundary (source or target) by its scope's classifier.
-- **Duplicate node** — an additional Black node referencing the same span as
-  an existing Black node, created by Step 2.b to split a combined
-  source-and-target span into two role-distinct nodes.
-- **Synthetic node** — a Black node created by Step 2.c to represent an
-  unobserved peer when only one side of a protocol call was instrumented.
-  Synthetic nodes are identified by a dedicated boolean field
-  (`is_synthetic` on colored-base-graph nodes, `synthetic` on entity nodes).
-  Identification is never done by inspecting the node's label or any other
-  display string — the field is the single source of truth.
+**Provenance** (how the node came to exist) — following the spec's
+definitions verbatim:
+- **Observed (real) node** — a node backed by an emitted span.
+- **Inferred node** — *"a node in the graph we know should exist although we
+  don't have a span emitted representing that node"* (spec def. 7). An
+  agentic span can describe an entity other than itself: an LLM `query` span
+  describes the LLM it called; a `tool_calls` attribute on an LLM-output span
+  describes a tool that was invoked. Step 2.b materialises such peers as
+  inferred nodes. An inferred node may later be **merged** with the real node
+  representing the same entity (Step 2.c).
+- **Duplicate node** — an additional node referencing the same span as an
+  existing boundary node, created by Step 2.b to split a combined
+  source-and-target span into two role-distinct nodes. (A duplicate is a
+  special case of inferred node: the peer is described by the *same* span
+  rather than a separate one.)
+
+**merge** — *"the process of collapsing inferred nodes with real nodes — this
+process can be based on heuristics"* (spec def. 8). Merging pools the edges
+and attributes of the collapsed nodes (see Step 2.c).
+
+In the implementation, an inferred node that survives to the entity graph
+without being merged into a real node is recorded with a dedicated boolean
+field — `is_inferred` on colored-base-graph nodes, `inferred` on entity nodes.
+Identification is **never** done by inspecting the node's label or any other
+display string — the field is the single source of truth.
+
+> **Naming note.** These columns were originally `is_synthetic` / `synthetic`.
+> The algorithm vocabulary is "inferred", so the intended column names are
+> `is_inferred` / `inferred`; this ADR documents the target names. The code
+> and scratch-table schema still carry the old names and will be renamed in a
+> later change.
 
 **Edges:**
 - **White edge** — parent/child relationship via OTel traceparent.
@@ -57,8 +82,13 @@ role-driven, not kind-driven" under Key decisions).
   entities/components/containers.
 
 A Black boundary node typically *plays* the Source or Target role depending on
-which side of the call its span represents. A duplicate or synthetic node is
-always created to fill in the *opposite* role of an existing boundary node.
+which side of the call its span represents. For the combined-span (Step 2.b
+case 1) and one-sided-stub cases, the duplicate / inferred node is created to
+fill the *opposite* role of an existing boundary node. Attribute-derived
+inferred nodes (Step 2.b case 2 — tool nodes inferred from an LLM span's
+`tool_calls`) are different: they introduce their *own* source/target pair
+(the tool-call node and the tool node) rather than completing the role of an
+existing boundary.
 
 ## Adapter layer
 
@@ -77,14 +107,16 @@ add a new kind value, …) from the graph-construction code.
 - `role` — `Role.SOURCE`, `Role.TARGET`, `Role.BOTH`, or `Role.NONE`.
   Assigned by the adapter from the span's call evidence: target identity,
   request/response payload, or a framework-specific span-name signal.
-  Drives Step 2.a.3 Black promotion. `Role.NONE` keeps the node Gray.
+  Drives Step 2.d Black promotion. `Role.NONE` keeps the node Gray.
 - `is_combined` — true iff one span carries BOTH the source and target side
   of the same call. Triggers Step 2.b duplication.
-- `natural_key` — stable per-boundary identity used as the Step 3.b
-  synthetic-peer merge key. Format is `<kind-prefix>:<identifier>` —
-  `tool:get_weather`, `llm:gpt-4o`, `agent:travel_advisor`. None when the
-  span carries no identifying attribute (those synthetics stay distinct in
-  3.b).
+- `natural_key` — stable per-boundary identity. Format is
+  `<kind-prefix>:<identifier>` — `tool:get_weather`, `llm:gpt-4o`,
+  `agent:travel_advisor`. It is the **identifying attribute** the Step 3.a
+  phase-2 combine groups on (carried on the inferred node as `peer_match_key`),
+  and the natural candidate key for the spec's Step 2.c inferred↔observed
+  merge. None when the span carries no identifying attribute (those nodes are
+  not combined).
 - `display_label`, `target_label` — human-facing labels; `target_label` is
   the duplicate's label for combined spans only.
 - `request_messages` / `response_messages` / `request_value` /
@@ -97,7 +129,7 @@ framework name is the third dotted segment of the scope name (e.g.
 covers openinference frameworks not yet profiled (LangChain, LiteLLM,
 Haystack, …) using the cross-framework openinference vocabulary; it is
 safe-by-default — unrecognised combined-span shapes degrade to one-sided
-boundaries that Step 2.c will stub.
+boundaries that Step 2.b will stub with an inferred peer.
 
 **Versioning.** Adapters that have absorbed schema drift across releases
 declare a per-version schema map keyed on `_scope_version(span)`. The
@@ -146,7 +178,7 @@ to itself, following the OTel traceparent relationships. The result is a single
 graph for the entire trace whose connectivity mirrors trace structure exactly.
 All nodes and edges start White.
 
-**Step 2.a — Agentic coloring.**
+**Step 2.a — Agentic coloring (Gray).**
 Coloring is additive: White edges are never removed when Gray edges are added,
 and Gray edges are never removed when Black edges are added. The base graph's
 full White connectivity is preserved throughout.
@@ -160,109 +192,178 @@ stages" below.
 2. For every pair of Gray nodes connected by a chain of White edges that does
    not pass through another Gray node, add a directed **Gray edge** between
    them in the same direction as the underlying chain.
-3. The openinference classifier delegates to the `(scope, framework)`
-   adapter to produce a `SpanFacts` for each span. A span is a *protocol
-   boundary* iff `SpanFacts.role` is not `NONE` — the adapter has
-   determined that the span carries explicit call evidence and represents
-   the source (caller side), the target (callee side), or both sides of
-   an agentic protocol call. Color each boundary node **Black**. Gray
-   nodes whose `SpanFacts.role` is `NONE` remain Gray. This includes:
-   internal SDK plumbing, lifecycle hooks, framework dispatch, guardrail
-   checks, custom CHAIN spans (kind=`OTHER`); **and** wrapper spans whose
-   kind is `AGENT`/`TOOL`/`LLM` but which lack the specific call evidence
-   needed to assert one side of a call (e.g. a top-level agent-run
-   wrapper that does not itself carry target identity or payload —
-   typically a more specific child span is the real boundary). The
-   adapter is the single arbiter of role; the builder reads only the
-   field.
-4. For every Gray edge whose endpoints are both Black, add a **Black edge** in
-   the same direction.
 
-**Step 2.b — Combined source-and-target spans.**
-Some agentic spans represent both sides of a call in a single span — e.g.
-`ClaudeAgentSDK.query` (and `ClaudeAgentSDK.ClaudeSDKClient.receive_response`)
-in the `claude_agent_sdk` framework, which record both the outgoing request
-to the remote LLM and the incoming response. The adapter signals this by
-returning `SpanFacts.is_combined = True` together with a `target_label` for
-the duplicated node (typically `llm:<model>`). For each such Black node,
-create an additional Black **duplicate node** referencing the same span. The
-**original** node keeps both its parent-side and child-side Gray/White
-chains and plays the **Source** role. The **duplicate** node has no
-neighbours in the base graph and plays the **Target** role; its label is
-`SpanFacts.target_label`. Add two directed Black edges between them:
-source→target (request) and target→source (response).
+Boundary promotion (Gray → Black) is **not** done here. The spec orders
+boundary detection *after* inferred-node creation and intra-trace merging,
+as Step 2.d — so a node only becomes Black once the algorithm has had a
+chance to materialise inferred peers and fold inferred nodes into the
+observed nodes they describe.
 
-**Step 2.c — Stubbing one-sided observations.**
-A Black boundary node with no Black edges indicates that the peer side of the
-call was not observed (missing instrumentation, a bug, or genuinely uninstrumented
-code on the other side). For every such Black node, create an additional Black
-**synthetic node** referencing the same span and carrying `is_synthetic = true`
-as a dedicated boolean field on the node (not encoded in the label or any other
-display string). The synthetic node also stores the originating boundary's
-`SpanFacts.natural_key` on a `peer_match_key` field — Step 3.b uses this to
-merge synthetic peers stubbing the same real callee from multiple sources.
-When a natural key is available the synthetic node's display label is the
-key itself (`tool:get_weather`, `llm:gpt-4o`, …); otherwise it falls back
-to `(unobserved peer of <source>)`. The original node retains its
-Source-or-Target role as classified; the synthetic node plays the
-*opposite* role. Add two directed Black edges between them: source→target
-and target→source.
+> **As-implemented note.** The current builder computes `SpanFacts.role` at
+> classification time and promotes boundaries early (it effectively folds the
+> Step 2.d promotion into 2.a). The spec ordering below is the intended
+> model; the role assignment itself is unchanged — only *when* the Black
+> color is applied moves.
 
-When both sides of a call are observed in the same trace, Step 2.a.4 will have
-already added a Black edge between them, so this step does not fire. A Black
-node with no Black edges therefore reliably indicates an unobserved peer.
+**Step 2.b — Inferred nodes.**
+Some agentic spans describe or represent an entity *other than the span's own
+node*. When a span carries evidence of such a peer, the algorithm materialises
+an **inferred node** for it and connects it with Black edges. Two cases:
+
+1. **Combined source-and-target spans.** A single span records both sides of a
+   call — e.g. `ClaudeAgentSDK.query` (and
+   `ClaudeAgentSDK.ClaudeSDKClient.receive_response`) in the
+   `claude_agent_sdk` framework, which record both the outgoing request to
+   the remote LLM and the incoming response. The adapter signals this by
+   returning `SpanFacts.is_combined = True` together with a `target_label`
+   for the inferred node (typically `llm:<model>`). For each such span,
+   create an additional **duplicate node** referencing the same span. The
+   **original** node keeps both its parent-side and child-side Gray/White
+   chains and plays the **Source** role. The **duplicate** node has no
+   neighbours in the base graph and plays the **Target** role; its label is
+   `SpanFacts.target_label`. Add two directed Black edges between them:
+   source→target (request) and target→source (response).
+
+2. **Peers described in span attributes.** An LLM-output span may carry a
+   `tool_calls` attribute, e.g.
+   `llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments`,
+   which describes a tool that was invoked from the LLM output. The span
+   itself represents the LLM call; the attribute additionally evidences a
+   *tool call* (the source) and the *tool itself* (the target). From it the
+   algorithm infers two nodes and three edges: (1) an edge from the current
+   span to the tool-call node, (2) an edge from the tool-call node to the
+   tool node (the target), and (3) the reverse edge from the tool node back
+   to the tool-call node.
+
+   > **As-implemented note.** Case 2 (tool-from-`tool_calls` inference) is
+   > **not yet implemented**. It is recorded here as intended design;
+   > currently only combined-span duplication (case 1) and the one-sided
+   > stubbing described below materialise inferred nodes.
+
+When only one side of a protocol call is observed, the missing peer is also an
+inferred node: a boundary node that has no observed peer in the trace gets an
+inferred node referencing the same span, carrying the originating boundary's
+`SpanFacts.natural_key` on a `peer_match_key` field and bidirectional Black
+edges (source→target and target→source). When a natural key is available the
+inferred node's display label is the key itself (`tool:get_weather`,
+`llm:gpt-4o`, …); otherwise it falls back to `(unobserved peer of <source>)`.
+The original node retains its Source-or-Target role; the inferred node plays
+the *opposite* role.
+
+> **Ordering note.** One-sided stubbing depends on knowing a node *is* a
+> boundary, which the spec colors in Step 2.d — so this sub-case is logically
+> intertwined with boundary detection rather than cleanly preceding it. The
+> spec lists it under inferred-node creation (it produces an inferred node);
+> the implementation determines boundary-ness from `SpanFacts.role` at
+> classification time, so the dependency is satisfied regardless of where the
+> Black color is nominally applied. The two cases above (combined span,
+> `tool_calls`) have no such dependency — they read evidence off the span
+> directly.
+
+**Step 2.c — Intra-trace merging.**
+Per spec def. 8, this step merges an **inferred** node with the **real
+(observed)** node representing the same entity, where both reside in the same
+trace. Merging a pair collapses them into a single node, pooling their
+**edges** and **attributes**.
+
+Merging is a set of heuristics that identify nodes representing the same
+entity. It may draw on:
+
+1. **Proximity in the trace** — an observed node representing the same entity
+   as an inferred node is expected to sit close by: a sibling, an ancestor,
+   etc.
+2. **Similarity of attributes** — e.g. identical tool names, identical
+   values.
+
+> **As-implemented note.** This step (inferred↔observed heuristic merging by
+> proximity or attribute similarity, in the execution-flow graph) is **not yet
+> implemented**; inferred nodes currently pass through to Step 3.a unmerged.
+> Implementing it would fold an inferred node into its *observed* twin when one
+> exists. It is complementary to — not a substitute for — the Step 3.a phase-2
+> combine, which converges repeatedly-called peers by identifying attribute
+> even when no observed twin exists.
+
+**Step 2.d — Agentic boundaries (Black).**
+Identify the Gray nodes that *represent an agentic boundary* and color them
+**Black**. A node is a boundary iff its `SpanFacts.role` is not `NONE` — the
+adapter has determined that the span carries explicit call evidence and
+represents the source (caller side), the target (callee side), or both sides
+of an agentic protocol call. Gray nodes whose role is `NONE` remain Gray:
+internal SDK plumbing, lifecycle hooks, framework dispatch, guardrail checks,
+custom CHAIN spans (kind=`OTHER`); **and** wrapper spans whose kind is
+`AGENT`/`TOOL`/`LLM` but which lack the specific call evidence needed to
+assert one side of a call (e.g. a top-level agent-run wrapper that does not
+itself carry target identity or payload — typically a more specific child span
+is the real boundary). The adapter is the single arbiter of role; the builder
+reads only the field. Promotion is driven by `role`, **not** by `Kind` (see
+"Boundary promotion is role-driven, not kind-driven" under Key decisions).
+
+Then, for every Gray edge whose endpoints are both Black, add a **Black edge**
+in the same direction.
 
 **Step 3 — Agentic entity graph.**
-Step 3 derives the entity graph from the colored base graph in three sub-steps:
-form entities (3.a), merge identical synthetic peers (3.b), and name them (3.c).
+Step 3 derives the entity graph from the colored execution-flow graph in two
+sub-steps: form-and-combine entities (3.a) and name them (3.b). Per spec
+Step 3, this is where multiple execution-graph nodes representing the *same
+entity* are combined into one.
 
-**Step 3.a — Creating the graph.**
-Compute connected components over the set of Gray and Black nodes, considering
-only White and Gray edges (Black edges are ignored for this purpose). Each
-connected component becomes one **entity node**. Attributes from every span in
-the component are pooled onto the entity node. Each Black edge in the colored
-base graph becomes a directed edge in the entity graph between the entity
-nodes containing its endpoints. Synthetic nodes propagate their `is_synthetic`
-marker onto the entity node they form via a dedicated boolean field
-(`synthetic`) on the entity node — again, not via label inspection. An entity
-is `synthetic = true` iff every absorbed Black node was synthetic.
+**Step 3.a — Creating the entity graph.**
+This sub-step has two phases.
 
-**Step 3.b — Merging identical synthetic peers.**
-Step 2.c materialises a synthetic Black node for every observed boundary whose
-peer was not observed; in Step 3.a each such synthetic node becomes its own
-entity node. When the same real peer is the unobserved target of multiple
-calls (e.g. the same tool invoked from two different agents in the same
-trace), Step 3.a produces multiple synthetic entities that should collapse
-into one.
+*Phase 1 — component → entity.* Compute connected components over the set of
+Gray and Black nodes, considering only White and Gray edges (Black edges are
+ignored for this purpose). Each connected component becomes one **entity
+node** — combining every execution-graph node in the component (inferred,
+observed, or both) into a single entity. Attributes from every span in the
+component are pooled onto the entity node. Each Black edge in the colored
+graph becomes a directed edge in the entity graph between the entity nodes
+containing its endpoints. Inferred nodes propagate their inferred marker onto
+the entity node they form via a dedicated boolean field (`inferred`) on the
+entity node — not via label inspection. An entity is `inferred = true` iff
+every absorbed node was an inferred node.
 
-For every pair of synthetic entity nodes whose **`peer_match_key` matches**,
-merge them into a single synthetic entity. The match key is the
-`SpanFacts.natural_key` of the originating boundary span — `tool:<name>`,
-`llm:<model>`, or `agent:<name>` — propagated from the synthetic Black
-node onto the entity in Step 3.a. Synthetic entities with no key (the
-originating span had no identifying attribute) are not merged; they remain
-distinct. The merged entity keeps the `synthetic: true` marker.
+*Phase 2 — combine same-entity nodes by identifying attribute.* After phase 1,
+the entity graph can still hold several entity nodes that represent the *same
+real entity*. This happens whenever the same peer is the target of several
+calls: Step 2.b materialises one inferred node per call site (e.g. one tool
+invoked from two agents → two inferred `tool:get_weather` nodes), and phase 1
+turns each into its own entity. Combine entity nodes that share an
+**identifying attribute** — the boundary's `natural_key` (`tool:<name>`,
+`llm:<model>`, `agent:<name>`) — into a single entity. **All edges are
+maintained**: every Black-derived edge incident on any combined node is
+rewritten onto the survivor, none dropped or deduplicated, so a tool called
+from two sources yields one entity with two edges (preserving the count and
+provenance of calls). Entity nodes with no identifying attribute are not
+combined; they remain distinct.
 
-**All edges and interactions are preserved across the merge.** Every Black
-edge incident on any of the merged peers is rewritten onto the single
-surviving entity — none is dropped, deduplicated by endpoint pair, or
-collapsed. Each pre-merge edge represents a distinct observed call site,
-and each must survive as a distinct edge (and therefore a distinct
-interaction in the extractor) so that the count and provenance of calls to
-the unobserved peer is preserved. Concretely: if two observed sources both
-called the same unobserved tool, the pre-merge graph has two synthetic
-entities with one edge each; the post-merge graph has one synthetic entity
-with two edges, not one.
+This phase-2 combine is what makes a repeatedly-called peer converge to one
+entity **even when that peer is never observed** in the trace — the case
+Step 2.c (which needs an observed node to merge into) cannot resolve. The two
+are complementary: Step 2.c folds an inferred node into an *observed* twin
+when one exists; Step 3.a phase 2 combines entity nodes that share an
+identifying attribute regardless of whether any was observed.
 
-Only synthetic entities are merged. Observed entities (those formed from a
-real boundary span on the peer side) are never fused at this stage — the
-"No inferred-peer fusion" decision below records the rationale.
+> **As-implemented note.** Phase 1 is `build_entity_graph`; phase 2 is the
+> `merge_synthetic_peers` pass (`builder.py`), which combines entity nodes by
+> `peer_match_key` (= the `natural_key`) and preserves all incident edges.
+> Both are implemented and exercised by the canonical-trace test (5 entities /
+> 18 interactions). Today phase 2 only combines *inferred* entities; the spec
+> phrases the combine generally ("based on an identifying attribute"), so
+> extending it to observed entities sharing a key is a possible later
+> broadening, not a current behavior.
 
-**Step 3.c — Naming nodes.**
-Each entity node is assigned the ID `unknown` at this stage. Richer naming
-— deriving an ID from the entity's pooled attributes (hostname from non-
-agentic enrichment, service name, model/tool name, etc.) — is deferred; see
-"Deferred to later stages" below.
+**Step 3.b — Naming nodes.**
+Each entity node should be given a key reflecting its originating subgraph,
+drawn from one of the subgraph's node spans. In particular, if a node in the
+subgraph carries a **hostname**, use it as the key. When no clear key is
+available, the entity is named `unknown`.
+
+> **As-implemented note.** The current implementation assigns `unknown` to
+> every entity. Richer naming — deriving an ID from the entity's pooled
+> attributes (hostname from non-agentic enrichment, service name, model/tool
+> name, etc.) — is deferred; the most useful identifier (hostname) lives on
+> non-agentic spans that today are not part of the entity-forming subgraph.
+> See "Deferred to later stages".
 
 ## Annotations
 
@@ -273,6 +374,40 @@ agentic spans that the classifier does not yet recognise as boundaries —
 treating the in-between span as a signal that the per-scope span tables or
 classifier may be incomplete. The annotation is informational only; it does
 not block entity formation.
+
+## Observations and assumptions
+
+These are the protocol-level expectations the spec relies on. They motivate
+the consecutive-send/receive flagging (Annotations) and the inferred-peer /
+split-graph handling, and they bound where the algorithm is expected to work.
+
+- **Matched send/receive.** When all events are received, a protocol
+  interaction shows up as a send event from one entity and a matching receive
+  event from another. The two are expected to be **consecutive** in the trace
+  — if an unexpected agentic span sits between them, the algorithm should be
+  able to identify and flag it (this is what the between-boundary annotation
+  catches).
+- **Combined send-and-receive spans exist.** Some frameworks (e.g. Google
+  ADK LLM spans, `ClaudeAgentSDK.query`) emit a single span representing both
+  the send and the receive. These are handled as combined source-and-target
+  spans (Step 2.b case 1).
+- **Interleaved sources represent the same entity.** With multiple
+  instrumentation sources (a2a and httpx, …) and traceparent on, events
+  interleave: `a2a tool call → http send → … → http receive → a2a call
+  receive`. The a2a-call and http-send events both represent the *same*
+  caller entity; both receive events represent the *same* callee entity. This
+  is the basis for the deferred cross-scope reconciliation.
+- **Missing instrumentation splits the graph.** If a component emits no
+  events, only one side of the interaction is seen and the graph splits. If a
+  component emits only *some* sources (e.g. a receiver with no a2a events:
+  `a2a tool call → http send → … → http receive |`), traceparent is not
+  forwarded, producing two traces and a split graph. Step 2.b's inferred peers
+  stub the missing side within a trace; cross-trace stitching is deferred to
+  Step 4.
+- **Events between a receive and a send belong to one entity.** All events
+  observed between a component's receive and its subsequent send belong to the
+  same entity — which is why a connected Gray/White component collapses to a
+  single entity in Step 3.a.
 
 ## Key decisions
 
@@ -347,48 +482,65 @@ a thin facade that translates `SpanFacts` to the older
 `AgenticClassification` shape the builder consumes.
 
 **Natural-key prefixes are part of the public algorithm vocabulary.**
-The synthetic-peer merge key produced by an adapter has a fixed format:
+The inferred-peer merge key produced by an adapter has a fixed format:
 `tool:<name>`, `llm:<model>`, `agent:<name>`. The prefix doubles as the
 entity's coarse kind in the extractor (`_kind_from_label`) and as the
-synthetic node's display label when no friendlier label is available.
+inferred node's display label when no friendlier label is available.
 Adapters strip provider prefixes from model strings (e.g.
 `anthropic/claude-3-7` → `claude-3-7`) so the key is the model alone, not
 the provider-qualified name. Hostname / `service.name` fallbacks are
 deliberately *not* used as keys — they would over-merge across distinct
 entities behind the same proxy.
 
-**Observed peers are never fused; synthetic peers may be merged.**
-When both sides of a call are observed, they become two separate entities in
-Step 3.a, joined by a Black edge representing the call. The two observed
-entities remain distinct — there is no attempt to fuse them into one richer
-caller/callee pair at this stage, and any cross-side attribute enrichment
-happens later. Synthetic peers (produced by Step 2.c when only one side was
-observed) are different: Step 3.b merges synthetic entities whose
-source-span attributes match, so a single unobserved real peer called from
-multiple sources collapses into one entity rather than appearing as N
-look-alike duplicates.
+**Two complementary places where nodes representing the same entity combine.**
+Convergence of same-entity nodes is not one operation but two, at different
+stages and on different graphs:
 
-**Synthetic peers are created in the core algorithm, not deferred.**
-When only one side of a protocol call is observed, Step 2.c materialises a
-synthetic Black node for the unobserved peer (marked with the dedicated
-`is_synthetic` boolean field — see "Synthetic identity is a boolean field,
-not a label convention" below) and connects it with bidirectional Black
-edges. This keeps the entity graph shape-consistent — every observed boundary
-participates in a complete source/target pair — and lets downstream consumers
-distinguish observed entities from inferred ones via the marker. The
-alternative (leave the lone boundary edgeless and stub later) was rejected
-because it would leave the entity graph topologically inconsistent across
-observed-both-sides vs observed-one-side cases.
+- **Step 2.c — inferred↔observed merge, execution-flow graph (spec def. 8).**
+  Collapse an **inferred** node into the **observed** node representing the
+  same entity, in the same trace, using proximity in the trace and attribute
+  similarity. The intent is that an inferred stub does not sit beside its
+  observed twin. **Not yet implemented**; inferred nodes pass through to
+  Step 3.a unmerged.
+- **Step 3.a phase 2 — combine by identifying attribute, entity graph (spec
+  Step 3).** After components are turned into entities, combine entity nodes
+  that share an identifying attribute (the boundary `natural_key`). This is
+  what converges a peer that is *called repeatedly but never observed* — the
+  case Step 2.c cannot handle because there is no observed node to merge into.
+  **Implemented** (`merge_synthetic_peers`), and required by the
+  canonical-trace test.
 
-**Synthetic identity is a boolean field, not a label convention.**
-Synthetic nodes are identified by a dedicated boolean field on the node row
-— `is_synthetic` on the colored-base-graph node and `synthetic` on the
-entity node — and never by parsing the `label` column or any other display
-string. The label is a human-facing display value (e.g. `"(unobserved peer
-of dl-demo-travel-advisor)"`) and is free to change for UX reasons; queries
-and downstream processors must filter on the boolean field. The scratch-
-table schemas in `cli.py` carry this column explicitly so external SQL
-inspection has a typed signal rather than a string-pattern heuristic.
+These are complementary, not redundant: 2.c removes an inferred node in favour
+of a real one (needs an observation); 3.a phase 2 fuses entities that share a
+key (needs no observation). The earlier ADR draft asserted "no inferred↔
+inferred de-duplication" and that unobserved repeated peers stay distinct —
+that was wrong; the spec's Step 3.a explicitly combines them by identifying
+attribute, and the code already does so.
+
+**Inferred peers are created in the core algorithm, not deferred.**
+When only one side of a protocol call is observed, Step 2.b materialises an
+inferred node for the unobserved peer (recorded with the dedicated
+`is_inferred` boolean field on unmerged survivors — see "Inferred identity
+is a boolean field, not a label convention" below) and connects it with
+bidirectional Black edges. This keeps the entity graph shape-consistent —
+every observed boundary participates in a complete source/target pair — and
+lets downstream consumers distinguish observed entities from inferred ones
+via the marker. The alternative (leave the lone boundary edgeless and stub
+later) was rejected because it would leave the entity graph topologically
+inconsistent across observed-both-sides vs observed-one-side cases.
+
+**Inferred identity is a boolean field, not a label convention.**
+An inferred node that survives without being merged into an observed node is
+identified by a dedicated boolean field on the node row — `is_inferred` on
+the colored-base-graph node and `inferred` on the entity node — and never by
+parsing the `label` column or any other display string. The label is a
+human-facing display value (e.g. `"(unobserved peer of
+dl-demo-travel-advisor)"`) and is free to change for UX reasons; queries and
+downstream processors must filter on the boolean field. The scratch-table
+schemas in `cli.py` carry this column explicitly so external SQL inspection
+has a typed signal rather than a string-pattern heuristic. (These columns are
+currently named `is_synthetic` / `synthetic` in the code; the rename to
+`is_inferred` / `inferred` is pending — see the naming note in Definitions.)
 
 **Entity attributes are pooled from all spans in the component.**
 Within a connected component, attributes from every Gray and Black span are
@@ -401,8 +553,10 @@ span-table reference for the framework that emitted it
 (`openinference_telemetry_spans.md` for cross-framework openinference at
 the current main snapshot;
 `openinference_openai_agents_v1.4.1_telemetry_spans.md` for openai_agents
-1.4.1 — the version that produced the canonical live trace; future
-references for httpx/starlette/etc.). New attributes are not added on
+1.4.1 — the version that produced the canonical live trace;
+`openinference_anthropic_v1.0.6_telemetry_spans.md` for the anthropic /
+`claude_agent_sdk` framework at 1.0.6; future references for
+httpx/starlette/etc.). New attributes are not added on
 intuition; the reference is regenerated from the upstream package and the
 attribute confirmed before it appears in `_OI_ATTRS` or in a per-version
 schema map. Each adapter records the framework version(s) it has been
@@ -435,7 +589,7 @@ and will be addressed by a separate enrichment stage:
   no traceparent link to its corresponding Send, the base graph is
   disconnected and Step 3.a naturally produces disconnected components in the
   entity graph. No special handling, no annotation at this stage.
-- **Richer entity naming.** Step 3.c assigns `unknown` to every entity. A
+- **Richer entity naming.** Step 3.b assigns `unknown` to every entity. A
   later stage will derive an ID from the entity's pooled attributes —
   hostname (from non-agentic httpx/starlette enrichment),
   `service.name` (OTel resource), or framework-specific attributes
@@ -443,6 +597,30 @@ and will be addressed by a separate enrichment stage:
   the cross-scope enrichment stage exists, since the most useful identifier
   (hostname) lives on non-agentic spans that today are not part of the
   entity-forming subgraph.
+- **Inferring tool nodes from `tool_calls` attributes.** An LLM-output span's
+  `llm.output_messages.*.message.tool_calls.*` attributes evidence a tool
+  call and the tool itself (Step 2.b case 2). Materialising those inferred
+  tool-call / tool nodes and their edges from span attributes is intended
+  design but not yet implemented.
+- **Step 2.c inferred↔observed merging.** The spec's Step 2.c — collapsing an
+  inferred peer into the observed node representing the same entity, by
+  proximity in the trace and attribute similarity — is specified but **not yet
+  implemented** (inferred nodes pass through to Step 3.a). This is distinct
+  from the Step 3.a phase-2 combine (combine by identifying attribute), which
+  *is* implemented and converges repeatedly-called peers even when never
+  observed.
+- **Column rename `is_synthetic`/`synthetic` → `is_inferred`/`inferred`.** The
+  algorithm vocabulary is "inferred"; the code and scratch-table schema still
+  use the old `synthetic` names and the `synth` UI marker. Renaming them to
+  match is pending.
+- **Step 4 (spec) — system graph.** The spec's Step 4 (deferred) builds a
+  cross-trace "system graph" and groups:
+  - **Inter-trace merging.** Merging an inferred node in one trace with an
+    observed node in another — which can happen when traceparent is not
+    propagated and a single logical interaction is split across two traces
+    (so the graph is split). The cross-trace analogue of Step 2.c.
+  - **Align names across executions.** Reconciling entity identifiers across
+    different traces / runs of the same system.
 - **Combined source-and-target spans whose target emits its own spans.** See
   the corresponding key decision above.
 - **Entities from pure non-agentic calls.** A direct httpx call between two
@@ -476,11 +654,11 @@ focused on agentic-scope semantics over a single base graph.
 ## Consequences
 
 - The prototype writes three sets of scratch tables for inspection: the base
-  graph (after Step 1), the colored base graph (after Steps 2.a, 2.b, and 2.c,
-  including combined-span duplicates, synthetic peers, and between-boundary
-  flag annotations), and the entity graph (after Step 3, including synthetic-
-  peer merging). All three are surfaced in the "Graphs (proto)" tab of the
-  trace-tree UI.
+  graph (after Step 1), the colored base graph (after the Step 2 coloring
+  passes — Gray coloring, inferred/duplicate nodes, boundary promotion —
+  including combined-span duplicates, inferred peers, and between-boundary
+  flag annotations), and the entity graph (after Step 3). All three are
+  surfaced in the "Graphs (proto)" tab of the trace-tree UI.
 - A trace captured only as a test fixture (the extractor's tests run it as a
   pure function over `fixtures/*.json`, never touching Postgres) is not
   visible in the UI, because the CLI sources its spans *from* the `spans`
@@ -496,18 +674,21 @@ focused on agentic-scope semantics over a single base graph.
   `is_synthetic boolean NOT NULL DEFAULT false` column, and the entity-node
   row (`proto_entity_nodes`) carries a `synthetic boolean NOT NULL DEFAULT
   false` column. These are the sole sanctioned signals for "is this an
-  unobserved-peer stub?" — the `label` column is display-only and must not
-  be parsed for this purpose. The mismatch in column name (`is_synthetic`
-  on the node table vs. `synthetic` on the entity table) follows the
-  existing `is_*` / `contains_*` convention on each table; the
+  inferred (unobserved-peer) node?" — the `label` column is display-only and
+  must not be parsed for this purpose. The mismatch in column name
+  (`is_synthetic` on the node table vs. `synthetic` on the entity table)
+  follows the existing `is_*` / `contains_*` convention on each table; the
   `/proto/graphs/{trace_id}` API normalises both to `is_synthetic` on the
   wire so the UI sees one boolean shape across base / colored / entity
-  graphs.
-- The "Graphs (proto)" UI surfaces synthetic peers via a `synth` marker
-  pill alongside the existing `boundary`, `target`, and `flagged` pills,
-  and shows a synthetic count in the colored-graph and entity-graph
+  graphs. These column and wire names describe the code **as it stands
+  today**; they are slated to be renamed to `is_inferred` / `inferred` to
+  match the algorithm vocabulary (pending code change).
+- The "Graphs (proto)" UI surfaces inferred peers via a `synth` marker
+  pill (current code) alongside the existing `boundary`, `target`, and
+  `flagged` pills, and shows a count in the colored-graph and entity-graph
   summary lines. The pill is rendered by reading the boolean field; the
-  label string is never inspected.
+  label string is never inspected. The marker is to be relabelled in line
+  with the `inferred` rename.
 - Non-agentic scopes contribute no entities at this stage. Scopes that emit
   no agentic spans at all will not appear in the entity graph until the
   enrichment stage runs.
