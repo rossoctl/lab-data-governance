@@ -29,19 +29,19 @@
  * a content classifier at each transform node, and this same view would then
  * render a COMPUTED data graph with the mock flag off.
  *
- * ── Shape (single left-to-right "river"; scenario.md §8) ──
- *   D ─d→ A ─d→ L[transform d→d′] ─┬─ d′→keywords → F1 (clean, TN)
- *                                  └─ d′→summary  → F2 (confidential, TP)
+ * ── Shape (left-to-right "river" spine + a y-axis LLM branch) ──
+ *   D ─d→ patent-agent ─┬─ d2 → F1 (clean)         (agent ⇅ LLM:
+ *                       └─ d3 → F2 (confidential)    d up, d1 back down)
  *        ……… fresh trace / session gap …………
- *   F1 ─keywords→ A ─keywords→ web_search          (clean, approved, TN)
- *   F2 ─summary → A ─summary → web_search ‼        (CONFIDENTIAL — the leak, TP)
- *   recall identity edge (dashed): web_search(summary) ⟵ d′ ⟵ d ⟵ D
+ *   F1 ─d2→ agent ─d2→ web_search          (clean, approved)
+ *   F2 ─d3→ agent ─d3→ web_search ‼        (CONFIDENTIAL — the leak)
  *
- * F1/F2 are SHARED nodes (drawn once): written by T1 (left of the boundary),
- * read by T2 (right of it). One node = the same bytes = data identity itself —
- * the persistent identity across the store + session gap that a session-scoped
- * trace cannot represent. The dashed recall edge makes the most important of
- * those identities (the leak's origin) explicit all the way back to D.
+ * The LLM is OFF the storage spine (a delegated sub-call): the agent sends d,
+ * gets d1 back, and the AGENT writes the two parts d2/d3. Running-index naming —
+ * d (raw) → d1 (LLM output) → d2,d3 (its parts) — so the SAME token rides
+ * write→read→egress: data identity across the store + session gap is explicit
+ * (d3 traces home d3←d1←d←D) with no session-scoped trace. F1/F2 are SHARED
+ * nodes (written in T1, read in T2). Classification is by content, not ancestry.
  *
  * Honesty guardrails carried verbatim from scenario.md §6 / plan/07:
  *   - Keep precision (T1) and recall (T2) as DISTINCT wins; don't blur them.
@@ -52,11 +52,11 @@
  *     summary's origin across the file/session gap.
  *
  * API:  dataGraph() -> a pure literal { mocked, title, columns, boundaryAfter,
- *       nodes, edges, metamorphosis, legend, notes }. Pure, no DOM; same
+ *       nodes, edges, identity, legend, notes }. Pure, no DOM; same
  *       dual-export pattern as forest_logic.js / forest_scenario_overlay.js.
  *
  * Node `type`  → renderer icon: datastore | agent | transform | file | external
- * Node `verdict` ∈ {clean, confidential, mixed};  `tag` (vs truth) ∈ {TN,TP}.
+ * Node `verdict` ∈ {clean, confidential, mixed} (the classifier's output).
  */
 
 'use strict';
@@ -73,22 +73,22 @@ function dataGraph() {
       why: 'The agent reads d (the patent text) from D and hands it to its LLM. Holds confidential data.' },
     { id: 'L',  lane: 'top', over: 'A1', zone: 'T1', type: 'transform', label: 'LLM',
       sub: '', verdict: 'confidential',
-      why: 'The TRANSFORMATION node (the LLM): d′ = summarize + extract-keywords. d′ is a derived metamorphosis of d, not a copy — and lineage must carry contamination THROUGH it and then SPLIT it: keywords and summary both diverge from this one d′. (The agent A is the actor; the bytes derive from d′.)' },
+      why: 'The TRANSFORMATION node (the LLM): it turns d into d1 (its full output). d1 is a derived metamorphosis of d, not a copy — lineage must carry contamination THROUGH it and then SPLIT it: the agent writes two parts of d1 (d2, d3) that diverge in classification. (The agent is the actor on the spine; the bytes derive from d1.)' },
     { id: 'F1', col: 2, zone: 'F', type: 'file', label: 'F1 · keywords.txt',
       sub: 'MinIO object', verdict: 'clean',
-      why: 'CLEAN (true-negative). keywords ⟵ d′ ⟵ d ⟵ D by ancestry, yet the content carries NO patent essence, so it is DECLASSIFIED below D’s floor. Tracing over-taints it (false-positive) purely by shared ancestry with d; lineage re-classifies by content and clears it. → the PRECISION win (axis 1).' },
+      why: 'CLEAN. By ancestry d2 ⟵ d1 ⟵ d ⟵ D, yet the content (keywords.txt) carries NO patent essence, so it is DECLASSIFIED below D’s floor. Tracing over-taints it purely by shared ancestry with d; lineage re-classifies by content and clears it. → the PRECISION win (axis 1).' },
     { id: 'F2', col: 2, zone: 'F', type: 'file', label: 'F2 · summary.txt',
       sub: 'MinIO object', verdict: 'confidential',
-      why: 'CONFIDENTIAL (true-positive). The content carries the patent essence (and inherits D’s floor). Both tracing and lineage flag it here — but tracing is right for the wrong reason (it taints by ancestry, not by reading the content).' },
+      why: 'CONFIDENTIAL. The content of d3 (summary.txt) carries the patent essence (and inherits D’s floor). Both tracing and lineage flag it here — but tracing is right for the wrong reason (it taints by ancestry, not by reading the content).' },
     { id: 'A2', col: 3, zone: 'T2', type: 'agent', label: 'patent-agent · fresh trace',
       sub: '', verdict: 'mixed',
-      why: 'T2 is a NEW A2A session = a NEW trace. Nothing in T2’s trace points back to T1 — that gap is exactly what a session-scoped tracer cannot bridge. The agent reads the two files back and calls web_search on each.' },
+      why: 'T2 is a NEW A2A session = a NEW trace. Nothing in T2’s trace points back to T1 — that gap is exactly what a session-scoped tracer cannot bridge. The agent reads the two files back (d2, d3) and calls web_search on each.' },
     { id: 'W1', col: 4, zone: 'T2', type: 'external', label: 'web_search',
       sub: 'egress', verdict: 'clean',
-      why: 'CLEAN (true-negative). Approved egress — sharing keywords with an outside tool is allowed. Everyone agrees: no leak.' },
+      why: 'CLEAN. Approved egress — sharing d2 (keywords.txt) with an outside tool is allowed. Everyone agrees: no leak.' },
     { id: 'W2', col: 4, zone: 'T2', type: 'external', label: 'web_search',
       sub: 'egress', verdict: 'confidential', leak: true,
-      why: 'THE VIOLATION. Tracing is BLIND here (false-negative): T2 is a fresh trace, the taint label was dropped at the file/session boundary. Lineage matches DATA IDENTITY across the gap back to D → true-positive. → the RECALL win (axis 2) — the one no stateless gate or session-scoped trace can reproduce.' },
+      why: 'THE VIOLATION. Tracing is BLIND here: T2 is a fresh trace, the taint label was dropped at the file/session boundary. Lineage matches DATA IDENTITY across the gap — d3 ⟵ d1 ⟵ d ⟵ D — back to the confidential DB. → the RECALL win (axis 2), the one no stateless gate or session-scoped trace can reproduce.' },
   ];
 
   const edges = [
@@ -96,26 +96,23 @@ function dataGraph() {
     { from: 'D',  to: 'A1', data: 'd',  verdict: 'confidential' },
     { from: 'A1', to: 'L',  data: 'd',  verdict: 'confidential', vert: true },
     { from: 'L',  to: 'A1', data: 'd1', verdict: 'confidential', vert: true,
-      why: 'The LLM returns d′ (summary + keywords) to the agent. The transform happens here — but it is the AGENT, not the LLM, that then writes d′ to the stores.' },
+      why: 'The LLM returns d1 (its full output) to the agent. The transform happens here — but it is the AGENT, not the LLM, that then writes d1’s parts (d2, d3) to the stores.' },
     { from: 'A1', to: 'F1', data: 'd2', verdict: 'clean', fork: true,
-      why: 'The fork, CLEAN branch. The agent writes d′ → keywords; content declassifies them below D’s floor.' },
+      why: 'The fork, CLEAN branch. The agent writes d2 (a part of d1); content declassifies it below D’s floor.' },
     { from: 'A1', to: 'F2', data: 'd3',  verdict: 'confidential', fork: true,
-      why: 'The fork, CONFIDENTIAL branch. The agent writes d′ → summary; content keeps the patent essence. Same parent d′, opposite verdict: the split the execution forest cannot show.' },
+      why: 'The fork, CONFIDENTIAL branch. The agent writes d3 (a part of d1); content keeps the patent essence. Same parent d1, opposite verdict: the split the execution forest cannot show.' },
     // ── T2: read back → egress (across the session gap) ──
     { from: 'F1', to: 'A2', data: 'd2', verdict: 'clean' },
     { from: 'F2', to: 'A2', data: 'd3',  verdict: 'confidential' },
     { from: 'A2', to: 'W1', data: 'd2', verdict: 'clean',
-      why: 'Approved egress — keywords carry no essence.' },
+      why: 'Approved egress — d2 carries no essence.' },
     { from: 'A2', to: 'W2', data: 'd3',  verdict: 'confidential', leak: true,
       why: 'THE LEAK: the patent essence leaves to an external tool — a policy violation surfaced only by lineage.' },
   ];
 
-  // The single explicit cross-session data-identity edge that matters most:
-  // the leak's origin, traced all the way back to D across the file/session gap.
-  const identity = [
-    { from: 'W2', to: 'D', label: '', kind: 'recall',
-      why: 'The recall chain. The leaked summary’s bytes trace back to the confidential DB D across the file + session gap. THIS edge is the axis-2 true-positive the trace gets wrong (false-negative) — the data-identity link a session-scoped trace structurally cannot have.' },
-  ];
+  // Recall arc removed from the view (UI request). The leak's lineage back to D
+  // is still fully traceable on the canvas via the shared token: d3 ← d1 ← d ← D.
+  const identity = [];
 
   return {
     mocked: true,
@@ -126,18 +123,10 @@ function dataGraph() {
     nodes,
     edges,
     identity,
-    // The metamorphosis story (plan/07 §5.2): SAME run, the forest's flat
-    // indistinguishable siblings become the data graph's clean/confidential
-    // fork. (The add_user intuition: siblings-in-tree vs converge/fork-in-data.)
-    metamorphosis: {
-      title: 'Execution forest → data graph · same run',
-      forest: 'The forest shows write_file(keywords) and write_file(summary) as two FLAT, identical-looking siblings under A. The tree cannot say one is clean and one confidential, nor that they share a parent.',
-      datagraph: 'The data graph shows them as a FORK from the same d′ — one branch declassified (keywords · clean), one carrying the essence (summary · confidential). Same execution; only the data graph supports the policy decision.',
-    },
+    // (metamorphosis story removed — the below-graph foot that displayed it is gone)
     legend: [
       { cls: 'clean', label: 'clean — declassified / approved (true-negative)' },
       { cls: 'conf',  label: 'confidential ‼ — carries the patent essence (source floor)' },
-      { cls: 'ident', label: 'data-identity edge — same bytes across stores + sessions' },
     ],
     notes: [
       'MOCKED this round — drawn by hand from scenario.md §8, not computed from spans.',

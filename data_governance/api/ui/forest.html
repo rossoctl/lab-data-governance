@@ -880,7 +880,7 @@
           + 'their delegator (ADR-0011).'
         : '<strong>' + forest.llmCount + '</strong> L (generation) nodes shown '
           + 'flat — the real tool-use loop, not collapsed to one.';
-      notesEl.style.display = '';
+      // notesEl stays hidden — below-graph notes removed per UI request
 
       applyOverlay();                          // adds the demo store column if on
       requestAnimationFrame(scheduleLayout);   // re-measure after layout settles
@@ -999,14 +999,9 @@
         '<div class="dg-banner"><b>MOCKED</b> — ' + DG.notes[0].replace(/^MOCKED[^—]*— ?/, '') +
         ' This is the <em>desired target</em> the execution forest cannot draw, not a computed result.</div>' +
         '<div class="dg-legend">' + legend + '</div>';
-      // foot: metamorphosis + notes
-      const m = DG.metamorphosis;
-      dgFootEl.innerHTML =
-        '<div class="dg-meta"><h3>' + m.title + '</h3>' +
-        '<div class="pane forest"><h4>Execution forest</h4>' + m.forest + '</div>' +
-        '<div class="arrow">→</div>' +
-        '<div class="pane fork"><h4>Data graph</h4>' + m.datagraph + '</div></div>' +
-        '<ul class="dg-notes">' + DG.notes.slice(1).map((n) => '<li>' + n + '</li>').join('') + '</ul>';
+      // foot intentionally empty — the below-graph metamorphosis/notes block was
+      // removed per UI request (no bottom text in either view).
+      dgFootEl.innerHTML = '';
     }
 
     function dgBuild() {
@@ -1145,7 +1140,7 @@
         const d = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', '
           + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2;
         _dgPath(d, VCOL[e.verdict] || VCOL.mixed,
-          { width: e.fork ? 2.6 : 2.2, flow: !!e.leak, glow: !!e.leak });
+          { width: e.fork ? 2.6 : 2.2, glow: !!e.leak });   // leak edge is solid (red glow), not dashed
         _dgLabel((x1 + x2) / 2, (y1 + y2) / 2, e.data, e.verdict);
       }
 

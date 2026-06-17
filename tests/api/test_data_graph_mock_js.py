@@ -106,14 +106,12 @@ def test_t2_recall_leak_on_summary_only():
     assert _edge(g, "A2", "W1").get("leak") in (None, False)
 
 
-def test_recall_identity_edge_traces_back_to_D():
-    """The single explicit cross-session identity edge runs from the leak
-    (web_search summary) back to the confidential DB D — the edge a session-scoped
-    trace structurally cannot have."""
+def test_recall_arc_removed():
+    """The recall arc was removed from the view; identity edges are empty. The
+    leak's lineage back to D stays traceable via the shared d3 token chain
+    (d3 <- d1 <- d <- D), so no explicit cross-session edge is drawn."""
     g = _graph()
-    assert len(g["identity"]) == 1
-    rec = g["identity"][0]
-    assert rec["from"] == "W2" and rec["to"] == "D" and rec["kind"] == "recall"
+    assert g["identity"] == []
 
 
 def test_files_are_single_shared_nodes_across_the_session_gap():
@@ -141,8 +139,8 @@ def test_graph_carries_only_auto_derivable_signal():
     # 3. the single-letter type labels (D/A/L) that merely duplicate the icon are gone
     for nid in ("D", "A1", "L", "A2"):
         assert _node(g, nid)["label"] not in ("D", "A", "L"), nid
-    # 4. the recall identity edge is unlabeled (its summary⟵…⟵D gloss is dropped)
-    assert not g["identity"][0].get("label")
+    # 4. the recall arc is removed entirely (identity edges emptied)
+    assert g["identity"] == []
     # 5. the fork's two branches are DISTINCT parts of d1 (not the same token), and
     #    each part keeps the SAME token across write → read → egress (data identity)
     assert _edge(g, "A1", "F1")["data"] != _edge(g, "A1", "F2")["data"]
