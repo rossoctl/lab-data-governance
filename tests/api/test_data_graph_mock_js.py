@@ -71,25 +71,35 @@ def test_mocked_flag_and_referential_integrity():
     assert ids == {"D", "A1", "L", "F1", "F2", "A2", "W1", "W2"}
 
 
-def test_t1_precision_fork_from_one_transform():
-    """Axis 1 (T1): keywords and summary FORK from the same transform output d′ —
-    one clean, one confidential. The split the execution forest cannot show."""
+def test_t1_precision_fork_written_by_the_agent():
+    """Axis 1 (T1): the LLM transforms d→d1 on a y-axis round-trip with the agent,
+    then the AGENT writes the fork — keywords (d2) and summary (d3) from the same
+    d1, one clean, one confidential. The split the execution forest cannot show."""
     g = _graph()
+    # the LLM is an off-spine node branching over its agent (not a storage hop)
     assert _node(g, "L")["type"] == "transform"
-    f_kw, f_sum = _edge(g, "L", "F1"), _edge(g, "L", "F2")
-    assert f_kw["fork"] and f_sum["fork"], "both fork edges leave the same d′ node"
+    assert _node(g, "L").get("lane") == "top" and _node(g, "L").get("over") == "A1"
+    # the agent⇄LLM round-trip: d up to the LLM, d′ back down to the agent
+    assert _edge(g, "A1", "L")["data"] == "d"
+    assert _edge(g, "L", "A1")["data"] == "d1"
+    # the AGENT (not the LLM) writes both files — the fork leaves A1
+    f_kw, f_sum = _edge(g, "A1", "F1"), _edge(g, "A1", "F2")
+    assert f_kw["fork"] and f_sum["fork"], "both fork edges leave the agent (post-d′)"
     assert f_kw["verdict"] == "clean" and f_sum["verdict"] == "confidential"
-    # the files themselves carry the truth-table verdict + tag
-    assert (_node(g, "F1")["verdict"], _node(g, "F1")["tag"]) == ("clean", "TN")
-    assert (_node(g, "F2")["verdict"], _node(g, "F2")["tag"]) == ("confidential", "TP")
+    # the files carry the classifier verdict; ground-truth TN/TP tags were removed
+    # (external, not auto-derivable — ADR-0012 auto-generatable pass)
+    assert _node(g, "F1")["verdict"] == "clean"
+    assert _node(g, "F2")["verdict"] == "confidential"
+    assert "tag" not in _node(g, "F1") and "tag" not in _node(g, "F2")
 
 
 def test_t2_recall_leak_on_summary_only():
-    """Axis 2 (T2): web_search(summary) is the leak (confidential, TP); only it is
-    flagged — web_search(keywords) is approved (clean, TN)."""
+    """Axis 2 (T2): web_search(summary) is the leak (confidential); only it is
+    flagged — web_search(keywords) is approved (clean)."""
     g = _graph()
-    assert _node(g, "W1")["verdict"] == "clean" and _node(g, "W1")["tag"] == "TN"
-    assert _node(g, "W2")["verdict"] == "confidential" and _node(g, "W2")["tag"] == "TP"
+    assert _node(g, "W1")["verdict"] == "clean"
+    assert _node(g, "W2")["verdict"] == "confidential"
+    assert "tag" not in _node(g, "W1") and "tag" not in _node(g, "W2")
     assert _node(g, "W2").get("leak") is True
     assert _node(g, "W1").get("leak") in (None, False)
     assert _edge(g, "A2", "W2").get("leak") is True
@@ -114,3 +124,27 @@ def test_files_are_single_shared_nodes_across_the_session_gap():
     assert sum(1 for n in g["nodes"] if n["id"] == "F2") == 1
     # boundary divider sits right after the files column
     assert g["boundaryAfter"] == _node(g, "F1")["col"] == _node(g, "F2")["col"]
+
+
+def test_graph_carries_only_auto_derivable_signal():
+    """Auto-generatable pass (ADR-0012): the view shows only what a builder could
+    derive from spans — no human content-names glossed onto the data flow, no
+    external ground-truth tags, no recall-arc gloss. The classifier verdict
+    (clean/confidential) and the d/d′ data tokens stay; they are derivable."""
+    g = _graph()
+    # 1. edges label the bytes with a neutral data token, never our content names
+    for e in g["edges"]:
+        assert "keywords" not in e["data"] and "summary" not in e["data"], e
+    # 2. no node carries an external ground-truth tag (TN/TP)
+    for n in g["nodes"]:
+        assert "tag" not in n, f"{n['id']} still has a ground-truth tag"
+    # 3. the single-letter type labels (D/A/L) that merely duplicate the icon are gone
+    for nid in ("D", "A1", "L", "A2"):
+        assert _node(g, nid)["label"] not in ("D", "A", "L"), nid
+    # 4. the recall identity edge is unlabeled (its summary⟵…⟵D gloss is dropped)
+    assert not g["identity"][0].get("label")
+    # 5. the fork's two branches are DISTINCT parts of d1 (not the same token), and
+    #    each part keeps the SAME token across write → read → egress (data identity)
+    assert _edge(g, "A1", "F1")["data"] != _edge(g, "A1", "F2")["data"]
+    clean = _edge(g, "A1", "F1")["data"]
+    assert _edge(g, "F1", "A2")["data"] == clean == _edge(g, "A2", "W1")["data"]

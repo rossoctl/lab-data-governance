@@ -233,6 +233,8 @@
     }
 
     #datagraph { display: none; }
+    body.mode-datagraph #status,
+    body.mode-datagraph #error,
     body.mode-datagraph #graph,
     body.mode-datagraph #notes,
     body.mode-datagraph #legend { display: none; }
@@ -302,9 +304,11 @@
       grid-template-columns: repeat(var(--dg-cols, 6), minmax(128px, 196px));
       align-items: center; justify-items: center;
       column-gap: 50px; row-gap: 28px; width: max-content; margin: 0 auto;
-      padding: 50px 14px 58px;
+      padding: 116px 14px 58px;
     }
     .dg-colstack { display: flex; flex-direction: column; gap: 30px; z-index: 1; }
+    /* off-spine node (the LLM on a y-axis branch above its agent) */
+    .node-card.dg-float { position: absolute; z-index: 2; }
     /* zone captions floating above the bands */
     .dg-zone {
       position: absolute; top: 16px; font-size: 0.66rem; font-weight: 700;
@@ -361,9 +365,11 @@
     .dg-elabel-tx.clean { fill: var(--c-clean-2); }
     .dg-elabel-tx.confidential { fill: var(--c-conf-2); }
     .dg-elabel-tx.recall { fill: var(--c-identity); }
-    .dg-boundary-line { stroke: var(--line-soft); stroke-width: 1.5; stroke-dasharray: 3 5; }
-    .dg-boundary-tx { fill: var(--muted); font-size: 10px; letter-spacing: 0.12em;
+    .dg-boundary-band { fill: var(--c-identity); opacity: 0.07; }
+    .dg-boundary-line { stroke: var(--c-identity); stroke-width: 3; stroke-dasharray: 11 7; opacity: 0.95; }
+    .dg-boundary-tx { fill: var(--c-identity); font-size: 12px; font-weight: 800; letter-spacing: 0.14em;
       text-anchor: middle; text-transform: uppercase; }
+    .dg-boundary-txbg { fill: var(--ink); opacity: 0.92; }
     .dg-flow { stroke-dasharray: 8 6; animation: dgflow .7s linear infinite; }
     @keyframes dgflow { to { stroke-dashoffset: -28; } }
 
@@ -1008,11 +1014,20 @@
       dgColumnsEl.innerHTML = '';
       _dgEls = new Map();
       const byCol = new Map();
-      for (const n of DG.nodes) { (byCol.get(n.col) || byCol.set(n.col, []).get(n.col)).push(n); }
+      for (const n of DG.nodes) {
+        if (n.lane) continue;                  // off-spine nodes (the LLM branch) placed in dgLayout
+        (byCol.get(n.col) || byCol.set(n.col, []).get(n.col)).push(n);
+      }
       for (let c = 0; c < DG.columns; c++) {
         const cell = document.createElement('div'); cell.className = 'dg-colstack';
         for (const n of (byCol.get(c) || [])) { const card = dgCard(n); _dgEls.set(n.id, card); cell.appendChild(card); }
         dgColumnsEl.appendChild(cell);
+      }
+      // off-spine nodes: absolute, floated over their `over` anchor (positioned in dgLayout)
+      for (const n of DG.nodes) {
+        if (!n.lane) continue;
+        const card = dgCard(n); card.classList.add('dg-float');
+        _dgEls.set(n.id, card); dgColumnsEl.appendChild(card);
       }
       // zone captions (positioned in dgLayout)
       const z1 = document.createElement('span'); z1.className = 'dg-zone t1'; z1.id = 'dg-zone-t1';
@@ -1029,6 +1044,7 @@
       if (side === 'r') return [r.right - o.left, y];
       if (side === 'l') return [r.left - o.left, y];
       if (side === 'b') return [r.left - o.left + r.width / 2, r.bottom - o.top];
+      if (side === 't') return [r.left - o.left + r.width / 2, r.top - o.top];
       return [r.left - o.left + r.width / 2, y];
     }
 
@@ -1060,7 +1076,30 @@
       dgEdgesSvg.appendChild(p);
     }
 
+    // y-axis round-trip edge between a spine node and the floating node above it:
+    // agent → LLM ('d', up the left) and LLM → agent ('d′', down the right).
+    function _dgVertEdge(e, fe, te) {
+      const fromFloat = !!((DG.nodes.find((n) => n.id === e.from) || {}).lane);
+      const floatEl = fromFloat ? fe : te, spineEl = fromFloat ? te : fe;
+      const [sx, sy] = _center(spineEl, 't');   // agent top-center
+      const [fx, fy] = _center(floatEl, 'b');   // LLM bottom-center
+      const cx = (sx + fx) / 2, off = 17, goingUp = !fromFloat;
+      const x = goingUp ? cx - off : cx + off;
+      const yA = goingUp ? sy : fy, yB = goingUp ? fy : sy, midy = (yA + yB) / 2;
+      const d = 'M ' + x + ' ' + yA + ' C ' + x + ' ' + midy + ', ' + x + ' ' + midy + ', ' + x + ' ' + yB;
+      _dgPath(d, VCOL[e.verdict] || VCOL.mixed, { width: 2.2 });
+      _dgLabel(x, midy + (goingUp ? -11 : 11), e.data, e.verdict);
+    }
+
     function dgLayout() {
+      // position off-spine nodes above their anchor agent first, so W/H account for them
+      for (const n of DG.nodes) {
+        if (!n.lane) continue;
+        const el = _dgEls.get(n.id), anc = _dgEls.get(n.over);
+        if (!el || !anc) continue;
+        el.style.left = (anc.offsetLeft + (anc.offsetWidth - el.offsetWidth) / 2) + 'px';
+        el.style.top = Math.max(4, anc.offsetTop - el.offsetHeight - 46) + 'px';
+      }
       const W = dgColumnsEl.scrollWidth, H = dgColumnsEl.scrollHeight;
       dgEdgesSvg.setAttribute('width', W); dgEdgesSvg.setAttribute('height', H);
       while (dgEdgesSvg.childNodes.length > 1) dgEdgesSvg.removeChild(dgEdgesSvg.lastChild); // keep <defs>
@@ -1072,22 +1111,35 @@
       if (leftN && rightN && _dgEls.get(leftN.id) && _dgEls.get(rightN.id)) {
         const lr = _center(_dgEls.get(leftN.id), 'r')[0];
         const rl = _center(_dgEls.get(rightN.id), 'l')[0];
-        const bx = (lr + rl) / 2;
+        const bx = (lr + rl) / 2, bandW = 48;
+        const band = document.createElementNS(SVGNS, 'rect');
+        band.setAttribute('class', 'dg-boundary-band');
+        band.setAttribute('x', bx - bandW / 2); band.setAttribute('y', 26);
+        band.setAttribute('width', bandW); band.setAttribute('height', Math.max(0, H - 52));
+        band.setAttribute('rx', 8); dgEdgesSvg.appendChild(band);
         const line = document.createElementNS(SVGNS, 'line');
         line.setAttribute('class', 'dg-boundary-line');
-        line.setAttribute('x1', bx); line.setAttribute('y1', 30);
-        line.setAttribute('x2', bx); line.setAttribute('y2', H - 30);
+        line.setAttribute('x1', bx); line.setAttribute('y1', 28);
+        line.setAttribute('x2', bx); line.setAttribute('y2', H - 28);
+        line.setAttribute('filter', 'url(#dg-glow)');
         dgEdgesSvg.appendChild(line);
         const bt = document.createElementNS(SVGNS, 'text');
         bt.setAttribute('class', 'dg-boundary-tx');
-        bt.setAttribute('x', bx); bt.setAttribute('y', 22);
+        bt.setAttribute('x', bx); bt.setAttribute('y', 50);
         bt.textContent = DG.boundaryLabel; dgEdgesSvg.appendChild(bt);
+        const bbx = bt.getBBox();
+        const chip = document.createElementNS(SVGNS, 'rect');
+        chip.setAttribute('class', 'dg-boundary-txbg');
+        chip.setAttribute('x', bbx.x - 7); chip.setAttribute('y', bbx.y - 3);
+        chip.setAttribute('width', bbx.width + 14); chip.setAttribute('height', bbx.height + 6);
+        chip.setAttribute('rx', 5); dgEdgesSvg.insertBefore(chip, bt);
       }
 
       // solid data-flow edges, colored by verdict, with a label chip
       for (const e of DG.edges) {
         const fe = _dgEls.get(e.from), te = _dgEls.get(e.to);
         if (!fe || !te) continue;
+        if (e.vert) { _dgVertEdge(e, fe, te); continue; }   // y-axis agent⇄LLM round-trip
         const [x1, y1] = _center(fe, 'r'), [x2, y2] = _center(te, 'l');
         const dx = Math.max(34, (x2 - x1) * 0.45);
         const d = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', '
@@ -1107,7 +1159,7 @@
         const d = 'M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + bow + ', '
           + x2 + ' ' + bow + ', ' + x2 + ' ' + y2;
         _dgPath(d, VCOL.recall, { dashed: true, flow: true, glow: true, width: 2.4, opacity: 0.95 });
-        _dgLabel((x1 + x2) / 2, bow - 4, e.label, 'recall');
+        if (e.label) _dgLabel((x1 + x2) / 2, bow - 4, e.label, 'recall');
       }
 
       // zone captions over their bands

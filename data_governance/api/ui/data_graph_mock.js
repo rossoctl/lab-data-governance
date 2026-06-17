@@ -65,61 +65,63 @@ function dataGraph() {
   // Columns 0..5 of the river. `boundaryAfter` draws the session/trace gap
   // line right after the files column (the F1/F2 written in T1, read in T2).
   const nodes = [
-    { id: 'D',  col: 0, zone: 'T1', type: 'datastore', label: 'D',
-      sub: 'patent DB · Tier-1', verdict: 'confidential',
+    { id: 'D',  col: 0, zone: 'T1', type: 'datastore', label: 'patent DB · Tier-1',
+      sub: '', verdict: 'confidential',
       why: 'The confidential patent database (Tier-1). SOURCE FLOOR: anything read from D starts confidential regardless of its bytes — content can later declassify a derivative, but never raise D above its floor.' },
-    { id: 'A1', col: 1, zone: 'T1', type: 'agent', label: 'A',
-      sub: 'patent-agent', verdict: 'confidential',
+    { id: 'A1', col: 1, zone: 'T1', type: 'agent', label: 'patent-agent',
+      sub: '', verdict: 'confidential',
       why: 'The agent reads d (the patent text) from D and hands it to its LLM. Holds confidential data.' },
-    { id: 'L',  col: 2, zone: 'T1', type: 'transform', label: 'L',
-      sub: 'transform · d → d′', verdict: 'confidential',
+    { id: 'L',  lane: 'top', over: 'A1', zone: 'T1', type: 'transform', label: 'LLM',
+      sub: '', verdict: 'confidential',
       why: 'The TRANSFORMATION node (the LLM): d′ = summarize + extract-keywords. d′ is a derived metamorphosis of d, not a copy — and lineage must carry contamination THROUGH it and then SPLIT it: keywords and summary both diverge from this one d′. (The agent A is the actor; the bytes derive from d′.)' },
-    { id: 'F1', col: 3, zone: 'F', type: 'file', label: 'F1 · keywords',
-      sub: 'MinIO object', verdict: 'clean', tag: 'TN',
+    { id: 'F1', col: 2, zone: 'F', type: 'file', label: 'F1 · keywords.txt',
+      sub: 'MinIO object', verdict: 'clean',
       why: 'CLEAN (true-negative). keywords ⟵ d′ ⟵ d ⟵ D by ancestry, yet the content carries NO patent essence, so it is DECLASSIFIED below D’s floor. Tracing over-taints it (false-positive) purely by shared ancestry with d; lineage re-classifies by content and clears it. → the PRECISION win (axis 1).' },
-    { id: 'F2', col: 3, zone: 'F', type: 'file', label: 'F2 · summary',
-      sub: 'MinIO object', verdict: 'confidential', tag: 'TP',
+    { id: 'F2', col: 2, zone: 'F', type: 'file', label: 'F2 · summary.txt',
+      sub: 'MinIO object', verdict: 'confidential',
       why: 'CONFIDENTIAL (true-positive). The content carries the patent essence (and inherits D’s floor). Both tracing and lineage flag it here — but tracing is right for the wrong reason (it taints by ancestry, not by reading the content).' },
-    { id: 'A2', col: 4, zone: 'T2', type: 'agent', label: 'A',
-      sub: 'patent-agent · fresh trace', verdict: 'mixed',
+    { id: 'A2', col: 3, zone: 'T2', type: 'agent', label: 'patent-agent · fresh trace',
+      sub: '', verdict: 'mixed',
       why: 'T2 is a NEW A2A session = a NEW trace. Nothing in T2’s trace points back to T1 — that gap is exactly what a session-scoped tracer cannot bridge. The agent reads the two files back and calls web_search on each.' },
-    { id: 'W1', col: 5, zone: 'T2', type: 'external', label: 'web_search',
-      sub: 'egress · keywords', verdict: 'clean', tag: 'TN',
+    { id: 'W1', col: 4, zone: 'T2', type: 'external', label: 'web_search',
+      sub: 'egress', verdict: 'clean',
       why: 'CLEAN (true-negative). Approved egress — sharing keywords with an outside tool is allowed. Everyone agrees: no leak.' },
-    { id: 'W2', col: 5, zone: 'T2', type: 'external', label: 'web_search',
-      sub: 'egress · summary', verdict: 'confidential', tag: 'TP', leak: true,
+    { id: 'W2', col: 4, zone: 'T2', type: 'external', label: 'web_search',
+      sub: 'egress', verdict: 'confidential', leak: true,
       why: 'THE VIOLATION. Tracing is BLIND here (false-negative): T2 is a fresh trace, the taint label was dropped at the file/session boundary. Lineage matches DATA IDENTITY across the gap back to D → true-positive. → the RECALL win (axis 2) — the one no stateless gate or session-scoped trace can reproduce.' },
   ];
 
   const edges = [
-    // ── T1: ingest → transform → fork ──
-    { from: 'D',  to: 'A1', data: 'd',        verdict: 'confidential' },
-    { from: 'A1', to: 'L',  data: 'd',        verdict: 'confidential' },
-    { from: 'L',  to: 'F1', data: 'd′ → keywords', verdict: 'clean', fork: true,
-      why: 'The fork, CLEAN branch. The same d′ yields keywords — content declassifies them below D’s floor.' },
-    { from: 'L',  to: 'F2', data: 'd′ → summary',  verdict: 'confidential', fork: true,
-      why: 'The fork, CONFIDENTIAL branch. The same d′ yields the summary — content keeps the patent essence. Same parent d′, opposite verdict: the split the execution forest cannot show.' },
+    // ── T1: ingest → agent → LLM round-trip → the AGENT writes the fork ──
+    { from: 'D',  to: 'A1', data: 'd',  verdict: 'confidential' },
+    { from: 'A1', to: 'L',  data: 'd',  verdict: 'confidential', vert: true },
+    { from: 'L',  to: 'A1', data: 'd1', verdict: 'confidential', vert: true,
+      why: 'The LLM returns d′ (summary + keywords) to the agent. The transform happens here — but it is the AGENT, not the LLM, that then writes d′ to the stores.' },
+    { from: 'A1', to: 'F1', data: 'd2', verdict: 'clean', fork: true,
+      why: 'The fork, CLEAN branch. The agent writes d′ → keywords; content declassifies them below D’s floor.' },
+    { from: 'A1', to: 'F2', data: 'd3',  verdict: 'confidential', fork: true,
+      why: 'The fork, CONFIDENTIAL branch. The agent writes d′ → summary; content keeps the patent essence. Same parent d′, opposite verdict: the split the execution forest cannot show.' },
     // ── T2: read back → egress (across the session gap) ──
-    { from: 'F1', to: 'A2', data: 'keywords', verdict: 'clean' },
-    { from: 'F2', to: 'A2', data: 'summary',  verdict: 'confidential' },
-    { from: 'A2', to: 'W1', data: 'keywords', verdict: 'clean',
+    { from: 'F1', to: 'A2', data: 'd2', verdict: 'clean' },
+    { from: 'F2', to: 'A2', data: 'd3',  verdict: 'confidential' },
+    { from: 'A2', to: 'W1', data: 'd2', verdict: 'clean',
       why: 'Approved egress — keywords carry no essence.' },
-    { from: 'A2', to: 'W2', data: 'summary',  verdict: 'confidential', leak: true,
+    { from: 'A2', to: 'W2', data: 'd3',  verdict: 'confidential', leak: true,
       why: 'THE LEAK: the patent essence leaves to an external tool — a policy violation surfaced only by lineage.' },
   ];
 
   // The single explicit cross-session data-identity edge that matters most:
   // the leak's origin, traced all the way back to D across the file/session gap.
   const identity = [
-    { from: 'W2', to: 'D', label: 'summary ⟵ d′ ⟵ d ⟵ D', kind: 'recall',
+    { from: 'W2', to: 'D', label: '', kind: 'recall',
       why: 'The recall chain. The leaked summary’s bytes trace back to the confidential DB D across the file + session gap. THIS edge is the axis-2 true-positive the trace gets wrong (false-negative) — the data-identity link a session-scoped trace structurally cannot have.' },
   ];
 
   return {
     mocked: true,
     title: 'Desired data graph — where the patent data actually went',
-    columns: 6,
-    boundaryAfter: 3,            // dashed session/trace boundary after the F column
+    columns: 5,
+    boundaryAfter: 2,            // dashed session/trace boundary after the F column
     boundaryLabel: 'fresh trace · session + store gap',
     nodes,
     edges,
