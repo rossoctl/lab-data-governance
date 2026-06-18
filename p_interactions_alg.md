@@ -112,7 +112,7 @@ This can be based on:
 In this step we identify agentic boundaries 
 
 1. Identify Gray nodes *representing a abentic boundary* and color them "Black".
-2. If there is a Gray edge between Black nodes Representing the same entity type (Agent, LLM, tool) - and one black node is a source while the other is its target - Color the edge black.
+2. If there is a Gray edge between Black nodes Representing the same entity type (Agent, LLM, tool) - and one black node is a source while the other is *its* target - Color the edge black.
 examples:
 tool call --> tool
 llm call --> llm
