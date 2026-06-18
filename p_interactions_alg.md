@@ -77,9 +77,19 @@ In some cases agentic spans may describe or represent additional entities - In t
 
 Examples:
 1. openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query
-This span represents a call to an LLM. While the span represents the current node - the agent (source), we can infer a new node representing the LLM (target). The spans includes information on both the current and inferred nodes as well as the data flowing between them.
+This span represents a call to an LLM. While the span represents the current node - the agent (source), and since the spans includes information on both the current and target nodes as well as the data flowing between them.
+we can infer:
+1. A new node representing the LLM (target). 
+2. An edge between the agent and the LLM target
+3. An edge between the LLM target and the agent
 
-2. "llm.output_messages.0.message.tool_calls.0.tool_call. function.arguments": "{\"action\": \"store\", \"name\": \"keywords.2.txt\", ..}"
+2. Similarly a tool call Span such as openinference.instrumentation.claude_agent_sdk.{tool_name}
+represent a call to a tool from which we can infer the following : 
+1. a new node representing the tool (target)
+2. an edge between the tool call (source) and the tool itself (target)
+3. an edge between the tool right (target) and the agent tool call (source)
+
+3. "llm.output_messages.0.message.tool_calls.0.tool_call. function.arguments": "{\"action\": \"store\", \"name\": \"keywords.2.txt\", ..}"
 Similarly The complete span represents a call to the LLM - however this specific attribute includes information on a tool.
 We can therefore infer two nodes: The first represents the tool call (The source) while the second represents the tool itself (target)
 In this case we will also infer several edges:
