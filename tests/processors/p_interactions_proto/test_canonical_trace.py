@@ -14,26 +14,27 @@ What the trace contains (from the openinference openai_agents v1.4.1 spans):
   * three tools it calls — `get_flights`, `get_weather`, `search_destinations`.
 
 Per ADR-0007 the LLM and tools are *one-sided* observations: only the
-caller (the agent) emitted spans, so Step 2.c stubs each peer as a
-**synthetic** entity and Step 3.b merges the per-call-site stubs of the same
-peer into one. The agent is the lone `observed` entity. Entity identity is the
-`natural_key` (`llm:` / `tool:` / `agent:` / service-name) — `display_name` is
-always `"unknown"` at Step 3.c, so we assert on the key, not the display name
-(ADR-0007 "Natural-key prefixes are part of the public algorithm vocabulary").
+caller (the agent) emitted spans, so Step 2.c stubs each peer as an
+**inferred** entity and Step 3.a phase 2 combines the per-call-site stubs of
+the same peer into one. The agent is the lone `observed` entity. Entity
+identity is the `natural_key` (`llm:` / `tool:` / `agent:` / service-name) —
+`display_name` is always `"unknown"` at Step 3.b, so we assert on the key, not
+the display name (ADR-0007 "Natural-key prefixes are part of the public
+algorithm vocabulary").
 """
 
 from __future__ import annotations
 
 from data_governance.processors.p_interactions_proto.extractor import extract
 
-# Expected entity set: natural_key -> synthetic?  (the two stable, ADR-0007
+# Expected entity set: natural_key -> inferred?  (the two stable, ADR-0007
 # sanctioned signals — never the display string, which is "unknown" here).
 EXPECTED_ENTITIES = {
     # The observed agent: the only side of every call that emitted spans.
     "dl-demo-travel-advisor": False,
-    # The LLM it calls — unobserved peer, stubbed + merged (synthetic).
+    # The LLM it calls — unobserved peer, stubbed + combined (inferred).
     "llm:claude-haiku-4-5-20251001": True,
-    # The three tools it calls — unobserved peers, stubbed + merged.
+    # The three tools it calls — unobserved peers, stubbed + combined.
     "tool:get_flights": True,
     "tool:get_weather": True,
     "tool:search_destinations": True,
@@ -49,28 +50,28 @@ def test_canonical_trace_entity_set(canonical_trace_spans):
     by_key = {e.natural_key: e for e in result.entities}
     assert len(by_key) == len(result.entities), "natural_keys not unique"
 
-    assert {k: v.synthetic for k, v in by_key.items()} == EXPECTED_ENTITIES
+    assert {k: v.inferred for k, v in by_key.items()} == EXPECTED_ENTITIES
 
 
-def test_one_observed_agent_rest_synthetic(canonical_trace_spans):
-    """Exactly one observed entity (the agent); LLM + tools are synthetic."""
+def test_one_observed_agent_rest_inferred(canonical_trace_spans):
+    """Exactly one observed entity (the agent); LLM + tools are inferred."""
     result = extract(canonical_trace_spans)
 
-    observed = [e for e in result.entities if not e.synthetic]
-    synthetic = [e for e in result.entities if e.synthetic]
+    observed = [e for e in result.entities if not e.inferred]
+    inferred = [e for e in result.entities if e.inferred]
 
     assert [e.natural_key for e in observed] == ["dl-demo-travel-advisor"]
-    assert {e.natural_key for e in synthetic} == {
+    assert {e.natural_key for e in inferred} == {
         "llm:claude-haiku-4-5-20251001",
         "tool:get_flights",
         "tool:get_weather",
         "tool:search_destinations",
     }
 
-    # Synthetic entities are flagged by the boolean field, not the label —
-    # ADR-0007 "Synthetic identity is a boolean field, not a label convention".
-    for e in synthetic:
-        assert e.detected_from == "synthetic"
+    # Inferred entities are flagged by the boolean field, not the label —
+    # ADR-0007 "Inferred identity is a boolean field, not a label convention".
+    for e in inferred:
+        assert e.detected_from == "inferred"
 
 
 def test_one_llm_three_tools(canonical_trace_spans):

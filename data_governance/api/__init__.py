@@ -229,7 +229,7 @@ async def _proto_interactions_handler(request: Request) -> Response:
                 return {"entities": [], "interactions": [], "spans_by_interaction": {}}
             entities = tx.fetch_all(
                 "SELECT id::text, natural_key, display_name, detected_from, "
-                "scope_name, anchor_span_id, synthetic "
+                "scope_name, anchor_span_id, inferred "
                 "FROM proto_entities WHERE trace_id = %s "
                 "ORDER BY scope_name, natural_key",
                 (trace_id,),
@@ -267,7 +267,7 @@ async def _proto_interactions_handler(request: Request) -> Response:
                         "id": r[0], "natural_key": r[1],
                         "display_name": r[2], "detected_from": r[3],
                         "scope_name": r[4], "anchor_span_id": r[5],
-                        "synthetic": bool(r[6]),
+                        "inferred": bool(r[6]),
                     }
                     for r in entities
                 ],
@@ -367,7 +367,7 @@ async def _proto_graphs_handler(request: Request) -> Response:
                     "span_ids": [r[1]] if r[1] else [],
                     "is_boundary": False,
                     "is_target_duplicate": False,
-                    "is_synthetic": False,
+                    "is_inferred": False,
                     "flagged": False,
                 }
                 for r in base_node_rows
@@ -382,10 +382,10 @@ async def _proto_graphs_handler(request: Request) -> Response:
                 for r in base_edge_rows
             ]
 
-            # --- Step 2.a / 2.b colored graph ---
+            # --- Step 2 colored graph ---
             colored_node_rows = tx.fetch_all(
                 "SELECT id, span_id, scope, color, is_boundary, is_target_duplicate, "
-                "       is_synthetic, flagged, label, attributes "
+                "       is_inferred, flagged, label, attributes "
                 "FROM proto_colored_nodes WHERE trace_id = %s "
                 "ORDER BY color, scope, span_id",
                 (trace_id,),
@@ -398,7 +398,7 @@ async def _proto_graphs_handler(request: Request) -> Response:
                     "color": r[3],
                     "is_boundary": r[4],
                     "is_target_duplicate": r[5],
-                    "is_synthetic": r[6],
+                    "is_inferred": r[6],
                     "flagged": r[7],
                     "label": r[8],
                     "attributes": r[9],
@@ -419,17 +419,17 @@ async def _proto_graphs_handler(request: Request) -> Response:
                 for r in colored_edge_rows
             ]
 
-            # --- Step 2.c entity graph ---
+            # --- Step 3 entity graph ---
             entity_node_rows = tx.fetch_all(
                 "SELECT n.id, n.label, n.attributes, n.contains_boundary, "
-                "       n.contains_black, n.contains_gray, n.synthetic, n.scopes, "
+                "       n.contains_black, n.contains_gray, n.inferred, n.scopes, "
                 "       array_agg(ns.span_id ORDER BY ns.span_id) "
                 "         FILTER (WHERE ns.span_id IS NOT NULL) "
                 "FROM proto_entity_nodes n "
                 "LEFT JOIN proto_entity_node_spans ns ON ns.node_id = n.id "
                 "WHERE n.trace_id = %s "
                 "GROUP BY n.id, n.label, n.attributes, n.contains_boundary, "
-                "         n.contains_black, n.contains_gray, n.synthetic, n.scopes "
+                "         n.contains_black, n.contains_gray, n.inferred, n.scopes "
                 "ORDER BY n.label",
                 (trace_id,),
             )
@@ -445,11 +445,11 @@ async def _proto_graphs_handler(request: Request) -> Response:
                     "span_ids": r[8] or [],
                     "is_boundary": r[3],
                     "is_target_duplicate": False,
-                    # Step 3.a/b marker: surfaced as `is_synthetic` on the wire
-                    # so the UI uses one boolean shape across base / colored /
+                    # Step 3.a marker: surfaced as `is_inferred` on the wire so
+                    # the UI uses one boolean shape across base / colored /
                     # entity graphs. Source column on the entity row is
-                    # `synthetic` (no `is_` prefix) — see ADR-0007.
-                    "is_synthetic": r[6],
+                    # `inferred` (no `is_` prefix) — see ADR-0007.
+                    "is_inferred": r[6],
                     "flagged": False,
                 }
                 for r in entity_node_rows

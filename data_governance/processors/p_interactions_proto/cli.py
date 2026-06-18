@@ -85,10 +85,10 @@ CREATE TABLE proto_colored_nodes (
   color               text NOT NULL,            -- white | gray | black
   is_boundary         boolean NOT NULL DEFAULT false,
   is_target_duplicate boolean NOT NULL DEFAULT false,
-  -- Set by Step 2.c on the materialised unobserved-peer stub.
-  -- Per ADR-0007: this column is the sole sanctioned signal for "synthetic
-  -- peer"; do not parse the `label` column for that purpose.
-  is_synthetic        boolean NOT NULL DEFAULT false,
+  -- Set by Step 2.b/2.c on the materialised inferred (e.g. unobserved-peer)
+  -- node. Per ADR-0007: this column is the sole sanctioned signal for
+  -- "inferred node"; do not parse the `label` column for that purpose.
+  is_inferred         boolean NOT NULL DEFAULT false,
   flagged             boolean NOT NULL DEFAULT false,
   label               text NULL,
   attributes          jsonb NOT NULL DEFAULT '{}',
@@ -104,7 +104,7 @@ CREATE TABLE proto_colored_edges (
   trace_id     text NOT NULL
 );
 
--- Step 2.c entity graph
+-- Step 3 entity graph
 CREATE TABLE proto_entity_nodes (
   id                 text PRIMARY KEY,
   label              text NULL,
@@ -112,10 +112,10 @@ CREATE TABLE proto_entity_nodes (
   contains_boundary  boolean NOT NULL DEFAULT false,
   contains_black     boolean NOT NULL DEFAULT false,
   contains_gray      boolean NOT NULL DEFAULT false,
-  -- Per ADR-0007 Step 3.a: true iff every absorbed Black node was synthetic.
-  -- This column is the sole sanctioned signal for "synthetic entity"; do not
+  -- Per ADR-0007 Step 3.a: true iff every absorbed Black node was inferred.
+  -- This column is the sole sanctioned signal for "inferred entity"; do not
   -- parse the `label` column for that purpose.
-  synthetic          boolean NOT NULL DEFAULT false,
+  inferred           boolean NOT NULL DEFAULT false,
   scopes             text NOT NULL DEFAULT '',
   trace_id           text NOT NULL
 );
@@ -145,10 +145,10 @@ CREATE TABLE proto_entities (
   detected_from  text NOT NULL,
   scope_name     text NOT NULL,
   anchor_span_id text NULL,
-  -- Per ADR-0007: synthetic identity is a typed boolean, never inferred
+  -- Per ADR-0007: inferred identity is a typed boolean, never derived
   -- from label/natural_key parsing. UI and downstream queries filter on
   -- this column.
-  synthetic      boolean NOT NULL DEFAULT false,
+  inferred       boolean NOT NULL DEFAULT false,
   trace_id       text NOT NULL
 );
 
@@ -234,10 +234,10 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
             txn.execute(
                 "INSERT INTO proto_colored_nodes("
                 "id, span_id, scope, color, is_boundary, is_target_duplicate, "
-                "is_synthetic, flagged, label, attributes, trace_id) "
+                "is_inferred, flagged, label, attributes, trace_id) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (node.id, node.span_id, node.scope, node.color,
-                 node.is_boundary, node.is_target_duplicate, node.is_synthetic,
+                 node.is_boundary, node.is_target_duplicate, node.is_inferred,
                  node.flagged, node.label,
                  json.dumps(node.attributes, default=str), trace_id),
             )
@@ -251,17 +251,17 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
                  colors_csv, edge.kind, trace_id),
             )
 
-        # --- Step 2.c entity graph ---
+        # --- Step 3 entity graph ---
         for node in result.entity_graph.nodes:
             scopes = _scopes_for_entity(node, span_by_id)
             txn.execute(
                 "INSERT INTO proto_entity_nodes("
                 "id, label, attributes, contains_boundary, contains_black, "
-                "contains_gray, synthetic, scopes, trace_id) "
+                "contains_gray, inferred, scopes, trace_id) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (node.id, node.label, json.dumps(node.attributes, default=str),
                  node.contains_boundary, node.contains_black, node.contains_gray,
-                 node.synthetic, scopes, trace_id),
+                 node.inferred, scopes, trace_id),
             )
             for sid in node.span_ids:
                 txn.execute(
@@ -281,10 +281,10 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
             txn.execute(
                 "INSERT INTO proto_entities("
                 "id, natural_key, display_name, detected_from, "
-                "scope_name, anchor_span_id, synthetic, trace_id) "
+                "scope_name, anchor_span_id, inferred, trace_id) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (e.id, e.natural_key, e.display_name, e.detected_from,
-                 e.scope_name, e.anchor_span_id, e.synthetic, trace_id),
+                 e.scope_name, e.anchor_span_id, e.inferred, trace_id),
             )
         for p in result.payloads:
             txn.execute(
@@ -339,10 +339,10 @@ def main() -> int:
         n_gray = sum(1 for n in result.colored_graph.nodes if n.color == "gray")
         n_black = sum(1 for n in result.colored_graph.nodes if n.color == "black")
         n_dup = sum(1 for n in result.colored_graph.nodes if n.is_target_duplicate)
-        n_synth = sum(1 for n in result.colored_graph.nodes if n.is_synthetic)
+        n_inferred = sum(1 for n in result.colored_graph.nodes if n.is_inferred)
         n_flag = sum(1 for n in result.colored_graph.nodes if n.flagged)
         print(f"  {n_gray} gray, {n_black} black "
-              f"({n_dup} target duplicates, {n_synth} synthetic)  "
+              f"({n_dup} target duplicates, {n_inferred} inferred)  "
               f"{len(result.colored_graph.edges)} edges  {n_flag} flagged")
 
         print(f"\n--- entity graph ---")
@@ -351,8 +351,8 @@ def main() -> int:
 
         print(f"\n--- entities ({len(result.entities)}) ---")
         for e in sorted(result.entities, key=lambda x: x.natural_key):
-            synth = " (synthetic)" if e.synthetic else ""
-            print(f"  {e.natural_key:40}{synth} scopes={e.scope_name}")
+            inferred = " (inferred)" if e.inferred else ""
+            print(f"  {e.natural_key:40}{inferred} scopes={e.scope_name}")
 
         print(f"\n--- interactions ({len(result.interactions)}) ---")
         for ix in sorted(result.interactions, key=lambda r: r.started_at):
