@@ -113,6 +113,38 @@ def _white_adjacency(graph: BaseGraph) -> tuple[dict[str, list[str]], dict[str, 
     return fwd, rev
 
 
+# Role/Kind values carried on Node as plain strings (Role/Kind are str-enums
+# in adapters.py; mirrored here to avoid an import cycle).
+_ROLE_SOURCE = "SOURCE"
+_ROLE_TARGET = "TARGET"
+_ROLE_BOTH = "BOTH"
+
+
+def _is_matched_call_pair(a: Node, b: Node) -> bool:
+    """True iff Black nodes `a` and `b` form a matched cross-entity call pair
+    for Step 2.d edge promotion: one is exactly the SOURCE (caller) side, the
+    other exactly the TARGET (callee) side, AND they share the same
+    entity-kind (tool→tool, llm→llm, agent→agent).
+
+    A pair where both nodes are SOURCE is NOT a call pair: an agent's `query`
+    span and its own `ClaudeAgentSDK.{tool}` dispatch span are both SOURCE and
+    belong to the same entity, so the Gray edge between them must stay Gray
+    (the dispatch's real callee is materialised as an inferred TARGET peer in
+    Step 2.b instead).
+
+    `BOTH` (a combined source-and-target span) is deliberately excluded here:
+    its target is the duplicate node created in Step 2.b, wired with Black
+    edges directly — it does not acquire a target by gray-chain promotion to
+    an unrelated adjacent boundary. Same-kind is required so an LLM call
+    adjacent to a tool call is not mistaken for a call between them.
+    """
+    if a.kind is None or b.kind is None or a.kind != b.kind:
+        return False
+    return (a.role == _ROLE_SOURCE and b.role == _ROLE_TARGET) or (
+        a.role == _ROLE_TARGET and b.role == _ROLE_SOURCE
+    )
+
+
 # ---------------------------------------------------------------------------
 # Step 2.a — Agentic coloring
 # ---------------------------------------------------------------------------
@@ -143,6 +175,8 @@ def color_agentic(graph: BaseGraph, spans_by_id: dict[str, Span]) -> None:
             continue
         result: AgenticClassification = classifier(span)
         node.is_boundary = result.is_boundary
+        node.role = result.role
+        node.kind = result.kind
         if result.label and not node.label:
             node.label = result.label
         # Stash the classification on the node attributes for 2.b.
@@ -184,7 +218,14 @@ def color_agentic(graph: BaseGraph, spans_by_id: dict[str, Span]) -> None:
         if node.color == GRAY and node.is_boundary:
             node.color = BLACK
 
-    # 4. Promote Gray edges between two Black endpoints to also Black.
+    # 4. Promote a Gray edge between two Black endpoints to Black ONLY when
+    #    the endpoints form a matched call pair: one is the SOURCE (caller)
+    #    side and the other the TARGET (callee) side of the SAME entity-kind
+    #    (tool→tool, llm→llm, agent→agent). A Black edge means a cross-entity
+    #    call, so two adjacent SOURCE boundaries on the same chain (e.g. an
+    #    agent's `query` span and its own `ClaudeAgentSDK.{tool}` dispatch
+    #    span — both SOURCE) must stay Gray: they belong to the same entity.
+    #    See ADR-0007 Step 2.d.
     for edge in graph.edges:
         if GRAY not in edge.colors:
             continue
@@ -192,7 +233,7 @@ def color_agentic(graph: BaseGraph, spans_by_id: dict[str, Span]) -> None:
         b = nodes_by_id.get(edge.to_node_id)
         if a is None or b is None:
             continue
-        if a.color == BLACK and b.color == BLACK:
+        if a.color == BLACK and b.color == BLACK and _is_matched_call_pair(a, b):
             edge.add_color(BLACK)
 
 
@@ -218,6 +259,10 @@ def duplicate_combined_nodes(graph: BaseGraph) -> None:
         dup = Node.make(span_id=node.span_id, scope=node.scope, color=BLACK)
         dup.is_boundary = True
         dup.is_target_duplicate = True
+        # The duplicate is the target side of the combined span; it shares the
+        # original's entity-kind and plays the TARGET role.
+        dup.kind = node.kind
+        dup.role = _ROLE_TARGET
         target_label = node.attributes.get("_target_label")
         dup.label = target_label if isinstance(target_label, str) else None
         # Pool attributes so the target entity has the span's payload too.
@@ -350,6 +395,12 @@ def synthesize_missing_peers(graph: BaseGraph, spans_by_id: dict[str, Span]) -> 
         peer = Node.make(span_id=node.span_id, scope=node.scope, color=BLACK)
         peer.is_boundary = True
         peer.is_inferred = True
+        # The inferred peer is the callee, so it plays the opposite role of the
+        # observed boundary and shares its entity-kind (a tool call's peer is
+        # the tool, an LLM call's peer is the LLM). This keeps the source→peer
+        # pair a matched call pair under Step 2.d.
+        peer.kind = node.kind
+        peer.role = _ROLE_TARGET if node.role in (_ROLE_SOURCE, _ROLE_BOTH) else _ROLE_SOURCE
         # Step 3.a phase 2 uses this key to combine inferred peers stubbing the
         # same real callee from multiple sources. The adapter computes it from
         # the boundary span's identifying attribute, normalised by kind.

@@ -68,10 +68,10 @@ Identification is **never** done by inspecting the node's label or any other
 display string — the field is the single source of truth.
 
 > **Naming note.** These columns were originally `is_synthetic` / `synthetic`.
-> The algorithm vocabulary is "inferred", so the intended column names are
-> `is_inferred` / `inferred`; this ADR documents the target names. The code
-> and scratch-table schema still carry the old names and will be renamed in a
-> later change.
+> The algorithm vocabulary is "inferred", so they have been renamed to
+> `is_inferred` / `inferred` across the stack (processor, scratch-table
+> schema, API wire shape, and the UI marker). This ADR uses the current
+> `inferred` names throughout.
 
 **Edges:**
 - **White edge** — parent/child relationship via OTel traceparent.
@@ -155,11 +155,12 @@ vocabulary.
 
 The honest division of labour is **schema drift in tables, behaviour drift
 in code**. Span-name parsing (the `"handoff to {target}"` prefix in
-openai_agents, the `ClaudeAgentSDK.{tool_name}` sub-agent prefix, the
-`ClaudeAgentSDK.query` combined-span recognition) is genuinely behavioural
-— recognising the prefix is coupled to a consequence (switch the
-natural-key kind, mark the span combined). Those decisions live in adapter
-code, not the schema tables.
+openai_agents, the `ClaudeAgentSDK.{tool_name}` tool/sub-agent dispatch
+prefix, the `ClaudeAgentSDK.query` combined-span recognition) is genuinely
+behavioural — recognising the prefix is coupled to a consequence (switch the
+natural-key kind, mark the span combined, or assign `role=SOURCE` to a
+dispatch span so it becomes a boundary with an inferred target peer). Those
+decisions live in adapter code, not the schema tables.
 
 **Boundary detection vs. agentic-scope recognition.** The OpenInference MCP
 adapter (`openinference.instrumentation.mcp`) exists in the registry but
@@ -208,7 +209,7 @@ observed nodes they describe.
 **Step 2.b — Inferred nodes.**
 Some agentic spans describe or represent an entity *other than the span's own
 node*. When a span carries evidence of such a peer, the algorithm materialises
-an **inferred node** for it and connects it with Black edges. Two cases:
+an **inferred node** for it and connects it with Black edges. Three cases:
 
 1. **Combined source-and-target spans.** A single span records both sides of a
    call — e.g. `ClaudeAgentSDK.query` (and
@@ -219,12 +220,37 @@ an **inferred node** for it and connects it with Black edges. Two cases:
    for the inferred node (typically `llm:<model>`). For each such span,
    create an additional **duplicate node** referencing the same span. The
    **original** node keeps both its parent-side and child-side Gray/White
-   chains and plays the **Source** role. The **duplicate** node has no
-   neighbours in the base graph and plays the **Target** role; its label is
+   chains and plays the **Source** role (`role=BOTH`). The **duplicate**
+   node has no neighbours in the base graph and plays the **Target** role
+   (`role=TARGET`, same `kind` as the original); its label is
    `SpanFacts.target_label`. Add two directed Black edges between them:
    source→target (request) and target→source (response).
 
-2. **Peers described in span attributes.** An LLM-output span may carry a
+2. **Tool / sub-agent dispatch spans.** A `ClaudeAgentSDK.{tool_name}` (or
+   `ClaudeAgentSDK.Subagent`) span records the agent *dispatching* a tool or
+   sub-agent; the span name carries the dispatched target's name and
+   `agent.name` is set, but the dispatched target emits **no span of its
+   own**. The adapter classifies the dispatch span as a **Source** boundary
+   (`role=SOURCE`) with `natural_key=agent:<name>`. Because the callee is
+   unobserved, the missing peer is materialised as an **inferred Target
+   node** of the same `kind` by the one-sided stubbing below, with
+   bidirectional Black edges (source→target, target→source). Sub-agent and
+   local-tool dispatch take the **same** path — the span-name suffix /
+   `agent.name` becomes the inferred peer's identity in both cases. Repeated
+   dispatches of the same target from one agent each produce their own
+   inferred peer; Step 3.a phase 2 then converges them to a single entity by
+   `natural_key`.
+
+   > **As-implemented note.** Implemented. The dispatch span is given
+   > `role=SOURCE` in `_ClaudeAgentSDKAdapter`; the inferred Target peer is
+   > created by `synthesize_missing_peers` (the one-sided stubbing below).
+   > This case depends on the Step 2.d edge rule (below): the dispatch span
+   > and its parent agent span are *both* Source boundaries, so the Gray
+   > edge between them is **not** promoted to Black — they remain one
+   > entity, and only the dispatch→inferred-peer edge is a cross-entity
+   > call.
+
+3. **Peers described in span attributes.** An LLM-output span may carry a
    `tool_calls` attribute, e.g.
    `llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments`,
    which describes a tool that was invoked from the LLM output. The span
@@ -235,10 +261,11 @@ an **inferred node** for it and connects it with Black edges. Two cases:
    tool node (the target), and (3) the reverse edge from the tool node back
    to the tool-call node.
 
-   > **As-implemented note.** Case 2 (tool-from-`tool_calls` inference) is
+   > **As-implemented note.** Case 3 (tool-from-`tool_calls` inference) is
    > **not yet implemented**. It is recorded here as intended design;
-   > currently only combined-span duplication (case 1) and the one-sided
-   > stubbing described below materialise inferred nodes.
+   > currently only combined-span duplication (case 1), tool/sub-agent
+   > dispatch (case 2), and the one-sided stubbing described below
+   > materialise inferred nodes.
 
 When only one side of a protocol call is observed, the missing peer is also an
 inferred node: a boundary node that has no observed peer in the trace gets an
@@ -247,8 +274,10 @@ inferred node referencing the same span, carrying the originating boundary's
 edges (source→target and target→source). When a natural key is available the
 inferred node's display label is the key itself (`tool:get_weather`,
 `llm:gpt-4o`, …); otherwise it falls back to `(unobserved peer of <source>)`.
-The original node retains its Source-or-Target role; the inferred node plays
-the *opposite* role.
+The original node retains its Source-or-Target role and `kind`; the inferred
+node plays the *opposite* role with the *same* `kind`, so the source→peer pair
+satisfies the Step 2.d kind+role-matched edge rule. This one-sided stubbing is
+`synthesize_missing_peers` in `builder.py`.
 
 > **Ordering note.** One-sided stubbing depends on knowing a node *is* a
 > boundary, which the spec colors in Step 2.d — so this sub-case is logically
@@ -256,9 +285,11 @@ the *opposite* role.
 > spec lists it under inferred-node creation (it produces an inferred node);
 > the implementation determines boundary-ness from `SpanFacts.role` at
 > classification time, so the dependency is satisfied regardless of where the
-> Black color is nominally applied. The two cases above (combined span,
+> Black color is nominally applied. Cases 1 and 3 (combined span,
 > `tool_calls`) have no such dependency — they read evidence off the span
-> directly.
+> directly. Case 2 (tool/sub-agent dispatch) produces its inferred peer
+> *through* this one-sided stubbing, so it shares the same boundary
+> dependency.
 
 **Step 2.c — Intra-trace merging.**
 Per spec def. 8, this step merges an **inferred** node with the **real
@@ -295,11 +326,33 @@ custom CHAIN spans (kind=`OTHER`); **and** wrapper spans whose kind is
 assert one side of a call (e.g. a top-level agent-run wrapper that does not
 itself carry target identity or payload — typically a more specific child span
 is the real boundary). The adapter is the single arbiter of role; the builder
-reads only the field. Promotion is driven by `role`, **not** by `Kind` (see
-"Boundary promotion is role-driven, not kind-driven" under Key decisions).
+reads only the field. *Node* promotion is driven by `role`, **not** by `Kind`
+(see "Boundary promotion is role-driven, not kind-driven" under Key decisions).
 
-Then, for every Gray edge whose endpoints are both Black, add a **Black edge**
-in the same direction.
+Then color the *edges*. A Gray edge whose endpoints are both Black is promoted
+to **Black only when the endpoints form a matched call pair**: one endpoint is
+exactly `role=SOURCE` (the caller) and the other exactly `role=TARGET` (the
+callee), **and** both carry the same `Kind` (tool→tool, llm→llm, agent→agent).
+A Black edge means a *cross-entity* call, so this rule keeps two adjacent
+Source boundaries on the same Gray chain from being mistaken for a call between
+them — e.g. an agent's `ClaudeAgentSDK.query` span and its own
+`ClaudeAgentSDK.{tool_name}` dispatch span are *both* Source: the Gray edge
+between them stays Gray, and they collapse into the same entity in Step 3.a.
+The dispatch's real callee is the inferred Target peer materialised in Step 2.b
+(case 2), and *that* source→peer edge is the matched call pair.
+
+`role=BOTH` (a combined source-and-target span) is deliberately **excluded**
+from this gray-edge promotion: its target is the duplicate node created in
+Step 2.b case 1, wired with Black edges directly — a combined span does not
+acquire a target by gray-chain adjacency to an unrelated boundary.
+
+> **As-implemented note.** This rule is `_is_matched_call_pair` in
+> `builder.py`, applied in `color_agentic`. To support it, base-graph nodes
+> carry the adapter's `role` and `kind` as plain string fields (mirrored from
+> the `Role`/`Kind` str-enums to avoid an import cycle). The earlier ADR draft
+> promoted *every* Gray edge between two Black endpoints; that blanket rule
+> produced spurious cross-entity edges between an agent and its own dispatch
+> spans, which is what this rule fixes.
 
 **Step 3 — Agentic entity graph.**
 Step 3 derives the entity graph from the colored execution-flow graph in two
@@ -344,7 +397,7 @@ when one exists; Step 3.a phase 2 combines entity nodes that share an
 identifying attribute regardless of whether any was observed.
 
 > **As-implemented note.** Phase 1 is `build_entity_graph`; phase 2 is the
-> `merge_synthetic_peers` pass (`builder.py`), which combines entity nodes by
+> `merge_inferred_peers` pass (`builder.py`), which combines entity nodes by
 > `peer_match_key` (= the `natural_key`) and preserves all incident edges.
 > Both are implemented and exercised by the canonical-trace test (5 entities /
 > 18 interactions). Today phase 2 only combines *inferred* entities; the spec
@@ -434,8 +487,9 @@ scopes (httpx, starlette, …) are not consulted for boundary detection at
 this stage; their spans remain White and contribute no entities. Their
 attributes will be used later to enrich agentic entities.
 
-**Boundary promotion is role-driven, not kind-driven.**
-A Gray node is promoted to Black iff the adapter assigned a non-`NONE`
+**Boundary-node promotion is role-driven, not kind-driven; edge promotion
+is kind+role-matched.**
+A Gray *node* is promoted to Black iff the adapter assigned a non-`NONE`
 role. A span's `Kind` (LLM/TOOL/AGENT/OTHER) records *what the span is
 about* — it drives natural-key prefix selection (`llm:` / `tool:` /
 `agent:`) and payload-shape selection (chat messages vs. opaque
@@ -451,7 +505,7 @@ non-call edges. The adapter therefore assigns `role=NONE` to wrappers
 and reserves `SOURCE`/`TARGET`/`BOTH` for spans that carry explicit
 call evidence — target identity, request/response payload, or a
 framework-specific span-name signal (e.g. `"handoff to {target}"`,
-`ClaudeAgentSDK.query`).
+`ClaudeAgentSDK.query`, `ClaudeAgentSDK.{tool_name}`).
 
 For LLM-kind spans the rule is more permissive: `role=SOURCE` is
 assigned even when both `llm.input_messages` and `input.value` are
@@ -459,7 +513,17 @@ absent. Empty payloads on an LLM-kind span are an instrumentation gap,
 not absence of a call — the kind itself is sufficient call evidence.
 This asymmetry with AGENT/TOOL is deliberate: AGENT-kind has too many
 wrapper-shape false positives to treat kind alone as evidence; LLM-kind
-does not.
+does not. The `ClaudeAgentSDK.{tool_name}` dispatch span is a deliberate
+AGENT-kind exception: the framework-specific span-name signal is itself
+the call evidence (it names the dispatched target), so the adapter
+assigns `role=SOURCE` there.
+
+While *node* promotion ignores `Kind`, *edge* promotion (Step 2.d) does
+use it: a Gray edge between two Black nodes becomes Black only for a
+`SOURCE`↔`TARGET` pair of the **same** `Kind`. `Kind` here disambiguates
+which adjacent boundaries form a genuine call (a tool call paired with a
+tool, an LLM call with an LLM) from two same-entity Source spans that
+merely sit next to each other on the chain. See Step 2.d.
 
 **Each (scope, framework) pair is developed and implemented separately.**
 A new framework — even within an existing scope like openinference — is
@@ -507,7 +571,7 @@ stages and on different graphs:
   that share an identifying attribute (the boundary `natural_key`). This is
   what converges a peer that is *called repeatedly but never observed* — the
   case Step 2.c cannot handle because there is no observed node to merge into.
-  **Implemented** (`merge_synthetic_peers`), and required by the
+  **Implemented** (`merge_inferred_peers`), and required by the
   canonical-trace test.
 
 These are complementary, not redundant: 2.c removes an inferred node in favour
@@ -539,8 +603,8 @@ dl-demo-travel-advisor)"`) and is free to change for UX reasons; queries and
 downstream processors must filter on the boolean field. The scratch-table
 schemas in `cli.py` carry this column explicitly so external SQL inspection
 has a typed signal rather than a string-pattern heuristic. (These columns are
-currently named `is_synthetic` / `synthetic` in the code; the rename to
-`is_inferred` / `inferred` is pending — see the naming note in Definitions.)
+named `is_inferred` on the node row and `inferred` on the entity row — see the
+naming note in Definitions.)
 
 **Entity attributes are pooled from all spans in the component.**
 Within a connected component, attributes from every Gray and Black span are
@@ -599,7 +663,7 @@ and will be addressed by a separate enrichment stage:
   entity-forming subgraph.
 - **Inferring tool nodes from `tool_calls` attributes.** An LLM-output span's
   `llm.output_messages.*.message.tool_calls.*` attributes evidence a tool
-  call and the tool itself (Step 2.b case 2). Materialising those inferred
+  call and the tool itself (Step 2.b case 3). Materialising those inferred
   tool-call / tool nodes and their edges from span attributes is intended
   design but not yet implemented.
 - **Step 2.c inferred↔observed merging.** The spec's Step 2.c — collapsing an
@@ -609,10 +673,6 @@ and will be addressed by a separate enrichment stage:
   from the Step 3.a phase-2 combine (combine by identifying attribute), which
   *is* implemented and converges repeatedly-called peers even when never
   observed.
-- **Column rename `is_synthetic`/`synthetic` → `is_inferred`/`inferred`.** The
-  algorithm vocabulary is "inferred"; the code and scratch-table schema still
-  use the old `synthetic` names and the `synth` UI marker. Renaming them to
-  match is pending.
 - **Step 4 (spec) — system graph.** The spec's Step 4 (deferred) builds a
   cross-trace "system graph" and groups:
   - **Inter-trace merging.** Merging an inferred node in one trace with an
@@ -626,14 +686,6 @@ and will be addressed by a separate enrichment stage:
 - **Entities from pure non-agentic calls.** A direct httpx call between two
   services with no agentic span on either side produces no entity at this
   stage.
-- **`ClaudeAgentSDK.{tool_name}` sub-agent dispatch.** These spans
-  structurally look like a call boundary — span name carries the target
-  agent name and `kind=AGENT` is set — but they do not carry payload or
-  enough call evidence to be classified as a real boundary under the
-  role-driven rule. The adapter assigns `role=NONE` for now, leaving
-  these nodes Gray. Treat as a known gap pending either richer
-  upstream instrumentation or a span-name-only boundary rule that we
-  are not yet ready to commit to.
 
 ## Considered alternatives
 
@@ -671,24 +723,21 @@ focused on agentic-scope semantics over a single base graph.
   `DATABASE_URL` points at, so it is disabled by default and refuses to run
   unless `PI_LOAD_FIXTURE_CONFIRM=1` is set (see its module docstring).
 - The colored-base-graph node row (`proto_colored_nodes`) carries an
-  `is_synthetic boolean NOT NULL DEFAULT false` column, and the entity-node
-  row (`proto_entity_nodes`) carries a `synthetic boolean NOT NULL DEFAULT
+  `is_inferred boolean NOT NULL DEFAULT false` column, and the entity-node
+  row (`proto_entity_nodes`) carries an `inferred boolean NOT NULL DEFAULT
   false` column. These are the sole sanctioned signals for "is this an
   inferred (unobserved-peer) node?" — the `label` column is display-only and
-  must not be parsed for this purpose. The mismatch in column name
-  (`is_synthetic` on the node table vs. `synthetic` on the entity table)
-  follows the existing `is_*` / `contains_*` convention on each table; the
-  `/proto/graphs/{trace_id}` API normalises both to `is_synthetic` on the
-  wire so the UI sees one boolean shape across base / colored / entity
-  graphs. These column and wire names describe the code **as it stands
-  today**; they are slated to be renamed to `is_inferred` / `inferred` to
-  match the algorithm vocabulary (pending code change).
-- The "Graphs (proto)" UI surfaces inferred peers via a `synth` marker
-  pill (current code) alongside the existing `boundary`, `target`, and
+  must not be parsed for this purpose. The difference in column name
+  (`is_inferred` on the node table vs. `inferred` on the entity table)
+  follows the existing `is_*` / `contains_*` convention on each table; on the
+  `/proto/graphs/{trace_id}` wire the base/colored graphs expose `is_inferred`
+  and the entity graph exposes `inferred`, and the UI reads whichever the
+  graph carries.
+- The "Graphs (proto)" UI surfaces inferred peers via an `inferred` marker
+  pill (`marker-inferred`) alongside the existing `boundary`, `target`, and
   `flagged` pills, and shows a count in the colored-graph and entity-graph
   summary lines. The pill is rendered by reading the boolean field; the
-  label string is never inspected. The marker is to be relabelled in line
-  with the `inferred` rename.
+  label string is never inspected.
 - Non-agentic scopes contribute no entities at this stage. Scopes that emit
   no agentic spans at all will not appear in the entity graph until the
   enrichment stage runs.

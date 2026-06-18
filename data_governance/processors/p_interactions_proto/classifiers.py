@@ -48,6 +48,12 @@ class AgenticClassification:
     label:        Entity label to attach to the source node. May be None.
     target_label: For combined spans, the label for the duplicate (target)
                   node. Ignored if is_combined is False.
+    role:         The adapter's call-side as a string ("SOURCE" / "TARGET" /
+                  "BOTH" / "NONE"). Step 2.d uses it (with kind) to decide
+                  which Gray edges become Black.
+    kind:         The adapter's entity-kind as a string ("LLM" / "TOOL" /
+                  "AGENT" / "OTHER"). Same-kind is required for a Gray edge
+                  to be promoted to Black between a SOURCE and a TARGET.
 
     Built from `SpanFacts` (see `adapters.py`) via `_from_facts`. Kept as a
     distinct dataclass so the builder's existing call sites do not need to
@@ -58,6 +64,8 @@ class AgenticClassification:
     is_combined: bool = False
     label: str | None = None
     target_label: str | None = None
+    role: str | None = None
+    kind: str | None = None
 
     @classmethod
     def _from_facts(cls, facts: SpanFacts) -> "AgenticClassification":
@@ -71,6 +79,10 @@ class AgenticClassification:
             is_combined=facts.is_combined,
             label=facts.display_label,
             target_label=facts.target_label,
+            # Role/Kind are str-enums; carry their string values to the base
+            # graph for the Step 2.d kind+role-matched edge promotion.
+            role=facts.role.value if facts.role is not None else None,
+            kind=facts.kind.value if facts.kind is not None else None,
         )
 
 
