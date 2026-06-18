@@ -383,20 +383,20 @@
       `${(base.nodes||[]).length} nodes · ${(base.edges||[]).length} edges`;
     renderInterleaved('graph-base-nodes-table', baseSorted, base.edges || [], baseById, 'base');
 
-    const flagCount  = (colored.nodes || []).filter(n => n.flagged).length;
-    const dupCount   = (colored.nodes || []).filter(n => n.is_target_duplicate).length;
-    const synthCount = (colored.nodes || []).filter(n => n.is_synthetic).length;
+    const flagCount     = (colored.nodes || []).filter(n => n.flagged).length;
+    const dupCount      = (colored.nodes || []).filter(n => n.is_target_duplicate).length;
+    const inferredCount = (colored.nodes || []).filter(n => n.is_inferred).length;
     document.getElementById('graph-colored-summary').textContent =
       `${(colored.nodes||[]).length} nodes · ${(colored.edges||[]).length} edges` +
-      (flagCount  ? ` · ${flagCount} flagged`     : '') +
-      (dupCount   ? ` · ${dupCount} duplicates`   : '') +
-      (synthCount ? ` · ${synthCount} synthetic`  : '');
+      (flagCount     ? ` · ${flagCount} flagged`      : '') +
+      (dupCount      ? ` · ${dupCount} duplicates`    : '') +
+      (inferredCount ? ` · ${inferredCount} inferred` : '');
     renderInterleaved('graph-colored-nodes-table', coloredSorted, colored.edges || [], coloredById, 'colored');
 
-    const entSynthCount = (entity.nodes || []).filter(n => n.is_synthetic).length;
+    const entInferredCount = (entity.nodes || []).filter(n => n.is_inferred).length;
     document.getElementById('graph-entity-summary').textContent =
       `${(entity.nodes||[]).length} entities · ${(entity.edges||[]).length} edges` +
-      (entSynthCount ? ` · ${entSynthCount} synthetic` : '');
+      (entInferredCount ? ` · ${entInferredCount} inferred` : '');
     renderInterleaved('graph-entity-nodes-table', entitySorted, entity.edges || [], entityById, 'entity');
   }
 
@@ -440,7 +440,7 @@
       if (mode !== 'base') {
         if (node.is_boundary)         tColor.appendChild(markerPill('boundary', 'marker-boundary'));
         if (node.is_target_duplicate) tColor.appendChild(markerPill('target',   'marker-target'));
-        if (node.is_synthetic)        tColor.appendChild(markerPill('synth',    'marker-synth'));
+        if (node.is_inferred)         tColor.appendChild(markerPill('inferred', 'marker-inferred'));
         if (node.flagged)             tColor.appendChild(markerPill('flagged',  'marker-flagged'));
       }
       tr.appendChild(tColor);

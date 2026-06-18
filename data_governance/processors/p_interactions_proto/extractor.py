@@ -7,17 +7,17 @@ Algorithm (see docs/adr/0007-p-interactions-graph-algorithm.md):
   Step 2.a   — agentic coloring (Gray nodes/edges, Black boundaries, additive)
   Step 2.b   — combined source-and-target span duplication
   Step 2.c   — synthesize missing peers (Black boundaries with no Black
-               edges → synthetic peer with bidirectional Black edges)
+               edges → inferred peer with bidirectional Black edges)
                + flag Gray nodes between Black boundaries
   Step 3.a   — connected components over Gray/Black via White+Gray edges
-               → entity graph; Black edges → entity edges
-  Step 3.b   — merge identical synthetic peers (same source-span identifying
-               attributes → one entity)
-  Step 3.c   — assign 'unknown' as every entity's display name (richer
+               → entity graph; Black edges → entity edges (phase 1); combine
+               inferred peers with matching source-span identifying
+               attributes into one entity (phase 2)
+  Step 3.b   — assign 'unknown' as every entity's display name (richer
                naming is deferred — see ADR-0007)
 
 Then the extractor derives ProtoEntity / ProtoInteraction / ProtoPayload
-output rows from the post-3.c entity graph.
+output rows from the post-3.b entity graph.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from .builder import (
     color_agentic,
     duplicate_combined_nodes,
     flag_between_boundaries,
-    merge_synthetic_peers,
+    merge_inferred_peers,
     synthesize_missing_peers,
 )
 from .graph import BaseGraph, EntityGraph
@@ -62,11 +62,11 @@ class ProtoEntity:
     detected_from: str
     scope_name: str
     anchor_span_id: str | None
-    # True iff every base-graph node absorbed into this entity was a Step 2.c
-    # synthetic peer. Per ADR-0007 this is the sole sanctioned signal for
-    # "unobserved-peer stub" — the UI must filter on this boolean, never on
-    # the label/natural_key string.
-    synthetic: bool = False
+    # True iff every base-graph node absorbed into this entity was an inferred
+    # peer (e.g. a Step 2.c unobserved-peer stub). Per ADR-0007 this is the
+    # sole sanctioned signal for "inferred entity" — the UI must filter on this
+    # boolean, never on the label/natural_key string.
+    inferred: bool = False
 
 
 @dataclasses.dataclass
@@ -108,8 +108,8 @@ class ExtractResult:
     # Intermediate graphs for evaluation. The base graph after Step 1 is
     # snapshotted *before* Steps 2.a–2.c mutate it; the colored graph is the
     # post-2.c state (after coloring, combined-span duplication, and
-    # synthetic-peer insertion). The entity graph is the post-3.b state
-    # (after synthetic-peer merging).
+    # inferred-peer insertion). The entity graph is the post-3.a state
+    # (after the phase-2 inferred-peer combine).
     base_graph: BaseGraph
     colored_graph: BaseGraph
     entity_graph: EntityGraph
@@ -175,8 +175,8 @@ def _derive_entities(
     out = []
     for n in entity_graph.nodes:
         anchor = n.span_ids[0] if n.span_ids else None
-        if n.synthetic:
-            detected = "synthetic"
+        if n.inferred:
+            detected = "inferred"
         elif n.span_ids:
             detected = "observed"
         else:
@@ -189,7 +189,7 @@ def _derive_entities(
             detected_from=detected,
             scope_name=_scopes_for_entity(n, span_by_id),
             anchor_span_id=anchor,
-            synthetic=n.synthetic,
+            inferred=n.inferred,
         ))
     return out
 
@@ -304,13 +304,13 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     flag_between_boundaries(working)
     colored_snapshot = _snapshot(working)
 
-    # Step 3.a — entity graph
+    # Step 3.a phase 1 — entity graph
     entity_graph = build_entity_graph(working)
 
-    # Step 3.b — merge identical synthetic peers
-    n_merged = merge_synthetic_peers(entity_graph)
+    # Step 3.a phase 2 — combine inferred peers by identifying attribute
+    n_merged = merge_inferred_peers(entity_graph)
 
-    # Step 3.c is applied during output derivation (entities get 'unknown'
+    # Step 3.b is applied during output derivation (entities get 'unknown'
     # display; the underlying classifier label is kept on the EntityNode for
     # the future enrichment stage).
     entities = _derive_entities(entity_graph, span_by_id)
@@ -325,15 +325,15 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     n_black = sum(1 for n in colored_snapshot.nodes if n.color == "black")
     n_flag = sum(1 for n in colored_snapshot.nodes if n.flagged)
     n_dup = sum(1 for n in colored_snapshot.nodes if n.is_target_duplicate)
-    n_synth = sum(1 for n in colored_snapshot.nodes if n.is_synthetic)
+    n_inferred = sum(1 for n in colored_snapshot.nodes if n.is_inferred)
     notes.append(
         f"colored graph: {n_gray} gray, {n_black} black "
-        f"({n_dup} target duplicates, {n_synth} synthetic peers), "
+        f"({n_dup} target duplicates, {n_inferred} inferred peers), "
         f"{n_flag} between-boundary flags"
     )
     notes.append(
         f"entity graph: {len(entity_graph.nodes)} entities, {len(entity_graph.edges)} edges "
-        f"(Step 3.b merged {n_merged} synthetic peers)"
+        f"(Step 3.a phase 2 combined {n_merged} inferred peers)"
     )
     notes.extend(ix_notes)
 

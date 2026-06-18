@@ -13,17 +13,16 @@ Implements the algorithm described in docs/adr/0007-p-interactions-graph-algorit
                source; duplicate stands alone and represents the target. Add
                request/response Black edges between them.
   Step 2.c   — synthesize missing peers: any Black boundary node with no
-               Black edges represents a one-sided observation. Materialise a
-               synthetic Black peer (carrying is_synthetic=True) and add
+               Black edges represents a one-sided observation. Materialise an
+               inferred Black peer (carrying is_inferred=True) and add
                bidirectional Black edges between them.
   Step 3.a   — entity graph: connected components over Gray/Black nodes via
-               White and Gray edges (Black ignored) → entity nodes; Black
-               edges → directed entity edges.
-  Step 3.b   — merge identical synthetic peers: synthetic entity nodes whose
-               source-span identifying attributes match collapse into one,
-               so the same unobserved real peer called from N sources is
-               represented by one entity rather than N look-alikes.
-  Step 3.c   — name nodes: each entity is assigned the ID 'unknown' (richer
+               White and Gray edges (Black ignored) → entity nodes (phase 1);
+               Black edges → directed entity edges. Phase 2 then combines
+               inferred entity nodes whose source-span identifying attributes
+               match, so the same unobserved real peer called from N sources
+               is represented by one entity rather than N look-alikes.
+  Step 3.b   — name nodes: each entity is assigned the ID 'unknown' (richer
                naming is deferred — see ADR-0007).
 
 Edge coloring is additive: an edge can carry multiple colors at once. The
@@ -295,16 +294,16 @@ def flag_between_boundaries(graph: BaseGraph) -> None:
 
 
 def _peer_match_key(node: Node, spans_by_id: dict[str, Span]) -> str | None:
-    """Identifying attribute of the boundary span — used as the merge key in
-    Step 3.b. Two synthetic peers stubbing the same real callee from
+    """Identifying attribute of the boundary span — used as the combine key in
+    Step 3.a phase 2. Two inferred peers stubbing the same real callee from
     different sources end up with the same key.
 
     Per ADR-0007, the key is "the source-span identifying attribute used by
     the originating boundary's classifier". The actual attribute lookup
     lives in `adapters.py`, dispatched on (scope, framework, version);
     here we just ask the matching adapter for `SpanFacts.natural_key`.
-    Returns None when no identifying attribute is available — Step 3.b
-    leaves keyless synthetics distinct.
+    Returns None when no identifying attribute is available — Step 3.a
+    phase 2 leaves keyless inferred peers distinct.
     """
     span = spans_by_id.get(node.span_id)
     if span is None:
@@ -313,8 +312,8 @@ def _peer_match_key(node: Node, spans_by_id: dict[str, Span]) -> str | None:
 
 
 def synthesize_missing_peers(graph: BaseGraph, spans_by_id: dict[str, Span]) -> None:
-    """For every Black boundary node with no Black edges, create a synthetic
-    Black peer (is_synthetic=True) referencing the same span and add
+    """For every Black boundary node with no Black edges, create an inferred
+    Black peer (is_inferred=True) referencing the same span and add
     bidirectional Black edges between them.
 
     A Black node with no Black edges indicates that the peer side of the call
@@ -322,11 +321,11 @@ def synthesize_missing_peers(graph: BaseGraph, spans_by_id: dict[str, Span]) -> 
     nodes that share a Gray chain in the trace, so an isolated Black node is
     a reliable signal for unobserved peer (not "peer present but unlinked").
 
-    The synthetic node copies the original node's pooled attributes so the
+    The inferred node copies the original node's pooled attributes so the
     resulting entity carries something to display, and inverts the role
-    label. Step 3.a's entity graph propagates the synthetic marker onto the
-    entity node; Step 3.b then merges synthetic entities whose source-span
-    attributes match.
+    label. Step 3.a's entity graph propagates the inferred marker onto the
+    entity node; Step 3.a phase 2 then combines inferred entities whose
+    source-span attributes match.
     """
     # Index Black-edge endpoints (only edges with BLACK color count).
     black_endpoints: set[str] = set()
@@ -350,21 +349,21 @@ def synthesize_missing_peers(graph: BaseGraph, spans_by_id: dict[str, Span]) -> 
 
         peer = Node.make(span_id=node.span_id, scope=node.scope, color=BLACK)
         peer.is_boundary = True
-        peer.is_synthetic = True
-        # Step 3.b uses this key to merge synthetic peers stubbing the same
-        # real callee from multiple sources. The adapter computes it from
+        peer.is_inferred = True
+        # Step 3.a phase 2 uses this key to combine inferred peers stubbing the
+        # same real callee from multiple sources. The adapter computes it from
         # the boundary span's identifying attribute, normalised by kind.
         peer.peer_match_key = _peer_match_key(node, spans_by_id)
-        # The synthetic peer represents the callee, not the emitter. The
+        # The inferred peer represents the callee, not the emitter. The
         # natural-key (e.g. `tool:get_weather`) IS the callee's identity,
         # so it's the right thing to show. Fall back to the generic
         # "unobserved peer of X" only when no key was extractable —
-        # those cases stay distinct in 3.b too, so a generic label is
-        # honest about the missing information.
+        # those cases stay distinct in 3.a phase 2 too, so a generic label
+        # is honest about the missing information.
         peer.label = peer.peer_match_key or (
             f"(unobserved peer of {node.label})" if node.label else "(unobserved peer)"
         )
-        # Pool attributes so the synthetic entity has something to display.
+        # Pool attributes so the inferred entity has something to display.
         peer.attributes = dict(node.attributes)
         peer.attributes.pop("_combined", None)
         peer.attributes.pop("_target_label", None)
@@ -462,38 +461,38 @@ def build_entity_graph(graph: BaseGraph) -> EntityGraph:
 
 
 # ---------------------------------------------------------------------------
-# Step 3.b — Merge identical synthetic peers
+# Step 3.a phase 2 — Combine inferred entity nodes by identifying attribute
 # ---------------------------------------------------------------------------
 
 
-def merge_synthetic_peers(entity_graph: EntityGraph) -> int:
-    """Collapse synthetic entity nodes that stub the same unobserved real peer.
+def merge_inferred_peers(entity_graph: EntityGraph) -> int:
+    """Combine inferred entity nodes that stub the same unobserved real peer.
 
-    Two synthetic entities are considered identical iff they carry the same
+    Two inferred entities are considered identical iff they carry the same
     `peer_match_key` (set in Step 2.c from the originating boundary's
-    classifier label). When N synthetic entities share a key, all but one
+    classifier label). When N inferred entities share a key, all but one
     are dropped; every entity edge that referenced a dropped peer is
     rewritten to point at the surviving peer.
 
-    All edges and interactions are preserved across the merge (ADR-0007 Step
-    3.b): every entity edge incident on any merged peer survives as a
-    distinct edge on the surviving entity — no dedup by endpoint pair, no
-    collapsing. Each pre-merge edge represents a distinct observed call site,
-    so the count and provenance of calls to the unobserved peer survives.
-    Self-loops created by the rewrite (would only arise if two synthetic
-    peers with the same key were directly connected — not produced by
+    All edges and interactions are preserved across the combine (ADR-0007
+    Step 3.a phase 2): every entity edge incident on any combined peer
+    survives as a distinct edge on the surviving entity — no dedup by endpoint
+    pair, no collapsing. Each pre-combine edge represents a distinct observed
+    call site, so the count and provenance of calls to the unobserved peer
+    survives. Self-loops created by the rewrite (would only arise if two
+    inferred peers with the same key were directly connected — not produced by
     Step 2.c today) are still dropped.
 
-    Observed entities are never merged — only `entity.synthetic == True`
+    Observed entities are not combined here — only `entity.inferred == True`
     nodes participate.
 
     Returns the number of entities removed.
     """
-    # Group synthetic entities by peer_match_key; entities without a key
+    # Group inferred entities by peer_match_key; entities without a key
     # cannot be matched and remain distinct.
     by_key: dict[str, list[EntityNode]] = defaultdict(list)
     for node in entity_graph.nodes:
-        if not node.synthetic or not node.peer_match_key:
+        if not node.inferred or not node.peer_match_key:
             continue
         by_key[node.peer_match_key].append(node)
 
@@ -522,8 +521,8 @@ def merge_synthetic_peers(entity_graph: EntityGraph) -> int:
         return 0
 
     # Rewrite edges in place; preserve every edge as a distinct edge per
-    # ADR-0007 Step 3.b. Self-loops (would only arise if two synthetic peers
-    # with the same key were connected directly) are dropped.
+    # ADR-0007 Step 3.a phase 2. Self-loops (would only arise if two inferred
+    # peers with the same key were connected directly) are dropped.
     rewritten: list[EntityEdge] = []
     for edge in entity_graph.edges:
         src = redirect.get(edge.from_node_id, edge.from_node_id)

@@ -24,7 +24,7 @@ deliberately *not* promoted to tool entities: this test asserts that the
 extractor agrees (no `tool:` entities, no tool interactions).
 
 As in the canonical test, entity identity is the `natural_key`
-(`llm:` / service-name); `display_name` is `"unknown"` at Step 3.c, so we
+(`llm:` / service-name); `display_name` is `"unknown"` at Step 3.b, so we
 assert on the key, not the display name.
 """
 
@@ -32,13 +32,13 @@ from __future__ import annotations
 
 from data_governance.processors.p_interactions_proto.extractor import extract
 
-# Expected entity set: natural_key -> synthetic?  Only the observed agent and
+# Expected entity set: natural_key -> inferred?  Only the observed agent and
 # the single LLM peer it calls. No tools — the mcp_tools spans are discovery,
 # not calls.
 EXPECTED_ENTITIES = {
     # The observed agent: the only side of the call that emitted spans.
     "dl-demo-travel-advisor": False,
-    # The LLM it calls once — unobserved peer, stubbed + merged (synthetic).
+    # The LLM it calls once — unobserved peer, stubbed (inferred).
     "llm:claude-haiku-4-5-20251001": True,
 }
 
@@ -50,25 +50,25 @@ def test_clarifying_turn_entity_set(clarifying_turn_trace_spans):
     by_key = {e.natural_key: e for e in result.entities}
     assert len(by_key) == len(result.entities), "natural_keys not unique"
 
-    assert {k: v.synthetic for k, v in by_key.items()} == EXPECTED_ENTITIES
+    assert {k: v.inferred for k, v in by_key.items()} == EXPECTED_ENTITIES
 
 
-def test_one_observed_agent_one_synthetic_llm(clarifying_turn_trace_spans):
-    """Exactly one observed entity (the agent); the LLM is synthetic."""
+def test_one_observed_agent_one_inferred_llm(clarifying_turn_trace_spans):
+    """Exactly one observed entity (the agent); the LLM is inferred."""
     result = extract(clarifying_turn_trace_spans)
 
-    observed = [e for e in result.entities if not e.synthetic]
-    synthetic = [e for e in result.entities if e.synthetic]
+    observed = [e for e in result.entities if not e.inferred]
+    inferred = [e for e in result.entities if e.inferred]
 
     assert [e.natural_key for e in observed] == ["dl-demo-travel-advisor"]
-    assert {e.natural_key for e in synthetic} == {
+    assert {e.natural_key for e in inferred} == {
         "llm:claude-haiku-4-5-20251001",
     }
 
-    # Synthetic identity is a boolean field with detected_from="synthetic"
+    # Inferred identity is a boolean field with detected_from="inferred"
     # (ADR-0007), not a label convention.
-    for e in synthetic:
-        assert e.detected_from == "synthetic"
+    for e in inferred:
+        assert e.detected_from == "inferred"
 
 
 def test_no_tool_entities(clarifying_turn_trace_spans):

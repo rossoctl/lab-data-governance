@@ -46,8 +46,8 @@ Per ADR-0007 the graph algorithm needs four things from a span:
   * Is this span a protocol boundary, and on which side (caller / callee /
     combined)? — Steps 2.a, 2.b.
   * If it is a boundary, what is the natural-key string for the entity
-    behind it? (E.g. `tool:get_weather`, `llm:gpt-4o`.) — Step 2.c (synthetic
-    peer creation), Step 3.b (peer merge).
+    behind it? (E.g. `tool:get_weather`, `llm:gpt-4o`.) — Step 2.c (inferred
+    peer creation), Step 3.a phase 2 (peer combine).
   * If it is a boundary, what's a human-friendly label? — node display.
   * If it is a boundary, what are the request/response payloads? — payload
     extraction in `extractor._derive_interactions`.
@@ -136,10 +136,10 @@ class SpanFacts:
     an agentic wrapper without specific call evidence).
     `is_combined` — true iff one span carries BOTH the source and the target
     side of the call (Step 2.b duplication trigger). Implies `role=BOTH`.
-    `natural_key` — stable per-boundary identity used as the merge key in
-    Step 3.b. Format: `tool:<n>`, `llm:<model>`, `agent:<n>`.
-    None when no identifying attribute is present — Step 3.b leaves
-    keyless synthetics distinct.
+    `natural_key` — stable per-boundary identity used as the combine key in
+    Step 3.a phase 2. Format: `tool:<n>`, `llm:<model>`, `agent:<n>`.
+    None when no identifying attribute is present — Step 3.a phase 2 leaves
+    keyless inferred peers distinct.
     `display_label` — human-friendly UI label. Free to be the framework's
     `service.name`, span name, or anything else readable.
     `target_label` — for combined spans only: label for the duplicated

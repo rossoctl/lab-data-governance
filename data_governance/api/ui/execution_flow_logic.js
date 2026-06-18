@@ -112,15 +112,15 @@
       pill.className = 'ent-pill ' + kind;
       pill.textContent = kind;
       kindTd.appendChild(pill);
-      // Synthetic-peer marker — sourced from the typed boolean per
-      // ADR-0007 ("Synthetic identity is a boolean field, not a label
-      // convention"); never inferred from natural_key text.
-      if (e.synthetic) {
-        const synthPill = document.createElement('span');
-        synthPill.className = 'marker-pill marker-synth';
-        synthPill.textContent = 'synth';
-        synthPill.title = 'Synthetic peer (Step 2.c) — unobserved side of a one-sided protocol call.';
-        kindTd.appendChild(synthPill);
+      // Inferred-peer marker — sourced from the typed boolean per
+      // ADR-0007 ("Inferred identity is a boolean field, not a label
+      // convention"); never derived from natural_key text.
+      if (e.inferred) {
+        const inferredPill = document.createElement('span');
+        inferredPill.className = 'marker-pill marker-inferred';
+        inferredPill.textContent = 'inferred';
+        inferredPill.title = 'Inferred peer (Step 2.c) — unobserved side of a one-sided protocol call.';
+        kindTd.appendChild(inferredPill);
       }
 
       const nameTd = document.createElement('td');
@@ -131,7 +131,7 @@
         ? e.natural_key
         : e.display_name;
       nameTd.textContent = nameLabel;
-      if (e.synthetic) {
+      if (e.inferred) {
         nameTd.style.fontStyle = 'italic';
         nameTd.style.color = '#9ec5e6';
       }
@@ -264,19 +264,19 @@
     kindPill.className = 'ent-pill ' + kind;
     kindPill.textContent = kind;
     td.appendChild(kindPill);
-    if (entity.synthetic) {
-      const synthPill = document.createElement('span');
-      synthPill.className = 'marker-pill marker-synth';
-      synthPill.textContent = 'synth';
-      synthPill.title = 'Synthetic peer (Step 2.c).';
-      td.appendChild(synthPill);
+    if (entity.inferred) {
+      const inferredPill = document.createElement('span');
+      inferredPill.className = 'marker-pill marker-inferred';
+      inferredPill.textContent = 'inferred';
+      inferredPill.title = 'Inferred peer (Step 2.c).';
+      td.appendChild(inferredPill);
     }
     const label = entity.natural_key && entity.natural_key !== 'unknown'
       ? entity.natural_key
       : entity.display_name;
     const labelSpan = document.createElement('span');
     labelSpan.textContent = label;
-    if (entity.synthetic) {
+    if (entity.inferred) {
       labelSpan.style.fontStyle = 'italic';
       labelSpan.style.color = '#9ec5e6';
     }
