@@ -694,8 +694,13 @@ class _ClaudeAgentSDKAdapter:
       * `ClaudeAgentSDK.ClaudeSDKClient.receive_response` — same shape as
         above, per-turn for stateful clients.
       * `ClaudeAgentSDK.{tool_name}` / `ClaudeAgentSDK.Subagent` —
-        AGENT kind, sub-agent invocation. `agent.name` carries the tool
-        name. NOT combined: the boundary is the sub-agent dispatch only.
+        AGENT kind, tool / sub-agent dispatch. `agent.name` carries the
+        dispatched target's name (the span-name suffix is the fallback).
+        A SOURCE boundary (ADR-0007 Step 2.b case 2): the dispatched
+        target emits no observed span, so Step 2.b's one-sided stubbing
+        infers the target peer keyed on `natural_key`. Sub-agent and
+        local tool take the same path — the suffix is the peer identity
+        either way. NOT combined: only the dispatch side is on this span.
       * `{tool_name}` (raw) — TOOL kind, local tool invocation.
         `tool.name` IS present, so the natural-key is `tool:<tool.name>`
         directly.
@@ -735,12 +740,14 @@ class _ClaudeAgentSDKAdapter:
         if kind is Kind.OTHER:
             return SpanFacts(kind=Kind.OTHER, role=Role.NONE, display_label=_service(span))
 
-        # Sub-agent invocation: ClaudeAgentSDK.{tool_name} | Subagent.
-        # Deferred per ADR-0007: structurally looks like a boundary (target
-        # agent name in the span name, kind=AGENT) but no payload or other
-        # call evidence is emitted. Stay Gray (role=NONE) until either
-        # upstream instrumentation is richer or we commit to a span-name-
-        # only boundary rule.
+        # Tool / sub-agent dispatch: ClaudeAgentSDK.{tool_name} | Subagent.
+        # ADR-0007 Step 2.b case 2: the span name carries the dispatched
+        # target's name and kind=AGENT, but the target emits no observed
+        # span of its own. Treat it as a SOURCE boundary keyed on
+        # `agent:<name>`; Step 2.b's one-sided stubbing then synthesizes
+        # the inferred target peer and its bidirectional Black edges.
+        # Sub-agent vs. local tool take the same path — the suffix is the
+        # peer identity in both cases.
         if kind is Kind.AGENT and name.startswith(_CLAUDE_SUBAGENT_PREFIX):
             agent = _first_attr(span, _OI_ATTRS["agent_name"])
             if not agent:
@@ -750,7 +757,7 @@ class _ClaudeAgentSDKAdapter:
             req_msgs, resp_msgs, req_value, resp_value = _oi_payloads_for_kind(span, kind)
             return SpanFacts(
                 kind=kind,
-                role=Role.NONE,
+                role=Role.SOURCE,
                 is_combined=False,
                 natural_key=natural_key,
                 display_label=_service(span) or natural_key,

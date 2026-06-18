@@ -67,6 +67,12 @@ class Node:
     label (e.g. 'tool:foo', 'llm:gpt-4'), so two inferred peers stubbing
     the same real callee from two different sources end up with the same
     key.
+    `role` / `kind` are the adapter's call-side ("SOURCE" / "TARGET" /
+    "BOTH" / "NONE") and entity-kind ("LLM" / "TOOL" / "AGENT" / "OTHER")
+    for this node, stored as plain strings to avoid an import cycle on
+    adapters.py. Step 2.d uses them to decide which Gray edges become
+    Black: a Gray edge is promoted only between a SOURCE node and a
+    same-kind TARGET node (tool→tool, llm→llm, agent→agent).
     """
 
     id: str
@@ -79,6 +85,8 @@ class Node:
     flagged: bool = False
     label: str | None = None
     peer_match_key: str | None = None
+    role: str | None = None
+    kind: str | None = None
     attributes: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     @staticmethod

@@ -91,3 +91,21 @@ CLARIFYING_TURN_TRACE_ID = "186b5703acde0532adc6940e9eda3cb1"
 def clarifying_turn_trace_spans() -> list[Span]:
     """Spans of a single-LLM-call travel-advisor trace (no tool invoked)."""
     return load_trace_spans("trace_186b5703")
+
+
+# A hand-built `claude_agent_sdk` trace exercising ADR-0007 Step 2.b case 2:
+# a `ClaudeAgentSDK.query` combined agent→LLM span whose children are
+# `ClaudeAgentSDK.{tool_name}` tool/sub-agent dispatches. The dispatched
+# targets emit no spans of their own, so they are materialised as inferred
+# TARGET peers. Two `get_weather` dispatches + one `book_flight` dispatch
+# verify that repeated dispatches of the same target converge to one entity
+# (Step 3.a phase 2) while the agent's own dispatch spans stay folded into the
+# single agent entity (Step 2.d kind+role-matched edge coloring). Attribute
+# shapes follow `openinference_telemetry_spans.md` (claude_agent_sdk 0.1.5).
+CLAUDE_SUBAGENT_TRACE_ID = "c1a0de00000000000000000000000001"
+
+
+@pytest.fixture()
+def claude_subagent_trace_spans() -> list[Span]:
+    """Spans of a claude_agent_sdk trace with tool/sub-agent dispatches."""
+    return load_trace_spans("trace_claude_subagent")
