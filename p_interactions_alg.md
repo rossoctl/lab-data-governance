@@ -75,7 +75,7 @@ Requires: Open inference telemetry (openinference_telemetry_spans.md, openinfere
 #### Step 2.b - Inferred (execution graph) nodes 
 In some cases agentic spans may describe or represent additional entities - In those cases we will create inferred nodes
 
-Examples:
+Examples for cases needing inferred notes:
 1. openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query
 This span represents a call to an LLM. While the span represents the current node - the agent (source), and since the spans includes information on both the current and target nodes as well as the data flowing between them.
 we can infer:
@@ -97,6 +97,8 @@ In this case we will also infer several edges:
 2. Between the tool call and the tool itself (The target)
 3. Between the tool itself and the tool call (Reverse edge)
 
+Additional cases may exist which need to be implemented .
+
 #### Step 2.c Intra trace merging
 In this step we apply heuristics to merge pairs of nodes where one node is inferred and the other is observed (real) and both reside in the same trace
 Merging of nodes will also entail merging of edges as well as merging of attributes 
@@ -104,13 +106,16 @@ Merging of nodes will also entail merging of edges as well as merging of attribu
 the process of merging Can be viewed as a set of heuristics identifying nodes representing the same entity 
 This can be based on:
 1 proximity in the trace - It is reasonable to assume that an observed node will be close by to the inferred node. it can be a sibling an ancestor etc.
-2 similarity of attributes - e.g. identical tool names identical  values 
+2 similarity of attributes - e.g. identical tool names identical  values
 
 #### Step 2.d - agentic (execution graph) boundaries 
 In this step we identify agentic boundaries 
 
 1. Identify Gray nodes *representing a abentic boundary* and color them "Black".
-2. If there is a Gray edge between Black nodes - Color the edge black.
+2. If there is a Gray edge between Black nodes Representing the same entity type (Agent, LLM, tool) - and one black node is a source while the other is its target - Color the edge black.
+examples:
+tool call --> tool
+llm call --> llm
 
 
 
