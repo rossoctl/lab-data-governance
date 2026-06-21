@@ -247,8 +247,8 @@ async def _proto_interactions_handler(request: Request) -> Response:
             interactions = tx.fetch_all(
                 "SELECT id::text, caller_entity_id::text, callee_entity_id::text, "
                 "started_at, ended_at, error, request_payload_hash, "
-                "response_payload_hash, summary "
-                "FROM proto_interactions WHERE trace_id = %s ORDER BY started_at",
+                'response_payload_hash, summary, "order" '
+                'FROM proto_interactions WHERE trace_id = %s ORDER BY started_at, "order"',
                 (trace_id,),
             )
             ev = tx.fetch_all(
@@ -290,6 +290,7 @@ async def _proto_interactions_handler(request: Request) -> Response:
                         "request_payload_hash": r[6],
                         "response_payload_hash": r[7],
                         "summary": r[8],
+                        "order": r[9],
                     }
                     for r in interactions
                 ],

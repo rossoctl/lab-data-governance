@@ -22,8 +22,9 @@ Implements the algorithm described in docs/adr/0007-p-interactions-graph-algorit
                inferred entity nodes whose source-span identifying attributes
                match, so the same unobserved real peer called from N sources
                is represented by one entity rather than N look-alikes.
-  Step 3.b   — name nodes: each entity is assigned the ID 'unknown' (richer
-               naming is deferred — see ADR-0007).
+  Step 3.b   — name nodes: each entity is named from its subgraph
+               (service.name, else the natural-key suffix, else 'unknown';
+               hostname-based naming is deferred — see ADR-0007).
 
 Edge coloring is additive: an edge can carry multiple colors at once. The
 underlying White connectivity is preserved when Gray/Black are added on top.
@@ -118,6 +119,29 @@ def _white_adjacency(graph: BaseGraph) -> tuple[dict[str, list[str]], dict[str, 
 _ROLE_SOURCE = "SOURCE"
 _ROLE_TARGET = "TARGET"
 _ROLE_BOTH = "BOTH"
+
+
+# ---------------------------------------------------------------------------
+# Interaction order bands (ADR-0007 "Inferred interaction ordering")
+# ---------------------------------------------------------------------------
+#
+# Several Black (interaction) edges derived from one span share that span's
+# `started_at`, so an explicit `order` breaks the tie. The bands encode the
+# spec rules directly:
+#
+#   rule 3 — input-derived tools BEFORE the LLM   → negative band
+#   rule 1 — call BEFORE its response              → call = even, response = odd
+#   rule 4 — output-derived tools AFTER the LLM    → positive band
+#
+# `_INPUT_TOOL_BASE` + 2*k gives the k-th input tool's call slot (response is
+# +1); the LLM/agent/one-sided call sits at 0 (response 1); `_OUTPUT_TOOL_BASE`
+# + 3*k gives the k-th output tool's call slot (response +1, leaving room for
+# the Gray fold edge which carries no order). The bands are spaced far apart so
+# they never interleave for realistic tool counts.
+_INPUT_TOOL_BASE = -40   # input tool k: call = -40+2k, response = -40+2k+1
+_CALL_ORDER = 0          # the agent↔LLM / combined / one-sided call
+_RESPONSE_ORDER = 1      # its response
+_OUTPUT_TOOL_BASE = 40   # output tool k: call = 40+3k, response = 40+3k+1
 
 
 def _is_matched_call_pair(a: Node, b: Node) -> bool:
@@ -273,10 +297,124 @@ def duplicate_combined_nodes(graph: BaseGraph) -> None:
         new_nodes.append(dup)
 
         # Request: source → target. Response: target → source.
-        req = Edge.make(node.id, dup.id, BLACK)
-        resp = Edge.make(dup.id, node.id, BLACK)
+        req = Edge.make(node.id, dup.id, BLACK, order=_CALL_ORDER)
+        resp = Edge.make(dup.id, node.id, BLACK, order=_RESPONSE_ORDER)
         new_edges.append(req)
         new_edges.append(resp)
+
+    graph.nodes.extend(new_nodes)
+    graph.edges.extend(new_edges)
+
+
+# ---------------------------------------------------------------------------
+# Step 2.b case 3 — Tool nodes inferred from an LLM span's tool_calls attribute
+# ---------------------------------------------------------------------------
+
+
+# Role/Kind string mirrors (Role/Kind are str-enums in adapters.py; mirrored
+# here as plain strings to avoid an import cycle — same pattern as the
+# _ROLE_* constants above).
+_KIND_TOOL = "TOOL"
+
+
+def infer_tool_calls_from_attributes(
+    graph: BaseGraph, spans_by_id: dict[str, Span]
+) -> None:
+    """ADR-0007 Step 2.b case 3 — materialise inferred tool nodes from an LLM
+    span's `tool_calls`, both output- and input-side.
+
+    Some agentic spans evidence a *tool the model asked to invoke* in an
+    attribute rather than as a separate span (the raw Anthropic client
+    instrumentation does exactly this — see `openinference_anthropic_v1.0.6_…`).
+    The adapter surfaces those on `SpanFacts.tool_calls` (output side, what the
+    model asked for *as a result of* this call) and `SpanFacts.input_tool_calls`
+    (input side, a prior turn's tool use replayed back into the request). For
+    each tool call we infer the two nodes and three edges the spec mandates:
+
+      * a **tool-call node** (the source — the act of calling, inside the LLM's
+        turn): BLACK, role=SOURCE, kind=TOOL;
+      * a **tool node** (the target — the tool itself): BLACK, role=TARGET,
+        kind=TOOL, carrying `peer_match_key=tool:<name>` so repeated calls to
+        the same tool converge in Step 3.a phase 2;
+      * edge (a) current span → tool-call node — **Gray** (so the tool-call
+        node folds into the LLM's entity in Step 3.a, exactly like a dispatch
+        span folding into its agent);
+      * edge (b) tool-call node → tool node — **Black** (the cross-entity call);
+      * edge (c) tool node → tool-call node — **Black** (the reverse / response).
+
+    **Ordering (ADR-0007 "Inferred interaction ordering").** Output-derived
+    tools are ordered *after* the LLM interaction (positive band, rule 4);
+    input-derived tools *before* it (negative band, rule 3). The call edge (b)
+    always precedes its response edge (c). The Gray fold edge (a) carries no
+    order (it is not an interaction).
+
+    Both inferred nodes reference the *originating LLM span* (they have no span
+    of their own). The tool-call node carries the call's name/arguments as
+    `_tool_call_name` / `_tool_call_arguments`; `build_entity_graph` copies the
+    arguments onto the resulting entity edge so the LLM→tool interaction's
+    request payload is the tool arguments, not the LLM completion.
+
+    Gated by the adapter: only adapters that populate `SpanFacts.tool_calls` /
+    `input_tool_calls` (currently anthropic) trigger this. Frameworks that emit
+    a real tool-execution span (e.g. openai_agents) leave both empty, so their
+    already-observed tools are not double-inferred. Per the human spec, every
+    input-side tool is materialised (including a replay of a prior turn's
+    output) — it is a genuine prior interaction fed back, ordered ahead of this
+    turn's LLM call.
+    """
+    new_nodes: list[Node] = []
+    new_edges: list[Edge] = []
+
+    def _materialise(node: Node, call: dict, *, call_order: int) -> None:
+        name = call.get("name")
+        if not name:
+            return
+        natural_key = f"tool:{name}"
+
+        tool_call_node = Node.make(span_id=node.span_id, scope=node.scope, color=BLACK)
+        tool_call_node.is_boundary = True
+        tool_call_node.is_inferred = True
+        tool_call_node.kind = _KIND_TOOL
+        tool_call_node.role = _ROLE_SOURCE
+        # Deliberately NO label: the tool-call node folds (via the Gray edge)
+        # into the caller's entity, and `EntityNode.absorb` takes the first
+        # non-empty label it sees. A label here would race the caller's own
+        # identity (e.g. relabel the agent/LLM entity `tool:database`). The
+        # tool identity lives on the tool node below.
+        tool_call_node.attributes["_tool_call_name"] = name
+        tool_call_node.attributes["_tool_call_arguments"] = call.get("arguments")
+
+        tool_node = Node.make(span_id=node.span_id, scope=node.scope, color=BLACK)
+        tool_node.is_boundary = True
+        tool_node.is_inferred = True
+        tool_node.kind = _KIND_TOOL
+        tool_node.role = _ROLE_TARGET
+        tool_node.label = natural_key
+        tool_node.peer_match_key = natural_key
+
+        new_nodes.append(tool_call_node)
+        new_nodes.append(tool_node)
+        # (a) Gray: folds the tool-call node into the LLM span's entity.
+        new_edges.append(Edge.make(node.id, tool_call_node.id, GRAY))
+        # (b)/(c) Black: the cross-entity call (call_order) and its reverse
+        # (call_order + 1, so the call always precedes its response).
+        new_edges.append(Edge.make(tool_call_node.id, tool_node.id, BLACK, order=call_order))
+        new_edges.append(Edge.make(tool_node.id, tool_call_node.id, BLACK, order=call_order + 1))
+
+    for node in graph.nodes:
+        if node.color not in (GRAY, BLACK):
+            continue
+        span = spans_by_id.get(node.span_id)
+        if span is None:
+            continue
+        facts = extract_facts(span)
+        # Input-derived tools first (negative band — ordered before the LLM).
+        for k, call in enumerate(facts.input_tool_calls or ()):
+            _materialise(node, call, call_order=_INPUT_TOOL_BASE + 2 * k)
+        # Output-derived tools (positive band — ordered after the LLM). The
+        # 3*k stride leaves the odd slot free for the response edge.
+        for k, call in enumerate(facts.tool_calls or ()):
+            _materialise(node, call, call_order=_OUTPUT_TOOL_BASE + 3 * k)
 
     graph.nodes.extend(new_nodes)
     graph.edges.extend(new_edges)
@@ -420,11 +558,168 @@ def synthesize_missing_peers(graph: BaseGraph, spans_by_id: dict[str, Span]) -> 
         peer.attributes.pop("_target_label", None)
         new_nodes.append(peer)
 
-        new_edges.append(Edge.make(node.id, peer.id, BLACK))
-        new_edges.append(Edge.make(peer.id, node.id, BLACK))
+        new_edges.append(Edge.make(node.id, peer.id, BLACK, order=_CALL_ORDER))
+        new_edges.append(Edge.make(peer.id, node.id, BLACK, order=_RESPONSE_ORDER))
 
     graph.nodes.extend(new_nodes)
     graph.edges.extend(new_edges)
+
+
+# ---------------------------------------------------------------------------
+# Step 2.c — Intra-trace merge (inferred ↔ observed)
+# ---------------------------------------------------------------------------
+
+
+def _white_gray_neighbors(graph: BaseGraph) -> dict[str, set[str]]:
+    """Undirected adjacency over White and Gray edges only (Black ignored) —
+    the same connectivity Step 3.a uses to form entities. Used by Step 2.c as
+    a proximity guard: an inferred node may only fold into an observed twin
+    that is reachable over this adjacency (a sibling/ancestor in the
+    execution-flow graph), never an unrelated same-key node elsewhere in the
+    trace.
+    """
+    adj: dict[str, set[str]] = defaultdict(set)
+    for edge in graph.edges:
+        if BLACK in edge.colors:
+            continue
+        adj[edge.from_node_id].add(edge.to_node_id)
+        adj[edge.to_node_id].add(edge.from_node_id)
+    return adj
+
+
+def _white_gray_components(graph: BaseGraph) -> dict[str, int]:
+    """Label every node with its White+Gray connected-component id — the same
+    components Step 3.a collapses into entities. Two nodes in the same
+    component are the *same* entity (a caller and its own plumbing); two in
+    different components are distinct entities linked only by a Black call.
+    """
+    adj = _white_gray_neighbors(graph)
+    comp: dict[str, int] = {}
+    cid = 0
+    for node in graph.nodes:
+        if node.id in comp:
+            continue
+        queue: deque[str] = deque([node.id])
+        comp[node.id] = cid
+        while queue:
+            nid = queue.popleft()
+            for nb in adj.get(nid, ()):
+                if nb not in comp:
+                    comp[nb] = cid
+                    queue.append(nb)
+        cid += 1
+    return comp
+
+
+def merge_inferred_into_observed(
+    graph: BaseGraph, spans_by_id: dict[str, Span]
+) -> int:
+    """ADR-0007 / spec Step 2.c — merge an **inferred** node into the
+    **observed** node representing the same entity, in the same trace, pooling
+    their edges and attributes.
+
+    Heuristic (spec def. 8 — "can be based on heuristics"; spec lists two
+    signals: proximity in the trace, and similarity of attributes):
+      1. **Identifying attribute + kind.** An inferred node folds only into an
+         observed boundary node whose identifying key (the adapter's
+         `natural_key` / `peer_match_key`) AND entity-kind both match. Kind is
+         required so an inferred `tool:foo` never folds into an unrelated
+         observed boundary that happens to share a key string.
+      2. **Different White/Gray component.** The observed twin must live in a
+         *different* White+Gray connected component than the inferred node's
+         source — i.e. it is an *independent observation of the callee*, not
+         another caller of it. This is the decisive guard: in a single-agent
+         trace every same-key boundary is a sibling *caller* on the agent's own
+         Gray chain (same component) — none of those is a second observation of
+         the callee, so none qualifies and the pass is a no-op. An observed
+         callee that emitted its own spans sits in its own component (reached
+         only across the Black call edge), so it qualifies. This is exactly the
+         spec's "matched send/receive across the boundary represent the same
+         entity" case. If several qualify, the nearest component by Black-hop is
+         not distinguished here — the first is taken (prototype-simple).
+
+    On a match the inferred node's attributes and `label` are pooled onto the
+    observed node, its Black edges are rewired onto the observed node (self
+    loops dropped), and the inferred node is removed.
+
+    Complementary to the Step 3.a phase-2 combine (`merge_inferred_peers`): 2.c
+    removes an inferred node *in favour of an observed twin* (needs an
+    independent observation of the same callee); phase 2 fuses inferred
+    entities that share a key *when none was observed*. With no observed callee
+    in the trace (the common case), this pass is a no-op and every inferred peer
+    passes through to Step 3.a unchanged.
+
+    Returns the number of inferred nodes merged away.
+    """
+    comp = _white_gray_components(graph)
+
+    # The inferred peer references the same span as the observed boundary it
+    # stubs for; that boundary's node sits in the peer's "source" component.
+    # Map span_id → component of the observed (non-inferred) node for that span.
+    source_comp_for_span: dict[str, int] = {}
+    for node in graph.nodes:
+        if not node.is_inferred and node.span_id:
+            source_comp_for_span.setdefault(node.span_id, comp[node.id])
+
+    # Observed boundary nodes, indexed by (identifying key, kind).
+    observed_by_key: dict[tuple[str, str | None], list[Node]] = defaultdict(list)
+    for node in graph.nodes:
+        if node.is_inferred or node.color != BLACK or not node.is_boundary:
+            continue
+        key = _peer_match_key(node, spans_by_id) or node.label
+        if key:
+            observed_by_key[(key, node.kind)].append(node)
+
+    if not observed_by_key:
+        return 0
+
+    redirect: dict[str, str] = {}
+    drop_ids: set[str] = set()
+    for node in graph.nodes:
+        if not node.is_inferred:
+            continue
+        key = node.peer_match_key or node.label
+        candidates = observed_by_key.get((key, node.kind)) if key else None
+        if not candidates:
+            continue
+        # The peer's source component (the caller it stubs for). An observed
+        # twin in that same component is a sibling caller, not the callee.
+        src_comp = source_comp_for_span.get(node.span_id, comp.get(node.id))
+        best: Node | None = None
+        for obs in candidates:
+            if obs.id in drop_ids:
+                continue
+            if comp[obs.id] == src_comp:
+                continue  # same component → a caller, not the observed callee
+            best = obs
+            break
+        if best is None:
+            continue
+        # Pool attributes + label onto the observed survivor.
+        for k, v in node.attributes.items():
+            best.attributes.setdefault(k, v)
+        if node.label and not best.label:
+            best.label = node.label
+        redirect[node.id] = best.id
+        drop_ids.add(node.id)
+
+    if not drop_ids:
+        return 0
+
+    # Rewire every edge referencing a merged inferred node onto its survivor;
+    # drop self-loops created by the rewrite.
+    rewritten: list[Edge] = []
+    for edge in graph.edges:
+        src = redirect.get(edge.from_node_id, edge.from_node_id)
+        dst = redirect.get(edge.to_node_id, edge.to_node_id)
+        if src == dst:
+            continue
+        edge.from_node_id = src
+        edge.to_node_id = dst
+        rewritten.append(edge)
+    graph.edges = rewritten
+    graph.nodes = [n for n in graph.nodes if n.id not in drop_ids]
+    return len(drop_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +794,11 @@ def build_entity_graph(graph: BaseGraph) -> EntityGraph:
         key = (src_eid, dst_eid)
         ent_edge = edge_index.get(key)
         if ent_edge is None:
-            ent_edge = EntityEdge.make(src_eid, dst_eid)
+            # Carry the originating Black edge's intra-turn order onto the
+            # entity edge (ADR-0007 "Inferred interaction ordering"). Pre-merge
+            # entity pairs are distinct per call site, so each EntityEdge owns
+            # one order; the Step 3.a phase-2 rewrite preserves it.
+            ent_edge = EntityEdge.make(src_eid, dst_eid, order=edge.order)
             edge_index[key] = ent_edge
             entity_graph.edges.append(ent_edge)
         # Pool span_ids from the Black edge's endpoint span(s).
@@ -507,6 +806,20 @@ def build_entity_graph(graph: BaseGraph) -> EntityGraph:
             n = nodes_by_id.get(endpoint_id)
             if n and n.span_id and n.span_id not in ent_edge.span_ids:
                 ent_edge.span_ids.append(n.span_id)
+        # Step 2.b case 3: a tool-call node (the Black edge's source) carries
+        # the inferred call's arguments. Surface them as the LLM→tool
+        # interaction's request payload (otherwise the extractor would derive
+        # the LLM completion off the shared span — see EntityEdge.req_payload).
+        from_node = nodes_by_id.get(edge.from_node_id)
+        if (
+            ent_edge.req_payload is None
+            and from_node is not None
+            and "_tool_call_arguments" in from_node.attributes
+        ):
+            ent_edge.req_payload = (
+                "tool_call_arguments",
+                from_node.attributes["_tool_call_arguments"],
+            )
 
     return entity_graph
 

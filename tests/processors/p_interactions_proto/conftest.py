@@ -109,3 +109,27 @@ CLAUDE_SUBAGENT_TRACE_ID = "c1a0de00000000000000000000000001"
 def claude_subagent_trace_spans() -> list[Span]:
     """Spans of a claude_agent_sdk trace with tool/sub-agent dispatches."""
     return load_trace_spans("trace_claude_subagent")
+
+
+# A hand-built "split graph" trace exercising the features implemented for
+# ADR-0007's deferred clauses. A `weather-agent` makes one
+# `openinference.instrumentation.anthropic` LLM call whose:
+#   * INPUT messages replay a prior `calendar` tool call (a genuinely-new
+#     input-side tool, never seen as an output) → inferred + ordered BEFORE
+#     the LLM interaction (Step 2.b case 3 input side / ordering rule 3);
+#   * OUTPUT messages ask for `get_weather` → inferred + ordered AFTER the LLM
+#     interaction (ordering rule 4).
+# Separately, the `get_weather` tool is *observed* executing as its own span
+# (`weather-tool` service) in a DIFFERENT White/Gray component (broken
+# traceparent — a split graph). Step 2.c folds the inferred `tool:get_weather`
+# peer into that observed `weather-tool` entity. The trace therefore exercises,
+# in one fixture: input-side tool inference (rule 3), explicit interaction
+# ordering (F6a), the Step 2.c inferred↔observed merge, and Step 3.b naming
+# (entities named from service.name rather than 'unknown').
+INFERRED_OBSERVED_MERGE_TRACE_ID = "b17047c0000000000000000000000001"
+
+
+@pytest.fixture()
+def inferred_observed_merge_trace_spans() -> list[Span]:
+    """Spans of the split-graph trace exercising 2.c / F6a / F6b / 3.b."""
+    return load_trace_spans("trace_inferred_observed_merge")

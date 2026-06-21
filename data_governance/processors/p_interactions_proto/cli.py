@@ -169,6 +169,10 @@ CREATE TABLE proto_interactions (
   request_payload_hash   text NULL REFERENCES proto_interaction_payloads(content_hash),
   response_payload_hash  text NULL REFERENCES proto_interaction_payloads(content_hash),
   summary                text NOT NULL,
+  -- Intra-turn ordering tiebreak (ADR-0007 "Inferred interaction ordering").
+  -- "order" is a SQL reserved word, so it is always double-quoted. Consumers
+  -- sort by (started_at, "order").
+  "order"                integer NOT NULL DEFAULT 0,
   trace_id               text NOT NULL
 );
 CREATE INDEX ON proto_interactions(trace_id);
@@ -297,10 +301,12 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
             txn.execute(
                 "INSERT INTO proto_interactions("
                 "id, caller_entity_id, callee_entity_id, started_at, ended_at, "
-                "error, request_payload_hash, response_payload_hash, summary, trace_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "error, request_payload_hash, response_payload_hash, summary, "
+                '"order", trace_id) '
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (ix.id, ix.caller_entity_id, ix.callee_entity_id, ix.started_at, ix.ended_at,
-                 ix.error, ix.request_payload_hash, ix.response_payload_hash, ix.summary, trace_id),
+                 ix.error, ix.request_payload_hash, ix.response_payload_hash, ix.summary,
+                 ix.order, trace_id),
             )
         for ev in result.interaction_spans:
             txn.execute(
@@ -380,7 +386,7 @@ def main() -> int:
             print(f"  {e.natural_key:40}{inferred} scopes={e.scope_name}")
 
         print(f"\n--- interactions ({len(result.interactions)}) ---")
-        for ix in sorted(result.interactions, key=lambda r: r.started_at):
+        for ix in sorted(result.interactions, key=lambda r: (r.started_at, r.order)):
             err = "ERR" if ix.error else "ok " if ix.error is False else "?  "
             print(f"  {err}  {ix.summary}")
 

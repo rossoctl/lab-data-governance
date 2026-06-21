@@ -149,6 +149,22 @@ class SpanFacts:
     no messages were captured.
     `request_value` / `response_value` — opaque request/response payload
     (e.g. tool call arguments / result). None when not present.
+    `tool_calls` — OUTPUT-side tool calls evidenced on an LLM span (ADR-0007
+    Step 2.b case 3) — what the model asked to invoke *as a result of* this
+    call. Each dict is `{"name": str, "arguments": Any}`. Drives
+    `builder.infer_tool_calls_from_attributes`, which materialises an inferred
+    tool node per call, ordered *after* the LLM interaction (ordering rule 4).
+    `input_tool_calls` — INPUT-side tool calls
+    (`llm.input_messages.*.tool_calls.*`) — a prior turn's tool use replayed
+    back into the request. Same dict shape; materialised the same way but
+    ordered *before* the LLM interaction (ordering rule 3). Per the human spec
+    every input-side tool is inferred, including a replay of a prior output:
+    the replay is a real prior interaction fed back into the turn.
+    Both are populated **only** by adapters that opt into attribute-derived
+    tool inference (currently `_AnthropicAdapter`, where the tool is never
+    observed as its own span). Frameworks that emit a separate tool-execution
+    span (e.g. openai_agents) leave both None so the observed tool span — not an
+    inference — is the source of truth.
     """
 
     kind: Kind
@@ -161,6 +177,8 @@ class SpanFacts:
     response_messages: list[dict[str, Any]] | None = None
     request_value: Any = None
     response_value: Any = None
+    tool_calls: list[dict[str, Any]] | None = None
+    input_tool_calls: list[dict[str, Any]] | None = None
 
 
 # Convenience: a SpanFacts that says "I have nothing to say about this span".
@@ -244,6 +262,75 @@ def _extract_indexed_messages(span: Span, prefix: str) -> list[dict[str, Any]] |
     if not msgs:
         return None
     return [msgs[i] for i in sorted(msgs)]
+
+
+def _extract_tool_calls(span: Span, msgs_prefix: str) -> list[dict[str, Any]] | None:
+    """Pull the tool calls evidenced under one OpenInference message prefix
+    (`llm.output_messages` or `llm.input_messages`). OpenInference encodes them
+    as flat keys under each message:
+
+        {prefix}.{i}.message.tool_calls.{k}.tool_call.function.name
+        {prefix}.{i}.message.tool_calls.{k}.tool_call.function.arguments
+
+    Returns `[{"name": ..., "arguments": ...}]` ordered by (message index `i`,
+    tool-call index `k`), or None when no such keys exist. A tool call with no
+    name is skipped (nothing to key an entity on).
+
+    The legacy `completions.create` shape (a bare-string `llm.output_messages`,
+    not indexed) produces no matches and returns None — correct, that endpoint
+    carries no tool calls.
+    """
+    attrs = span.attributes or {}
+    # (i, k) -> partial {"name"/"arguments": value}
+    found: dict[tuple[int, int], dict[str, Any]] = {}
+    prefix = f"{msgs_prefix}."
+    for key, value in attrs.items():
+        if not key.startswith(prefix):
+            continue
+        rest = key[len(prefix):]  # "{i}.message.tool_calls.{k}.tool_call.function.<field>"
+        parts = rest.split(".")
+        if (
+            len(parts) != 7
+            or not parts[0].isdigit()
+            or parts[1] != "message"
+            or parts[2] != "tool_calls"
+            or not parts[3].isdigit()
+            or parts[4] != "tool_call"
+            or parts[5] != "function"
+        ):
+            continue
+        field = parts[6]
+        if field not in ("name", "arguments"):
+            continue
+        found.setdefault((int(parts[0]), int(parts[3])), {})[field] = value
+
+    if not found:
+        return None
+    calls: list[dict[str, Any]] = []
+    for idx in sorted(found):
+        entry = found[idx]
+        name = entry.get("name")
+        if not name:
+            continue
+        calls.append({"name": name, "arguments": entry.get("arguments")})
+    return calls or None
+
+
+def _extract_output_tool_calls(span: Span) -> list[dict[str, Any]] | None:
+    """OUTPUT-side tool calls the model asked to invoke *as a result of* this
+    call (ADR-0007 Step 2.b case 3, rule 4 — ordered after the LLM)."""
+    return _extract_tool_calls(span, _OI_OUTPUT_MSGS_PREFIX)
+
+
+def _extract_input_tool_calls(span: Span) -> list[dict[str, Any]] | None:
+    """INPUT-side tool calls — a prior turn's tool use replayed back into the
+    request (ADR-0007 Step 2.b case 3, rule 3 — ordered before the LLM).
+
+    Per the human spec these are materialised as their own inferred tool
+    interactions even when they replay a call already seen on an earlier span's
+    output: the replay is a genuine prior interaction fed back into the turn.
+    """
+    return _extract_tool_calls(span, _OI_INPUT_MSGS_PREFIX)
 
 
 # ---------------------------------------------------------------------------
@@ -855,6 +942,70 @@ class _MCPAdapter:
         return SpanFacts(kind=Kind.OTHER, display_label=_service(span))
 
 
+@dataclasses.dataclass
+class _AnthropicAdapter:
+    """Adapter for `openinference.instrumentation.anthropic`
+    (`openinference-instrumentation-anthropic`, the raw Anthropic Python
+    client — **not** the Claude Agent SDK).
+
+    Per `openinference_anthropic_v1.0.6_telemetry_spans.md`:
+
+      * Every span is `openinference.span.kind = LLM` — one `client.messages.*`
+        / `client.completions.*` HTTP round-trip. There are no AGENT / TOOL /
+        CHAIN spans and **no combined source+target shape**: each span is purely
+        the outbound (Send / SOURCE) side of one API call.
+      * The model is `llm.model_name` (bare, no provider prefix).
+      * Tools the model *asked* to invoke are not separate spans — they live on
+        the output messages as
+        `llm.output_messages.0.message.tool_calls.{k}.tool_call.function.name`/
+        `.arguments`. This adapter surfaces them on `SpanFacts.tool_calls`,
+        which `builder.infer_tool_calls_from_attributes` turns into inferred
+        tool nodes (ADR-0007 Step 2.b case 3). This is the one framework that
+        opts into attribute-derived tool inference, because the tool execution
+        is genuinely unobserved here (contrast openai_agents, which emits a
+        real tool-execution span).
+      * INPUT-side tool calls (`llm.input_messages.*.tool_calls.*`) — a prior
+        turn's tool use replayed back into the request — are surfaced on
+        `SpanFacts.input_tool_calls` and inferred too, ordered ahead of this
+        turn's LLM interaction (ordering rule 3).
+
+    No span-name dispatch is needed (every wrapped method emits an LLM span).
+    Legacy `completions.create` uses `llm.prompts` and a bare-string
+    `llm.output_messages`; the message/tool-call helpers return None on that
+    shape, so it degrades to a plain LLM boundary with no tool calls — correct.
+    """
+
+    scope_root: str = "openinference"
+    framework: str = "anthropic"
+    documented_version: str = "1.0.6"
+
+    def extract(self, span: Span) -> SpanFacts:
+        kind = _oi_kind(span)
+        # Defensive: the doc says kind is unconditionally LLM, but if a future
+        # version emits something else, stay Gray rather than mis-Black.
+        if kind is not Kind.LLM:
+            return SpanFacts(kind=Kind.OTHER, role=Role.NONE, display_label=_service(span))
+
+        model = _strip_provider(_first_attr(span, _OI_ATTRS["llm_model"]))
+        natural_key = f"llm:{model}" if model else None
+        display = _service(span) or natural_key
+        req_msgs, resp_msgs = _oi_messages(span)
+        tool_calls = _extract_output_tool_calls(span)
+        input_tool_calls = _extract_input_tool_calls(span)
+
+        return SpanFacts(
+            kind=Kind.LLM,
+            role=Role.SOURCE,
+            is_combined=False,
+            natural_key=natural_key,
+            display_label=display,
+            request_messages=req_msgs,
+            response_messages=resp_msgs,
+            tool_calls=tool_calls,
+            input_tool_calls=input_tool_calls,
+        )
+
+
 def _generic_oi_extract(span: Span) -> SpanFacts:
     """Straight-line OpenInference extraction: no combined spans, no
     framework-specific span-name parsing. Used by Google ADK, Strands
@@ -937,6 +1088,7 @@ class _GenericOpenInferenceAdapter:
 _OPENINFERENCE_ADAPTERS: dict[str, SpanAdapter] = {
     "openai_agents":    _OpenAIAgentsAdapter(),
     "claude_agent_sdk": _ClaudeAgentSDKAdapter(),
+    "anthropic":        _AnthropicAdapter(),
     "google_adk":       _GoogleADKAdapter(),
     "strands_agents":   _StrandsAgentsAdapter(),
     "mcp":              _MCPAdapter(),

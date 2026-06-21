@@ -13,8 +13,9 @@ Step 3.a reduces the colored base graph to an EntityGraph: connected components
 over Gray/Black nodes via White and Gray edges (Black edges ignored) become
 EntityNodes; Black edges become directed EntityEdges between entities. Step 3.a
 phase 2 then combines inferred entity nodes whose source-span identifying
-attributes match. Step 3.b assigns the literal ID 'unknown' to every entity
-(richer naming is deferred — see ADR-0007).
+attributes match. Step 3.b names each entity from its subgraph (service.name,
+else the natural-key suffix, else 'unknown'; hostname-based naming is deferred
+— see ADR-0007).
 """
 
 from __future__ import annotations
@@ -103,16 +104,31 @@ class Edge:
     edges from Step 1. Gray/Black are added by Step 2.a. Edges added by
     Step 2.b (combined-span request/response) carry only {"black"} — they do
     not have a White underlying span-graph relationship.
+
+    `order` is the intra-turn ordering band carried by Black (interaction)
+    edges, per ADR-0007 "Inferred interaction ordering". Several Black edges
+    derived from a *single* span share that span's `started_at`, so `order`
+    breaks the tie. The band encodes the spec rules: input-derived tool calls
+    sit in a negative band (before the LLM), the LLM/agent call+response in
+    {0, 1}, and output-derived tool calls in a positive band (after the LLM);
+    within any call/response pair the call's `order` is one less than its
+    response's. White/Gray-only edges leave it at 0 (never read — only Black
+    edges become interactions). `build_entity_graph` copies it onto the
+    resulting `EntityEdge`.
     """
 
     id: str
     from_node_id: str
     to_node_id: str
     colors: set[str] = dataclasses.field(default_factory=set)
+    order: int = 0
 
     @staticmethod
-    def make(from_id: str, to_id: str, color: str) -> Edge:
-        return Edge(id=str(uuid.uuid4()), from_node_id=from_id, to_node_id=to_id, colors={color})
+    def make(from_id: str, to_id: str, color: str, order: int = 0) -> Edge:
+        return Edge(
+            id=str(uuid.uuid4()), from_node_id=from_id, to_node_id=to_id,
+            colors={color}, order=order,
+        )
 
     def add_color(self, color: str) -> None:
         self.colors.add(color)
@@ -199,16 +215,33 @@ class EntityNode:
 @dataclasses.dataclass
 class EntityEdge:
     """Directed edge between EntityNodes (one per Black edge in the base graph
-    whose endpoints fall in different entities)."""
+    whose endpoints fall in different entities).
+
+    `req_payload` is an optional `(content_kind, content)` override for the
+    interaction this edge produces. It is set for tool calls inferred from an
+    LLM span's `tool_calls` attribute (ADR-0007 Step 2.b case 3): the tool's
+    request payload is the call's arguments, carried on the inferred tool-call
+    node rather than re-derivable from the LLM span's own facts. When None the
+    extractor derives the payload from the anchor span's `SpanFacts` as usual.
+
+    `order` is copied from the originating Black base-graph edge (see
+    `Edge.order`). It is the deterministic intra-turn tiebreak for the derived
+    interaction; the extractor sorts by `(started_at, order)` so interactions
+    sharing a span's timestamp keep their spec-mandated order.
+    """
 
     id: str
     from_node_id: str
     to_node_id: str
     span_ids: list[str] = dataclasses.field(default_factory=list)
+    req_payload: tuple[str, Any] | None = None
+    order: int = 0
 
     @staticmethod
-    def make(from_id: str, to_id: str) -> EntityEdge:
-        return EntityEdge(id=str(uuid.uuid4()), from_node_id=from_id, to_node_id=to_id)
+    def make(from_id: str, to_id: str, order: int = 0) -> EntityEdge:
+        return EntityEdge(
+            id=str(uuid.uuid4()), from_node_id=from_id, to_node_id=to_id, order=order,
+        )
 
 
 @dataclasses.dataclass
