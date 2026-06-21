@@ -75,7 +75,7 @@ Requires: Open inference telemetry (openinference_telemetry_spans.md, openinfere
 #### Step 2.b - Inferred (execution graph) nodes 
 In some cases agentic spans may describe or represent additional entities - In those cases we will create inferred nodes
 
-Examples for cases needing inferred notes:
+Examples for cases needing inferred nodes:
 1. openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query
 This span represents a call to an LLM. While the span represents the current node - the agent (source), and since the spans includes information on both the current and target nodes as well as the data flowing between them.
 we can infer:
@@ -97,7 +97,7 @@ In this case we will also infer several edges:
 2. Between the tool call and the tool itself (The target)
 3. Between the tool itself and the tool call (Reverse edge)
 
-Additional cases may exist which need to be implemented .
+Additional cases may exist which need to be implemented such as tools inferred from input attributes.
 
 Inferred interaction ordering:
 When inferring new edges (interactions) Make sure to adjust the order.
@@ -107,7 +107,7 @@ When inferring new edges (interactions) Make sure to adjust the order.
     - the edge between the tool and the tool itself is before the edge between the tool and the tool call (reverse edge)
     - Tool interactions derived from input attributes should happen before interactions with the LLM
     - tool interactions derived from output attributes should happen after interactions with the LLM
-    
+
 
 #### Step 2.c Intra trace merging
 In this step we apply heuristics to merge pairs of nodes where one node is inferred and the other is observed (real) and both reside in the same trace
