@@ -900,3 +900,124 @@ def merge_inferred_peers(entity_graph: EntityGraph) -> int:
     entity_graph.edges = rewritten
     entity_graph.nodes = [n for n in entity_graph.nodes if n.id not in drop_ids]
     return len(drop_ids)
+
+
+# ---------------------------------------------------------------------------
+# Step 3.a — Combine observed entity nodes representing the same entity
+# ---------------------------------------------------------------------------
+
+
+def merge_same_entity(
+    entity_graph: EntityGraph, span_by_id: dict[str, Span]
+) -> int:
+    """ADR-0007 / spec Step 3.a — combine **observed** entity nodes that
+    represent the same entity but were split into separate White+Gray
+    components.
+
+    The motivating case: raw-anthropic instrumentation emits one
+    `messages.create` LLM-SOURCE boundary per turn, and consecutive turns are
+    joined only by a White (non-agentic, e.g. starlette) parent — no Gray chain
+    between them — so Step 3.a phase 1 forms one entity per turn even though
+    they are the *same* service process. The spec's Step 3.a combine
+    ("Combine multiple entity graph nodes representing the same entity … based
+    on an identifying attribute") applies, but `merge_inferred_peers` skips
+    these: they are observed (`inferred=False`) and keyless (`peer_match_key`
+    is None), since a SOURCE caller's identity is the service, not a typed
+    callee `natural_key`.
+
+    Identifying attribute: **service.name** (derived from the entity's pooled
+    spans — same precedence as `extractor._entity_display_name`). The ADR's
+    "service.name would over-merge entities behind a shared proxy" hazard is
+    neutralised by a **keyless** guard: an entity already identified by a typed
+    natural-key is never merged here. "Typed" means either `peer_match_key` is
+    set OR the entity `label` carries a typed prefix (`tool:` / `llm:` /
+    `agent:`). The label check matters because an *observed* boundary node
+    carries its typed identity on `label` but never on `peer_match_key` (that
+    field is populated only for inferred peers) — e.g. an observed
+    `llm:claude-3-7-sonnet` entity that happens to share the agent's
+    `service.name` must NOT fold into the agent. Only entities whose identity
+    is a bare service name (no typed prefix) combine, grouped by `service.name`
+    alone, so two genuinely-distinct tools/LLMs (each typed) sharing a service
+    are never collapsed.
+
+    Merge rules (mirror `merge_inferred_peers`): pick the first as survivor,
+    pool span_ids/attributes, OR the `contains_*` markers, rewrite every
+    incident entity edge onto the survivor and drop self-loops. Every edge is
+    preserved as distinct (no dedup by endpoint pair), so interaction counts
+    survive. `inferred` stays False and `peer_match_key` stays None on the
+    survivor.
+
+    Returns the number of entities removed.
+    """
+    def _service_of(entity: EntityNode) -> str | None:
+        for sid in entity.span_ids:
+            s = span_by_id.get(sid)
+            if s is not None and s.service_name:
+                return s.service_name
+        return None
+
+    def _is_typed(entity: EntityNode) -> bool:
+        # Typed identity → never merge by service name. `peer_match_key` carries
+        # it for inferred peers; an observed boundary carries it on `label`
+        # (e.g. `llm:claude-3-7-sonnet`), so check both.
+        if entity.peer_match_key:
+            return True
+        label = entity.label or ""
+        return label.startswith(("tool:", "llm:", "agent:"))
+
+    # Group by service.name alone. Two genuinely-distinct services have
+    # distinct names, so service.name is sufficient; kind is deliberately NOT
+    # in the key — a single service process legitimately contains mixed-kind
+    # boundaries (an observed LLM-source span plus its folded-in inferred
+    # tool-call nodes), so an entity's pooled coarse kind is not a stable
+    # discriminator between two components of the same service.
+    by_key: dict[str, list[EntityNode]] = defaultdict(list)
+    for node in entity_graph.nodes:
+        if node.inferred:
+            continue  # inferred↔inferred is owned by merge_inferred_peers
+        if _is_typed(node):
+            continue  # typed entity → never merged by service name
+        if not (node.contains_black and node.contains_boundary):
+            continue  # must be an observed boundary caller
+        svc = _service_of(node)
+        if not svc:
+            continue
+        by_key[svc].append(node)
+
+    if not any(len(group) > 1 for group in by_key.values()):
+        return 0
+
+    redirect: dict[str, str] = {}
+    drop_ids: set[str] = set()
+    for group in by_key.values():
+        if len(group) <= 1:
+            continue
+        survivor = group[0]
+        for dup in group[1:]:
+            redirect[dup.id] = survivor.id
+            drop_ids.add(dup.id)
+            for sid in dup.span_ids:
+                if sid not in survivor.span_ids:
+                    survivor.span_ids.append(sid)
+            for k, v in dup.attributes.items():
+                survivor.attributes.setdefault(k, v)
+            survivor.contains_boundary = survivor.contains_boundary or dup.contains_boundary
+            survivor.contains_black = survivor.contains_black or dup.contains_black
+            survivor.contains_gray = survivor.contains_gray or dup.contains_gray
+            # inferred stays False; peer_match_key stays None.
+
+    if not drop_ids:
+        return 0
+
+    rewritten: list[EntityEdge] = []
+    for edge in entity_graph.edges:
+        src = redirect.get(edge.from_node_id, edge.from_node_id)
+        dst = redirect.get(edge.to_node_id, edge.to_node_id)
+        if src == dst:
+            continue
+        edge.from_node_id = src
+        edge.to_node_id = dst
+        rewritten.append(edge)
+    entity_graph.edges = rewritten
+    entity_graph.nodes = [n for n in entity_graph.nodes if n.id not in drop_ids]
+    return len(drop_ids)

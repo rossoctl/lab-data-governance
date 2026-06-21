@@ -166,9 +166,9 @@ class EntityNode:
     `inferred` is True iff every contributing base-graph node was produced as
     an inferred (e.g. unobserved-peer) stub. Inferred entities have no observed
     spans of their own; their span_ids reference the observed peer's span(s).
-    `peer_match_key` is the combine key for Step 3.a phase 2 — two inferred
-    entities with the same key represent the same unobserved real peer and
-    collapse into one.
+    `peer_match_key` is the combine key for the Step 3.a inferred↔inferred
+    combine — two inferred entities with the same key represent the same
+    unobserved real peer and collapse into one.
     """
 
     id: str

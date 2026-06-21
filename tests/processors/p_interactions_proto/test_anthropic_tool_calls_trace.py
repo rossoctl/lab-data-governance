@@ -19,9 +19,10 @@ Expected behavior:
 
   * Each anthropic LLM span is an observed LLM SOURCE boundary; with no Gray
     chain between the two spans (their only link is the White server parent),
-    they stay two observed `patent-assistant` components. (The same agent
-    appearing twice is the known split-agent limitation — broadening the
-    phase-2 combine to observed entities is deferred per ADR-0007.)
+    Step 3.a phase 1 forms two `patent-assistant` components. The Step 3.a
+    observed↔observed combine (`merge_same_entity`) then collapses them into a
+    single observed `patent-assistant` entity — they are keyless observed
+    boundary callers of the same `service.name`.
   * The combined model peer `llm:claude-haiku-4-5-20251001` is the inferred
     one-sided stub of the LLM call (Step 2.b one-sided stubbing); the two
     spans' stubs converge to one entity.
@@ -66,13 +67,15 @@ def test_llm_peer_present_and_observed_agent():
     result = extract(_spans())
     by_inferred = {(e.natural_key, e.inferred) for e in result.entities}
     assert ("llm:claude-haiku-4-5-20251001", True) in by_inferred
-    # patent-assistant is observed. (It appears more than once — the known
-    # split-agent limitation — so assert at least one observed instance.)
+    # patent-assistant is observed and now appears exactly once: the Step 3.a
+    # observed↔observed combine (merge_same_entity) collapses the two split
+    # LLM-source components into one entity (same service.name, both keyless
+    # observed boundary callers).
     observed_agents = [
         e for e in result.entities
         if e.natural_key == "patent-assistant" and not e.inferred
     ]
-    assert observed_agents, "expected an observed patent-assistant entity"
+    assert len(observed_agents) == 1, "expected a single merged patent-assistant entity"
 
 
 def test_tool_interactions_present_both_directions():

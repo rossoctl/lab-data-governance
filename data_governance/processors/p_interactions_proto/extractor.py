@@ -42,6 +42,7 @@ from .builder import (
     infer_tool_calls_from_attributes,
     merge_inferred_into_observed,
     merge_inferred_peers,
+    merge_same_entity,
     synthesize_missing_peers,
 )
 from .graph import BaseGraph, EntityGraph
@@ -371,6 +372,13 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     # Step 3.a phase 2 — combine inferred peers by identifying attribute
     n_merged = merge_inferred_peers(entity_graph)
 
+    # Step 3.a — combine observed same-entity nodes split across White+Gray
+    # components (e.g. raw-anthropic per-turn LLM-source spans of one service).
+    # Keyed on service.name, gated to keyless observed boundary callers so it
+    # cannot over-merge typed entities. No-op unless a service appears more than
+    # once as such a caller; see merge_same_entity.
+    n_merged_same = merge_same_entity(entity_graph, span_by_id)
+
     # Step 3.b is applied during output derivation (entities are named from
     # service.name / natural-key suffix; the classifier label is kept on the
     # EntityNode for the future enrichment stage).
@@ -395,7 +403,8 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     )
     notes.append(
         f"entity graph: {len(entity_graph.nodes)} entities, {len(entity_graph.edges)} edges "
-        f"(Step 3.a phase 2 combined {n_merged} inferred peers)"
+        f"(Step 3.a phase 2 combined {n_merged} inferred peers; "
+        f"Step 3.a merged {n_merged_same} observed same-entity nodes)"
     )
     notes.extend(ix_notes)
 
