@@ -99,6 +99,16 @@ In this case we will also infer several edges:
 
 Additional cases may exist which need to be implemented .
 
+Inferred interaction ordering:
+When inferring new edges (interactions) Make sure to adjust the order.
+- outgoing edges (calls) are before incoming edges (responses)
+- When tools are derived from LLM spans:
+    - The edge between the LLM and the tool call is before the edge between the two call and the tool itself
+    - the edge between the tool and the tool itself is before the edge between the tool and the tool call (reverse edge)
+    - Tool interactions derived from input attributes should happen before interactions with the LLM
+    - tool interactions derived from output attributes should happen after interactions with the LLM
+    
+
 #### Step 2.c Intra trace merging
 In this step we apply heuristics to merge pairs of nodes where one node is inferred and the other is observed (real) and both reside in the same trace
 Merging of nodes will also entail merging of edges as well as merging of attributes 
