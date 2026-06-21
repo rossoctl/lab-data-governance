@@ -512,4 +512,36 @@
   }
 
   graphBtn.addEventListener('click', () => setAllViews('graph'));
+
+  // "Process this trace" button inside the empty state: runs the extractor
+  // for the current trace on demand, then re-loads the graph view. Same
+  // semantics as the CLI (single-trace; replaces any existing proto data).
+  const processBtn = graphEmpty.querySelector('[data-proto-process]');
+  if (processBtn) {
+    processBtn.addEventListener('click', async () => {
+      const traceId = getTraceId();
+      if (!traceId) return;
+      const original = processBtn.textContent;
+      processBtn.disabled = true;
+      processBtn.textContent = 'Processing…';
+      try {
+        const resp = await fetch('/proto/process/' + encodeURIComponent(traceId), { method: 'POST' });
+        if (!resp.ok) {
+          processBtn.disabled = false;
+          processBtn.textContent = original;
+          graphEmpty.appendChild(document.createElement('br'));
+          graphEmpty.appendChild(document.createTextNode('Failed to process: HTTP ' + resp.status));
+          return;
+        }
+        // Re-run the loader: clear the latch so it re-fetches and renders.
+        graphLoaded = false;
+        await loadGraph();
+      } catch (e) {
+        processBtn.disabled = false;
+        processBtn.textContent = original;
+        graphEmpty.appendChild(document.createElement('br'));
+        graphEmpty.appendChild(document.createTextNode('Failed to process: ' + e));
+      }
+    });
+  }
 })();

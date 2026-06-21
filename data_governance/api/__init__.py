@@ -487,6 +487,38 @@ async def _proto_graphs_handler(request: Request) -> Response:
     return JSONResponse(data)
 
 
+async def _proto_process_handler(request: Request) -> Response:
+    """Run the P-interactions extractor for a trace, on demand. THROWAWAY.
+
+    Backs the "Process this trace" button: runs the exact same extraction
+    the CLI runs (single-trace semantics — drops & recreates the proto_*
+    scratch tables, writes only this trace). Synchronous: the extraction
+    runs in a worker thread and the response carries the resulting counts.
+    """
+    trace_id = request.path_params.get("trace_id")
+    if not trace_id:
+        return JSONResponse({"error": "trace_id required"}, status_code=400)
+
+    def _process() -> dict:
+        # Import inside the handler — the proto prototype is throwaway and
+        # kept off the API's import-time surface (same isolation as the
+        # other /proto/* routes).
+        from data_governance.processors.p_interactions_proto import process_trace
+
+        result = process_trace(trace_id)
+        return {
+            "entities": len(result.entities),
+            "interactions": len(result.interactions),
+            "spans": len(result.base_graph.nodes),
+        }
+
+    try:
+        counts = await asyncio.to_thread(_process)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(counts)
+
+
 async def _ui_asset_handler(request: Request) -> Response:
     """Serve a whitelisted static asset under ``/ui/<file>``."""
     name = request.path_params.get("name", "")
@@ -535,6 +567,11 @@ def build_app() -> Starlette:
             "/proto/graphs/{trace_id:str}",
             endpoint=_proto_graphs_handler,
             methods=["GET"],
+        ),
+        Route(
+            "/proto/process/{trace_id:str}",
+            endpoint=_proto_process_handler,
+            methods=["POST"],
         ),
         Route("/", endpoint=_ui_handler, methods=["GET"]),
     ]

@@ -384,4 +384,36 @@
 
   treeBtn.addEventListener('click', () => setView('tree'));
   flowBtn.addEventListener('click', () => setView('flow'));
+
+  // "Process this trace" button inside the empty state: runs the extractor
+  // for the current trace on demand, then re-loads the view. Same semantics
+  // as running the CLI (single-trace; replaces any existing proto data).
+  const processBtn = flowEmpty.querySelector('[data-proto-process]');
+  if (processBtn) {
+    processBtn.addEventListener('click', async () => {
+      const traceId = getTraceId();
+      if (!traceId) return;
+      const original = processBtn.textContent;
+      processBtn.disabled = true;
+      processBtn.textContent = 'Processing…';
+      try {
+        const resp = await fetch('/proto/process/' + encodeURIComponent(traceId), { method: 'POST' });
+        if (!resp.ok) {
+          processBtn.disabled = false;
+          processBtn.textContent = original;
+          flowEmpty.appendChild(document.createElement('br'));
+          flowEmpty.appendChild(document.createTextNode('Failed to process: HTTP ' + resp.status));
+          return;
+        }
+        // Re-run the loader: clear the latch so it re-fetches and renders.
+        flowLoaded = false;
+        await loadFlow();
+      } catch (e) {
+        processBtn.disabled = false;
+        processBtn.textContent = original;
+        flowEmpty.appendChild(document.createElement('br'));
+        flowEmpty.appendChild(document.createTextNode('Failed to process: ' + e));
+      }
+    });
+  }
 })();

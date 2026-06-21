@@ -543,6 +543,16 @@ def test_ui_assets_are_served_no_cache(api_server, configured_db):
         assert resp.headers.get("cache-control") == "no-cache", path
 
 
+def test_proto_empty_states_have_process_button(api_server, configured_db):
+    """Both proto empty states carry a 'Process this trace' button so the
+    extractor can be run on demand from the UI (no shell into the pod)."""
+    resp = httpx.get(f"{_base_url(api_server)}/trace/anything")
+    body = resp.text
+    # One button per empty state (flow + graph).
+    assert body.count("data-proto-process") == 2
+    assert "Process this trace" in body
+
+
 def test_trace_tree_shell_calls_subtree_endpoint(api_server, configured_db):
     """The shell's lazy-expansion fetches ``/spans?trace_id=...&
     parent_id=...``. Smoke-check the endpoint string is present so a

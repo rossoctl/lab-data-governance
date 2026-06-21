@@ -316,15 +316,23 @@
           <tbody></tbody>
         </table>
         <div id="flow-empty" style="display:none;color:#888;padding:1rem 0">
-          No entities or interactions for this trace. Either the prototype CLI hasn't run yet,
-          or the trace has no agentic-scope spans. Run the prototype CLI:<br>
-          <code style="color:#c9c9c9">python -m data_governance.processors.p_interactions_proto.cli &lt;trace_id&gt;</code>
+          No entities or interactions for this trace yet — the prototype extractor
+          hasn't run for it (or the trace has no agentic-scope spans).<br><br>
+          <button class="view-btn" data-proto-process>Process this trace</button>
+          <div style="margin-top:0.75rem">
+            …or run it manually:
+            <code style="color:#c9c9c9">python -m data_governance.processors.p_interactions_proto.cli &lt;trace_id&gt;</code>
+          </div>
         </div>
       </div>
       <div id="graph-section" style="display:none">
         <div id="graph-empty" style="display:none;color:#888;padding:1rem 0">
-          No graph data for this trace. Run the prototype CLI:<br>
-          <code style="color:#c9c9c9">python -m data_governance.processors.p_interactions_proto.cli &lt;trace_id&gt;</code>
+          No graph data for this trace yet — the prototype extractor hasn't run for it.<br><br>
+          <button class="view-btn" data-proto-process>Process this trace</button>
+          <div style="margin-top:0.75rem">
+            …or run it manually:
+            <code style="color:#c9c9c9">python -m data_governance.processors.p_interactions_proto.cli &lt;trace_id&gt;</code>
+          </div>
         </div>
         <div id="graph-content" style="display:none">
           <div id="graph-subtab-bar" style="margin:0.75rem 0 1rem">
