@@ -523,6 +523,26 @@ def test_trace_tree_logic_js_asset_is_served(api_server, configured_db):
     assert "buildParentIndex" in resp.text
 
 
+def test_ui_assets_are_served_no_cache(api_server, configured_db):
+    """UI assets and the HTML shells must carry ``Cache-Control: no-cache``.
+
+    The served image is rebuilt in place under the same ``:latest`` tag, so
+    the bytes behind a URL change without the URL changing. Without a cache
+    directive the browser keeps serving the pre-rebuild JS, which presents
+    as "ran the prototype CLI but the Flow panel still says it hasn't."
+    ``no-cache`` forces revalidation so a rebuilt asset is always picked up.
+    """
+    base = _base_url(api_server)
+    for path in (
+        "/ui/trace_tree_logic.js",
+        "/ui/execution_flow_logic.js",
+        "/trace/anything",
+    ):
+        resp = httpx.get(f"{base}{path}")
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "no-cache", path
+
+
 def test_trace_tree_shell_calls_subtree_endpoint(api_server, configured_db):
     """The shell's lazy-expansion fetches ``/spans?trace_id=...&
     parent_id=...``. Smoke-check the endpoint string is present so a
