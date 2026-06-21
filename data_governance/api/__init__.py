@@ -35,6 +35,7 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from data_governance import db, retrieval
+from data_governance.retrieval import lineage as lineage_q
 
 __all__ = ["SpansApiServer", "build_app"]
 
@@ -215,6 +216,105 @@ async def _graph_handler(request: Request) -> Response:
     return Response(content=body, media_type="application/json", status_code=200)
 
 
+def _lineage_json(payload: object) -> Response:
+    """Serialize a lineage payload (datetimes -> ISO-8601) as JSON."""
+    body = json.dumps(payload, default=_json_default)
+    return Response(content=body, media_type="application/json", status_code=200)
+
+
+async def _lineage_runs_handler(request: Request) -> Response:
+    """``GET /lineage/runs`` — one row per trace with >=1 sidecar hop."""
+    try:
+        limit = _parse_int(request.query_params.get("limit"), "limit") or 50
+        rows = await asyncio.to_thread(lineage_q.list_runs, limit=limit)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return _lineage_json(rows)
+
+
+async def _lineage_trajectory_handler(request: Request) -> Response:
+    """``GET /lineage/runs/{run_id}/trajectory`` — ordered hops for one run."""
+    run_id = request.path_params["run_id"]
+    rows = await asyncio.to_thread(lineage_q.get_trajectory, run_id)
+    if not rows:
+        return JSONResponse({"error": f"run {run_id!r} not found"}, status_code=404)
+    return _lineage_json(rows)
+
+
+async def _lineage_graph_handler(request: Request) -> Response:
+    """``GET /lineage/runs/{run_id}/graph`` — entity nodes + edges for one run."""
+    run_id = request.path_params["run_id"]
+    graph = await asyncio.to_thread(lineage_q.get_run_graph, run_id)
+    if not graph["nodes"]:
+        return JSONResponse({"error": f"run {run_id!r} not found"}, status_code=404)
+    return _lineage_json(graph)
+
+
+async def _lineage_sequence_handler(request: Request) -> Response:
+    """``GET /lineage/runs/{run_id}/sequence`` — ordered participants + messages."""
+    run_id = request.path_params["run_id"]
+    seq = await asyncio.to_thread(lineage_q.get_run_sequence, run_id)
+    if not seq["messages"]:
+        return JSONResponse({"error": f"run {run_id!r} not found"}, status_code=404)
+    return _lineage_json(seq)
+
+
+async def _lineage_tree_handler(request: Request) -> Response:
+    """``GET /lineage/runs/{run_id}/tree`` — execution-forest tree for one run."""
+    run_id = request.path_params["run_id"]
+    tree = await asyncio.to_thread(lineage_q.get_run_tree, run_id)
+    if not tree["children"]:
+        return JSONResponse({"error": f"run {run_id!r} not found"}, status_code=404)
+    return _lineage_json(tree)
+
+
+async def _lineage_datagraph_handler(_request: Request) -> Response:
+    """``GET /lineage/datagraph`` — the mocked lineage data graph (ADR-0012)."""
+    return _lineage_json(lineage_q.get_data_graph())
+
+
+async def _lineage_common_edges_handler(request: Request) -> Response:
+    """``GET /lineage/edges/common`` — aggregated edges of one hop kind."""
+    try:
+        limit = _parse_int(request.query_params.get("limit"), "limit") or 50
+        hop_kind = request.query_params.get("hop_kind") or "agent_to_agent"
+        rows = await asyncio.to_thread(
+            lineage_q.list_common_edges, hop_kind=hop_kind, limit=limit
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return _lineage_json(rows)
+
+
+async def _lineage_paths_handler(request: Request) -> Response:
+    """``GET /lineage/paths?agent=&tool=`` — principals behind an agent->tool hop."""
+    agent = request.query_params.get("agent") or ""
+    tool = request.query_params.get("tool") or ""
+    rows = await asyncio.to_thread(lineage_q.list_principal_paths, agent=agent, tool=tool)
+    return _lineage_json(rows)
+
+
+async def _lineage_principal_agents_handler(request: Request) -> Response:
+    """``GET /lineage/principals/{principal_id}/agents``."""
+    principal_id = request.path_params["principal_id"]
+    agents = await asyncio.to_thread(lineage_q.list_principal_agents, principal_id)
+    return _lineage_json({"principal_id": principal_id, "agents": agents})
+
+
+async def _lineage_autocomplete_agents_handler(request: Request) -> Response:
+    """``GET /lineage/autocomplete/agents``."""
+    prefix = request.query_params.get("prefix") or ""
+    rows = await asyncio.to_thread(lineage_q.autocomplete_agents, prefix=prefix)
+    return _lineage_json(rows)
+
+
+async def _lineage_autocomplete_tools_handler(request: Request) -> Response:
+    """``GET /lineage/autocomplete/tools``."""
+    prefix = request.query_params.get("prefix") or ""
+    rows = await asyncio.to_thread(lineage_q.autocomplete_tools, prefix=prefix)
+    return _lineage_json(rows)
+
+
 def _probe_postgres() -> None:
     """Blocking ``SELECT 1`` against Postgres for :func:`_healthz_handler`.
 
@@ -309,6 +409,52 @@ def build_app() -> Starlette:
         Route("/healthz", endpoint=_healthz_handler, methods=["GET"]),
         Route("/spans", endpoint=_spans_handler, methods=["GET"]),
         Route("/graph", endpoint=_graph_handler, methods=["GET"]),
+        # Lineage REST contract (arielf's lineage_service shapes) — lets the
+        # Kagenti UI Data Lineage page consume the DG pod unchanged. Mount under
+        # /lineage so the UI backend's lineage_service_url is just ".../lineage".
+        Route("/lineage/runs", endpoint=_lineage_runs_handler, methods=["GET"]),
+        Route(
+            "/lineage/runs/{run_id:str}/trajectory",
+            endpoint=_lineage_trajectory_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/lineage/runs/{run_id:str}/graph",
+            endpoint=_lineage_graph_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/lineage/runs/{run_id:str}/sequence",
+            endpoint=_lineage_sequence_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/lineage/runs/{run_id:str}/tree",
+            endpoint=_lineage_tree_handler,
+            methods=["GET"],
+        ),
+        Route("/lineage/datagraph", endpoint=_lineage_datagraph_handler, methods=["GET"]),
+        Route(
+            "/lineage/edges/common",
+            endpoint=_lineage_common_edges_handler,
+            methods=["GET"],
+        ),
+        Route("/lineage/paths", endpoint=_lineage_paths_handler, methods=["GET"]),
+        Route(
+            "/lineage/principals/{principal_id:str}/agents",
+            endpoint=_lineage_principal_agents_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/lineage/autocomplete/agents",
+            endpoint=_lineage_autocomplete_agents_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/lineage/autocomplete/tools",
+            endpoint=_lineage_autocomplete_tools_handler,
+            methods=["GET"],
+        ),
         Route("/ui/{name:str}", endpoint=_ui_asset_handler, methods=["GET"]),
         Route(
             "/trace/{trace_id:str}",

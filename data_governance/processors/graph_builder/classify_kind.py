@@ -33,7 +33,89 @@ __all__ = [
     "entity_id",
     "display_name",
     "edge_kind",
+    "lineage_hop",
+    "inproc_llm_hop",
 ]
+
+
+# The authbridge sidecar self-tags ``source=sidecar`` and stamps a hop kind
+# (``trust.hop_kind`` / ``lineage.hop.kind``) plus the hop's two endpoint
+# identities (``trust.source_id``/``lineage.source.id`` -> the caller,
+# ``trust.target_id``/``lineage.target.id`` -> the callee). Unlike an
+# in-process span — whose graph edge is the parent->child boundary — a sidecar
+# hop encodes *both* endpoints in one span, so its edge is derived from the
+# span's own attributes (see ``lineage_hop``). This is what lets the DG pod
+# serve arielf's lineage REST contract (runs/hops/edges) off the same
+# ``entities``/``edges`` tables.
+_HOP_TARGET_ROLE = {
+    "principal_to_agent": "AGENT",
+    "agent_to_agent": "AGENT",
+    "agent_to_tool": "TOOL",
+    "agent_to_llm": "LLM",
+}
+_HOP_SOURCE_ROLE = {
+    "principal_to_agent": "PRINCIPAL",
+    "agent_to_agent": "AGENT",
+    "agent_to_tool": "AGENT",
+    "agent_to_llm": "AGENT",
+}
+
+
+def lineage_hop(attributes: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Extract a lineage hop from a sidecar span, or ``None`` if it isn't one.
+
+    Returns ``{hop_kind, source_id, target_id, source_role, target_role}``.
+    ``source_id`` may be ``None`` (an anonymous ``principal_to_agent`` inbound
+    with no authenticated principal). Prefers the ``trust.*`` keys and falls
+    back to ``lineage.*`` (both are stamped by the authbridge plugin).
+    """
+    if attributes.get("source") != "sidecar":
+        return None
+    hop_kind = attributes.get("trust.hop_kind") or attributes.get("lineage.hop.kind")
+    if not hop_kind:
+        return None
+    hop_kind = str(hop_kind)
+    source_id = attributes.get("trust.source_id") or attributes.get("lineage.source.id")
+    target_id = attributes.get("trust.target_id") or attributes.get("lineage.target.id")
+    if not target_id:
+        return None
+    return {
+        "hop_kind": hop_kind,
+        "source_id": source_id,
+        "target_id": str(target_id),
+        "source_role": _HOP_SOURCE_ROLE.get(hop_kind, "AGENT"),
+        "target_role": _HOP_TARGET_ROLE.get(hop_kind, "TOOL"),
+    }
+
+
+def inproc_llm_hop(
+    attributes: Mapping[str, Any], service_name: str | None
+) -> dict[str, Any] | None:
+    """Derive an ``agent_to_llm`` hop from an in-process LLM span, or ``None``.
+
+    This is the enrichment the sidecar cannot provide: the agent->LLM call rides
+    an HTTPS connection the authbridge Envoy TLS-passthroughs, so no sidecar hop
+    exists for it. The in-process OpenInference instrumentor *does* capture it
+    (model, token counts, full prompt/response), and DG stored it — so the
+    DG-backed lineage view shows the LLM reasoning steps a sidecar-only service
+    never could. The hop runs ``<agent service_name> -> <model>``.
+    """
+    if attributes.get("source") != "in-process":
+        return None
+    if str(attributes.get("openinference.span.kind") or "").upper() != "LLM":
+        return None
+    if not service_name:
+        return None
+    model = attributes.get("llm.model_name") or attributes.get("gen_ai.request.model")
+    if not model:
+        return None
+    return {
+        "hop_kind": "agent_to_llm",
+        "source_id": service_name,
+        "target_id": str(model),
+        "source_role": "AGENT",
+        "target_role": "LLM",
+    }
 
 # Entity-id encoding. Real service names and kinds cannot contain ASCII control
 # chars, so using the Unit Separator (U+001F) as the field delimiter and the

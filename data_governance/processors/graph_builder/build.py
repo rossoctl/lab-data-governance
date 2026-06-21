@@ -41,6 +41,8 @@ from .classify_kind import (
     display_name,
     edge_kind,
     entity_id,
+    inproc_llm_hop,
+    lineage_hop,
     semantic_kind,
     sub_kind,
 )
@@ -130,7 +132,21 @@ def run_backfill(*, batch_size: int = _DEFAULT_BATCH) -> BackfillResult:
     node: dict[tuple[str, str], tuple[str, str]] = {}
     # (trace_id, span_id, parent_id, to_entity, to_kind)
     edge_candidates: list[tuple[str, str, str, str, str]] = []
+    # Lineage hops (sidecar spans): edges are resolved from the span's own
+    # attributes, not its parent, so they are fully formed here and bypass the
+    # parent-resolution pass below.
+    lineage_edge_params: list[tuple[Any, ...]] = []
     scanned = 0
+
+    def _touch_entity(eid: str, svc: str | None, sk: str, sub: str | None, ts: Any) -> None:
+        existing = entities.get(eid)
+        if existing is None:
+            entities[eid] = [svc, sk, sub, ts, ts]
+        else:
+            if ts < existing[3]:
+                existing[3] = ts
+            if ts > existing[4]:
+                existing[4] = ts
 
     with db.transaction() as tx:
         for trace_id, span_id, parent_id, service_name, kind, started_at, attrs, _seq in _scan_spans(
@@ -138,19 +154,32 @@ def run_backfill(*, batch_size: int = _DEFAULT_BATCH) -> BackfillResult:
         ):
             scanned += 1
             attributes = attrs or {}
+
+            # Lineage hop: a sidecar hop (source/target in its attributes), or an
+            # in-process LLM call (agent->model) the sidecar cannot see. Either
+            # way the edge is derived from the span itself, not the trace tree.
+            hop = lineage_hop(attributes) or inproc_llm_hop(attributes, service_name)
+            if hop is not None:
+                to_eid = entity_id(hop["target_id"], hop["target_role"], None)
+                _touch_entity(to_eid, hop["target_id"], hop["target_role"], None, started_at)
+                node[(trace_id, span_id)] = (to_eid, hop["target_role"])
+                from_eid = None
+                if hop["source_id"]:
+                    from_eid = entity_id(hop["source_id"], hop["source_role"], None)
+                    _touch_entity(
+                        from_eid, hop["source_id"], hop["source_role"], None, started_at
+                    )
+                if from_eid != to_eid:
+                    lineage_edge_params.append(
+                        (trace_id, span_id, parent_id or "", to_eid, from_eid, hop["hop_kind"])
+                    )
+                continue
+
             sk = semantic_kind(attributes, kind)
             sub = sub_kind(sk, attributes)
             eid = entity_id(service_name, sk, sub)
             node[(trace_id, span_id)] = (eid, sk)
-
-            existing = entities.get(eid)
-            if existing is None:
-                entities[eid] = [service_name, sk, sub, started_at, started_at]
-            else:
-                if started_at < existing[3]:
-                    existing[3] = started_at
-                if started_at > existing[4]:
-                    existing[4] = started_at
+            _touch_entity(eid, service_name, sk, sub, started_at)
 
             if parent_id is not None:
                 edge_candidates.append((trace_id, span_id, parent_id, eid, sk))
@@ -196,6 +225,11 @@ def run_backfill(*, batch_size: int = _DEFAULT_BATCH) -> BackfillResult:
                     edge_kind(from_kind, to_kind),
                 )
             )
+        # Lineage hops carry their own from/to (resolved in the scan), so they
+        # join the generic edges for a single write. Orphan lineage hops
+        # (source_id absent) keep from_entity NULL, same as orphan boundaries.
+        orphan_edges += sum(1 for e in lineage_edge_params if e[4] is None)
+        edge_params.extend(lineage_edge_params)
         if edge_params:
             tx.execute_many(_UPSERT_EDGE_SQL, edge_params)
 

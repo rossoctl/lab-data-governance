@@ -28,7 +28,7 @@
       --line: #2c2c2c; --line-soft: #3a3a3a; --fg: #f0f0f0; --fg-dim: #b8b8b8;
       --muted: #888; --accent: #92c5f9; --danger: #f85149;
       --c-user: #d2a8ff; --c-agent: #92c5f9; --c-llm: #e3b341;
-      --c-tool: #7ee787; --c-datastore: #ffa657;
+      --c-tool: #5fd3e0; --c-datastore: #ffa657;
     }
     * { box-sizing: border-box; }
     body {
@@ -1098,15 +1098,23 @@
     const detailH2 = document.querySelector('#detail h2');
     const VCOL = { clean: '#56d364', confidential: '#ff7b72', mixed: '#92c5f9',
                    recall: '#bc8cff', transform: '#e3b341' };
+    // Node colour is by TYPE only (never red/green). Classification (clean vs
+    // confidential) shows ONLY on edge colour: green = d2, red = d/d1/d3.
+    const DG_TYPECOL = { datastore: 'var(--c-datastore)', agent: 'var(--c-agent)',
+                         transform: 'var(--c-llm)', file: 'var(--c-datastore)',
+                         external: '#9aa5b1' };
+    const dgNodeColor = (n) => DG_TYPECOL[n.type] || 'var(--muted)';
+    const dgEdgeColor = (e) => (e.data === 'd2' ? VCOL.clean : VCOL.confidential);
+    const dgEdgeCls = (e) => (e.data === 'd2' ? 'clean' : 'confidential');
     let _dgBuilt = false, _dgEls = new Map(), _dgRaf = 0, _dgDetail = null;
 
     /* one verdict-colored node card (its own badge so the icon takes the
        card's verdict color, not a per-type color). */
     function dgCard(node) {
       const card = document.createElement('div');
-      card.className = 'node-card dg-card v-' + node.verdict
-        + (node.type === 'transform' ? ' transform' : '')
-        + (node.leak ? ' leak' : '');
+      card.className = 'node-card dg-card'
+        + (node.type === 'transform' ? ' transform' : '');
+      card.style.color = dgNodeColor(node);   // colour by type, never by verdict
       const b = document.createElement('span');
       b.className = 'badge';
       const svg = document.createElementNS(SVGNS, 'svg'); svg.setAttribute('class', 'ic');
@@ -1135,14 +1143,11 @@
       // head: title + MOCKED banner + legend
       const legend = DG.legend.map((l) =>
         l.cls === 'ident'
-          ? '<span class="item ident"><span class="swatch dash"></span>' + l.label + '</span>'
-          : '<span class="item ' + l.cls + '"><span class="dot"></span>' + l.label + '</span>'
+          ? '<span class="item ident"><span class="swatch dash"></span>' + l.label.replace(' ‼', '') + '</span>'
+          : '<span class="item ' + l.cls + '"><span class="swatch"></span>' + l.label.replace(' ‼', '') + '</span>'
       ).join('');
       dgHeadEl.innerHTML =
-        '<div class="dg-title">' + DG.title +
-        ' <span class="sub">— the lineage view (mocked)</span></div>' +
-        '<div class="dg-banner"><b>MOCKED</b> — ' + DG.notes[0].replace(/^MOCKED[^—]*— ?/, '') +
-        ' This is the <em>desired target</em> the execution forest cannot draw, not a computed result.</div>' +
+        '<div class="dg-title">' + DG.title + '</div>' +
         '<div class="dg-legend">' + legend + '</div>';
       // foot intentionally empty — the below-graph metamorphosis/notes block was
       // removed per UI request (no bottom text in either view).
@@ -1227,8 +1232,8 @@
       const x = goingUp ? cx - off : cx + off;
       const yA = goingUp ? sy : fy, yB = goingUp ? fy : sy, midy = (yA + yB) / 2;
       const d = 'M ' + x + ' ' + yA + ' C ' + x + ' ' + midy + ', ' + x + ' ' + midy + ', ' + x + ' ' + yB;
-      _dgPath(d, VCOL[e.verdict] || VCOL.mixed, { width: 2.2 });
-      _dgLabel(x, midy + (goingUp ? -11 : 11), e.data, e.verdict);
+      _dgPath(d, dgEdgeColor(e), { width: 2.2 });
+      _dgLabel(x, midy + (goingUp ? -11 : 11), e.data, dgEdgeCls(e));
     }
 
     function dgLayout() {
@@ -1284,9 +1289,9 @@
         const dx = Math.max(34, (x2 - x1) * 0.45);
         const d = 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + dx) + ' ' + y1 + ', '
           + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2;
-        _dgPath(d, VCOL[e.verdict] || VCOL.mixed,
-          { width: e.fork ? 2.6 : 2.2, glow: !!e.leak });   // leak edge is solid (red glow), not dashed
-        _dgLabel((x1 + x2) / 2, (y1 + y2) / 2, e.data, e.verdict);
+        _dgPath(d, dgEdgeColor(e),
+          { width: e.fork ? 2.6 : 2.2, glow: !!e.leak });   // leak edge keeps its red glow
+        _dgLabel((x1 + x2) / 2, (y1 + y2) / 2, e.data, dgEdgeCls(e));
       }
 
       // recall data-identity edge(s): a sweeping dashed arc under the river,
@@ -1316,17 +1321,12 @@
     function dgSelect(node, card) {
       for (const c of dgColumnsEl.querySelectorAll('.node-card.selected')) c.classList.remove('selected');
       if (card) card.classList.add('selected');
-      const color = VCOL[node.verdict] || VCOL.mixed;
-      const verdictLabel = node.verdict === 'mixed' ? 'fresh trace (mixed)'
-        : node.verdict + (node.tag ? ' · ' + node.tag : '');
+      const color = dgNodeColor(node);
       _dgDetail.innerHTML =
         '<button class="close" aria-label="Close">×</button>' +
         '<h2 style="color:' + color + '">' + node.label + '</h2>' +
         '<div style="margin:-0.1rem 0 0.6rem;font-size:0.78rem;color:var(--muted)">' + node.sub + '</div>' +
-        '<span style="display:inline-block;font-size:0.7rem;font-weight:700;color:' + color +
-        ';border:1px solid ' + color + ';border-radius:999px;padding:0.1rem 0.6rem">'
-        + verdictLabel + '</span>' +
-        '<h3>Why · mocked lineage</h3>' +
+        '<h3>Why</h3>' +
         '<p style="font-size:0.82rem;line-height:1.55;color:var(--fg-dim);margin:0">' + node.why + '</p>';
       _dgDetail.querySelector('.close').addEventListener('click', () => { _dgDetail.style.display = 'none'; });
       _dgDetail.style.display = 'block';
