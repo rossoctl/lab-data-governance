@@ -25,8 +25,16 @@
   let graphLoaded = false;
 
   function getTraceId() {
-    const m = window.location.pathname.match(/^\/trace\/([0-9a-f]+)/i);
-    return m ? m[1] : null;
+    // Match the trace id after a `/trace/` segment anywhere in the path —
+    // tolerant of a gateway path prefix and a trailing slash/query — then
+    // fall back to the last path segment. The previous anchored
+    // `^/trace/` regex returned null whenever the page was served under a
+    // prefix, and loadGraph() then bailed before fetching (issue: graph
+    // tab stuck on the "run the CLI" hint despite populated scratch tables).
+    const m = window.location.pathname.match(/\/trace\/([0-9a-fA-F]+)/);
+    if (m) return m[1];
+    const segs = window.location.pathname.split('/').filter(Boolean);
+    return segs.length ? segs[segs.length - 1] : null;
   }
 
   function setAllViews(view) {
@@ -68,9 +76,14 @@
   // -------------------------------------------------------------------------
 
   async function loadGraph() {
-    graphLoaded = true;
     const traceId = getTraceId();
-    if (!traceId) return;
+    if (!traceId) {
+      // Don't latch graphLoaded — leave the tab retryable rather than
+      // permanently stuck if the trace id can't be resolved.
+      graphEmpty.style.display = '';
+      graphEmpty.textContent = 'Could not determine trace id from the URL.';
+      return;
+    }
     try {
       const resp = await fetch('/proto/graphs/' + encodeURIComponent(traceId));
       if (!resp.ok) {
@@ -80,6 +93,9 @@
       }
       const data = await resp.json();
       renderGraphs(data);
+      // Only latch after a successful render, so a transient failure or an
+      // unresolved trace id leaves the tab retryable on the next click.
+      graphLoaded = true;
     } catch (e) {
       graphEmpty.style.display = '';
       graphEmpty.textContent = 'Failed to load: ' + e;

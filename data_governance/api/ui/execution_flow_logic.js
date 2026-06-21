@@ -30,8 +30,13 @@
   let flowData = null;
 
   function getTraceId() {
-    const m = window.location.pathname.match(/^\/trace\/([0-9a-f]+)/i);
-    return m ? m[1] : null;
+    // Tolerant of a gateway path prefix and trailing slash/query; falls
+    // back to the last path segment. See graph_view_logic.js for the
+    // rationale (anchored ^/trace/ regex returned null under a prefix).
+    const m = window.location.pathname.match(/\/trace\/([0-9a-fA-F]+)/);
+    if (m) return m[1];
+    const segs = window.location.pathname.split('/').filter(Boolean);
+    return segs.length ? segs[segs.length - 1] : null;
   }
 
   // The natural-key prefix IS the coarse kind (`llm:` / `tool:` /
@@ -65,9 +70,13 @@
   }
 
   async function loadFlow() {
-    flowLoaded = true;
     const traceId = getTraceId();
-    if (!traceId) return;
+    if (!traceId) {
+      // Don't latch flowLoaded — leave the tab retryable.
+      flowEmpty.style.display = '';
+      flowEmpty.textContent = 'Could not determine trace id from the URL.';
+      return;
+    }
     try {
       const resp = await fetch('/proto/interactions/' + encodeURIComponent(traceId));
       if (!resp.ok) {
@@ -77,6 +86,8 @@
       }
       flowData = await resp.json();
       renderFlow();
+      // Only latch after a successful render.
+      flowLoaded = true;
     } catch (e) {
       flowEmpty.style.display = '';
       flowEmpty.textContent = 'Failed to load: ' + e;
