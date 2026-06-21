@@ -180,11 +180,21 @@ async def _healthz_handler(_request: Request) -> Response:
     return Response("ok", status_code=200, media_type="text/plain")
 
 
+# UI assets are read fresh on every request (hot-reload) and the served
+# image is rebuilt in place under the same ``:latest`` tag, so the bytes
+# behind a given URL change without the URL changing. Without a cache
+# directive, browsers apply heuristic caching and keep serving a stale
+# copy after a rebuild (the "ran the CLI but the Flow panel says it
+# hasn't" confusion). ``no-cache`` lets the browser cache but forces a
+# revalidation every time, so a rebuilt asset is always picked up.
+_NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
+
+
 async def _ui_handler(_request: Request) -> Response:
     """Serve the UI shell ``index.html``."""
     index = _UI_DIR / "index.html"
     # Read on every request intentionally — enables hot-reload during development.
-    return HTMLResponse(content=index.read_text())
+    return HTMLResponse(content=index.read_text(), headers=_NO_CACHE_HEADERS)
 
 
 async def _trace_tree_handler(_request: Request) -> Response:
@@ -196,7 +206,7 @@ async def _trace_tree_handler(_request: Request) -> Response:
     for any trace_id.
     """
     page = _UI_DIR / "trace_tree.html"
-    return HTMLResponse(content=page.read_text())
+    return HTMLResponse(content=page.read_text(), headers=_NO_CACHE_HEADERS)
 
 
 # Static asset names allowed under ``/ui/`` — kept narrow on purpose so
@@ -486,7 +496,12 @@ async def _ui_asset_handler(request: Request) -> Response:
     if not asset.is_file():
         return Response(status_code=404)
     media_type = "application/javascript" if name.endswith(".js") else "text/plain"
-    return Response(content=asset.read_text(), media_type=media_type, status_code=200)
+    return Response(
+        content=asset.read_text(),
+        media_type=media_type,
+        status_code=200,
+        headers=_NO_CACHE_HEADERS,
+    )
 
 
 # ---------------------------------------------------------------------------
