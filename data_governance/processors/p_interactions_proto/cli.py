@@ -15,7 +15,8 @@ Scratch tables written:
           (Gray/Black nodes, additive edge colors, combined-span duplicates,
           between-boundary flag annotations)
     proto_entity_nodes, proto_entity_edges
-        — entity graph after Step 2.c
+        — entity graph after Step 3 (components, inferred↔inferred and
+          observed↔observed same-entity combines, naming)
 
   Final output (same shape as linear-pass prototype for comparison):
     proto_entities

@@ -110,8 +110,9 @@ When inferring new edges (interactions) Make sure to adjust the order.
 
 
 #### Step 2.c Intra trace merging
-In this step we apply heuristics to merge pairs of nodes 
-(inferred/inferred and inferred/observed) - representing the same entity - and both reside in the same trace.
+In this step we apply heuristics to merge pairs of nodes -
+consisting of inferred/inferred or inferred/observed - representing the same entity - and both reside in the same trace.
+(Observed/observed nodes will be handled 3.a)
 Merging of nodes will also entail merging of edges as well as merging of attributes 
 
 the process of merging Can be viewed as a set of heuristics identifying nodes representing the same entity 
