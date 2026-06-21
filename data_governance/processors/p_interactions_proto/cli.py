@@ -311,6 +311,37 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
             )
 
 
+def process_trace(trace_id: str, *, progress=None) -> ExtractResult:
+    """Fetch a trace's spans, run the graph extractor, write scratch tables.
+
+    The reusable core shared by the CLI (:func:`main`) and the UI's
+    ``POST /proto/process/<trace_id>`` endpoint. Single-trace semantics,
+    identical to the CLI: :func:`_write_results` runs ``_DDL`` which drops
+    and recreates every ``proto_*`` table, so each call holds exactly one
+    trace.
+
+    ``db.configure(...)`` must already have been called by the caller.
+
+    ``progress`` is an optional ``callable(str)`` used by the CLI for its
+    phase reporting; the API caller passes nothing.
+    """
+    def _say(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
+    _say(f"fetching spans for {trace_id}...")
+    spans = _fetch_trace_spans(trace_id)
+    _say(f"  fetched {len(spans)} spans")
+
+    _say("running graph extractor...")
+    result = extract(spans)
+    span_by_id = {s.span_id: s for s in spans}
+
+    _say("writing scratch tables...")
+    _write_results(trace_id, result, span_by_id)
+    return result
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print(__doc__)
@@ -324,13 +355,7 @@ def main() -> int:
         return 1
     db.configure(dsn)
     try:
-        print(f"fetching spans for {trace_id}...")
-        spans = _fetch_trace_spans(trace_id)
-        print(f"  fetched {len(spans)} spans")
-
-        print("running graph extractor...")
-        result = extract(spans)
-        span_by_id = {s.span_id: s for s in spans}
+        result = process_trace(trace_id, progress=print)
 
         print(f"\n--- base graph ---")
         print(f"  {len(result.base_graph.nodes)} nodes  {len(result.base_graph.edges)} edges")
@@ -370,9 +395,7 @@ def main() -> int:
         for n in result.notes:
             print(f"  - {n}")
 
-        print("\nwriting scratch tables...")
-        _write_results(trace_id, result, span_by_id)
-        print("done.")
+        print("\ndone.")
     finally:
         db.close_pool()
     return 0
