@@ -24,13 +24,18 @@ The algorithm uses two orthogonal vocabularies for nodes — one describes the
 one). A third vocabulary — `SpanFacts` — sits between the raw spans and the
 algorithm and is described under "Adapter layer" below.
 
-**Roles** (what the node represents):
-- **Event node** — a node representing a local entity, recorded by an
-  observed span.
-- **Source node** — a node representing the caller side of an agentic
-  protocol call (the local entity initiating the call).
-- **Target node** — a node representing the callee side of an agentic
-  protocol call (the remote entity receiving the call).
+**Roles** (what the node represents) — following the spec's definitions
+(defs. 1, 2, 5) verbatim where it gives them:
+- **Event node** — *"a node representing a local entity"* (spec def. 1),
+  recorded by an observed span.
+- **Source node** / **Target node** — *"Source / Target nodes representing
+  a local and remote entity"* (spec def. 2). The Source node is the caller
+  side of an agentic protocol call (the local entity initiating the call);
+  the Target node is the callee side (the remote entity receiving the call).
+- **Agentic boundary** — *"a boundary is (node) source calling an agent, a
+  tool, an LLM or another service, or a target of such a call"* (spec
+  def. 5). A boundary is therefore any node playing the Source or Target
+  role; Step 2.d colors exactly these nodes Black.
 
 A span's role is assigned by its `(scope, framework)` adapter and surfaced
 on `SpanFacts.role` (`SOURCE` / `TARGET` / `BOTH` / `NONE`). `NONE` means
@@ -73,13 +78,17 @@ display string — the field is the single source of truth.
 > schema, API wire shape, and the UI marker). This ADR uses the current
 > `inferred` names throughout.
 
-**Edges:**
-- **White edge** — parent/child relationship via OTel traceparent.
-- **Gray edge** — order of events considering only agentic-scoped events; a
-  Gray edge connects two Gray nodes whose underlying White chain does not
-  pass through another Gray node.
-- **Black edge** — a source/target relationship across agentic
-  entities/components/containers.
+**Edges** — following the spec's definitions (defs. 3, 4, 6):
+- **White edge** — *"parent child relationship based on trace parent"*
+  (spec def. 3).
+- **Gray edge** — *"the (grand-)parent child relationship in agentic
+  scoped events"* (spec def. 4): the order of events considering only
+  agentic-scoped (Gray) nodes. Because the immediate traceparent parent of
+  one Gray node may be a non-agentic (White) node, the Gray edge spans the
+  transitive (grand-)parent chain — it connects two Gray nodes whose
+  underlying White chain does not pass through another Gray node.
+- **Black edge** — *"a source/target across agentic entities/components/
+  containers"* (spec def. 6).
 
 A Black boundary node typically *plays* the Source or Target role depending on
 which side of the call its span represents. For the combined-span (Step 2.b
@@ -262,10 +271,78 @@ an **inferred node** for it and connects it with Black edges. Three cases:
    to the tool-call node.
 
    > **As-implemented note.** Case 3 (tool-from-`tool_calls` inference) is
-   > **not yet implemented**. It is recorded here as intended design;
-   > currently only combined-span duplication (case 1), tool/sub-agent
-   > dispatch (case 2), and the one-sided stubbing described below
-   > materialise inferred nodes.
+   > implemented for the `anthropic` framework by
+   > `builder.infer_tool_calls_from_attributes`: the adapter surfaces
+   > output-side tool calls on `SpanFacts.tool_calls`, and the builder
+   > materialises the tool-call node (source, folds into the LLM entity via a
+   > Gray edge) and the inferred tool node (target) with the request/response
+   > Black edges. It is **gated per-adapter**: only adapters that populate
+   > `tool_calls` trigger it, so frameworks that emit a real tool-execution
+   > span (e.g. openai_agents, whose LLM spans *also* carry output
+   > `tool_calls` for the same tool) are not double-counted. Combined-span
+   > duplication (case 1), tool/sub-agent dispatch (case 2), and the one-sided
+   > stubbing below also materialise inferred nodes.
+   >
+   > Both the **output** and **input** sides are now read. Input-side tool
+   > calls (`llm.input_messages.*.message.tool_calls.*`) are a prior turn's
+   > tool use replayed back into the request; the anthropic adapter surfaces
+   > them on `SpanFacts.input_tool_calls` and the builder materialises them the
+   > same way, ordered *ahead of* the LLM interaction (see "Inferred
+   > interaction ordering" below). Per the human spec every input-side tool is
+   > inferred — including a replay of a call already seen on a prior span's
+   > output — since the replay is a genuine prior interaction fed back into the
+   > turn.
+
+**Inferred interaction ordering.**
+The spec (`p_interactions_alg.md`, "Inferred interaction ordering" under
+Step 2.b) requires that inferred edges carry a deterministic order, because
+several inferred interactions are derived from a *single* span and therefore
+share that span's timestamp — `started_at` alone cannot order them. The rules:
+
+1. **Calls before responses.** For any inferred pair, the outgoing edge (the
+   call: source→target) precedes the incoming edge (the response:
+   target→source).
+2. **Case-3 edge order.** For a tool inferred from an LLM span (case 3): the
+   `current LLM span → tool-call` edge precedes the `tool-call → tool` edge;
+   and the `tool-call → tool` edge (the call) precedes the `tool → tool-call`
+   edge (the reverse / response). (This is rule 1 applied within the case-3
+   triple.)
+3. **Input-derived tools before the LLM call.** A tool evidenced on the LLM
+   span's *input* messages (`llm.input_messages.*.message.tool_calls.*`) was
+   invoked on a *prior* turn whose result is being fed back in; its inferred
+   interaction is ordered **before** the interaction with the LLM.
+4. **Output-derived tools after the LLM call.** A tool evidenced on the LLM
+   span's *output* messages (`llm.output_messages.*.message.tool_calls.*`) is
+   what the model asked to invoke *as a result of* this call; its inferred
+   interaction is ordered **after** the interaction with the LLM.
+
+So a single LLM turn expands, in order, to: *(input-derived tool calls) →
+(the agent↔LLM call/response) → (output-derived tool calls)*, with each
+call immediately preceding its own response per rule 1.
+
+**Representation (design decision).** Ordering is carried as an explicit
+integer order field on the derived interaction, assigned at derivation time,
+and the CLI/API sort by `(started_at, order)` rather than `started_at` alone.
+A derivation-order-only tiebreak was rejected as too fragile — any consumer
+that re-sorts (the API already issues `ORDER BY started_at`) would silently
+lose the contract; an explicit field survives the SQL round-trip and is
+inspectable.
+
+> **As-implemented note.** **Implemented.** (a) The explicit order field is a
+> plain integer carried on the base-graph `Edge` (`Edge.order`), stamped at
+> Black-edge creation in `duplicate_combined_nodes`, `synthesize_missing_peers`,
+> and `infer_tool_calls_from_attributes`, copied onto `EntityEdge.order` in
+> `build_entity_graph`, and surfaced as `ProtoInteraction.order` and the
+> `proto_interactions."order"` column. The CLI sorts by `(started_at, order)`
+> and the API issues `ORDER BY started_at, "order"`. The band scheme realises
+> the rules directly: input-derived tools sit at `-40 + 2k` (call) / `+1`
+> (response), the agent↔LLM / combined / one-sided call at `0` / `1`, and
+> output-derived tools at `40 + 3k` / `+1` — so negative < 0/1 < positive
+> encodes rules 3, 1, 4. (b) Input-side tool inference now exists:
+> `infer_tool_calls_from_attributes` reads both `SpanFacts.tool_calls`
+> (output, positive band) and `SpanFacts.input_tool_calls` (input, negative
+> band), the latter populated by the anthropic adapter from
+> `llm.input_messages.*.message.tool_calls.*`.
 
 When only one side of a protocol call is observed, the missing peer is also an
 inferred node: a boundary node that has no observed peer in the trace gets an
@@ -306,13 +383,22 @@ entity. It may draw on:
 2. **Similarity of attributes** — e.g. identical tool names, identical
    values.
 
-> **As-implemented note.** This step (inferred↔observed heuristic merging by
-> proximity or attribute similarity, in the execution-flow graph) is **not yet
-> implemented**; inferred nodes currently pass through to Step 3.a unmerged.
-> Implementing it would fold an inferred node into its *observed* twin when one
-> exists. It is complementary to — not a substitute for — the Step 3.a phase-2
-> combine, which converges repeatedly-called peers by identifying attribute
-> even when no observed twin exists.
+> **As-implemented note.** **Implemented** as `merge_inferred_into_observed`
+> (`builder.py`), run after Step 2.b inference / one-sided stubbing and before
+> entity formation. An inferred node folds into an observed boundary node when
+> three conditions hold: (1) the identifying key **and** entity-kind match;
+> (2) the observed twin lives in a *different* White+Gray connected component
+> than the inferred node's source — i.e. it is an *independent observation of
+> the callee*, not another caller of it; (3) it has its own observed span.
+> Condition (2) is the decisive guard: in a single-agent trace every same-key
+> boundary is a sibling caller on the agent's own Gray chain (same component),
+> so none qualifies and the pass is a no-op — which is why it leaves all the
+> single-agent fixtures (canonical, anthropic, claude subagent, clarifying
+> turn) unchanged. It fires only on a split graph where the callee emitted its
+> own spans (the `trace_inferred_observed_merge` fixture). It is complementary
+> to — not a substitute for — the Step 3.a phase-2 combine, which converges
+> repeatedly-called peers by identifying attribute even when no observed twin
+> exists.
 
 **Step 2.d — Agentic boundaries (Black).**
 Identify the Gray nodes that *represent an agentic boundary* and color them
@@ -411,12 +497,17 @@ drawn from one of the subgraph's node spans. In particular, if a node in the
 subgraph carries a **hostname**, use it as the key. When no clear key is
 available, the entity is named `unknown`.
 
-> **As-implemented note.** The current implementation assigns `unknown` to
-> every entity. Richer naming — deriving an ID from the entity's pooled
-> attributes (hostname from non-agentic enrichment, service name, model/tool
-> name, etc.) — is deferred; the most useful identifier (hostname) lives on
-> non-agentic spans that today are not part of the entity-forming subgraph.
-> See "Deferred to later stages".
+> **As-implemented note.** **Implemented** (partially, as scoped) in
+> `extractor._entity_display_name`. Each entity's `display_name` is derived by
+> precedence: (1) the `service.name` of any contributing span (the typed
+> `Span.service_name` field — `dl-demo-travel-advisor`, `weather-tool`, …);
+> (2) the model / tool / agent name parsed from the `natural_key` suffix
+> (`llm:claude-…` → `claude-…`); (3) the literal `unknown` when neither is
+> available. The spec's *preferred* identifier — a **hostname** — is still
+> deferred: it lives on non-agentic (httpx / botocore) spans that are not part
+> of the entity-forming subgraph today, so it is unreachable until the
+> cross-scope enrichment stage runs. `service.name` is the best identifier
+> available now. See "Deferred to later stages → Richer entity naming".
 
 ## Annotations
 
@@ -562,10 +653,12 @@ stages and on different graphs:
 
 - **Step 2.c — inferred↔observed merge, execution-flow graph (spec def. 8).**
   Collapse an **inferred** node into the **observed** node representing the
-  same entity, in the same trace, using proximity in the trace and attribute
-  similarity. The intent is that an inferred stub does not sit beside its
-  observed twin. **Not yet implemented**; inferred nodes pass through to
-  Step 3.a unmerged.
+  same entity, in the same trace, using matching key + kind and the
+  different-component guard (the observed twin is an independent observation of
+  the callee, not a sibling caller). The intent is that an inferred stub does
+  not sit beside its observed twin. **Implemented**
+  (`merge_inferred_into_observed`); fires on a split graph where the callee
+  emitted its own spans, no-op otherwise.
 - **Step 3.a phase 2 — combine by identifying attribute, entity graph (spec
   Step 3).** After components are turned into entities, combine entity nodes
   that share an identifying attribute (the boundary `natural_key`). This is
@@ -653,26 +746,36 @@ and will be addressed by a separate enrichment stage:
   no traceparent link to its corresponding Send, the base graph is
   disconnected and Step 3.a naturally produces disconnected components in the
   entity graph. No special handling, no annotation at this stage.
-- **Richer entity naming.** Step 3.b assigns `unknown` to every entity. A
-  later stage will derive an ID from the entity's pooled attributes —
-  hostname (from non-agentic httpx/starlette enrichment),
-  `service.name` (OTel resource), or framework-specific attributes
-  (`llm.model_name`, `tool.name`, `agent.name`, …). This is deferred until
-  the cross-scope enrichment stage exists, since the most useful identifier
-  (hostname) lives on non-agentic spans that today are not part of the
-  entity-forming subgraph.
-- **Inferring tool nodes from `tool_calls` attributes.** An LLM-output span's
-  `llm.output_messages.*.message.tool_calls.*` attributes evidence a tool
-  call and the tool itself (Step 2.b case 3). Materialising those inferred
-  tool-call / tool nodes and their edges from span attributes is intended
-  design but not yet implemented.
-- **Step 2.c inferred↔observed merging.** The spec's Step 2.c — collapsing an
-  inferred peer into the observed node representing the same entity, by
-  proximity in the trace and attribute similarity — is specified but **not yet
-  implemented** (inferred nodes pass through to Step 3.a). This is distinct
-  from the Step 3.a phase-2 combine (combine by identifying attribute), which
-  *is* implemented and converges repeatedly-called peers even when never
-  observed.
+- **Hostname-based entity naming.** Step 3.b now names entities from
+  `service.name` / the natural-key suffix (see its as-implemented note), but
+  the spec's *preferred* identifier — a **hostname** — remains deferred. It
+  lives on non-agentic (httpx / botocore / starlette) spans that are not part
+  of the entity-forming subgraph today, so it is unreachable until the
+  cross-scope enrichment stage exists.
+- ~~**Inferring tool nodes from `tool_calls` attributes.**~~ *Implemented for
+  the `anthropic` framework, both sides* — an LLM span's
+  `llm.output_messages.*.message.tool_calls.*` (output, ordered after the LLM)
+  and `llm.input_messages.*.message.tool_calls.*` (input replay, ordered
+  before the LLM) attributes now materialise the inferred tool-call / tool
+  nodes and their edges (Step 2.b case 3, gated per-adapter; see the
+  as-implemented note under Step 2.b). Other frameworks that emit a real
+  tool-execution span do not opt in (their tools are observed, not inferred).
+- ~~**Inferred-interaction ordering + input-derived tools.**~~ *Implemented* —
+  the spec's "Inferred interaction ordering" rules (calls before responses;
+  input-derived tools before the LLM interaction; output-derived tools after
+  it) are realised by an explicit integer `order` carried from the base-graph
+  `Edge` through `EntityEdge` to `ProtoInteraction` and the
+  `proto_interactions."order"` column, with the CLI and API sorting by
+  `(started_at, order)`. See the "Inferred interaction ordering" as-implemented
+  note under Step 2.b.
+- ~~**Step 2.c inferred↔observed merging.**~~ *Implemented* as
+  `merge_inferred_into_observed` — collapses an inferred peer into an
+  *independently observed* node for the same entity (matching key + kind, in a
+  different White+Gray component, i.e. across the Black call boundary). A no-op
+  on single-agent traces (every same-key boundary there is a sibling caller,
+  not an observed callee); fires on a split graph where the callee emitted its
+  own spans. See the as-implemented note under Step 2.c. Distinct from — and
+  complementary to — the Step 3.a phase-2 combine.
 - **Step 4 (spec) — system graph.** The spec's Step 4 (deferred) builds a
   cross-trace "system graph" and groups:
   - **Inter-trace merging.** Merging an inferred node in one trace with an

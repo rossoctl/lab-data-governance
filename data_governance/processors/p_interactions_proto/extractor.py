@@ -13,8 +13,9 @@ Algorithm (see docs/adr/0007-p-interactions-graph-algorithm.md):
                → entity graph; Black edges → entity edges (phase 1); combine
                inferred peers with matching source-span identifying
                attributes into one entity (phase 2)
-  Step 3.b   — assign 'unknown' as every entity's display name (richer
-               naming is deferred — see ADR-0007)
+  Step 3.b   — name each entity from its subgraph: service.name, else the
+               natural-key suffix, else 'unknown' (hostname-based naming is
+               deferred — see ADR-0007)
 
 Then the extractor derives ProtoEntity / ProtoInteraction / ProtoPayload
 output rows from the post-3.b entity graph.
@@ -38,6 +39,8 @@ from .builder import (
     color_agentic,
     duplicate_combined_nodes,
     flag_between_boundaries,
+    infer_tool_calls_from_attributes,
+    merge_inferred_into_observed,
     merge_inferred_peers,
     synthesize_missing_peers,
 )
@@ -80,6 +83,12 @@ class ProtoInteraction:
     request_payload_hash: str | None
     response_payload_hash: str | None
     summary: str
+    # Intra-turn ordering tiebreak (ADR-0007 "Inferred interaction ordering").
+    # Interactions derived from one span share `started_at`; consumers sort by
+    # `(started_at, order)` so the spec order (input tools → LLM call/response
+    # → output tools; call before response) survives. Copied from
+    # `EntityEdge.order`.
+    order: int = 0
 
 
 @dataclasses.dataclass
@@ -158,14 +167,48 @@ def _scopes_for_entity(entity_node, span_by_id: dict[str, Span]) -> str:
     return ",".join(scopes)
 
 
+def _entity_display_name(
+    entity_node, natural_key: str, span_by_id: dict[str, Span]
+) -> str:
+    """Step 3.b naming — derive a display key for an entity from its subgraph.
+
+    Precedence (ADR-0007 Step 3.b, as scoped today):
+      1. **service.name** of any contributing span — the OTel resource service
+         that emitted the agentic spans (`dl-demo-travel-advisor`,
+         `patent-assistant`). This is the typed `Span.service_name` field, not
+         a raw attribute read, so it stays within the adapter-layer isolation
+         rule.
+      2. the model / tool / agent **name** parsed from the `natural_key`
+         suffix (`llm:gpt-4o` → `gpt-4o`, `tool:get_weather` → `get_weather`).
+      3. `"unknown"` when neither is available.
+
+    The spec's preferred identifier — a hostname — lives on non-agentic
+    (httpx/botocore) spans that are not part of the entity-forming subgraph at
+    this stage, so it is unreachable until the cross-scope enrichment stage
+    runs; service.name is the best identifier available now. See ADR-0007
+    "Deferred to later stages → Richer entity naming".
+    """
+    for sid in entity_node.span_ids:
+        s = span_by_id.get(sid)
+        if s is not None and s.service_name:
+            return s.service_name
+    if natural_key and natural_key != "unknown" and ":" in natural_key:
+        suffix = natural_key.split(":", 1)[1].strip()
+        if suffix:
+            return suffix
+    return "unknown"
+
+
 def _derive_entities(
     entity_graph: EntityGraph, span_by_id: dict[str, Span]
 ) -> list[ProtoEntity]:
     """Build ProtoEntity rows from the post-Step-3.b entity graph.
 
-    Step 3.c per ADR-0007: every entity gets the literal display_name
-    'unknown'. Richer naming (hostname / service.name / framework
-    attributes) is deferred to the cross-scope enrichment stage.
+    Step 3.b per ADR-0007: each entity is named from its subgraph —
+    service.name, else the natural-key suffix, else 'unknown' (see
+    `_entity_display_name`). Hostname-based naming is deferred to the
+    cross-scope enrichment stage (the host-bearing spans are not yet in the
+    entity subgraph).
 
     The classifier-derived natural key (`tool:<name>`, `llm:<model>`,
     `agent:<name>`) is propagated as-is so prototype consumers can tell
@@ -185,7 +228,7 @@ def _derive_entities(
         out.append(ProtoEntity(
             id=n.id,
             natural_key=natural_key,
-            display_name="unknown",
+            display_name=_entity_display_name(n, natural_key, span_by_id),
             detected_from=detected,
             scope_name=_scopes_for_entity(n, span_by_id),
             anchor_span_id=anchor,
@@ -236,12 +279,18 @@ def _derive_interactions(
         # extractor neither inspects raw attributes nor branches on the
         # natural-key prefix string.
         req_shape, resp_shape = payload_shapes_for_facts(extract_facts(anchor_span))
+        # Step 2.b case 3: a tool inferred from an LLM span's tool_calls carries
+        # its arguments on the entity edge (the anchor span is the LLM span, so
+        # deriving from its facts would yield the LLM completion, not the tool
+        # arguments). Prefer the edge-carried request payload when present.
+        if ee.req_payload is not None:
+            req_shape = ee.req_payload
         req_hash = _ensure(_proto_payload(req_shape))
         resp_hash = _ensure(_proto_payload(resp_shape))
 
-        # Step 3.c keeps display_name as "unknown" until richer naming
-        # lands; the natural_key carries the classifier label, which is
-        # the most informative thing we have.
+        # The summary uses the natural_key (the typed classifier label), which
+        # is the most distinguishing identifier; the display_name (Step 3.b) is
+        # the friendlier service/entity name surfaced separately on the entity.
         caller_label = caller.natural_key or caller.display_name
         callee_label = callee.natural_key or callee.display_name
         ix_id = str(uuid.uuid4())
@@ -255,6 +304,7 @@ def _derive_interactions(
             request_payload_hash=req_hash,
             response_payload_hash=resp_hash,
             summary=f"{caller_label} → {callee_label}",
+            order=ee.order,
         ))
 
         for span in edge_spans:
@@ -300,7 +350,18 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     # Step 2.a → 2.c — coloring on a working copy
     color_agentic(working, span_by_id)
     duplicate_combined_nodes(working)
+    # Step 2.b case 3 — infer tool nodes from LLM-output tool_calls. Must run
+    # AFTER color_agentic (so the new Gray edge isn't seen by the Black
+    # edge-promotion loop) and BEFORE synthesize_missing_peers (so the inferred
+    # tool-call/tool nodes already have their Black edges and aren't themselves
+    # stubbed, while the LLM span node — still edgeless — still gets its llm
+    # peer).
+    infer_tool_calls_from_attributes(working, span_by_id)
     synthesize_missing_peers(working, span_by_id)
+    # Step 2.c — fold each inferred peer into its observed twin (same entity,
+    # same trace, reachable over White+Gray adjacency). No-op when no observed
+    # twin exists, which is the common case; see merge_inferred_into_observed.
+    n_merged_2c = merge_inferred_into_observed(working, span_by_id)
     flag_between_boundaries(working)
     colored_snapshot = _snapshot(working)
 
@@ -310,9 +371,9 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     # Step 3.a phase 2 — combine inferred peers by identifying attribute
     n_merged = merge_inferred_peers(entity_graph)
 
-    # Step 3.b is applied during output derivation (entities get 'unknown'
-    # display; the underlying classifier label is kept on the EntityNode for
-    # the future enrichment stage).
+    # Step 3.b is applied during output derivation (entities are named from
+    # service.name / natural-key suffix; the classifier label is kept on the
+    # EntityNode for the future enrichment stage).
     entities = _derive_entities(entity_graph, span_by_id)
     entity_by_id = {e.id: e for e in entities}
     interactions, ix_spans, payloads, ix_notes = _derive_interactions(
@@ -329,7 +390,8 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     notes.append(
         f"colored graph: {n_gray} gray, {n_black} black "
         f"({n_dup} target duplicates, {n_inferred} inferred peers), "
-        f"{n_flag} between-boundary flags"
+        f"{n_flag} between-boundary flags "
+        f"(Step 2.c merged {n_merged_2c} inferred peers into observed twins)"
     )
     notes.append(
         f"entity graph: {len(entity_graph.nodes)} entities, {len(entity_graph.edges)} edges "
