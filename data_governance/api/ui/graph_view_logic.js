@@ -1,11 +1,13 @@
 /* P-interactions graph prototype — graph view. THROWAWAY.
  *
  * Adds a "Graphs (proto)" tab to the trace-tree page showing the three
- * intermediate stages produced by the new graph-based extractor:
- *   Step 1     — base graph (white nodes + traceparent edges)
- *   Step 2.a/b — colored graph (Gray/Black, additive edge colors,
- *                combined-span duplicates, between-boundary flags)
- *   Step 2.c   — entity graph (one node per connected component)
+ * stages produced by the graph-based extractor:
+ *   Step 1      — base graph (white nodes + traceparent edges)
+ *   Steps 2–4   — execution graph BEFORE the fuse: Gray/Black coloring,
+ *                 inferred nodes/edges, and the Step 4 node+edge merge
+ *                 (combined-span duplicates, inferred peers, between-boundary
+ *                 flags all visible here)
+ *   Step 5      — entity graph AFTER the fuse (one node per fused component)
  *
  * Loads from /proto/graphs/<trace_id>.
  */
@@ -359,7 +361,7 @@
       tag.style.color = '#888';
       tag.style.fontSize = '0.7rem';
       tag.textContent = '(dup)';
-      tag.title = 'duplicate node — Step 2.b combined source-and-target span';
+      tag.title = 'duplicate node — Step 2.a combined source-and-target span';
       el.appendChild(tag);
     }
 

@@ -151,7 +151,9 @@ class SpanFacts:
     (e.g. tool call arguments / result). None when not present.
     `tool_calls` — OUTPUT-side tool calls evidenced on an LLM span (ADR-0007
     Step 2.b case 3) — what the model asked to invoke *as a result of* this
-    call. Each dict is `{"name": str, "arguments": Any}`. Drives
+    call. Each dict is `{"name": str, "arguments": Any, "id": str | None}`
+    (the `id` is the framework's tool_call id, used by Step 4 edge merge to
+    recognise the same logical call replayed across spans). Drives
     `builder.infer_tool_calls_from_attributes`, which materialises an inferred
     tool node per call, ordered *after* the LLM interaction (ordering rule 4).
     `input_tool_calls` — INPUT-side tool calls
@@ -289,18 +291,25 @@ def _extract_tool_calls(span: Span, msgs_prefix: str) -> list[dict[str, Any]] | 
             continue
         rest = key[len(prefix):]  # "{i}.message.tool_calls.{k}.tool_call.function.<field>"
         parts = rest.split(".")
+        # Two shapes share the `{i}.message.tool_calls.{k}.tool_call.` stem:
+        #   …tool_call.function.name / .arguments   (7 parts)
+        #   …tool_call.id                           (6 parts) — the call id,
+        # used downstream to recognise the *same* logical call replayed across
+        # spans (Step 4 edge merge).
         if (
-            len(parts) != 7
+            len(parts) < 6
             or not parts[0].isdigit()
             or parts[1] != "message"
             or parts[2] != "tool_calls"
             or not parts[3].isdigit()
             or parts[4] != "tool_call"
-            or parts[5] != "function"
         ):
             continue
-        field = parts[6]
-        if field not in ("name", "arguments"):
+        if len(parts) == 6 and parts[5] == "id":
+            field = "id"
+        elif len(parts) == 7 and parts[5] == "function" and parts[6] in ("name", "arguments"):
+            field = parts[6]
+        else:
             continue
         found.setdefault((int(parts[0]), int(parts[3])), {})[field] = value
 
@@ -312,7 +321,7 @@ def _extract_tool_calls(span: Span, msgs_prefix: str) -> list[dict[str, Any]] | 
         name = entry.get("name")
         if not name:
             continue
-        calls.append({"name": name, "arguments": entry.get("arguments")})
+        calls.append({"name": name, "arguments": entry.get("arguments"), "id": entry.get("id")})
     return calls or None
 
 

@@ -1,30 +1,28 @@
 """Graph construction for the p_interactions prototype. THROWAWAY.
 
-Implements the algorithm described in docs/adr/0007-p-interactions-graph-algorithm.md:
+Implements the algorithm described in docs/adr/0007-p-interactions-graph-algorithm.md.
+The spec's five steps, and the functions that realise them:
 
-  Step 1     — build the base graph (one node per span; one White directed
-               parent→child edge per traceparent relationship).
-  Step 2.a   — agentic coloring (additive). Color openinference-scope nodes
-               Gray, add Gray edges between consecutive Gray nodes, color
-               boundary nodes Black, add Black edges between Black-to-Black
-               Gray edges. (a2a and mcp scopes are deferred — see ADR-0007.)
-  Step 2.b   — combined source-and-target spans: duplicate the Black node;
-               original keeps its parent/child chains and represents the
-               source; duplicate stands alone and represents the target. Add
-               request/response Black edges between them.
-  Step 2.c   — synthesize missing peers: any Black boundary node with no
-               Black edges represents a one-sided observation. Materialise an
-               inferred Black peer (carrying is_inferred=True) and add
-               bidirectional Black edges between them.
-  Step 3.a   — entity graph: connected components over Gray/Black nodes via
-               White and Gray edges (Black ignored) → entity nodes (phase 1);
-               Black edges → directed entity edges. Phase 2 then combines
-               inferred entity nodes whose source-span identifying attributes
-               match, so the same unobserved real peer called from N sources
-               is represented by one entity rather than N look-alikes.
-  Step 3.b   — name nodes: each entity is named from its subgraph
-               (service.name, else the natural-key suffix, else 'unknown';
-               hostname-based naming is deferred — see ADR-0007).
+  Step 1   — build the base graph: one node per span; one White directed
+             parent→child edge per traceparent relationship (`build_base_graph`).
+  Step 2.a — extend the (openinference) execution graph with inferred nodes and
+             edges: combined source-and-target spans duplicate the Black node
+             (`duplicate_combined_nodes`); LLM `tool_calls` attributes infer
+             tool-call/tool nodes (`infer_tool_calls_from_attributes`); one-sided
+             observations get an inferred peer (`synthesize_missing_peers`).
+             (a2a and mcp scopes are deferred — see ADR-0007.)
+  Step 3   — agentic semantics: 3.a colors openinference-scope nodes Gray and
+             adds Gray edges; 3.b colors boundary nodes Black and adds Black
+             edges between matched Source/Target call pairs (`color_agentic`).
+  Step 4   — node-and-edge merge on the execution-flow graph (`merge_step4`):
+             collapse same-entity nodes (inferred↔observed, inferred↔inferred,
+             observed↔observed) then same-interaction Black edges. Runs *before*
+             the fuse so the colored snapshot reflects every merge.
+  Step 5.a — fuse: connected White/Gray components → entity nodes; one entity
+             edge per Black edge (`build_entity_graph`). The Step-4 A3 forced
+             grouping fuses split-service components without touching nodes.
+  Step 5.b — name nodes from the subgraph (service.name, else the natural-key
+             suffix, else 'unknown'; hostname naming deferred). In the extractor.
 
 Edge coloring is additive: an edge can carry multiple colors at once. The
 underlying White connectivity is preserved when Gray/Black are added on top.
@@ -383,6 +381,11 @@ def infer_tool_calls_from_attributes(
         # tool identity lives on the tool node below.
         tool_call_node.attributes["_tool_call_name"] = name
         tool_call_node.attributes["_tool_call_arguments"] = call.get("arguments")
+        # The framework's tool_call id (when present) lets Step 4 edge merge
+        # recognise the *same* logical call replayed across spans (e.g. an
+        # output-side call later fed back on the input side).
+        if call.get("id") is not None:
+            tool_call_node.attributes["_tool_call_id"] = call["id"]
 
         tool_node = Node.make(span_id=node.span_id, scope=node.scope, color=BLACK)
         tool_node.is_boundary = True
@@ -611,57 +614,156 @@ def _white_gray_components(graph: BaseGraph) -> dict[str, int]:
     return comp
 
 
-def merge_inferred_into_observed(
-    graph: BaseGraph, spans_by_id: dict[str, Span]
-) -> int:
-    """ADR-0007 / spec Step 2.c — merge an **inferred** node into the
-    **observed** node representing the same entity, in the same trace, pooling
-    their edges and attributes.
+def _entity_components(graph: BaseGraph) -> dict[str, int]:
+    """Component id over **Gray/Black nodes only** (White nodes excluded),
+    using White+Gray edges — i.e. the *exact* grouping `build_entity_graph`
+    uses to form entities. Differs from `_white_gray_components`, which also
+    walks *through* White nodes: two agentic boundaries sharing only a White
+    (non-agentic) parent are one component there but **separate** entities at
+    the fuse. The Step-4 A3 observed↔observed merge keys on this so it sees the
+    same split the fuse will (e.g. raw-anthropic per-turn LLM-source spans
+    joined only by a White starlette parent)."""
+    coloured = {n.id for n in graph.nodes if n.color in (GRAY, BLACK)}
+    adj: dict[str, set[str]] = defaultdict(set)
+    for edge in graph.edges:
+        if BLACK in edge.colors:
+            continue
+        if edge.from_node_id in coloured and edge.to_node_id in coloured:
+            adj[edge.from_node_id].add(edge.to_node_id)
+            adj[edge.to_node_id].add(edge.from_node_id)
+    comp: dict[str, int] = {}
+    cid = 0
+    for nid in coloured:
+        if nid in comp:
+            continue
+        queue: deque[str] = deque([nid])
+        comp[nid] = cid
+        while queue:
+            cur = queue.popleft()
+            for nb in adj.get(cur, ()):
+                if nb not in comp:
+                    comp[nb] = cid
+                    queue.append(nb)
+        cid += 1
+    return comp
 
-    Heuristic (spec def. 8 — "can be based on heuristics"; spec lists two
-    signals: proximity in the trace, and similarity of attributes):
-      1. **Identifying attribute + kind.** An inferred node folds only into an
-         observed boundary node whose identifying key (the adapter's
-         `natural_key` / `peer_match_key`) AND entity-kind both match. Kind is
-         required so an inferred `tool:foo` never folds into an unrelated
-         observed boundary that happens to share a key string.
-      2. **Different White/Gray component.** The observed twin must live in a
-         *different* White+Gray connected component than the inferred node's
-         source — i.e. it is an *independent observation of the callee*, not
-         another caller of it. This is the decisive guard: in a single-agent
-         trace every same-key boundary is a sibling *caller* on the agent's own
-         Gray chain (same component) — none of those is a second observation of
-         the callee, so none qualifies and the pass is a no-op. An observed
-         callee that emitted its own spans sits in its own component (reached
-         only across the Black call edge), so it qualifies. This is exactly the
-         spec's "matched send/receive across the boundary represent the same
-         entity" case. If several qualify, the nearest component by Black-hop is
-         not distinguished here — the first is taken (prototype-simple).
 
-    On a match the inferred node's attributes and `label` are pooled onto the
-    observed node, its Black edges are rewired onto the observed node (self
-    loops dropped), and the inferred node is removed.
+_KIND_PREFIX = {_KIND_TOOL: "tool", "LLM": "llm", "AGENT": "agent"}
 
-    Complementary to the Step 3.a phase-2 combine (`merge_inferred_peers`): 2.c
-    removes an inferred node *in favour of an observed twin* (needs an
-    independent observation of the same callee); phase 2 fuses inferred
-    entities that share a key *when none was observed*. With no observed callee
-    in the trace (the common case), this pass is a no-op and every inferred peer
-    passes through to Step 3.a unchanged.
 
-    Returns the number of inferred nodes merged away.
+def _typed_callee_key(node: Node, spans_by_id: dict[str, Span]) -> str | None:
+    """Return the typed identity of a node that *is* an entity (a callee), or
+    None. The discriminator: the node's identifying key prefix must match its
+    own `kind` (a `tool:` key on a TOOL node, an `llm:` key on an LLM node).
+
+    This separates genuine callee peers / observed callees — `tool:get_weather`
+    on a TOOL node, `llm:…` on an LLM node — from the Gray-folded tool-call
+    SOURCE nodes, which carry the *caller's* `llm:` key on a TOOL-kind node
+    (prefix `llm` ≠ kind TOOL) and must NOT be treated as a tool entity. It also
+    excludes an observed LLM-SOURCE caller whose label is a bare service name
+    (no typed key of its own), so a caller is never fused into its callee.
     """
-    comp = _white_gray_components(graph)
+    key = node.peer_match_key or _peer_match_key(node, spans_by_id)
+    if not key:
+        return None
+    prefix = key.split(":", 1)[0]
+    if prefix != _KIND_PREFIX.get(node.kind or ""):
+        return None
+    return key
 
-    # The inferred peer references the same span as the observed boundary it
-    # stubs for; that boundary's node sits in the peer's "source" component.
-    # Map span_id → component of the observed (non-inferred) node for that span.
+
+def _rewire_edges(graph: BaseGraph, redirect: dict[str, str]) -> None:
+    """Rewrite every edge endpoint through `redirect`; drop self-loops."""
+    rewritten: list[Edge] = []
+    for edge in graph.edges:
+        edge.from_node_id = redirect.get(edge.from_node_id, edge.from_node_id)
+        edge.to_node_id = redirect.get(edge.to_node_id, edge.to_node_id)
+        if edge.from_node_id == edge.to_node_id:
+            continue
+        rewritten.append(edge)
+    graph.edges = rewritten
+
+
+def merge_step4(
+    graph: BaseGraph, spans_by_id: dict[str, Span]
+) -> tuple[int, int, dict[str, str]]:
+    """ADR-0007 / spec **Step 4** — node-and-edge merge on the execution-flow
+    (base) graph, before the Step 5 fuse.
+
+    One merge over all three provenance combinations the spec names
+    (inferred/inferred, inferred/observed, observed/observed); the spec also
+    prescribes the order — *"the process starts with merging nodes. Next the
+    process continues with merging edges."*
+
+    **Phase A — node merge.** Three sub-passes, each collapsing same-entity
+    nodes into one survivor (pooling attributes/label, rewiring incident edges,
+    dropping self-loops); an observed survivor is preferred over an inferred one:
+
+      A1 **inferred ↔ observed.** Fold an inferred peer into an *independently
+         observed* node for the same entity — matching typed key + kind, in a
+         *different* White+Gray component (so it is the observed callee, not a
+         sibling caller). No-op unless the callee emitted its own spans
+         (split-graph case).
+      A2 **inferred ↔ inferred (typed peers).** Converge typed callee peers
+         (`_typed_callee_key`) that share a key — the repeatedly-called,
+         never-observed peer. Survives A1.
+      A3 **observed ↔ observed (keyless service).** Collapse observed boundary
+         callers with no typed identity, keyed on `service.name` — the same
+         service split across White+Gray components (e.g. per-turn LLM-source
+         spans).
+
+    **Phase B — edge merge.** Collapse Black edges that represent the *same*
+    interaction: same connected entity (component) pair AND same logical call
+    (equal request arguments, else equal `_tool_call_id`). Time is *not*
+    required to match — a tool call replayed onto a later span's input is the
+    same logical call even though the two spans don't overlap. Genuinely
+    distinct calls differ in arguments, so they are preserved (the canonical
+    trace's repeated tool/LLM calls all have distinct arguments). The survivor
+    keeps the lower `order` (preserving an input-replay's negative band) and
+    pools both edges' colors.
+
+    Returns `(nodes_merged, edges_merged, forced_groups)`, where `forced_groups`
+    maps node id → shared group key for the A3 observed↔observed split-service
+    case; `build_entity_graph` fuses nodes sharing a group into one entity.
+    """
+    nodes_merged = 0
+
+    def _collapse(groups: dict, *, observed_survivor: bool) -> None:
+        nonlocal nodes_merged
+        redirect: dict[str, str] = {}
+        drop_ids: set[str] = set()
+        for members in groups.values():
+            if len(members) <= 1:
+                continue
+            survivor = (
+                next((m for m in members if not m.is_inferred), members[0])
+                if observed_survivor else members[0]
+            )
+            for m in members:
+                if m.id == survivor.id:
+                    continue
+                for k, v in m.attributes.items():
+                    survivor.attributes.setdefault(k, v)
+                if m.label and not survivor.label:
+                    survivor.label = m.label
+                if m.peer_match_key and not survivor.peer_match_key:
+                    survivor.peer_match_key = m.peer_match_key
+                redirect[m.id] = survivor.id
+                drop_ids.add(m.id)
+        if drop_ids:
+            _rewire_edges(graph, redirect)
+            graph.nodes = [n for n in graph.nodes if n.id not in drop_ids]
+            nodes_merged += len(drop_ids)
+
+    # --- Phase A1: inferred ↔ observed (fold peer into observed twin) -----
+    # Requires the observed twin to live in a *different* White+Gray component
+    # than the inferred peer's source (an independent observation of the callee,
+    # not a sibling caller on the same chain).
+    comp = _white_gray_components(graph)
     source_comp_for_span: dict[str, int] = {}
     for node in graph.nodes:
         if not node.is_inferred and node.span_id:
             source_comp_for_span.setdefault(node.span_id, comp[node.id])
-
-    # Observed boundary nodes, indexed by (identifying key, kind).
     observed_by_key: dict[tuple[str, str | None], list[Node]] = defaultdict(list)
     for node in graph.nodes:
         if node.is_inferred or node.color != BLACK or not node.is_boundary:
@@ -669,57 +771,145 @@ def merge_inferred_into_observed(
         key = _peer_match_key(node, spans_by_id) or node.label
         if key:
             observed_by_key[(key, node.kind)].append(node)
-
-    if not observed_by_key:
-        return 0
-
-    redirect: dict[str, str] = {}
-    drop_ids: set[str] = set()
-    for node in graph.nodes:
-        if not node.is_inferred:
-            continue
-        key = node.peer_match_key or node.label
-        candidates = observed_by_key.get((key, node.kind)) if key else None
-        if not candidates:
-            continue
-        # The peer's source component (the caller it stubs for). An observed
-        # twin in that same component is a sibling caller, not the callee.
-        src_comp = source_comp_for_span.get(node.span_id, comp.get(node.id))
-        best: Node | None = None
-        for obs in candidates:
-            if obs.id in drop_ids:
+    a1_redirect: dict[str, str] = {}
+    a1_drop: set[str] = set()
+    if observed_by_key:
+        for node in graph.nodes:
+            if not node.is_inferred:
                 continue
-            if comp[obs.id] == src_comp:
-                continue  # same component → a caller, not the observed callee
-            best = obs
-            break
-        if best is None:
+            key = node.peer_match_key or node.label
+            candidates = observed_by_key.get((key, node.kind)) if key else None
+            if not candidates:
+                continue
+            src_comp = source_comp_for_span.get(node.span_id, comp.get(node.id))
+            best = next(
+                (o for o in candidates if o.id not in a1_drop and comp[o.id] != src_comp),
+                None,
+            )
+            if best is None:
+                continue
+            for k, v in node.attributes.items():
+                best.attributes.setdefault(k, v)
+            if node.label and not best.label:
+                best.label = node.label
+            a1_redirect[node.id] = best.id
+            a1_drop.add(node.id)
+    if a1_drop:
+        _rewire_edges(graph, a1_redirect)
+        graph.nodes = [n for n in graph.nodes if n.id not in a1_drop]
+        nodes_merged += len(a1_drop)
+
+    # --- Phase A2: inferred ↔ inferred — typed callee peers by key --------
+    # TARGET role only: a peer that *is* the callee. A SOURCE caller's
+    # natural_key describes the entity it *calls* (e.g. the agent's `llm:` key),
+    # so grouping SOURCE nodes by key would fuse a caller into its callee.
+    typed_groups: dict[tuple[str, str], list[Node]] = defaultdict(list)
+    for node in graph.nodes:
+        if not node.is_boundary or node.color != BLACK or node.role != _ROLE_TARGET:
             continue
-        # Pool attributes + label onto the observed survivor.
-        for k, v in node.attributes.items():
-            best.attributes.setdefault(k, v)
-        if node.label and not best.label:
-            best.label = node.label
-        redirect[node.id] = best.id
-        drop_ids.add(node.id)
+        key = _typed_callee_key(node, spans_by_id)
+        if key:
+            typed_groups[(key, node.kind)].append(node)
+    _collapse(typed_groups, observed_survivor=True)
 
-    if not drop_ids:
-        return 0
+    # --- Phase A3: observed ↔ observed — keyless service split across -----
+    # White+Gray components. This is the one merge expressed as a *fuse-time
+    # component grouping* rather than a node merge: node-merging the boundaries
+    # would destroy the per-call edge anchors (each call site's boundary span),
+    # so instead we record which White+Gray components belong to the same
+    # service and hand that grouping to `build_entity_graph`, which fuses them
+    # into one entity while leaving every node and edge intact. Only same-service
+    # boundaries in *different* components participate (same-component siblings
+    # are already one entity); a typed boundary never participates.
+    comp_a3 = _entity_components(graph)
+    comps_by_service: dict[str, set[int]] = defaultdict(set)
+    for node in graph.nodes:
+        if node.is_inferred or not node.is_boundary or node.color != BLACK:
+            continue
+        label = node.label or ""
+        if node.peer_match_key or label.startswith(("tool:", "llm:", "agent:")):
+            continue  # typed identity → never merged by service name
+        span = spans_by_id.get(node.span_id)
+        svc = span.service_name if span is not None else None
+        if svc:
+            comps_by_service[svc].add(comp_a3[node.id])
+    # forced_groups: node_id → shared group key, for services spanning >1
+    # component. build_entity_graph treats nodes sharing a group as one entity.
+    forced_groups: dict[str, str] = {}
+    for svc, cids in comps_by_service.items():
+        if len(cids) <= 1:
+            continue
+        for node in graph.nodes:
+            if comp_a3.get(node.id) in cids:
+                forced_groups[node.id] = f"svc:{svc}"
 
-    # Rewire every edge referencing a merged inferred node onto its survivor;
-    # drop self-loops created by the rewrite.
-    rewritten: list[Edge] = []
+    # --- Phase B: edge merge ----------------------------------------------
+    # Two Black edges are the same interaction when they connect the same two
+    # *entities* (= White+Gray components, since the fuse will collapse each
+    # component to one entity) AND describe the same logical call. The call's
+    # identity lives on the tool-call node (its `_tool_call_id`, else its
+    # `_tool_call_arguments`); both the call edge (tool-call → tool) and its
+    # response (tool → tool-call) touch that node, so we read the signature off
+    # whichever endpoint carries it and key direction-sensitively so a call
+    # merges only with calls and a response only with responses.
+    nodes_by_id = {n.id: n for n in graph.nodes}
+    comp = _white_gray_components(graph)
+
+    def _call_identity(node: Node | None) -> tuple | None:
+        # Same logical call ⇔ same request arguments (the replayed call carries
+        # identical args whether it appears on a span's output or a later span's
+        # input). Args are the primary key; the framework tool_call id is only a
+        # fallback when arguments are absent. Keying on the id *instead of* args
+        # would split a replay (output side has no id, input side carries one)
+        # into two interactions — exactly what Step 4 should collapse.
+        if node is None:
+            return None
+        args = node.attributes.get("_tool_call_arguments")
+        if args is not None:
+            return ("args", repr(args))
+        tcid = node.attributes.get("_tool_call_id")
+        if tcid is not None:
+            return ("id", tcid)
+        return None
+
+    def _edge_sig(edge: Edge) -> tuple | None:
+        if BLACK not in edge.colors:
+            return None
+        a = nodes_by_id.get(edge.from_node_id)
+        b = nodes_by_id.get(edge.to_node_id)
+        # The tool-call node is the SOURCE-role endpoint; the call edge points
+        # away from it (call), the response edge points toward it (response).
+        if a is not None and a.role == _ROLE_SOURCE:
+            ident, direction = _call_identity(a), "call"
+        elif b is not None and b.role == _ROLE_SOURCE:
+            ident, direction = _call_identity(b), "resp"
+        else:
+            return None
+        if ident is None:
+            return None
+        return (comp[edge.from_node_id], comp[edge.to_node_id], direction, ident)
+
+    seen: dict[tuple, Edge] = {}
+    kept: list[Edge] = []
+    edges_merged = 0
     for edge in graph.edges:
-        src = redirect.get(edge.from_node_id, edge.from_node_id)
-        dst = redirect.get(edge.to_node_id, edge.to_node_id)
-        if src == dst:
+        sig = _edge_sig(edge)
+        if sig is None:
+            kept.append(edge)
             continue
-        edge.from_node_id = src
-        edge.to_node_id = dst
-        rewritten.append(edge)
-    graph.edges = rewritten
-    graph.nodes = [n for n in graph.nodes if n.id not in drop_ids]
-    return len(drop_ids)
+        first = seen.get(sig)
+        if first is None:
+            seen[sig] = edge
+            kept.append(edge)
+            continue
+        # Same logical call already kept — fold this edge into it (keep the
+        # earliest order band so an input-replay's negative ordering survives).
+        first.order = min(first.order, edge.order)
+        first.colors |= edge.colors
+        edges_merged += 1
+    graph.edges = kept
+
+    return nodes_merged, edges_merged, forced_groups
 
 
 # ---------------------------------------------------------------------------
@@ -727,11 +917,21 @@ def merge_inferred_into_observed(
 # ---------------------------------------------------------------------------
 
 
-def build_entity_graph(graph: BaseGraph) -> EntityGraph:
-    """Compute connected components over Gray/Black nodes using White and
-    Gray edges only (Black edges ignored). Each component becomes one entity
-    node, with attributes pooled from every contributing span. Black edges
-    crossing entity boundaries become directed entity edges."""
+def build_entity_graph(
+    graph: BaseGraph, forced_groups: dict[str, str] | None = None
+) -> EntityGraph:
+    """Step 5 fuse — compute connected components over Gray/Black nodes using
+    White and Gray edges only (Black edges ignored). Each component becomes one
+    entity node, with attributes pooled from every contributing span. Black
+    edges crossing entity boundaries become directed entity edges (one entity
+    edge per Black edge — no dedup; Step 4 already merged same interactions).
+
+    `forced_groups` (node id → group key, from the Step 4 A3 observed↔observed
+    pass) fuses nodes sharing a group key into the same entity even when no
+    White/Gray edge connects them — the split-service case. This is done at the
+    fuse rather than by a node merge so every node keeps its own span (the
+    per-call edge anchor) intact."""
+    forced_groups = forced_groups or {}
     entity_graph = EntityGraph()
     nodes_by_id = {n.id: n for n in graph.nodes}
 
@@ -746,6 +946,16 @@ def build_entity_graph(graph: BaseGraph) -> EntityGraph:
             continue
         adj[edge.from_node_id].append(edge.to_node_id)
         adj[edge.to_node_id].append(edge.from_node_id)
+
+    # Step 4 A3: link all nodes sharing a forced group key, so the BFS below
+    # fuses their (otherwise disconnected) White+Gray components into one entity.
+    group_members: dict[str, list[str]] = defaultdict(list)
+    for nid, gkey in forced_groups.items():
+        group_members[gkey].append(nid)
+    for members in group_members.values():
+        for other in members[1:]:
+            adj[members[0]].append(other)
+            adj[other].append(members[0])
 
     # Restrict to Gray/Black nodes — White nodes contribute no entity at this
     # stage (non-agentic spans are enrichment-only later).
@@ -780,10 +990,12 @@ def build_entity_graph(graph: BaseGraph) -> EntityGraph:
         for nid in component:
             node_to_entity[nid] = entity.id
 
-    # Each Black edge whose endpoints fall in different entities becomes an
-    # entity edge. Same-entity Black edges are dropped (shouldn't happen at
-    # this point, but guarded for safety).
-    edge_index: dict[tuple[str, str], EntityEdge] = {}
+    # Each Black edge whose endpoints fall in different entities becomes one
+    # entity edge — **one EntityEdge per Black edge, no dedup by endpoint
+    # pair**. Same-interaction collapsing already happened in Step 4 (Phase B);
+    # the fuse is purely structural, so distinct calls between the same two
+    # entities (e.g. two separate LLM turns) survive as separate interactions.
+    # Same-entity Black edges are dropped (shouldn't happen, guarded for safety).
     for edge in graph.edges:
         if BLACK not in edge.colors:
             continue
@@ -791,22 +1003,19 @@ def build_entity_graph(graph: BaseGraph) -> EntityGraph:
         dst_eid = node_to_entity.get(edge.to_node_id)
         if src_eid is None or dst_eid is None or src_eid == dst_eid:
             continue
-        key = (src_eid, dst_eid)
-        ent_edge = edge_index.get(key)
-        if ent_edge is None:
-            # Carry the originating Black edge's intra-turn order onto the
-            # entity edge (ADR-0007 "Inferred interaction ordering"). Pre-merge
-            # entity pairs are distinct per call site, so each EntityEdge owns
-            # one order; the Step 3.a phase-2 rewrite preserves it.
-            ent_edge = EntityEdge.make(src_eid, dst_eid, order=edge.order)
-            edge_index[key] = ent_edge
-            entity_graph.edges.append(ent_edge)
-        # Pool span_ids from the Black edge's endpoint span(s).
+        # Carry the originating Black edge's intra-turn order onto the entity
+        # edge (ADR-0007 "Inferred interaction ordering").
+        ent_edge = EntityEdge.make(src_eid, dst_eid, order=edge.order)
+        entity_graph.edges.append(ent_edge)
+        # Pool span_ids from the Black edge's endpoint span(s). The *source*
+        # endpoint's span is the anchor (listed first); the callee's own span
+        # (when it emitted one, e.g. an openai_agents tool span) follows so its
+        # error/payload signal is still available to the extractor.
         for endpoint_id in (edge.from_node_id, edge.to_node_id):
             n = nodes_by_id.get(endpoint_id)
             if n and n.span_id and n.span_id not in ent_edge.span_ids:
                 ent_edge.span_ids.append(n.span_id)
-        # Step 2.b case 3: a tool-call node (the Black edge's source) carries
+        # Step 2.a case 3: a tool-call node (the Black edge's source) carries
         # the inferred call's arguments. Surface them as the LLM→tool
         # interaction's request payload (otherwise the extractor would derive
         # the LLM completion off the shared span — see EntityEdge.req_payload).
@@ -823,201 +1032,3 @@ def build_entity_graph(graph: BaseGraph) -> EntityGraph:
 
     return entity_graph
 
-
-# ---------------------------------------------------------------------------
-# Step 3.a phase 2 — Combine inferred entity nodes by identifying attribute
-# ---------------------------------------------------------------------------
-
-
-def merge_inferred_peers(entity_graph: EntityGraph) -> int:
-    """Combine inferred entity nodes that stub the same unobserved real peer.
-
-    Two inferred entities are considered identical iff they carry the same
-    `peer_match_key` (set in Step 2.c from the originating boundary's
-    classifier label). When N inferred entities share a key, all but one
-    are dropped; every entity edge that referenced a dropped peer is
-    rewritten to point at the surviving peer.
-
-    All edges and interactions are preserved across the combine (ADR-0007
-    Step 3.a phase 2): every entity edge incident on any combined peer
-    survives as a distinct edge on the surviving entity — no dedup by endpoint
-    pair, no collapsing. Each pre-combine edge represents a distinct observed
-    call site, so the count and provenance of calls to the unobserved peer
-    survives. Self-loops created by the rewrite (would only arise if two
-    inferred peers with the same key were directly connected — not produced by
-    Step 2.c today) are still dropped.
-
-    Observed entities are not combined here — only `entity.inferred == True`
-    nodes participate.
-
-    Returns the number of entities removed.
-    """
-    # Group inferred entities by peer_match_key; entities without a key
-    # cannot be matched and remain distinct.
-    by_key: dict[str, list[EntityNode]] = defaultdict(list)
-    for node in entity_graph.nodes:
-        if not node.inferred or not node.peer_match_key:
-            continue
-        by_key[node.peer_match_key].append(node)
-
-    if not any(len(group) > 1 for group in by_key.values()):
-        return 0
-
-    # For each duplicate group, pick the first as the survivor and map all
-    # others' ids to it.
-    redirect: dict[str, str] = {}
-    drop_ids: set[str] = set()
-    for group in by_key.values():
-        if len(group) <= 1:
-            continue
-        survivor = group[0]
-        for dup in group[1:]:
-            redirect[dup.id] = survivor.id
-            drop_ids.add(dup.id)
-            # Pool span_ids from the merged peer onto the survivor so its
-            # evidence list reflects every observed source that pointed at
-            # it.
-            for sid in dup.span_ids:
-                if sid not in survivor.span_ids:
-                    survivor.span_ids.append(sid)
-
-    if not drop_ids:
-        return 0
-
-    # Rewrite edges in place; preserve every edge as a distinct edge per
-    # ADR-0007 Step 3.a phase 2. Self-loops (would only arise if two inferred
-    # peers with the same key were connected directly) are dropped.
-    rewritten: list[EntityEdge] = []
-    for edge in entity_graph.edges:
-        src = redirect.get(edge.from_node_id, edge.from_node_id)
-        dst = redirect.get(edge.to_node_id, edge.to_node_id)
-        if src == dst:
-            continue
-        edge.from_node_id = src
-        edge.to_node_id = dst
-        rewritten.append(edge)
-
-    entity_graph.edges = rewritten
-    entity_graph.nodes = [n for n in entity_graph.nodes if n.id not in drop_ids]
-    return len(drop_ids)
-
-
-# ---------------------------------------------------------------------------
-# Step 3.a — Combine observed entity nodes representing the same entity
-# ---------------------------------------------------------------------------
-
-
-def merge_same_entity(
-    entity_graph: EntityGraph, span_by_id: dict[str, Span]
-) -> int:
-    """ADR-0007 / spec Step 3.a — combine **observed** entity nodes that
-    represent the same entity but were split into separate White+Gray
-    components.
-
-    The motivating case: raw-anthropic instrumentation emits one
-    `messages.create` LLM-SOURCE boundary per turn, and consecutive turns are
-    joined only by a White (non-agentic, e.g. starlette) parent — no Gray chain
-    between them — so Step 3.a phase 1 forms one entity per turn even though
-    they are the *same* service process. The spec's Step 3.a combine
-    ("Combine multiple entity graph nodes representing the same entity … based
-    on an identifying attribute") applies, but `merge_inferred_peers` skips
-    these: they are observed (`inferred=False`) and keyless (`peer_match_key`
-    is None), since a SOURCE caller's identity is the service, not a typed
-    callee `natural_key`.
-
-    Identifying attribute: **service.name** (derived from the entity's pooled
-    spans — same precedence as `extractor._entity_display_name`). The ADR's
-    "service.name would over-merge entities behind a shared proxy" hazard is
-    neutralised by a **keyless** guard: an entity already identified by a typed
-    natural-key is never merged here. "Typed" means either `peer_match_key` is
-    set OR the entity `label` carries a typed prefix (`tool:` / `llm:` /
-    `agent:`). The label check matters because an *observed* boundary node
-    carries its typed identity on `label` but never on `peer_match_key` (that
-    field is populated only for inferred peers) — e.g. an observed
-    `llm:claude-3-7-sonnet` entity that happens to share the agent's
-    `service.name` must NOT fold into the agent. Only entities whose identity
-    is a bare service name (no typed prefix) combine, grouped by `service.name`
-    alone, so two genuinely-distinct tools/LLMs (each typed) sharing a service
-    are never collapsed.
-
-    Merge rules (mirror `merge_inferred_peers`): pick the first as survivor,
-    pool span_ids/attributes, OR the `contains_*` markers, rewrite every
-    incident entity edge onto the survivor and drop self-loops. Every edge is
-    preserved as distinct (no dedup by endpoint pair), so interaction counts
-    survive. `inferred` stays False and `peer_match_key` stays None on the
-    survivor.
-
-    Returns the number of entities removed.
-    """
-    def _service_of(entity: EntityNode) -> str | None:
-        for sid in entity.span_ids:
-            s = span_by_id.get(sid)
-            if s is not None and s.service_name:
-                return s.service_name
-        return None
-
-    def _is_typed(entity: EntityNode) -> bool:
-        # Typed identity → never merge by service name. `peer_match_key` carries
-        # it for inferred peers; an observed boundary carries it on `label`
-        # (e.g. `llm:claude-3-7-sonnet`), so check both.
-        if entity.peer_match_key:
-            return True
-        label = entity.label or ""
-        return label.startswith(("tool:", "llm:", "agent:"))
-
-    # Group by service.name alone. Two genuinely-distinct services have
-    # distinct names, so service.name is sufficient; kind is deliberately NOT
-    # in the key — a single service process legitimately contains mixed-kind
-    # boundaries (an observed LLM-source span plus its folded-in inferred
-    # tool-call nodes), so an entity's pooled coarse kind is not a stable
-    # discriminator between two components of the same service.
-    by_key: dict[str, list[EntityNode]] = defaultdict(list)
-    for node in entity_graph.nodes:
-        if node.inferred:
-            continue  # inferred↔inferred is owned by merge_inferred_peers
-        if _is_typed(node):
-            continue  # typed entity → never merged by service name
-        if not (node.contains_black and node.contains_boundary):
-            continue  # must be an observed boundary caller
-        svc = _service_of(node)
-        if not svc:
-            continue
-        by_key[svc].append(node)
-
-    if not any(len(group) > 1 for group in by_key.values()):
-        return 0
-
-    redirect: dict[str, str] = {}
-    drop_ids: set[str] = set()
-    for group in by_key.values():
-        if len(group) <= 1:
-            continue
-        survivor = group[0]
-        for dup in group[1:]:
-            redirect[dup.id] = survivor.id
-            drop_ids.add(dup.id)
-            for sid in dup.span_ids:
-                if sid not in survivor.span_ids:
-                    survivor.span_ids.append(sid)
-            for k, v in dup.attributes.items():
-                survivor.attributes.setdefault(k, v)
-            survivor.contains_boundary = survivor.contains_boundary or dup.contains_boundary
-            survivor.contains_black = survivor.contains_black or dup.contains_black
-            survivor.contains_gray = survivor.contains_gray or dup.contains_gray
-            # inferred stays False; peer_match_key stays None.
-
-    if not drop_ids:
-        return 0
-
-    rewritten: list[EntityEdge] = []
-    for edge in entity_graph.edges:
-        src = redirect.get(edge.from_node_id, edge.from_node_id)
-        dst = redirect.get(edge.to_node_id, edge.to_node_id)
-        if src == dst:
-            continue
-        edge.from_node_id = src
-        edge.to_node_id = dst
-        rewritten.append(edge)
-    entity_graph.edges = rewritten
-    entity_graph.nodes = [n for n in entity_graph.nodes if n.id not in drop_ids]
-    return len(drop_ids)

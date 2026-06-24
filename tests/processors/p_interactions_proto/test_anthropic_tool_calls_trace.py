@@ -115,23 +115,26 @@ def test_tool_request_payload_is_arguments():
 
 def test_input_side_tool_call_counted_and_ordered():
     """`database` is called on the OUTPUT side of two spans and replayed on the
-    INPUT side of span 3 (a prior turn fed back). Per the human spec the input
-    replay IS inferred — three call sites total — ordered ahead of span 3's LLM
-    interaction (ordering rule 3). All three still converge to ONE
-    `tool:database` entity (Step 3.a phase 2 combines by key)."""
+    INPUT side of span 3 (a prior turn fed back). The input replay carries the
+    *same* `tool_call.id` (`toolu_prev`) and arguments as the span-2 output
+    call — it is the **same logical call** — so Step 4 edge merge collapses the
+    two into one interaction (the replay still sets the ordering, ahead of the
+    LLM). With the distinct `refine` output call, that leaves **two** forward
+    `database` interactions, all converging to ONE `tool:database` entity."""
     result = extract(_spans())
 
-    # One entity despite three call sites.
+    # One entity despite the (now merged) call sites.
     db_entities = [e for e in result.entities if e.natural_key == "tool:database"]
     assert len(db_entities) == 1
 
-    # Three agent→tool:database calls now (two output + one input replay).
+    # Two agent→tool:database calls: the `search` call (output + its input
+    # replay collapsed by Step 4 edge merge) and the distinct `refine` call.
     db_forward = [
         ix for ix in result.interactions
         if _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
         and _ent(result, ix.callee_entity_id).natural_key == "tool:database"
     ]
-    assert len(db_forward) == 3
+    assert len(db_forward) == 2
 
     # The input-side replay carries a negative order band, so it sorts (by
     # (started_at, order)) ahead of the LLM call that shares its span. Find the

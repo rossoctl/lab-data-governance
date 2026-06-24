@@ -11,12 +11,12 @@ Scratch tables written:
     proto_base_nodes, proto_base_edges
         — base graph after Step 1 (white nodes + traceparent edges)
     proto_colored_nodes, proto_colored_edges
-        — colored base graph after Step 2.a / 2.b
-          (Gray/Black nodes, additive edge colors, combined-span duplicates,
-          between-boundary flag annotations)
+        — execution graph BEFORE the fuse (Steps 2–4): Gray/Black nodes,
+          additive edge colors, inferred nodes/edges, combined-span duplicates,
+          the Step 4 node+edge merge, and between-boundary flag annotations
     proto_entity_nodes, proto_entity_edges
-        — entity graph after Step 3 (components, inferred↔inferred and
-          observed↔observed same-entity combines, naming)
+        — entity graph AFTER the fuse (Step 5): one node per fused component,
+          named per Step 5.b
 
   Final output (same shape as linear-pass prototype for comparison):
     proto_entities
@@ -78,7 +78,7 @@ CREATE TABLE proto_base_edges (
   trace_id     text NOT NULL
 );
 
--- Step 2.a / 2.b colored base graph
+-- Steps 2–4 colored execution graph (before fuse)
 CREATE TABLE proto_colored_nodes (
   id                  text PRIMARY KEY,
   span_id             text NOT NULL,
@@ -86,7 +86,7 @@ CREATE TABLE proto_colored_nodes (
   color               text NOT NULL,            -- white | gray | black
   is_boundary         boolean NOT NULL DEFAULT false,
   is_target_duplicate boolean NOT NULL DEFAULT false,
-  -- Set by Step 2.b/2.c on the materialised inferred (e.g. unobserved-peer)
+  -- Set by Step 2.a / Step 4 on the materialised inferred (e.g. unobserved-peer)
   -- node. Per ADR-0007: this column is the sole sanctioned signal for
   -- "inferred node"; do not parse the `label` column for that purpose.
   is_inferred         boolean NOT NULL DEFAULT false,
@@ -105,7 +105,7 @@ CREATE TABLE proto_colored_edges (
   trace_id     text NOT NULL
 );
 
--- Step 3 entity graph
+-- Step 5 entity graph (after fuse)
 CREATE TABLE proto_entity_nodes (
   id                 text PRIMARY KEY,
   label              text NULL,
@@ -113,7 +113,7 @@ CREATE TABLE proto_entity_nodes (
   contains_boundary  boolean NOT NULL DEFAULT false,
   contains_black     boolean NOT NULL DEFAULT false,
   contains_gray      boolean NOT NULL DEFAULT false,
-  -- Per ADR-0007 Step 3.a: true iff every absorbed Black node was inferred.
+  -- Per ADR-0007 Step 5.a: true iff every absorbed Black node was inferred.
   -- This column is the sole sanctioned signal for "inferred entity"; do not
   -- parse the `label` column for that purpose.
   inferred           boolean NOT NULL DEFAULT false,
@@ -234,7 +234,7 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
                 (edge.id, edge.from_node_id, edge.to_node_id, trace_id),
             )
 
-        # --- Step 2.a / 2.b colored graph ---
+        # --- Steps 2–4 colored execution graph (before fuse) ---
         for node in result.colored_graph.nodes:
             txn.execute(
                 "INSERT INTO proto_colored_nodes("
@@ -256,7 +256,7 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
                  colors_csv, edge.kind, trace_id),
             )
 
-        # --- Step 3 entity graph ---
+        # --- Step 5 entity graph (after fuse) ---
         for node in result.entity_graph.nodes:
             scopes = _scopes_for_entity(node, span_by_id)
             txn.execute(
