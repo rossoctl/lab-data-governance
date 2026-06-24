@@ -127,7 +127,7 @@ Additional hints can be derived from:
 - same/similar time 
 - whether the node or edge are inferred or observed in conjunction with the source spans 
 
-### Step 5 - agentic entity Graph
+### Step 5 - agentic entity Graph (fuse)
 based on this scope we will build the agentic graph. 
 
 In this step we are going to create a new graph representing agentic entities and interactions
@@ -145,7 +145,7 @@ The black edges represent connections between entities
 First we are going to create subgraphs of execution graph nodes by simply ignoring the black edges. 
 The subgraph can contain inferred nodes, observed nodes Or both. 
 
-Next, each sub graph represented by connected Gray and black nodes will become a new node in the entity graph - Effectively merging all nodes from the Execution flow subgraph into a single entity node.
+Next, each sub graph represented by connected Gray and black nodes will become a new node in the entity graph - Effectively fusing all nodes from the Execution flow subgraph into a single entity node.
 
 Note that the black edges (both observed and inferred) should be maintained, meaning, the nodes (entities) the in the new graph are connected with new edges matchin the original black edges 
 
