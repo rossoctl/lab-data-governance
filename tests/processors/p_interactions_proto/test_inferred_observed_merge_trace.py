@@ -69,12 +69,15 @@ def test_inferred_tool_folds_into_observed_twin():
     assert wt and wt[0].inferred is False
 
 
-def test_2c_merge_recorded_in_notes():
-    """The pass reports exactly one inferred peer merged into an observed
-    twin."""
+def test_step4_merge_recorded_in_notes():
+    """The unified Step 4 pass records its node/edge merge counts in the notes;
+    the inferred↔observed fold of the `get_weather` peer is counted among the
+    merged nodes (>= 1)."""
     result = extract(_spans())
-    note = next(n for n in result.notes if "Step 2.c merged" in n)
-    assert "Step 2.c merged 1 inferred peers into observed twins" in note
+    note = next(n for n in result.notes if "Step 4 merged" in n)
+    import re
+    m = re.search(r"Step 4 merged (\d+) same-entity nodes", note)
+    assert m and int(m.group(1)) >= 1
 
 
 # --- F6b input side (rule 3) ----------------------------------------------

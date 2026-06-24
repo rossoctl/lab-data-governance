@@ -338,9 +338,10 @@ async def _proto_graphs_handler(request: Request) -> Response:
 
     Returns three graph stages from the new algorithm:
       - base:    Step 1 white base graph (one node per span; traceparent edges)
-      - colored: Step 2.a / 2.b colored base graph (Gray/Black, additive edge
-                 colors, combined-span duplicates, between-boundary flags)
-      - entity:  Step 2.c entity graph (one node per connected component)
+      - colored: Steps 2–4 colored execution graph, before the fuse (Gray/Black,
+                 additive edge colors, inferred nodes/edges, combined-span
+                 duplicates, the Step 4 node+edge merge, between-boundary flags)
+      - entity:  Step 5 entity graph, after the fuse (one node per fused component)
     """
     trace_id = request.path_params.get("trace_id")
     if not trace_id:
@@ -393,7 +394,7 @@ async def _proto_graphs_handler(request: Request) -> Response:
                 for r in base_edge_rows
             ]
 
-            # --- Step 2 colored graph ---
+            # --- Steps 2–4 colored execution graph (before fuse) ---
             colored_node_rows = tx.fetch_all(
                 "SELECT id, span_id, scope, color, is_boundary, is_target_duplicate, "
                 "       is_inferred, flagged, label, attributes "
@@ -430,7 +431,7 @@ async def _proto_graphs_handler(request: Request) -> Response:
                 for r in colored_edge_rows
             ]
 
-            # --- Step 3 entity graph ---
+            # --- Step 5 entity graph (after fuse) ---
             entity_node_rows = tx.fetch_all(
                 "SELECT n.id, n.label, n.attributes, n.contains_boundary, "
                 "       n.contains_black, n.contains_gray, n.inferred, n.scopes, "

@@ -40,9 +40,7 @@ from .builder import (
     duplicate_combined_nodes,
     flag_between_boundaries,
     infer_tool_calls_from_attributes,
-    merge_inferred_into_observed,
-    merge_inferred_peers,
-    merge_same_entity,
+    merge_step4,
     synthesize_missing_peers,
 )
 from .graph import BaseGraph, EntityGraph
@@ -268,7 +266,11 @@ def _derive_interactions(
             notes.append(f"SKIP edge {caller.display_name}→{callee.display_name}: no evidence spans")
             continue
 
-        anchor_span = min(edge_spans, key=lambda s: s.started_at)
+        # The anchor is the edge's *source* span (stamped first on the edge by
+        # build_entity_graph) — the span that originates this specific call, so
+        # each call site keeps its own payload even when the callee peer was
+        # merged across call sites in Step 4. Falls back to the earliest span.
+        anchor_span = edge_spans[0]
         started_at = min(s.started_at for s in edge_spans)
         ended_at = max((s.ended_at for s in edge_spans if s.ended_at), default=None)
         error = (
@@ -308,13 +310,15 @@ def _derive_interactions(
             order=ee.order,
         ))
 
-        for span in edge_spans:
-            ix_spans.append(ProtoInteractionSpan(
-                interaction_id=ix_id,
-                trace_id=span.trace_id,
-                span_id=span.span_id,
-                is_anchor=(span.span_id == anchor_span.span_id),
-            ))
+        # One evidence row per interaction: the anchor span. (error / timing /
+        # payload above are still computed over every span the edge pooled, so
+        # a callee span's error signal is not lost.)
+        ix_spans.append(ProtoInteractionSpan(
+            interaction_id=ix_id,
+            trace_id=anchor_span.trace_id,
+            span_id=anchor_span.span_id,
+            is_anchor=True,
+        ))
 
     notes.append(
         f"derived {len(interactions)} interactions, "
@@ -348,10 +352,10 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     working = build_base_graph(spans_list)
     base_snapshot = _snapshot(working)
 
-    # Step 2.a → 2.c — coloring on a working copy
+    # Step 2 → 3 — coloring + inference on a working copy
     color_agentic(working, span_by_id)
     duplicate_combined_nodes(working)
-    # Step 2.b case 3 — infer tool nodes from LLM-output tool_calls. Must run
+    # Step 2.a case 3 — infer tool nodes from LLM-output tool_calls. Must run
     # AFTER color_agentic (so the new Gray edge isn't seen by the Black
     # edge-promotion loop) and BEFORE synthesize_missing_peers (so the inferred
     # tool-call/tool nodes already have their Black edges and aren't themselves
@@ -359,27 +363,20 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     # peer).
     infer_tool_calls_from_attributes(working, span_by_id)
     synthesize_missing_peers(working, span_by_id)
-    # Step 2.c — fold each inferred peer into its observed twin (same entity,
-    # same trace, reachable over White+Gray adjacency). No-op when no observed
-    # twin exists, which is the common case; see merge_inferred_into_observed.
-    n_merged_2c = merge_inferred_into_observed(working, span_by_id)
+    # Step 4 — single node-and-edge merge on the execution-flow graph, before
+    # the fuse: collapse same-entity nodes (inferred/inferred, inferred/observed,
+    # observed/observed) then same-interaction Black edges. Runs BEFORE the
+    # snapshot so the colored execution graph reflects every merge.
+    n_nodes_merged, n_edges_merged, forced_groups = merge_step4(working, span_by_id)
     flag_between_boundaries(working)
     colored_snapshot = _snapshot(working)
 
-    # Step 3.a phase 1 — entity graph
-    entity_graph = build_entity_graph(working)
+    # Step 5.a — fuse: connected White/Gray components → entity nodes; Black
+    # edges → entity edges. No merging here (Step 4 already merged); the A3
+    # forced grouping fuses split-service components without touching nodes.
+    entity_graph = build_entity_graph(working, forced_groups)
 
-    # Step 3.a phase 2 — combine inferred peers by identifying attribute
-    n_merged = merge_inferred_peers(entity_graph)
-
-    # Step 3.a — combine observed same-entity nodes split across White+Gray
-    # components (e.g. raw-anthropic per-turn LLM-source spans of one service).
-    # Keyed on service.name, gated to keyless observed boundary callers so it
-    # cannot over-merge typed entities. No-op unless a service appears more than
-    # once as such a caller; see merge_same_entity.
-    n_merged_same = merge_same_entity(entity_graph, span_by_id)
-
-    # Step 3.b is applied during output derivation (entities are named from
+    # Step 5.b is applied during output derivation (entities are named from
     # service.name / natural-key suffix; the classifier label is kept on the
     # EntityNode for the future enrichment stage).
     entities = _derive_entities(entity_graph, span_by_id)
@@ -399,12 +396,11 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
         f"colored graph: {n_gray} gray, {n_black} black "
         f"({n_dup} target duplicates, {n_inferred} inferred peers), "
         f"{n_flag} between-boundary flags "
-        f"(Step 2.c merged {n_merged_2c} inferred peers into observed twins)"
+        f"(Step 4 merged {n_nodes_merged} same-entity nodes, "
+        f"{n_edges_merged} same-interaction edges)"
     )
     notes.append(
-        f"entity graph: {len(entity_graph.nodes)} entities, {len(entity_graph.edges)} edges "
-        f"(Step 3.a phase 2 combined {n_merged} inferred peers; "
-        f"Step 3.a merged {n_merged_same} observed same-entity nodes)"
+        f"entity graph: {len(entity_graph.nodes)} entities, {len(entity_graph.edges)} edges"
     )
     notes.extend(ix_notes)
 

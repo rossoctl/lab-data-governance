@@ -113,7 +113,7 @@ llm call --> llm
 
 
 ### Step 4 - execution graph node / edge merge 
-this step identifies nodes and/or edges represent the same entity or interaction and merges those. The process accounts for merging inferred/inferred, inferred/observed as well as observed/observed nodes or edges.
+this step identifies nodes and/or edges In the execution graph representing the same entity or interaction and merges those. The process accounts for merging inferred/inferred, inferred/observed as well as observed/observed nodes or edges.
 
 The process of Merging is a set of heuristics identifying nodes/edges representing the same entity or edge (interaction).
 the process starts with merging nodes. Next the process continues with merging edges.
