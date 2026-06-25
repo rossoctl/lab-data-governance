@@ -571,12 +571,33 @@ marker onto the entity node they form via a dedicated boolean field
 >   already collapsed same-interaction edges, so distinct calls between the same
 >   two entities (e.g. two separate LLM turns) correctly remain distinct
 >   interactions. The entity edge's first `span_id` is its Black edge's *source*
->   span — the per-call anchor the extractor uses for the interaction's payload,
->   so each call site keeps its own payload even when its callee peer was merged
->   across call sites in Step 4.
+>   span — the per-call **anchor** the extractor uses for the interaction's
+>   payload *and* timing (see below), so each call site keeps its own identity
+>   even when its callee peer was merged across call sites in Step 4.
 >
 > Inferred nodes propagate their `inferred` marker; an entity is
 > `inferred = true` iff every absorbed node was inferred.
+
+**Interaction timing follows the anchor span.**
+An interaction's `started_at` / `ended_at` are taken from its **anchor span**
+(the source span of its Black edge), **not** from an aggregate over every span
+the interaction touches. This matters specifically because of the Step 4 merge:
+when a repeatedly-called peer is merged into one node, an interaction's pooled
+evidence spans can include a span from *another* turn (the merged peer carries
+an earlier turn's span). Aggregating — e.g. `min(started_at)` over the pooled
+set — would drag every turn's interaction down to the earliest turn's time, so a
+later-turn tool call could sort *ahead of* LLM calls that actually ran after it.
+The anchor span is the single source of truth for an interaction's identity, so
+its times define both the interaction's time and its position in the
+`(started_at, order)` sort. (`error`, by contrast, still considers the whole
+call/response pair — either side erroring marks the interaction errored.)
+
+> **As-implemented note.** `extractor._derive_interactions` sets `started_at` /
+> `ended_at` from `anchor_span` (= `edge_spans[0]`, the source span), not from
+> `min`/`max` over `edge_spans`. The regression test
+> `test_interaction_time_follows_its_anchor_span` (anthropic-tool-calls fixture)
+> asserts each interaction's `started_at` equals its anchor span's, and that the
+> three agent→LLM turns keep three distinct times.
 
 **Step 5.b — Naming nodes.**
 Each entity node should be given a key reflecting its originating subgraph,
