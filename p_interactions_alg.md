@@ -81,7 +81,7 @@ Inferred edges:
 
 Additional cases may exist which need to be implemented such as tools inferred from input attributes.
 
-Inferred edges ordering:
+Inferred edges ordering/timing:
 When inferring new edges (interactions) Make sure to adjust the order based on the execution order. examples: 
 - outgoing edges (calls) are before incoming edges (responses)
 - When tools are derived from LLM spans:
@@ -126,6 +126,8 @@ Additional hints can be derived from:
 - proximity in the trace
 - same/similar time 
 - whether the node or edge are inferred or observed in conjunction with the source spans 
+
+Timing note: when merging edges account for the timing of each of the edges And maintain the time of the Original Span. for example, After a tool call its input may be repeated several times. in this case the timing of this is interaction should be after the span creating the tool call.
 
 ### Step 5 - agentic entity Graph (fuse)
 based on this scope we will build the agentic graph. 
