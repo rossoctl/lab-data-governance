@@ -133,3 +133,26 @@ INFERRED_OBSERVED_MERGE_TRACE_ID = "b17047c0000000000000000000000001"
 def inferred_observed_merge_trace_spans() -> list[Span]:
     """Spans of the split-graph trace exercising 2.c / F6a / F6b / 3.b."""
     return load_trace_spans("trace_inferred_observed_merge")
+
+
+# A real `openinference.instrumentation.anthropic` trace captured verbatim from
+# the deployment's `spans` table (the trace the in-pod CLI runs are checked
+# against). A `patent-assistant` agent makes three `messages.create` LLM calls
+# across three turns; each turn's LLM output asks for a tool (`database`, then
+# `file`), and following turns replay the prior tool calls on their INPUT
+# messages. This three-turn shape exercises the Step-4 merge ordering/timing
+# fixes more fully than the hand-built two-turn `trace_anthropic_tool_calls`:
+#   * the replayed `database` / `file` calls (same args / tool_call.id across
+#     output + later inputs) collapse to one interaction each (edge merge);
+#   * each merged tool call keeps its *originating* (output) order, sorting
+#     AFTER its turn's LLM rather than ahead of it;
+#   * the three agent↔LLM turns keep three DISTINCT started_at values (timing
+#     follows the anchor span, not a pooled min, and the response anchors on the
+#     observed endpoint, not the merged peer's first-turn span).
+ANTHROPIC_LIVE_TRACE_ID = "8e8d7b1ee84bd8995e3c951f659292a2"
+
+
+@pytest.fixture()
+def anthropic_live_trace_spans() -> list[Span]:
+    """Spans of the live 3-turn patent-assistant anthropic trace."""
+    return load_trace_spans("trace_8e8d7b1e")
