@@ -570,34 +570,49 @@ marker onto the entity node they form via a dedicated boolean field
 > - **One entity edge per Black edge — no endpoint-pair dedup.** Step 4 Phase B
 >   already collapsed same-interaction edges, so distinct calls between the same
 >   two entities (e.g. two separate LLM turns) correctly remain distinct
->   interactions. The entity edge's first `span_id` is its Black edge's *source*
->   span — the per-call **anchor** the extractor uses for the interaction's
->   payload *and* timing (see below), so each call site keeps its own identity
->   even when its callee peer was merged across call sites in Step 4.
+>   interactions. The entity edge's first `span_id` is its **anchor** — the span
+>   the extractor uses for the interaction's payload *and* timing (see below).
+>   The anchor is the **observed (non-inferred) endpoint's** span when one
+>   exists, else the source endpoint's: an inferred peer that Step 4 merged
+>   across turns carries a *stale* span (the merge survivor's, from an earlier
+>   turn), so anchoring on the observed endpoint keeps each call site — including
+>   the *response* edge, whose source is the merged peer — on its own turn's span.
 >
 > Inferred nodes propagate their `inferred` marker; an entity is
 > `inferred = true` iff every absorbed node was inferred.
 
 **Interaction timing follows the anchor span.**
 An interaction's `started_at` / `ended_at` are taken from its **anchor span**
-(the source span of its Black edge), **not** from an aggregate over every span
-the interaction touches. This matters specifically because of the Step 4 merge:
-when a repeatedly-called peer is merged into one node, an interaction's pooled
-evidence spans can include a span from *another* turn (the merged peer carries
-an earlier turn's span). Aggregating — e.g. `min(started_at)` over the pooled
-set — would drag every turn's interaction down to the earliest turn's time, so a
-later-turn tool call could sort *ahead of* LLM calls that actually ran after it.
+(the entity edge's first pooled span — see the fuse note above), **not** from an
+aggregate over every span the interaction touches. This matters specifically
+because of the Step 4 merge, in two ways:
+- **Aggregation drags timing.** When a repeatedly-called peer is merged into one
+  node, an interaction's pooled spans can include a span from *another* turn
+  (the merged peer carries an earlier turn's span). A `min(started_at)` over the
+  pooled set would drag every turn's interaction down to the earliest turn's
+  time, so a later-turn tool call could sort *ahead of* LLM calls that ran after
+  it. Hence timing follows the single anchor, not an aggregate.
+- **The anchor must be the observed endpoint.** For a *response* edge (e.g.
+  `LLM → agent`), the edge's *source* is the merged peer — its span is stale.
+  Anchoring on the observed (non-inferred) endpoint instead keeps each turn's
+  response on its own span, so the per-turn responses get distinct
+  `started_at`s rather than all collapsing onto the first turn's span (which
+  would also stack them at one `(started_at, order)` key).
+
 The anchor span is the single source of truth for an interaction's identity, so
 its times define both the interaction's time and its position in the
 `(started_at, order)` sort. (`error`, by contrast, still considers the whole
 call/response pair — either side erroring marks the interaction errored.)
 
-> **As-implemented note.** `extractor._derive_interactions` sets `started_at` /
-> `ended_at` from `anchor_span` (= `edge_spans[0]`, the source span), not from
-> `min`/`max` over `edge_spans`. The regression test
+> **As-implemented note.** The fuse (`build_entity_graph`) lists each entity
+> edge's spans **observed-endpoint-first**, so `edge_spans[0]` in
+> `extractor._derive_interactions` is the observed-side span; the extractor sets
+> `started_at` / `ended_at` from that anchor, not from `min`/`max` over
+> `edge_spans`. The regression test
 > `test_interaction_time_follows_its_anchor_span` (anthropic-tool-calls fixture)
 > asserts each interaction's `started_at` equals its anchor span's, and that the
-> three agent→LLM turns keep three distinct times.
+> per-turn agent→LLM calls **and** LLM→agent responses each keep distinct times
+> (the response-direction assertion is what guards the observed-endpoint anchor).
 
 **Step 5.b — Naming nodes.**
 Each entity node should be given a key reflecting its originating subgraph,

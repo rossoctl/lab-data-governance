@@ -1007,13 +1007,24 @@ def build_entity_graph(
         # edge (ADR-0007 "Inferred interaction ordering").
         ent_edge = EntityEdge.make(src_eid, dst_eid, order=edge.order)
         entity_graph.edges.append(ent_edge)
-        # Pool span_ids from the Black edge's endpoint span(s). The *source*
-        # endpoint's span is the anchor (listed first); the callee's own span
-        # (when it emitted one, e.g. an openai_agents tool span) follows so its
-        # error/payload signal is still available to the extractor.
-        for endpoint_id in (edge.from_node_id, edge.to_node_id):
-            n = nodes_by_id.get(endpoint_id)
-            if n and n.span_id and n.span_id not in ent_edge.span_ids:
+        # Pool span_ids from the Black edge's endpoint span(s), anchor first.
+        # The anchor (first span_id) drives the interaction's timing and payload.
+        # Prefer the **observed (non-inferred) endpoint** as the anchor: it
+        # always carries this call's own per-turn span, whereas an inferred peer
+        # that Step 4 merged across turns carries a *stale* span (the merge
+        # survivor's, from an earlier turn). This matters for the *response*
+        # edge of an agent↔LLM call — its source is the merged peer, so a
+        # source-first anchor would stamp every turn's response with the first
+        # turn's span. Falls back to source-first when both endpoints share
+        # provenance (e.g. an inferred tool-call→tool pair, where the source
+        # carries the tool arguments).
+        endpoints = [
+            n for n in (nodes_by_id.get(edge.from_node_id), nodes_by_id.get(edge.to_node_id))
+            if n is not None and n.span_id
+        ]
+        endpoints.sort(key=lambda n: n.is_inferred)  # observed (False) first; stable
+        for n in endpoints:
+            if n.span_id not in ent_edge.span_ids:
                 ent_edge.span_ids.append(n.span_id)
         # Step 2.a case 3: a tool-call node (the Black edge's source) carries
         # the inferred call's arguments. Surface them as the LLM→tool

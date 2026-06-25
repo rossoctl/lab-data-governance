@@ -180,8 +180,8 @@ def test_interaction_time_follows_its_anchor_span():
             f"span {anchor_span_id[-6:]} time {span_started[anchor_span_id]}"
         )
 
-    # The three agent→LLM turns must carry three *distinct* started_at values
-    # (the bug collapsed them to one), matching their three spans.
+    # Each agent→LLM turn must carry a *distinct* started_at (the timing bug
+    # collapsed them to one), matching its own span.
     llm_calls = [
         ix for ix in result.interactions
         if _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
@@ -189,6 +189,23 @@ def test_interaction_time_follows_its_anchor_span():
     ]
     assert len({ix.started_at for ix in llm_calls}) == len(llm_calls) >= 2, (
         "each agent→LLM turn must keep its own span time"
+    )
+
+    # ...and so must the *response* direction (llm → agent). This is the
+    # distinct anchor bug: Step 4 merges the LLM TARGET peers into one node, so
+    # every response edge's *source* is the merged peer carrying the first
+    # turn's span. Anchoring the response on the merged peer's span would stamp
+    # all responses with the first turn's time (and stack them at one
+    # (started_at, order)). The fuse anchors on the *observed* endpoint instead,
+    # so each response keeps its own turn's time.
+    llm_responses = [
+        ix for ix in result.interactions
+        if _ent(result, ix.caller_entity_id).natural_key.startswith("llm:")
+        and _ent(result, ix.callee_entity_id).natural_key == "patent-assistant"
+    ]
+    assert len({ix.started_at for ix in llm_responses}) == len(llm_responses) >= 2, (
+        "each LLM→agent response must keep its own turn's span time, not the "
+        "merged peer's first-turn span"
     )
 
 
