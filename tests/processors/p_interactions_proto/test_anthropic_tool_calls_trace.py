@@ -113,22 +113,23 @@ def test_tool_request_payload_is_arguments():
     assert "results.txt" in args
 
 
-def test_input_side_tool_call_counted_and_ordered():
-    """`database` is called on the OUTPUT side of two spans and replayed on the
-    INPUT side of span 3 (a prior turn fed back). The input replay carries the
-    *same* `tool_call.id` (`toolu_prev`) and arguments as the span-2 output
-    call — it is the **same logical call** — so Step 4 edge merge collapses the
-    two into one interaction (the replay still sets the ordering, ahead of the
-    LLM). With the distinct `refine` output call, that leaves **two** forward
-    `database` interactions, all converging to ONE `tool:database` entity."""
+def test_merged_tool_call_orders_after_its_originating_llm():
+    """A tool call created on an LLM's OUTPUT and later replayed on a following
+    span's INPUT is the *same* logical call, merged by Step 4. The merged
+    interaction must take the order of the **originating** (output) call — which
+    sits AFTER that turn's LLM exchange (positive band) — NOT the negative band
+    of the input replay. A plain `min(order)` over the merged edges would let
+    the replay's negative band win and wrongly sort the call ahead of its own
+    originating LLM (the "database before the first LLM" bug).
+
+    `database` originates as output (positive band) and is replayed as input on
+    later spans; all converge to ONE `tool:database` entity with two forward
+    interactions (the `search` call + the distinct `refine` call)."""
     result = extract(_spans())
 
-    # One entity despite the (now merged) call sites.
     db_entities = [e for e in result.entities if e.natural_key == "tool:database"]
     assert len(db_entities) == 1
 
-    # Two agent→tool:database calls: the `search` call (output + its input
-    # replay collapsed by Step 4 edge merge) and the distinct `refine` call.
     db_forward = [
         ix for ix in result.interactions
         if _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
@@ -136,20 +137,26 @@ def test_input_side_tool_call_counted_and_ordered():
     ]
     assert len(db_forward) == 2
 
-    # The input-side replay carries a negative order band, so it sorts (by
-    # (started_at, order)) ahead of the LLM call that shares its span. Find the
-    # span-3 LLM interaction (patent-assistant → llm:*) and the input-derived
-    # database call on the same span, and assert the tool precedes the LLM.
-    input_db = [ix for ix in db_forward if ix.order < 0]
-    assert input_db, "expected an input-derived database call with a negative order band"
-    replay = input_db[0]
-    # An interaction sharing the replay's started_at with order >= 0 is the LLM
-    # call (or a later output tool); the replay must sort first among them.
-    same_span = sorted(
-        (ix for ix in result.interactions if ix.started_at == replay.started_at),
-        key=lambda r: (r.started_at, r.order),
+    # No surviving forward database call carries a negative (input-replay) band:
+    # the replays were folded into their output origin, which is positive.
+    assert all(ix.order > 0 for ix in db_forward), (
+        f"merged output-origin tool call must keep its positive (after-LLM) band; "
+        f"got orders {[ix.order for ix in db_forward]}"
     )
-    assert same_span[0].order < 0, "input-derived tool must order before the LLM interaction"
+
+    # For the turn whose LLM exchange shares a span with a database call, the
+    # database call must sort AFTER the agent→LLM call (its originating LLM).
+    for db in db_forward:
+        llm_same_span = [
+            ix for ix in result.interactions
+            if ix.started_at == db.started_at
+            and _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
+            and _ent(result, ix.callee_entity_id).natural_key.startswith("llm:")
+        ]
+        assert llm_same_span, "expected an agent→LLM call sharing the database call's span"
+        assert db.order > llm_same_span[0].order, (
+            "output-derived tool call must order after its originating LLM call"
+        )
 
 
 def test_interaction_time_follows_its_anchor_span():

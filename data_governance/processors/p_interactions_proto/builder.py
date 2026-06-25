@@ -889,6 +889,24 @@ def merge_step4(
             return None
         return (comp[edge.from_node_id], comp[edge.to_node_id], direction, ident)
 
+    def _originating_order(a: int, b: int) -> int:
+        """Pick the order of the *originating* call when two same-call edges
+        merge. A tool call is "created" on the span where it appears as LLM
+        output (positive band, ordered AFTER the LLM); the same call later
+        replayed on an input message (negative band, ordered before that span's
+        LLM) is the *same* interaction echoed back as history. Per the spec's
+        timing note, the merged interaction takes the time/order of the span
+        that *created* the call — so an output (positive) order wins over an
+        input-replay (negative) one. A plain min() would wrongly let the replay's
+        negative band drag the merged call ahead of its own originating LLM.
+        When both are the same sign (e.g. a call only ever seen as input
+        replay), the earlier (min) band is kept."""
+        if a >= 0 and b < 0:
+            return a
+        if b >= 0 and a < 0:
+            return b
+        return min(a, b)
+
     seen: dict[tuple, Edge] = {}
     kept: list[Edge] = []
     edges_merged = 0
@@ -902,9 +920,9 @@ def merge_step4(
             seen[sig] = edge
             kept.append(edge)
             continue
-        # Same logical call already kept — fold this edge into it (keep the
-        # earliest order band so an input-replay's negative ordering survives).
-        first.order = min(first.order, edge.order)
+        # Same logical call already kept — fold this edge into it, taking the
+        # *originating* call's order (output band wins over an input replay's).
+        first.order = _originating_order(first.order, edge.order)
         first.colors |= edge.colors
         edges_merged += 1
     graph.edges = kept
