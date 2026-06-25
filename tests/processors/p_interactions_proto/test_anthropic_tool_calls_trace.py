@@ -152,5 +152,45 @@ def test_input_side_tool_call_counted_and_ordered():
     assert same_span[0].order < 0, "input-derived tool must order before the LLM interaction"
 
 
+def test_interaction_time_follows_its_anchor_span():
+    """Each interaction's `started_at` equals its **anchor span's** start time,
+    not an aggregate over its pooled evidence spans.
+
+    Regression for the Step-4 merge bug: the three patent-assistant → LLM calls
+    are three distinct turns (spans at distinct times). Step 4 merges the LLM
+    TARGET peers into one node, so each agent↔LLM interaction pools the merged
+    peer's span (an *earlier* turn's). A `min(started_at)` over the pooled set
+    dragged every turn's LLM interaction down to the first turn's time, so a
+    later-turn tool call (e.g. `file`) sorted *after* LLM calls that really ran
+    after it. Timing must follow the anchor, which keeps per-turn times distinct.
+    """
+    result = extract(_spans())
+    span_started = {s.span_id: s.started_at for s in _spans()}
+
+    anchor_of = {}
+    for s in result.interaction_spans:
+        if s.is_anchor:
+            anchor_of[s.interaction_id] = s.span_id
+
+    for ix in result.interactions:
+        anchor_span_id = anchor_of.get(ix.id)
+        assert anchor_span_id is not None, f"interaction {ix.id} has no anchor span"
+        assert ix.started_at == span_started[anchor_span_id], (
+            f"interaction {ix.summary!r} started_at {ix.started_at} != its anchor "
+            f"span {anchor_span_id[-6:]} time {span_started[anchor_span_id]}"
+        )
+
+    # The three agent→LLM turns must carry three *distinct* started_at values
+    # (the bug collapsed them to one), matching their three spans.
+    llm_calls = [
+        ix for ix in result.interactions
+        if _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
+        and _ent(result, ix.callee_entity_id).natural_key.startswith("llm:")
+    ]
+    assert len({ix.started_at for ix in llm_calls}) == len(llm_calls) >= 2, (
+        "each agent→LLM turn must keep its own span time"
+    )
+
+
 def _ent(result, entity_id):
     return next(e for e in result.entities if e.id == entity_id)

@@ -267,12 +267,19 @@ def _derive_interactions(
             continue
 
         # The anchor is the edge's *source* span (stamped first on the edge by
-        # build_entity_graph) — the span that originates this specific call, so
-        # each call site keeps its own payload even when the callee peer was
-        # merged across call sites in Step 4. Falls back to the earliest span.
+        # build_entity_graph) — the span that originates this specific call.
+        # **Timing follows the anchor**, not an aggregate over `edge_spans`:
+        # after Step 4 merges a repeatedly-called peer into one node, an
+        # interaction's pooled spans can include spans from *other* turns (the
+        # merged peer carries an earlier turn's span), so `min(started_at)` would
+        # drag every turn's interaction to the earliest turn's time. The anchor
+        # is the single source of truth for the interaction's identity, so its
+        # times define the interaction's time and its (started_at, order) sort
+        # position. `error`, by contrast, still considers the whole call/response
+        # pair — either side erroring marks the interaction errored.
         anchor_span = edge_spans[0]
-        started_at = min(s.started_at for s in edge_spans)
-        ended_at = max((s.ended_at for s in edge_spans if s.ended_at), default=None)
+        started_at = anchor_span.started_at
+        ended_at = anchor_span.ended_at
         error = (
             True if any(s.error for s in edge_spans)
             else (False if any(s.error is False for s in edge_spans) else None)
