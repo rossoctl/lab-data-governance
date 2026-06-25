@@ -533,6 +533,20 @@ operates on an already-merged graph.
 > `tool_call.id` `toolu_prev`) from two interactions to one, while the distinct
 > `refine` call stays — leaving two forward `database` interactions.
 >
+> **The merged survivor takes the *originating* call's order, not `min(order)`.**
+> A tool call is *created* on the span where it appears as LLM **output**
+> (positive band, ordered AFTER that turn's LLM); the same call replayed on a
+> later span's **input** carries a negative band (ordered before *that* span's
+> LLM). When the two merge they are one interaction, and per the spec's timing
+> note it takes the time/order of the span that *created* the call — so an
+> output (positive) order **wins over** an input-replay (negative) one
+> (`_originating_order` in `builder.py`). A naive `min(order)` would let the
+> replay's negative band drag the merged call ahead of its own originating LLM
+> (the "database sorts before the first LLM" bug). When both merged edges share
+> a sign (a call only ever seen as input replay, never as an output in-trace),
+> the earlier band is kept. Guarded by
+> `test_merged_tool_call_orders_after_its_originating_llm`.
+>
 > Because Phase B reduces interaction count *before* the fuse, `build_entity_graph`
 > emits **one entity edge per surviving Black edge** (no endpoint-pair dedup),
 > so distinct calls between the same two entities remain distinct interactions.
