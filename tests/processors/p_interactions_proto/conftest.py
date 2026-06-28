@@ -156,3 +156,23 @@ ANTHROPIC_LIVE_TRACE_ID = "8e8d7b1ee84bd8995e3c951f659292a2"
 def anthropic_live_trace_spans() -> list[Span]:
     """Spans of the live 3-turn patent-assistant anthropic trace."""
     return load_trace_spans("trace_8e8d7b1e")
+
+
+# A second real `openinference.instrumentation.anthropic` trace captured
+# verbatim from the deployment's `spans` table. A `patent_search` agent makes
+# three `messages.create` LLM calls; two of the turns' outputs each ask for a
+# *different* tool (`file`, then `web_search`), and each tool is invoked exactly
+# once. Unlike `trace_8e8d7b1e` (where the same tool call is replayed on a later
+# turn's INPUT messages and the Step-4 edge merge collapses the replay), here no
+# call repeats — so every output-derived tool interaction stays in its positive
+# (after-LLM) band with no merge. It is the clean multi-tool, output-only
+# counterpart to the replay-heavy `trace_8e8d7b1e`: same 4-entity / 10-interaction
+# shape (one observed agent + three inferred peers: the LLM and two tools), but
+# the tool calls are distinct rather than merged.
+ANTHROPIC_MULTITOOL_TRACE_ID = "4ee0239356d61584bb4c3b6965041788"
+
+
+@pytest.fixture()
+def anthropic_multitool_trace_spans() -> list[Span]:
+    """Spans of the live patent_search anthropic trace (file + web_search)."""
+    return load_trace_spans("trace_4ee02393")
