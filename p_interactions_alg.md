@@ -90,8 +90,8 @@ When inferring new edges (interactions) Make sure to adjust the order based on t
     - Tool interactions derived from input attributes should happen before interactions with the LLM
     - tool interactions derived from output attributes should happen after interactions with the LLM
 
-#### Step 2.b - Other scopes
-deferred to later steps.
+<!-- #### Step 2.b - Other scopes
+deferred to later steps. -->
 
 
 
@@ -100,15 +100,25 @@ deferred to later steps.
 #### Step 3.a Color agentic nodes
 1. Traverse the execution flow graph, And identify all nodes related to the agentic scope. 
 2. Mark each agentic scope node as "Gray" 
-3. connect consecutive "Gray" nodes using "Gray" edges iff there is a path (of white edges) between two Gray nodes (Without going through a Gray node in between).
+3. connect consecutive "Gray" nodes using "Gray" edges iff there is a path (of white edges - regardless of scope) between two Gray nodes (Without going through a Gray node in between).
 
 #### Step 3.b - agentic (execution graph) boundaries 
 In this step we identify agentic boundaries 
 
-1. Identify Gray nodes *representing a abentic boundary* and color them "Black".
-2. If there is a Gray edge between Black nodes Representing the same entity type (Agent, LLM, tool) - and one black node is a source while the other is *its* target - Color the edge black.
+Nodes:
+1. Identify Gray nodes *representing a agentic boundary* and color them "Black". This includes For example:
+  - tool targets 
+  - agent calls
+  - llm calls
+  - agent root spans - Representing (outermost) target/entry points for the agent
+
+Note: Using span kind and attributes only
+
+Edges:
+2. If there is a Gray edge between Black nodes (one black node represents a source while the other its related target in the agentic scope) - Color the edge black.
 examples:
 tool call --> tool
+tool call --> agent
 llm call --> llm
 
 
@@ -127,7 +137,7 @@ Additional hints can be derived from:
 - same/similar time 
 - whether the node or edge are inferred or observed in conjunction with the source spans 
 
-Timing note: when merging edges account for the timing of each of the edges And maintain the time of the Original Span. for example, After a tool call its input may be repeated several times. in this case the timing of this is interaction should be after the span creating the tool call.
+Timing note: when merging edges account for the timing of each of the edges and maintain the time of the appropriate Span. for example, After a tool call its input may be repeated several times in following spans. in this case the timing of this is interaction should be after the span creating the tool call.
 
 ### Step 5 - agentic entity Graph (fuse)
 based on this scope we will build the agentic graph. 
