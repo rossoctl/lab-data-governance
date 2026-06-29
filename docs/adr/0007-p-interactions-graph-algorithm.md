@@ -141,8 +141,8 @@ add a new kind value, …) from the graph-construction code.
 - `is_combined` — true iff one span carries BOTH the source and target side
   of the same call. Triggers Step 2.a duplication.
 - `natural_key` — stable per-boundary identity. Format is
-  `<kind-prefix>:<identifier>` — `tool:get_weather`, `llm:gpt-4o`,
-  `agent:travel_advisor`. It is the **identifying attribute** the Step 4
+  `<kind-prefix>:<identifier>` — `tool:<tool-name>`, `llm:<model>`,
+  `agent:<agent-name>`. It is the **identifying attribute** the Step 4
   same-entity merge groups on (carried on the inferred node as
   `peer_match_key`) — both for the inferred↔observed merge and for converging
   repeatedly-called inferred peers. None when the span carries no identifying
@@ -363,8 +363,8 @@ inferred node: a boundary node that has no observed peer in the trace gets an
 inferred node referencing the same span, carrying the originating boundary's
 `SpanFacts.natural_key` on a `peer_match_key` field and bidirectional Black
 edges (source→target and target→source). When a natural key is available the
-inferred node's display label is the key itself (`tool:get_weather`,
-`llm:gpt-4o`, …); otherwise it falls back to `(unobserved peer of <source>)`.
+inferred node's display label is the key itself (`tool:<tool-name>`,
+`llm:<model>`, …); otherwise it falls back to `(unobserved peer of <source>)`.
 The original node retains its Source-or-Target role and `kind`; the inferred
 node plays the *opposite* role with the *same* `kind`, so the source→peer pair
 satisfies the Step 3.b kind+role-matched edge rule. This one-sided stubbing is
@@ -397,7 +397,15 @@ stages" below.
    the node **Gray**.
 2. For every pair of Gray nodes connected by a chain of White edges that does
    not pass through another Gray node, add a directed **Gray edge** between
-   them in the same direction as the underlying chain.
+   them in the same direction as the underlying chain. The White chain is
+   followed **regardless of the intermediate nodes' scope** (latest spec, Step
+   3.a.3): the bridge between two agentic nodes may run through non-agentic
+   (httpx / starlette / a2a) spans — including spans in a *different service* —
+   and a Gray edge is still drawn across it as long as no Gray node lies in
+   between. This is what lets an agent's call boundary connect, in the Gray
+   layer, to the boundary of the *remote* agent it called over A2A: the
+   intervening client-send (`httpx POST`) and server-receive (`starlette POST
+   /`) spans are White and do not interrupt the chain.
 
 > **As-implemented / ordering note.** In the spec's document order Step 2.a
 > (inferred nodes/edges) precedes this coloring, but inference logically reads
@@ -407,6 +415,18 @@ stages" below.
 > Black promotion in the same `color_agentic` pass. The role assignment and the
 > set of Gray/Black nodes are unchanged by the renumbering; only the spec's
 > grouping of these operations into Step 2 vs. Step 3 moved.
+>
+> **"Regardless of scope" — partially exercised.** The builder's Gray-edge
+> traversal already walks the White chain without consulting intermediate
+> nodes' scope, so the spec's 3.a.3 wording matches the code mechanically. But
+> in every fixture to date the bridge between two agentic nodes stays *within
+> one service* (the openinference spans of a single agent), so the
+> cross-service case the new wording targets — a Gray edge spanning the
+> `httpx → starlette` A2A bridge between two *different* agents — is not yet
+> realised end-to-end: producing the cross-entity **Black** edge from it
+> additionally needs the Step 3.b agent-root boundary + "related target"
+> binding below, which are spec-level and not yet implemented. See "Cross-scope
+> multi-agent composition (A2A)" under Deferred to later stages.
 
 **Step 3.b — Agentic boundaries (Black).**
 Identify the Gray nodes that *represent an agentic boundary* and color them
@@ -423,11 +443,43 @@ is the real boundary). The adapter is the single arbiter of role; the builder
 reads only the field. *Node* promotion is driven by `role`, **not** by `Kind`
 (see "Boundary promotion is role-driven, not kind-driven" under Key decisions).
 
+**Agent-root spans as target boundaries (latest spec — not yet implemented).**
+The latest spec broadens the boundary node list (Step 3.b clause 1) to include,
+alongside tool targets / agent calls / llm calls, the **agent root span**:
+the *outermost* per-activation span an agentic framework emits for an agent
+run, which represents the agent's **entry / target** side. The spec requires
+this be identified **using span kind and attributes only** — i.e. span-locally,
+without a tree walk — which is per-framework adapter logic, since the marker
+differs by framework (openai_agents: the AGENT-kind span carrying **no**
+`graph.node.id` — the inner per-node AGENT span *has* `graph.node.id`;
+google_adk: `agent_run [{agent.name}]`; langchain: the `agent` span; validated
+against the per-scope span references). Promoting the callee's agent-root span
+to a **Target** boundary is what gives a cross-agent delegation an *observed*
+target to pair with, instead of the inferred peer Step 2.a stubs today. This is
+the callee-side complement to the existing source-side boundaries; the current
+code does **not** implement it (AGENT-kind wrappers map to `role=NONE`, so a
+delegated-to agent's root stays Gray and the delegation resolves to an inferred
+`tool:` peer — see "Cross-scope multi-agent composition (A2A)" under Deferred).
+
 Then color the *edges*. A Gray edge whose endpoints are both Black is promoted
-to **Black only when the endpoints form a matched call pair**: one endpoint is
-exactly `role=SOURCE` (the caller) and the other exactly `role=TARGET` (the
-callee), **and** both carry the same `Kind` (tool→tool, llm→llm, agent→agent).
-A Black edge means a *cross-entity* call, so this rule keeps two adjacent
+to **Black only when the endpoints form a matched call pair**. The matched-pair
+rule has two formulations:
+
+- **As implemented (`_is_matched_call_pair`):** one endpoint is exactly
+  `role=SOURCE` (the caller) and the other exactly `role=TARGET` (the callee),
+  **and** both carry the same `Kind` (tool→tool, llm→llm, agent→agent).
+- **Latest spec:** one endpoint is a **source** and the other **its related
+  target in the agentic scope** — the same-`Kind` requirement is **dropped**
+  and the same-scope requirement is **not** imposed (the pair is "in the
+  agentic scope", not "in the *same* scope"), so a cross-framework
+  **`tool call → agent`** delegation (e.g. an openai_agents `delegate_to_*`
+  tool-call source paired with a langchain / google_adk agent-root target) is
+  now an admitted pair, not only `tool→tool` / `llm→llm` / `agent→agent`.
+  The binding is the source and **its related target** (not merely *a*
+  target); what makes a target "related" is left open by the spec and is not
+  recorded here.
+
+A Black edge means a *cross-entity* call, so the rule keeps two adjacent
 Source boundaries on the same Gray chain from being mistaken for a call between
 them — e.g. an agent's `ClaudeAgentSDK.query` span and its own
 `ClaudeAgentSDK.{tool_name}` dispatch span are *both* Source: the Gray edge
@@ -440,13 +492,26 @@ from this gray-edge promotion: its target is the duplicate node created in
 Step 2.a case 1, wired with Black edges directly — a combined span does not
 acquire a target by gray-chain adjacency to an unrelated boundary.
 
-> **As-implemented note.** This rule is `_is_matched_call_pair` in
+> **As-implemented note.** The implemented rule is `_is_matched_call_pair` in
 > `builder.py`, applied in `color_agentic`. To support it, base-graph nodes
 > carry the adapter's `role` and `kind` as plain string fields (mirrored from
 > the `Role`/`Kind` str-enums to avoid an import cycle). The earlier ADR draft
 > promoted *every* Gray edge between two Black endpoints; that blanket rule
 > produced spurious cross-entity edges between an agent and its own dispatch
-> spans, which is what this rule fixes.
+> spans, which is what this rule fixes. The blanket-promotion hazard is large
+> in practice: on a multi-agent A2A trace, the overwhelming majority of
+> Gray-only edges are *intra-agent* (an agent's internal Gray hops over its own
+> non-agentic plumbing) and only a handful cross a service boundary — promoting
+> all of them would shatter each agent into one entity per internal Gray hop.
+> The matched-pair guard isolates the genuine cross-entity edges from the
+> intra-agent ones.
+>
+> **Spec ahead of code (Step 3.b).** The latest spec adds two things this note's
+> rule does not yet do: (1) **agent-root target boundaries** (above), and
+> (2) the **same-`Kind`-dropped, "related target"** edge rule admitting
+> `tool→agent`. Until both land, a cross-agent A2A delegation still resolves to
+> an inferred `tool:` peer rather than a Black edge to the observed callee
+> agent. Tracked under "Cross-scope multi-agent composition (A2A)" in Deferred.
 
 **Step 4 — Node and edge merge.**
 Per spec def. 9, Step 4 identifies nodes and/or edges that *represent the same
@@ -502,12 +567,13 @@ operates on an already-merged graph.
 >   observed* node for the same entity: matching typed key + kind, and the
 >   observed twin in a *different* White+Gray component than the peer's source
 >   (so it is the observed callee, not a sibling caller). No-op on single-agent
->   fixtures (every same-key boundary is a sibling caller); fires on the split
->   graph where the callee emitted its own spans (`trace_inferred_observed_merge`).
+>   fixtures (every same-key boundary is a sibling caller); fires on a split
+>   graph where the callee emitted its own spans.
 > - **A2 inferred ↔ inferred.** Converge typed callee peers (TARGET role; key
 >   prefix matching kind, via `_typed_callee_key`) that share a key — the
->   repeatedly-called peer, e.g. the per-call `tool:database` / `tool:get_flights`
->   peers a trace produces. TARGET-only and prefix-matches-kind are the guards
+>   repeatedly-called peer, e.g. the per-call `tool:<name>` peers a trace
+>   produces when one tool is invoked from several call sites. TARGET-only and
+>   prefix-matches-kind are the guards
 >   that keep a *caller's* `natural_key` (the agent's `llm:` / `tool:` key) and
 >   the Gray-folded tool-call SOURCE nodes from fusing a caller into its callee.
 > - **A3 observed ↔ observed.** The same service split across White+Gray
@@ -518,7 +584,7 @@ operates on an already-merged graph.
 >   records `node_id → group` and hands it to `build_entity_graph`, which fuses
 >   those components into one entity *without touching nodes or edges* — so every
 >   call site keeps its own boundary span (the per-call payload/evidence anchor).
->   Exercised by the anthropic-tool-calls test (two `patent-assistant`
+>   Exercised by a single-agent anthropic fixture (two same-service agent
 >   components collapse to one entity).
 >
 > **Phase B — edge merge.** Collapse Black edges that are the *same*
@@ -527,11 +593,12 @@ operates on an already-merged graph.
 > primary key; a replayed call carries identical arguments whether it appears on
 > a span's output or a later span's input, even though those spans don't overlap
 > in time, so time is *not* required to match.) Genuinely distinct calls differ
-> in arguments and survive — the canonical trace's 5 LLM calls and 2
-> `get_flights` calls all keep distinct arguments. This is what collapses the
-> anthropic `database` replay (output `search` + its input replay, same
-> `tool_call.id` `toolu_prev`) from two interactions to one, while the distinct
-> `refine` call stays — leaving two forward `database` interactions.
+> in arguments and survive — multiple LLM calls and repeated tool calls with
+> *different* arguments all keep distinct arguments and remain distinct
+> interactions. This is what collapses a tool-call replay (the same call seen as
+> a span's output and again on a later span's input, carrying the same
+> `tool_call.id`) from two interactions to one, while a distinct call with the
+> same tool but different arguments stays.
 >
 > **The merged survivor takes the *originating* call's order, not `min(order)`.**
 > A tool call is *created* on the span where it appears as LLM **output**
@@ -622,8 +689,7 @@ call/response pair — either side erroring marks the interaction errored.)
 > edge's spans **observed-endpoint-first**, so `edge_spans[0]` in
 > `extractor._derive_interactions` is the observed-side span; the extractor sets
 > `started_at` / `ended_at` from that anchor, not from `min`/`max` over
-> `edge_spans`. The regression test
-> `test_interaction_time_follows_its_anchor_span` (anthropic-tool-calls fixture)
+> `edge_spans`. A regression test over a multi-turn anthropic fixture
 > asserts each interaction's `started_at` equals its anchor span's, and that the
 > per-turn agent→LLM calls **and** LLM→agent responses each keep distinct times
 > (the response-direction assertion is what guards the observed-endpoint anchor).
@@ -637,8 +703,8 @@ available, the entity is named `unknown`.
 > **As-implemented note.** **Implemented** (partially, as scoped) in
 > `extractor._entity_display_name`. Each entity's `display_name` is derived by
 > precedence: (1) the `service.name` of any contributing span (the typed
-> `Span.service_name` field — `dl-demo-travel-advisor`, `weather-tool`, …);
-> (2) the model / tool / agent name parsed from the `natural_key` suffix
+> `Span.service_name` field — e.g. the agent's or tool's Kubernetes service
+> name); (2) the model / tool / agent name parsed from the `natural_key` suffix
 > (`llm:claude-…` → `claude-…`); (3) the literal `unknown` when neither is
 > available. The spec's *preferred* identifier — a **hostname** — is still
 > deferred: it lives on non-agentic (httpx / botocore) spans that are not part
@@ -845,8 +911,8 @@ An inferred node that survives without being merged into an observed node is
 identified by a dedicated boolean field on the node row — `is_inferred` on
 the colored-base-graph node and `inferred` on the entity node — and never by
 parsing the `label` column or any other display string. The label is a
-human-facing display value (e.g. `"(unobserved peer of
-dl-demo-travel-advisor)"`) and is free to change for UX reasons; queries and
+human-facing display value (e.g. `"(unobserved peer of <source>)"`) and is
+free to change for UX reasons; queries and
 downstream processors must filter on the boolean field. The scratch-table
 schemas in `cli.py` carry this column explicitly so external SQL inspection
 has a typed signal rather than a string-pattern heuristic. (These columns are
@@ -864,8 +930,7 @@ span-table reference for the framework that emitted it
 (`openinference_telemetry_spans.md` for cross-framework openinference at
 the current main snapshot;
 `openinference_openai_agents_v1.4.1_telemetry_spans.md` for openai_agents
-1.4.1 — the version that produced the canonical live trace;
-`openinference_anthropic_v1.0.6_telemetry_spans.md` for the anthropic /
+1.4.1; `openinference_anthropic_v1.0.6_telemetry_spans.md` for the anthropic /
 `claude_agent_sdk` framework at 1.0.6; future references for
 httpx/starlette/etc.). New attributes are not added on
 intuition; the reference is regenerated from the upstream package and the
@@ -896,6 +961,21 @@ and will be addressed by a separate enrichment stage:
   spans (httpx URL/host, starlette route, …) onto the agentic entities they
   describe. Also: recognising that an agentic caller span and an httpx caller
   span on the same chain represent the same real entity.
+- **Cross-scope multi-agent composition (A2A).** When one agent delegates to
+  another over A2A, the two agents' agentic spans are connected only through
+  the non-agentic `httpx → starlette` bridge between their services. The latest
+  spec covers this in principle — Step 3.a draws a Gray edge across the bridge
+  "regardless of scope"; Step 3.b adds the callee's **agent-root span** as a
+  Target boundary and admits a cross-framework `tool call → agent` matched pair
+  bound on the source's *related* target — so the delegation should become a
+  Black edge between two distinct, observed agent entities rather than an
+  inferred `tool:` peer. None of these three pieces is implemented yet: the
+  caller-side `delegate_*` span is a Source boundary, but the callee agent-root
+  stays Gray (AGENT-kind wrappers map to `role=NONE`), no `tool→agent` edge is
+  promoted, and the delegated agent surfaces as an inferred peer. Realising it
+  also requires resolving how the **entry** agent's root (delegated-to by no
+  in-trace agent) is treated, and what makes a target "related" to a source —
+  both open in the spec.
 - **Broken traceparent / disconnected base graphs.** When a Receive span has
   no traceparent link to its corresponding Send, the base graph is
   disconnected and Step 5.a naturally produces disconnected components in the
