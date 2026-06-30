@@ -103,19 +103,20 @@ deferred to later steps. -->
 3. connect consecutive "Gray" nodes using "Gray" edges iff there is a path (of white edges - regardless of scope) between two Gray nodes (Without going through a Gray node in between).
 
 #### Step 3.b - agentic (execution graph) boundaries 
-In this step we identify agentic boundaries 
+In this step we identify agentic boundaries, Specifically we aim to identify input and output points.
 
 Nodes:
 1. Identify Gray nodes *representing a agentic boundary* and color them "Black". This includes For example:
-  - tool targets 
-  - agent calls
+  - tool targets (Target)
+  - agent calls (Source)
   - llm calls
-  - agent root spans - Representing (outermost) target/entry points for the agent
+  - agent root spans - Representing entry points for the agent (Target)
 
 Note: Using span kind and attributes only
 
 Edges:
-2. If there is a Gray edge between Black nodes (one black node represents a source while the other its related target in the agentic scope) - Color the edge black.
+2. Create edges between source and related targets in the agentic scope.
+specifically if there is a gray path (Consisting only of Gray edges and nodes) between two black nodes (one black node represents a source while the other its related target in the agentic scope) - Create a new black edge.
 examples:
 tool call --> tool
 tool call --> agent
