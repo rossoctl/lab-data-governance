@@ -162,6 +162,7 @@ Next, each sub graph represented by connected Gray and black nodes will become a
 
 Note that the black edges (both observed and inferred) should be maintained, meaning, the nodes (entities) the in the new graph are connected with new edges matchin the original black edges 
 
+Note: For now there is no need to fuse any Gray nodes beyond black nodes
 
 #### Step 5.b - Naming nodes
 
