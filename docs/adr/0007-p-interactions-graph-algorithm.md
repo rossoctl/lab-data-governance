@@ -829,6 +829,8 @@ schema drift is absorbed by adding entries to that adapter's per-version
 schema map; behavioural drift (new combined-span shapes, new span-name
 conventions) lives in adapter code.
 
+**Adapter Capabilities must be consistent across all frameworks but implementation may be adapter specific**
+
 **Raw OTel attribute keys are isolated to the adapter layer.**
 Every attribute lookup happens in `adapters.py`. The graph builder, the
 classifier facade, and the extractor read only typed `SpanFacts` fields
