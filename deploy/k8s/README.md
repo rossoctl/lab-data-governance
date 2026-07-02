@@ -12,6 +12,7 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `40-ui.yaml`                  | `Service` + `Deployment` for the UI backend                 |
 | `50-networkpolicy.yaml`       | `NetworkPolicy` for receiver, UI, and Postgres ingress      |
 | `60-ui-httproute.yaml`        | `HTTPRoute` + `ReferenceGrant` exposing the UI on the kagenti shared Gateway |
+| `70-interactions.yaml`        | `Deployment` for the P-interactions processor (no Service)  |
 
 ## Topology summary
 
@@ -30,6 +31,19 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 - **UI backend Deployment.** Single replica running `python -m
   data_governance.api` on port 8080. Serves both `GET /spans` and the
   static UI shell.
+- **P-interactions processor Deployment.** **Single replica** running
+  `python -m data_governance.processors.interactions` on the receiver
+  image (`data-governance/receiver:latest`, `command:` override — no new
+  image). Init container runs `python -m data_governance.db.migrate` to
+  head like the receiver (ADR-0002). It is a DB consumer with **no
+  Service and no container ports**: it polls the `spans` table by `seq`
+  and writes the derived interactions tables (migration 0004), advancing
+  one shared `processor_state` cursor. Single replica because the driver
+  has no inter-pod lock — two pods would share the one cursor and
+  double-process; the rollout uses `maxSurge:0`/`maxUnavailable:1` so the
+  old pod is gone before the new one starts. It serves a Prometheus
+  `/metrics` surface on 9091 in-pod, but — like the receiver's 9090 — v1
+  has no monitoring peer, so the port is left undeclared (a v2 concern).
 - **NetworkPolicy.** Three policies, one per workload. Receiver and UI
   ingress is restricted to the upstream Kagenti namespace, matched by
   the default `kubernetes.io/metadata.name=kagenti` label every
@@ -45,7 +59,8 @@ The Deployments here reference `data-governance/receiver:latest` and
 are produced from a single repo-root `Containerfile` (see issue #38) — one
 image, two tags, two entry points. A fresh Kind cluster has neither tag,
 so applying these manifests without first building and loading the image
-results in `ErrImagePull` / `CrashLoopBackOff` on the receiver and UI pods.
+results in `ErrImagePull` / `CrashLoopBackOff` on the receiver, UI, and
+interactions-processor pods.
 
 The `deploy/build-and-load.sh` helper does both steps in one shot:
 
@@ -82,16 +97,19 @@ init container drives both conditions to true.
 ## Re-deploying after a code change
 
 For an existing cluster where the manifests are already applied and you
-just want the receiver / UI to pick up new code from `main`:
+just want the receiver / UI / interactions processor to pick up new code
+from `main`:
 
 ```sh
 git pull --ff-only
 ./deploy/build-and-load.sh
 kubectl apply -f deploy/k8s/                                        # usually a no-op; safe to skip if no manifest changes
 kubectl -n data-governance rollout restart \
-  deployment/data-governance-receiver deployment/data-governance-ui
+  deployment/data-governance-receiver deployment/data-governance-ui \
+  deployment/data-governance-interactions
 kubectl -n data-governance rollout status deployment/data-governance-receiver --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-ui --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-interactions --timeout=120s
 ```
 
 The `rollout restart` is the step that's easy to forget: the manifests

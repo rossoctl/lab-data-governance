@@ -1,0 +1,145 @@
+---
+# P-interactions processor Deployment — a DB consumer, NOT an inbound API.
+#
+# Unlike the receiver (30-receiver.yaml), this workload exposes NO Service and
+# declares NO container ports: it has no inbound traffic. It polls the `spans`
+# table by `seq` and writes the derived interactions tables (migration 0004),
+# advancing a single durable cursor in `processor_state`
+# (data_governance/processors/interactions/driver.py).
+#
+# Same image as the receiver — one repo-root Containerfile, one image, two
+# tags; deployments differ only by `command:` (issue #38). No new image build.
+#
+# Single replica (NOT 2 like the receiver). The driver drains spans against
+# ONE shared `processor_state` cursor with no inter-pod lock; two replicas
+# would poll the same cursor concurrently, double-process spans, and contend
+# on writes to the same lineage region. What keeps that correctness-safe is
+# that the per-span re-derive is idempotent (ADR-0007 recovery) — so even a
+# brief overlap of two pods only duplicates work, never corrupts state.
+#
+# RollingUpdate with maxSurge:0 / maxUnavailable:1 keeps the VOLUNTARY
+# (controller-driven) rollout from ever creating a second pod: the old pod is
+# torn down before the replacement starts. It does NOT cover involuntary
+# disruption — a node drain or eviction can start the replacement before the
+# evicted pod's process fully exits, briefly running two cursors. Idempotency,
+# not the rollout strategy, is what makes that window safe. Running two
+# replicas deliberately is still not a supported topology.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-governance-interactions
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-interactions
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 1
+  strategy:
+    # Single-cursor drainer: don't create a second pod during a rollout (see
+    # the header note — involuntary eviction can still briefly overlap; that
+    # window is made safe by the idempotent re-derive, not by this strategy).
+    # maxSurge:0 + maxUnavailable:1 tears down the old pod before the
+    # replacement starts, the opposite of the receiver's surge-first rollout.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-interactions
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-governance-interactions
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      initContainers:
+        # ADR-0002: each pod runs `python -m data_governance.db.migrate` to
+        # head before the processor container starts. Alembic's version table
+        # makes this idempotent — running it from this pod as well as from the
+        # receiver replicas is safe (both migrate to the same compiled head).
+        - name: migrate
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.db.migrate"]
+          # Note: ``DATABASE_URL`` must come AFTER the POSTGRES_* entries it
+          # references. Kubernetes only substitutes ``$(VAR)`` against names
+          # defined earlier in the same env list — a forward reference
+          # reaches the container as literal ``$(VAR)`` and breaks DSN
+          # parsing (issue #40). The
+          # ``test_container_env_placeholder_references_resolve_in_order``
+          # regression test in tests/deploy/test_manifests.py pins this.
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"
+      containers:
+        # The processor container runs the interactions entry point. Like the
+        # receiver (PROJECT.md §3), it does NOT run Alembic itself — the init
+        # container is the schema-ordering gate. The entry point performs a
+        # defence-in-depth schema-version check on startup (issue #10) and
+        # exits non-zero on mismatch, surfacing as CrashLoopBackOff.
+        - name: interactions
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.processors.interactions"]
+          # See the ordering note on the migrate init container above —
+          # ``DATABASE_URL`` must come after the POSTGRES_* entries it
+          # references (issue #40). Env block is the receiver's verbatim.
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          # No ports / no Service: the processor has no inbound API. It serves a
+          # Prometheus /metrics surface on 9091 in-pod
+          # (data_governance/processors/interactions/__main__.py), but — like
+          # the receiver's 9090, which the v1 NetworkPolicy also does not open —
+          # v1 has no monitoring peer, so the port is intentionally left
+          # undeclared and unexposed. Re-adding scraper ingress is a v2 concern.
+          #
+          # No liveness/readiness probes: there is no HTTP serving surface to
+          # probe (the /metrics server is for scraping, not health), and there
+          # is no Service routing traffic that a readiness gate would protect.
+          # Kubernetes restarts the pod on process exit; the startup
+          # schema-version check (issue #10) handles the "wrong image" failure
+          # mode by exiting non-zero into CrashLoopBackOff.
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              memory: "1Gi"

@@ -15,6 +15,9 @@ Public surface:
         row = tx.fetch_one(sql, params)
         rows = tx.fetch_all(sql, params)
 
+    with db.listen(channel, dsn) as lst:   # LISTEN/NOTIFY wake (ADR-0015)
+        woke = lst.wait(timeout)           # True on notify, False on timeout
+
     db.ConnectionTimeout      # raised when the pool can't hand out a conn
     db.is_connection_error(e) # ADR-0003 connection-class classifier
 
@@ -22,11 +25,17 @@ Clean exit commits and returns the connection to the pool. Any exception
 rolls back and still returns the connection. The pool is a process-singleton
 — `configure()` may be called multiple times (e.g. by tests) but only one
 pool is live at a time.
+
+`listen()` is the one Layer-1 capability outside the pooled-transaction model
+(ADR-0015): a dedicated, autocommit, session-scoped connection for Postgres
+`LISTEN`, which the pool's short-lived autocommit-off connections cannot
+provide. It stays generic — it knows nothing about the channel's meaning.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import threading
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -37,10 +46,12 @@ import psycopg_pool
 
 __all__ = [
     "ConnectionTimeout",
+    "Listener",
     "Transaction",
     "close_pool",
     "configure",
     "is_connection_error",
+    "listen",
     "transaction",
 ]
 
@@ -235,3 +246,73 @@ def is_connection_error(exc: BaseException) -> bool:
         # yet-negotiated). Treat as connection-class.
         return isinstance(exc, psycopg.OperationalError)
     return False
+
+
+# --- LISTEN/NOTIFY session connection (ADR-0015) -----------------------------
+#
+# This is the one Layer-1 capability that does NOT go through the pool. LISTEN
+# registration is session-scoped and the consumer must hold an autocommit
+# connection to receive notifications as inserts commit — the opposite of the
+# pool's short-lived autocommit-off connections. So `listen()` opens its own
+# dedicated connection, held for the caller's `with` block. It stays generic:
+# the channel name and its meaning belong to the caller, not this module.
+
+# LISTEN cannot parameterize the channel identifier, so the value is
+# interpolated into the SQL. Restrict it to a bare SQL identifier so that
+# interpolation cannot inject — anything else is a programming error.
+_CHANNEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class Listener:
+    """Handle yielded by :func:`listen`. Wraps a dedicated autocommit connection
+    already registered (``LISTEN``) on a channel.
+
+    The single method :meth:`wait` blocks for the next notification or the
+    timeout. Notification *count* and *payload* are deliberately not surfaced:
+    the consumer's reaction to any wake is "drain from the durable cursor,"
+    which coalesces a burst, so only "did something arrive" matters.
+    """
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn: psycopg.Connection[Any]) -> None:
+        self._conn = conn
+
+    def wait(self, timeout: float) -> bool:
+        """Block up to *timeout* seconds for a notification.
+
+        Returns ``True`` if at least one notification arrived, ``False`` on
+        timeout. Lets connection-class errors propagate so the caller can fall
+        back to its poll backstop (see the processor driver, issue #71).
+        """
+        # psycopg 3.2+ `notifies()` blocks up to `timeout` and yields each
+        # pending notification; `stop_after=1` returns as soon as one arrives.
+        # An empty generator means the timeout elapsed with nothing pending.
+        for _ in self._conn.notifies(timeout=timeout, stop_after=1):
+            return True
+        return False
+
+
+@contextmanager
+def listen(channel: str, dsn: str) -> Iterator[Listener]:
+    """Open a dedicated autocommit connection, ``LISTEN`` on *channel*, yield a
+    :class:`Listener`.
+
+    The connection is held for the duration of the ``with`` block (typically a
+    long-running consumer's lifetime) and closed on exit. It is NOT drawn from
+    the pool — a session-scoped ``LISTEN`` on an autocommit connection is a
+    different connection shape than the pool provides (ADR-0015).
+
+    *channel* must be a bare SQL identifier (``LISTEN`` cannot bind it as a
+    parameter); a non-identifier raises :class:`ValueError`.
+    """
+    if not _CHANNEL_RE.match(channel):
+        raise ValueError(
+            f"LISTEN channel must be a bare SQL identifier, got {channel!r}"
+        )
+    conn = psycopg.connect(dsn, autocommit=True)
+    try:
+        conn.execute(f"LISTEN {channel}")
+        yield Listener(conn)
+    finally:
+        conn.close()

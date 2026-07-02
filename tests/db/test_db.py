@@ -239,3 +239,41 @@ class TestPoolAcquireTimeout:
             with db.transaction():
                 pass
         assert db.is_connection_error(excinfo.value)
+
+
+class TestListen:
+    """`db.listen()` LISTEN/NOTIFY session connection (ADR-0015).
+
+    `listen()` opens its own connection from the DSN and does not touch the
+    pool, so these tests pass `pg_dsn` directly. They exercise the public
+    contract: wait() returns True on a notification, False on timeout, and the
+    channel is validated as a bare identifier.
+    """
+
+    def test_wait_returns_true_when_notified(self, pg_dsn: str) -> None:
+        with db.listen("dg_test_chan", pg_dsn) as lst:
+            # NOTIFY from a separate connection; the listener must wake.
+            with psycopg.connect(pg_dsn, autocommit=True) as notifier:
+                notifier.execute("NOTIFY dg_test_chan")
+            assert lst.wait(timeout=5.0) is True
+
+    def test_wait_returns_false_on_timeout(self, pg_dsn: str) -> None:
+        with db.listen("dg_test_chan", pg_dsn) as lst:
+            # Nobody notifies — wait must time out and report False.
+            assert lst.wait(timeout=0.3) is False
+
+    def test_payload_is_irrelevant_count_coalesces(self, pg_dsn: str) -> None:
+        """A burst of payload-less NOTIFYs still satisfies a single wait() —
+        the consumer only needs to learn 'something happened' (issue #71)."""
+        with db.listen("dg_test_chan", pg_dsn) as lst:
+            with psycopg.connect(pg_dsn, autocommit=True) as notifier:
+                for _ in range(5):
+                    notifier.execute("NOTIFY dg_test_chan, ''")
+            assert lst.wait(timeout=5.0) is True
+
+    def test_rejects_non_identifier_channel(self, pg_dsn: str) -> None:
+        """LISTEN can't bind the channel as a parameter, so a non-identifier
+        (the injection vector) is refused before any SQL runs."""
+        with pytest.raises(ValueError):
+            with db.listen("bad; DROP TABLE spans", pg_dsn):
+                pass

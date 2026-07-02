@@ -40,11 +40,29 @@ function applyMissingParentFilter(rows, hideMissingParent) {
   return rows.filter((r) => r.parent_id === null);
 }
 
+function formatTime24Utc(iso) {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toISOString().slice(11, 19);
+  } catch (_e) {
+    return iso;
+  }
+}
+
 // Pure Node access. The browser script also loads this file via a
 // <script> tag and accesses the globals attached to window.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { dedupeByTraceId, applyMissingParentFilter };
+  module.exports = {
+    dedupeByTraceId,
+    applyMissingParentFilter,
+    formatTime24Utc,
+  };
 }
 if (typeof window !== 'undefined') {
-  window.RecentTraces = { dedupeByTraceId, applyMissingParentFilter };
+  window.RecentTraces = {
+    dedupeByTraceId,
+    applyMissingParentFilter,
+    formatTime24Utc,
+  };
 }

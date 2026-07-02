@@ -1,6 +1,6 @@
 """End-to-end blocklist tests (issue #9 acceptance criteria).
 
-Covers both pattern types (exact and prefix*), the blocked_span_counts upsert,
+Covers regex patterns (literal + wildcard), the blocked_span_counts upsert,
 the spans_blocked_total Prometheus counter, silent-success OTLP responses, and
 downstream invisibility via get_spans.
 """
@@ -21,19 +21,25 @@ from tests.harness.fixtures import OtlpHarness
 
 
 class TestBlocklistMatch:
-    def test_exact_pattern_matches(self) -> None:
+    def test_literal_pattern_matches(self) -> None:
         assert blocklist_match("/metrics") == "/metrics"
 
-    def test_exact_pattern_case_sensitive(self) -> None:
+    def test_pattern_case_sensitive(self) -> None:
         assert blocklist_match("/Metrics") is None
 
-    def test_prefix_glob_matches(self) -> None:
-        assert blocklist_match("otlp_receiver/export") == "otlp_receiver/*"
+    def test_regex_wildcard_matches(self) -> None:
+        assert blocklist_match("otlp_receiver/export") == r"otlp_receiver/.*"
 
-    def test_prefix_glob_exact_prefix_only_matches(self) -> None:
-        assert blocklist_match("otlp_receiver/") == "otlp_receiver/*"
+    def test_regex_wildcard_bare_prefix_matches(self) -> None:
+        assert blocklist_match("otlp_receiver/") == r"otlp_receiver/.*"
 
-    def test_prefix_glob_no_match_for_unrelated_name(self) -> None:
+    def test_regex_is_fully_anchored(self) -> None:
+        # A literal pattern must not match a name that merely contains it;
+        # match() uses re.fullmatch, so partial matches are rejected.
+        assert blocklist_match("x/metrics") is None
+        assert blocklist_match("/metrics/extra") is None
+
+    def test_regex_no_match_for_unrelated_name(self) -> None:
         assert blocklist_match("my-service/handler") is None
 
     def test_non_blocked_span_returns_none(self) -> None:
@@ -49,7 +55,30 @@ class TestBlocklistMatch:
         assert blocklist_match("GET /metrics") == "GET /metrics"
 
     def test_healthz_get_blocked(self) -> None:
-        assert blocklist_match("GET /healthz") == "GET /healthz"
+        assert blocklist_match("GET /healthz") == r"(GET|POST) /healthz.*"
+
+    def test_healthz_get_with_asgi_suffix_blocked(self) -> None:
+        # The real-world leak: Starlette OTel emits ' http send'/' http receive'
+        # child spans, which the old exact entry missed. (issue: healthz suffix)
+        assert blocklist_match("GET /healthz http send") == r"(GET|POST) /healthz.*"
+        assert (
+            blocklist_match("GET /healthz http receive") == r"(GET|POST) /healthz.*"
+        )
+
+    def test_healthz_post_blocked(self) -> None:
+        assert blocklist_match("POST /healthz") == r"(GET|POST) /healthz.*"
+
+    def test_healthz_subpath_blocked(self) -> None:
+        assert blocklist_match("GET /healthz/ready") == r"(GET|POST) /healthz.*"
+
+    def test_agent_card_dot_is_literal(self) -> None:
+        # The '.' in the agent-card path is escaped, so it matches literally and
+        # not as the regex any-char wildcard.
+        assert (
+            blocklist_match("GET /.well-known/agent-card.json")
+            == r"GET /\.well-known/agent-card\.json"
+        )
+        assert blocklist_match("GET /Xwell-knownXagent-cardXjson") is None
 
 
 # ---------------------------------------------------------------------------
@@ -57,26 +86,20 @@ class TestBlocklistMatch:
 # ---------------------------------------------------------------------------
 
 
-def test_invalid_pattern_rejected() -> None:
+def test_invalid_regex_rejected() -> None:
     from data_governance.processors.otlp_receiver.blocklist import (
         _validate,
     )
 
+    # Unbalanced group / bracket — does not compile as a regex.
     with pytest.raises(ValueError, match="invalid"):
-        _validate(("pre*fix",))
+        _validate(("(GET",))
 
 
 def test_valid_patterns_accepted() -> None:
     from data_governance.processors.otlp_receiver.blocklist import _validate
 
-    _validate(("/metrics", "prefix*", "exact-name"))
-
-
-def test_star_only_pattern_rejected() -> None:
-    from data_governance.processors.otlp_receiver.blocklist import _validate
-
-    with pytest.raises(ValueError):
-        _validate(("*",))
+    _validate(("/metrics", r"prefix.*", "exact-name", r"(GET|POST) /healthz.*"))
 
 
 def test_empty_pattern_rejected() -> None:
@@ -126,7 +149,19 @@ class TestBlocklistEndToEnd:
         )
         row = otlp_harness.rows.get(trace_id, span_id)
         assert row is None, "prefix-blocked span must not appear in spans"
-        assert _prometheus_blocked_count("otlp_receiver/*") == 1.0
+        assert _prometheus_blocked_count(r"otlp_receiver/.*") == 1.0
+
+    def test_healthz_asgi_suffix_span_not_in_spans(
+        self, otlp_harness: OtlpHarness
+    ) -> None:
+        """The real leak: ' http send' child spans of a /healthz probe."""
+        _metrics.make_registry()
+        trace_id, span_id = otlp_harness.client.send_http_span(
+            name="GET /healthz http send"
+        )
+        row = otlp_harness.rows.get(trace_id, span_id)
+        assert row is None, "healthz ASGI-suffix span must not appear in spans"
+        assert _prometheus_blocked_count(r"(GET|POST) /healthz.*") == 1.0
 
     def test_non_blocked_span_written_normally(self, otlp_harness: OtlpHarness) -> None:
         trace_id, span_id = otlp_harness.client.send_grpc_span(name="user.checkout")

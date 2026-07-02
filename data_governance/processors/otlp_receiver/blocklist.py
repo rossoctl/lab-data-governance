@@ -1,7 +1,9 @@
 """§3.1 ingest blocklist — span-name patterns dropped at the OTLP socket.
 
-Pattern grammar: exact strings or ``prefix*`` globs — nothing else. Mixed
-grammar in a single entry (e.g. ``pre*fix``) is rejected at import time.
+Pattern grammar: each entry is a Python regular expression, matched against
+the *whole* span name with :func:`re.fullmatch` (so patterns are fully
+anchored — a literal entry does not match a name that merely contains it).
+Entries that do not compile as a regex are rejected at import time.
 
 Blocked spans are silently dropped before any ``spans`` write; they are
 counted in ``blocked_span_counts`` and in the ``spans_blocked_total``
@@ -19,45 +21,55 @@ __all__ = ["match"]
 # Pattern list
 # ---------------------------------------------------------------------------
 
-# Each entry is an exact span name OR a ``prefix*`` glob (star only at end).
-# Reviewed by PR; not runtime-configurable.
+# Each entry is a regex matched with re.fullmatch. Literal paths need no
+# wildcard; use ``.*`` for "any suffix" and escape regex metacharacters (e.g.
+# ``\.``) that should match literally. Reviewed by PR; not runtime-configurable.
 _PATTERNS: tuple[str, ...] = (
-    # Kubernetes liveness / readiness probe spans
-    "GET /healthz",
-    "GET /readyz",
-    "GET /livez",
-    "/healthz",
-    "/readyz",
-    "/livez",
+    # Kubernetes liveness / readiness probe spans. The healthz entry also
+    # covers the ' http send'/' http receive' ASGI child spans the Starlette
+    # OTel instrumentation emits (and POST probes), via the trailing ``.*``.
+    r"(GET|POST) /healthz.*",
+    r"GET /readyz",
+    r"GET /livez",
+    r"/healthz",
+    r"/readyz",
+    r"/livez",
     # Prometheus /metrics scrape paths
-    "GET /metrics",
-    "/metrics",
-    # A2A agent-card discovery polling
-    "GET /.well-known/agent-card.json",
-    "GET /.well-known/agent-card.json http send",
-    "GET /.well-known/agent-card.json http receive",
+    r"GET /metrics",
+    r"/metrics",
+    # A2A agent-card discovery polling ('.' escaped so it matches literally)
+    r"GET /\.well-known/agent-card\.json",
+    r"GET /\.well-known/agent-card\.json http send",
+    r"GET /\.well-known/agent-card\.json http receive",
     # Receiver self-spans (if the receiver instruments itself)
-    "otlp_receiver/*",
+    r"otlp_receiver/.*",
 )
 
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
-_VALID_PATTERN = re.compile(r"^[^*]+\*?$")
 
+def _validate(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    """Compile each entry, rejecting any that is empty or not a valid regex.
 
-def _validate(patterns: tuple[str, ...]) -> None:
-    """Reject any entry that is not a valid exact string or ``prefix*`` glob."""
+    Returns the compiled patterns (parallel to *patterns*) so the module can
+    match against pre-compiled objects while still reporting the source string.
+    """
+    compiled: list[re.Pattern[str]] = []
     for p in patterns:
-        if not _VALID_PATTERN.match(p):
+        if p == "":
+            raise ValueError("blocklist pattern is invalid: empty string")
+        try:
+            compiled.append(re.compile(p))
+        except re.error as exc:
             raise ValueError(
-                f"blocklist pattern {p!r} is invalid: "
-                "only exact strings and 'prefix*' globs are allowed"
-            )
+                f"blocklist pattern {p!r} is invalid: {exc}"
+            ) from exc
+    return tuple(compiled)
 
 
-_validate(_PATTERNS)
+_COMPILED: tuple[re.Pattern[str], ...] = _validate(_PATTERNS)
 
 # ---------------------------------------------------------------------------
 # Match function
@@ -67,15 +79,11 @@ _validate(_PATTERNS)
 def match(span_name: str) -> str | None:
     """Return the first matching pattern if *span_name* is blocklisted, else ``None``.
 
-    Tries exact patterns first, then prefix globs. The returned value is
-    the pattern string itself — callers use it as the label for
-    ``blocked_span_counts`` and ``spans_blocked_total{pattern}``.
+    Patterns are tried in list order and matched with :func:`re.fullmatch`.
+    The returned value is the pattern *source* string — callers use it as the
+    label for ``blocked_span_counts`` and ``spans_blocked_total{pattern}``.
     """
-    for pattern in _PATTERNS:
-        if pattern.endswith("*"):
-            if span_name.startswith(pattern[:-1]):
-                return pattern
-        else:
-            if span_name == pattern:
-                return pattern
+    for pattern, compiled in zip(_PATTERNS, _COMPILED):
+        if compiled.fullmatch(span_name):
+            return pattern
     return None
