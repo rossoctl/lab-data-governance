@@ -149,8 +149,14 @@ When inferring new edges (interactions) make sure to adjust the order based on t
 
 ## Step 2.d - merge identical interactions (execution graph)
 
-this step identifies nodes and/or edges (inferred or observed) in the execution graph representing the same interaction - meaning, Nodes and edges that represent the same processing that took place at the same time. 
-Once these are detected, these nodes and edges are merged. 
+this step identifies cases where a single interaction is represented more than once in the execution graph.
+Once these are detected, these chains are merged as a unit. 
+
+Specifically, an interaction is a chain (subgraph): Blue source → transport region → Blue target with response legs. Transport region is one or more Teal (and possibly White) nodes (inferred server or observed transport chain). 
+The goal is to identify chains that represent the same interaction (same processing at the same time) and merges them as a unit — the aligned Blue endpoints and the transport regions collapse pairwise onto one survivor. 
+Each side may be inferred or observed. Matching uses {proximity, same tool name, same execution time, same input/output, inferred-vs-observed, same scope}; the survivor keeps the time of the span that created the interaction.
+
+
 
 For example, Assume a trace including a span for LLM and another span for a tool call
 the execution graph may include nodes inferred from the first span including
