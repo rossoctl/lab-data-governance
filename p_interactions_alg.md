@@ -100,7 +100,7 @@ we can infer:
 2. Similarly a tool call Span such as openinference.instrumentation.claude_agent_sdk.{tool_name}
 represent a call to a tool from which we can infer the following : 
   1. a new node representing the tool (target) - Agentic scope node "Blue"
-  2. A new node representing a server - transportation node "Teal"
+  2. A new node representing a transportation node "Teal" (e.g. server)
   3. New edges:
     - from the agent tool call (source) to server
     - from server to the tool itself (target)
@@ -112,7 +112,7 @@ While the complete span represents a call to the LLM - this specific attribute i
 We can therefore infer two nodes and three edges.
 Inferred nodes:
   1. A new node representing the tool call (The source) - Agentic scope "blue"
-  2. A new node representing a server - transportation node "Teal"
+  2. A new node representing a transportation node "Teal" (e.g. server)
   3. A new node representing the tool itself (target) - agent scope "blue"
   4. new Inferred edges:
     - from the current span to the tool call
@@ -149,9 +149,8 @@ When inferring new edges (interactions) make sure to adjust the order based on t
 
 ## Step 2.d - merge identical interactions (execution graph)
 
-this step identifies nodes and/or edges in the execution graph representing the same 
-interaction - meaning, Nodes and edges that represent the same processing that took place at the same time. 
-Once these are detected, these nodes and edges are merged. The process accounts for merging inferred/inferred, inferred/observed as well as observed/observed nodes or edges.
+this step identifies nodes and/or edges (inferred or observed) in the execution graph representing the same interaction - meaning, Nodes and edges that represent the same processing that took place at the same time. 
+Once these are detected, these nodes and edges are merged. 
 
 For example, Assume a trace including a span for LLM and another span for a tool call
 the execution graph may include nodes inferred from the first span including
@@ -193,9 +192,9 @@ Consider the Blue and Teal nodes in the execution flow graph.
 First we are going to create subgraphs of execution graph nodes by simply dropping teal nodes. 
 Each subgraph can contain inferred nodes, observed nodes or both - But these can only be blue or white. 
 
-Next, each sub graph represented by connected Blue and White nodes will become a new node in the entity graph - Effectively fusing all nodes from the Execution flow subgraph into a single entity node.
+Next, each sub graph represented by connected Blue and White nodes will become a new node in the entity graph - Effectively fusing all nodes (inferred or observed) from the Execution flow subgraph into a single entity node.
 
-Note, every path connecting subgraphs (entity nodes) should be fused to a single edge connecting these entity nodes.
+Note, every path connecting subgraphs (entity nodes) should be fused to a single edge connecting these entity nodes. In other words: collapse each Teal transport chain between two Blue components into one interaction 
 
 
 Goal: Each node in the entity graph should be given a key. 
