@@ -172,6 +172,7 @@ The entity graph is going to be constructed in as follows:
   Each subgraph can contain inferred nodes, observed nodes or both - But these can only be Blue or White. 
 
   Next, for all nodes in each sub graph represented by connected Blue and White nodes create a group.
+  (Groups without blue can be ignored)
 
 2. Semantically:
   Combine groups representing the same entity into a single group
