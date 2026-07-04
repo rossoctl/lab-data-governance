@@ -135,7 +135,7 @@
       }
 
       const nameTd = document.createElement('td');
-      // display_name is "unknown" until Step 3.c lands richer naming; the
+      // display_name is "unknown" until Step 3.b lands richer naming; the
       // natural_key (e.g. tool:get_weather) is the most informative thing
       // we currently have.
       const nameLabel = e.natural_key && e.natural_key !== 'unknown'

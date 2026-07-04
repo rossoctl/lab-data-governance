@@ -218,8 +218,8 @@
     <span style="flex:1"></span>
     <span id="view-switcher" style="font-size:0.85rem">
       <button id="view-tree-btn" class="view-btn active" data-view="tree">Span tree</button>
-      <button id="view-flow-btn" class="view-btn" data-view="flow">Execution flow (proto)</button>
       <button id="view-graph-btn" class="view-btn" data-view="graph">Graphs (proto)</button>
+      <button id="view-flow-btn" class="view-btn" data-view="flow">Entities and interactions (proto)</button>
     </span>
   </header>
   <style>
@@ -261,8 +261,8 @@
       font-size: 0.75rem; font-family: ui-monospace, monospace;
     }
     .col-white { background: #2a2a2a; color: #aaaaaa; border: 1px solid #3a3a3a; }
-    .col-gray  { background: #1c2a3a; color: #79c8ff; }
-    .col-black { background: #1c1c1c; color: #f0f0f0; border: 1px solid #444; }
+    .col-blue  { background: #1c2a3a; color: #79c8ff; }
+    .col-teal  { background: #103030; color: #5fe6d0; border: 1px solid #2a5a54; }
     .marker-pill {
       display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
       font-size: 0.7rem; font-family: ui-monospace, monospace;
@@ -277,8 +277,9 @@
       font-size: 0.75rem; font-family: ui-monospace, monospace;
     }
     .ek-white { background: #2a2a2a; color: #aaaaaa; border: 1px solid #3a3a3a; }
-    .ek-gray  { background: #1c2a3a; color: #79c8ff; }
-    .ek-black { background: #1c1c1c; color: #f0f0f0; border: 1px solid #444; }
+    .ek-blue  { background: #1c2a3a; color: #79c8ff; }
+    .ek-teal  { background: #103030; color: #5fe6d0; border: 1px solid #2a5a54; }
+    .ek-interaction { background: #1c1c1c; color: #f0f0f0; border: 1px solid #444; }
     .err-cell { color: #f85149; }
     .ok-cell { color: #6acf6a; }
     .pl-link { color: #92c5f9; text-decoration: underline dotted; cursor: pointer; }
@@ -337,8 +338,8 @@
         <div id="graph-content" style="display:none">
           <div id="graph-subtab-bar" style="margin:0.75rem 0 1rem">
             <button class="graph-subtab-btn active" data-subtab="base">Step 1 — Base <span id="graph-base-summary" style="color:#888;font-weight:normal;font-size:0.75rem"></span></button>
-            <button class="graph-subtab-btn" data-subtab="colored">Steps 2–4 — Execution graph (before fuse) <span id="graph-colored-summary" style="color:#888;font-weight:normal;font-size:0.75rem"></span></button>
-            <button class="graph-subtab-btn" data-subtab="entity">Step 5 — Entity graph (after fuse) <span id="graph-entity-summary" style="color:#888;font-weight:normal;font-size:0.75rem"></span></button>
+            <button class="graph-subtab-btn" data-subtab="colored">Step 2 — Execution graph <span id="graph-colored-summary" style="color:#888;font-weight:normal;font-size:0.75rem"></span></button>
+            <button class="graph-subtab-btn" data-subtab="entity">Step 3 — Entity graph <span id="graph-entity-summary" style="color:#888;font-weight:normal;font-size:0.75rem"></span></button>
           </div>
           <div id="graph-subtab-base">
             <table class="flow-table" id="graph-base-nodes-table">

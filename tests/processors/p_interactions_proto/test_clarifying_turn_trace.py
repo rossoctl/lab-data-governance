@@ -37,7 +37,7 @@ from data_governance.processors.p_interactions_proto.extractor import extract
 # not calls.
 EXPECTED_ENTITIES = {
     # The observed agent: the only side of the call that emitted spans.
-    "dl-demo-travel-advisor": False,
+    "agent:travel-advisor": False,
     # The LLM it calls once — unobserved peer, stubbed (inferred).
     "llm:claude-haiku-4-5-20251001": True,
 }
@@ -60,7 +60,7 @@ def test_one_observed_agent_one_inferred_llm(clarifying_turn_trace_spans):
     observed = [e for e in result.entities if not e.inferred]
     inferred = [e for e in result.entities if e.inferred]
 
-    assert [e.natural_key for e in observed] == ["dl-demo-travel-advisor"]
+    assert [e.natural_key for e in observed] == ["agent:travel-advisor"]
     assert {e.natural_key for e in inferred} == {
         "llm:claude-haiku-4-5-20251001",
     }
@@ -95,8 +95,8 @@ def test_no_tool_entities(clarifying_turn_trace_spans):
 # agent->LLM (request) and LLM->agent (response). No tool calls, so that is
 # the whole interaction set.
 EXPECTED_DIRECTED_PAIRS = {
-    ("dl-demo-travel-advisor", "llm:claude-haiku-4-5-20251001"): 1,
-    ("llm:claude-haiku-4-5-20251001", "dl-demo-travel-advisor"): 1,
+    ("agent:travel-advisor", "llm:claude-haiku-4-5-20251001"): 1,
+    ("llm:claude-haiku-4-5-20251001", "agent:travel-advisor"): 1,
 }
 
 

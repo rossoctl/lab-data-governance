@@ -11,12 +11,12 @@ Scratch tables written:
     proto_base_nodes, proto_base_edges
         — base graph after Step 1 (white nodes + traceparent edges)
     proto_colored_nodes, proto_colored_edges
-        — execution graph BEFORE the fuse (Steps 2–4): Gray/Black nodes,
+        — execution graph BEFORE entity formation (Step 2): Blue/Teal nodes,
           additive edge colors, inferred nodes/edges, combined-span duplicates,
-          the Step 4 node+edge merge, and between-boundary flag annotations
+          the Step 2.d node+edge merge, and between-boundary flag annotations
     proto_entity_nodes, proto_entity_edges
-        — entity graph AFTER the fuse (Step 5): one node per fused component,
-          named per Step 5.b
+        — entity graph AFTER Step 3: one node per combined group (Step 3.a),
+          one interaction per Teal transport chain (Step 3.b)
 
   Final output (same shape as linear-pass prototype for comparison):
     proto_entities
@@ -32,6 +32,7 @@ import sys
 
 from data_governance import db, retrieval
 
+from .builder import _node_is_boundary
 from .extractor import ExtractResult, extract
 
 
@@ -78,15 +79,15 @@ CREATE TABLE proto_base_edges (
   trace_id     text NOT NULL
 );
 
--- Steps 2–4 colored execution graph (before fuse)
+-- Step 2 colored execution graph (before fuse)
 CREATE TABLE proto_colored_nodes (
   id                  text PRIMARY KEY,
   span_id             text NOT NULL,
   scope               text NOT NULL,
-  color               text NOT NULL,            -- white | gray | black
+  color               text NOT NULL,            -- white | blue | teal
   is_boundary         boolean NOT NULL DEFAULT false,
   is_target_duplicate boolean NOT NULL DEFAULT false,
-  -- Set by Step 2.a / Step 4 on the materialised inferred (e.g. unobserved-peer)
+  -- Set by Step 2.c / Step 2.d on the materialised inferred (e.g. unobserved-peer)
   -- node. Per ADR-0007: this column is the sole sanctioned signal for
   -- "inferred node"; do not parse the `label` column for that purpose.
   is_inferred         boolean NOT NULL DEFAULT false,
@@ -100,20 +101,20 @@ CREATE TABLE proto_colored_edges (
   id           text PRIMARY KEY,
   from_node_id text NOT NULL REFERENCES proto_colored_nodes(id),
   to_node_id   text NOT NULL REFERENCES proto_colored_nodes(id),
-  colors       text NOT NULL,                   -- comma-joined subset of {white,gray,black}
+  colors       text NOT NULL,                   -- comma-joined subset of {white,blue,teal}
   kind         text NOT NULL,                   -- highest applied color (for display)
   trace_id     text NOT NULL
 );
 
--- Step 5 entity graph (after fuse)
+-- Step 3 entity graph (after fuse)
 CREATE TABLE proto_entity_nodes (
   id                 text PRIMARY KEY,
   label              text NULL,
   attributes         jsonb NOT NULL DEFAULT '{}',
   contains_boundary  boolean NOT NULL DEFAULT false,
-  contains_black     boolean NOT NULL DEFAULT false,
-  contains_gray      boolean NOT NULL DEFAULT false,
-  -- Per ADR-0007 Step 5.a: true iff every absorbed Black node was inferred.
+  contains_blue      boolean NOT NULL DEFAULT false,
+  contains_teal      boolean NOT NULL DEFAULT false,
+  -- Per ADR-0007 Step 3.a: true iff every absorbed node was inferred.
   -- This column is the sole sanctioned signal for "inferred entity"; do not
   -- parse the `label` column for that purpose.
   inferred           boolean NOT NULL DEFAULT false,
@@ -138,8 +139,8 @@ CREATE TABLE proto_entity_edges (
 CREATE TABLE proto_entities (
   id             text PRIMARY KEY,
   -- natural_key carries the kind as a typed prefix (`llm:` / `tool:` /
-  -- `agent:`) per ADR-0007 "Natural-key prefixes are part of the public
-  -- algorithm vocabulary." Consumers split on `:` rather than reading a
+  -- `agent:`) per ADR-0007 "Natural-key prefixes (an implementation construct,
+  -- not a spec vocabulary)". Consumers split on `:` rather than reading a
   -- separate kind column.
   natural_key    text NOT NULL,
   display_name   text NOT NULL,
@@ -242,8 +243,8 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
                 "is_inferred, flagged, label, attributes, trace_id) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (node.id, node.span_id, node.scope, node.color,
-                 node.is_boundary, node.is_target_duplicate, node.is_inferred,
-                 node.flagged, node.label,
+                 _node_is_boundary(node, span_by_id), node.is_target_duplicate,
+                 node.is_inferred, node.flagged, node.label,
                  json.dumps(node.attributes, default=str), trace_id),
             )
         for edge in result.colored_graph.edges:
@@ -256,16 +257,16 @@ def _write_results(trace_id: str, result: ExtractResult, span_by_id) -> None:
                  colors_csv, edge.kind, trace_id),
             )
 
-        # --- Step 5 entity graph (after fuse) ---
+        # --- Step 3 entity graph (after fuse) ---
         for node in result.entity_graph.nodes:
             scopes = _scopes_for_entity(node, span_by_id)
             txn.execute(
                 "INSERT INTO proto_entity_nodes("
-                "id, label, attributes, contains_boundary, contains_black, "
-                "contains_gray, inferred, scopes, trace_id) "
+                "id, label, attributes, contains_boundary, contains_blue, "
+                "contains_teal, inferred, scopes, trace_id) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (node.id, node.label, json.dumps(node.attributes, default=str),
-                 node.contains_boundary, node.contains_black, node.contains_gray,
+                 node.contains_boundary, node.contains_blue, node.contains_teal,
                  node.inferred, scopes, trace_id),
             )
             for sid in node.span_ids:
@@ -368,12 +369,14 @@ def main() -> int:
         print(f"  {len(result.base_graph.nodes)} nodes  {len(result.base_graph.edges)} edges")
 
         print(f"\n--- colored graph ---")
-        n_gray = sum(1 for n in result.colored_graph.nodes if n.color == "gray")
-        n_black = sum(1 for n in result.colored_graph.nodes if n.color == "black")
+        n_blue = sum(1 for n in result.colored_graph.nodes if n.color == "blue")
+        n_teal = sum(1 for n in result.colored_graph.nodes if n.color == "teal")
         n_dup = sum(1 for n in result.colored_graph.nodes if n.is_target_duplicate)
         n_inferred = sum(1 for n in result.colored_graph.nodes if n.is_inferred)
         n_flag = sum(1 for n in result.colored_graph.nodes if n.flagged)
-        print(f"  {n_gray} gray, {n_black} black "
+        # Boundary count is reported in the notes (it needs span facts to
+        # re-derive for observed nodes); the colored-graph note line has it.
+        print(f"  {n_blue} blue, {n_teal} teal "
               f"({n_dup} target duplicates, {n_inferred} inferred)  "
               f"{len(result.colored_graph.edges)} edges  {n_flag} flagged")
 

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P-interactions proto — Architecture</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1d222b;
+    --ink: #e6e9ef;
+    --muted: #9aa4b2;
+    --line: #2a303b;
+    --white: #cbd5e1;
+    --blue: #5b8def;
+    --teal: #2dd4bf;
+    --amber: #f5a623;
+    --violet: #a78bfa;
+    --green: #34d399;
+    --code: #e7c07b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px;
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 15px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 40px 0 14px; font-weight: 600; }
+  .sub { color: var(--muted); margin: 0 0 8px; }
+  code { font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; color: var(--code); font-size: .92em; }
+
+  .box {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .box .title { font-weight: 700; margin-bottom: 4px; }
+  .box .desc { color: var(--muted); font-size: 13px; }
+
+  .arrow { text-align: center; color: var(--muted); font-size: 20px; line-height: 1; margin: 6px 0; }
+  .arrow small { display:block; font-size: 11px; letter-spacing: .04em; }
+
+  /* top-level data flow */
+  .flow { display: grid; grid-template-columns: 1fr auto 2fr auto 1fr; align-items: center; gap: 10px; }
+  .flow .a { font-size: 22px; color: var(--muted); text-align:center; }
+  .flow .cap { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+  /* component diagram grid */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connector { text-align:center; color: var(--muted); font-size: 12px; margin: -2px 0; }
+
+  .tag { display:inline-block; font-size: 11px; font-weight:700; padding: 1px 7px; border-radius: 20px; margin-left: 8px; vertical-align: middle; }
+  .tag.algo   { background: rgba(91,141,239,.18);  color: var(--blue);   border:1px solid rgba(91,141,239,.4); }
+  .tag.iso    { background: rgba(45,212,191,.16);  color: var(--teal);   border:1px solid rgba(45,212,191,.4); }
+  .tag.data   { background: rgba(167,139,250,.16); color: var(--violet); border:1px solid rgba(167,139,250,.4); }
+  .tag.facade { background: rgba(245,166,35,.16);  color: var(--amber);  border:1px solid rgba(245,166,35,.4); }
+
+  ul.steps { margin: 8px 0 0; padding-left: 0; list-style: none; font-size: 13px; }
+  ul.steps li { padding: 2px 0; color: var(--muted); }
+  ul.steps li b { color: var(--ink); }
+  ul.steps .s { display:inline-block; width: 40px; color: var(--blue); font-weight:700; }
+
+  ul.plain { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
+  ul.plain li { padding: 1px 0; }
+
+  /* layers pipeline */
+  .layers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; align-items: stretch; }
+  .layer { background: var(--panel); border:1px solid var(--line); border-radius: 10px; padding: 12px; text-align:center; position:relative; }
+  .layer .lt { font-weight: 700; font-size: 13px; }
+  .layer .ld { color: var(--muted); font-size: 12px; margin-top:3px; }
+  .layer .tbl { margin-top: 10px; font-size: 11px; }
+  .layer .tbl code { color: var(--violet); display:block; }
+  .larrow { display:flex; align-items:center; justify-content:center; color: var(--muted); }
+  .pipeline { display:grid; grid-template-columns: 1fr 20px 1fr 20px 1fr 20px 1fr; gap: 4px; align-items:stretch; }
+
+  .swatch { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+  .legend { display:flex; gap:18px; flex-wrap:wrap; font-size:13px; color:var(--muted); margin-top:10px; }
+
+  /* responsibility table */
+  table { width:100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  th, td { text-align:left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight:600; font-size:12px; letter-spacing:.05em; text-transform:uppercase; }
+  td:first-child code { color: var(--teal); }
+
+  .foot { margin-top: 34px; color: var(--muted); font-size: 12px; border-top:1px solid var(--line); padding-top: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>P-interactions prototype — Architecture</h1>
+  <p class="sub">Derives agentic <b>entities</b> and their <b>interactions</b> from OTel spans, via a single base graph progressively colored by scope semantics. See <code>docs/adr/0007-p-interactions-graph-algorithm.md</code>. <b>Throwaway</b> logic prototype.</p>
+
+  <!-- ───────────── Top-level data flow ───────────── -->
+  <h2>Data flow</h2>
+  <div class="flow">
+    <div>
+      <div class="box"><div class="title">Postgres — <code>spans</code></div><div class="desc">OTel spans for one trace</div></div>
+    </div>
+    <div class="a">▶</div>
+    <div>
+      <div class="box" style="border-color:rgba(91,141,239,.4)">
+        <div class="title">p_interactions_proto pipeline</div>
+        <div class="desc"><code>extract()</code>: spans → 3 graph layers → output rows. Driven by <code>cli.py</code> or the API endpoint.</div>
+      </div>
+    </div>
+    <div class="a">▶</div>
+    <div>
+      <div class="box"><div class="title">Postgres — <code>proto_*</code></div><div class="desc">scratch tables the UI reads</div></div>
+    </div>
+  </div>
+
+  <!-- ───────────── Component diagram ───────────── -->
+  <h2>Components &amp; dependencies</h2>
+
+  <div class="box" style="border-color:var(--line); margin-bottom:14px;">
+    <div class="title">entry points &nbsp;·&nbsp; <code>cli.py</code> &nbsp;/&nbsp; <code>POST /proto/process/&lt;trace_id&gt;</code></div>
+    <div class="desc">fetch spans (one trace) → <code>extract()</code> → drop/recreate &amp; write <code>proto_*</code> tables</div>
+  </div>
+  <div class="arrow">│<small>spans</small>▼</div>
+
+  <div class="box" style="border-color:var(--line); margin-bottom:16px;">
+    <div class="title">extractor.py <span class="tag facade">orchestrator</span></div>
+    <div class="desc">Runs the pipeline in order; snapshots the base graph (after Step 1) and the colored graph (after Step 2.d); derives <code>ProtoEntity</code> / <code>ProtoInteraction</code> / <code>ProtoPayload</code> rows. Interaction timing follows the <b>anchor span</b>.</div>
+    <ul class="steps" style="margin-top:10px">
+      <li><span class="s">S1</span> → <span class="s">S2.a/b</span> → <span class="s">S2.c</span> → <span class="s">S2.d</span> → <span class="s">S3.a</span> → <span class="s">S3.b</span></li>
+    </ul>
+  </div>
+
+  <div class="cols">
+    <!-- LEFT: builder -> graph -->
+    <div class="stack">
+      <div class="box" style="border-color:rgba(91,141,239,.45)">
+        <div class="title">builder.py <span class="tag algo">the algorithm</span></div>
+        <ul class="steps">
+          <li><span class="s">1</span><b>build_base_graph</b> — node/span, White traceparent edges</li>
+          <li><span class="s">2.a</span><b>color_transport</b> — Teal (httpx/starlette/asgi)</li>
+          <li><span class="s">2.b</span><b>color_agentic</b> — Blue + Blue chain edges</li>
+          <li><span class="s">2.c</span><b>duplicate_combined_nodes</b> (case 1)</li>
+          <li><span class="s"></span><b>infer_tool_calls_from_attributes</b> (case 3)</li>
+          <li><span class="s"></span><b>synthesize_missing_peers</b> (one-sided stub)</li>
+          <li><span class="s"></span><b>infer_agent_from_bare_leaf_llms</b> (case 4)</li>
+          <li><span class="s">2.d</span><b>merge_identical_interactions</b></li>
+          <li><span class="s">3.a/3.b</span><b>build_entity_graph</b> — drop Teal, group components (3.a nodes) + one interaction per Teal chain (3.b edges)</li>
+          <li><span class="s">3.a</span><b>combine_identical_entities</b> — semantic combine of same-entity groups</li>
+        </ul>
+      </div>
+      <div class="connector">│ operates on ▼</div>
+      <div class="box" style="border-color:rgba(167,139,250,.45)">
+        <div class="title">graph.py <span class="tag data">data structures</span></div>
+        <ul class="plain">
+          <li><b>BaseGraph</b>: <code>Node</code>, <code>Edge</code> — color, <code>is_inferred</code>, <code>order</code>, <code>replaces</code></li>
+          <li><b>EntityGraph</b>: <code>EntityNode</code>, <code>EntityEdge</code> — fuse output</li>
+        </ul>
+        <div class="desc" style="margin-top:8px">Inferred identity is a <b>boolean field</b>, never label parsing.</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: adapters -> classifiers -->
+    <div class="stack">
+      <div class="box" style="border-color:rgba(45,212,191,.45)">
+        <div class="title">adapters.py <span class="tag iso">isolation layer</span></div>
+        <div class="desc">The <b>only</b> place raw OTel attribute keys are read. One <code>SpanAdapter</code> per <code>(scope, framework)</code> → typed <code>SpanFacts</code>.</div>
+        <ul class="plain">
+          <li>openai_agents · claude_agent_sdk · anthropic</li>
+          <li>google_adk · strands_agents · mcp</li>
+          <li><code>*</code> — generic openinference fallback</li>
+        </ul>
+        <div class="desc" style="margin-top:8px"><code>_VersionedSchema</code> tables = <b>schema drift</b> (declarative). Span-name parsing = <b>behaviour drift</b> (in code). <code>is_transport_scope</code> · dispatch.</div>
+      </div>
+      <div class="connector">▲ SpanFacts &nbsp;·&nbsp; facade ▼</div>
+      <div class="box" style="border-color:rgba(245,166,35,.45)">
+        <div class="title">classifiers.py <span class="tag facade">thin facade</span></div>
+        <div class="desc"><code>SpanFacts</code> → <code>AgenticClassification</code>. A shim the builder consumes — edit <code>adapters.py</code>, not this.</div>
+      </div>
+    </div>
+  </div>
+
+  <p class="sub" style="margin-top:14px; font-size:13px">
+    Dependency direction: <code>cli → extractor → { builder → graph, adapters }</code>; <code>classifiers</code> is a facade over <code>adapters</code>; <code>adapters</code> is the sole boundary against raw OTel vocabulary.
+  </p>
+
+  <!-- ───────────── Graph layers ───────────── -->
+  <h2>Three graph layers (each persisted for inspection)</h2>
+  <div class="pipeline">
+    <div class="layer">
+      <div class="lt">BASE GRAPH</div>
+      <div class="ld">all White · one node/span · traceparent edges</div>
+      <div class="tbl"><code>proto_base_*</code></div>
+    </div>
+    <div class="larrow">▶</div>
+    <div class="layer">
+      <div class="lt">COLORED EXEC GRAPH</div>
+      <div class="ld"><span class="swatch" style="background:var(--blue)"></span>Blue <span class="swatch" style="background:var(--teal)"></span>Teal · inferred nodes + servers · merged</div>
+      <div class="tbl"><code>proto_colored_*</code></div>
+    </div>
+    <div class="larrow">▶</div>
+    <div class="layer">
+      <div class="lt">ENTITY GRAPH</div>
+      <div class="ld">Teal dropped · components fused → entities + interactions</div>
+      <div class="tbl"><code>proto_entity_*</code></div>
+    </div>
+    <div class="larrow">▶</div>
+    <div class="layer" style="border-color:rgba(52,211,153,.45)">
+      <div class="lt">OUTPUT ROWS</div>
+      <div class="ld">final derived rows</div>
+      <div class="tbl">
+        <code>proto_entities</code>
+        <code>proto_interactions</code>
+        <code>proto_interaction_spans</code>
+        <code>proto_interaction_payloads</code>
+      </div>
+    </div>
+  </div>
+  <div class="legend">
+    <span><span class="swatch" style="background:var(--white)"></span>White — unassigned scope</span>
+    <span><span class="swatch" style="background:var(--blue)"></span>Blue — agentic (openinference)</span>
+    <span><span class="swatch" style="background:var(--teal)"></span>Teal — transport (httpx/starlette/asgi + inferred servers)</span>
+  </div>
+
+  <!-- ───────────── Responsibility table ───────────── -->
+  <h2>Responsibilities</h2>
+  <table>
+    <thead><tr><th>Component</th><th>Role</th><th>Key rule</th></tr></thead>
+    <tbody>
+      <tr><td><code>cli.py</code></td><td>Driver: fetch → extract → write scratch tables</td><td>Drops/recreates <code>proto_*</code> each run (one trace)</td></tr>
+      <tr><td><code>extractor.py</code></td><td>Orchestrates pipeline, derives output rows</td><td>Interaction timing follows the <b>anchor span</b></td></tr>
+      <tr><td><code>builder.py</code></td><td>The algorithm (Steps 1–3)</td><td>Coloring additive; cross-entity call = route through a Teal server</td></tr>
+      <tr><td><code>adapters.py</code></td><td>Per-<code>(scope, framework)</code> → <code>SpanFacts</code></td><td><b>Only</b> place raw OTel attribute keys are read</td></tr>
+      <tr><td><code>classifiers.py</code></td><td>Facade <code>SpanFacts → AgenticClassification</code></td><td>Shim; edit adapters, not this</td></tr>
+      <tr><td><code>graph.py</code></td><td><code>BaseGraph</code> / <code>EntityGraph</code> dataclasses</td><td>Inferred identity = boolean field, never label</td></tr>
+    </tbody>
+  </table>
+
+  <div class="foot">
+    Generated from a code review of <code>data_governance/processors/p_interactions_proto/</code> and ADR-0007. Throwaway prototype — to be folded into <code>processors/p_interactions/</code> or rejected.
+  </div>
+
+</div>
+</body>
+</html>

@@ -2,90 +2,100 @@
 
 The P-interactions processor derives agentic entities and their interactions
 from OTel spans using a single base graph that is progressively colored by
-agentic-scope semantics, rather than linear span-pattern matching or a stack of
+scope semantics, rather than linear span-pattern matching or a stack of
 per-scope graphs that are merged at the end. This was chosen because the linear
 approach requires hard-coded heuristics for each span pattern and cannot
 represent partial instrumentation cleanly, and because the per-scope-then-merge
 approach pushes structural decisions into a cross-scope merge step that is hard
 to inspect. A single colored base graph makes both the trace structure and the
-agentic semantics explicit and inspectable in one place.
+scope semantics explicit and inspectable in one place.
 
 This ADR records the design as it tracks `p_interactions_alg.md` (the
-human-owned algorithm spec). Where the current implementation realises only a
-subset of the spec, the text says so explicitly: the algorithm vocabulary and
-step ordering below follow the spec, and per-section notes flag what the code
-implements today versus what is deferred.
+human-owned algorithm spec). The implementation now realises the spec's full
+White/Blue/Teal pipeline (transport coloring, Teal server routing, the case-4
+inferred agent, and the two-graph merge split); the algorithm vocabulary and
+step ordering below follow the spec, and per-section notes record how each step
+is implemented and what remains deferred.
+
+> **Spec revision this ADR tracks.** The human spec was restructured into a
+> **three top-level step** shape with a **color-based** node vocabulary:
+> **Step 1** base (White) graph → **Step 2** enrich the graph with scoped
+> semantics (2.a transport → Teal, 2.b agentic → Blue, 2.c derive inferred
+> nodes/edges, 2.d merge identical interactions on the execution graph) →
+> **Step 3** entity graph (3.a create the entity-graph *nodes* — group
+> connected Blue+White subgraphs, then combine same-entity groups; 3.b create
+> the entity-graph *edges* — one interaction per Teal transport chain). This ADR
+> follows that numbering. Cross-entity calls are the inferred Teal servers routed
+> in Step 2.c and dropped when the entity nodes are formed in Step 3.a; there is
+> no separate cross-entity edge signal.
 
 ## Definitions
 
-The algorithm uses two orthogonal vocabularies for nodes — one describes the
-**role** the node plays in an interaction, the other describes the
-**provenance** of the node (was it recorded by a real span, or inferred from
-one). A third vocabulary — `SpanFacts` — sits between the raw spans and the
-algorithm and is described under "Adapter layer" below.
+The algorithm colors nodes and edges to layer scope semantics onto a single
+base graph. Two orthogonal vocabularies apply to a node — its **color**
+(which scope it belongs to) and its **provenance** (was it recorded by a real
+span, or inferred from one). A third vocabulary — `SpanFacts` — sits between
+the raw spans and the algorithm and is described under "Adapter layer" below.
 
-**Roles** (what the node represents) — following the spec's definitions
-(defs. 1, 2, 5) verbatim where it gives them:
-- **Event node** — *"a node representing a local entity"* (spec def. 1),
-  recorded by an observed span.
-- **Source node** / **Target node** — *"Source / Target nodes representing
-  a local and remote entity"* (spec def. 2). The Source node is the caller
-  side of an agentic protocol call (the local entity initiating the call);
-  the Target node is the callee side (the remote entity receiving the call).
-- **Agentic boundary** — *"a boundary is (node) source calling an agent, a
-  tool, an LLM or another service, or a target of such a call"* (spec
-  def. 5). A boundary is therefore any node playing the Source or Target
-  role; Step 3.b colors exactly these nodes Black.
+**Colors** — quoting the spec's definitions (lightly case-normalized):
+- **White** — *"initial color of all nodes and edges, and those not assigned a
+  scope"* (spec def.). Every node and edge starts White; a node stays White if
+  no scope claims it.
+- **Blue** — *"nodes assigned the agentic scope"* (spec def.). The openinference
+  agentic-scope nodes are colored Blue in Step 2.b.
+- **Teal** — *"nodes assigned the transport scope (e.g. communication, proxy)"*
+  (spec def.). Transport spans (httpx, starlette, asgi) are colored Teal in
+  Step 2.a, and inferred transport "server" nodes are Teal. (The spec's Step 2.a
+  heading and inference cases call this the "transportation" scope; this ADR uses
+  "transport" throughout — same scope.)
 
-A span's role is assigned by its `(scope, framework)` adapter and surfaced
-on `SpanFacts.role` (`SOURCE` / `TARGET` / `BOTH` / `NONE`). `NONE` means
-the span is not a call boundary — typically a wrapper / runner /
-per-activation span that lacks the specific call evidence (target
-identity, request/response payload, or a framework-specific span-name
-signal) needed to assert one side of a call. The Step 3.b promotion to
-Black is driven by `role`, **not** by `Kind` (see "Boundary promotion is
-role-driven, not kind-driven" under Key decisions).
+**Node kinds** — the spec's remaining node definitions (the spec does not group
+these as "roles"; that term appears only in the implementation's `SpanFacts`,
+noted below):
+- **Event node** — *"Event node representing a local entity"* (spec def.).
+- **Source node** / **Target node** — *"Source / Target nodes representing a
+  local and remote entity"* (spec def.).
 
-**Provenance** (how the node came to exist) — following the spec's
-definitions verbatim:
-- **Observed (real) node** — a node backed by an emitted span.
-- **Inferred node** — *"a node in the graph we know should exist although we
-  don't have a span emitted representing that node"* (spec def. 7). An
-  agentic span can describe an entity other than itself: an LLM `query` span
-  describes the LLM it called; a `tool_calls` attribute on an LLM-output span
-  describes a tool that was invoked. Step 2.a materialises such peers as
-  inferred nodes. An inferred node may later be **merged** with another node
-  representing the same entity — an observed node or another inferred node —
-  in Step 4.
+**Edges** — the spec's edge vocabulary in this revision is:
+- **White edge** — *"parent child relationship based on trace parent"* (spec
+  def.). Step 1 draws one per span, parent→child, mirroring traceparent.
 - **Inferred edge** — *"an interaction in the graph we know should exist
-  although we don't have a span representing this interaction"* (spec def. 8,
-  added by the latest spec). The Black request/response edges Step 2.a draws
-  between an observed boundary and its inferred peer are inferred edges; so
-  are the three edges of the case-3 `tool_calls` triple. An inferred edge
-  carries an explicit derivation **order** (see "Inferred interaction
-  ordering" under Step 2.a).
-- **Duplicate node** — an additional node referencing the same span as an
-  existing boundary node, created by Step 2.a to split a combined
-  source-and-target span into two role-distinct nodes. (A duplicate is a
-  special case of inferred node: the peer is described by the *same* span
-  rather than a separate one.)
+  although we don't have a span representing this interaction"* (spec def.).
+  The edges Step 2.c draws between an observed node and its inferred peer (and
+  through the inferred Teal server node) are inferred edges. An inferred edge
+  carries an explicit derivation **order** (see "Inferred interaction ordering"
+  under Step 2.c).
 
-**merge** — *"the process of merging nodes and edges representing the same
-exact entity and interaction"* (spec def. 9; the latest spec broadened this
-from "collapsing inferred nodes with real nodes" to cover **edges** as well as
-nodes, and all three provenance combinations). Merging pools the edges and
-attributes of the collapsed nodes and is the subject of the consolidated
-Step 4 — *"the process starts with merging nodes. Next the process continues
-with merging edges."*
+**Provenance** (how the node came to exist). The spec defines only the
+**Inferred node** (quoted verbatim below); **Observed (real) node** is an ADR
+term for its complement (the spec does not name it):
+- **Observed (real) node** — a node backed by an emitted span (ADR term; spec
+  is silent).
+- **Inferred node** — *"a node in the graph we know should exist although we
+  don't have a span emitted representing that node"* (spec def.). An agentic
+  span can describe an entity other than itself: an LLM `query` span describes
+  the LLM it called; a `tool_calls` attribute on an LLM-output span describes a
+  tool that was invoked. Step 2.c materialises such peers as inferred nodes. An
+  inferred node may later be **merged** (Step 2.d) with another node
+  representing the same interaction, and — once the entity graph is built — the
+  entities that carry it may be **combined** (Step 3.a) with other groups
+  representing the same entity.
 
-**fuse** — *"the process of collapsing multiple nodes together to represent a
-single entity"* (spec def., added alongside the def. 9 broadening). Fuse is
-distinct from merge: merge identifies *the same* entity/interaction across
-nodes/edges (Step 4); fuse is the Step 5.a operation that collapses every
-execution-graph node of one connected subgraph into a single **entity** node,
-regardless of whether those nodes represent the same fine-grained entity. The
-spec's Step 5 text now reads "multiple nodes … are **fused**" where it
-previously said "combined".
+> **Vocabulary note (merge / combine / group).** The current spec does **not**
+> define standalone `merge` or `fuse` terms (earlier revisions did; they have
+> been removed). The spec now uses two distinct operations:
+> - **merge** (Step 2.d) — collapse execution-graph nodes/edges representing the
+>   *same interaction*. The spec's Step 2.d heading is "merge identical
+>   interactions".
+> - **combine** (Step 3.a semantic sub-step) — combine the *groups* of
+>   execution-graph nodes that represent the *same entity* into one group, where
+>   each final group becomes one entity-graph node. The spec speaks of
+>   "**groups**" being "**combined**", not of nodes being "fused".
+>
+> This ADR follows that vocabulary. Where the implementation's function or field
+> names still say "fuse" (e.g. `build_entity_graph`'s grouping is called a fuse
+> in code comments), those are flagged as code names in the relevant
+> as-implemented notes; the algorithm term is "combine groups".
 
 In the implementation, an inferred node that survives to the entity graph
 without being merged into a real node is recorded with a dedicated boolean
@@ -99,27 +109,6 @@ display string — the field is the single source of truth.
 > schema, API wire shape, and the UI marker). This ADR uses the current
 > `inferred` names throughout.
 
-**Edges** — following the spec's definitions (defs. 3, 4, 6):
-- **White edge** — *"parent child relationship based on trace parent"*
-  (spec def. 3).
-- **Gray edge** — *"the (grand-)parent child relationship in agentic
-  scoped events"* (spec def. 4): the order of events considering only
-  agentic-scoped (Gray) nodes. Because the immediate traceparent parent of
-  one Gray node may be a non-agentic (White) node, the Gray edge spans the
-  transitive (grand-)parent chain — it connects two Gray nodes whose
-  underlying White chain does not pass through another Gray node.
-- **Black edge** — *"a source/target across agentic entities/components/
-  containers"* (spec def. 6).
-
-A Black boundary node typically *plays* the Source or Target role depending on
-which side of the call its span represents. For the combined-span (Step 2.a
-case 1) and one-sided-stub cases, the duplicate / inferred node is created to
-fill the *opposite* role of an existing boundary node. Attribute-derived
-inferred nodes (Step 2.a case 3 — tool nodes inferred from an LLM span's
-`tool_calls`) are different: they introduce their *own* source/target pair
-(the tool-call node and the tool node) rather than completing the role of an
-existing boundary.
-
 ## Adapter layer
 
 Raw OTel attribute keys are consulted in **exactly one place**: `adapters.py`.
@@ -132,25 +121,29 @@ add a new kind value, …) from the graph-construction code.
 
 - `kind` — `Kind.LLM`, `Kind.TOOL`, `Kind.AGENT`, or `Kind.OTHER`. Kind
   records *what the span is about* (used to derive natural-key prefix and
-  payload shape) — it does **not** by itself decide boundary-ness. A
-  wrapper AGENT span carries `Kind.AGENT` and `role=NONE`.
-- `role` — `Role.SOURCE`, `Role.TARGET`, `Role.BOTH`, or `Role.NONE`.
-  Assigned by the adapter from the span's call evidence: target identity,
-  request/response payload, or a framework-specific span-name signal.
-  Drives Step 3.b Black promotion. `Role.NONE` keeps the node Gray.
+  payload shape).
 - `is_combined` — true iff one span carries BOTH the source and target side
-  of the same call. Triggers Step 2.a duplication.
-- `natural_key` — stable per-boundary identity. Format is
+  of the same call. Triggers Step 2.c duplication.
+- `natural_key` — stable per-entity identity. Format is
   `<kind-prefix>:<identifier>` — `tool:<tool-name>`, `llm:<model>`,
-  `agent:<agent-name>`. It is the **identifying attribute** the Step 4
-  same-entity merge groups on (carried on the inferred node as
+  `agent:<agent-name>`. It is the **identifying attribute** the Step 2.d merge
+  and the Step 3.a semantic combine group on (carried on the inferred node as
   `peer_match_key`) — both for the inferred↔observed merge and for converging
   repeatedly-called inferred peers. None when the span carries no identifying
-  attribute (those nodes are not combined).
+  attribute.
 - `display_label`, `target_label` — human-facing labels; `target_label` is
   the duplicate's label for combined spans only.
 - `request_messages` / `response_messages` / `request_value` /
   `response_value` — payload data for `extractor._derive_interactions`.
+
+> **As-implemented note (role).** `SpanFacts` carries a `role` field
+> (`SOURCE` / `TARGET` / `BOTH` / `NONE`). It is not part of the spec's
+> algorithm vocabulary; the code uses it only to decide which spans are call
+> points needing an inferred peer and, for such a span, whether that peer sits
+> on the target or the source side (`synthesize_missing_peers`). Role and kind
+> are re-derived from `SpanFacts` on demand for observed nodes
+> (`_node_role` / `_node_kind`) and stamped on `node.attributes` at construction
+> for inferred nodes.
 
 **Dispatch.** Adapters are registered per `(scope_root, framework)` — e.g.
 `(openinference, openai_agents)`, `(openinference, claude_agent_sdk)`. The
@@ -159,7 +152,7 @@ framework name is the third dotted segment of the scope name (e.g.
 covers openinference frameworks not yet profiled (LangChain, LiteLLM,
 Haystack, …) using the cross-framework openinference vocabulary; it is
 safe-by-default — unrecognised combined-span shapes degrade to one-sided
-boundaries that Step 2.a will stub with an inferred peer.
+peers that Step 2.c will stub with an inferred node.
 
 **Versioning.** Adapters that have absorbed schema drift across releases
 declare a per-version schema map keyed on `_scope_version(span)`. The
@@ -168,7 +161,7 @@ schema records two axes declaratively:
 - `kinds[raw_value] → Kind` — maps the raw string the framework emits at
   `openinference.span.kind` to the internal `Kind`. A version that
   introduces a new raw value adds an entry; raw values absent from the
-  map decode to `Kind.OTHER` (better Gray than mis-Black).
+  map decode to `Kind.OTHER`.
 - `fields[(Kind, raw_attr_key)] → logical_field` — maps a (decoded kind,
   physical attribute key the framework emits) pair to the adapter's
   internal logical field name (`"model"`, `"name"`, `"input_value"`,
@@ -187,903 +180,678 @@ The honest division of labour is **schema drift in tables, behaviour drift
 in code**. Span-name parsing (the `"handoff to {target}"` prefix in
 openai_agents, the `ClaudeAgentSDK.{tool_name}` tool/sub-agent dispatch
 prefix, the `ClaudeAgentSDK.query` combined-span recognition) is genuinely
-behavioural — recognising the prefix is coupled to a consequence (switch the
-natural-key kind, mark the span combined, or assign `role=SOURCE` to a
-dispatch span so it becomes a boundary with an inferred target peer). Those
-decisions live in adapter code, not the schema tables.
+behavioural. Those decisions live in adapter code, not the schema tables.
 
-**Boundary detection vs. agentic-scope recognition.** The OpenInference MCP
-adapter (`openinference.instrumentation.mcp`) exists in the registry but
-returns `Kind.OTHER` for every span — the MCP instrumentor only injects /
-extracts W3C `traceparent` headers and emits no application spans. The
-adapter exists so dispatch recognises the scope (future enrichment can
-find these spans), not because MCP boundaries are detected at this stage.
-Standalone a2a and mcp scopes outside openinference remain deferred, per
-the "Deferred to later stages" section.
+**Transport-scope recognition.** The OpenInference MCP adapter
+(`openinference.instrumentation.mcp`) exists in the registry but returns
+`Kind.OTHER` for every span — the MCP instrumentor only injects / extracts
+W3C `traceparent` headers and emits no application spans. The adapter exists
+so dispatch recognises the scope, not because MCP entities are detected at
+this stage. Standalone a2a and mcp scopes outside openinference remain
+deferred, per the "Deferred to later stages" section.
 
 ## The algorithm
 
-> **Spec step order (latest revision).** The human spec was restructured into
-> five top-level steps, and the ADR follows that numbering here:
-> **Step 1** base graph → **Step 2** extend the graph per scope (2.a derives
-> inferred nodes *and edges* from the openinference scope; 2.b other scopes,
-> deferred) → **Step 3** enrich with agentic semantics (3.a color Gray, 3.b
-> agentic boundaries / Black) → **Step 4** node-and-edge merge **on the
-> execution-flow graph** (all three provenance combinations, nodes first then
-> edges) → **Step 5** agentic entity graph (5.a fuse components into entities,
-> 5.b name them). This is a
-> renumbering of the previous draft (which carried coloring, inference, merge,
-> and boundaries all under Step 2 as 2.a–2.d and the entity graph as Step 3);
-> the *operations* are unchanged, only their grouping and numbers. As-implemented
-> notes map each spec step to the builder functions, whose in-code comments
-> still use the older 2.x labels.
-
-**Step 1 — Base graph.**
+**Step 1 — Base (White) execution flow graph.**
 Construct one node per span and one White directed edge from each span's parent
 to itself, following the OTel traceparent relationships. The result is a single
-graph for the entire trace whose connectivity mirrors trace structure exactly.
-All nodes and edges start White.
+graph for the entire trace whose connectivity mirrors trace structure exactly,
+resembling what Phoenix or MLflow shows (with the addition of the inferred
+nodes/edges added later). All nodes and edges start White.
 
-**Step 2.a — Inferred nodes and edges (openinference scope).**
-The spec's Step 2 *extends* the execution-flow graph per scope; Step 2.a handles
-the **openinference** agentic scope (Step 2.b — other scopes — is deferred, see
-"Deferred to later stages"). Some agentic spans describe or represent an entity
-*other than the span's own node*. When a span carries evidence of such a peer,
-the algorithm materialises an **inferred node** for it and connects it with
-Black **inferred edges**. Three cases:
+**Step 2 — Enrich the execution flow graph with scoped semantics.**
+Step 2 colors nodes by scope and extends the graph with inferred nodes/edges,
+then merges identical interactions. Coloring is **additive**: coloring a node
+Teal or Blue never removes its White edges — the base graph's full White
+connectivity is preserved throughout.
 
-1. **Combined source-and-target spans.** A single span records both sides of a
-   call — e.g. `ClaudeAgentSDK.query` (and
-   `ClaudeAgentSDK.ClaudeSDKClient.receive_response`) in the
-   `claude_agent_sdk` framework, which record both the outgoing request to
-   the remote LLM and the incoming response. The adapter signals this by
-   returning `SpanFacts.is_combined = True` together with a `target_label`
-   for the inferred node (typically `llm:<model>`). For each such span,
-   create an additional **duplicate node** referencing the same span. The
-   **original** node keeps both its parent-side and child-side Gray/White
-   chains and plays the **Source** role (`role=BOTH`). The **duplicate**
-   node has no neighbours in the base graph and plays the **Target** role
-   (`role=TARGET`, same `kind` as the original); its label is
-   `SpanFacts.target_label`. Add two directed Black edges between them:
-   source→target (request) and target→source (response).
+**Step 2.a — Transport scope (Teal).**
+Requires transport spans such as httpx, starlette, asgi. Traverse the
+execution flow graph, identify every node in the **transport** scope, and color
+it **Teal**.
 
-2. **Tool / sub-agent dispatch spans.** A `ClaudeAgentSDK.{tool_name}` (or
-   `ClaudeAgentSDK.Subagent`) span records the agent *dispatching* a tool or
-   sub-agent; the span name carries the dispatched target's name and
-   `agent.name` is set, but the dispatched target emits **no span of its
-   own**. The adapter classifies the dispatch span as a **Source** boundary
-   (`role=SOURCE`) with `natural_key=agent:<name>`. Because the callee is
-   unobserved, the missing peer is materialised as an **inferred Target
-   node** of the same `kind` by the one-sided stubbing below, with
-   bidirectional Black edges (source→target, target→source). Sub-agent and
-   local-tool dispatch take the **same** path — the span-name suffix /
-   `agent.name` becomes the inferred peer's identity in both cases. Repeated
-   dispatches of the same target from one agent each produce their own
-   inferred peer; the Step 4 same-entity merge (Phase A2) then converges them by
-   `natural_key` on the execution-flow graph — see "Same-entity merging — one
-   Step-4 pass" under Key decisions.
+> **As-implemented note.** **Implemented** in `builder.color_transport`, which
+> colors every transport-scope node Teal. Transport-scope recognition
+> (`adapters.is_transport_scope`) covers `opentelemetry.instrumentation.`
+> `{httpx,starlette,asgi,aiohttp_*}`; non-communication instrumentations
+> (botocore, psycopg) are deliberately excluded. The inferred Teal server nodes
+> of Step 2.c are also implemented (see below).
 
-   > **As-implemented note.** Implemented. The dispatch span is given
-   > `role=SOURCE` in `_ClaudeAgentSDKAdapter`; the inferred Target peer is
-   > created by `synthesize_missing_peers` (the one-sided stubbing below).
-   > This case depends on the Step 3.b edge rule (below): the dispatch span
-   > and its parent agent span are *both* Source boundaries, so the Gray
-   > edge between them is **not** promoted to Black — they remain one
-   > entity, and only the dispatch→inferred-peer edge is a cross-entity
-   > call.
+**Step 2.b — Agentic scope (Blue).**
+Requires openinference telemetry spans. Traverse the execution flow graph,
+identify every node in the **agentic** scope, and color it **Blue**.
 
-3. **Peers described in span attributes.** An LLM-output span may carry a
-   `tool_calls` attribute, e.g.
+> **As-implemented note.** Implemented for the **openinference** scope only, in
+> `builder.color_agentic`. It colors every openinference-scope node Blue and
+> adds Blue chain edges between consecutive agentic nodes. Cross-entity calls are
+> expressed by the Step 2.c server routes, not by any edge promotion here.
+> Support for additional agentic scopes — standalone a2a, mcp — is deferred;
+> see "Deferred to later stages".
+
+**Step 2.c — Derive inferred nodes and edges (openinference scope).**
+Some agentic spans describe or represent an entity *other than the span's own
+node*. When a span carries evidence of such a peer, the algorithm materialises
+an **inferred node** for it and connects it with **inferred edges**. In this
+spec revision the source↔target *call* inferences (cases 1–3 below) route the
+call **through an inferred Teal "server" node** — the request and response pass
+source→server→target and target→server→source — modelling the transport hop
+between the two entities. (Case 4, the inferred *agent* node, is structural and
+introduces no Teal server.)
+
+Cases:
+
+1. **Combined source-and-target spans** (LLM call). A single span records both
+   sides of a call — e.g. `openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query`,
+   which represents a call to an LLM and carries both the outgoing request and
+   the incoming response. From it the algorithm infers:
+   1. a node representing the **LLM** (target) — agentic-scope **Blue**;
+   2. a node representing a **server** — transport-scope **Teal**;
+   3. edges: Agent→server, server→LLM, LLM→server, server→Agent.
+
+2. **Tool call spans.** A tool-call span such as
+   `openinference.instrumentation.claude_agent_sdk.{tool_name}` represents a
+   call to a tool. From it the algorithm infers:
+   1. a node representing the **tool** (target) — agentic-scope **Blue**;
+   2. a node representing a **server** — transport-scope **Teal**;
+   3. edges: agent-tool-call(source)→server, server→tool(target),
+      tool→server, server→agent-tool-call.
+
+3. **Peers described in span attributes** (tool from `tool_calls`). An
+   LLM-output span may carry a `tool_calls` attribute, e.g.
    `llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments`,
-   which describes a tool that was invoked from the LLM output. The span
-   itself represents the LLM call; the attribute additionally evidences a
-   *tool call* (the source) and the *tool itself* (the target). From it the
-   algorithm infers two nodes and three edges: (1) an edge from the current
-   span to the tool-call node, (2) an edge from the tool-call node to the
-   tool node (the target), and (3) the reverse edge from the tool node back
-   to the tool-call node.
+   which describes a tool invoked from the LLM output. The span itself
+   represents the LLM call; the attribute additionally evidences a *tool call*
+   (the source) and the *tool itself* (the target). The spec's summary line
+   says *"We can therefore infer two nodes and three edges"*, but its own
+   enumeration then lists **three** nodes and **five** edges (the spec is
+   internally inconsistent on this count — see the note below):
+   1. a node for the **tool call** (source) — agentic **Blue**;
+   2. a node for a **server** — transport **Teal**;
+   3. a node for the **tool itself** (target) — agentic **Blue**;
+   4. edges: current-span→tool-call, tool-call(source)→server,
+      server→tool(target), tool→server, server→tool-call.
 
-   > **As-implemented note.** Case 3 (tool-from-`tool_calls` inference) is
-   > implemented for the `anthropic` framework by
-   > `builder.infer_tool_calls_from_attributes`: the adapter surfaces
-   > output-side tool calls on `SpanFacts.tool_calls`, and the builder
-   > materialises the tool-call node (source, folds into the LLM entity via a
-   > Gray edge) and the inferred tool node (target) with the request/response
-   > Black edges. It is **gated per-adapter**: only adapters that populate
-   > `tool_calls` trigger it, so frameworks that emit a real tool-execution
-   > span (e.g. openai_agents, whose LLM spans *also* carry output
-   > `tool_calls` for the same tool) are not double-counted. Combined-span
-   > duplication (case 1), tool/sub-agent dispatch (case 2), and the one-sided
-   > stubbing below also materialise inferred nodes.
-   >
-   > Both the **output** and **input** sides are now read. Input-side tool
-   > calls (`llm.input_messages.*.message.tool_calls.*`) are a prior turn's
-   > tool use replayed back into the request; the anthropic adapter surfaces
-   > them on `SpanFacts.input_tool_calls` and the builder materialises them the
-   > same way, ordered *ahead of* the LLM interaction (see "Inferred
-   > interaction ordering" below). Per the human spec every input-side tool is
-   > inferred — including a replay of a call already seen on a prior span's
-   > output — since the replay is a genuine prior interaction fed back into the
-   > turn.
+   > **Spec inconsistency (unresolved).** Step 2.c case 3 opens with *"infer
+   > two nodes and three edges"* but enumerates three nodes and five edges. The
+   > "two nodes / three edges" figure appears to predate the addition of the
+   > Teal server node (a two-node/three-edge shape — tool-call, tool, plus
+   > current→tool-call / tool-call→tool / tool→tool-call — is exactly the
+   > pre-Teal version). The ADR reproduces the enumeration (three/five) because
+   > it is the internally-detailed one and matches the Teal routing added
+   > elsewhere in the same revision, but does **not** silently discard the
+   > spec's summary line. This should be reconciled in the spec.
+
+4. **Inferred agent node** (anthropic bare-leaf case). When the framework emits
+   only bare leaf LLM spans — no run/agent/wrapper span — an agent node is
+   inferred by observing that all LLM spans share a single common parent in the
+   transport scope. Example:
+   ```
+   POST /
+    ├─ messages.create
+    └─ messages.create
+   ```
+   The algorithm infers:
+   1. a node representing the **agent**;
+   2. inferred edges: transport(POST)→agent, and agent→each LLM span;
+   3. **disconnect** the original edges but maintain a reference from the newly
+      created edges back to the originals.
+
+Additional cases may exist and need implementing (e.g. tools inferred from
+input attributes — see the ordering note and the as-implemented note below).
+
+> **As-implemented note.** The inferred-node machinery **routes every call
+> through an inferred Teal server node**, per the spec: `_insert_teal_server`
+> creates the server (`span_id=""`, `is_inferred=True`) and the four
+> request/response edges (source→server, server→target at the call band;
+> target→server, server→source at the response band). `duplicate_combined_nodes`,
+> `infer_tool_calls_from_attributes`, and `synthesize_missing_peers` all wire
+> their pair through a server rather than with a direct edge. The Step 3.a fuse
+> drops Teal and reconstructs the interaction from each server (see Step 3.a).
+>
+> - **Case 1** is `duplicate_combined_nodes`: for a combined span it creates a
+>   duplicate node referencing the same span (the LLM target) and routes
+>   original→server→duplicate. The adapter signals it via
+>   `SpanFacts.is_combined = True` and a `target_label`.
+> - **Case 2** (tool/sub-agent dispatch) is recognised in `_ClaudeAgentSDKAdapter`
+>   and the missing peer is materialised by `synthesize_missing_peers` (the
+>   one-sided stubbing below), routed through a server. Sub-agent and local-tool
+>   dispatch take the same path — the span-name suffix / `agent.name` becomes the
+>   inferred peer's identity. Repeated dispatches of the same target each produce
+>   their own inferred peer; the Step 3.a semantic combine converges them by
+>   `natural_key`.
+> - **Case 3** (tool-from-`tool_calls`) is `infer_tool_calls_from_attributes`,
+>   implemented for the `anthropic` framework. It adds a Blue *fold* edge
+>   (current-span→tool-call, so the tool-call folds into the LLM's entity) and
+>   routes tool-call→server→tool. It is **gated per-adapter**: only adapters that
+>   populate `SpanFacts.tool_calls` trigger it, so frameworks that emit a real
+>   tool-execution span (e.g. openai_agents, whose LLM spans also carry output
+>   `tool_calls` for the same tool) are not double-counted. Both **output**
+>   (`llm.output_messages.*.message.tool_calls.*`) and **input**
+>   (`llm.input_messages.*.message.tool_calls.*`, surfaced on
+>   `SpanFacts.input_tool_calls`) sides are read; input-side calls are a prior
+>   turn's tool use replayed into the request and are ordered *ahead of* the LLM
+>   interaction (see ordering below).
+> - **Case 4** (inferred agent from bare leaf LLM spans) is **implemented** in
+>   `infer_agent_from_bare_leaf_llms`, as the spec writes it: when a transport
+>   (Teal) parent's direct Blue children are all LLM spans and no Blue ancestor
+>   exists, it creates a new inferred agent node, adds edges transport→agent and
+>   agent→each LLM span, and **disconnects** the original transport→LLM edges,
+>   recording their ids on the new edges' `Edge.replaces` back-reference. The
+>   agent is named from the LLM spans' `service.name` and forces its fused entity
+>   `inferred = true` (via the `_inferred_agent` marker) even though it absorbs
+>   observed LLM spans — the *agent* is what was inferred. This produces the
+>   single-agent bare-leaf entity upstream, at inference time, rather than by any
+>   same-service node grouping during the merge.
+
+**One-sided stubbing.** When only one side of a call is observed, the missing
+peer is an inferred node: an observed call point with no server-routed peer in
+the trace gets an inferred node referencing the same span, carrying the originating
+`SpanFacts.natural_key` on a `peer_match_key` field, and the call is routed
+through an inferred Teal server. When a natural key is available the inferred
+node's display label is the key itself (`tool:<tool-name>`, `llm:<model>`, …);
+otherwise it falls back to `(unobserved peer of <source>)`. This is
+`synthesize_missing_peers` in `builder.py`.
 
 **Inferred interaction ordering.**
-The spec (`p_interactions_alg.md`, "Inferred edges ordering" under
-Step 2.a) requires that inferred edges carry a deterministic order based on
-**execution order**, because several inferred interactions are derived from a
-*single* span and therefore share that span's timestamp — `started_at` alone
-cannot order them. The rules:
+Several inferred interactions are derived from a *single* span and therefore
+share that span's timestamp — `started_at` alone cannot order them. The spec
+(`p_interactions_alg.md`, "Inferred edges ordering/timing" under Step 2.c)
+requires an explicit **execution order**:
 
-1. **Calls before responses.** For any inferred pair, the outgoing edge (the
-   call: source→target) precedes the incoming edge (the response:
-   target→source).
-2. **Case-3 edge order.** For a tool inferred from an LLM span (case 3): the
+1. **Calls before responses.** The outgoing edge (source→target) precedes the
+   incoming edge (target→source).
+2. **Case-3 edge order.** For a tool inferred from an LLM span: the
    `current LLM span → tool-call` edge precedes the `tool-call → tool` edge;
-   and the `tool-call → tool` edge (the call) precedes the `tool → tool-call`
-   edge (the reverse / response). (This is rule 1 applied within the case-3
-   triple.)
+   and the `tool-call → tool` edge (call) precedes the `tool → tool-call` edge
+   (reverse / response). (Rule 1 applied within the case-3 triple. The spec's
+   second sub-bullet here is garbled — *"the edge between the tool and the tool
+   itself is before the edge between the tool and the tool call (reverse
+   edge)"* — this is the sensible reading of it.)
 3. **Input-derived tools before the LLM call.** A tool evidenced on the LLM
-   span's *input* messages (`llm.input_messages.*.message.tool_calls.*`) was
-   invoked on a *prior* turn whose result is being fed back in; its inferred
-   interaction is ordered **before** the interaction with the LLM.
+   span's *input* messages was invoked on a prior turn whose result is being
+   fed back in; its interaction is ordered **before** the interaction with the
+   LLM.
 4. **Output-derived tools after the LLM call.** A tool evidenced on the LLM
-   span's *output* messages (`llm.output_messages.*.message.tool_calls.*`) is
-   what the model asked to invoke *as a result of* this call; its inferred
-   interaction is ordered **after** the interaction with the LLM.
+   span's *output* messages is what the model asked to invoke as a result of
+   this call; its interaction is ordered **after** the interaction with the LLM.
 
-So a single LLM turn expands, in order, to: *(input-derived tool calls) →
-(the agent↔LLM call/response) → (output-derived tool calls)*, with each
-call immediately preceding its own response per rule 1.
+So a single LLM turn expands, in order, to: *(input-derived tool calls) → (the
+agent↔LLM call/response) → (output-derived tool calls)*, with each call
+immediately preceding its own response per rule 1.
 
 **Representation (design decision).** Ordering is carried as an explicit
 integer order field on the derived interaction, assigned at derivation time,
 and the CLI/API sort by `(started_at, order)` rather than `started_at` alone.
 A derivation-order-only tiebreak was rejected as too fragile — any consumer
-that re-sorts (the API already issues `ORDER BY started_at`) would silently
-lose the contract; an explicit field survives the SQL round-trip and is
-inspectable.
+that re-sorts would silently lose the contract; an explicit field survives the
+SQL round-trip and is inspectable.
 
-> **As-implemented note.** **Implemented.** (a) The explicit order field is a
-> plain integer carried on the base-graph `Edge` (`Edge.order`), stamped at
-> Black-edge creation in `duplicate_combined_nodes`, `synthesize_missing_peers`,
-> and `infer_tool_calls_from_attributes`, copied onto `EntityEdge.order` in
-> `build_entity_graph`, and surfaced as `ProtoInteraction.order` and the
-> `proto_interactions."order"` column. The CLI sorts by `(started_at, order)`
+> **As-implemented note.** **Implemented.** The explicit order field is a plain
+> integer carried on the base-graph `Edge` (`Edge.order`), stamped on the four
+> request/response edges of each inferred Teal server at creation time (the call
+> band on the request legs, the response band on the response legs). The Step
+> 3.a fuse reads the bands back off each server (`_server_endpoints`) and copies
+> them onto the reconstructed `EntityEdge.order`; they surface as
+> `ProtoInteraction.order` and the `proto_interactions."order"` column. The CLI sorts by `(started_at, order)`
 > and the API issues `ORDER BY started_at, "order"`. The band scheme realises
 > the rules directly: input-derived tools sit at `-40 + 2k` (call) / `+1`
 > (response), the agent↔LLM / combined / one-sided call at `0` / `1`, and
 > output-derived tools at `40 + 3k` / `+1` — so negative < 0/1 < positive
-> encodes rules 3, 1, 4. (b) Input-side tool inference now exists:
-> `infer_tool_calls_from_attributes` reads both `SpanFacts.tool_calls`
-> (output, positive band) and `SpanFacts.input_tool_calls` (input, negative
-> band), the latter populated by the anthropic adapter from
-> `llm.input_messages.*.message.tool_calls.*`.
+> encodes rules 3, 1, 4. Input-side tool inference exists:
+> `infer_tool_calls_from_attributes` reads both `SpanFacts.tool_calls` (output,
+> positive band) and `SpanFacts.input_tool_calls` (input, negative band), the
+> latter from the anthropic adapter's `llm.input_messages.*.message.tool_calls.*`.
 
-When only one side of a protocol call is observed, the missing peer is also an
-inferred node: a boundary node that has no observed peer in the trace gets an
-inferred node referencing the same span, carrying the originating boundary's
-`SpanFacts.natural_key` on a `peer_match_key` field and bidirectional Black
-edges (source→target and target→source). When a natural key is available the
-inferred node's display label is the key itself (`tool:<tool-name>`,
-`llm:<model>`, …); otherwise it falls back to `(unobserved peer of <source>)`.
-The original node retains its Source-or-Target role and `kind`; the inferred
-node plays the *opposite* role with the *same* `kind`, so the source→peer pair
-satisfies the Step 3.b kind+role-matched edge rule. This one-sided stubbing is
-`synthesize_missing_peers` in `builder.py`.
+**Step 2.d — Merge identical interactions (execution graph).**
+This step identifies nodes and/or edges (inferred or observed) in the
+**execution graph** representing the *same interaction* and merges them. "Same
+interaction" means the **same logical occurrence of processing** — one real call
+— **not** the same wall-clock timestamp. (The spec's definition says "the same
+processing that took place at the same time"; this is read as *same occurrence*,
+because a single call's input is often replayed into later spans at different
+timestamps and must still merge — see the database example below and the timing
+note. Accordingly "same execution time" is a matching **signal**, not a
+requirement.) The spec states this as one heuristic-driven step (heuristics
+below); it does not enumerate provenance sub-cases or mandate a node-before-edge
+order.
 
-> **Ordering note.** One-sided stubbing depends on knowing a node *is* a
-> boundary, which the spec colors in Step 3.b — so this sub-case is logically
-> intertwined with boundary detection rather than cleanly preceding it. The
-> spec lists it under inferred-node creation (it produces an inferred node);
-> the implementation determines boundary-ness from `SpanFacts.role` at
-> classification time, so the dependency is satisfied regardless of where the
-> Black color is nominally applied. Cases 1 and 3 (combined span,
-> `tool_calls`) have no such dependency — they read evidence off the span
-> directly. Case 2 (tool/sub-agent dispatch) produces its inferred peer
-> *through* this one-sided stubbing, so it shares the same boundary
-> dependency.
+The unit being compared is a **chain (subgraph)**, not an isolated node or edge.
+An interaction is a chain `Blue source → transport region → Blue target` (with
+response legs back), where:
+- the **Blue** ends are the agentic endpoints — the source's call node and the
+  target tool / LLM / agent node;
+- the **transport region** in between is one or more **Teal (and possibly
+  White)** nodes — either a single inferred server (Step 2.c) or a run of
+  observed transport spans (Step 2.a), plus any unscoped White plumbing on the
+  path.
 
-**Step 3.a — Agentic coloring (Gray).**
-The spec's Step 3 enriches the (already extended) execution-flow graph with
-agentic semantics. Step 3.a colors the agentic-scope nodes Gray. Coloring is
-additive: White edges are never removed when Gray edges are added, and Gray
-edges are never removed when Black edges are added (Step 3.b). The base graph's
-full White connectivity is preserved throughout.
+So Step 2.d compares **chain against chain**: when two chains represent the same
+interaction, they are merged *as a unit* — the aligned Blue endpoints merge with
+each other and the transport regions merge with each other. It never pairs
+mismatched representations (e.g. an isolated edge against a chain); both sides
+are the same kind of object because Step 2.c already routed every call into this
+chain form. Each side of the comparison may be inferred or observed, so the
+merge spans all provenance combinations (inferred↔inferred, inferred↔observed,
+observed↔observed).
 
-This stage currently handles the **openinference** agentic scope only. Support
-for additional agentic scopes (a2a, mcp) is deferred — see "Deferred to later
-stages" below.
+Two motivating examples from the spec, both chain-vs-chain:
+- A trace with an LLM span and a tool-call span may yield, from the first span,
+  the chain `tool call → Server → Tool`, and from the second, `Server → Tool`.
+  These are the *same* interaction, so they merge as a unit — the tool-call
+  nodes, the Server (transport) regions, and the Tool nodes each collapse
+  pairwise.
+- A tool retrieving from a database followed by multiple LLM interactions: the
+  tool input reappears in every following LLM span, producing multiple inferred
+  database tool-call chains. Since all represent a *single* call to the
+  database, they merge.
 
-1. For every span belonging to the openinference instrumentation scope, color
-   the node **Gray**.
-2. For every pair of Gray nodes connected by a chain of White edges that does
-   not pass through another Gray node, add a directed **Gray edge** between
-   them in the same direction as the underlying chain. The White chain is
-   followed **regardless of the intermediate nodes' scope** (latest spec, Step
-   3.a.3): the bridge between two agentic nodes may run through non-agentic
-   (httpx / starlette / a2a) spans — including spans in a *different service* —
-   and a Gray edge is still drawn across it as long as no Gray node lies in
-   between. This is what lets an agent's call boundary connect, in the Gray
-   layer, to the boundary of the *remote* agent it called over A2A: the
-   intervening client-send (`httpx POST`) and server-receive (`starlette POST
-   /`) spans are White and do not interrupt the chain.
+Merging is a set of heuristics asserting the same exact processing is observed,
+drawing on: **proximity in the trace**, **same tool name**, **same execution
+time**, **same input argument and output result**, **whether the node/edge is
+inferred or observed in conjunction with the source spans**, and **nodes from
+the same scope**.
 
-> **As-implemented / ordering note.** In the spec's document order Step 2.a
-> (inferred nodes/edges) precedes this coloring, but inference logically reads
-> agentic-scope evidence off the spans — so the builder colors Gray first and
-> then materialises inferred nodes/edges in the same pass. The builder also
-> computes `SpanFacts.role` at classification time and applies the Step 3.b
-> Black promotion in the same `color_agentic` pass. The role assignment and the
-> set of Gray/Black nodes are unchanged by the renumbering; only the spec's
-> grouping of these operations into Step 2 vs. Step 3 moved.
+**Timing note.** When merging edges, account for each edge's timing and keep the
+time of the appropriate span. After a tool call, its input may be repeated in
+following spans; the timing of that interaction should be **after** the span
+that created the tool call.
+
+> **As-implemented note.** Step 2.d is the function `merge_identical_interactions`
+> (`builder.py`), run on the execution-flow graph after Step 2.c inference and
+> before the Step 3.a fuse (and before the colored-graph snapshot, so the
+> snapshot reflects every merge). The spec describes Step 2.d as one
+> heuristic-driven step over any same-interaction nodes/edges; the code realises
+> it as three operations — two node merges then a Teal-chain (server) merge:
 >
-> **"Regardless of scope" — partially exercised.** The builder's Gray-edge
-> traversal already walks the White chain without consulting intermediate
-> nodes' scope, so the spec's 3.a.3 wording matches the code mechanically. But
-> in every fixture to date the bridge between two agentic nodes stays *within
-> one service* (the openinference spans of a single agent), so the
-> cross-service case the new wording targets — a Gray edge spanning the
-> `httpx → starlette` A2A bridge between two *different* agents — is not yet
-> realised end-to-end: producing the cross-entity **Black** edge from it
-> additionally needs the Step 3.b agent-root boundary + "related target"
-> binding below, which are spec-level and not yet implemented. See "Cross-scope
-> multi-agent composition (A2A)" under Deferred to later stages.
-
-**Step 3.b — Agentic boundaries (Black).**
-Identify the Gray nodes that *represent an agentic boundary* and color them
-**Black**. A node is a boundary iff its `SpanFacts.role` is not `NONE` — the
-adapter has determined that the span carries explicit call evidence and
-represents the source (caller side), the target (callee side), or both sides
-of an agentic protocol call. Gray nodes whose role is `NONE` remain Gray:
-internal SDK plumbing, lifecycle hooks, framework dispatch, guardrail checks,
-custom CHAIN spans (kind=`OTHER`); **and** wrapper spans whose kind is
-`AGENT`/`TOOL`/`LLM` but which lack the specific call evidence needed to
-assert one side of a call (e.g. a top-level agent-run wrapper that does not
-itself carry target identity or payload — typically a more specific child span
-is the real boundary). The adapter is the single arbiter of role; the builder
-reads only the field. *Node* promotion is driven by `role`, **not** by `Kind`
-(see "Boundary promotion is role-driven, not kind-driven" under Key decisions).
-
-**Agent-root spans as target boundaries (latest spec — not yet implemented).**
-The latest spec broadens the boundary node list (Step 3.b clause 1) to include,
-alongside tool targets / agent calls / llm calls, the **agent root span**:
-the *outermost* per-activation span an agentic framework emits for an agent
-run, which represents the agent's **entry / target** side. The spec requires
-this be identified **using span kind and attributes only** — i.e. span-locally,
-without a tree walk — which is per-framework adapter logic, since the marker
-differs by framework (openai_agents: the AGENT-kind span carrying **no**
-`graph.node.id` — the inner per-node AGENT span *has* `graph.node.id`;
-google_adk: `agent_run [{agent.name}]`; langchain: the `agent` span; validated
-against the per-scope span references). Promoting the callee's agent-root span
-to a **Target** boundary is what gives a cross-agent delegation an *observed*
-target to pair with, instead of the inferred peer Step 2.a stubs today. This is
-the callee-side complement to the existing source-side boundaries; the current
-code does **not** implement it (AGENT-kind wrappers map to `role=NONE`, so a
-delegated-to agent's root stays Gray and the delegation resolves to an inferred
-`tool:` peer — see "Cross-scope multi-agent composition (A2A)" under Deferred).
-
-Then color the *edges*. A Gray edge whose endpoints are both Black is promoted
-to **Black only when the endpoints form a matched call pair**. The matched-pair
-rule has two formulations:
-
-- **As implemented (`_is_matched_call_pair`):** one endpoint is exactly
-  `role=SOURCE` (the caller) and the other exactly `role=TARGET` (the callee),
-  **and** both carry the same `Kind` (tool→tool, llm→llm, agent→agent).
-- **Latest spec:** one endpoint is a **source** and the other **its related
-  target in the agentic scope** — the same-`Kind` requirement is **dropped**
-  and the same-scope requirement is **not** imposed (the pair is "in the
-  agentic scope", not "in the *same* scope"), so a cross-framework
-  **`tool call → agent`** delegation (e.g. an openai_agents `delegate_to_*`
-  tool-call source paired with a langchain / google_adk agent-root target) is
-  now an admitted pair, not only `tool→tool` / `llm→llm` / `agent→agent`.
-  The binding is the source and **its related target** (not merely *a*
-  target); what makes a target "related" is left open by the spec and is not
-  recorded here.
-
-A Black edge means a *cross-entity* call, so the rule keeps two adjacent
-Source boundaries on the same Gray chain from being mistaken for a call between
-them — e.g. an agent's `ClaudeAgentSDK.query` span and its own
-`ClaudeAgentSDK.{tool_name}` dispatch span are *both* Source: the Gray edge
-between them stays Gray, and they collapse into the same entity in Step 5.a.
-The dispatch's real callee is the inferred Target peer materialised in Step 2.a
-(case 2), and *that* source→peer edge is the matched call pair.
-
-`role=BOTH` (a combined source-and-target span) is deliberately **excluded**
-from this gray-edge promotion: its target is the duplicate node created in
-Step 2.a case 1, wired with Black edges directly — a combined span does not
-acquire a target by gray-chain adjacency to an unrelated boundary.
-
-> **As-implemented note.** The implemented rule is `_is_matched_call_pair` in
-> `builder.py`, applied in `color_agentic`. To support it, base-graph nodes
-> carry the adapter's `role` and `kind` as plain string fields (mirrored from
-> the `Role`/`Kind` str-enums to avoid an import cycle). The earlier ADR draft
-> promoted *every* Gray edge between two Black endpoints; that blanket rule
-> produced spurious cross-entity edges between an agent and its own dispatch
-> spans, which is what this rule fixes. The blanket-promotion hazard is large
-> in practice: on a multi-agent A2A trace, the overwhelming majority of
-> Gray-only edges are *intra-agent* (an agent's internal Gray hops over its own
-> non-agentic plumbing) and only a handful cross a service boundary — promoting
-> all of them would shatter each agent into one entity per internal Gray hop.
-> The matched-pair guard isolates the genuine cross-entity edges from the
-> intra-agent ones.
+> 1. **Node merge — inferred peer into its observed twin.** Fold an inferred
+>    peer into an *independently observed* node for the same entity (matching
+>    typed key + kind, with the observed twin in a *different* Blue component
+>    than the peer's source, so it is the observed callee and not a sibling
+>    caller on the same chain). This is the split-graph case — a no-op unless the
+>    callee emitted its own spans. Component membership uses `_white_blue_*`,
+>    which skips Teal-incident edges, so a caller and its callee land in distinct
+>    components.
+> 2. **Node merge — observed ↔ observed same interaction.** Merge two *observed*
+>    callee nodes that represent the same processing at the same time. The guard
+>    is a strict `_same_processing_signature`: identical typed callee identity
+>    (`_typed_callee_key`) + kind, same scope, same request payload **and** same
+>    response payload, and the same `(started_at, ended_at)` window. Any
+>    difference keeps the nodes distinct, so genuinely-separate calls are never
+>    over-merged; non-callee nodes (no typed key) never participate.
+> 3. **Teal-chain (server) merge — duplicate interactions.** Collapse Teal chains
+>    that are the *same* interaction: same source component + same target *typed
+>    identity* + same logical call (equal request arguments, else equal
+>    `tool_call.id`). Genuinely distinct calls differ in arguments and survive.
+>    This collapses a tool-call replay (the same call seen as a span's output and
+>    again on a later span's input) from two interactions to one; the duplicate
+>    is dropped and the originating order carried onto the survivor's legs. Keying
+>    the target on its *typed identity* rather than its component lets a replay
+>    merge even though its inferred target peer sits in a separate component
+>    (those peers converge later, in the Step 3.a semantic combine).
 >
-> **Spec ahead of code (Step 3.b).** The latest spec adds two things this note's
-> rule does not yet do: (1) **agent-root target boundaries** (above), and
-> (2) the **same-`Kind`-dropped, "related target"** edge rule admitting
-> `tool→agent`. Until both land, a cross-agent A2A delegation still resolves to
-> an inferred `tool:` peer rather than a Black edge to the observed callee
-> agent. Tracked under "Cross-scope multi-agent composition (A2A)" in Deferred.
-
-**Step 4 — Node and edge merge.**
-Per spec def. 9, Step 4 identifies nodes and/or edges that *represent the same
-entity or interaction* and merges them. The latest spec **consolidated** what
-the previous draft split between an intra-trace node merge (old Step 2.c) and
-the entity-graph combine (old Step 3.a): merging is now one named step covering
-**all three** provenance combinations — inferred↔inferred, inferred↔observed,
-**and** observed↔observed — and explicitly covering **edges** as well as nodes.
-The spec prescribes an order: *"the process starts with merging nodes. Next the
-process continues with merging edges."*
-
-Merging is a set of heuristics that identify nodes/edges representing the same
-entity or interaction. It may draw on:
-
-1. **Similarity of node attributes** — e.g. identical tool names hint that two
-   nodes represent the same tool (entity) and should be merged. The edges are
-   maintained: the source/target of an incident edge is re-pointed onto the
-   survivor (and edges may themselves merge — see below).
-2. **Similarity of edge attributes** — two edges with similar arguments and the
-   *same source and same target* (e.g. a tool call with the same arguments) can
-   represent a single interaction, hinting the two edges should be merged.
-
-Additional hints: **proximity in the trace** (an observed twin of an inferred
-node is expected to sit close by — a sibling, an ancestor), **same/similar
-time**, and **whether the node or edge is inferred or observed** in conjunction
-with the source spans.
-
-The three node-merge combinations:
-
-- **inferred ↔ observed** — fold an inferred peer into the observed node for
-  the same entity (the canonical "an inferred stub should not sit beside its
-  observed twin" case).
-- **inferred ↔ inferred** — converge multiple inferred peers that stub the
-  *same* unobserved entity (e.g. one tool invoked from several call sites,
-  each materialising its own inferred peer in Step 2.a).
-- **observed ↔ observed** — collapse observed nodes/entities that represent the
-  same service process but were split across White+Gray components.
-
-Per the spec, Step 4 runs on the **execution-flow graph** — between boundary
-coloring (Step 3) and entity formation (Step 5) — so that the fuse in Step 5.a
-operates on an already-merged graph.
-
-> **As-implemented note.** Step 4 is the single function `merge_step4`
-> (`builder.py`), run on the execution-flow graph after Step 2.a inference and
-> before the Step 5.a fuse (and before the colored-graph snapshot, so the
-> snapshot reflects every merge). It does **node merge then edge merge**, as the
-> spec prescribes.
->
-> **Phase A — node merge**, three sub-passes (each collapses same-entity nodes
-> into one survivor, pooling attributes/label, rewiring incident edges, dropping
-> self-loops; an observed survivor is preferred over an inferred one):
-> - **A1 inferred ↔ observed.** Fold an inferred peer into an *independently
->   observed* node for the same entity: matching typed key + kind, and the
->   observed twin in a *different* White+Gray component than the peer's source
->   (so it is the observed callee, not a sibling caller). No-op on single-agent
->   fixtures (every same-key boundary is a sibling caller); fires on a split
->   graph where the callee emitted its own spans.
-> - **A2 inferred ↔ inferred.** Converge typed callee peers (TARGET role; key
->   prefix matching kind, via `_typed_callee_key`) that share a key — the
->   repeatedly-called peer, e.g. the per-call `tool:<name>` peers a trace
->   produces when one tool is invoked from several call sites. TARGET-only and
->   prefix-matches-kind are the guards
->   that keep a *caller's* `natural_key` (the agent's `llm:` / `tool:` key) and
->   the Gray-folded tool-call SOURCE nodes from fusing a caller into its callee.
-> - **A3 observed ↔ observed.** The same service split across White+Gray
->   components (e.g. raw-anthropic per-turn LLM-source spans joined only by a
->   White non-agentic parent). Keyed on `service.name`, gated to **keyless**
->   observed boundary callers, and only across *different* entity components.
->   Realised as a **fuse-time forced grouping** rather than a node merge: it
->   records `node_id → group` and hands it to `build_entity_graph`, which fuses
->   those components into one entity *without touching nodes or edges* — so every
->   call site keeps its own boundary span (the per-call payload/evidence anchor).
->   Exercised by a single-agent anthropic fixture (two same-service agent
->   components collapse to one entity).
->
-> **Phase B — edge merge.** Collapse Black edges that are the *same*
-> interaction: same connected-entity (component) pair **and** same logical call
-> — equal request arguments, else equal `tool_call.id`. (Arguments are the
-> primary key; a replayed call carries identical arguments whether it appears on
-> a span's output or a later span's input, even though those spans don't overlap
-> in time, so time is *not* required to match.) Genuinely distinct calls differ
-> in arguments and survive — multiple LLM calls and repeated tool calls with
-> *different* arguments all keep distinct arguments and remain distinct
-> interactions. This is what collapses a tool-call replay (the same call seen as
-> a span's output and again on a later span's input, carrying the same
-> `tool_call.id`) from two interactions to one, while a distinct call with the
-> same tool but different arguments stays.
+> The remaining spec case — converging multiple *inferred* peers for one entity —
+> is handled by the Step 3.a semantic combine (on the entity graph, below), not
+> here, per the spec's node/edge split. Guarded by `test_same_processing_merge.py`
+> (`test_step2d_merges_two_observed_same_interaction_nodes`, plus over-merge
+> guards for distinct arguments and differing scope/name).
 >
 > **The merged survivor takes the *originating* call's order, not `min(order)`.**
-> A tool call is *created* on the span where it appears as LLM **output**
-> (positive band, ordered AFTER that turn's LLM); the same call replayed on a
-> later span's **input** carries a negative band (ordered before *that* span's
-> LLM). When the two merge they are one interaction, and per the spec's timing
-> note it takes the time/order of the span that *created* the call — so an
-> output (positive) order **wins over** an input-replay (negative) one
-> (`_originating_order` in `builder.py`). A naive `min(order)` would let the
-> replay's negative band drag the merged call ahead of its own originating LLM
-> (the "database sorts before the first LLM" bug). When both merged edges share
-> a sign (a call only ever seen as input replay, never as an output in-trace),
-> the earlier band is kept. Guarded by
+> A tool call is created on the span where it appears as LLM **output** (positive
+> band, ordered AFTER that turn's LLM); the same call replayed on a later span's
+> **input** carries a negative band. When they merge they are one interaction,
+> and per the spec's timing note it takes the time/order of the span that
+> *created* the call — so an output (positive) order **wins over** an input-replay
+> (negative) one (`_originating_order`). A naive `min(order)` would drag the
+> merged call ahead of its own originating LLM. When both merged legs share a
+> sign, the earlier band is kept. Guarded by
 > `test_merged_tool_call_orders_after_its_originating_llm`.
->
-> Because Phase B reduces interaction count *before* the fuse, `build_entity_graph`
-> emits **one entity edge per surviving Black edge** (no endpoint-pair dedup),
-> so distinct calls between the same two entities remain distinct interactions.
 
-**Step 5 — Agentic entity graph.**
-Step 5 derives the entity graph from the colored, merged execution-flow graph
-in two sub-steps: create-and-fuse entities (5.a) and name them (5.b). Per spec
-Step 5, this is where multiple execution-graph nodes representing the *same
-entity* are **fused** into one.
+**Step 3 — Entity graph.**
+Create a new graph representing agentic entities and interactions, built from
+the colored, merged execution graph. It is used to (1) identify the entities and
+(2) identify the interactions. The spec splits construction by **nodes then
+edges**: **Step 3.a** creates the entity-graph *nodes*, and **Step 3.b** creates
+the entity-graph *edges*.
 
-**Step 5.a — Creating the entity graph (fuse).**
-Consider the Gray and Black nodes and edges in the (merged) execution-flow
-graph; Black edges represent connections *between* entities. First, form
-subgraphs by **ignoring the Black edges** — i.e. compute connected components
-over the Gray and Black nodes considering only White and Gray edges. A subgraph
-may contain inferred nodes, observed nodes, or both. Each connected component
-then becomes one **entity node**, **fusing** every execution-graph node in the
-component into a single entity. Attributes from every span in the component are
-pooled onto the entity node. The Black edges — both observed and inferred — are
-**maintained**: each becomes a directed edge in the entity graph between the
-entity nodes containing its endpoints. Inferred nodes propagate their inferred
-marker onto the entity node they form via a dedicated boolean field
-(`inferred`) on the entity node — not via label inspection. An entity is
-`inferred = true` iff every absorbed node was an inferred node.
+**Step 3.a — Creating the entity-graph nodes.**
+Two sub-steps, structural then semantic:
 
-> **As-implemented note.** The fuse is `build_entity_graph` in `builder.py`,
-> run *after* the Step 4 merge. It is purely structural — no merging happens
-> here (Step 4 already merged on the execution-flow graph):
+1. **Structural — group the execution graph.** Consider the Blue and Teal nodes
+   in the execution flow graph; form subgraphs by **dropping the Teal nodes**.
+   Each subgraph is a set of connected nodes that can only be Blue or White
+   (inferred, observed, or both). For each connected Blue+White subgraph, create
+   a **group**.
+2. **Semantic — combine same-entity groups.** Combine the groups that represent
+   the *same entity* into a single group. For example, multiple tool calls (with
+   *different arguments*) to a file system yield multiple inferred file-system
+   tools — a group each from the structural step — but all represent one
+   file-system tool entity, so those groups are **combined**. The heuristics for
+   deciding two groups are the same entity: **same tool/service/host/llm name**,
+   **same argument/output types**, **nodes from the same scope**.
+
+Each final group is one **entity-graph node**. Each entity node is given a
+**key** reflecting its originating subgraph, drawn from one of the subgraph's
+node spans — in particular, if a node in the subgraph carries an
+agent/service/tool/host name, use it as the key; when the key is not clear, it
+can be called `unknown`.
+
+Inferred nodes propagate their inferred marker onto the entity node they form.
+(The spec is silent on how a combined entity inherits inferred status; in the
+implementation this is carried on the `inferred` boolean field — not label
+inspection — and an entity is `inferred = true` iff every absorbed node was
+inferred, or a case-4 inferred-agent node was absorbed.)
+
+> **As-implemented note.** The structural grouping is `build_entity_graph` in
+> `builder.py` (its in-code comments call the grouping a "fuse" — that is a code
+> name; the spec term is "group / combine"). It **drops all Teal nodes** and
+> forms connected components over the Blue+White nodes (edges touching a Teal
+> node are cut, so the whole Teal chain between two Blue components is the entity
+> boundary). Attributes are pooled via `EntityNode.absorb`; White plumbing nodes
+> are pulled into a component but seed none. The semantic combine sub-step is a
+> separate pass, `combine_identical_entities` — see the "As-implemented note
+> (semantic combine)" below (it operates on the just-formed groups/entity nodes
+> and so is documented with the node-creation code even though it runs after edge
+> reconstruction in
+> the current ordering).
 >
-> - Connected components over Gray/Black nodes (White+Gray edges only) → entity
->   nodes; attributes pooled via `EntityNode.absorb`.
-> - The Step 4 **A3 forced grouping** (`node_id → group`) is applied as extra
->   adjacency, so the same-service components A3 identified fuse into one entity
->   without any node having been merged — every node keeps its own span.
-> - **One entity edge per Black edge — no endpoint-pair dedup.** Step 4 Phase B
->   already collapsed same-interaction edges, so distinct calls between the same
->   two entities (e.g. two separate LLM turns) correctly remain distinct
->   interactions. The entity edge's first `span_id` is its **anchor** — the span
->   the extractor uses for the interaction's payload *and* timing (see below).
->   The anchor is the **observed (non-inferred) endpoint's** span when one
->   exists, else the source endpoint's: an inferred peer that Step 4 merged
->   across turns carries a *stale* span (the merge survivor's, from an earlier
->   turn), so anchoring on the observed endpoint keeps each call site — including
->   the *response* edge, whose source is the merged peer — on its own turn's span.
+> Entity naming (`extractor._entity_display_name`) implements the key by
+> precedence: (1) the `service.name` of any contributing span
+> (`Span.service_name`); (2) the model / tool / agent name parsed from the
+> `natural_key` suffix; (3) the literal `unknown`. The spec's other preferred
+> identifier — a **hostname** — is deferred: it lives on non-agentic (httpx /
+> botocore) spans that are dropped as Teal, so it is unreachable until
+> transport-scope enrichment runs. See "Deferred to later stages →
+> Hostname-based entity naming".
+
+> **As-implemented note (semantic combine).** The combine sub-step is
+> `combine_identical_entities`, a pass over the entity-graph nodes. It groups them
+> on the spec's Step 3.a semantic heuristics and combines each group into one
+> survivor, re-pointing every `EntityEdge` endpoint to it and preserving all
+> edges (distinct calls stay distinct interactions). The combine key is:
+> - **same tool/service/host/llm name** — the entity's typed identity
+>   (`peer_match_key`, else the natural-key `label`, e.g. `tool:database`);
+>   keyless entities (a case-4 inferred agent named from `service.name`, an
+>   `unknown` entity) never combine, since there is no name to assert sameness on;
+> - **same argument/output types** — the typed-key prefix (`tool:` / `llm:` /
+>   `agent:`), the coarse kind, so a tool and an LLM sharing a name stay apart;
+> - **nodes from the same scope** — derived from the entity's pooled spans
+>   (`spans_by_id`, threaded in from the extractor);
+> - **inferred vs observed** — carried in the key (an implementation guard, not
+>   a spec heuristic) so an inferred peer never silently absorbs an observed
+>   entity.
 >
-> Inferred nodes propagate their `inferred` marker; an entity is
-> `inferred = true` iff every absorbed node was inferred.
+> Both inferred peers and observed entities participate: repeatedly-called
+> inferred peers converge (one tool invoked from several sites → a peer per site
+> → one entity — the spec's file-system example), and two observed spans of the
+> same callee that landed in separate (traceparent-broken) components combine.
+> Guarded by `test_same_processing_merge.py`
+> (`test_step3b_merges_observed_same_entity_keeping_edges`,
+> `test_step3b_scope_separates_same_named_observed_entities`, and guards that
+> distinct names, and observed-vs-inferred, do not combine).
 
 **Interaction timing follows the anchor span.**
-An interaction's `started_at` / `ended_at` are taken from its **anchor span**
-(the entity edge's first pooled span — see the fuse note above), **not** from an
-aggregate over every span the interaction touches. This matters specifically
-because of the Step 4 merge, in two ways:
+The spec specifies inferred-edge *ordering* (Step 2.c) and *merge timing*
+(Step 2.d timing note) but not how an interaction's absolute timestamps are
+chosen; the anchor-span rule below is an implementation resolution of a merge
+artifact, not a spec-stated decision. An interaction's `started_at` /
+`ended_at` are taken from its **anchor span** (the entity edge's first pooled
+span), **not** from an aggregate over every span the interaction touches. This
+matters because of the Step 2.d merge, in two ways:
 - **Aggregation drags timing.** When a repeatedly-called peer is merged into one
-  node, an interaction's pooled spans can include a span from *another* turn
-  (the merged peer carries an earlier turn's span). A `min(started_at)` over the
-  pooled set would drag every turn's interaction down to the earliest turn's
-  time, so a later-turn tool call could sort *ahead of* LLM calls that ran after
-  it. Hence timing follows the single anchor, not an aggregate.
+  node, an interaction's pooled spans can include a span from *another* turn. A
+  `min(started_at)` over the pooled set would drag every turn's interaction down
+  to the earliest turn's time. Hence timing follows the single anchor.
 - **The anchor must be the observed endpoint.** For a *response* edge (e.g.
   `LLM → agent`), the edge's *source* is the merged peer — its span is stale.
-  Anchoring on the observed (non-inferred) endpoint instead keeps each turn's
-  response on its own span, so the per-turn responses get distinct
-  `started_at`s rather than all collapsing onto the first turn's span (which
-  would also stack them at one `(started_at, order)` key).
+  Anchoring on the observed (non-inferred) endpoint keeps each turn's response
+  on its own span.
 
-The anchor span is the single source of truth for an interaction's identity, so
-its times define both the interaction's time and its position in the
-`(started_at, order)` sort. (`error`, by contrast, still considers the whole
-call/response pair — either side erroring marks the interaction errored.)
+(`error`, by contrast, still considers the whole call/response pair — either
+side erroring marks the interaction errored.)
 
-> **As-implemented note.** The fuse (`build_entity_graph`) lists each entity
-> edge's spans **observed-endpoint-first**, so `edge_spans[0]` in
+> **As-implemented note.** The fuse lists each entity edge's spans
+> **observed-endpoint-first**, so `edge_spans[0]` in
 > `extractor._derive_interactions` is the observed-side span; the extractor sets
 > `started_at` / `ended_at` from that anchor, not from `min`/`max` over
-> `edge_spans`. A regression test over a multi-turn anthropic fixture
-> asserts each interaction's `started_at` equals its anchor span's, and that the
-> per-turn agent→LLM calls **and** LLM→agent responses each keep distinct times
-> (the response-direction assertion is what guards the observed-endpoint anchor).
+> `edge_spans`. A regression test over a multi-turn anthropic fixture asserts
+> each interaction's `started_at` equals its anchor span's, and that per-turn
+> agent→LLM calls **and** LLM→agent responses each keep distinct times.
 
-**Step 5.b — Naming nodes.**
-Each entity node should be given a key reflecting its originating subgraph,
-drawn from one of the subgraph's node spans. In particular, if a node in the
-subgraph carries a **hostname**, use it as the key. When no clear key is
-available, the entity is named `unknown`.
+**Step 3.b — Creating the entity-graph edges.**
+Purely structural. Given the entity-graph nodes (groups) from Step 3.a:
+- edges **internal** to a group are ignored;
+- **each path** connecting two entity nodes is represented by a **single
+  interaction** between them — in other words, **each Teal transport chain
+  between two Blue components becomes one interaction**.
 
-> **As-implemented note.** **Implemented** (partially, as scoped) in
-> `extractor._entity_display_name`. Each entity's `display_name` is derived by
-> precedence: (1) the `service.name` of any contributing span (the typed
-> `Span.service_name` field — e.g. the agent's or tool's Kubernetes service
-> name); (2) the model / tool / agent name parsed from the `natural_key` suffix
-> (`llm:claude-…` → `claude-…`); (3) the literal `unknown` when neither is
-> available. The spec's *preferred* identifier — a **hostname** — is still
-> deferred: it lives on non-agentic (httpx / botocore) spans that are not part
-> of the entity-forming subgraph today, so it is unreachable until the
-> cross-scope enrichment stage runs. `service.name` is the best identifier
-> available now. See "Deferred to later stages → Richer entity naming".
+The mapping is **per chain**, not per entity pair: two *distinct* calls between
+the same pair of entities run through two distinct transport chains and therefore
+become **two** interactions. A chain is collapsed only *within itself* (its
+multi-node transport region → one interaction), never across sibling chains.
+(Genuinely-duplicate chains — the same call surfaced twice — were already merged
+in Step 2.d, so what reaches Step 3.b are the distinct interactions.) The edges
+of the entity graph are simply these interactions.
 
-## Annotations
-
-**Flagging unexpected agentic spans between boundaries.**
-Any Gray node that lies on a Gray chain between two Black boundary nodes is
-annotated and surfaced in the "Graphs (proto)" UI tab. The intent is to catch
-agentic spans that the classifier does not yet recognise as boundaries —
-treating the in-between span as a signal that the per-scope span tables or
-classifier may be incomplete. The annotation is informational only; it does
-not block entity formation.
+> **As-implemented note.** Edge reconstruction is done inside `build_entity_graph`
+> as it drops each Teal chain: **one S→D entity edge (call band) and one D→S
+> entity edge (response band) per dropped Teal transport chain.** A Teal
+> transport chain is a run of one or more Teal nodes between two Blue components
+> — a single inferred server (Step 2.c, `span_id=""`) is the length-1 case; an
+> observed httpx→starlette hop (Step 2.a) is the multi-node case. Both drop, and
+> both reconstruct: the chain's external source and target and its two order
+> bands are read back from its incident edges by `_server_endpoints` (source =
+> the endpoint whose inbound edge carries the lower/call band). Because Step 2.d
+> already collapsed duplicate chains, distinct calls between the same two
+> entities remain distinct interactions — one per surviving chain.
+>
+> The entity edge's first `span_id` is its **anchor** — the span the extractor
+> uses for the interaction's payload *and* timing (see "Interaction timing
+> follows the anchor span" above).
+> The anchor is the observed (non-inferred) endpoint's span when one exists, else
+> the source endpoint's; the Teal nodes themselves never anchor (an inferred
+> server carries `span_id=""`; observed transport spans are dropped).
 
 ## Observations and assumptions
 
-These are the protocol-level expectations the spec relies on. They motivate
-the consecutive-send/receive flagging (Annotations) and the inferred-peer /
-split-graph handling, and they bound where the algorithm is expected to work.
+These are the protocol-level expectations the spec relies on. They motivate the
+inferred-peer / split-graph handling and bound where the algorithm is expected
+to work.
 
 - **Matched send/receive.** When all events are received, a protocol
   interaction shows up as a send event from one entity and a matching receive
-  event from another. The two are expected to be **consecutive** in the trace
-  — if an unexpected agentic span sits between them, the algorithm should be
-  able to identify and flag it (this is what the between-boundary annotation
-  catches).
-- **Combined send-and-receive spans exist.** Some frameworks (e.g. Google
-  ADK LLM spans, `ClaudeAgentSDK.query`) emit a single span representing both
-  the send and the receive. These are handled as combined source-and-target
-  spans (Step 2.a case 1).
+  event from another. The two are expected to be **consecutive** in the trace —
+  otherwise the algorithm should be able to identify and flag the *semantics of
+  the event in between*.
+- **Combined send-and-receive spans exist.** Some frameworks (e.g. Google ADK
+  LLM spans, `ClaudeAgentSDK.query`) emit a single span representing both the
+  send and the receive. These are handled as combined source-and-target spans
+  (Step 2.c case 1).
 - **Interleaved sources represent the same entity.** With multiple
   instrumentation sources (a2a and httpx, …) and traceparent on, events
   interleave: `a2a tool call → http send → … → http receive → a2a call
-  receive`. The a2a-call and http-send events both represent the *same*
-  caller entity; both receive events represent the *same* callee entity. This
-  is the basis for the deferred cross-scope reconciliation.
-- **Missing instrumentation splits the graph.** If a component emits no
-  events, only one side of the interaction is seen and the graph splits. If a
-  component emits only *some* sources (e.g. a receiver with no a2a events:
+  receive`. The a2a-call and http-send events both represent the *same* entity;
+  both receive events represent *another* entity (the caller / callee reading
+  follows from send=caller). All events between a receive and a send belong to
+  one entity.
+- **Missing instrumentation splits the graph.** If a component emits no events,
+  only one side is seen and the graph splits. If a component emits only *some*
+  sources (e.g. a receiver with no a2a events:
   `a2a tool call → http send → … → http receive |`), traceparent is not
-  forwarded, producing two traces and a split graph. Step 2.a's inferred peers
-  stub the missing side within a trace; *cross-trace* stitching is deferred to a
-  later enrichment stage (the latest spec removed its former Step 4 system-graph
-  section — see "Deferred to later stages").
-- **Events between a receive and a send belong to one entity.** All events
-  observed between a component's receive and its subsequent send belong to the
-  same entity — which is why a connected Gray/White component collapses to a
-  single entity in Step 5.a.
+  forwarded, producing two traces and a split graph. Step 2.c's inferred peers
+  stub the missing side within a trace; *cross-trace* stitching is deferred.
 
 ## Key decisions
 
 **One base graph, no per-scope graphs, no cross-scope merge.**
-All scopes contribute spans to a single base graph. Agentic-scope semantics
-are overlaid by coloring nodes/edges in place. There is no separate
-`ScopeGraph` per scope and no `XScopeGraph` merge step. Cross-scope attribute
-reconciliation (e.g. a2a caller and httpx caller representing the same real
-entity) is deferred to a later enrichment stage and is out of scope for this
-algorithm.
+All scopes contribute spans to a single base graph. Scope semantics are overlaid
+by coloring nodes/edges in place (White → Teal / Blue). There is no separate
+`ScopeGraph` per scope and no `XScopeGraph` merge step.
 
-**Edge coloring is additive, not replacement.**
-A Gray edge between two Gray nodes is added on top of the underlying White
-chain; the White edges remain. A Black edge between two Black nodes is added
-on top of the corresponding Gray edge; the Gray edge remains. This keeps trace
+**Coloring is additive, not replacement.**
+Coloring a node Teal or Blue never removes its White edges. This keeps trace
 structure recoverable at every layer.
 
-**Boundaries are detected only in agentic scopes.**
-Each agentic scope has its own per-`(scope, framework)` adapter that
-produces `SpanFacts` for every span; a `SpanFacts.role` other than
-`NONE` marks a boundary. The current algorithm covers the openinference
-scope only; standalone a2a and mcp adapters are deferred. Non-agentic
-scopes (httpx, starlette, …) are not consulted for boundary detection at
-this stage; their spans remain White and contribute no entities. Their
-attributes will be used later to enrich agentic entities.
-
-**Boundary-node promotion is role-driven, not kind-driven; edge promotion
-is kind+role-matched.**
-A Gray *node* is promoted to Black iff the adapter assigned a non-`NONE`
-role. A span's `Kind` (LLM/TOOL/AGENT/OTHER) records *what the span is
-about* — it drives natural-key prefix selection (`llm:` / `tool:` /
-`agent:`) and payload-shape selection (chat messages vs. opaque
-input/output values). It does **not** by itself decide boundary-ness.
-This separation matters because the agentic SDKs emit wrapper spans
-(top-level agent runs, per-activation `AgentSpanData`, runner spans)
-that carry `kind=AGENT` but represent no specific call: they do not
-carry a target identity, do not carry request/response payloads, and
-typically have a more specific child span that *is* the real boundary.
-Promoting wrappers to Black on kind alone would produce duplicate
-boundaries on the same Gray chain and inflate the entity graph with
-non-call edges. The adapter therefore assigns `role=NONE` to wrappers
-and reserves `SOURCE`/`TARGET`/`BOTH` for spans that carry explicit
-call evidence — target identity, request/response payload, or a
-framework-specific span-name signal (e.g. `"handoff to {target}"`,
-`ClaudeAgentSDK.query`, `ClaudeAgentSDK.{tool_name}`).
-
-For LLM-kind spans the rule is more permissive: `role=SOURCE` is
-assigned even when both `llm.input_messages` and `input.value` are
-absent. Empty payloads on an LLM-kind span are an instrumentation gap,
-not absence of a call — the kind itself is sufficient call evidence.
-This asymmetry with AGENT/TOOL is deliberate: AGENT-kind has too many
-wrapper-shape false positives to treat kind alone as evidence; LLM-kind
-does not. The `ClaudeAgentSDK.{tool_name}` dispatch span is a deliberate
-AGENT-kind exception: the framework-specific span-name signal is itself
-the call evidence (it names the dispatched target), so the adapter
-assigns `role=SOURCE` there.
-
-While *node* promotion ignores `Kind`, *edge* promotion (Step 3.b) does
-use it: a Gray edge between two Black nodes becomes Black only for a
-`SOURCE`↔`TARGET` pair of the **same** `Kind`. `Kind` here disambiguates
-which adjacent boundaries form a genuine call (a tool call paired with a
-tool, an LLM call with an LLM) from two same-entity Source spans that
-merely sit next to each other on the chain. See Step 3.b.
-
-**Each (scope, framework) pair is developed and implemented separately.**
-A new framework — even within an existing scope like openinference — is
-added in isolation: drop a new adapter class into the registry. The base
-graph, coloring rules, and entity-graph derivation are shared and
-unchanged across scopes and frameworks. A new framework version with
-schema drift is absorbed by adding entries to that adapter's per-version
-schema map; behavioural drift (new combined-span shapes, new span-name
-conventions) lives in adapter code.
-
-**Adapter Capabilities must be consistent across all frameworks but implementation may be adapter specific**
+**Scope coloring is per `(scope, framework)` adapter.**
+Each agentic scope has its own per-`(scope, framework)` adapter that produces
+`SpanFacts` for every span. The current algorithm colors the openinference
+agentic scope Blue; transport (Teal) coloring and standalone a2a / mcp scopes
+are deferred. A new framework — even within openinference — is added in
+isolation: drop a new adapter class into the registry. Schema drift is absorbed
+by per-version schema-map entries; behavioural drift (new combined-span shapes,
+new span-name conventions) lives in adapter code.
 
 **Raw OTel attribute keys are isolated to the adapter layer.**
 Every attribute lookup happens in `adapters.py`. The graph builder, the
-classifier facade, and the extractor read only typed `SpanFacts` fields
-— `kind`, `natural_key`, `is_combined`, `target_label`,
-`request_messages`, `response_messages`, `request_value`,
-`response_value`. A framework attribute rename is a one-file edit; before
-this layer existed the same rename required edits in classifiers,
-builder, and extractor. The classifier module (`classifiers.py`) is now
-a thin facade that translates `SpanFacts` to the older
+classifier facade, and the extractor read only typed `SpanFacts` fields. A
+framework attribute rename is a one-file edit. The classifier module
+(`classifiers.py`) is a thin facade translating `SpanFacts` to the older
 `AgenticClassification` shape the builder consumes.
 
-**Natural-key prefixes are part of the public algorithm vocabulary.**
-The inferred-peer merge key produced by an adapter has a fixed format:
-`tool:<name>`, `llm:<model>`, `agent:<name>`. The prefix doubles as the
-entity's coarse kind in the extractor (`_kind_from_label`) and as the
-inferred node's display label when no friendlier label is available.
-Adapters strip provider prefixes from model strings (e.g.
-`anthropic/claude-3-7` → `claude-3-7`) so the key is the model alone, not
-the provider-qualified name. Hostname / `service.name` are deliberately *not*
-used as the *natural-key* — they would over-merge across distinct entities
-behind the same proxy.
+**Natural-key prefixes (an implementation construct, not a spec vocabulary).**
+The current spec specifies only a *hostname-or-`unknown`* entity key (Step 3.a);
+it does **not** define a "natural key" or any prefix format. The following is an
+**implementation decision**, not spec-derived algorithm intent. The merge key
+produced by an adapter (`SpanFacts.natural_key`) has a fixed format:
+`tool:<name>`, `llm:<model>`, `agent:<name>`. The prefix doubles as the entity's
+coarse kind in the extractor and as the inferred node's display label when no
+friendlier label is available. Adapters strip provider prefixes from model
+strings (e.g. `anthropic/claude-3-7` → `claude-3-7`). Hostname / `service.name`
+are deliberately *not* used as the *natural-key* — they would over-merge across
+distinct entities behind the same proxy.
 
-`service.name` *is*, however, used as the combine key in one tightly-gated
-place: the Step 4 observed ↔ observed merge (Phase A3), which fires **only** for
-**keyless** observed boundary callers — nodes with no typed natural-key on
-`peer_match_key` *or* `label` — and only across *different* entity components. A
-typed node (`tool:` / `llm:` / `agent:`) always keeps its natural-key identity
-and is never merged by service name, so the over-merge hazard above does not
-apply: only same-service nodes that have *no other identity than the service*
-are combined.
+`service.name` is used only for entity *display naming* (`_entity_display_name`),
+never as a merge/combine key.
 
-**Same-entity merging — one Step-4 pass on the execution-flow graph.**
-The spec consolidates all same-entity convergence — **inferred ↔ observed**,
-**inferred ↔ inferred**, and **observed ↔ observed** — plus **edge** merge into
-a single Step 4 (def. 9), run **on the execution-flow graph** before the Step 5
-fuse. The implementation matches this: `merge_step4` does Phase A (node merge,
-three sub-passes A1/A2/A3) then Phase B (edge merge), all on the base graph
-(see the Step 4 as-implemented note). The three node sub-passes are not
-redundant — inferred↔observed needs an observation to fold into;
-inferred↔inferred needs none; observed↔observed unifies two observations of the
-same service — and each carries the guard that keeps a *caller* from fusing into
-its *callee*:
-
-- **A1 inferred ↔ observed** — typed key + kind, observed twin in a *different*
-  entity component (an independent observation, not a sibling caller).
-- **A2 inferred ↔ inferred** — typed callee peers (TARGET role, key-prefix
-  matching kind) sharing a key; converges a repeatedly-called peer.
-- **A3 observed ↔ observed** — same `service.name` across different entity
-  components, gated to keyless observed callers. Realised as a fuse-time forced
-  grouping (not a node merge) so per-call boundary spans survive.
-
-**Edge merge is implemented** (Phase B): the call-over-count the earlier draft
-flagged as a known limitation is fixed. A tool call replayed across spans (same
-`tool_call.id` / same arguments between the same entity pair) collapses to one
-interaction; genuinely distinct calls (distinct arguments) are preserved. The
-fuse then emits one entity edge per surviving Black edge, so interaction counts
-reflect Phase B exactly.
-
-> **History.** Earlier ADR drafts (a) asserted "no inferred↔inferred
-> de-duplication" — wrong, the spec combines them; (b) split merging across
-> Step 2.c and Step 3.a and ran two passes *post-fuse* on the entity graph, a
-> divergence from the spec's execution-flow placement; (c) left edge merge
-> unimplemented (the call over-count). The current code resolves all three:
-> one `merge_step4` on the execution-flow graph, node merge then edge merge.
+**Same-interaction merge vs. same-entity combine — two graphs.**
+The spec separates two operations across two graphs, and the code follows that
+split: Step 2.d (`merge_identical_interactions`) merges same-*interaction*
+nodes/edges on the execution-flow graph — folding an inferred peer into its
+observed twin, merging observed↔observed same-interaction nodes, and collapsing
+duplicate Teal chains — while the **Step 3.a semantic** sub-step
+(`combine_identical_entities`) combines same-*entity* groups on the entity graph
+(both inferred peers and observed entities) on the spec's Step 3.a heuristics.
+See the as-implemented notes under Step 2.d and Step 3.a for the exact keys.
 
 **Inferred peers are created in the core algorithm, not deferred.**
-When only one side of a protocol call is observed, Step 2.a materialises an
-inferred node for the unobserved peer (recorded with the dedicated
-`is_inferred` boolean field on unmerged survivors — see "Inferred identity
-is a boolean field, not a label convention" below) and connects it with
-bidirectional Black edges. This keeps the entity graph shape-consistent —
-every observed boundary participates in a complete source/target pair — and
-lets downstream consumers distinguish observed entities from inferred ones
-via the marker. The alternative (leave the lone boundary edgeless and stub
-later) was rejected because it would leave the entity graph topologically
-inconsistent across observed-both-sides vs observed-one-side cases.
+When only one side of a call is observed, Step 2.c materialises an inferred node
+for the unobserved peer (recorded with the `is_inferred` boolean on unmerged
+survivors) and connects it. This keeps the entity graph shape-consistent — every
+observed entity participates in a complete source/target pair — and lets
+consumers distinguish observed entities from inferred ones via the marker.
 
 **Inferred identity is a boolean field, not a label convention.**
 An inferred node that survives without being merged into an observed node is
-identified by a dedicated boolean field on the node row — `is_inferred` on
-the colored-base-graph node and `inferred` on the entity node — and never by
-parsing the `label` column or any other display string. The label is a
-human-facing display value (e.g. `"(unobserved peer of <source>)"`) and is
-free to change for UX reasons; queries and
-downstream processors must filter on the boolean field. The scratch-table
-schemas in `cli.py` carry this column explicitly so external SQL inspection
-has a typed signal rather than a string-pattern heuristic. (These columns are
-named `is_inferred` on the node row and `inferred` on the entity row — see the
-naming note in Definitions.)
+identified by a dedicated boolean field — `is_inferred` on the colored-base-graph
+node and `inferred` on the entity node — and never by parsing the `label` column.
+The label is a human-facing display value and is free to change. The scratch-table
+schemas in `cli.py` carry this column explicitly.
 
 **Entity attributes are pooled from all spans in the component.**
-Within a connected component, attributes from every Gray and Black span are
-pooled onto the resulting entity node. Internal Gray plumbing nodes contribute
-their attributes too — they are not treated as structure-only.
+Within a connected component, attributes from every contributing span are pooled
+onto the resulting entity node. Internal plumbing nodes contribute their
+attributes too. (The spec's Step 3.a groups component nodes into one entity but
+is silent on attribute handling; pooling is an implementation choice.)
 
 **Attribute sources are validated against the per-scope span reference.**
-Every attribute an adapter consults must be validated against the
-span-table reference for the framework that emitted it
-(`openinference_telemetry_spans.md` for cross-framework openinference at
-the current main snapshot;
-`openinference_openai_agents_v1.4.1_telemetry_spans.md` for openai_agents
-1.4.1; `openinference_anthropic_v1.0.6_telemetry_spans.md` for the anthropic /
-`claude_agent_sdk` framework at 1.0.6; future references for
-httpx/starlette/etc.). New attributes are not added on
-intuition; the reference is regenerated from the upstream package and the
-attribute confirmed before it appears in `_OI_ATTRS` or in a per-version
-schema map. Each adapter records the framework version(s) it has been
-verified against in a `documented_version` field for the next maintainer.
+Every attribute an adapter consults must be validated against the span-table
+reference for the framework that emitted it
+(`openinference_telemetry_spans.md` for cross-framework openinference;
+`openinference_openai_agents_v1.4.1_telemetry_spans.md` for openai_agents 1.4.1;
+`openinference_anthropic_v1.0.6_telemetry_spans.md` for the anthropic /
+`claude_agent_sdk` framework at 1.0.6; future references for httpx / starlette /
+etc.). New attributes are not added on intuition; the reference is regenerated
+from the upstream package and the attribute confirmed before it appears in
+`_OI_ATTRS` or a per-version schema map. Each adapter records the framework
+version(s) it has been verified against in a `documented_version` field.
 
-**Combined source-and-target spans assume the target emits no spans of its
-own.** Step 2.a's duplicate-node approach is correct when the target side has
-no observable spans (e.g. an external LLM call where only the SDK's combined
-span is recorded). When the target *does* emit its own spans, those spans
-would necessarily appear as parents of the original combined span (because
-the combined span carries the result), and the duplicate-stands-alone model
-becomes incorrect. This case is deferred.
+**Cross-entity calls are the Teal region, not a separate edge signal.**
+A cross-entity call is expressed entirely by the Blue/Teal structure the spec
+describes: Step 2.c routes an inferred call through a Teal server and Step 2.a
+colors observed transport spans Teal, and Step 3.a separates entities by
+dropping Teal (edges touching any Teal node are cut, so the Teal transport chain
+between two Blue components — a lone server is just the length-1 case — is where
+two entities meet). No distinct cross-entity edge type or promotion pass is
+needed. In-code names track the spec: `merge_identical_interactions` is Step 2.d,
+`build_entity_graph` builds the Step 3 entity graph (nodes + edges), and
+`combine_identical_entities` realises the Step 3.a *semantic combine*.
 
 ## Deferred to later stages
 
-The following are intentionally out of scope for the algorithm described here
-and will be addressed by a separate enrichment stage:
-
 - **Additional agentic scopes (standalone a2a, standalone mcp).** The current
-  algorithm handles the openinference scope only. The OpenInference MCP
-  adapter (`openinference.instrumentation.mcp`) is registered but emits no
-  boundaries — the MCP instrumentor only injects/extracts traceparent
-  headers. Standalone a2a and mcp scopes (outside openinference) and their
-  integration into the coloring step are deferred.
-- **Cross-scope attribute enrichment.** Pulling attributes from non-agentic
-  spans (httpx URL/host, starlette route, …) onto the agentic entities they
-  describe. Also: recognising that an agentic caller span and an httpx caller
-  span on the same chain represent the same real entity.
+  algorithm colors the openinference agentic scope only. The OpenInference MCP
+  adapter is registered but yields no entities (the MCP instrumentor only
+  handles traceparent headers). Standalone a2a and mcp scopes are deferred.
+- **Cross-scope attribute enrichment.** Pulling attributes from transport spans
+  (httpx URL/host, starlette route, …) onto the agentic entities they describe;
+  recognising an agentic caller span and a transport caller span on the same
+  chain as the same real entity. (Transport spans are now colored Teal and
+  dropped at the fuse; consuming their attributes is the enrichment stage.)
 - **Cross-scope multi-agent composition (A2A).** When one agent delegates to
-  another over A2A, the two agents' agentic spans are connected only through
-  the non-agentic `httpx → starlette` bridge between their services. The latest
-  spec covers this in principle — Step 3.a draws a Gray edge across the bridge
-  "regardless of scope"; Step 3.b adds the callee's **agent-root span** as a
-  Target boundary and admits a cross-framework `tool call → agent` matched pair
-  bound on the source's *related* target — so the delegation should become a
-  Black edge between two distinct, observed agent entities rather than an
-  inferred `tool:` peer. None of these three pieces is implemented yet: the
-  caller-side `delegate_*` span is a Source boundary, but the callee agent-root
-  stays Gray (AGENT-kind wrappers map to `role=NONE`), no `tool→agent` edge is
-  promoted, and the delegated agent surfaces as an inferred peer. Realising it
-  also requires resolving how the **entry** agent's root (delegated-to by no
-  in-trace agent) is treated, and what makes a target "related" to a source —
-  both open in the spec.
-- **Broken traceparent / disconnected base graphs.** When a Receive span has
-  no traceparent link to its corresponding Send, the base graph is
-  disconnected and Step 5.a naturally produces disconnected components in the
-  entity graph. No special handling, no annotation at this stage.
-- **Hostname-based entity naming.** Step 5.b now names entities from
-  `service.name` / the natural-key suffix (see its as-implemented note), but
-  the spec's *preferred* identifier — a **hostname** — remains deferred. It
-  lives on non-agentic (httpx / botocore / starlette) spans that are not part
-  of the entity-forming subgraph today, so it is unreachable until the
-  cross-scope enrichment stage exists.
-- ~~**Inferring tool nodes from `tool_calls` attributes.**~~ *Implemented for
-  the `anthropic` framework, both sides* — an LLM span's
-  `llm.output_messages.*.message.tool_calls.*` (output, ordered after the LLM)
-  and `llm.input_messages.*.message.tool_calls.*` (input replay, ordered
-  before the LLM) attributes now materialise the inferred tool-call / tool
-  nodes and their edges (Step 2.a case 3, gated per-adapter; see the
-  as-implemented note under Step 2.a). Other frameworks that emit a real
-  tool-execution span do not opt in (their tools are observed, not inferred).
-- ~~**Inferred-interaction ordering + input-derived tools.**~~ *Implemented* —
-  the spec's "Inferred edges ordering" rules (calls before responses;
-  input-derived tools before the LLM interaction; output-derived tools after
-  it) are realised by an explicit integer `order` carried from the base-graph
-  `Edge` through `EntityEdge` to `ProtoInteraction` and the
-  `proto_interactions."order"` column, with the CLI and API sorting by
-  `(started_at, order)`. See the "Inferred interaction ordering" as-implemented
-  note under Step 2.a.
-- ~~**Step 4 node-and-edge merge (all combinations, on the execution-flow
-  graph).**~~ *Implemented* as the single `merge_step4` (see "Same-entity
-  merging — one Step-4 pass" under Key decisions and the Step 4 as-implemented
-  note): Phase A node merge (A1 inferred↔observed, A2 inferred↔inferred, A3
-  observed↔observed — A3 as a fuse-time forced grouping) then Phase B edge
-  merge, all on the execution-flow graph before the Step 5 fuse. This retires
-  two earlier divergences: the post-fuse placement of two merges, and the
-  unimplemented edge merge (the call over-count is now fixed).
-- **Cross-trace ("system graph") merging and name alignment.** The earlier spec
-  carried a top-level "Step 4 — system graph" covering cross-trace work; the
-  latest spec **removed** that section (its old Step 4 number is now the
-  node/edge merge). The work it described remains deferred to a separate
-  enrichment stage:
-  - **Inter-trace merging.** Merging an inferred node in one trace with an
-    observed node in another — which can happen when traceparent is not
-    propagated and a single logical interaction is split across two traces
-    (so the graph is split). The cross-trace analogue of the Step 4 intra-trace
-    merge.
-  - **Align names across executions.** Reconciling entity identifiers across
-    different traces / runs of the same system.
-- **Combined source-and-target spans whose target emits its own spans.** See
-  the corresponding key decision above.
-- **Entities from pure non-agentic calls.** A direct httpx call between two
-  services with no agentic span on either side produces no entity at this
+  another over A2A, the two agents' agentic spans are connected only through the
+  transport (`httpx → starlette`) bridge between their services. Resolving the
+  delegation to a cross-entity call between two observed agent entities (rather
+  than an inferred `tool:` peer) depends on the callee's agent-root being
+  recognised as a target — deferred.
+- **Broken traceparent / disconnected base graphs.** When a Receive span has no
+  traceparent link to its Send, the base graph is disconnected and Step 3.a
+  naturally produces disconnected entity components. No special handling at this
   stage.
+- **Hostname-based entity naming.** Step 3.a names entities from `service.name` /
+  the natural-key suffix; the spec's *preferred* identifier, a **hostname**,
+  remains deferred — it lives on transport spans that are dropped before fusing.
+- **Cross-trace ("system graph") merging and name alignment.** Merging an
+  inferred node in one trace with an observed node in another (when traceparent
+  is not propagated and one logical interaction is split across two traces), and
+  reconciling entity identifiers across runs. Deferred to a separate enrichment
+  stage.
+- **Combined source-and-target spans whose target emits its own spans.** Step
+  2.c's duplicate approach is correct when the target has no observable spans.
+  When the target *does* emit spans, they would appear as parents of the combined
+  span and the duplicate-stands-alone model becomes incorrect. Deferred.
+- **Entities from pure non-agentic calls.** A direct httpx call between two
+  services with no agentic span on either side produces no entity at this stage.
 
 ## Considered alternatives
 
-**Linear span-pattern matching** (the original prototype). Three passes over
-the full span list — cross-service SERVER anchors, LLM calls, local tool
-calls — using hard-coded ancestor walks. Conflates graph construction with
-entity inference, cannot represent intermediate states, and requires bespoke
-logic per interaction pattern.
+**Linear span-pattern matching** (the original prototype). Three passes over the
+full span list using hard-coded ancestor walks. Conflates graph construction
+with entity inference, cannot represent intermediate states, and requires
+bespoke logic per interaction pattern.
 
-**Per-scope graphs with cross-scope merge.** Build one `ScopeGraph` per
-instrumentation scope, then merge them via structural isomorphism plus label
-matching. Inspectable, but pushes the hardest decisions into the merge step
-and forces every scope (including non-agentic ones) to commit to a Send /
-Receive / Internal classification up front. The current design moves that
-work into a separately-defined enrichment stage and keeps the core algorithm
-focused on agentic-scope semantics over a single base graph.
+**Per-scope graphs with cross-scope merge.** Build one `ScopeGraph` per scope,
+then merge them via structural isomorphism plus label matching. Inspectable, but
+pushes the hardest decisions into the merge step and forces every scope
+(including non-agentic ones) to commit to a Send / Receive / Internal
+classification up front. The current design moves that work into a
+separately-defined enrichment stage and keeps the core algorithm focused on
+scope coloring over a single base graph.
 
 ## Consequences
 
 - The prototype writes three sets of scratch tables for inspection: the base
-  graph (after Step 1); the colored execution graph (after Step 2 inference,
-  Step 3 Gray-coloring and Black boundary promotion, and the execution-flow
-  Step 4 node+edge merge — including combined-span duplicates, inferred peers,
-  and between-boundary flag annotations); and the entity graph (after the Step 5
-  fuse — Step 4 merges already ran on the execution-flow graph, so the fuse is
-  purely structural). The UI surfaces these as the execution graph **before**
-  the fuse and the entity graph **after** it. All three are in the "Graphs
-  (proto)" tab of the trace-tree UI.
-- A trace captured only as a test fixture (the extractor's tests run it as a
-  pure function over `fixtures/*.json`, never touching Postgres) is not
-  visible in the UI, because the CLI sources its spans *from* the `spans`
-  table. The throwaway helper
-  `data_governance.processors.p_interactions_proto.load_fixture` bridges this:
-  it inserts a fixture's spans into `spans` (via the receiver's own
-  `write_span`, so insertion is idempotent) and then runs the normal CLI
-  processor over that trace, populating `proto_*` *and* satisfying the UI's
-  `proto_interaction_spans → spans` evidence join. It mutates whatever
-  `DATABASE_URL` points at, so it is disabled by default and refuses to run
-  unless `PI_LOAD_FIXTURE_CONFIRM=1` is set (see its module docstring).
+  graph (after Step 1); the colored execution graph (after Step 2 coloring,
+  inference, and the Step 2.d merge); and the entity graph (after Step 3
+  entity-node grouping and edge creation). The UI surfaces these as the
+  execution graph **before** entity formation and the entity graph **after** it,
+  in the "Graphs (proto)" tab.
+- A trace captured only as a test fixture is not visible in the UI (the CLI
+  sources spans from the `spans` table). The throwaway helper
+  `data_governance.processors.p_interactions_proto.load_fixture` bridges this by
+  inserting a fixture's spans into `spans` (via the receiver's `write_span`, so
+  idempotent) and running the normal CLI processor. It mutates whatever
+  `DATABASE_URL` points at, so it is disabled unless `PI_LOAD_FIXTURE_CONFIRM=1`
+  is set.
 - The colored-base-graph node row (`proto_colored_nodes`) carries an
-  `is_inferred boolean NOT NULL DEFAULT false` column, and the entity-node
-  row (`proto_entity_nodes`) carries an `inferred boolean NOT NULL DEFAULT
-  false` column. These are the sole sanctioned signals for "is this an
-  inferred (unobserved-peer) node?" — the `label` column is display-only and
-  must not be parsed for this purpose. The difference in column name
-  (`is_inferred` on the node table vs. `inferred` on the entity table)
-  follows the existing `is_*` / `contains_*` convention on each table; on the
-  `/proto/graphs/{trace_id}` wire the base/colored graphs expose `is_inferred`
-  and the entity graph exposes `inferred`, and the UI reads whichever the
-  graph carries.
-- The "Graphs (proto)" UI surfaces inferred peers via an `inferred` marker
-  pill (`marker-inferred`) alongside the existing `boundary`, `target`, and
-  `flagged` pills, and shows a count in the colored-graph and entity-graph
-  summary lines. The pill is rendered by reading the boolean field; the
-  label string is never inspected.
-- Non-agentic scopes contribute no entities at this stage. Scopes that emit
-  no agentic spans at all will not appear in the entity graph until the
-  enrichment stage runs.
+  `is_inferred boolean NOT NULL DEFAULT false` column, and the entity-node row
+  (`proto_entity_nodes`) carries an `inferred boolean NOT NULL DEFAULT false`
+  column. These are the sole sanctioned signals for "is this an inferred node?"
+  — the `label` column is display-only. On the `/proto/graphs/{trace_id}` wire
+  the base/colored graphs expose `is_inferred` and the entity graph exposes
+  `inferred`, and the UI reads whichever the graph carries.
+- The "Graphs (proto)" UI surfaces inferred peers via an `inferred` marker pill
+  (`marker-inferred`) and shows a count in the colored-graph and entity-graph
+  summary lines. The pill is rendered by reading the boolean field; the label
+  string is never inspected.
+- Non-agentic scopes contribute no entities at this stage. Scopes that emit no
+  agentic spans at all will not appear in the entity graph until the enrichment
+  stage runs.

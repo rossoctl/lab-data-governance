@@ -33,10 +33,12 @@ def _ent(result, entity_id):
     return next(e for e in result.entities if e.id == entity_id)
 
 
-# Expected entity set: natural_key -> inferred?  The agent is the lone observed
-# entity; the LLM and both tools are inferred from the anthropic LLM spans.
+# Expected entity set: natural_key -> inferred?  This trace has only bare leaf
+# LLM spans under a transport parent (no agent/run wrapper), so the agent itself
+# is *inferred* by Step 2.c case 4 — hence `patent-assistant` is inferred. The
+# LLM and both tools are also inferred from the anthropic LLM spans.
 EXPECTED_ENTITIES = {
-    "patent-assistant": False,
+    "agent:patent-assistant": True,
     "llm:claude-haiku-4-5-20251001": True,
     "tool:database": True,
     "tool:file": True,
@@ -65,7 +67,7 @@ def test_merged_tool_calls_order_after_their_llm():
 
     tool_calls = [
         ix for ix in result.interactions
-        if _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
+        if _ent(result, ix.caller_entity_id).natural_key == "agent:patent-assistant"
         and _ent(result, ix.callee_entity_id).natural_key.startswith("tool:")
     ]
     assert tool_calls, "expected agent→tool interactions"
@@ -78,7 +80,7 @@ def test_merged_tool_calls_order_after_their_llm():
         llm_same_span = [
             ix for ix in result.interactions
             if ix.started_at == tc.started_at
-            and _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
+            and _ent(result, ix.caller_entity_id).natural_key == "agent:patent-assistant"
             and _ent(result, ix.callee_entity_id).natural_key.startswith("llm:")
         ]
         assert llm_same_span, "expected an agent→LLM call sharing the tool call's turn"
@@ -95,13 +97,13 @@ def test_each_turn_keeps_distinct_times_both_directions():
 
     calls = [
         ix for ix in result.interactions
-        if _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
+        if _ent(result, ix.caller_entity_id).natural_key == "agent:patent-assistant"
         and _ent(result, ix.callee_entity_id).natural_key.startswith("llm:")
     ]
     responses = [
         ix for ix in result.interactions
         if _ent(result, ix.caller_entity_id).natural_key.startswith("llm:")
-        and _ent(result, ix.callee_entity_id).natural_key == "patent-assistant"
+        and _ent(result, ix.callee_entity_id).natural_key == "agent:patent-assistant"
     ]
     assert len(calls) == 3 and len(responses) == 3
     assert len({ix.started_at for ix in calls}) == 3, "agent→LLM turns must keep distinct times"
