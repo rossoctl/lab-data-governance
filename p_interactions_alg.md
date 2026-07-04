@@ -165,13 +165,13 @@ In addition it may include nodes inferred from the second span including
 Server --> Tool
 In such a case they inferred tool call may be merged with the node representing the tool called span, and both pairs of server no nodes and tool nodes should be merged.
 
-Another example: assume we have a tool called retrieving information from a database followed by multiple interactions with an LLM. in such a case the tool input will appear in all the following LLM spans and may result in multiple inferred database tool calls.
+Another example: assume we have a tool called retrieving information from a database (Single invocation of the database) followed by multiple interactions with an LLM. in such a case the tool input will appear in all the following LLM spans and may result in multiple inferred database tool calls.
 since all those inferred nodes represent a single call to the database - They should be merged.
 
 The process of Merging is a set of heuristics - asserting the same exact processing is observed - and can be based on:
 - proximity in the trace
 - Same tool name 
-- same execution time
+- same exact execution time
 - Same input argument and output result 
 - whether the node or edge are inferred or observed in conjunction with the source spans 
 - nodes from the same scope
@@ -181,49 +181,51 @@ Timing note: when merging edges account for the timing of each of the edges and 
 
 
 # Step 3 - entity graph 
-In this step we create the entity graph based on the execution graph
-
-In this step we are going to create a new graph representing agentic entities and interactions
+In this step we create the entity graph, based on the execution graph,representing agentic entities and interactions
 The agentic entity graph is going to be used for two things
 1. Identify the entities
 2. Identify the interactions 
 
-The entity graph is going to be constructed in several steps:
-1. structurally - fuse nodes representing the same entity into a single node 
-2. Semantically - fuse And then though entity nodes representing the same entity
 
 ## Step 3.a - Creating the Entity graph
-Consider the Blue and Teal nodes in the execution flow graph.
 
-First we are going to create subgraphs of execution graph nodes by simply dropping teal nodes. 
-Each subgraph can contain inferred nodes, observed nodes or both - But these can only be blue or white. 
+The entity graph is going to be constructed in as follows:
 
-Next, each sub graph represented by connected Blue and White nodes will become a new node in the entity graph - Effectively fusing all nodes (inferred or observed) from the Execution flow subgraph into a single entity node.
+Nodes:
+1. structurally:
+  Consider the Blue and Teal nodes in the execution flow graph.
 
-Note, every path connecting subgraphs (entity nodes) should be fused to a single edge connecting these entity nodes. In other words: collapse each Teal transport chain between two Blue components into one interaction 
+  First we are going to create subgraphs of execution graph nodes by simply dropping teal nodes. 
+  Each subgraph can contain inferred nodes, observed nodes or both - But these can only be Blue or White. 
 
+  Next, for all nodes in each sub graph represented by connected Blue and White nodes create a group.
 
-Goal: Each node in the entity graph should be given a key. 
+2. Semantically:
+  Combine groups representing the same entity into a single group
 
-This key should reflect the original subgraph and may be from one of the subgraph node spans. in particular if we can identify a node in the subgraph containing the host name we should use it as an key 
+  For example, An execution graph may include multiple tool calls (e.g. with different arguments) to a file   
+  system, and therefore multiple inferred file system tools.
+  For each one of these tools we will create a group, based on the structural step. However all those tools 
+  represent in reality a single file system tool entity. Therefore all these groups should be combined
+
+  The process of identifying groups represent the same entity is a set of heuristics - and can be based on:
+  - Same tool/service/host/llm name 
+  - Same argument/output types 
+  - nodes from the same scope
+
+Each group represents a node in the entity graph 
+
+Note: Each node in the entity graph should be given a key: This key should reflect the original subgraph and may be from one of the subgraph node spans. in particular if we can identify a node in the subgraph containing a agent/service/tool/host name we should use it as an key 
 If the key is not clear we can call it unknown.
 
+Edges:
+1. Structurally:
+  - edges internal to a group are ignored
+  - Every path connecting entity nodes should be grouped and represented by a single interaction connecting these entity nodes. In other words: collapse each Teal transport chain between two Blue components into one interaction 
 
-## Step 3.b - merge identical entities (entity graph)
-
-This step identified entities in the entity graph that represent the same one. once detected these entities are merged - maintaining the edges (Updating the source or target to the merged entity)
-
-For example, An execution graph may include multiple tool calls (e.g. with different arguments) to a file system, and therefore multiple inferred file system tools.
-For each one of these tools we will create an entity.
-however all those tools represent in reality a single file system tool entity and should be merged to a single entity while maintaining all edges representing the different calls.
+The edges in the entity graph are simply these interactions.
 
 
-
-The process of Merging is a set of heuristics - asserting the same exact Entity is observed - and can be based on:
-- Same tool name 
-- Same argument/output types 
-- whether the node or edge are inferred or observed in conjunction with the source spans 
-- nodes from the same scope
 
 
 
@@ -231,8 +233,6 @@ The process of Merging is a set of heuristics - asserting the same exact Entity 
 
 # Guide
 - All attributes used in the code should be validated. The otel-span-table skill can generate a table with all the span attributes given URL .
-- development and implementation of each scope should be separate
-
 
 
 
