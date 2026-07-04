@@ -195,7 +195,7 @@ If the key is not clear we can call it unknown.
 
 1. Structurally:
   - edges internal to a group are ignored
-  - Each path connecting entity nodes should be grouped and represented by a single interaction connecting these entity nodes. In other words: each Teal transport chain between two Blue components becomes a single interaction 
+  - Each path connecting entity nodes should be represented by a single interaction connecting these entity nodes. In other words: each Teal transport chain between two Blue components becomes a single interaction 
 
 The edges in the entity graph are simply these interactions.
 
