@@ -24,10 +24,6 @@ The output are entities and interactions.
 -. A white edge representing parent child relationship based on trace parent.
 -. Inferred node - a node in the graph we know should exist although we don't have a span emitted representing that node. for example, LLM output requires a call to a tool can produce an inferred node representing that tool.
 -. Inferred edge - an interaction in the graph we know should exist although we don't have a span representing this interaction
--. merge interaction - the process of merging nodes and edges representing the same exact process
--. fuse - the process of collapsing multiple nodes together to represent a single entity.
-
-
 
 
 # Step 1 - Base (white) execution flow graph
@@ -57,28 +53,6 @@ Requires openinference telemetry spans
 1. Traverse the execution flow graph, And identify all nodes related to the *agentic* scope. 
 2. Color each agentic scope node "Blue" 
 
-<!-- 3. connect consecutive "Gray" nodes using "Gray" edges iff there is a path (of white edges - regardless of scope) between two Gray nodes (Without going through a Gray node in between). -->
-
-<!-- #### Step 3.b - agentic (execution graph) boundaries 
-It was a step this step we identify agentic boundaries, Specifically we aim to identify input (call target) and output (call sources) points.
-
-Nodes:
-1. Identify Gray nodes *representing a agentic boundary* and color them "Black". This includes For example:
-  - tool targets (Target)
-  - agent calls (Source)
-  - llm calls
-  - agent root spans - Representing entry points for the agent (Target)
-
-Note: Using span kind and attributes only
-
-Edges:
-2. Create edges between source and related targets in the agentic scope.
-specifically if there is a gray path (Consisting only of Gray edges and nodes) between two black nodes (one black node represents a source while the other its related target in the agentic scope) - *Create* a new black edge.
-examples:
-tool call -> tool
-tool call -> agent
-llm call -> llm 
--->
 
 ## Step 2.c - derive inferred (execution graph) nodes and edges
 
@@ -221,7 +195,7 @@ If the key is not clear we can call it unknown.
 
 1. Structurally:
   - edges internal to a group are ignored
-  - Every path connecting entity nodes should be grouped and represented by a single interaction connecting these entity nodes. In other words: collapse each Teal transport chain between two Blue components into one interaction 
+  - Each path connecting entity nodes should be grouped and represented by a single interaction connecting these entity nodes. In other words: each Teal transport chain between two Blue components becomes a single interaction 
 
 The edges in the entity graph are simply these interactions.
 
