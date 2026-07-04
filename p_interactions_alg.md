@@ -186,12 +186,11 @@ The agentic entity graph is going to be used for two things
 1. Identify the entities
 2. Identify the interactions 
 
-
-## Step 3.a - Creating the Entity graph
-
 The entity graph is going to be constructed in as follows:
 
-Nodes:
+## Step 3.a - Creating the Entity graph nodes
+
+
 1. structurally:
   Consider the Blue and Teal nodes in the execution flow graph.
 
@@ -218,7 +217,8 @@ Each group represents a node in the entity graph
 Note: Each node in the entity graph should be given a key: This key should reflect the original subgraph and may be from one of the subgraph node spans. in particular if we can identify a node in the subgraph containing a agent/service/tool/host name we should use it as an key 
 If the key is not clear we can call it unknown.
 
-Edges:
+## Step 3.b - Creating the Entity graph edges
+
 1. Structurally:
   - edges internal to a group are ignored
   - Every path connecting entity nodes should be grouped and represented by a single interaction connecting these entity nodes. In other words: collapse each Teal transport chain between two Blue components into one interaction 
