@@ -40,49 +40,38 @@ class AgenticClassification:
     """Result of classifying an agentic span — algorithm-facing shape.
 
     is_boundary:  True iff this span is a protocol boundary (caller or
-                  callee side of an agentic protocol call). Step 2.a colors
-                  the node Black; False keeps it Gray.
+                  callee side of an agentic protocol call). Informational for
+                  the builder (which re-derives boundary-ness from the span's
+                  facts via `_node_is_boundary`); False means a plain Blue node.
     is_combined:  True iff the boundary span carries BOTH the source and
-                  the target of the same call (Step 2.b duplication).
+                  the target of the same call (Step 2.c duplication).
                   Implies is_boundary.
     label:        Entity label to attach to the source node. May be None.
     target_label: For combined spans, the label for the duplicate (target)
                   node. Ignored if is_combined is False.
-    role:         The adapter's call-side as a string ("SOURCE" / "TARGET" /
-                  "BOTH" / "NONE"). Step 2.d uses it (with kind) to decide
-                  which Gray edges become Black.
-    kind:         The adapter's entity-kind as a string ("LLM" / "TOOL" /
-                  "AGENT" / "OTHER"). Same-kind is required for a Gray edge
-                  to be promoted to Black between a SOURCE and a TARGET.
 
     Built from `SpanFacts` (see `adapters.py`) via `_from_facts`. Kept as a
     distinct dataclass so the builder's existing call sites do not need to
-    learn about adapters.
+    learn about adapters. Call-role and entity-kind are NOT carried here — the
+    builder reads them from `SpanFacts` directly at the point of use.
     """
 
     is_boundary: bool
     is_combined: bool = False
     label: str | None = None
     target_label: str | None = None
-    role: str | None = None
-    kind: str | None = None
 
     @classmethod
     def _from_facts(cls, facts: SpanFacts) -> "AgenticClassification":
-        # Per ADR-0007 "Boundary promotion is role-driven, not kind-driven":
-        # the adapter's role assignment is the single source of truth for
+        # The adapter's role assignment is the single source of truth for
         # whether this span is a boundary. A wrapper AGENT span carries
-        # kind=AGENT, role=NONE → is_boundary=False (stays Gray).
+        # kind=AGENT, role=NONE → is_boundary=False.
         is_boundary = facts.role is not Role.NONE
         return cls(
             is_boundary=is_boundary,
             is_combined=facts.is_combined,
             label=facts.display_label,
             target_label=facts.target_label,
-            # Role/Kind are str-enums; carry their string values to the base
-            # graph for the Step 2.d kind+role-matched edge promotion.
-            role=facts.role.value if facts.role is not None else None,
-            kind=facts.kind.value if facts.kind is not None else None,
         )
 
 

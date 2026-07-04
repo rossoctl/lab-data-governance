@@ -17,18 +17,17 @@ span of its own):
 
 Expected behavior:
 
-  * Each anthropic LLM span is an observed LLM SOURCE boundary; with no Gray
-    chain between the two spans (their only link is the White server parent),
-    Step 3.a phase 1 forms two `patent-assistant` components. The Step 3.a
-    observed↔observed combine (`merge_same_entity`) then collapses them into a
-    single observed `patent-assistant` entity — they are keyless observed
-    boundary callers of the same `service.name`.
+  * The two anthropic LLM spans are bare leaves under a single transport
+    (`POST /`) parent with no agent/run wrapper, so Step 2.c case 4 infers a
+    single agent node and rewires transport→agent→each-LLM. At the fuse the
+    agent and its LLM spans form one `patent-assistant` entity, marked
+    **inferred** (the agent itself was never observed).
   * The combined model peer `llm:claude-haiku-4-5-20251001` is the inferred
-    one-sided stub of the LLM call (Step 2.b one-sided stubbing); the two
+    one-sided stub of the LLM call (Step 2.c one-sided stubbing); the two
     spans' stubs converge to one entity.
   * Each distinct output tool becomes one inferred `tool:<name>` entity:
     `tool:database` (converged from three call sites — two output, one input
-    replay — via Step 3.a phase 2) and `tool:file`.
+    replay — via the Step 2.d/3.b same-entity merge) and `tool:file`.
   * The agent→tool interaction's request payload is the tool call's
     `arguments` (tool_call_arguments), not the LLM completion.
 """
@@ -61,21 +60,19 @@ def test_inferred_tools_from_tool_calls():
             assert e.inferred is True
 
 
-def test_llm_peer_present_and_observed_agent():
-    """The model is an inferred `llm:` peer; the agent is observed (not
-    inferred)."""
+def test_llm_peer_present_and_inferred_agent():
+    """The model is an inferred `llm:` peer; the agent is *inferred* too — this
+    trace has only bare leaf LLM spans under a transport parent (no agent/run
+    wrapper), so Step 2.c case 4 infers the agent node. It appears exactly once
+    (the inferred agent fuses the per-turn LLM spans into one entity)."""
     result = extract(_spans())
     by_inferred = {(e.natural_key, e.inferred) for e in result.entities}
     assert ("llm:claude-haiku-4-5-20251001", True) in by_inferred
-    # patent-assistant is observed and now appears exactly once: the Step 3.a
-    # observed↔observed combine (merge_same_entity) collapses the two split
-    # LLM-source components into one entity (same service.name, both keyless
-    # observed boundary callers).
-    observed_agents = [
+    inferred_agents = [
         e for e in result.entities
-        if e.natural_key == "patent-assistant" and not e.inferred
+        if e.natural_key == "agent:patent-assistant" and e.inferred
     ]
-    assert len(observed_agents) == 1, "expected a single merged patent-assistant entity"
+    assert len(inferred_agents) == 1, "expected a single inferred patent-assistant entity"
 
 
 def test_tool_interactions_present_both_directions():
@@ -85,10 +82,10 @@ def test_tool_interactions_present_both_directions():
              for ix in result.interactions
              for c in [_ent(result, ix.caller_entity_id)]
              for c2 in [_ent(result, ix.callee_entity_id)]}
-    assert ("patent-assistant", "tool:database") in pairs
-    assert ("tool:database", "patent-assistant") in pairs
-    assert ("patent-assistant", "tool:file") in pairs
-    assert ("tool:file", "patent-assistant") in pairs
+    assert ("agent:patent-assistant", "tool:database") in pairs
+    assert ("tool:database", "agent:patent-assistant") in pairs
+    assert ("agent:patent-assistant", "tool:file") in pairs
+    assert ("tool:file", "agent:patent-assistant") in pairs
 
 
 def test_tool_request_payload_is_arguments():
@@ -100,7 +97,7 @@ def test_tool_request_payload_is_arguments():
     # Find an agent→tool:file interaction and check its request payload.
     file_calls = [
         ix for ix in result.interactions
-        if _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
+        if _ent(result, ix.caller_entity_id).natural_key == "agent:patent-assistant"
         and _ent(result, ix.callee_entity_id).natural_key == "tool:file"
     ]
     assert file_calls, "expected a patent-assistant → tool:file interaction"
@@ -132,7 +129,7 @@ def test_merged_tool_call_orders_after_its_originating_llm():
 
     db_forward = [
         ix for ix in result.interactions
-        if _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
+        if _ent(result, ix.caller_entity_id).natural_key == "agent:patent-assistant"
         and _ent(result, ix.callee_entity_id).natural_key == "tool:database"
     ]
     assert len(db_forward) == 2
@@ -150,7 +147,7 @@ def test_merged_tool_call_orders_after_its_originating_llm():
         llm_same_span = [
             ix for ix in result.interactions
             if ix.started_at == db.started_at
-            and _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
+            and _ent(result, ix.caller_entity_id).natural_key == "agent:patent-assistant"
             and _ent(result, ix.callee_entity_id).natural_key.startswith("llm:")
         ]
         assert llm_same_span, "expected an agent→LLM call sharing the database call's span"
@@ -191,7 +188,7 @@ def test_interaction_time_follows_its_anchor_span():
     # collapsed them to one), matching its own span.
     llm_calls = [
         ix for ix in result.interactions
-        if _ent(result, ix.caller_entity_id).natural_key == "patent-assistant"
+        if _ent(result, ix.caller_entity_id).natural_key == "agent:patent-assistant"
         and _ent(result, ix.callee_entity_id).natural_key.startswith("llm:")
     ]
     assert len({ix.started_at for ix in llm_calls}) == len(llm_calls) >= 2, (
@@ -208,7 +205,7 @@ def test_interaction_time_follows_its_anchor_span():
     llm_responses = [
         ix for ix in result.interactions
         if _ent(result, ix.caller_entity_id).natural_key.startswith("llm:")
-        and _ent(result, ix.callee_entity_id).natural_key == "patent-assistant"
+        and _ent(result, ix.callee_entity_id).natural_key == "agent:patent-assistant"
     ]
     assert len({ix.started_at for ix in llm_responses}) == len(llm_responses) >= 2, (
         "each LLM→agent response must keep its own turn's span time, not the "

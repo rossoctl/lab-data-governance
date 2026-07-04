@@ -176,3 +176,22 @@ ANTHROPIC_MULTITOOL_TRACE_ID = "4ee0239356d61584bb4c3b6965041788"
 def anthropic_multitool_trace_spans() -> list[Span]:
     """Spans of the live patent_search anthropic trace (file + web_search)."""
     return load_trace_spans("trace_4ee02393")
+
+
+# A hand-built cross-service trace exercising ADR-0007 Step 3.b for an *observed*
+# transport chain (as opposed to an inferred Teal server). A `caller-agent`
+# (service `svc-caller`) calls a `callee-agent` (service `svc-callee`) over HTTP:
+# the two agentic openinference spans are bridged only by an observed
+# `httpx (client) → starlette (server)` transport chain, both colored Teal in
+# Step 2.a. Per the ADR, dropping that Teal chain separates the two agents into
+# distinct entities, and the chain reconstructs into one call interaction
+# (caller→callee) plus its response (callee→caller). No LLM or tool spans, so the
+# only signal is the observed transport hop — the case no pre-existing fixture
+# covered (their observed Teal is always a dangling leaf within one entity).
+CROSS_SERVICE_TRANSPORT_TRACE_ID = "c0550000000000000000000000000001"
+
+
+@pytest.fixture()
+def cross_service_transport_trace_spans() -> list[Span]:
+    """Spans of the cross-service agent→httpx→starlette→agent trace."""
+    return load_trace_spans("trace_cross_service_transport")

@@ -31,7 +31,9 @@ from data_governance.processors.p_interactions_proto.extractor import extract
 # sanctioned signals — never the display string, which is "unknown" here).
 EXPECTED_ENTITIES = {
     # The observed agent: the only side of every call that emitted spans.
-    "dl-demo-travel-advisor": False,
+    # natural_key is the agent's typed identity from `agent.name`
+    # (display_name stays the service `dl-demo-travel-advisor`).
+    "agent:travel-advisor": False,
     # The LLM it calls — unobserved peer, stubbed + combined (inferred).
     "llm:claude-haiku-4-5-20251001": True,
     # The three tools it calls — unobserved peers, stubbed + combined.
@@ -60,7 +62,7 @@ def test_one_observed_agent_rest_inferred(canonical_trace_spans):
     observed = [e for e in result.entities if not e.inferred]
     inferred = [e for e in result.entities if e.inferred]
 
-    assert [e.natural_key for e in observed] == ["dl-demo-travel-advisor"]
+    assert [e.natural_key for e in observed] == ["agent:travel-advisor"]
     assert {e.natural_key for e in inferred} == {
         "llm:claude-haiku-4-5-20251001",
         "tool:get_flights",
@@ -99,23 +101,23 @@ def test_one_llm_three_tools(canonical_trace_spans):
 # peer are joined in both directions. The extractor turns every Black edge into
 # one ProtoInteraction. Counting directed (caller -> callee) pairs:
 #
-#     5 x  dl-demo-travel-advisor      -> llm:claude-haiku-4-5-20251001
-#     2 x  dl-demo-travel-advisor      -> tool:get_flights
-#     1 x  dl-demo-travel-advisor      -> tool:get_weather
-#     1 x  dl-demo-travel-advisor      -> tool:search_destinations
+#     5 x  agent:travel-advisor      -> llm:claude-haiku-4-5-20251001
+#     2 x  agent:travel-advisor      -> tool:get_flights
+#     1 x  agent:travel-advisor      -> tool:get_weather
+#     1 x  agent:travel-advisor      -> tool:search_destinations
 #   (and the same four mirrored back, peer -> agent)         = 18 total
 #
 # The agent calls the LLM 5 times and the three tools 2 / 1 / 1 times — the
 # per-entity call counts seen directly in the trace's openinference spans.
 EXPECTED_DIRECTED_PAIRS = {
-    ("dl-demo-travel-advisor", "llm:claude-haiku-4-5-20251001"): 5,
-    ("dl-demo-travel-advisor", "tool:get_flights"): 2,
-    ("dl-demo-travel-advisor", "tool:get_weather"): 1,
-    ("dl-demo-travel-advisor", "tool:search_destinations"): 1,
-    ("llm:claude-haiku-4-5-20251001", "dl-demo-travel-advisor"): 5,
-    ("tool:get_flights", "dl-demo-travel-advisor"): 2,
-    ("tool:get_weather", "dl-demo-travel-advisor"): 1,
-    ("tool:search_destinations", "dl-demo-travel-advisor"): 1,
+    ("agent:travel-advisor", "llm:claude-haiku-4-5-20251001"): 5,
+    ("agent:travel-advisor", "tool:get_flights"): 2,
+    ("agent:travel-advisor", "tool:get_weather"): 1,
+    ("agent:travel-advisor", "tool:search_destinations"): 1,
+    ("llm:claude-haiku-4-5-20251001", "agent:travel-advisor"): 5,
+    ("tool:get_flights", "agent:travel-advisor"): 2,
+    ("tool:get_weather", "agent:travel-advisor"): 1,
+    ("tool:search_destinations", "agent:travel-advisor"): 1,
 }
 
 
@@ -168,7 +170,7 @@ def test_get_flights_interactions_errored(canonical_trace_spans):
         for ix in result.interactions
         if ix.error
     }
-    assert errored == {("dl-demo-travel-advisor", "tool:get_flights")}
+    assert errored == {("agent:travel-advisor", "tool:get_flights")}
 
     n_error = sum(1 for ix in result.interactions if ix.error)
     n_clean = sum(1 for ix in result.interactions if ix.error is False)

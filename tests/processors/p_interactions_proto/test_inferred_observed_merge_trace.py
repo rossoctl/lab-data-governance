@@ -57,12 +57,12 @@ def test_inferred_tool_folds_into_observed_twin():
 
     # The agent's resolved get_weather call lands on the observed weather-tool.
     pairs = _pairs(result)
-    assert ("weather-agent", "weather-tool") in pairs
-    assert ("weather-tool", "weather-agent") in pairs
+    assert ("agent:weather-agent", "weather-tool") in pairs
+    assert ("weather-tool", "agent:weather-agent") in pairs
 
     # No agent→inferred-tool:get_weather edge survives the merge: the LLM's
     # output tool call points at the observed twin instead.
-    assert ("weather-agent", "tool:get_weather") not in pairs
+    assert ("agent:weather-agent", "tool:get_weather") not in pairs
 
     # weather-tool is observed, not inferred.
     wt = [e for e in result.entities if e.natural_key == "weather-tool"]
@@ -70,13 +70,13 @@ def test_inferred_tool_folds_into_observed_twin():
 
 
 def test_step4_merge_recorded_in_notes():
-    """The unified Step 4 pass records its node/edge merge counts in the notes;
+    """The Step 2.d merge records its node/edge merge counts in the notes;
     the inferred↔observed fold of the `get_weather` peer is counted among the
     merged nodes (>= 1)."""
     result = extract(_spans())
-    note = next(n for n in result.notes if "Step 4 merged" in n)
+    note = next(n for n in result.notes if "Step 2.d merged" in n)
     import re
-    m = re.search(r"Step 4 merged (\d+) same-entity nodes", note)
+    m = re.search(r"Step 2.d merged (\d+) same-entity nodes", note)
     assert m and int(m.group(1)) >= 1
 
 
@@ -104,11 +104,11 @@ def test_intra_turn_ordering():
         for ix in result.interactions
     }
 
-    cal_call = order_by_pair[("weather-agent", "tool:calendar")]
-    cal_resp = order_by_pair[("tool:calendar", "weather-agent")]
-    llm_call = order_by_pair[("weather-agent", "llm:claude-haiku-4-5-20251001")]
-    llm_resp = order_by_pair[("llm:claude-haiku-4-5-20251001", "weather-agent")]
-    tool_call = order_by_pair[("weather-agent", "weather-tool")]
+    cal_call = order_by_pair[("agent:weather-agent", "tool:calendar")]
+    cal_resp = order_by_pair[("tool:calendar", "agent:weather-agent")]
+    llm_call = order_by_pair[("agent:weather-agent", "llm:claude-haiku-4-5-20251001")]
+    llm_resp = order_by_pair[("llm:claude-haiku-4-5-20251001", "agent:weather-agent")]
+    tool_call = order_by_pair[("agent:weather-agent", "weather-tool")]
 
     # rule 3: input tool before the LLM.
     assert cal_call < llm_call
@@ -128,7 +128,8 @@ def test_entities_named_from_service_or_key():
     originating span (or the natural-key suffix)."""
     result = extract(_spans())
     names = {e.natural_key: e.display_name for e in result.entities}
-    assert names["weather-agent"] == "weather-agent"
+    # natural_key carries the `agent:` prefix; display_name stays the service.
+    assert names["agent:weather-agent"] == "weather-agent"
     assert names["weather-tool"] == "weather-tool"
     # Inferred peers reference the originating LLM span, whose service is the
     # agent — so they are named after it, never 'unknown'.

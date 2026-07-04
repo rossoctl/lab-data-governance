@@ -47,7 +47,7 @@ Per ADR-0007 the graph algorithm needs four things from a span:
     combined)? — Steps 2.a, 2.b.
   * If it is a boundary, what is the natural-key string for the entity
     behind it? (E.g. `tool:get_weather`, `llm:gpt-4o`.) — Step 2.c (inferred
-    peer creation), Step 3.a phase 2 (peer combine).
+    peer creation), Step 3.a semantic combine (peer combine).
   * If it is a boundary, what's a human-friendly label? — node display.
   * If it is a boundary, what are the request/response payloads? — payload
     extraction in `extractor._derive_interactions`.
@@ -79,10 +79,10 @@ from data_governance.retrieval import Span
 
 class Kind(str, Enum):
     """What the span is *about* — drives natural-key prefix and payload
-    shape, NOT boundary-ness. Per ADR-0007 "Boundary promotion is
-    role-driven, not kind-driven", the Step 2.a.3 promotion to Black
-    reads `Role`, not `Kind`. A span can carry `Kind.AGENT` and
-    `Role.NONE` (a wrapper / runner span); that node stays Gray.
+    shape, NOT boundary-ness. Boundary-ness (whether a node is a call point
+    needing an inferred peer in Step 2.c) is read from `Role`, not `Kind`.
+    A span can carry `Kind.AGENT` and `Role.NONE` (a wrapper / runner span);
+    that node stays a plain Blue node.
 
     `OTHER` is the default for spans the adapter declines to classify
     (e.g. unknown framework version, internal SDK plumbing, lifecycle
@@ -96,26 +96,27 @@ class Kind(str, Enum):
 
 
 class Role(str, Enum):
-    """Boundary role — drives Step 2.a.3 Black promotion. The adapter is
-    the single arbiter of role; the builder reads only this field.
+    """Boundary role — drives Step 2.c peer synthesis (which call points get an
+    inferred peer, and on which side). The adapter is the single arbiter of
+    role; the builder reads only this field.
 
     `SOURCE` — the span represents the caller side of an agentic
     protocol call. Carries enough evidence (target identity, request
     payload, or framework-specific span-name signal) to assert one side.
     `TARGET` — the span represents the callee side. (Reserved; current
     adapters emit only SOURCE and BOTH.)
-    `BOTH` — combined source-and-target span (Step 2.b). One span
+    `BOTH` — combined source-and-target span (Step 2.c). One span
     carries both the outgoing request and the incoming response, e.g.
     `ClaudeAgentSDK.query`.
     `NONE` — not a boundary. Either non-agentic (`Kind.OTHER`) or an
     agentic wrapper that lacks specific call evidence (a top-level
     agent-run, per-activation `AgentSpanData`, runner span). The node
-    stays Gray.
+    stays a plain Blue node.
 
     The asymmetry with `Kind` is deliberate. `Kind.AGENT` covers both
     real agent-call spans and agent-run wrappers; only the adapter can
-    tell them apart. Promoting on kind alone would inflate the entity
-    graph with non-call edges (see ADR-0007 Key decisions).
+    tell them apart. Synthesizing a peer for every AGENT-kind span would
+    inflate the entity graph with non-call edges (see ADR-0007 Key decisions).
     """
 
     SOURCE = "SOURCE"
@@ -131,14 +132,15 @@ class SpanFacts:
 
     `kind` — what the span is about. Drives natural-key prefix and
     payload shape. Does NOT drive boundary-ness — see `role`.
-    `role` — the span's boundary role. Drives Step 2.a.3 Black
-    promotion. `Role.NONE` means the node stays Gray (non-agentic, or
-    an agentic wrapper without specific call evidence).
+    `role` — the span's boundary role. Drives Step 2.c peer synthesis (which
+    call points get an inferred peer, and on which side). `Role.NONE` means the
+    node stays a plain Blue node (non-agentic, or an agentic wrapper without
+    specific call evidence).
     `is_combined` — true iff one span carries BOTH the source and the target
-    side of the call (Step 2.b duplication trigger). Implies `role=BOTH`.
+    side of the call (Step 2.c duplication trigger). Implies `role=BOTH`.
     `natural_key` — stable per-boundary identity used as the combine key in
-    Step 3.a phase 2. Format: `tool:<n>`, `llm:<model>`, `agent:<n>`.
-    None when no identifying attribute is present — Step 3.a phase 2 leaves
+    the Step 3.a semantic combine. Format: `tool:<n>`, `llm:<model>`, `agent:<n>`.
+    None when no identifying attribute is present — the Step 3.a combine leaves
     keyless inferred peers distinct.
     `display_label` — human-friendly UI label. Free to be the framework's
     `service.name`, span name, or anything else readable.
@@ -150,9 +152,9 @@ class SpanFacts:
     `request_value` / `response_value` — opaque request/response payload
     (e.g. tool call arguments / result). None when not present.
     `tool_calls` — OUTPUT-side tool calls evidenced on an LLM span (ADR-0007
-    Step 2.b case 3) — what the model asked to invoke *as a result of* this
+    Step 2.c case 3) — what the model asked to invoke *as a result of* this
     call. Each dict is `{"name": str, "arguments": Any, "id": str | None}`
-    (the `id` is the framework's tool_call id, used by Step 4 edge merge to
+    (the `id` is the framework's tool_call id, used by Step 2.d edge merge to
     recognise the same logical call replayed across spans). Drives
     `builder.infer_tool_calls_from_attributes`, which materialises an inferred
     tool node per call, ordered *after* the LLM interaction (ordering rule 4).
@@ -295,7 +297,7 @@ def _extract_tool_calls(span: Span, msgs_prefix: str) -> list[dict[str, Any]] | 
         #   …tool_call.function.name / .arguments   (7 parts)
         #   …tool_call.id                           (6 parts) — the call id,
         # used downstream to recognise the *same* logical call replayed across
-        # spans (Step 4 edge merge).
+        # spans (Step 2.d edge merge).
         if (
             len(parts) < 6
             or not parts[0].isdigit()
@@ -327,13 +329,13 @@ def _extract_tool_calls(span: Span, msgs_prefix: str) -> list[dict[str, Any]] | 
 
 def _extract_output_tool_calls(span: Span) -> list[dict[str, Any]] | None:
     """OUTPUT-side tool calls the model asked to invoke *as a result of* this
-    call (ADR-0007 Step 2.b case 3, rule 4 — ordered after the LLM)."""
+    call (ADR-0007 Step 2.c case 3, rule 4 — ordered after the LLM)."""
     return _extract_tool_calls(span, _OI_OUTPUT_MSGS_PREFIX)
 
 
 def _extract_input_tool_calls(span: Span) -> list[dict[str, Any]] | None:
     """INPUT-side tool calls — a prior turn's tool use replayed back into the
-    request (ADR-0007 Step 2.b case 3, rule 3 — ordered before the LLM).
+    request (ADR-0007 Step 2.c case 3, rule 3 — ordered before the LLM).
 
     Per the human spec these are materialised as their own inferred tool
     interactions even when they replay a call already seen on an earlier span's
@@ -417,7 +419,7 @@ _OI_OUTPUT_MSGS_PREFIX = "llm.output_messages"
 #      string the framework emits at `openinference.span.kind` to our
 #      internal boundary `Kind`. A version that introduces a new raw value
 #      (e.g. 1.5.1's `"GUARDRAIL"`) adds an entry; raw values absent from
-#      the map decode to `Kind.OTHER` ("better Gray than mis-Black").
+#      the map decode to `Kind.OTHER` ("better a plain Blue node than a spurious interaction").
 #   2. Attribute renames — `fields[(kind, raw_attr_key)] → logical_field`
 #      maps a (decoded kind, physical attribute key the framework emits)
 #      pair to the logical field name the adapter consumes (`"model"`,
@@ -516,7 +518,7 @@ def _oi_kind(span: Span) -> Kind:
     CHAIN / GUARDRAIL. CHAIN (orchestration plumbing — runner spans,
     cycles, custom spans) and GUARDRAIL (in-process safety check) are
     NOT protocol boundaries → return OTHER. Unknown / missing values also
-    return OTHER (better Gray than mis-Black).
+    return OTHER (better a plain Blue node than a spurious interaction).
     """
     raw = _first_attr(span, _OI_ATTRS["kind"])
     if raw == "LLM":
@@ -548,7 +550,12 @@ def _oi_natural_key(span: Span, kind: Kind) -> str | None:
         return f"tool:{tool}" if tool else None
 
     if kind is Kind.AGENT:
-        agent = _first_attr(span, _OI_ATTRS["agent_name"])
+        # Prefer the instrumented `agent.name`; fall back to the service name
+        # for frameworks that emit an AGENT-kind span without one (e.g.
+        # LangChain's `agent` span). The service is the best available identity
+        # there, and prefixing it lets the Step 3.a semantic combine key on it
+        # (same rationale as the case-4 inferred agent).
+        agent = _first_attr(span, _OI_ATTRS["agent_name"]) or _service(span)
         return f"agent:{agent}" if agent else None
 
     return None
@@ -587,6 +594,13 @@ def _oi_payloads_for_kind(span: Span, kind: Kind):
 
 
 _OPENAI_AGENTS_HANDOFF_PREFIX = "handoff to "
+
+# openai_agents emits a fixed-name AGENT-kind runner/wrapper span ("Agent
+# workflow") that carries no real agent identity — it wraps the whole run, not
+# a specific agent. Its span name must NOT become an `agent:` natural_key
+# (that would create a spurious `agent:Agent workflow` entity and compete with
+# the real agent's identity in the Step 3.a entity-label promotion).
+_OPENAI_AGENTS_WRAPPER_AGENT_NAMES = frozenset({"Agent workflow"})
 
 
 # Per-version schema for the openai_agents framework.
@@ -697,7 +711,7 @@ class _OpenAIAgentsAdapter:
         display = _service(span) or natural_key
         req_msgs, resp_msgs, req_value, resp_value = self._payloads(schema, span, kind)
 
-        # Boundary role per ADR-0007 "Boundary promotion is role-driven".
+        # Boundary role: drives Step 2.c peer synthesis, not kind (see `Role`).
         # LLM-kind: always SOURCE — the kind alone is sufficient call
         # evidence; empty payloads are an instrumentation gap, not absence
         # of a call.
@@ -743,6 +757,10 @@ class _OpenAIAgentsAdapter:
             # Schema records `(AGENT, "name") → []`; lookup returns None,
             # span name is the documented fallback in both versions.
             agent = _schema_field(schema, span, kind, "name") or name or None
+            # Drop the fixed-name runner wrapper — it is AGENT-kind but names
+            # the run, not an agent identity.
+            if agent in _OPENAI_AGENTS_WRAPPER_AGENT_NAMES:
+                return None
             return f"agent:{agent}" if agent else None
 
         if kind is Kind.LLM:
@@ -785,15 +803,15 @@ class _ClaudeAgentSDKAdapter:
         `llm.output_messages.*`. The agent (source) is the local process;
         the target is the remote Claude API. Modelled here as a **combined
         source-and-target** span: kind=AGENT, is_combined=True,
-        target_label=`llm:<model>`. Step 2.b duplicates so the entity graph
+        target_label=`llm:<model>`. Step 2.c duplicates so the entity graph
         carries both the agent and the LLM endpoints.
       * `ClaudeAgentSDK.ClaudeSDKClient.receive_response` — same shape as
         above, per-turn for stateful clients.
       * `ClaudeAgentSDK.{tool_name}` / `ClaudeAgentSDK.Subagent` —
         AGENT kind, tool / sub-agent dispatch. `agent.name` carries the
         dispatched target's name (the span-name suffix is the fallback).
-        A SOURCE boundary (ADR-0007 Step 2.b case 2): the dispatched
-        target emits no observed span, so Step 2.b's one-sided stubbing
+        A SOURCE boundary (ADR-0007 Step 2.c case 2): the dispatched
+        target emits no observed span, so Step 2.c's one-sided stubbing
         infers the target peer keyed on `natural_key`. Sub-agent and
         local tool take the same path — the suffix is the peer identity
         either way. NOT combined: only the dispatch side is on this span.
@@ -837,11 +855,11 @@ class _ClaudeAgentSDKAdapter:
             return SpanFacts(kind=Kind.OTHER, role=Role.NONE, display_label=_service(span))
 
         # Tool / sub-agent dispatch: ClaudeAgentSDK.{tool_name} | Subagent.
-        # ADR-0007 Step 2.b case 2: the span name carries the dispatched
+        # ADR-0007 Step 2.c case 2: the span name carries the dispatched
         # target's name and kind=AGENT, but the target emits no observed
         # span of its own. Treat it as a SOURCE boundary keyed on
-        # `agent:<name>`; Step 2.b's one-sided stubbing then synthesizes
-        # the inferred target peer and its bidirectional Black edges.
+        # `agent:<name>`; Step 2.c's one-sided stubbing then synthesizes
+        # the inferred target peer and its bidirectional interaction edges.
         # Sub-agent vs. local tool take the same path — the suffix is the
         # peer identity in both cases.
         if kind is Kind.AGENT and name.startswith(_CLAUDE_SUBAGENT_PREFIX):
@@ -868,7 +886,7 @@ class _ClaudeAgentSDKAdapter:
         natural_key = _oi_natural_key(span, kind)
         display = _service(span) or natural_key
         req_msgs, resp_msgs, req_value, resp_value = _oi_payloads_for_kind(span, kind)
-        # Bare AGENT-kind wrappers (if any reach here) stay Gray; only
+        # Bare AGENT-kind wrappers (if any reach here) stay non-boundary; only
         # LLM/TOOL with kind-decoded role are real boundaries on this path.
         if kind is Kind.LLM or kind is Kind.TOOL:
             role = Role.SOURCE
@@ -969,7 +987,7 @@ class _AnthropicAdapter:
         `llm.output_messages.0.message.tool_calls.{k}.tool_call.function.name`/
         `.arguments`. This adapter surfaces them on `SpanFacts.tool_calls`,
         which `builder.infer_tool_calls_from_attributes` turns into inferred
-        tool nodes (ADR-0007 Step 2.b case 3). This is the one framework that
+        tool nodes (ADR-0007 Step 2.c case 3). This is the one framework that
         opts into attribute-derived tool inference, because the tool execution
         is genuinely unobserved here (contrast openai_agents, which emits a
         real tool-execution span).
@@ -991,7 +1009,7 @@ class _AnthropicAdapter:
     def extract(self, span: Span) -> SpanFacts:
         kind = _oi_kind(span)
         # Defensive: the doc says kind is unconditionally LLM, but if a future
-        # version emits something else, stay Gray rather than mis-Black.
+        # version emits something else, stay non-boundary rather than assert a spurious call.
         if kind is not Kind.LLM:
             return SpanFacts(kind=Kind.OTHER, role=Role.NONE, display_label=_service(span))
 
@@ -1027,7 +1045,7 @@ def _generic_oi_extract(span: Span) -> SpanFacts:
     `output.value`). AGENT-kind wrappers map to `Role.NONE` — without
     framework-specific knowledge we can't tell a real agent-call span
     from a top-level run wrapper, and the conservative default is to
-    stay Gray. Frameworks that emit AGENT-kind real boundaries will
+    leave it a non-boundary. Frameworks that emit AGENT-kind real boundaries will
     need a dedicated adapter (or version-specific schema entry) that
     overrides this default.
     """
@@ -1125,6 +1143,30 @@ def _parse_scope(scope_name: str) -> tuple[str | None, str | None]:
 def is_agentic_scope(scope_name: str) -> bool:
     root, _ = _parse_scope(scope_name)
     return root is not None
+
+
+# Transport-scope OTel instrumentation scopes (ADR-0007 Step 2.a "transport
+# scope — communication / proxy"). The spec names httpx / starlette / asgi;
+# aiohttp is the common async-HTTP-client sibling. This is the single place the
+# raw transport scope strings live, keeping the adapter-layer isolation rule
+# (raw scope/attribute vocabulary lives only in adapters.py). Non-communication
+# instrumentations (botocore, psycopg) are deliberately excluded — they are not
+# the agentic transport hop the Teal server models.
+_TRANSPORT_SCOPES = frozenset(
+    {
+        "opentelemetry.instrumentation.httpx",
+        "opentelemetry.instrumentation.starlette",
+        "opentelemetry.instrumentation.asgi",
+        "opentelemetry.instrumentation.aiohttp_client",
+        "opentelemetry.instrumentation.aiohttp_server",
+    }
+)
+
+
+def is_transport_scope(scope_name: str) -> bool:
+    """True iff the span's scope is a transport (communication/proxy) scope —
+    httpx / starlette / asgi / aiohttp. Step 2.a colors these nodes Teal."""
+    return scope_name in _TRANSPORT_SCOPES
 
 
 def get_adapter(span: Span) -> SpanAdapter | None:

@@ -30,10 +30,11 @@ def _ent(result, entity_id):
     return next(e for e in result.entities if e.id == entity_id)
 
 
-# Expected entity set: natural_key -> inferred?  The agent is the lone observed
-# entity; the LLM and both tools are inferred from the anthropic LLM spans.
+# Expected entity set: natural_key -> inferred?  Bare leaf LLM spans under a
+# transport parent (no agent/run wrapper), so the agent is *inferred* by Step
+# 2.c case 4 — hence `patent_search` is inferred, as are the LLM and both tools.
 EXPECTED_ENTITIES = {
-    "patent_search": False,
+    "agent:patent_search": True,
     "llm:claude-haiku-4-5-20251001": True,
     "tool:file": True,
     "tool:web_search": True,
@@ -62,7 +63,7 @@ def test_tool_calls_order_after_their_llm():
 
     tool_calls = [
         ix for ix in result.interactions
-        if _ent(result, ix.caller_entity_id).natural_key == "patent_search"
+        if _ent(result, ix.caller_entity_id).natural_key == "agent:patent_search"
         and _ent(result, ix.callee_entity_id).natural_key.startswith("tool:")
     ]
     assert len(tool_calls) == 2, "expected one call each to file and web_search"
@@ -75,7 +76,7 @@ def test_tool_calls_order_after_their_llm():
         llm_same_span = [
             ix for ix in result.interactions
             if ix.started_at == tc.started_at
-            and _ent(result, ix.caller_entity_id).natural_key == "patent_search"
+            and _ent(result, ix.caller_entity_id).natural_key == "agent:patent_search"
             and _ent(result, ix.callee_entity_id).natural_key.startswith("llm:")
         ]
         assert llm_same_span, "expected an agent→LLM call sharing the tool call's turn"
@@ -105,13 +106,13 @@ def test_each_llm_turn_keeps_distinct_times_both_directions():
 
     calls = [
         ix for ix in result.interactions
-        if _ent(result, ix.caller_entity_id).natural_key == "patent_search"
+        if _ent(result, ix.caller_entity_id).natural_key == "agent:patent_search"
         and _ent(result, ix.callee_entity_id).natural_key.startswith("llm:")
     ]
     responses = [
         ix for ix in result.interactions
         if _ent(result, ix.caller_entity_id).natural_key.startswith("llm:")
-        and _ent(result, ix.callee_entity_id).natural_key == "patent_search"
+        and _ent(result, ix.callee_entity_id).natural_key == "agent:patent_search"
     ]
     assert len(calls) == 3 and len(responses) == 3
     assert len({ix.started_at for ix in calls}) == 3, "agent→LLM turns must keep distinct times"

@@ -3,11 +3,11 @@
  * Adds a "Graphs (proto)" tab to the trace-tree page showing the three
  * stages produced by the graph-based extractor:
  *   Step 1      — base graph (white nodes + traceparent edges)
- *   Steps 2–4   — execution graph BEFORE the fuse: Gray/Black coloring,
- *                 inferred nodes/edges, and the Step 4 node+edge merge
+ *   Step 2      — execution graph BEFORE the fuse: Blue/Teal coloring,
+ *                 inferred nodes/edges, and the Step 2.d node+edge merge
  *                 (combined-span duplicates, inferred peers, between-boundary
  *                 flags all visible here)
- *   Step 5      — entity graph AFTER the fuse (one node per fused component)
+ *   Step 3      — entity graph AFTER the fuse (one node per fused component)
  *
  * Loads from /proto/graphs/<trace_id>.
  */
@@ -361,7 +361,7 @@
       tag.style.color = '#888';
       tag.style.fontSize = '0.7rem';
       tag.textContent = '(dup)';
-      tag.title = 'duplicate node — Step 2.a combined source-and-target span';
+      tag.title = 'duplicate node — Step 2.c combined source-and-target span';
       el.appendChild(tag);
     }
 

@@ -4,21 +4,24 @@ plus the intermediate base / colored / entity graphs for evaluation. THROWAWAY.
 Algorithm (see docs/adr/0007-p-interactions-graph-algorithm.md):
 
   Step 1     — build the white base graph from spans + traceparent edges
-  Step 2.a   — agentic coloring (Gray nodes/edges, Black boundaries, additive)
-  Step 2.b   — combined source-and-target span duplication
-  Step 2.c   — synthesize missing peers (Black boundaries with no Black
-               edges → inferred peer with bidirectional Black edges)
-               + flag Gray nodes between Black boundaries
-  Step 3.a   — connected components over Gray/Black via White+Gray edges
-               → entity graph; Black edges → entity edges (phase 1); combine
-               inferred peers with matching source-span identifying
-               attributes into one entity (phase 2)
-  Step 3.b   — name each entity from its subgraph: service.name, else the
-               natural-key suffix, else 'unknown' (hostname-based naming is
-               deferred — see ADR-0007)
+  Step 2.b   — agentic coloring (Blue nodes/edges, boundary marking, additive)
+  Step 2.c   — combined source-and-target span duplication; tool nodes inferred
+               from LLM `tool_calls`; synthesize missing peers (boundaries with
+               no interaction edges → inferred peer with bidirectional
+               interaction edges) + flag Blue nodes between boundaries
+  Step 2.d   — merge identical interactions on the execution graph (node merge
+               then edge merge)
+  Step 3.a   — create the entity-graph *nodes*: connected components over Blue
+               via non-interaction edges → groups (structural), then combine
+               same-entity groups (semantic). Each node is keyed/named from its
+               subgraph: service.name, else the natural-key suffix, else
+               'unknown' (hostname-based naming is deferred — see ADR-0007)
+  Step 3.b   — create the entity-graph *edges*: one interaction per Teal
+               transport chain between two Blue components (per-chain — distinct
+               calls stay distinct)
 
 Then the extractor derives ProtoEntity / ProtoInteraction / ProtoPayload
-output rows from the post-3.b entity graph.
+output rows from the entity graph.
 """
 
 from __future__ import annotations
@@ -34,13 +37,17 @@ from data_governance.retrieval import Span
 
 from .adapters import extract_facts, payload_shapes_for_facts
 from .builder import (
+    _node_is_boundary,
     build_base_graph,
     build_entity_graph,
     color_agentic,
+    color_transport,
+    combine_identical_entities,
     duplicate_combined_nodes,
     flag_between_boundaries,
+    infer_agent_from_bare_leaf_llms,
     infer_tool_calls_from_attributes,
-    merge_step4,
+    merge_identical_interactions,
     synthesize_missing_peers,
 )
 from .graph import BaseGraph, EntityGraph
@@ -56,9 +63,10 @@ class ProtoEntity:
     id: str
     # natural_key is the classifier-derived label with a typed prefix:
     # `llm:<model>` | `tool:<name>` | `agent:<name>`. The prefix doubles
-    # as the coarse kind (consumers split on `:` when they need it) — see
-    # ADR-0007 "Natural-key prefixes are part of the public algorithm
-    # vocabulary." There is no separate `kind` column.
+    # as the coarse kind (consumers split on `:` when they need it). Per
+    # ADR-0007 "Natural-key prefixes (an implementation construct, not a spec
+    # vocabulary)", this format is an implementation decision, not spec-derived.
+    # There is no separate `kind` column.
     natural_key: str
     display_name: str
     detected_from: str
@@ -114,10 +122,9 @@ class ExtractResult:
     payloads: list[ProtoPayload]
     notes: list[str]
     # Intermediate graphs for evaluation. The base graph after Step 1 is
-    # snapshotted *before* Steps 2.a–2.c mutate it; the colored graph is the
-    # post-2.c state (after coloring, combined-span duplication, and
-    # inferred-peer insertion). The entity graph is the post-3.a state
-    # (after the phase-2 inferred-peer combine).
+    # snapshotted *before* Step 2 mutates it; the colored graph is the
+    # post-Step-2 state (after coloring, inference, and the Step 2.d merge). The
+    # entity graph is the post-Step-3 state.
     base_graph: BaseGraph
     colored_graph: BaseGraph
     entity_graph: EntityGraph
@@ -169,9 +176,9 @@ def _scopes_for_entity(entity_node, span_by_id: dict[str, Span]) -> str:
 def _entity_display_name(
     entity_node, natural_key: str, span_by_id: dict[str, Span]
 ) -> str:
-    """Step 3.b naming — derive a display key for an entity from its subgraph.
+    """Step 3.a entity key/naming — derive a display key for an entity from its subgraph.
 
-    Precedence (ADR-0007 Step 3.b, as scoped today):
+    Precedence (ADR-0007 Step 3.a entity key, as scoped today):
       1. **service.name** of any contributing span — the OTel resource service
          that emitted the agentic spans (`dl-demo-travel-advisor`,
          `patent-assistant`). This is the typed `Span.service_name` field, not
@@ -185,7 +192,7 @@ def _entity_display_name(
     (httpx/botocore) spans that are not part of the entity-forming subgraph at
     this stage, so it is unreachable until the cross-scope enrichment stage
     runs; service.name is the best identifier available now. See ADR-0007
-    "Deferred to later stages → Richer entity naming".
+    "Deferred to later stages → Hostname-based entity naming".
     """
     for sid in entity_node.span_ids:
         s = span_by_id.get(sid)
@@ -201,9 +208,9 @@ def _entity_display_name(
 def _derive_entities(
     entity_graph: EntityGraph, span_by_id: dict[str, Span]
 ) -> list[ProtoEntity]:
-    """Build ProtoEntity rows from the post-Step-3.b entity graph.
+    """Build ProtoEntity rows from the entity graph.
 
-    Step 3.b per ADR-0007: each entity is named from its subgraph —
+    Step 3.a entity key per ADR-0007: each entity is named from its subgraph —
     service.name, else the natural-key suffix, else 'unknown' (see
     `_entity_display_name`). Hostname-based naming is deferred to the
     cross-scope enrichment stage (the host-bearing spans are not yet in the
@@ -269,7 +276,7 @@ def _derive_interactions(
         # The anchor is the edge's *source* span (stamped first on the edge by
         # build_entity_graph) — the span that originates this specific call.
         # **Timing follows the anchor**, not an aggregate over `edge_spans`:
-        # after Step 4 merges a repeatedly-called peer into one node, an
+        # after Step 2.d merges a repeatedly-called peer into one node, an
         # interaction's pooled spans can include spans from *other* turns (the
         # merged peer carries an earlier turn's span), so `min(started_at)` would
         # drag every turn's interaction to the earliest turn's time. The anchor
@@ -289,7 +296,7 @@ def _derive_interactions(
         # extractor neither inspects raw attributes nor branches on the
         # natural-key prefix string.
         req_shape, resp_shape = payload_shapes_for_facts(extract_facts(anchor_span))
-        # Step 2.b case 3: a tool inferred from an LLM span's tool_calls carries
+        # Step 2.c case 3: a tool inferred from an LLM span's tool_calls carries
         # its arguments on the entity edge (the anchor span is the LLM span, so
         # deriving from its facts would yield the LLM completion, not the tool
         # arguments). Prefer the edge-carried request payload when present.
@@ -299,7 +306,7 @@ def _derive_interactions(
         resp_hash = _ensure(_proto_payload(resp_shape))
 
         # The summary uses the natural_key (the typed classifier label), which
-        # is the most distinguishing identifier; the display_name (Step 3.b) is
+        # is the most distinguishing identifier; the display_name (Step 3.a entity key) is
         # the friendlier service/entity name surfaced separately on the entity.
         caller_label = caller.natural_key or caller.display_name
         callee_label = callee.natural_key or callee.display_name
@@ -360,30 +367,45 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     base_snapshot = _snapshot(working)
 
     # Step 2 → 3 — coloring + inference on a working copy
+    # Step 2.a — transport scope (Teal). Runs before agentic coloring; the two
+    # scopes are disjoint (transport scopes are not agentic), so order only
+    # matters for readability.
+    color_transport(working)
     color_agentic(working, span_by_id)
-    duplicate_combined_nodes(working)
-    # Step 2.a case 3 — infer tool nodes from LLM-output tool_calls. Must run
-    # AFTER color_agentic (so the new Gray edge isn't seen by the Black
-    # edge-promotion loop) and BEFORE synthesize_missing_peers (so the inferred
-    # tool-call/tool nodes already have their Black edges and aren't themselves
-    # stubbed, while the LLM span node — still edgeless — still gets its llm
-    # peer).
+    duplicate_combined_nodes(working, span_by_id)
+    # Step 2.c case 3 — infer tool nodes from LLM-output tool_calls. Must run
+    # AFTER color_agentic (so the new Blue fold edge isn't seen by the
+    # interaction edge-promotion loop) and BEFORE synthesize_missing_peers (so
+    # the inferred tool-call/tool nodes already have their interaction edges and
+    # aren't themselves stubbed, while the LLM span node — still edgeless — still
+    # gets its llm peer).
     infer_tool_calls_from_attributes(working, span_by_id)
     synthesize_missing_peers(working, span_by_id)
-    # Step 4 — single node-and-edge merge on the execution-flow graph, before
-    # the fuse: collapse same-entity nodes (inferred/inferred, inferred/observed,
-    # observed/observed) then same-interaction Black edges. Runs BEFORE the
+    # Step 2.c case 4 — infer an agent node when the framework emits only bare
+    # leaf LLM spans under a transport parent (no agent/run wrapper). Runs after
+    # the other Step 2.c inference so the LLM spans already carry their servers.
+    infer_agent_from_bare_leaf_llms(working, span_by_id)
+    # Step 2.d — single node-and-edge merge on the execution-flow graph, before
+    # the Step 3.a entity grouping: collapse same-entity nodes (inferred/inferred, inferred/observed,
+    # observed/observed) then same-interaction edges. Runs BEFORE the
     # snapshot so the colored execution graph reflects every merge.
-    n_nodes_merged, n_edges_merged, forced_groups = merge_step4(working, span_by_id)
-    flag_between_boundaries(working)
+    n_nodes_merged, n_edges_merged = merge_identical_interactions(
+        working, span_by_id
+    )
+    flag_between_boundaries(working, span_by_id)
     colored_snapshot = _snapshot(working)
 
-    # Step 5.a — fuse: connected White/Gray components → entity nodes; Black
-    # edges → entity edges. No merging here (Step 4 already merged); the A3
-    # forced grouping fuses split-service components without touching nodes.
-    entity_graph = build_entity_graph(working, forced_groups)
+    # Step 3.a (structural grouping) — connected Blue components → entity nodes
+    # (groups); Step 3.b — each dropped Teal transport chain → a pair of entity
+    # edges (one interaction per chain).
+    entity_graph = build_entity_graph(working, span_by_id)
+    # Step 3.a (semantic combine) — combine entity nodes representing the same
+    # entity (inferred peers AND observed entities sharing a typed key + kind +
+    # scope), maintaining all edges. `span_by_id` supplies each entity's scope
+    # for the combine key.
+    n_entities_merged = combine_identical_entities(entity_graph, span_by_id)
 
-    # Step 5.b is applied during output derivation (entities are named from
+    # Entity naming is applied during output derivation (entities are named from
     # service.name / natural-key suffix; the classifier label is kept on the
     # EntityNode for the future enrichment stage).
     entities = _derive_entities(entity_graph, span_by_id)
@@ -394,20 +416,24 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
 
     notes: list[str] = []
     notes.append(f"base graph: {len(base_snapshot.nodes)} nodes, {len(base_snapshot.edges)} edges")
-    n_gray = sum(1 for n in colored_snapshot.nodes if n.color == "gray")
-    n_black = sum(1 for n in colored_snapshot.nodes if n.color == "black")
+    n_blue = sum(1 for n in colored_snapshot.nodes if n.color == "blue")
+    n_teal = sum(1 for n in colored_snapshot.nodes if n.color == "teal")
+    n_boundary = sum(
+        1 for n in colored_snapshot.nodes if _node_is_boundary(n, span_by_id)
+    )
     n_flag = sum(1 for n in colored_snapshot.nodes if n.flagged)
     n_dup = sum(1 for n in colored_snapshot.nodes if n.is_target_duplicate)
     n_inferred = sum(1 for n in colored_snapshot.nodes if n.is_inferred)
     notes.append(
-        f"colored graph: {n_gray} gray, {n_black} black "
+        f"colored graph: {n_blue} blue, {n_teal} teal, {n_boundary} boundaries "
         f"({n_dup} target duplicates, {n_inferred} inferred peers), "
         f"{n_flag} between-boundary flags "
-        f"(Step 4 merged {n_nodes_merged} same-entity nodes, "
+        f"(Step 2.d merged {n_nodes_merged} same-entity nodes, "
         f"{n_edges_merged} same-interaction edges)"
     )
     notes.append(
-        f"entity graph: {len(entity_graph.nodes)} entities, {len(entity_graph.edges)} edges"
+        f"entity graph: {len(entity_graph.nodes)} entities, {len(entity_graph.edges)} edges "
+        f"(Step 3.a combined {n_entities_merged} same-entity nodes)"
     )
     notes.extend(ix_notes)
 

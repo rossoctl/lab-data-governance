@@ -338,10 +338,10 @@ async def _proto_graphs_handler(request: Request) -> Response:
 
     Returns three graph stages from the new algorithm:
       - base:    Step 1 white base graph (one node per span; traceparent edges)
-      - colored: Steps 2–4 colored execution graph, before the fuse (Gray/Black,
+      - colored: Step 2 colored execution graph, before the fuse (Blue/Teal,
                  additive edge colors, inferred nodes/edges, combined-span
-                 duplicates, the Step 4 node+edge merge, between-boundary flags)
-      - entity:  Step 5 entity graph, after the fuse (one node per fused component)
+                 duplicates, the Step 2.d node+edge merge, between-boundary flags)
+      - entity:  Step 3 entity graph, after the fuse (one node per fused component)
     """
     trace_id = request.path_params.get("trace_id")
     if not trace_id:
@@ -394,7 +394,7 @@ async def _proto_graphs_handler(request: Request) -> Response:
                 for r in base_edge_rows
             ]
 
-            # --- Steps 2–4 colored execution graph (before fuse) ---
+            # --- Step 2 colored execution graph (before fuse) ---
             colored_node_rows = tx.fetch_all(
                 "SELECT id, span_id, scope, color, is_boundary, is_target_duplicate, "
                 "       is_inferred, flagged, label, attributes "
@@ -431,17 +431,17 @@ async def _proto_graphs_handler(request: Request) -> Response:
                 for r in colored_edge_rows
             ]
 
-            # --- Step 5 entity graph (after fuse) ---
+            # --- Step 3 entity graph (after fuse) ---
             entity_node_rows = tx.fetch_all(
                 "SELECT n.id, n.label, n.attributes, n.contains_boundary, "
-                "       n.contains_black, n.contains_gray, n.inferred, n.scopes, "
+                "       n.contains_blue, n.contains_teal, n.inferred, n.scopes, "
                 "       array_agg(ns.span_id ORDER BY ns.span_id) "
                 "         FILTER (WHERE ns.span_id IS NOT NULL) "
                 "FROM proto_entity_nodes n "
                 "LEFT JOIN proto_entity_node_spans ns ON ns.node_id = n.id "
                 "WHERE n.trace_id = %s "
                 "GROUP BY n.id, n.label, n.attributes, n.contains_boundary, "
-                "         n.contains_black, n.contains_gray, n.inferred, n.scopes "
+                "         n.contains_blue, n.contains_teal, n.inferred, n.scopes "
                 "ORDER BY n.label",
                 (trace_id,),
             )
@@ -450,7 +450,9 @@ async def _proto_graphs_handler(request: Request) -> Response:
                     "id": r[0],
                     "scope": r[7],
                     "node_type": "entity",
-                    "color": "black" if r[4] else ("gray" if r[5] else "white"),
+                    # Teal nodes are dropped at the fuse, so an entity is Blue
+                    # when it carries any agentic node, else White.
+                    "color": "blue" if r[4] else ("teal" if r[5] else "white"),
                     "label": r[1],
                     "attributes": r[2],
                     "contains_boundary": r[3],
@@ -472,7 +474,7 @@ async def _proto_graphs_handler(request: Request) -> Response:
                 (trace_id,),
             )
             entity_edges = [
-                {"id": r[0], "from": r[1], "to": r[2], "kind": "black", "colors": "black"}
+                {"id": r[0], "from": r[1], "to": r[2], "kind": "interaction", "colors": "interaction"}
                 for r in entity_edge_rows
             ]
 
