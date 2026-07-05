@@ -37,7 +37,7 @@ from typing import Any
 
 from data_governance.retrieval import Span
 
-from .adapters import Role, extract_facts, is_transport_scope
+from .adapters import Role, _service, extract_facts, is_transport_scope
 from .classifiers import (
     AgenticClassification,
     get_agentic_classifier,
@@ -1090,6 +1090,22 @@ def merge_identical_interactions(
         key = _peer_match_key(node, spans_by_id) or node.label
         if key:
             observed_by_key[(key, _node_kind(node, spans_by_id))].append(node)
+    def _independent_observation(inferred_peer: Node, observed: Node) -> bool:
+        """The observed twin is a genuinely independent observation of the
+        callee iff it was emitted by a *different service* than the inferred
+        peer's caller. A same-service "twin" is the caller's own boundary span
+        (e.g. google_adk's `execute_tool <name>`, emitted under the calling
+        agent's service), not a separately-deployed callee — folding into it
+        would collapse the tool into its agent. When either service is unknown,
+        fail safe: do NOT fold (keep the inferred peer distinct)."""
+        isp = spans_by_id.get(inferred_peer.span_id)
+        osp = spans_by_id.get(observed.span_id)
+        isvc = _service(isp) if isp else None
+        osvc = _service(osp) if osp else None
+        if isvc is None or osvc is None:
+            return False
+        return osvc != isvc
+
     a1_redirect: dict[str, str] = {}
     a1_drop: set[str] = set()
     if observed_by_key:
@@ -1105,7 +1121,10 @@ def merge_identical_interactions(
                 continue
             src_comp = source_comp_for_span.get(node.span_id, comp.get(node.id))
             best = next(
-                (o for o in candidates if o.id not in a1_drop and comp[o.id] != src_comp),
+                (o for o in candidates
+                 if o.id not in a1_drop
+                 and comp[o.id] != src_comp
+                 and _independent_observation(node, o)),
                 None,
             )
             if best is None:
