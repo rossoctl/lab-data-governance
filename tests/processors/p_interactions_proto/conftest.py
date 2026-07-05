@@ -195,3 +195,23 @@ CROSS_SERVICE_TRANSPORT_TRACE_ID = "c0550000000000000000000000000001"
 def cross_service_transport_trace_spans() -> list[Span]:
     """Spans of the cross-service agent→httpx→starlette→agent trace."""
     return load_trace_spans("trace_cross_service_transport")
+
+
+# A hand-built google_adk trace exercising the observed-tool-span fold guard.
+# A `booking-agent` is invoked twice (two traceparent-broken components); each
+# invocation emits an `execute_tool create_booking` TOOL span under its
+# `agent_run` AGENT span, all under the agent's own service (`booking-agent`).
+# Because the tool call is observed as the AGENT's own span (same service as the
+# caller), the Step 2.d "inferred peer → observed twin" fold must NOT absorb the
+# inferred `tool:create_booking` peer into the other invocation's agent span
+# (which would collapse the tool into the agent and emit spurious agent→agent
+# self-loops). The service-identity guard in `merge_identical_interactions`
+# keeps the tool distinct: the two invocations converge to ONE inferred
+# `tool:create_booking` entity with two bidirectional agent↔tool interactions.
+OBSERVED_TOOL_TWO_INVOCATIONS_TRACE_ID = "0b00b1e5000000000000000000000001"
+
+
+@pytest.fixture()
+def observed_tool_two_invocations_trace_spans() -> list[Span]:
+    """Spans of a google_adk agent invoked twice, each running create_booking."""
+    return load_trace_spans("trace_observed_tool_two_invocations")
