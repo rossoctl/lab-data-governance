@@ -1,11 +1,12 @@
 """Contract tests for the execution-flow REST resources.
 
-The flow graph is served as four lean resources nested under a trace:
+The flow graph is served as four lean resources nested under a trace
+(namespaced under ``/api/`` per ADR-0017):
 
-- ``GET /traces/{trace_id}/interactions``            → ``{"interactions": [...]}``
-- ``GET /traces/{trace_id}/entities``                → ``{"entities": [...]}``
-- ``GET /traces/{trace_id}/interactions/{id}/spans`` → ``{"spans": [...]}``
-- ``GET /traces/{trace_id}/entities/{id}/spans``      → ``{"spans": [...]}``
+- ``GET /api/traces/{tid}/interactions``        → ``{"interactions": [...]}``
+- ``GET /api/traces/{tid}/entities``            → ``{"entities": [...]}``
+- ``GET /api/traces/{tid}/interactions/{iid}/spans`` → ``{"spans": [...]}``
+- ``GET /api/traces/{tid}/entities/{eid}/spans``      → ``{"spans": [...]}``
 
 The list responses are lean: interactions carry a ``span_count`` /
 ``anchor_count`` summary (so the flow table can size evidence without pulling
@@ -88,7 +89,7 @@ def seeded(configured_db: str) -> str:
 
 
 def test_interactions_list_has_counts_and_no_bulk_maps(seeded, api_server):
-    resp = httpx.get(f"{_base_url(api_server)}/traces/{seeded}/interactions")
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
     assert resp.status_code == 200
     body = resp.json()
     # Lean shape: interactions only — no entities, no spans_by_* maps.
@@ -103,7 +104,7 @@ def test_interactions_list_has_counts_and_no_bulk_maps(seeded, api_server):
 
 
 def test_entities_list_is_lean(seeded, api_server):
-    resp = httpx.get(f"{_base_url(api_server)}/traces/{seeded}/entities")
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/entities")
     assert resp.status_code == 200
     body = resp.json()
     assert set(body) == {"entities"}
@@ -116,7 +117,7 @@ def test_entities_list_is_lean(seeded, api_server):
 
 def test_interaction_spans_sub_resource(seeded, api_server):
     resp = httpx.get(
-        f"{_base_url(api_server)}/traces/{seeded}/interactions/{_IX_ID}/spans"
+        f"{_base_url(api_server)}/api/traces/{seeded}/interactions/{_IX_ID}/spans"
     )
     assert resp.status_code == 200
     spans = resp.json()["spans"]
@@ -130,7 +131,7 @@ def test_interaction_spans_sub_resource(seeded, api_server):
 
 def test_entity_spans_sub_resource(seeded, api_server):
     resp = httpx.get(
-        f"{_base_url(api_server)}/traces/{seeded}/entities/{_ENT_ID}/spans"
+        f"{_base_url(api_server)}/api/traces/{seeded}/entities/{_ENT_ID}/spans"
     )
     assert resp.status_code == 200
     spans = resp.json()["spans"]
@@ -143,7 +144,21 @@ def test_unknown_ids_return_empty_spans_not_404(seeded, api_server):
     """Unknown id → 200 with an empty list, so the UI renders an empty table
     rather than an error. Mirrors the empty-shape convention on the lists."""
     base = _base_url(api_server)
-    ix = httpx.get(f"{base}/traces/{seeded}/interactions/nope/spans")
-    ent = httpx.get(f"{base}/traces/{seeded}/entities/nope/spans")
+    ix = httpx.get(f"{base}/api/traces/{seeded}/interactions/nope/spans")
+    ent = httpx.get(f"{base}/api/traces/{seeded}/entities/nope/spans")
     assert ix.status_code == 200 and ix.json() == {"spans": []}
     assert ent.status_code == 200 and ent.json() == {"spans": []}
+
+
+def test_flow_logic_parses_ui_traces_page_prefix(api_server):
+    """getTraceId() in execution_flow_logic.js must read the trace id from the
+    ADR-0017 page path ``/ui/traces/<tid>``, not the retired ``/traces/<hex>``.
+
+    The flow view early-returns on a null trace id, so a stale parser leaves the
+    Interaction-flow view permanently empty on the live page — a break the
+    API-boundary tests above cannot see. Pin the parser's page-prefix contract
+    on the served asset."""
+    js = httpx.get(f"{_base_url(api_server)}/ui/execution_flow_logic.js").text
+    assert "/ui/traces/" in js
+    # The retired hex-only /traces/ page parser must be gone.
+    assert "/^\\/traces\\/" not in js

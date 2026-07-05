@@ -174,9 +174,13 @@
   <script src="/ui/recent_traces_logic.js"></script>
   <script>
     /* Recent-traces view (issue #13).
-       Endpoint: GET /spans?root_only=true&time_from=...&time_to=...
-                 &cursor=...&limit=20
-       Each returned Span is one trace's listing root. */
+       Endpoint: GET /api/traces?time_from=...&time_to=...&cursor=...&limit=20
+       Returns {traces:[TraceListingEntry]}, each entry
+       {trace_id, listing_root, counts, in_time_window} (ADR-0018).
+       We flatten each entry to a "row" (the listing_root span fields plus
+       trace_id / in_time_window) and stash counts by trace_id, so the pure
+       data-layer helpers (dedupe / filter, which key on span fields) are
+       unchanged. */
 
     const PAGE_SIZE = 20;
 
@@ -209,12 +213,11 @@
 
     async function fetchPage() {
       const params = new URLSearchParams({
-        root_only: 'true',
         limit: String(PAGE_SIZE),
         ...timeWindowParams(windowSelect.value),
       });
       if (cursor !== null) params.set('cursor', String(cursor));
-      const resp = await fetch('/spans?' + params.toString());
+      const resp = await fetch('/api/traces?' + params.toString());
       if (!resp.ok) {
         const body = await resp.text();
         throw new Error('HTTP ' + resp.status + ': ' + body);
@@ -309,14 +312,14 @@
       /* Click-through. The trace-tree view (issue #14) reads the
          listing-root Span out of sessionStorage so it does not need
          to re-fetch its anchor; the URL carries the trace_id so a
-         pasted /traces/<id> link still works (cold-open is a future
-         slice). */
+         pasted /ui/traces/<id> link still works (cold-open re-fetches
+         from GET /api/traces/<id>). */
       try {
         sessionStorage.setItem(
           'dg.listingRoot.' + row.trace_id, JSON.stringify(row),
         );
       } catch (_e) { /* storage full / disabled — non-fatal */ }
-      window.location.href = '/traces/' + encodeURIComponent(row.trace_id);
+      window.location.href = '/ui/traces/' + encodeURIComponent(row.trace_id);
     }
 
     function render() {
@@ -351,22 +354,31 @@
       errorEl.textContent = '';
       try {
         const data = await fetchPage();
-        const spans = data.spans || [];
-        accumRows = accumRows.concat(spans);
-        accumCounts = Object.assign({}, accumCounts, data.counts || {});
+        const entries = data.traces || [];
+        /* Flatten each TraceListingEntry to a row the pure helpers and
+           renderRow understand: the listing_root span fields, plus the
+           entry-level trace_id / in_time_window. Counts are stashed by
+           trace_id (they used to arrive as a sidecar map; now they are
+           nested per entry). */
+        const rows = entries.map((e) => Object.assign(
+          {}, e.listing_root,
+          { trace_id: e.trace_id, in_time_window: e.in_time_window },
+        ));
+        accumRows = accumRows.concat(rows);
+        for (const e of entries) accumCounts[e.trace_id] = e.counts;
 
-        if (spans.length > 0) {
+        if (rows.length > 0) {
           /* The server sorts by started_at DESC, span_id ASC and uses
              a composite (started_at, span_id) keyset cursor resolved
              from the caller's seq value (issue #30). The cursor must
-             be the seq of the *last span in sort order* on this page —
-             spans[spans.length - 1].seq — so the server can anchor the
-             keyset exactly at the page boundary. Using max(seq) would
-             anchor at an interior row and silently skip rows that sort
-             between that interior anchor and the true page boundary. */
-          cursor = spans[spans.length - 1].seq;
+             be the seq of the *last listing root in sort order* on this
+             page — so the server can anchor the keyset exactly at the
+             page boundary. Using max(seq) would anchor at an interior
+             row and silently skip rows that sort between that interior
+             anchor and the true page boundary. */
+          cursor = rows[rows.length - 1].seq;
         }
-        if (spans.length < PAGE_SIZE) exhausted = true;
+        if (rows.length < PAGE_SIZE) exhausted = true;
 
         render();
       } catch (err) {

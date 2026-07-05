@@ -517,7 +517,7 @@ detail — the contract is pinned here so deployments can rely on it.
   listing root (or empty if the trace has no spans at all). The
   `(time_from, time_to)` window is **ignored** in this case — the
   caller named the trace by id, the API always answers. Use case:
-  UI cold-open / deep-link to `/traces/T` (§7). Inherits eventual-
+  UI cold-open / deep-link to `/ui/traces/T` (§7). Inherits eventual-
   consistency from ADR-0001: a cold open during a listing-root flip
   may see the orphan or the real root depending on timing; the UI
   re-resolves on next interaction.
@@ -638,17 +638,30 @@ detail — the contract is pinned here so deployments can rely on it.
 
 ## 7. UI backend
 
-- **Thin REST wrapper.** One endpoint, `GET /spans`, that
-  pass-throughs 1:1 to `get_spans` (§6). All `get_spans` parameters
-  (`cursor`, `limit`, `trace_id`, `span_id`, `parent_id`,
-  `time_from`, `time_to`, `root_only`, `order`) are accepted as query
-  parameters; the response body is the JSON encoding of
-  `GetSpansResult` — `{"spans": [...], "counts": {...} | null}`.
-  No `GET /traces` resource: spans are the only first-class REST
-  resource in v1, and the recent-traces *view* is a `root_only=true`
-  query against `GET /spans`. This keeps the REST surface tiny and
-  collapses the previously-considered `GET /traces` cursor-stability
-  problem onto a span-level `seq` cursor that already works.
+- **Namespaced REST surface.** JSON resources live under `/api/`, HTML
+  pages and JS assets under `/ui/`, bare `/` 302-redirects to `/ui/`, and
+  `/healthz` stays un-prefixed at the root for infra probes (ADR-0017).
+- **Trace/span resource tree.** The span reads are a resource tree, not
+  the single `GET /spans` pass-through the tracer bullet shipped (retired
+  by ADR-0018):
+  - `GET /api/traces` — recent-traces feed → `{"traces": [TraceListingEntry]}`
+    (was `root_only=true&time_from&time_to`).
+  - `GET /api/traces/{tid}` — one **TraceListingEntry** (cold-open seed;
+    was `root_only=true&trace_id`).
+  - `GET /api/traces/{tid}/spans` — the whole trace, flat, paginated
+    (`{"spans": [...], "counts": null}`; ships without a current UI caller).
+  - `GET /api/traces/{tid}/spans/{sid}` — one full-row `Span` (was
+    `trace_id&span_id`; ADR-0006's one-shape contract).
+  - `GET /api/traces/{tid}/spans/{sid}/children` — direct children,
+    keyset-paginated (was `trace_id&parent_id&cursor&limit`).
+  A **TraceListingEntry** is `{trace_id, listing_root, counts, in_time_window}`
+  — the listing-root `Span` nested, per-trace **Trace counts** inline —
+  and is the identical shape for the collection element and the singular.
+  The execution-flow resources (`.../interactions`, `.../entities`, their
+  `/spans` sub-resources) and `GET /api/payloads/{hash}` share the `/api/`
+  namespace. Every handler calls the library `get_spans` (§6) — its
+  `root_only` / `parent_id` / `cursor` parameters and compatibility raises
+  are unchanged; only the HTTP surface was reshaped.
 - **No expansion parameters in v1.** The `attributes` blob (with
   inline payloads) is always returned. If response size becomes a
   problem in practice, the typical remediation is a per-key opt-out
@@ -660,27 +673,30 @@ detail — the contract is pinned here so deployments can rely on it.
   high-water-mark mechanism — a stream consumer can't be correct
   under the §3 / §6 cursor-allocation gap without it.
 
-### Recent-traces view (UI flow on `GET /spans`)
+### Recent-traces view (UI flow on `GET /api/traces`)
 
 The recent-traces view is rendered from
-`GET /spans?root_only=true&time_from=...&time_to=...&cursor=...&limit=20`.
-Each returned `Span` is a **listing root** of a trace with in-window
-activity, applying the **listing root fallback** (real root if any,
-else earliest orphan) — see §6 and ADR-0001. The response's
-`counts[trace_id]` carries `{total, in_window, error_count}` for the
-row's display. The UI's default page size is **20** rows.
+`GET /api/traces?time_from=...&time_to=...&cursor=...&limit=20`, which
+returns `{"traces": [TraceListingEntry]}`. Each entry's `listing_root` is
+the **listing root** of a trace with in-window activity, applying the
+**listing root fallback** (real root if any, else earliest orphan) — see §6
+and ADR-0001. The entry's `counts` carries `{total, in_window, error_count}`
+for the row's display, and `in_time_window` flags whether the anchor is in
+window. The UI's default page size is **20** rows.
 
-The UI:
+The UI (flattening each entry to a row of the `listing_root` span fields plus
+the entry's `trace_id` / `in_time_window`, with `counts` stashed by
+`trace_id`):
 
-- Inspects `parent_id` on each returned span to label the row
-  ("real root" vs "missing parent" badge).
+- Inspects `listing_root.parent_id` to label the row ("real root" vs
+  "missing parent" badge).
 - Uses `in_time_window` to grey out roots whose `started_at` falls
   outside the requested window.
 - Displays `in_window / total` from the per-trace counts so the
   user sees burst activity within the window against the trace's
   full size.
 - Renders an error badge with the count when
-  `counts[trace_id].error_count > 0` (§8).
+  `counts.error_count > 0` (§8).
 - **Dedupes by `trace_id` client-side.** A trace's listing root may
   flip from an orphan to a real root as late spans arrive (ADR-0001),
   or its `seq` may advance via finalization (§3.2 / ADR-0004). Two
@@ -690,24 +706,27 @@ The UI:
   the price of cursor-by-`seq` simplicity over a server-side frozen
   snapshot.
 
-### Trace tree view (UI flow on `GET /spans`)
+### Trace tree view (UI flow on the `/api/traces` tree)
 
 Opening a trace from a listing row: the listing-root `Span` is
-already in hand from the recent-traces response. The UI uses it as
-the tree's root anchor with no extra fetch.
+already in hand (cached in sessionStorage from the recent-traces
+response). The UI uses it as the tree's root anchor with no extra fetch.
 
 Cold-open / deep-link to a single trace (e.g. user pastes a
-`/traces/T` URL): the UI fetches the trace's listing root via
-`GET /spans?root_only=true&trace_id=T`. Returns exactly one Span
-plus `counts[T]`; window parameters are ignored in this single-trace
-case (§6).
+`/ui/traces/T` URL): the UI fetches the trace's **TraceListingEntry** via
+`GET /api/traces/T` and reads `.listing_root` as the anchor. Returns the
+entry (listing root + `counts`); window parameters do not apply to the
+singular (§6). A 404 renders the "Trace not found." empty state.
 
 Subtree expansion (every click that drills into a node): the UI
 fetches direct children via
-`GET /spans?trace_id=T&parent_id=P&cursor=...`. Pagination is by
+`GET /api/traces/T/spans/P/children?cursor=...`. Pagination is by
 `seq`; a single parent with more than `limit` children paginates
 across multiple calls. Wide-fan-out parents (loops, batch jobs) are
 the realistic case where this matters.
+
+Single-span re-fetch (Refresh button, reveal-in-tree): the UI fetches
+`GET /api/traces/T/spans/S`, which returns the full-row `Span` directly.
 
 ### Eventual consistency
 
@@ -739,11 +758,11 @@ running v1 outside an isolated cluster is unsupported.
 The v1 UI is a single page with two views:
 
 - **Recent traces** — paginated list rendered from
-  `GET /spans?root_only=true&time_from=...&time_to=...&cursor=...&limit=20`
+  `GET /api/traces?time_from=...&time_to=...&cursor=...&limit=20`
   (see §7). Each row shows the listing root's `service_name`,
   `name`, `started_at`, the trace's `in_window / total` from the
-  response's per-trace counts, an **error badge** showing
-  `counts[trace_id].error_count` when `> 0`, and a "missing parent"
+  entry's per-trace counts, an **error badge** showing
+  `counts.error_count` when `> 0`, and a "missing parent"
   badge when the listing root is an orphan (its `parent_id` is
   non-null). Roots whose `started_at` is outside the requested
   window (`in_time_window = false`) are rendered greyed out so the

@@ -2,7 +2,8 @@
 
 Verifies:
 - ``Span`` carries the new full-row fields over the wire.
-- ``GET /spans`` JSON response includes every new field.
+- The ``GET /api/traces/{tid}/spans`` JSON response includes every new field
+  (ADR-0018; was ``GET /spans?trace_id``).
 - The trace-tree HTML shell contains all nine section headings.
 - The ``selectSpan`` logic correctly uses the new fields.
 """
@@ -71,18 +72,17 @@ def _insert_finalized_error_span(conn) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wire-level: new fields present in GET /spans response
+# Wire-level: new fields present in the whole-trace spans response
 # ---------------------------------------------------------------------------
 
 
 def test_new_fields_present_on_wire(api_server, configured_db):
-    """Every new ADR-0006 field surfaces on the /spans JSON response."""
+    """Every new ADR-0006 field surfaces on the whole-trace spans JSON."""
     with psycopg.connect(configured_db) as conn:
         _insert_finalized_error_span(conn)
 
     spans = httpx.get(
-        f"http://127.0.0.1:{api_server.port}/spans",
-        params={"trace_id": "trace-full"},
+        f"http://127.0.0.1:{api_server.port}/api/traces/trace-full/spans",
     ).json()["spans"]
     assert len(spans) == 1
     s = spans[0]
@@ -129,8 +129,7 @@ def test_nullable_fields_surface_as_null_for_minimal_span(
         conn.commit()
 
     spans = httpx.get(
-        f"http://127.0.0.1:{api_server.port}/spans",
-        params={"trace_id": "trace-min"},
+        f"http://127.0.0.1:{api_server.port}/api/traces/trace-min/spans",
     ).json()["spans"]
     assert len(spans) == 1
     s = spans[0]
@@ -152,7 +151,7 @@ def test_nullable_fields_surface_as_null_for_minimal_span(
 def test_trace_tree_shell_has_nine_section_headings(api_server, configured_db):
     """The trace-tree HTML shell must contain all nine section headings
     so the detail panel renders the correct structure for any span."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
     assert resp.status_code == 200
     text = resp.text
 
@@ -179,7 +178,7 @@ def test_trace_tree_shell_has_nine_section_headings(api_server, configured_db):
 def test_trace_tree_shell_has_select_span_fields(api_server, configured_db):
     """The selectSpan function must reference the new ADR-0006 field names
     so the JS detail panel is wired up correctly."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
     assert resp.status_code == 200
     text = resp.text
 
@@ -203,7 +202,7 @@ def test_trace_tree_shell_has_select_span_fields(api_server, configured_db):
 
 def test_detail_panel_identity_section_fields(api_server, configured_db):
     """The shell contains all seven Identity dt labels."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
     text = resp.text
 
     for label in ("trace_id", "span_id", "parent_id", "kind",
@@ -219,7 +218,7 @@ def test_detail_panel_identity_section_fields(api_server, configured_db):
 def test_status_rendering_logic_in_shell(api_server, configured_db):
     """The shell must contain the Status tristate logic:
     'Error:', 'OK', 'Unset'."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
     text = resp.text
 
     assert "Error:" in text
@@ -234,13 +233,13 @@ def test_status_rendering_logic_in_shell(api_server, configured_db):
 
 def test_timing_not_finalized_text_in_shell(api_server, configured_db):
     """The shell must include the '(not finalized)' fallback for ended_at."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
     assert "(not finalized)" in resp.text
 
 
 def test_timing_duration_computed_in_shell(api_server, configured_db):
     """The shell JS must compute duration from ended_at - started_at."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
     text = resp.text
     assert "duration" in text
     assert "ended_at" in text

@@ -3,10 +3,10 @@
 Acceptance criteria covered:
 - AC1: Refresh button is rendered in the detail panel header.
 - AC2: Button starts hidden (display:none) until a span is selected.
-- AC3/4: GET /spans?trace_id=T&span_id=S is the retrieval endpoint; the
-  response surface used by the button includes the correct span.
+- AC3/4: GET /api/traces/{tid}/spans/{sid} is the retrieval endpoint (ADR-0018,
+  replacing GET /spans?trace_id&span_id); the response is the full-row Span.
 - AC5: loadedSpans update path — verified through the wire contract
-  (the same /spans call the button uses).
+  (the same single-span call the button uses).
 - AC6: Error path — HTTP error shows message in errorEl, panel unchanged.
 - AC7: E2E finalization scenario — the button re-fetches after
   ended_at/seq/error/status_message have been updated in the DB and the
@@ -97,7 +97,7 @@ def _finalize_span(
 
 def test_refresh_button_present_in_shell(api_server, configured_db):
     """The trace-tree shell must contain the Refresh button element."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
     assert resp.status_code == 200
     text = resp.text
     assert 'id="refresh-btn"' in text, "refresh-btn element missing from shell"
@@ -106,7 +106,7 @@ def test_refresh_button_present_in_shell(api_server, configured_db):
 def test_refresh_button_hidden_by_default(api_server, configured_db):
     """The button must start hidden (display:none) — no span is selected
     on page load."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
     text = resp.text
     # The button element must carry style="display:none" (or equivalent).
     assert 'display:none' in text or 'display: none' in text, (
@@ -115,13 +115,13 @@ def test_refresh_button_hidden_by_default(api_server, configured_db):
 
 
 # ---------------------------------------------------------------------------
-# AC3/4: Wire contract — GET /spans?trace_id=T&span_id=S returns the span
+# AC3/4: Wire contract — GET /api/traces/{tid}/spans/{sid} returns the span
 # ---------------------------------------------------------------------------
 
 
 def test_refresh_wire_contract_returns_single_span(api_server, configured_db):
-    """GET /spans?trace_id=T&span_id=S — the exact call the button issues —
-    returns a single-element spans list for the requested span."""
+    """GET /api/traces/{tid}/spans/{sid} — the exact call the button issues —
+    returns the full-row Span object directly (ADR-0018)."""
     with psycopg.connect(configured_db) as conn:
         _insert_span(
             conn,
@@ -133,13 +133,10 @@ def test_refresh_wire_contract_returns_single_span(api_server, configured_db):
         )
 
     resp = httpx.get(
-        f"http://127.0.0.1:{api_server.port}/spans",
-        params={"trace_id": "T-refresh", "span_id": "sp-alpha"},
+        f"http://127.0.0.1:{api_server.port}/api/traces/T-refresh/spans/sp-alpha",
     )
     assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["spans"]) == 1
-    s = body["spans"][0]
+    s = resp.json()
     assert s["trace_id"] == "T-refresh"
     assert s["span_id"] == "sp-alpha"
     assert s["name"] == "alpha-span"
@@ -147,15 +144,13 @@ def test_refresh_wire_contract_returns_single_span(api_server, configured_db):
     assert s["kind"] == "SERVER"
 
 
-def test_refresh_wire_contract_no_span_returns_empty(api_server, configured_db):
-    """GET /spans?trace_id=T&span_id=nonexistent returns an empty list.
+def test_refresh_wire_contract_no_span_returns_404(api_server, configured_db):
+    """GET /api/traces/{tid}/spans/{sid} returns 404 for an unknown span.
     The button JS checks for this and surfaces an error message."""
     resp = httpx.get(
-        f"http://127.0.0.1:{api_server.port}/spans",
-        params={"trace_id": "T-missing", "span_id": "no-such-span"},
+        f"http://127.0.0.1:{api_server.port}/api/traces/T-missing/spans/no-such-span",
     )
-    assert resp.status_code == 200
-    assert resp.json()["spans"] == []
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +161,7 @@ def test_refresh_wire_contract_no_span_returns_empty(api_server, configured_db):
 def test_refresh_button_error_handler_present_in_shell(api_server, configured_db):
     """The shell JS must reference 'errorEl' inside the refresh handler so
     HTTP errors surface in the existing error element."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
     text = resp.text
     # The error path must assign errorEl.textContent inside the refresh handler.
     assert "Refresh failed" in text, (
@@ -208,11 +203,10 @@ def test_refresh_reflects_finalized_span(api_server, configured_db):
 
     # --- Initial fetch (what the tree loaded at page render time) ---
     initial_resp = httpx.get(
-        f"http://127.0.0.1:{api_server.port}/spans",
-        params={"trace_id": "T-finalize", "span_id": "sp-beta"},
+        f"http://127.0.0.1:{api_server.port}/api/traces/T-finalize/spans/sp-beta",
     )
     assert initial_resp.status_code == 200
-    initial = initial_resp.json()["spans"][0]
+    initial = initial_resp.json()
     assert initial["ended_at"] is None, "span must be unfinalized initially"
     assert initial["error"] is None
     initial_seq = initial["seq"]
@@ -230,11 +224,10 @@ def test_refresh_reflects_finalized_span(api_server, configured_db):
 
     # --- Refresh fetch (what the button issues) ---
     refresh_resp = httpx.get(
-        f"http://127.0.0.1:{api_server.port}/spans",
-        params={"trace_id": "T-finalize", "span_id": "sp-beta"},
+        f"http://127.0.0.1:{api_server.port}/api/traces/T-finalize/spans/sp-beta",
     )
     assert refresh_resp.status_code == 200
-    fresh = refresh_resp.json()["spans"][0]
+    fresh = refresh_resp.json()
 
     # Post-finalization values must reflect the DB update.
     assert fresh["ended_at"] is not None, "ended_at must be set after finalization"

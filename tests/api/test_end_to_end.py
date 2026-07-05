@@ -1,6 +1,8 @@
 """End-to-end test for issue #4:
 
-Send an OTLP span via gRPC → call GET /spans → assert the span is in the response.
+Send an OTLP span via gRPC → read it back through the recent-traces feed
+(``GET /api/traces``, ADR-0018) → assert the span is the listing root of its
+trace.
 """
 
 from __future__ import annotations
@@ -17,8 +19,8 @@ from data_governance.processors.otlp_receiver.server import GrpcOtlpServer
 from tests.api.conftest import _free_port, _wait_port
 
 
-def test_otlp_span_visible_via_get_spans(configured_db: str) -> None:
-    """Send span via OTLP gRPC, read it back through GET /spans."""
+def test_otlp_span_visible_via_traces_feed(configured_db: str) -> None:
+    """Send span via OTLP gRPC, read it back through GET /api/traces."""
     grpc_port = _free_port()
     api_port = _free_port()
 
@@ -44,11 +46,10 @@ def test_otlp_span_visible_via_get_spans(configured_db: str) -> None:
             pass
         provider.shutdown()
 
-        resp = httpx.get(f"http://127.0.0.1:{api_port}/spans")
+        resp = httpx.get(f"http://127.0.0.1:{api_port}/api/traces")
         assert resp.status_code == 200
 
-        spans = resp.json()["spans"]
-        names = [s["name"] for s in spans]
+        names = [e["listing_root"]["name"] for e in resp.json()["traces"]]
         assert "e2e-read-path" in names
 
     finally:

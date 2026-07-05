@@ -318,7 +318,7 @@
 </head>
 <body>
   <header>
-    <a class="back" href="/">&larr; Recent traces</a>
+    <a class="back" href="/ui/">&larr; Recent traces</a>
     <h1>Trace tree</h1>
     <span id="trace-id-display" style="color:#888;font-size:0.85rem"></span>
     <span style="flex:1"></span>
@@ -450,7 +450,10 @@
   <script src="/ui/trace_tree_logic.js"></script>
   <script>
     /* Trace-tree view (issue #14).
-       Endpoint: GET /spans?trace_id=T&parent_id=P&cursor=...
+       Children: GET /api/traces/{tid}/spans/{sid}/children?cursor=...
+       Single span: GET /api/traces/{tid}/spans/{sid}
+       Cold-open seed: GET /api/traces/{tid} → .listing_root
+       (ADR-0018 resource tree; ADR-0017 /ui/ + /api/ namespacing).
        The listing-root Span is read out of sessionStorage on load —
        see openTrace() in index.html (the recent-traces shell). */
 
@@ -492,27 +495,25 @@
       // Snapshot before the await so a concurrent span-click doesn't corrupt state.
       const refreshingSpan = selectedSpan;
       const currentRow = treeEl.querySelector('.row.selected');
-      const params = new URLSearchParams({
-        trace_id: refreshingSpan.trace_id,
-        span_id: refreshingSpan.span_id,
-      });
+      const url = '/api/traces/' + encodeURIComponent(refreshingSpan.trace_id)
+        + '/spans/' + encodeURIComponent(refreshingSpan.span_id);
       try {
-        const resp = await fetch('/spans?' + params.toString());
+        const resp = await fetch(url);
         // Bail if the user navigated to a different span while the fetch was in-flight.
         if (selectedSpan !== refreshingSpan) return;
+        if (resp.status === 404) {
+          errorEl.textContent = 'Refresh failed: span not found';
+          return;
+        }
         if (!resp.ok) {
           const body = await resp.text();
           if (selectedSpan !== refreshingSpan) return;
           errorEl.textContent = 'Refresh failed: HTTP ' + resp.status + ': ' + body;
           return;
         }
-        const data = await resp.json();
+        // Single-span route returns the Span object directly (ADR-0018).
+        const fresh = await resp.json();
         if (selectedSpan !== refreshingSpan) return;
-        if (!data.spans || data.spans.length === 0) {
-          errorEl.textContent = 'Refresh failed: span not found';
-          return;
-        }
-        const fresh = data.spans[0];
         // Replace the stale entry in loadedSpans so badge walks see the update.
         const k = key(fresh);
         const idx = loadedSpans.findIndex((s) => key(s) === k);
@@ -525,9 +526,9 @@
       }
     });
 
-    /* Pull trace_id from /traces/<trace_id>. */
+    /* Pull trace_id from /ui/traces/<trace_id> (ADR-0017 namespacing). */
     const traceId = decodeURIComponent(
-      window.location.pathname.replace(/^\/traces\//, ''),
+      window.location.pathname.replace(/^\/ui\/traces\//, ''),
     );
     traceIdDisplay.textContent = traceId;
 
@@ -554,14 +555,13 @@
     }
 
     async function fetchChildren(parentSpanId) {
-      const params = new URLSearchParams({
-        trace_id: traceId,
-        parent_id: parentSpanId,
-        limit: String(PAGE_SIZE),
-      });
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
       const cur = childCursors[parentSpanId];
       if (cur !== undefined) params.set('cursor', String(cur));
-      const resp = await fetch('/spans?' + params.toString());
+      const url = '/api/traces/' + encodeURIComponent(traceId)
+        + '/spans/' + encodeURIComponent(parentSpanId)
+        + '/children?' + params.toString();
+      const resp = await fetch(url);
       if (!resp.ok) {
         const body = await resp.text();
         throw new Error('HTTP ' + resp.status + ': ' + body);
@@ -818,13 +818,13 @@
     /* Navigation API for the Execution-flow proto view: load a span's
        ancestor chain, expand each level, then select the target span. */
     async function fetchSpan(spanId) {
-      const params = new URLSearchParams({
-        trace_id: traceId, span_id: spanId,
-      });
-      const resp = await fetch('/spans?' + params.toString());
+      const url = '/api/traces/' + encodeURIComponent(traceId)
+        + '/spans/' + encodeURIComponent(spanId);
+      const resp = await fetch(url);
+      if (resp.status === 404) return null;
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const data = await resp.json();
-      return (data.spans && data.spans[0]) || null;
+      // Single-span route returns the Span object directly (ADR-0018).
+      return await resp.json();
     }
 
     // Reveal a span in the tree by expanding its ancestor chain. Returns the
@@ -1079,20 +1079,24 @@
     async function init() {
       let root = readListingRoot();
       if (root === null) {
-        // Cold-open / pasted URL — fetch the listing root for this trace.
-        // root_only=true with trace_id ignores the window per PROJECT.md §6.
+        // Cold-open / pasted URL — fetch this trace's listing root via the
+        // TraceListingEntry singular (ADR-0018). The entry nests the listing
+        // root as .listing_root; 404 means the trace has no spans.
         try {
           const resp = await fetch(
-            '/spans?root_only=true&trace_id='
-            + encodeURIComponent(traceId),
+            '/api/traces/' + encodeURIComponent(traceId),
           );
-          if (!resp.ok) throw new Error('HTTP ' + resp.status);
-          const data = await resp.json();
-          if (!data.spans || data.spans.length === 0) {
+          if (resp.status === 404) {
             statusEl.textContent = 'Trace not found.';
             return;
           }
-          root = data.spans[0];
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const entry = await resp.json();
+          if (!entry.listing_root) {
+            statusEl.textContent = 'Trace not found.';
+            return;
+          }
+          root = entry.listing_root;
         } catch (err) {
           errorEl.textContent = 'Error loading trace: ' + err.message;
           return;

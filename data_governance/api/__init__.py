@@ -1,13 +1,24 @@
 """UI backend REST API — thin Starlette wrapper over the retrieval library.
 
-The single endpoint ``GET /spans`` accepts every ``get_spans`` parameter as
-a query parameter and returns the JSON encoding of ``GetSpansResult``.
+The surface is resource-oriented and namespaced (ADR-0017): JSON resources
+under ``/api/``, HTML pages and JS assets under ``/ui/``, bare ``/`` a 302 to
+``/ui/``, and ``/healthz`` un-prefixed at the root for infra probes.
 
-Issue #4 shipped the tracer bullet (``cursor``, ``limit``, ``trace_id``,
-``span_id``, ``order``). Issue #12 extended the surface with
-``time_from`` / ``time_to`` (ISO-8601, naive datetimes rejected per
-PROJECT.md §6), ``root_only``, and ``parent_id`` (the latter only
-honoured for the parameter-compatibility raises until #13 lands).
+The span reads are a trace/span resource tree (ADR-0018, which retired the
+former single ``GET /spans`` pass-through):
+
+- ``GET /api/traces`` — recent-traces feed, ``{"traces": [TraceListingEntry]}``
+- ``GET /api/traces/{tid}`` — one ``TraceListingEntry`` (cold-open seed)
+- ``GET /api/traces/{tid}/spans`` — whole trace, flat, paginated
+- ``GET /api/traces/{tid}/spans/{sid}`` — one ``Span``
+- ``GET /api/traces/{tid}/spans/{sid}/children`` — direct children, keyset-paginated
+
+The P-interactions execution-flow resources (``.../interactions``,
+``.../entities``, their ``/spans`` sub-resources) and ``GET /api/payloads/{hash}``
+live under the same ``/api/`` namespace. Every handler calls the retrieval
+library ``get_spans`` (unchanged — its ``root_only`` / ``parent_id`` / ``cursor``
+parameters and compatibility raises are reached only through these routes) or
+the ``db`` module underneath.
 """
 
 from __future__ import annotations
@@ -22,7 +33,12 @@ from pathlib import Path
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from starlette.routing import Mount, Route
 
 from data_governance import db, retrieval
@@ -60,6 +76,36 @@ def _result_to_dict(result: retrieval.GetSpansResult) -> dict:
     }
 
 
+def _json_ok(payload: object) -> Response:
+    """Encode ``payload`` as a 200 ``application/json`` response.
+
+    The one place the span-read handlers' success encoding lives — they emit
+    dataclass-bearing payloads that need ``_json_default`` for datetimes, so a
+    plain ``JSONResponse`` won't do.
+    """
+    body = json.dumps(payload, default=_json_default)
+    return Response(content=body, media_type="application/json", status_code=200)
+
+
+def _trace_listing_entry(
+    span: retrieval.Span, counts: retrieval.TraceCounts | None
+) -> dict:
+    """Map a listing-root ``Span`` + its ``TraceCounts`` to a TraceListingEntry.
+
+    CONTEXT.md **TraceListingEntry**: trace-shaped (identity ``trace_id``) with
+    the anchor **Listing root** nested and the per-trace **Trace counts**
+    inline — not a bare span with a sidecar counts map. This is the element of
+    the ``GET /api/traces`` collection and the body of ``GET /api/traces/{tid}``
+    (ADR-0018); the two shapes are identical.
+    """
+    return {
+        "trace_id": span.trace_id,
+        "listing_root": dataclasses.asdict(span),
+        "counts": dataclasses.asdict(counts) if counts is not None else None,
+        "in_time_window": span.in_time_window,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Query-parameter parsing
 # ---------------------------------------------------------------------------
@@ -74,16 +120,20 @@ def _parse_int(value: str | None, name: str) -> int | None:
         raise ValueError(f"'{name}' must be an integer, got {value!r}")
 
 
-def _parse_bool(value: str | None, name: str) -> bool:
-    """Lenient bool parser for query strings: ``"true"`` / ``"1"`` → True."""
-    if value is None:
-        return False
-    lowered = value.strip().lower()
-    if lowered in ("true", "1", "yes"):
-        return True
-    if lowered in ("false", "0", "no", ""):
-        return False
-    raise ValueError(f"'{name}' must be a boolean, got {value!r}")
+def _pagination_kwargs(params) -> tuple[int | None, dict]:
+    """Parse the shared ``cursor`` / ``limit`` query params.
+
+    Returns ``(cursor, kwargs)`` where ``kwargs`` carries ``limit`` only when
+    the caller supplied it — omitting it lets ``get_spans`` apply its own
+    default rather than being handed ``None``. Raises ``ValueError`` on a
+    non-integer value (handlers turn that into a 400).
+    """
+    cursor = _parse_int(params.get("cursor"), "cursor")
+    limit_raw = _parse_int(params.get("limit"), "limit")
+    kwargs: dict = {}
+    if limit_raw is not None:
+        kwargs["limit"] = limit_raw
+    return cursor, kwargs
 
 
 def _parse_iso_datetime(value: str | None, name: str) -> dt.datetime | None:
@@ -117,40 +167,121 @@ def _parse_iso_datetime(value: str | None, name: str) -> dt.datetime | None:
 # ---------------------------------------------------------------------------
 
 
-async def _spans_handler(request: Request) -> Response:
-    """``GET /spans`` — pass-through to ``get_spans``."""
-    params = request.query_params
+async def _traces_handler(request: Request) -> Response:
+    """``GET /api/traces`` — the recent-traces feed (ADR-0018).
 
+    Was ``GET /spans?root_only=true&time_from&time_to``. Returns
+    ``{"traces": [TraceListingEntry]}`` — the trace-shaped feed the
+    recent-traces view reads. ``time_from`` / ``time_to`` still window the
+    listing-root selection; the library ``get_spans`` is unchanged underneath.
+    """
+    params = request.query_params
     try:
-        cursor = _parse_int(params.get("cursor"), "cursor")
-        limit_raw = _parse_int(params.get("limit"), "limit")
-        trace_id = params.get("trace_id") or None
-        span_id = params.get("span_id") or None
-        parent_id = params.get("parent_id") or None
-        order = params.get("order") or None
-        root_only = _parse_bool(params.get("root_only"), "root_only")
+        cursor, kwargs = _pagination_kwargs(params)
         time_from = _parse_iso_datetime(params.get("time_from"), "time_from")
         time_to = _parse_iso_datetime(params.get("time_to"), "time_to")
-
-        kwargs: dict = {}
-        if limit_raw is not None:
-            kwargs["limit"] = limit_raw
         result = retrieval.get_spans(
             cursor=cursor,
-            trace_id=trace_id,
-            span_id=span_id,
-            parent_id=parent_id,
             time_from=time_from,
             time_to=time_to,
-            root_only=root_only,
-            order=order,
+            root_only=True,
             **kwargs,
         )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
-    body = json.dumps(_result_to_dict(result), default=_json_default)
-    return Response(content=body, media_type="application/json", status_code=200)
+    counts = result.counts or {}
+    traces = [
+        _trace_listing_entry(span, counts.get(span.trace_id))
+        for span in result.spans
+    ]
+    return _json_ok({"traces": traces})
+
+
+async def _trace_handler(request: Request) -> Response:
+    """``GET /api/traces/{tid}`` — one **TraceListingEntry** (cold-open seed).
+
+    Was ``GET /spans?root_only=true&trace_id``. Returns the identical
+    TraceListingEntry shape as one element of ``GET /api/traces`` (ADR-0018:
+    collection and singular are symmetric), not wrapped in ``{"traces": ...}``.
+    404 when the trace has no spans.
+    """
+    tid = request.path_params.get("tid")
+    try:
+        result = retrieval.get_spans(root_only=True, trace_id=tid)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    if not result.spans:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    counts = result.counts or {}
+    span = result.spans[0]
+    return _json_ok(_trace_listing_entry(span, counts.get(span.trace_id)))
+
+
+async def _trace_spans_handler(request: Request) -> Response:
+    """``GET /api/traces/{tid}/spans`` — the whole trace, flat, paginated.
+
+    Was ``GET /spans?trace_id``. The root of the span resource tree. Ships
+    without a current UI caller (the tree UI seeds from the listing root and
+    expands children-by-parent), included per ADR-0018 as the obvious
+    collection root and a future export target. Returns the raw ``get_spans``
+    shape ``{"spans": [...], "counts": null}``.
+    """
+    params = request.query_params
+    tid = request.path_params.get("tid")
+    try:
+        cursor, kwargs = _pagination_kwargs(params)
+        order = params.get("order") or None
+        result = retrieval.get_spans(
+            cursor=cursor, trace_id=tid, order=order, **kwargs
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return _json_ok(_result_to_dict(result))
+
+
+async def _span_children_handler(request: Request) -> Response:
+    """``GET /api/traces/{tid}/spans/{sid}/children`` — direct children.
+
+    Was ``GET /spans?trace_id&parent_id&cursor&limit``. Keyset-paginated by
+    ``seq`` (ADR-0001) — the tree UI's lazy-expansion source. Returns the raw
+    ``get_spans`` shape ``{"spans": [...], "counts": null}``.
+    """
+    params = request.query_params
+    tid = request.path_params.get("tid")
+    sid = request.path_params.get("sid")
+    try:
+        cursor, kwargs = _pagination_kwargs(params)
+        result = retrieval.get_spans(
+            cursor=cursor, trace_id=tid, parent_id=sid, **kwargs
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    return _json_ok(_result_to_dict(result))
+
+
+async def _single_span_handler(request: Request) -> Response:
+    """``GET /api/traces/{tid}/spans/{sid}`` — one **Span** (ADR-0018).
+
+    Was ``GET /spans?trace_id&span_id``. Returns the full-row ``Span`` object
+    (ADR-0006 "one shape, one contract" — identical to a collection element),
+    not wrapped in ``{"spans": ...}``. 404 when the span is absent.
+    """
+    tid = request.path_params.get("tid")
+    sid = request.path_params.get("sid")
+    try:
+        result = retrieval.get_spans(trace_id=tid, span_id=sid)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    if not result.spans:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    return _json_ok(dataclasses.asdict(result.spans[0]))
 
 
 def _probe_postgres() -> None:
@@ -158,8 +289,8 @@ def _probe_postgres() -> None:
 
     Pulled out so the handler can dispatch it via :func:`asyncio.to_thread`
     — ``db.transaction`` does synchronous libpq round-trips. Mirrors the
-    receiver's ``server._probe_postgres`` for symmetry; the v1 UI backend's
-    only job is to serve ``GET /spans``, which fans out to Postgres, so
+    receiver's ``server._probe_postgres`` for symmetry; the UI backend's job
+    is to serve the ``/api/`` resource tree, which fans out to Postgres, so
     "Postgres reachable" is the right liveness signal.
     """
     with db.transaction() as tx:
@@ -180,8 +311,17 @@ async def _healthz_handler(_request: Request) -> Response:
     return Response("ok", status_code=200, media_type="text/plain")
 
 
+async def _root_redirect_handler(_request: Request) -> Response:
+    """``GET /`` → 302 to ``/ui/`` (ADR-0017).
+
+    Bare ``/`` is not a resource; the UI namespace is ``/ui/``. ``/healthz``
+    stays un-prefixed at the root for infra probes.
+    """
+    return RedirectResponse(url="/ui/", status_code=302)
+
+
 async def _ui_handler(_request: Request) -> Response:
-    """Serve the UI shell ``index.html``."""
+    """Serve the UI shell ``index.html`` at ``/ui/`` (ADR-0017)."""
     index = _UI_DIR / "index.html"
     # Read on every request intentionally — enables hot-reload during development.
     return HTMLResponse(content=index.read_text())
@@ -190,10 +330,10 @@ async def _ui_handler(_request: Request) -> Response:
 async def _trace_tree_handler(_request: Request) -> Response:
     """Serve the trace-tree UI shell (issue #14).
 
-    Path is ``/traces/{trace_id}``. The trace_id is consumed by the
-    in-page JS (it reads ``window.location.pathname`` to learn the
-    target trace), so the server-side handler is the same static HTML
-    for any trace_id.
+    Path is ``/ui/traces/{tid}`` (ADR-0017 namespacing). The trace_id is
+    consumed by the in-page JS (it reads ``window.location.pathname`` to
+    learn the target trace, expecting the ``/ui/traces/`` prefix), so the
+    server-side handler is the same static HTML for any trace_id.
     """
     page = _UI_DIR / "trace_tree.html"
     return HTMLResponse(content=page.read_text())
@@ -244,15 +384,15 @@ def _derived_tables_exist(tx) -> bool:
 
 
 async def _interactions_handler(request: Request) -> Response:
-    """``GET /traces/{trace_id}/interactions`` — derived interactions.
+    """``GET /api/traces/{tid}/interactions`` — derived interactions.
 
     Returns the interactions the in-cluster processor materialised for a
     trace (schema is the productized one, ADR-0013). Each row carries
     ``span_count`` / ``anchor_count`` so the flow table can show evidence
     sizing without pulling every span; the spans themselves are fetched
-    per-row from ``/traces/{trace_id}/interactions/{interaction_id}/spans``.
+    per-row from ``/api/traces/{tid}/interactions/{iid}/spans``.
     """
-    trace_id = request.path_params.get("trace_id")
+    trace_id = request.path_params.get("tid")
     if not trace_id:
         return JSONResponse({"error": "trace_id required"}, status_code=400)
 
@@ -305,16 +445,16 @@ async def _interactions_handler(request: Request) -> Response:
 
 
 async def _entities_handler(request: Request) -> Response:
-    """``GET /traces/{trace_id}/entities`` — derived entities.
+    """``GET /api/traces/{tid}/entities`` — derived entities.
 
     Productized entities are cross-trace-stable (ADR-0013): no trace_id
     column. Scope them to this trace indirectly via ``entity_spans`` (which
     is trace-scoped) — the entities the processor recorded provenance for in
     this trace. No ``retracted_at`` either (ADR-0012 emit-once-final, no
     tombstone). Span provenance is fetched per-row from
-    ``/traces/{trace_id}/entities/{entity_id}/spans``.
+    ``/api/traces/{tid}/entities/{eid}/spans``.
     """
-    trace_id = request.path_params.get("trace_id")
+    trace_id = request.path_params.get("tid")
     if not trace_id:
         return JSONResponse({"error": "trace_id required"}, status_code=400)
 
@@ -348,15 +488,15 @@ async def _entities_handler(request: Request) -> Response:
 
 
 async def _interaction_spans_handler(request: Request) -> Response:
-    """``GET /traces/{trace_id}/interactions/{interaction_id}/spans``.
+    """``GET /api/traces/{tid}/interactions/{iid}/spans``.
 
     The span-evidence for one interaction (backs the detail panel's Spans
     table). Returns ``{"spans": []}`` for an unknown id or before the
     interactions migration has run — an empty table is the right UI state,
     not a 404.
     """
-    trace_id = request.path_params.get("trace_id")
-    interaction_id = request.path_params.get("interaction_id")
+    trace_id = request.path_params.get("tid")
+    interaction_id = request.path_params.get("iid")
     if not trace_id or not interaction_id:
         return JSONResponse(
             {"error": "trace_id and interaction_id required"}, status_code=400
@@ -384,13 +524,13 @@ async def _interaction_spans_handler(request: Request) -> Response:
 
 
 async def _entity_spans_handler(request: Request) -> Response:
-    """``GET /traces/{trace_id}/entities/{entity_id}/spans``.
+    """``GET /api/traces/{tid}/entities/{eid}/spans``.
 
     The span-evidence for one entity. Same shape and empty-on-unknown
     convention as :func:`_interaction_spans_handler`.
     """
-    trace_id = request.path_params.get("trace_id")
-    entity_id = request.path_params.get("entity_id")
+    trace_id = request.path_params.get("tid")
+    entity_id = request.path_params.get("eid")
     if not trace_id or not entity_id:
         return JSONResponse(
             {"error": "trace_id and entity_id required"}, status_code=400
@@ -418,8 +558,11 @@ async def _entity_spans_handler(request: Request) -> Response:
 
 
 async def _payload_handler(request: Request) -> Response:
-    """Fetch a payload by content_hash (backs the flow view's Req/Resp cells)."""
-    h = request.path_params.get("content_hash")
+    """``GET /api/payloads/{hash}`` — a payload by content hash.
+
+    Backs the flow view's Req/Resp cells.
+    """
+    h = request.path_params.get("hash")
     if not h:
         return JSONResponse({"error": "content_hash required"}, status_code=400)
 
@@ -467,41 +610,62 @@ def build_app() -> Starlette:
     """Build and return the Starlette application."""
     routes: list = [
         Route("/healthz", endpoint=_healthz_handler, methods=["GET"]),
-        Route("/spans", endpoint=_spans_handler, methods=["GET"]),
-        Route("/ui/{name:str}", endpoint=_ui_asset_handler, methods=["GET"]),
+        Route("/api/traces", endpoint=_traces_handler, methods=["GET"]),
+        Route("/api/traces/{tid:str}", endpoint=_trace_handler, methods=["GET"]),
         Route(
-            "/traces/{trace_id:str}",
+            "/api/traces/{tid:str}/spans",
+            endpoint=_trace_spans_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/traces/{tid:str}/spans/{sid:str}/children",
+            endpoint=_span_children_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/traces/{tid:str}/spans/{sid:str}",
+            endpoint=_single_span_handler,
+            methods=["GET"],
+        ),
+        # UI pages + assets, all under /ui/ (ADR-0017). /ui/ is the index
+        # shell; /ui/traces/{tid} is the trace-tree page; /ui/{name} serves a
+        # whitelisted static asset. The page route is two path segments and
+        # the asset route one, so they don't collide.
+        Route("/ui/", endpoint=_ui_handler, methods=["GET"]),
+        Route(
+            "/ui/traces/{tid:str}",
             endpoint=_trace_tree_handler,
             methods=["GET"],
         ),
+        Route("/ui/{name:str}", endpoint=_ui_asset_handler, methods=["GET"]),
         # P-interactions execution-flow endpoints. Lists are lean; span
         # provenance is a per-id sub-resource, fetched lazily on drill-in.
         Route(
-            "/traces/{trace_id:str}/interactions",
+            "/api/traces/{tid:str}/interactions",
             endpoint=_interactions_handler,
             methods=["GET"],
         ),
         Route(
-            "/traces/{trace_id:str}/entities",
+            "/api/traces/{tid:str}/entities",
             endpoint=_entities_handler,
             methods=["GET"],
         ),
         Route(
-            "/traces/{trace_id:str}/interactions/{interaction_id:str}/spans",
+            "/api/traces/{tid:str}/interactions/{iid:str}/spans",
             endpoint=_interaction_spans_handler,
             methods=["GET"],
         ),
         Route(
-            "/traces/{trace_id:str}/entities/{entity_id:str}/spans",
+            "/api/traces/{tid:str}/entities/{eid:str}/spans",
             endpoint=_entity_spans_handler,
             methods=["GET"],
         ),
         Route(
-            "/payloads/{content_hash:str}",
+            "/api/payloads/{hash:str}",
             endpoint=_payload_handler,
             methods=["GET"],
         ),
-        Route("/", endpoint=_ui_handler, methods=["GET"]),
+        Route("/", endpoint=_root_redirect_handler, methods=["GET"]),
     ]
     return Starlette(routes=routes)
 

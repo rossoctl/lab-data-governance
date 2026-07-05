@@ -29,8 +29,8 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
   receiver. Production-grade Postgres operations (backup, replication,
   sizing) are out of scope for v1 (PROJECT.md §1, §5).
 - **UI backend Deployment.** Single replica running `python -m
-  data_governance.api` on port 8080. Serves both `GET /spans` and the
-  static UI shell.
+  data_governance.api` on port 8080. Serves both the `/api/` REST
+  resource tree and the `/ui/` static UI shell.
 - **P-interactions processor Deployment.** **Single replica** running
   `python -m data_governance.processors.interactions` on the receiver
   image (`data-governance/receiver:latest`, `command:` override — no new

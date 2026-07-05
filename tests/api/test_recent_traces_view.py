@@ -1,8 +1,8 @@
 """End-to-end tests for the recent-traces UI view — issue #13.
 
-The view replaces the flat-span shell from #4 as the default landing
-surface and is rendered against ``GET /spans?root_only=true``. These
-tests cover the full acceptance-criterion matrix from issue #13:
+The view is the default landing surface, rendered against ``GET /api/traces``
+(ADR-0018 retired the former ``GET /spans?root_only=true``). These tests cover
+the full acceptance-criterion matrix from issue #13:
 
 - real-root-only traces
 - orphan-only traces (listing-root fallback per ADR-0001)
@@ -12,11 +12,12 @@ tests cover the full acceptance-criterion matrix from issue #13:
 
 The view itself is plain HTML/JS rendered by the existing
 :mod:`data_governance.api` Starlette app. We exercise the API the view
-calls (``GET /spans?root_only=true``) and the UI shell (``GET /``) so
-the round-trip a browser would take is covered without booting a
-browser-engine. The dedupe-by-trace_id and grey-out-on-out-of-window
-behaviours live in the shipped JS; their *inputs* are asserted here at
-the API boundary.
+calls (``GET /api/traces``, returning ``{traces:[TraceListingEntry]}``) and the
+UI shell (``GET /ui/``) so the round-trip a browser would take is covered
+without booting a browser-engine. Each **TraceListingEntry** nests its listing
+root under ``listing_root`` and its counts under ``counts``. The
+dedupe-by-trace_id and grey-out-on-out-of-window behaviours live in the shipped
+JS; their *inputs* are asserted here at the API boundary.
 """
 
 from __future__ import annotations
@@ -165,18 +166,37 @@ _WINDOW_TO = "2026-05-01T14:00:00Z"
 # ---------------------------------------------------------------------------
 
 
+def _entries_to_listing(body: dict) -> dict:
+    """Flatten a ``GET /api/traces`` body into the legacy listing shape.
+
+    ``GET /api/traces`` returns ``{traces:[TraceListingEntry]}`` where each
+    entry nests the listing-root span under ``listing_root`` and the counts
+    under ``counts`` (ADR-0018). These tests assert on the listing-root span
+    fields and per-trace counts; rebuild the pre-ADR-0018 ``{spans, counts}``
+    shape (listing-root span with ``in_time_window`` merged in, plus a
+    ``{trace_id: counts}`` map) so the assertions read against the same
+    inputs the JS view flattens to."""
+    spans = []
+    counts = {}
+    for entry in body["traces"]:
+        span = dict(entry["listing_root"])
+        span["in_time_window"] = entry["in_time_window"]
+        spans.append(span)
+        counts[entry["trace_id"]] = entry["counts"]
+    return {"spans": spans, "counts": counts}
+
+
 def _fetch_listing(server: SpansApiServer) -> dict:
     resp = httpx.get(
-        f"{_base_url(server)}/spans",
+        f"{_base_url(server)}/api/traces",
         params={
-            "root_only": "true",
             "time_from": _WINDOW_FROM,
             "time_to": _WINDOW_TO,
             "limit": 20,
         },
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()
+    return _entries_to_listing(resp.json())
 
 
 def test_real_root_only_trace_uses_real_root_as_listing_root(
@@ -284,23 +304,23 @@ def test_service_name_returned_for_listing_row(api_server, configured_db):
     assert by_trace["B"]["service_name"] == "svc-B"
 
 
-def test_default_landing_query_is_root_only_limit_20(
+def test_default_landing_query_is_traces_limit_20(
     api_server, configured_db
 ):
-    """The view's default landing query: GET /spans with root_only=true
-    and limit=20. Smoke-test the API supports it (limit=20 is a query
-    parameter, so this is really a sanity check that nothing bombs)."""
+    """The view's default landing query: GET /api/traces with limit=20.
+    Smoke-test the API supports it (limit=20 is a query parameter, so this
+    is really a sanity check that nothing bombs)."""
     with psycopg.connect(configured_db) as conn:
         _seed_acceptance_matrix(conn)
 
     resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"root_only": "true", "limit": 20},
+        f"{_base_url(api_server)}/api/traces",
+        params={"limit": 20},
     )
     assert resp.status_code == 200
     body = resp.json()
     # No window supplied -> all in-window=true; no E exclusion -> 6 traces.
-    assert len(body["spans"]) == 6
+    assert len(body["traces"]) == 6
 
 
 # ---------------------------------------------------------------------------
@@ -337,21 +357,22 @@ def test_pagination_by_cursor_advances(api_server, configured_db):
     # E were silently skipped because their old started_at kept pushing them
     # off each page until the cursor advanced past their (relatively high) seq.
     for _ in range(20):
-        params: dict[str, object] = {"root_only": "true", "limit": 2}
+        params: dict[str, object] = {"limit": 2}
         if cursor is not None:
             params["cursor"] = cursor
         page = httpx.get(
-            f"{_base_url(api_server)}/spans", params=params
+            f"{_base_url(api_server)}/api/traces", params=params
         ).json()
-        spans = page["spans"]
-        if not spans:
+        entries = page["traces"]
+        if not entries:
             break
-        seen_trace_ids.update(s["trace_id"] for s in spans)
-        # Use the last span in sort order (spans[-1]) as the cursor anchor,
+        seen_trace_ids.update(e["trace_id"] for e in entries)
+        # Use the last entry in sort order (entries[-1]) as the cursor anchor,
         # not max(seq). The composite keyset cursor on the server resolves seq
         # to (started_at, span_id) and uses the page boundary position in the
-        # started_at DESC, span_id ASC sort — the last element on the page.
-        cursor = spans[-1]["seq"]
+        # started_at DESC, span_id ASC sort — the last element on the page. The
+        # cursor is the listing root's seq, nested under the entry.
+        cursor = entries[-1]["listing_root"]["seq"]
     else:  # pragma: no cover - hard-cap safety net
         raise AssertionError("pagination did not terminate")
 
@@ -368,26 +389,25 @@ def test_pagination_by_cursor_advances(api_server, configured_db):
 # ---------------------------------------------------------------------------
 
 
-def test_ui_shell_served_at_root(api_server, configured_db):
-    """``GET /`` returns the recent-traces UI shell HTML."""
-    resp = httpx.get(f"{_base_url(api_server)}/")
+def test_ui_shell_served_at_ui(api_server, configured_db):
+    """``GET /ui/`` returns the recent-traces UI shell HTML (ADR-0017)."""
+    resp = httpx.get(f"{_base_url(api_server)}/ui/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
 
 
-def test_ui_shell_calls_root_only_listing_endpoint(
+def test_ui_shell_calls_traces_listing_endpoint(
     api_server, configured_db
 ):
-    """The shell is wired to call ``/spans?root_only=true`` for its
-    initial render — the canonical endpoint for the recent-traces view
-    (PROJECT.md §7)."""
-    resp = httpx.get(f"{_base_url(api_server)}/")
-    assert "root_only=true" in resp.text
+    """The shell is wired to call ``/api/traces`` for its initial render —
+    the canonical endpoint for the recent-traces view (ADR-0018)."""
+    resp = httpx.get(f"{_base_url(api_server)}/ui/")
+    assert "/api/traces" in resp.text
 
 
 def test_ui_shell_default_page_size_is_20(api_server, configured_db):
     """Default page size is 20 (issue #13 spec)."""
-    resp = httpx.get(f"{_base_url(api_server)}/")
+    resp = httpx.get(f"{_base_url(api_server)}/ui/")
     # The constant should appear in the JS literal that drives the request.
     assert "20" in resp.text
 
@@ -397,7 +417,7 @@ def test_ui_shell_has_design_classes_from_ui_design_doc(
 ):
     """Shell carries the design-token CSS classes from
     ``docs/ui-design.md`` §6 / §7 / §9 (greyed-out + tabular-num count)."""
-    resp = httpx.get(f"{_base_url(api_server)}/")
+    resp = httpx.get(f"{_base_url(api_server)}/ui/")
     text = resp.text
     assert "dg-row--out-of-window" in text  # §6 greyed-out
     assert "dg-window-count" in text  # §7 in_window/total format
@@ -408,7 +428,7 @@ def test_ui_shell_has_missing_parent_filter_toggle(
 ):
     """Shell exposes the filter toggle that hides missing-parent
     listing roots (issue #13 acceptance criterion)."""
-    resp = httpx.get(f"{_base_url(api_server)}/")
+    resp = httpx.get(f"{_base_url(api_server)}/ui/")
     # Use a stable id we can hook tests onto.
     assert 'id="hide-missing-parent"' in resp.text
 
@@ -417,7 +437,7 @@ def test_ui_shell_has_time_window_picker(api_server, configured_db):
     """Shell exposes a time-window selection surface (issue #13:
     "User-visible time-window selection ... at whatever granularity
     #11 settled on")."""
-    resp = httpx.get(f"{_base_url(api_server)}/")
+    resp = httpx.get(f"{_base_url(api_server)}/ui/")
     assert 'id="time-window"' in resp.text
 
 

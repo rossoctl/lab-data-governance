@@ -403,13 +403,27 @@ filtering `content_kind = 'unknown'`. Stored on
 
 **TraceListingEntry**:
 One row of the recent-traces UI view — a derived display of a **Trace**,
-anchored on its current **Listing root**. Rendered from a `GET /spans` call
-with `root_only=true` (each returned `Span` is one trace's listing root).
+anchored on its current **Listing root**. Is the element type of the
+`GET /api/traces` collection and the body of the `GET /api/traces/{tid}`
+singular: `{trace_id, listing_root, counts, in_time_window}`, where
+`listing_root` is the anchor **Span**, `counts` is its **Trace counts**,
+and `in_time_window` reports whether the anchor is **In-window**. The
+collection and singular return the identical shape.
 Eventually consistent: the listing root, and therefore the row's display
 fields, may change as late spans arrive or **Finalization** advances a
 span's `seq`. Identity is `trace_id`; everything else is derived. The UI
 dedupes by `trace_id` across paginated responses to collapse anchor flips
 into a single row, keeping the highest-`seq` anchor.
+_Avoid_: describing this as a `Span` with a sidecar `counts` map — the
+row is trace-shaped (identity `trace_id`), with the anchor span nested,
+not a bare listing-root span.
+
+**Trace counts**:
+The per-**Trace** tally carried on a **TraceListingEntry**: `total` (all
+spans in the trace), `in_window` (spans whose `started_at` is **In-window**),
+and `error_count`. Computed at query time alongside the **Listing root**;
+present on both the `GET /api/traces` collection rows and the
+`GET /api/traces/{tid}` singular. Backed by the `TraceCounts` retrieval type.
 
 ## Relationships
 
@@ -423,16 +437,23 @@ into a single row, keeping the highest-`seq` anchor.
 - A **TraceListingEntry** is a derived view of one **Trace**, anchored on its
   current **Listing root**.
 - The **Retrieval API** is the only sanctioned read path over **Spans**; the UI
-  backend composes its REST endpoints from it.
+  backend composes its REST endpoints from it. The REST layer is
+  resource-oriented and namespaced: JSON resources under `/api/`
+  (`/api/traces`, `/api/traces/{tid}`, `/api/traces/{tid}/spans[/{sid}[/children]]`,
+  the interaction/entity sub-resources, `/api/payloads/{hash}`); HTML pages
+  and JS assets under `/ui/`. The single `GET /spans` pass-through was retired
+  in favour of these — the library `get_spans` (and its `root_only` /
+  `parent_id` parameters) is unchanged; only the HTTP surface was reshaped.
 
 ## Example dialogue
 
 > **Dev:** "If a trace's `parent_id IS NULL` span hasn't arrived yet, does
-> `GET /spans?root_only=true` skip the trace?"
+> `GET /api/traces` skip the trace?"
 > **Designer:** "No. The **Listing root fallback** picks the earliest **Orphan
-> span** as the **Listing root** so the trace still shows up. The UI flags it
-> by checking whether the returned listing root's `parent_id` is null
-> (**Real root**) or not (orphan acting as listing root)."
+> span** as the **Listing root** so the trace still shows up as a
+> **TraceListingEntry**. The UI flags it by checking whether the row's
+> `listing_root.parent_id` is null (**Real root**) or not (orphan acting as
+> listing root)."
 
 > **Dev:** "What if the real root arrives later?"
 > **Designer:** "Then the **Listing root** flips on the next query. The

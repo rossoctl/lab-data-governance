@@ -1,9 +1,9 @@
 ---
 # UI backend Service — ClusterIP exposing :8080.
 #
-# `data_governance.api` serves both `GET /spans` and the static UI shell
-# (index.html / trace_tree.html / whitelisted JS assets). Port 8080 matches
-# `data_governance.api.DEFAULT_PORT`.
+# `data_governance.api` serves both the `/api/` JSON resource tree and the
+# `/ui/` static UI shell (index.html / trace_tree.html / whitelisted JS
+# assets). Port 8080 matches `data_governance.api.DEFAULT_PORT`.
 apiVersion: v1
 kind: Service
 metadata:
@@ -26,7 +26,7 @@ spec:
 # UI backend Deployment.
 #
 # v1 ships the UI shell (HTML/CSS/JS) from the same process that serves the
-# REST `GET /spans`. A separate static-asset deployment is left as
+# `/api/` REST resource tree. A separate static-asset deployment is left as
 # implementer's discretion within v1's "single unified UI" framing
 # (issue #16); colocated with the REST surface keeps the deployment topology
 # minimal.

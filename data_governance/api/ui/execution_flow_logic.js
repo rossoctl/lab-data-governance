@@ -5,11 +5,12 @@
  * derived from spans by the in-cluster interactions processor
  * (`data-governance-interactions`).
  *
- * Data model — four lean REST resources under the trace:
- *   GET /traces/<id>/interactions            -> { interactions: [...] }
- *   GET /traces/<id>/entities                -> { entities: [...] }
- *   GET /traces/<id>/interactions/<iid>/spans -> { spans: [...] }
- *   GET /traces/<id>/entities/<eid>/spans     -> { spans: [...] }
+ * Data model — four lean REST resources under the trace (namespaced under
+ * /api/ per ADR-0017):
+ *   GET /api/traces/<tid>/interactions             -> { interactions: [...] }
+ *   GET /api/traces/<tid>/entities                 -> { entities: [...] }
+ *   GET /api/traces/<tid>/interactions/<iid>/spans -> { spans: [...] }
+ *   GET /api/traces/<tid>/entities/<eid>/spans     -> { spans: [...] }
  * The two lists are fetched up front (they populate the tables); each row's
  * span evidence is fetched lazily on click from the matching /spans
  * sub-resource. Interaction rows show an at-a-glance "N (M anchor)" count
@@ -158,8 +159,12 @@
   }
 
   function getTraceId() {
-    const m = window.location.pathname.match(/^\/traces\/([0-9a-f]+)/i);
-    return m ? m[1] : null;
+    // Page path is /ui/traces/<tid> (ADR-0017); mirror trace_tree.html's
+    // prefix-strip so both parsers accept the same (arbitrary) trace_id.
+    const p = window.location.pathname;
+    if (!p.startsWith('/ui/traces/')) return null;
+    const tid = decodeURIComponent(p.slice('/ui/traces/'.length));
+    return tid || null;
   }
 
   function formatTime24Utc(iso) {
@@ -201,7 +206,7 @@
     flowLoaded = true;
     const traceId = getTraceId();
     if (!traceId) return;
-    const base = '/traces/' + encodeURIComponent(traceId);
+    const base = '/api/traces/' + encodeURIComponent(traceId);
     try {
       // Interactions and entities are independent list resources; fetch them
       // in parallel and merge so renderFlow() sees the combined shape.
@@ -230,7 +235,7 @@
   async function fetchSpans(resource, id) {
     const traceId = getTraceId();
     if (!traceId) return [];
-    const url = '/traces/' + encodeURIComponent(traceId) + '/' +
+    const url = '/api/traces/' + encodeURIComponent(traceId) + '/' +
       resource + '/' + encodeURIComponent(id) + '/spans';
     try {
       const resp = await fetch(url);
@@ -285,7 +290,7 @@
     // Compute depth by walking parent links, independent of row order. The rows
     // arrive ordered by started_at, which is NOT a topological order — a parent
     // interaction can sort after its child (equal or NULL started_at, per the
-    // /traces/<id>/interactions query's `ORDER BY started_at`), so a single forward
+    // /api/traces/<tid>/interactions query's `ORDER BY started_at`), so a single forward
     // pass keyed on "parent already seen" would render such a child at depth 0.
     // Resolve each depth by following parent_interaction_id up through the full
     // set, memoising and guarding against cycles / missing parents.
@@ -434,7 +439,7 @@
   }
 
   async function showPayload(hash) {
-    const resp = await fetch('/payloads/' + encodeURIComponent(hash));
+    const resp = await fetch('/api/payloads/' + encodeURIComponent(hash));
     if (!resp.ok) {
       alert('Failed to fetch payload: ' + resp.status);
       return;
