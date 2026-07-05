@@ -97,7 +97,7 @@ def _finalize_span(
 
 def test_refresh_button_present_in_shell(api_server, configured_db):
     """The trace-tree shell must contain the Refresh button element."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
     assert resp.status_code == 200
     text = resp.text
     assert 'id="refresh-btn"' in text, "refresh-btn element missing from shell"
@@ -106,7 +106,7 @@ def test_refresh_button_present_in_shell(api_server, configured_db):
 def test_refresh_button_hidden_by_default(api_server, configured_db):
     """The button must start hidden (display:none) — no span is selected
     on page load."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
     text = resp.text
     # The button element must carry style="display:none" (or equivalent).
     assert 'display:none' in text or 'display: none' in text, (
@@ -166,7 +166,7 @@ def test_refresh_wire_contract_no_span_returns_empty(api_server, configured_db):
 def test_refresh_button_error_handler_present_in_shell(api_server, configured_db):
     """The shell JS must reference 'errorEl' inside the refresh handler so
     HTTP errors surface in the existing error element."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
     text = resp.text
     # The error path must assign errorEl.textContent inside the refresh handler.
     assert "Refresh failed" in text, (

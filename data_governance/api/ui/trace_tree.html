@@ -525,9 +525,9 @@
       }
     });
 
-    /* Pull trace_id from /trace/<trace_id>. */
+    /* Pull trace_id from /traces/<trace_id>. */
     const traceId = decodeURIComponent(
-      window.location.pathname.replace(/^\/trace\//, ''),
+      window.location.pathname.replace(/^\/traces\//, ''),
     );
     traceIdDisplay.textContent = traceId;
 

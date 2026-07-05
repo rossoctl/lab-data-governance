@@ -5,9 +5,17 @@
  * derived from spans by the in-cluster interactions processor
  * (`data-governance-interactions`).
  *
- * Loads from /proto/interactions/<trace_id> (the endpoint path is
- * still `/proto/...` for compatibility); if the derived graph hasn't
- * been populated for the trace yet, shows an empty-state hint.
+ * Data model — four lean REST resources under the trace:
+ *   GET /traces/<id>/interactions            -> { interactions: [...] }
+ *   GET /traces/<id>/entities                -> { entities: [...] }
+ *   GET /traces/<id>/interactions/<iid>/spans -> { spans: [...] }
+ *   GET /traces/<id>/entities/<eid>/spans     -> { spans: [...] }
+ * The two lists are fetched up front (they populate the tables); each row's
+ * span evidence is fetched lazily on click from the matching /spans
+ * sub-resource. Interaction rows show an at-a-glance "N (M anchor)" count
+ * from the span_count/anchor_count fields on the list response, so the count
+ * column needs no extra fetch. If the derived graph hasn't been populated for
+ * the trace yet, shows an empty-state hint.
  */
 
 (function () {
@@ -150,7 +158,7 @@
   }
 
   function getTraceId() {
-    const m = window.location.pathname.match(/^\/trace\/([0-9a-f]+)/i);
+    const m = window.location.pathname.match(/^\/traces\/([0-9a-f]+)/i);
     return m ? m[1] : null;
   }
 
@@ -193,18 +201,44 @@
     flowLoaded = true;
     const traceId = getTraceId();
     if (!traceId) return;
+    const base = '/traces/' + encodeURIComponent(traceId);
     try {
-      const resp = await fetch('/proto/interactions/' + encodeURIComponent(traceId));
-      if (!resp.ok) {
+      // Interactions and entities are independent list resources; fetch them
+      // in parallel and merge so renderFlow() sees the combined shape.
+      const [ixResp, entResp] = await Promise.all([
+        fetch(base + '/interactions'),
+        fetch(base + '/entities'),
+      ]);
+      if (!ixResp.ok || !entResp.ok) {
         flowEmpty.style.display = '';
-        flowEmpty.textContent = 'Failed to load: HTTP ' + resp.status;
+        flowEmpty.textContent =
+          'Failed to load: HTTP ' + (ixResp.ok ? entResp.status : ixResp.status);
         return;
       }
-      flowData = await resp.json();
+      const [ix, ent] = await Promise.all([ixResp.json(), entResp.json()]);
+      flowData = { ...ix, ...ent };
       renderFlow();
     } catch (e) {
       flowEmpty.style.display = '';
       flowEmpty.textContent = 'Failed to load: ' + e;
+    }
+  }
+
+  // Lazy-fetch the span evidence for one interaction/entity row on click.
+  // `resource` is 'interactions' or 'entities'. Returns the evidence list
+  // (empty on any error, so the detail panel just shows an empty Spans table).
+  async function fetchSpans(resource, id) {
+    const traceId = getTraceId();
+    if (!traceId) return [];
+    const url = '/traces/' + encodeURIComponent(traceId) + '/' +
+      resource + '/' + encodeURIComponent(id) + '/spans';
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return data.spans || [];
+    } catch (_e) {
+      return [];
     }
   }
 
@@ -239,8 +273,10 @@
       tr.appendChild(nameTd);
       tr.appendChild(detTd);
       tr.dataset.entityId = e.id;
-      const evidence = (flowData.spans_by_entity && flowData.spans_by_entity[e.id]) || [];
-      tr.addEventListener('click', () => selectEntity(e, evidence));
+      tr.addEventListener('click', async () => {
+        const evidence = await fetchSpans('entities', e.id);
+        selectEntity(e, evidence);
+      });
       entitiesTbody.appendChild(tr);
     });
 
@@ -249,7 +285,7 @@
     // Compute depth by walking parent links, independent of row order. The rows
     // arrive ordered by started_at, which is NOT a topological order — a parent
     // interaction can sort after its child (equal or NULL started_at, per the
-    // /proto/interactions query's `ORDER BY started_at`), so a single forward
+    // /traces/<id>/interactions query's `ORDER BY started_at`), so a single forward
     // pass keyed on "parent already seen" would render such a child at depth 0.
     // Resolve each depth by following parent_interaction_id up through the full
     // set, memoising and guarding against cycles / missing parents.
@@ -350,12 +386,17 @@
 
       const tSpans = document.createElement('td');
       tSpans.style.color = '#888';
-      const evidence = flowData.spans_by_interaction[ix.id] || [];
-      const anchorCount = evidence.filter(e => e.role === 'anchor').length;
-      tSpans.textContent = `${evidence.length} (${anchorCount} anchor)`;
+      // Count comes from the list row (span_count/anchor_count); the span
+      // list itself is fetched lazily on click.
+      const spanCount = ix.span_count || 0;
+      const anchorCount = ix.anchor_count || 0;
+      tSpans.textContent = `${spanCount} (${anchorCount} anchor)`;
       tr.appendChild(tSpans);
 
-      tr.addEventListener('click', () => selectInteraction(ix, evidence));
+      tr.addEventListener('click', async () => {
+        const evidence = await fetchSpans('interactions', ix.id);
+        selectInteraction(ix, evidence);
+      });
 
       interactionsTbody.appendChild(tr);
     });
@@ -393,7 +434,7 @@
   }
 
   async function showPayload(hash) {
-    const resp = await fetch('/proto/payload/' + encodeURIComponent(hash));
+    const resp = await fetch('/payloads/' + encodeURIComponent(hash));
     if (!resp.ok) {
       alert('Failed to fetch payload: ' + resp.status);
       return;
@@ -513,7 +554,17 @@
 
     const tdl = document.getElementById('detail-timing');
     tdl.innerHTML = '';
-    [['started_at', ix.started_at], ['ended_at', ix.ended_at]].forEach(([k, v]) => {
+    const timingRows = [
+      ['started_at', ix.started_at],
+      ['ended_at', ix.ended_at],
+    ];
+    // Duration only when both ends exist. Same formula/format as the span
+    // detail panel (trace_tree.html): (ended - started) ms to 3 decimals.
+    if (ix.started_at != null && ix.ended_at != null) {
+      const ms = (new Date(ix.ended_at) - new Date(ix.started_at)).toFixed(3);
+      timingRows.push(['duration', ms + ' ms']);
+    }
+    timingRows.forEach(([k, v]) => {
       const dt = document.createElement('dt'); dt.textContent = k;
       const dd = document.createElement('dd'); dd.textContent = String(v);
       tdl.appendChild(dt); tdl.appendChild(dd);

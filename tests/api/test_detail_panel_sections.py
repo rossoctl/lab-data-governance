@@ -152,7 +152,7 @@ def test_nullable_fields_surface_as_null_for_minimal_span(
 def test_trace_tree_shell_has_nine_section_headings(api_server, configured_db):
     """The trace-tree HTML shell must contain all nine section headings
     so the detail panel renders the correct structure for any span."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
     assert resp.status_code == 200
     text = resp.text
 
@@ -179,7 +179,7 @@ def test_trace_tree_shell_has_nine_section_headings(api_server, configured_db):
 def test_trace_tree_shell_has_select_span_fields(api_server, configured_db):
     """The selectSpan function must reference the new ADR-0006 field names
     so the JS detail panel is wired up correctly."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
     assert resp.status_code == 200
     text = resp.text
 
@@ -203,7 +203,7 @@ def test_trace_tree_shell_has_select_span_fields(api_server, configured_db):
 
 def test_detail_panel_identity_section_fields(api_server, configured_db):
     """The shell contains all seven Identity dt labels."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
     text = resp.text
 
     for label in ("trace_id", "span_id", "parent_id", "kind",
@@ -219,7 +219,7 @@ def test_detail_panel_identity_section_fields(api_server, configured_db):
 def test_status_rendering_logic_in_shell(api_server, configured_db):
     """The shell must contain the Status tristate logic:
     'Error:', 'OK', 'Unset'."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
     text = resp.text
 
     assert "Error:" in text
@@ -234,13 +234,13 @@ def test_status_rendering_logic_in_shell(api_server, configured_db):
 
 def test_timing_not_finalized_text_in_shell(api_server, configured_db):
     """The shell must include the '(not finalized)' fallback for ended_at."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
     assert "(not finalized)" in resp.text
 
 
 def test_timing_duration_computed_in_shell(api_server, configured_db):
     """The shell JS must compute duration from ended_at - started_at."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
+    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/traces/any")
     text = resp.text
     assert "duration" in text
     assert "ended_at" in text

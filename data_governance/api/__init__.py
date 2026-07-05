@@ -190,7 +190,7 @@ async def _ui_handler(_request: Request) -> Response:
 async def _trace_tree_handler(_request: Request) -> Response:
     """Serve the trace-tree UI shell (issue #14).
 
-    Path is ``/trace/{trace_id}``. The trace_id is consumed by the
+    Path is ``/traces/{trace_id}``. The trace_id is consumed by the
     in-page JS (it reads ``window.location.pathname`` to learn the
     target trace), so the server-side handler is the same static HTML
     for any trace_id.
@@ -211,13 +211,46 @@ _UI_ASSETS: frozenset[str] = frozenset(
 )
 
 
-async def _proto_interactions_handler(request: Request) -> Response:
-    """P-interactions endpoint — reads the derived interaction graph.
+# Row-mapper for the span-evidence the /spans sub-resources return. Shared by
+# the interaction- and entity-scoped handlers: both join their link table to
+# ``spans`` for the same provenance shape (ADR-0013), selecting
+# ``s.span_id, <link>.role, s.parent_id, s.kind, s.service_name`` in order.
+def _span_evidence_row(row: tuple) -> dict:
+    span_id, role, parent_id, kind, service_name = row
+    return {
+        "span_id": span_id,
+        "role": role,
+        "parent_id": parent_id,
+        "kind": kind,
+        "service_name": service_name,
+    }
 
-    Serves the entities/interactions the in-cluster interactions processor
-    materialised for a trace. The route path is kept as ``/proto/...`` for
-    compatibility with existing UI links; the schema it reads is the
-    productized one (ADR-0013).
+
+def _derived_tables_exist(tx) -> bool:
+    """Whether the interactions migration has run on this DB.
+
+    The derived tables (``interactions``, ``entities``, and their link
+    tables) all land in the same migration, so probing ``interactions`` is
+    sufficient. Handlers short-circuit to their empty shape when absent so a
+    fresh DB serves 200s rather than 500s.
+    """
+    return (
+        tx.fetch_one(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'interactions'"
+        )
+        is not None
+    )
+
+
+async def _interactions_handler(request: Request) -> Response:
+    """``GET /traces/{trace_id}/interactions`` — derived interactions.
+
+    Returns the interactions the in-cluster processor materialised for a
+    trace (schema is the productized one, ADR-0013). Each row carries
+    ``span_count`` / ``anchor_count`` so the flow table can show evidence
+    sizing without pulling every span; the spans themselves are fetched
+    per-row from ``/traces/{trace_id}/interactions/{interaction_id}/spans``.
     """
     trace_id = request.path_params.get("trace_id")
     if not trace_id:
@@ -225,27 +258,8 @@ async def _proto_interactions_handler(request: Request) -> Response:
 
     def _query() -> dict:
         with db.transaction() as tx:
-            # The derived tables may not exist yet on a fresh DB (before the
-            # interactions migration has run).
-            exists = tx.fetch_one(
-                "SELECT 1 FROM information_schema.tables "
-                "WHERE table_name = 'interactions'"
-            )
-            if exists is None:
-                return {"entities": [], "interactions": [], "spans_by_interaction": {}, "spans_by_entity": {}}
-            # Productized entities are cross-trace-stable (ADR-0013): no
-            # trace_id column. Scope them to this trace indirectly via
-            # entity_spans (which is trace-scoped) — the entities the
-            # processor recorded provenance for in this trace. No
-            # retracted_at either (ADR-0012 emit-once-final, no tombstone).
-            entities = tx.fetch_all(
-                "SELECT id::text, kind, natural_key, display_name, detected_from "
-                "FROM entities "
-                "WHERE id IN (SELECT DISTINCT entity_id FROM entity_spans "
-                "WHERE trace_id = %s) "
-                "ORDER BY kind, display_name",
-                (trace_id,),
-            )
+            if not _derived_tables_exist(tx):
+                return {"interactions": []}
             interactions = tx.fetch_all(
                 "SELECT id::text, caller_entity_id::text, callee_entity_id::text, "
                 "started_at, ended_at, error, request_payload_hash, "
@@ -254,54 +268,18 @@ async def _proto_interactions_handler(request: Request) -> Response:
                 "ORDER BY started_at",
                 (trace_id,),
             )
-            ev = tx.fetch_all(
-                "SELECT pis.interaction_id::text, pis.span_id, pis.role, "
-                "s.parent_id, s.kind, s.service_name "
-                "FROM interaction_spans pis "
-                "LEFT JOIN spans s "
-                "  ON s.trace_id = pis.trace_id AND s.span_id = pis.span_id "
-                "WHERE pis.trace_id = %s",
+            # Per-interaction span aggregate — one grouped scan of the link
+            # table, so the row count stays O(1) fetches regardless of trace
+            # size.
+            count_rows = tx.fetch_all(
+                "SELECT interaction_id::text, COUNT(*) AS span_count, "
+                "COUNT(*) FILTER (WHERE role = 'anchor') AS anchor_count "
+                "FROM interaction_spans WHERE trace_id = %s "
+                "GROUP BY interaction_id",
                 (trace_id,),
             )
-            spans_by_ix: dict[str, list[dict]] = {}
-            for ix_id, span_id, role, parent_id, kind, service_name in ev:
-                spans_by_ix.setdefault(ix_id, []).append(
-                    {
-                        "span_id": span_id,
-                        "role": role,
-                        "parent_id": parent_id,
-                        "kind": kind,
-                        "service_name": service_name,
-                    }
-                )
-            ent_ev = tx.fetch_all(
-                "SELECT pes.entity_id::text, pes.span_id, pes.role, "
-                "s.parent_id, s.kind, s.service_name "
-                "FROM entity_spans pes "
-                "LEFT JOIN spans s "
-                "  ON s.trace_id = pes.trace_id AND s.span_id = pes.span_id "
-                "WHERE pes.trace_id = %s",
-                (trace_id,),
-            )
-            spans_by_entity: dict[str, list[dict]] = {}
-            for ent_id, span_id, role, parent_id, kind, service_name in ent_ev:
-                spans_by_entity.setdefault(ent_id, []).append(
-                    {
-                        "span_id": span_id,
-                        "role": role,
-                        "parent_id": parent_id,
-                        "kind": kind,
-                        "service_name": service_name,
-                    }
-                )
+            counts = {r[0]: (r[1], r[2]) for r in count_rows}
             return {
-                "entities": [
-                    {
-                        "id": r[0], "kind": r[1], "natural_key": r[2],
-                        "display_name": r[3], "detected_from": r[4],
-                    }
-                    for r in entities
-                ],
                 "interactions": [
                     {
                         "id": r[0], "caller_entity_id": r[1], "callee_entity_id": r[2],
@@ -312,11 +290,11 @@ async def _proto_interactions_handler(request: Request) -> Response:
                         "response_payload_hash": r[7],
                         "summary": r[8],
                         "parent_interaction_id": r[9],
+                        "span_count": counts.get(r[0], (0, 0))[0],
+                        "anchor_count": counts.get(r[0], (0, 0))[1],
                     }
                     for r in interactions
                 ],
-                "spans_by_interaction": spans_by_ix,
-                "spans_by_entity": spans_by_entity,
             }
 
     try:
@@ -326,7 +304,120 @@ async def _proto_interactions_handler(request: Request) -> Response:
     return JSONResponse(data)
 
 
-async def _proto_payload_handler(request: Request) -> Response:
+async def _entities_handler(request: Request) -> Response:
+    """``GET /traces/{trace_id}/entities`` — derived entities.
+
+    Productized entities are cross-trace-stable (ADR-0013): no trace_id
+    column. Scope them to this trace indirectly via ``entity_spans`` (which
+    is trace-scoped) — the entities the processor recorded provenance for in
+    this trace. No ``retracted_at`` either (ADR-0012 emit-once-final, no
+    tombstone). Span provenance is fetched per-row from
+    ``/traces/{trace_id}/entities/{entity_id}/spans``.
+    """
+    trace_id = request.path_params.get("trace_id")
+    if not trace_id:
+        return JSONResponse({"error": "trace_id required"}, status_code=400)
+
+    def _query() -> dict:
+        with db.transaction() as tx:
+            if not _derived_tables_exist(tx):
+                return {"entities": []}
+            entities = tx.fetch_all(
+                "SELECT id::text, kind, natural_key, display_name, detected_from "
+                "FROM entities "
+                "WHERE id IN (SELECT DISTINCT entity_id FROM entity_spans "
+                "WHERE trace_id = %s) "
+                "ORDER BY kind, display_name",
+                (trace_id,),
+            )
+            return {
+                "entities": [
+                    {
+                        "id": r[0], "kind": r[1], "natural_key": r[2],
+                        "display_name": r[3], "detected_from": r[4],
+                    }
+                    for r in entities
+                ],
+            }
+
+    try:
+        data = await asyncio.to_thread(_query)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(data)
+
+
+async def _interaction_spans_handler(request: Request) -> Response:
+    """``GET /traces/{trace_id}/interactions/{interaction_id}/spans``.
+
+    The span-evidence for one interaction (backs the detail panel's Spans
+    table). Returns ``{"spans": []}`` for an unknown id or before the
+    interactions migration has run — an empty table is the right UI state,
+    not a 404.
+    """
+    trace_id = request.path_params.get("trace_id")
+    interaction_id = request.path_params.get("interaction_id")
+    if not trace_id or not interaction_id:
+        return JSONResponse(
+            {"error": "trace_id and interaction_id required"}, status_code=400
+        )
+
+    def _query() -> dict:
+        with db.transaction() as tx:
+            if not _derived_tables_exist(tx):
+                return {"spans": []}
+            rows = tx.fetch_all(
+                "SELECT s.span_id, pis.role, s.parent_id, s.kind, s.service_name "
+                "FROM interaction_spans pis "
+                "LEFT JOIN spans s "
+                "  ON s.trace_id = pis.trace_id AND s.span_id = pis.span_id "
+                "WHERE pis.trace_id = %s AND pis.interaction_id = %s",
+                (trace_id, interaction_id),
+            )
+            return {"spans": [_span_evidence_row(r) for r in rows]}
+
+    try:
+        data = await asyncio.to_thread(_query)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(data)
+
+
+async def _entity_spans_handler(request: Request) -> Response:
+    """``GET /traces/{trace_id}/entities/{entity_id}/spans``.
+
+    The span-evidence for one entity. Same shape and empty-on-unknown
+    convention as :func:`_interaction_spans_handler`.
+    """
+    trace_id = request.path_params.get("trace_id")
+    entity_id = request.path_params.get("entity_id")
+    if not trace_id or not entity_id:
+        return JSONResponse(
+            {"error": "trace_id and entity_id required"}, status_code=400
+        )
+
+    def _query() -> dict:
+        with db.transaction() as tx:
+            if not _derived_tables_exist(tx):
+                return {"spans": []}
+            rows = tx.fetch_all(
+                "SELECT s.span_id, pes.role, s.parent_id, s.kind, s.service_name "
+                "FROM entity_spans pes "
+                "LEFT JOIN spans s "
+                "  ON s.trace_id = pes.trace_id AND s.span_id = pes.span_id "
+                "WHERE pes.trace_id = %s AND pes.entity_id = %s",
+                (trace_id, entity_id),
+            )
+            return {"spans": [_span_evidence_row(r) for r in rows]}
+
+    try:
+        data = await asyncio.to_thread(_query)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return JSONResponse(data)
+
+
+async def _payload_handler(request: Request) -> Response:
     """Fetch a payload by content_hash (backs the flow view's Req/Resp cells)."""
     h = request.path_params.get("content_hash")
     if not h:
@@ -379,19 +470,35 @@ def build_app() -> Starlette:
         Route("/spans", endpoint=_spans_handler, methods=["GET"]),
         Route("/ui/{name:str}", endpoint=_ui_asset_handler, methods=["GET"]),
         Route(
-            "/trace/{trace_id:str}",
+            "/traces/{trace_id:str}",
             endpoint=_trace_tree_handler,
             methods=["GET"],
         ),
-        # P-interactions execution-flow endpoints (path kept as /proto/*)
+        # P-interactions execution-flow endpoints. Lists are lean; span
+        # provenance is a per-id sub-resource, fetched lazily on drill-in.
         Route(
-            "/proto/interactions/{trace_id:str}",
-            endpoint=_proto_interactions_handler,
+            "/traces/{trace_id:str}/interactions",
+            endpoint=_interactions_handler,
             methods=["GET"],
         ),
         Route(
-            "/proto/payload/{content_hash:str}",
-            endpoint=_proto_payload_handler,
+            "/traces/{trace_id:str}/entities",
+            endpoint=_entities_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/traces/{trace_id:str}/interactions/{interaction_id:str}/spans",
+            endpoint=_interaction_spans_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/traces/{trace_id:str}/entities/{entity_id:str}/spans",
+            endpoint=_entity_spans_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/payloads/{content_hash:str}",
+            endpoint=_payload_handler,
             methods=["GET"],
         ),
         Route("/", endpoint=_ui_handler, methods=["GET"]),

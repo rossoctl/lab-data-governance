@@ -1,6 +1,6 @@
-"""End-to-end tests for the cold-open / deep-link to /trace/T — issue #15.
+"""End-to-end tests for the cold-open / deep-link to /traces/T — issue #15.
 
-A user pastes a ``/trace/T`` URL (or otherwise lands on the trace tree
+A user pastes a ``/traces/T`` URL (or otherwise lands on the trace tree
 without coming from the recent-traces listing). The UI must:
 
 - Fetch ``GET /spans?root_only=true&trace_id=T`` without any window params.
@@ -13,7 +13,7 @@ without coming from the recent-traces listing). The UI must:
 - Support lazy subtree expansion identically to the click-through path.
 
 These tests exercise the acceptance criteria matrix from issue #15.  The
-``/trace/{trace_id}`` server route, the cold-open fetch, and the empty-state
+``/traces/{trace_id}`` server route, the cold-open fetch, and the empty-state
 path all land in this slice; the subtree-expansion contract was already
 covered by issue #14 (test_trace_tree_view.py) and is smoke-checked here in
 the context of a cold-opened root.
@@ -84,39 +84,39 @@ def _insert(
 
 
 # ---------------------------------------------------------------------------
-# AC: /trace/T URL is a real, shareable, bookmarkable route
+# AC: /traces/T URL is a real, shareable, bookmarkable route
 # ---------------------------------------------------------------------------
 
 
 def test_trace_route_returns_html_shell(api_server, configured_db):
-    """/trace/<trace_id> returns 200 HTML for any trace_id value.
+    """/traces/<trace_id> returns 200 HTML for any trace_id value.
 
     The route must be a real server-side route (not a hash fragment) so a
     pasted URL reaches the server and is served the same HTML shell
     regardless of whether the trace exists.
     """
-    resp = httpx.get(f"{_base_url(api_server)}/trace/some-trace-id-123")
+    resp = httpx.get(f"{_base_url(api_server)}/traces/some-trace-id-123")
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
 
 
 def test_trace_route_is_not_hash_navigation(api_server, configured_db):
-    """Recent-traces click-through must use real /trace/<id> routes, not hashes.
+    """Recent-traces click-through must use real /traces/<id> routes, not hashes.
 
-    A ``#/trace/<id>`` href never reaches the server on a paste/reload;
+    A ``#/traces/<id>`` href never reaches the server on a paste/reload;
     only a real path does.  This pins the regression from the early
     hash-based prototype.
     """
     resp = httpx.get(f"{_base_url(api_server)}/")
-    assert "'#/trace/'" not in resp.text
-    assert '"#/trace/"' not in resp.text
+    assert "'#/traces/'" not in resp.text
+    assert '"#/traces/"' not in resp.text
 
 
 def test_multiple_distinct_trace_ids_each_served(api_server, configured_db):
     """Different trace IDs each get the same HTML shell — the trace_id is
     consumed by in-page JS from window.location.pathname, not from the HTML."""
     for tid in ("trace-aaa", "trace-bbb", "trace-ccc"):
-        resp = httpx.get(f"{_base_url(api_server)}/trace/{tid}")
+        resp = httpx.get(f"{_base_url(api_server)}/traces/{tid}")
         assert resp.status_code == 200
 
 
@@ -128,7 +128,7 @@ def test_multiple_distinct_trace_ids_each_served(api_server, configured_db):
 def test_cold_open_fetch_uses_root_only_and_trace_id(api_server, configured_db):
     """The trace-tree shell must include ``root_only=true`` and ``trace_id``
     in the cold-open fetch, and must NOT include time-window parameters."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/T")
+    resp = httpx.get(f"{_base_url(api_server)}/traces/T")
     html = resp.text
 
     # The cold-open fetch must use root_only=true (not root_only=false or absent).
@@ -328,7 +328,7 @@ def test_cold_open_empty_response_for_unknown_trace(api_server, configured_db):
 def test_cold_open_shell_contains_empty_state_message(api_server, configured_db):
     """The trace-tree HTML shell must include the 'trace not found' empty-state
     text so the in-page JS can surface it without a second round-trip."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/anything")
+    resp = httpx.get(f"{_base_url(api_server)}/traces/anything")
     html = resp.text
     # The shell's init() renders this when data.spans is empty.
     assert "not found" in html.lower() or "Trace not found" in html
@@ -420,10 +420,10 @@ def test_cold_open_subtree_expansion_paginates_wide_fanout(api_server, configure
 def test_trace_route_and_root_route_are_separate_real_routes(
     api_server, configured_db,
 ):
-    """Both / and /trace/<id> must be distinct server-side routes so
+    """Both / and /traces/<id> must be distinct server-side routes so
     browser history entries are real URLs that survive a reload."""
     root_resp = httpx.get(f"{_base_url(api_server)}/")
-    trace_resp = httpx.get(f"{_base_url(api_server)}/trace/abc")
+    trace_resp = httpx.get(f"{_base_url(api_server)}/traces/abc")
 
     assert root_resp.status_code == 200
     assert trace_resp.status_code == 200
@@ -440,7 +440,7 @@ def test_trace_route_and_root_route_are_separate_real_routes(
 def test_end_to_end_cold_open_walk_and_expand(api_server, configured_db):
     """Simulates the full cold-open user journey:
 
-    1. User pastes /trace/E2E — server returns HTML shell (200).
+    1. User pastes /traces/E2E — server returns HTML shell (200).
     2. JS fetches GET /spans?root_only=true&trace_id=E2E — returns listing root.
     3. JS expands the root's children.
     4. JS expands a child's grandchildren.
@@ -471,7 +471,7 @@ def test_end_to_end_cold_open_walk_and_expand(api_server, configured_db):
         )
 
     # Step 1: server serves the HTML shell for the pasted URL.
-    shell = httpx.get(f"{_base_url(api_server)}/trace/E2E")
+    shell = httpx.get(f"{_base_url(api_server)}/traces/E2E")
     assert shell.status_code == 200
     assert "text/html" in shell.headers.get("content-type", "")
 

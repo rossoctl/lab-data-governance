@@ -3,7 +3,7 @@
 The trace-tree view replaces the recent-traces row's click-through
 target. Reaching it: the user clicks a recent-traces row; the JS
 caches the listing-root ``Span`` in sessionStorage and navigates to
-``/trace/<trace_id>`` (a real route, not a hash). The shell at that
+``/traces/<trace_id>`` (a real route, not a hash). The shell at that
 route reads the anchor from sessionStorage and lazy-expands subtrees
 via ``GET /spans?trace_id=T&parent_id=P&cursor=...``.
 
@@ -495,10 +495,10 @@ def test_v1_limitation_collapsed_subtree_does_not_propagate_badge(
 def test_trace_tree_route_serves_shell_for_any_trace_id(
     api_server, configured_db,
 ):
-    """``GET /trace/<trace_id>`` returns the trace-tree shell HTML.
+    """``GET /traces/<trace_id>`` returns the trace-tree shell HTML.
     The trace_id is consumed by in-page JS so the same HTML is served
     for any value."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/abcdef")
+    resp = httpx.get(f"{_base_url(api_server)}/traces/abcdef")
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
     assert "Trace tree" in resp.text
@@ -507,7 +507,7 @@ def test_trace_tree_route_serves_shell_for_any_trace_id(
 def test_trace_tree_shell_loads_logic_js_asset(api_server, configured_db):
     """The shell pulls in ``trace_tree_logic.js`` for the descendant-
     badge walker."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/anything")
+    resp = httpx.get(f"{_base_url(api_server)}/traces/anything")
     assert "/ui/trace_tree_logic.js" in resp.text
 
 
@@ -527,7 +527,7 @@ def test_trace_tree_shell_calls_subtree_endpoint(api_server, configured_db):
     """The shell's lazy-expansion fetches ``/spans?trace_id=...&
     parent_id=...``. Smoke-check the endpoint string is present so a
     refactor doesn't silently break the contract."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/x")
+    resp = httpx.get(f"{_base_url(api_server)}/traces/x")
     assert "parent_id" in resp.text
     assert "/spans?" in resp.text or "'/spans?'" in resp.text or (
         "/spans" in resp.text
@@ -541,20 +541,20 @@ def test_trace_tree_shell_reads_listing_root_from_session_storage(
     ``dg.listingRoot.<trace_id>`` — see openTrace() in the recent-
     traces shell. The trace-tree shell must read the same key (so the
     anchor doesn't need re-fetching)."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/x")
+    resp = httpx.get(f"{_base_url(api_server)}/traces/x")
     assert "dg.listingRoot." in resp.text
 
 
 def test_recent_traces_shell_links_to_real_trace_tree_route(
     api_server, configured_db,
 ):
-    """Recent-traces row click-through must navigate to ``/trace/<id>``
+    """Recent-traces row click-through must navigate to ``/traces/<id>``
     (real route), not a hash. Hash navigation never reaches the server,
-    so the previously-shipped ``#/trace/<id>`` href would never load
+    so the previously-shipped ``#/traces/<id>`` href would never load
     the trace-tree shell. This test pins the regression."""
     resp = httpx.get(f"{_base_url(api_server)}/")
     text = resp.text
-    assert "/trace/" in text
+    assert "/traces/" in text
     # Defend against an accidental return to hash navigation.
-    assert "'#/trace/'" not in text
-    assert '"#/trace/"' not in text
+    assert "'#/traces/'" not in text
+    assert '"#/traces/"' not in text

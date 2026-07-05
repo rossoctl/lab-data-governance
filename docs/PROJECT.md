@@ -517,7 +517,7 @@ detail — the contract is pinned here so deployments can rely on it.
   listing root (or empty if the trace has no spans at all). The
   `(time_from, time_to)` window is **ignored** in this case — the
   caller named the trace by id, the API always answers. Use case:
-  UI cold-open / deep-link to `/trace/T` (§7). Inherits eventual-
+  UI cold-open / deep-link to `/traces/T` (§7). Inherits eventual-
   consistency from ADR-0001: a cold open during a listing-root flip
   may see the orphan or the real root depending on timing; the UI
   re-resolves on next interaction.
@@ -697,7 +697,7 @@ already in hand from the recent-traces response. The UI uses it as
 the tree's root anchor with no extra fetch.
 
 Cold-open / deep-link to a single trace (e.g. user pastes a
-`/trace/T` URL): the UI fetches the trace's listing root via
+`/traces/T` URL): the UI fetches the trace's listing root via
 `GET /spans?root_only=true&trace_id=T`. Returns exactly one Span
 plus `counts[T]`; window parameters are ignored in this single-trace
 case (§6).

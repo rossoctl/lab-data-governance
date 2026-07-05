@@ -309,14 +309,14 @@
       /* Click-through. The trace-tree view (issue #14) reads the
          listing-root Span out of sessionStorage so it does not need
          to re-fetch its anchor; the URL carries the trace_id so a
-         pasted /trace/<id> link still works (cold-open is a future
+         pasted /traces/<id> link still works (cold-open is a future
          slice). */
       try {
         sessionStorage.setItem(
           'dg.listingRoot.' + row.trace_id, JSON.stringify(row),
         );
       } catch (_e) { /* storage full / disabled — non-fatal */ }
-      window.location.href = '/trace/' + encodeURIComponent(row.trace_id);
+      window.location.href = '/traces/' + encodeURIComponent(row.trace_id);
     }
 
     function render() {
