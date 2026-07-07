@@ -149,14 +149,16 @@ When merging, the inferred server and callee nodes are collapsed into the observ
 The process of Merging is a set of heuristics - asserting the same exact processing is observed - and can be based on:
 - proximity in the trace
 - Same tool name 
-- same exact execution time
+- same exact executio this update n time
 - Same input argument and output result 
 - whether the node or edge are inferred or observed in conjunction with the source spans 
 - nodes from the same scope
 - same root node
 
-Timing note: when merging edges account for the timing of each of the edges and maintain the time of the appropriate Span. for example, After a tool call its input may be repeated several times in following spans. in this case the timing of this is interaction should be after the span creating the tool call.
+Timing notes:
+when merging edges account for the timing of each of the edges and maintain the time of the appropriate Span. for example, After a tool call its input may be repeated several times in following spans. in this case the timing of this is interaction should be after the span creating the tool call.
 
+When collapsing the inferred and observed nodes, the result should maintain the observed timestamps.
 
 
 # Step 3 - entity graph 
@@ -204,6 +206,12 @@ If the key is not clear we can call it unknown.
   - Each path connecting entity nodes should be represented by a single interaction connecting these entity nodes. In other words: each Teal transport chain between two Blue components becomes a single interaction 
 
 The edges in the entity graph are simply these interactions.
+
+
+## Step 3.c - Timing (absolute timestamps):
+The goal in this step is to assign each interaction (call, reponse) an absolute started_at / ended_at. These are taken from the interaction's anchor span.
+
+Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor on the observed span that derived them (the originating agentic span). 
 
 
 
