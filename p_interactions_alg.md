@@ -210,7 +210,7 @@ The edges in the entity graph are simply these interactions.
 
 
 ## Step 3.c - Timing (absolute timestamps):
-The goal in this step is to assign each interaction (call, reponse) an absolute started_at / ended_at. These are taken from the interaction's anchor span.
+The goal in this step is to assign each interaction (call, response) an absolute started_at / ended_at. These are taken from the interaction's anchor span.
 
 Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor on the observed span that derived them (the originating agentic span). 
 
