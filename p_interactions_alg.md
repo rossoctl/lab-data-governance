@@ -142,6 +142,9 @@ In such a case they inferred tool call may be merged with the node representing 
 Another example: assume we have a tool called retrieving information from a database (Single invocation of the database) followed by multiple interactions with an LLM. in such a case the tool input will appear in all the following LLM spans and may result in multiple inferred database tool calls.
 since all those inferred nodes represent a single call to the database - They should be merged.
 
+Another example: Assume we have an agent with a call site (e.g. a tool call) whose callee was inferred (source Blue -> inferred Teal server -> inferred Blue callee). Assume that the *same* call-site span is also the root of an observed transport chain (Teal) that runs through transport nodes until it reaches observed agentic (Blue) nodes.
+In that case the inferred server/callee and the observed transport chain/agebtic node are the *same* interaction: the call made was actually served by the observed downstream agent.
+
 The process of Merging is a set of heuristics - asserting the same exact processing is observed - and can be based on:
 - proximity in the trace
 - Same tool name 
@@ -149,6 +152,7 @@ The process of Merging is a set of heuristics - asserting the same exact process
 - Same input argument and output result 
 - whether the node or edge are inferred or observed in conjunction with the source spans 
 - nodes from the same scope
+- same root node
 
 Timing note: when merging edges account for the timing of each of the edges and maintain the time of the appropriate Span. for example, After a tool call its input may be repeated several times in following spans. in this case the timing of this is interaction should be after the span creating the tool call.
 
@@ -199,10 +203,6 @@ If the key is not clear we can call it unknown.
   - Each path connecting entity nodes should be represented by a single interaction connecting these entity nodes. In other words: each Teal transport chain between two Blue components becomes a single interaction 
 
 The edges in the entity graph are simply these interactions.
-
-
-
-
 
 
 
