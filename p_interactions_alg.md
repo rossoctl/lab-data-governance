@@ -139,11 +139,12 @@ In addition it may include nodes inferred from the second span including
 Server --> Tool
 In such a case they inferred tool call may be merged with the node representing the tool called span, and both pairs of server no nodes and tool nodes should be merged.
 
-Another example: assume we have a tool called retrieving information from a database (Single invocation of the database) followed by multiple interactions with an LLM. in such a case the tool input will appear in all the following LLM spans and may result in multiple inferred database tool calls.
+example II: assume we have a tool called retrieving information from a database (Single invocation of the database) followed by multiple interactions with an LLM. in such a case the tool input will appear in all the following LLM spans and may result in multiple inferred database tool calls.
 since all those inferred nodes represent a single call to the database - They should be merged.
 
-Another example: Assume we have an agent with a call site (e.g. a tool call) whose callee was inferred (source Blue -> inferred Teal server -> inferred Blue callee). Assume that the *same* call-site span is also the root of an observed transport chain (Teal) that runs through transport nodes until it reaches observed agentic (Blue) nodes.
-In that case the inferred server/callee and the observed transport chain/agebtic node are the *same* interaction: the call made was actually served by the observed downstream agent.
+example III: Assume we have an agent with a call site (e.g. a tool call) whose callee was inferred (source Blue -> inferred Teal server -> inferred Blue callee). Assume that the *same* call-site span is also the root of an observed transport chain (Teal) that runs through transport nodes until it reaches observed agentic (Blue) nodes.
+In that case the inferred server/callee and the observed transport chain/agentic node are the *same* interaction: the call made was actually served by the observed downstream agent.
+When merging, the inferred server and callee nodes are collapsed into the observed transport chain and agentic (Blue) nodes. The result is a single interaction from the call site to the observed downstream agent (e.g. agent -> agent). For this case, a shared root node is a sufficient signal on its own.
 
 The process of Merging is a set of heuristics - asserting the same exact processing is observed - and can be based on:
 - proximity in the trace
