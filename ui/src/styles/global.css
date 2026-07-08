@@ -1,0 +1,17 @@
+/* Data-governance keeps the dark palette the vanilla shell used. PatternFly 5
+   ships a dark theme activated by the `pf-v5-theme-dark` class on <html>;
+   src/App applies it on mount. These few rules cover the app-shell background
+   and the monospace treatment the trace/span views rely on. */
+
+html.pf-v5-theme-dark,
+body {
+  background: #151515;
+}
+
+body {
+  margin: 0;
+}
+
+.dg-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
