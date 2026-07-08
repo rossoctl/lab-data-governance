@@ -8,6 +8,7 @@ import {
   CodeBlock,
   CodeBlockCode,
 } from '@patternfly/react-core';
+import { durationMs } from '../lib/flow';
 import type { Span } from '../types';
 
 /** JSON block with the vanilla `(none)` fallback for a null value. */
@@ -69,10 +70,9 @@ export function SpanDetailPanel({ span, onRefresh }: SpanDetailPanelProps) {
     ['started_at', span.started_at],
     ['ended_at', span.ended_at == null ? '(not finalized)' : span.ended_at],
   ];
-  if (span.ended_at != null && span.started_at != null) {
-    const ms = new Date(span.ended_at).getTime() - new Date(span.started_at).getTime();
-    timing.push(['duration', `${ms.toFixed(3)} ms`]);
-  }
+  // Duration only when both ends exist; same helper the flow view uses.
+  const dur = durationMs(span.started_at, span.ended_at);
+  if (dur !== null) timing.push(['duration', `${dur} ms`]);
   timing.push(['observed_at', span.observed_at]);
 
   return (

@@ -18,6 +18,7 @@ import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { useInteractions, useEntities } from '../api/hooks';
 import { fetchJson } from '../api/client';
 import { computeInteractionDepths, durationMs } from '../lib/flow';
+import { formatTime24Utc } from '../lib/recentTraces';
 import type { PinStore } from '../lib/pins';
 import { EntityPill } from './EntityPill';
 import type { Entity, Interaction, SpanEvidence } from '../types';
@@ -60,11 +61,12 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan }: Fl
     return m;
   }, [entities]);
   const depthById = useMemo(() => computeInteractionDepths(interactions), [interactions]);
-  const pinColor = useMemo(() => {
-    const m = new Map<string, string>();
-    pins.getPins().forEach((p) => m.set(p.key, p.color));
-    return m;
-  }, [pins]);
+  // Read the pin colors directly on render (NOT via useMemo keyed on `pins`):
+  // `pins` is a stable mutable store reference, so a memo keyed on it would
+  // never recompute after a pin toggle. The parent re-renders FlowTables on
+  // every pin change (onPinsChange → bumpPins), so a plain read is fresh.
+  const pinColor = new Map<string, string>();
+  pins.getPins().forEach((p) => pinColor.set(p.key, p.color));
 
   const isLoading = interactionsQ.isLoading || entitiesQ.isLoading;
   const isEmpty = interactions.length === 0 && entities.length === 0;
@@ -208,7 +210,7 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan }: Fl
               return (
                 <Tr key={ix.id} isClickable onRowClick={() => selectInteraction(ix)}>
                   <Td dataLabel="Started" className="dg-mono">
-                    {ix.started_at ? new Date(ix.started_at).toISOString().slice(11, 19) : ''}
+                    {ix.started_at ? formatTime24Utc(ix.started_at) : ''}
                   </Td>
                   <Td>{pinDot(`interaction:${ix.id}`)}</Td>
                   <Td dataLabel="Caller">

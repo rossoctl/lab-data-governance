@@ -1,3 +1,4 @@
+import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -57,6 +58,23 @@ describe('FlowTables', () => {
     await waitFor(() =>
       expect(screen.getByText(/No interaction data for this trace yet/i)).toBeInTheDocument(),
     );
+  });
+
+  it('shows a pin dot on a row after it is added to highlights (no stale memo)', async () => {
+    mockFetch();
+    const pins = new PinStore();
+    // A parent that re-renders FlowTables on pin change, like TraceDetailPage.
+    function Host() {
+      const [, force] = React.useReducer((n: number) => n + 1, 0);
+      return <FlowTables traceId="T1" pins={pins} onPinsChange={force} />;
+    }
+    renderWithProviders(<Host />);
+    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
+    // Select the 'search' entity (unique to the entities table), then Add to highlights.
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    await userEvent.click(await screen.findByRole('button', { name: /Add to highlights/i }));
+    // The entity row now carries a pin dot (aria-label="pinned").
+    await waitFor(() => expect(screen.getAllByLabelText('pinned').length).toBeGreaterThan(0));
   });
 
   it('selects an interaction row on click and shows its summary in the detail panel', async () => {

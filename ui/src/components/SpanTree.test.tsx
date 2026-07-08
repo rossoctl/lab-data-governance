@@ -68,6 +68,50 @@ describe('SpanTree', () => {
     expect(within(rootRow as HTMLElement).getByText(/Child error/i)).toBeInTheDocument();
   });
 
+  it('renders a "Load more children" affordance for a full page and pages forward', async () => {
+    // First page returns exactly PAGE_SIZE (50) children → more may exist.
+    const page1 = Array.from({ length: 50 }, (_, i) =>
+      span({ seq: 100 + i, span_id: `c${i}`, name: `child-${i}`, parent_id: 'root' }),
+    );
+    const page2 = [span({ seq: 200, span_id: 'c50', name: 'child-50', parent_id: 'root' })];
+    let call = 0;
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/spans/root/children')) {
+        call += 1;
+        return { ok: true, status: 200, json: async () => ({ spans: call === 1 ? page1 : page2 }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    renderWithProviders(
+      <SpanTree traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /expand root-span/i }));
+    await waitFor(() => expect(screen.getByText('child-0')).toBeInTheDocument());
+    // A full first page → "Load more children" is offered.
+    const more = await screen.findByRole('button', { name: /Load more children/i });
+    await userEvent.click(more);
+    // The next page's child appears, and (short page) the affordance disappears.
+    await waitFor(() => expect(screen.getByText('child-50')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /Load more children/i })).toBeNull();
+  });
+
+  it('does not infinitely recurse on a self-referential parent_id (cycle guard)', async () => {
+    // root's child is root itself (self-loop) — render must terminate.
+    const selfChild = span({ seq: 2, span_id: 'root', name: 'root-span', parent_id: 'root' });
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/spans/root/children')) {
+        return { ok: true, status: 200, json: async () => ({ spans: [selfChild] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    renderWithProviders(
+      <SpanTree traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /expand root-span/i }));
+    // The cycle is rendered as a terminal "(cycle)" node, not an infinite tree.
+    await waitFor(() => expect(screen.getByText(/\(cycle\)/)).toBeInTheDocument());
+  });
+
   it('calls onSelect with the span when a row is clicked', async () => {
     mockChildren([]);
     const onSelect = vi.fn();

@@ -11,13 +11,14 @@ import {
   FormSelectOption,
   Label,
   Spinner,
+  Button,
   EmptyState,
   EmptyStateBody,
   EmptyStateHeader,
 } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 
-import { useTraces } from '../api/hooks';
+import { useTracesInfinite } from '../api/hooks';
 import {
   dedupeByTraceId,
   applyMissingParentFilter,
@@ -69,15 +70,27 @@ export function RecentTracesPage() {
   const [windowKey, setWindowKey] = useState<WindowKey>('1h');
   const [hideMissingParent, setHideMissingParent] = useState(false);
 
-  const { data: entries = [], isLoading, isError } = useTraces({
-    limit: 20,
-    ...windowParams(windowKey),
-  });
+  // Freeze the window bounds per windowKey (NOT per render) so the query key is
+  // stable across time and doesn't refetch/re-key on every render.
+  const window = useMemo(() => windowParams(windowKey), [windowKey]);
+
+  const {
+    data,
+    isLoading,
+    isError,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = useTracesInfinite(window);
 
   const rows = useMemo(() => {
+    // Accumulate every fetched page, then dedupe over the whole accumulator so
+    // a flipped anchor (orphan → real root) arriving on a later page collapses
+    // to one row (PROJECT.md §7 / the vanilla accumulate-then-dedupe design).
+    const entries: TraceListingEntry[] = data ? data.pages.flat() : [];
     const deduped = dedupeByTraceId(entries.map(toRow));
     return applyMissingParentFilter(deduped, hideMissingParent);
-  }, [entries, hideMissingParent]);
+  }, [data, hideMissingParent]);
 
   return (
     <PageSection>
@@ -175,6 +188,18 @@ export function RecentTracesPage() {
             })}
           </Tbody>
         </Table>
+      )}
+
+      {hasNextPage && (
+        <Button
+          variant="secondary"
+          isBlock
+          isLoading={isFetchingNextPage}
+          onClick={() => fetchNextPage()}
+          style={{ marginTop: '1rem' }}
+        >
+          {isFetchingNextPage ? 'Loading…' : 'Load more'}
+        </Button>
       )}
     </PageSection>
   );

@@ -340,9 +340,21 @@ async def _spa_index(_request: Request) -> Response:
 
     Read on every request intentionally — cheap, and lets a rebuilt ``dist/``
     be picked up without a process restart during development.
+
+    Returns 503 with a plain-text hint when the SPA build is absent (a
+    build-less checkout / image), symmetrical with the ``check_dir=False`` on
+    the ``/ui/assets`` mount — a missing build is a deploy problem to surface
+    cleanly, not an opaque 500 from an unhandled ``FileNotFoundError``.
     """
     index = _UI_DIR / "index.html"
-    return HTMLResponse(content=index.read_text())
+    try:
+        return HTMLResponse(content=index.read_text())
+    except FileNotFoundError:
+        return Response(
+            "UI build not found — run the Vite build (see ADR-0019)",
+            status_code=503,
+            media_type="text/plain",
+        )
 
 
 # Row-mapper for the span-evidence the /spans sub-resources return. Shared by

@@ -44,12 +44,55 @@ export function SpanTree({ traceId, root, pins, onSelect }: SpanTreeProps) {
   );
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [childrenOf, setChildrenOf] = useState<Map<string, string[]>>(new Map());
+  // Parents whose children are fully paged in (last page was < PAGE_SIZE). A
+  // parent absent from this set with a loaded page of exactly PAGE_SIZE has
+  // more children behind a "Load more" affordance.
+  const [exhausted, setExhausted] = useState<Set<string>>(new Set());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   const spans = useMemo(() => Array.from(loaded.values()), [loaded]);
   const descendantErrorKeys = useMemo(
     () => descendantErrorAncestors(spans as TreeSpan[], buildParentIndex(spans as TreeSpan[])),
     [spans],
+  );
+
+  // Fetch one page of a parent's children (keyset-paginated by seq, ADR-0001)
+  // and append it. `cursor` is the max seq of the children already loaded, so
+  // the next page continues past the last one. Marks the parent exhausted when
+  // a short page comes back.
+  const loadChildrenPage = useCallback(
+    async (span: Span) => {
+      const k = spanKey(span.trace_id, span.span_id);
+      const existing = childrenOf.get(k) ?? [];
+      const cursor =
+        existing.length > 0
+          ? Math.max(
+              ...existing
+                .map((ck) => loaded.get(ck)?.seq ?? -Infinity)
+                .filter((n) => Number.isFinite(n)),
+            )
+          : undefined;
+      const page = await fetchJson<{ spans: Span[] }>(
+        `/traces/${traceId}/spans/${span.span_id}/children`,
+        { limit: PAGE_SIZE, ...(cursor !== undefined ? { cursor } : {}) },
+      )
+        .then((r) => r.spans)
+        .catch(() => [] as Span[]);
+      setLoaded((prev) => {
+        const next = new Map(prev);
+        for (const c of page) next.set(spanKey(c.trace_id, c.span_id), c);
+        return next;
+      });
+      setChildrenOf((prev) => {
+        const next = new Map(prev);
+        next.set(k, [...(prev.get(k) ?? []), ...page.map((c) => spanKey(c.trace_id, c.span_id))]);
+        return next;
+      });
+      if (page.length < PAGE_SIZE) {
+        setExhausted((prev) => new Set(prev).add(k));
+      }
+    },
+    [traceId, childrenOf, loaded],
   );
 
   const expand = useCallback(
@@ -64,29 +107,13 @@ export function SpanTree({ traceId, root, pins, onSelect }: SpanTreeProps) {
         });
         return;
       }
-      // Fetch children on first expand.
+      // Fetch the first page of children on first expand.
       if (!childrenOf.has(k)) {
-        const children = await fetchJson<{ spans: Span[] }>(
-          `/traces/${traceId}/spans/${span.span_id}/children`,
-          { limit: PAGE_SIZE },
-        )
-          .then((r) => r.spans)
-          .catch(() => [] as Span[]);
-        setLoaded((prev) => {
-          const next = new Map(prev);
-          for (const c of children) next.set(spanKey(c.trace_id, c.span_id), c);
-          return next;
-        });
-        setChildrenOf((prev) =>
-          new Map(prev).set(
-            k,
-            children.map((c) => spanKey(c.trace_id, c.span_id)),
-          ),
-        );
+        await loadChildrenPage(span);
       }
       setExpanded((prev) => new Set(prev).add(k));
     },
-    [traceId, expanded, childrenOf],
+    [expanded, childrenOf, loadChildrenPage],
   );
 
   const select = useCallback(
@@ -97,8 +124,28 @@ export function SpanTree({ traceId, root, pins, onSelect }: SpanTreeProps) {
     [onSelect],
   );
 
-  const renderNode = (span: Span, depth: number): React.ReactNode => {
+  const renderNode = (
+    span: Span,
+    depth: number,
+    ancestors: ReadonlySet<string>,
+  ): React.ReactNode => {
     const k = spanKey(span.trace_id, span.span_id);
+    // Cycle guard: if this span is already on the path from the root (a
+    // self-loop or A→B→A parent_id, which orphan/malformed lineage can
+    // produce), render it without recursing so a bad trace can't stack-overflow.
+    if (ancestors.has(k)) {
+      return (
+        <li key={k} style={{ listStyle: 'none', margin: 0 }}>
+          <div
+            data-testid="span-row"
+            style={{ paddingLeft: depth * 20 + 4, color: '#888', fontStyle: 'italic' }}
+          >
+            ↻ {span.name || '(unnamed)'} (cycle)
+          </div>
+        </li>
+      );
+    }
+    const childAncestors = new Set(ancestors).add(k);
     const isExpanded = expanded.has(k);
     const kidKeys = childrenOf.get(k) ?? [];
     // First pinned-set color striping this span's row (a span may be in several
@@ -157,17 +204,31 @@ export function SpanTree({ traceId, root, pins, onSelect }: SpanTreeProps) {
             </Label>
           )}
         </div>
-        {isExpanded && kidKeys.length > 0 && (
+        {isExpanded && (
           <ul style={{ margin: 0, paddingLeft: 0 }}>
             {kidKeys
               .map((ck) => loaded.get(ck))
               .filter((s): s is Span => s !== undefined)
-              .map((child) => renderNode(child, depth + 1))}
+              .map((child) => renderNode(child, depth + 1, childAncestors))}
+            {/* Wide-fanout parent: a full page came back and there may be more.
+                Offer a "Load more" affordance that pages forward by seq. */}
+            {kidKeys.length > 0 && !exhausted.has(k) && (
+              <li style={{ listStyle: 'none' }}>
+                <Button
+                  variant="link"
+                  isInline
+                  onClick={() => loadChildrenPage(span)}
+                  style={{ paddingLeft: (depth + 1) * 20 + 4 }}
+                >
+                  Load more children
+                </Button>
+              </li>
+            )}
           </ul>
         )}
       </li>
     );
   };
 
-  return <ul style={{ margin: 0, padding: 0 }}>{renderNode(root, 0)}</ul>;
+  return <ul style={{ margin: 0, padding: 0 }}>{renderNode(root, 0, new Set())}</ul>;
 }

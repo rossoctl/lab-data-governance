@@ -6,7 +6,13 @@
  * cache invalidates correctly. Retrieval policy (staleTime, retry) is the
  * QueryClient's job (see main.tsx).
  */
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useQuery,
+  useInfiniteQuery,
+  type UseQueryResult,
+  type UseInfiniteQueryResult,
+  type InfiniteData,
+} from '@tanstack/react-query';
 import { fetchJson, type QueryParams } from './client';
 import type {
   Span,
@@ -30,6 +36,37 @@ export function useTraces(params: {
       fetchJson<{ traces: TraceListingEntry[] }>('/traces', params as QueryParams).then(
         (r) => r.traces,
       ),
+  });
+}
+
+const TRACES_PAGE_SIZE = 20;
+
+/**
+ * Paginated recent-traces feed. Accumulates cursor pages across "Load more"
+ * (the vanilla accumulate-then-dedupe design): each page's cursor is the seq of
+ * its last listing root, and getNextPageParam returns undefined once a short
+ * page signals the end. The time window is frozen in the query key at fetch
+ * start, so it does not drift per render.
+ */
+export function useTracesInfinite(window: {
+  time_from?: string;
+  time_to?: string;
+}): UseInfiniteQueryResult<InfiniteData<TraceListingEntry[]>> {
+  return useInfiniteQuery({
+    queryKey: ['traces-infinite', window],
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam }) =>
+      fetchJson<{ traces: TraceListingEntry[] }>('/traces', {
+        limit: TRACES_PAGE_SIZE,
+        ...window,
+        ...(pageParam !== undefined ? { cursor: pageParam } : {}),
+      } as QueryParams).then((r) => r.traces),
+    getNextPageParam: (lastPage) => {
+      // A short page means no more; otherwise page forward from the last
+      // listing root's seq (the server's composite keyset cursor, issue #30).
+      if (lastPage.length < TRACES_PAGE_SIZE) return undefined;
+      return lastPage[lastPage.length - 1]?.listing_root.seq;
+    },
   });
 }
 

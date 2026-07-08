@@ -160,3 +160,36 @@ def test_api_namespace_still_serves_json(spa_server):
     assert resp.status_code == 200
     assert "application/json" in resp.headers["content-type"]
     assert "traces" in resp.json()
+
+
+# ---------------------------------------------------------------------------
+# Missing build → clean 503, not an opaque 500
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def buildless_server(
+    configured_db: str, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> Iterator[SpansApiServer]:
+    """A server whose ``_UI_DIR`` has no ``index.html`` (a build-less checkout).
+
+    The ``/ui/assets`` mount already tolerates a missing dir via
+    ``check_dir=False``; this exercises the symmetrical catch-all path.
+    """
+    monkeypatch.setattr(api_mod, "_UI_DIR", tmp_path)  # empty dir, no index.html
+    port = _free_port()
+    server = SpansApiServer(host="127.0.0.1", port=port)
+    server.start()
+    try:
+        _wait_port("127.0.0.1", port)
+        yield server
+    finally:
+        server.stop(grace=1.0)
+
+
+def test_missing_build_serves_503_not_500(buildless_server):
+    """Without a Vite build, ``/ui`` returns a clean 503 (deploy problem to
+    surface), not an opaque 500 from an unhandled FileNotFoundError."""
+    resp = httpx.get(f"{_base(buildless_server)}/ui")
+    assert resp.status_code == 503
+    assert "UI build not found" in resp.text

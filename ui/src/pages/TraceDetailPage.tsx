@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   PageSection,
@@ -54,6 +54,35 @@ export function TraceDetailPage() {
     ).catch(() => null);
     if (fresh) setSelectedSpan(fresh);
   }, [traceId, selectedSpan]);
+
+  // Jump from a flow-view span link to that span in the tree: switch to the
+  // tree view and load + select the span into the detail panel (the vanilla
+  // cross-view navigateToSpan). Full ancestor auto-expand in the tree is a
+  // follow-up; this restores the view switch + detail selection.
+  const navigateToSpan = useCallback(
+    async (spanId: string) => {
+      setView('tree');
+      const span = await fetchJson<Span>(
+        `/traces/${traceId}/spans/${spanId}`,
+      ).catch(() => null);
+      if (span) setSelectedSpan(span);
+    },
+    [traceId],
+  );
+
+  // Esc clears every highlight set while the tree view is active (the vanilla
+  // clearAllPins keyboard shortcut).
+  useEffect(() => {
+    if (view !== 'tree') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        pins.clearAll();
+        bumpPins();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [view, pins, bumpPins]);
 
   // The PinStore is mutable by design; bumpPins (via pinVersion state) forces a
   // re-render on every add/remove, so reading getPins() directly on render
@@ -115,7 +144,12 @@ export function TraceDetailPage() {
           )}
 
           {view === 'flow' && (
-            <FlowTables traceId={traceId} pins={pins} onPinsChange={bumpPins} />
+            <FlowTables
+              traceId={traceId}
+              pins={pins}
+              onPinsChange={bumpPins}
+              onNavigateToSpan={navigateToSpan}
+            />
           )}
 
           {view === 'graph' && <EntityInteractionGraph traceId={traceId} />}
