@@ -56,6 +56,18 @@ describe('PinStore', () => {
     expect(s.slotColorFor('c')).toBe(colorForSlot(0));
   });
 
+  it('tracks which spans belong to a pinned set (for tree stripes)', () => {
+    const s = new PinStore();
+    s.addPin({ key: 'i:1', label: 'ix', spanIds: ['sp-a', 'sp-b'] });
+    s.addPin({ key: 'e:2', label: 'ent', spanIds: ['sp-b'] });
+    expect(s.isSpanInPin('i:1', 'sp-a')).toBe(true);
+    expect(s.isSpanInPin('i:1', 'sp-z')).toBe(false);
+    // sp-b is in both sets → both slot colors, in slot order.
+    expect(s.spanColors('sp-b')).toEqual([colorForSlot(0), colorForSlot(1)]);
+    expect(s.spanColors('sp-a')).toEqual([colorForSlot(0)]);
+    expect(s.spanColors('sp-none')).toEqual([]);
+  });
+
   it('getPins exposes key + color + label in slot order', () => {
     const s = new PinStore();
     s.addPin({ key: 'a', label: 'Alpha', spanIds: [] });

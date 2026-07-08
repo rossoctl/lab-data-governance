@@ -100,4 +100,21 @@ export class PinStore {
       .sort((a, b) => a.slot - b.slot)
       .map((p) => ({ key: p.key, color: colorForSlot(p.slot), label: p.label }));
   }
+
+  /** Whether `spanId` is one of the spans the pin `key` highlights. */
+  isSpanInPin(key: string, spanId: string): boolean {
+    const p = this.pinFor(key);
+    return p ? p.spanIds.includes(spanId) : false;
+  }
+
+  /**
+   * The stripe colors for a span: one per pinned set it belongs to, in slot
+   * order (the tree draws a left-edge stripe per color). Empty when unpinned.
+   */
+  spanColors(spanId: string): string[] {
+    return [...this.pins]
+      .filter((p) => p.spanIds.includes(spanId))
+      .sort((a, b) => a.slot - b.slot)
+      .map((p) => colorForSlot(p.slot));
+  }
 }
