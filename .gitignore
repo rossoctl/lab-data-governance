@@ -8,3 +8,6 @@ __pycache__/
 build/
 dist/
 uv.lock
+
+# Pipeline runtime output
+classification/output/
