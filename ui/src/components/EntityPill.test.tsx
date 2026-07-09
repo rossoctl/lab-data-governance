@@ -29,4 +29,30 @@ describe('EntityPill', () => {
     );
     expect(screen.getByTitle(/In-framework tool hosted by an agent/i)).toBeInTheDocument();
   });
+
+  it('gives every pill the bordered class, with the dashed modifier only for in-framework tools', () => {
+    // The border is drawn by the `dg-ent-pill` class (global.css) on the outer
+    // .pf-v5-c-label element, keyed off the kind color; in-framework tools add
+    // the `--dashed` modifier. (jsdom doesn't apply stylesheet borders, so we
+    // assert the class contract rather than a computed border style.)
+    const labelOf = (text: string) =>
+      screen.getByText(text).closest('.pf-v5-c-label') as HTMLElement;
+
+    // Non-tool entity: bordered, not dashed.
+    const { rerender } = render(<EntityPill entity={ent({ kind: 'agent' })} />);
+    let pill = labelOf('agent');
+    expect(pill).toHaveClass('dg-ent-pill');
+    expect(pill).not.toHaveClass('dg-ent-pill--dashed');
+
+    // Deployed tool: bordered, solid (no dashed modifier).
+    rerender(<EntityPill entity={ent({ kind: 'tool', natural_key: 'tool:(p,svc)' })} />);
+    pill = labelOf('tool');
+    expect(pill).toHaveClass('dg-ent-pill');
+    expect(pill).not.toHaveClass('dg-ent-pill--dashed');
+
+    // In-framework tool: dashed (distinguishable from deployed).
+    rerender(<EntityPill entity={ent({ kind: 'tool', natural_key: 'tool:agent:(p,a):search' })} />);
+    pill = labelOf('tool');
+    expect(pill).toHaveClass('dg-ent-pill', 'dg-ent-pill--dashed');
+  });
 });

@@ -1,14 +1,11 @@
 import {
   Title,
   Button,
-  DescriptionList,
-  DescriptionListGroup,
-  DescriptionListTerm,
-  DescriptionListDescription,
   CodeBlock,
   CodeBlockCode,
 } from '@patternfly/react-core';
 import { durationMs } from '../lib/flow';
+import { DetailList } from './DetailList';
 import type { Span } from '../types';
 
 /** JSON block with the vanilla `(none)` fallback for a null value. */
@@ -33,32 +30,57 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function dl(pairs: Array<[string, string]>) {
-  return (
-    <DescriptionList isCompact isHorizontal>
-      {pairs.map(([k, v]) => (
-        <DescriptionListGroup key={k}>
-          <DescriptionListTerm>{k}</DescriptionListTerm>
-          <DescriptionListDescription className="dg-mono">{v}</DescriptionListDescription>
-        </DescriptionListGroup>
-      ))}
-    </DescriptionList>
-  );
-}
+const dl = (pairs: Array<[string, string]>) => <DetailList pairs={pairs} />;
 
 export interface SpanDetailPanelProps {
-  span: Span;
+  span: Span | null;
   onRefresh: () => void;
 }
 
+/** Panel header: title left, Refresh glued to the right. Always rendered, even
+ *  in the empty state, so the panel is a stable fixture in the tree layout —
+ *  but Refresh is disabled when there is no span to re-fetch (else it would be
+ *  a clickable no-op, since the parent's refresh handler early-returns). */
+function PanelHeader({ onRefresh, canRefresh }: { onRefresh: () => void; canRefresh: boolean }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <Title headingLevel="h3" size="md">
+        Details
+      </Title>
+      <Button
+        variant="secondary"
+        isInline
+        isDisabled={!canRefresh}
+        onClick={onRefresh}
+        title="Re-fetch this span"
+      >
+        Refresh
+      </Button>
+    </div>
+  );
+}
+
 /**
- * The span detail panel — the nine sections ported from the vanilla trace-tree
- * shell (Identity / Timing / Status / Resource / Scope / OTLP envelope /
- * Attributes / Events / Links), with the tri-state status, the `(not
- * finalized)` ended_at fallback, and a duration when both ends exist. A
- * Refresh button re-fetches the span (the parent owns the fetch).
+ * The span detail panel — always rendered (a fixed fixture in the tree
+ * layout). With a selected span it shows the nine sections ported from the
+ * vanilla trace-tree shell (Span / Timing / Status / Resource / Scope / OTLP
+ * envelope / Attributes / Events / Links), with the tri-state status, the
+ * `(not finalized)` ended_at fallback, and a duration when both ends exist.
+ * With no span it shows a placeholder under the same header. The Refresh
+ * button re-fetches the span (the parent owns the fetch).
  */
 export function SpanDetailPanel({ span, onRefresh }: SpanDetailPanelProps) {
+  if (!span) {
+    return (
+      <div>
+        <PanelHeader onRefresh={onRefresh} canRefresh={false} />
+        <div style={{ color: '#888', fontStyle: 'italic', marginTop: '0.75rem' }}>
+          Select a span to view its details.
+        </div>
+      </div>
+    );
+  }
+
   const statusText =
     span.error === true
       ? `Error: ${span.status_message ?? ''}`
@@ -77,16 +99,9 @@ export function SpanDetailPanel({ span, onRefresh }: SpanDetailPanelProps) {
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <Title headingLevel="h3" size="md">
-          Span detail
-        </Title>
-        <Button variant="secondary" isInline onClick={onRefresh} title="Re-fetch this span">
-          Refresh
-        </Button>
-      </div>
+      <PanelHeader onRefresh={onRefresh} canRefresh />
 
-      <Section title="Identity">
+      <Section title="Span">
         {dl([
           ['name', span.name],
           ['trace_id', span.trace_id],

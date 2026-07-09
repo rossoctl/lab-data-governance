@@ -80,6 +80,43 @@ export function computeInteractionDepths(
 }
 
 /**
+ * Which glyph a span-evidence `role` renders with, in the flow detail panel's
+ * Spans table. The two role enums live on different relations but share a
+ * "weight" reading, encoded by the icon:
+ * - `key`   — the creating/first-evidence span. `anchor` (created the
+ *             interaction) and `discovered_via` (first revealed the entity)
+ *             both get it: exactly-one, highest weight, the defining span.
+ * - `info`  — `info`: a non-anchor span that carried payload/error content.
+ * - `dot`   — `identified_via`: a later span that re-confirmed an already-known
+ *             entity (repeat sighting, lower weight than the key).
+ * - `minus` — `connector`: present in the interaction's territory but
+ *             contributed nothing classifiable (the faintest, thin-dash mark).
+ * - `none`  — any unrecognised role (no glyph, raw label).
+ *
+ * The DB enums are unchanged — this is a display-only map (see CONTEXT.md
+ * **Entity-span role** / **Interaction-span role**).
+ */
+export type RoleIconKind = 'key' | 'info' | 'dot' | 'minus' | 'none';
+
+interface RoleMeta {
+  /** Human-readable role text, for the tooltip and accessible label. */
+  label: string;
+  icon: RoleIconKind;
+}
+
+const ROLE_META: Record<string, RoleMeta> = {
+  anchor: { label: 'anchor', icon: 'key' },
+  discovered_via: { label: 'discovered via', icon: 'key' },
+  info: { label: 'info', icon: 'info' },
+  identified_via: { label: 'identified via', icon: 'dot' },
+  connector: { label: 'connector', icon: 'minus' },
+};
+
+export function roleMeta(role: string): RoleMeta {
+  return ROLE_META[role] ?? { label: role, icon: 'none' };
+}
+
+/**
  * (ended - started) in milliseconds to 3 decimals, or null when either end is
  * absent. Same formula/format the span detail panel uses.
  */

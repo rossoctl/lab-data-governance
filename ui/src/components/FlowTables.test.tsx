@@ -1,4 +1,6 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -20,11 +22,21 @@ const INTERACTIONS = [
   },
 ];
 
+// Evidence rows returned for the entity/interaction /spans sub-resources.
+const ENTITY_EVIDENCE = [
+  { span_id: 'span-abc', role: 'discovered_via', parent_id: 'span-parent', kind: 'SERVER', service_name: 'svc' },
+  { span_id: 'span-def', role: 'identified_via', parent_id: null, kind: 'CLIENT', service_name: 'svc' },
+];
+const INTERACTION_EVIDENCE = [
+  { span_id: 'span-xyz', role: 'anchor', parent_id: 'span-parent', kind: 'CLIENT', service_name: 'svc' },
+];
+
 function mockFetch() {
   (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
     if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: INTERACTIONS }) };
     if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
-    // span-evidence sub-resources.
+    if (url.includes('/entities/')) return { ok: true, status: 200, json: async () => ({ spans: ENTITY_EVIDENCE }) };
+    if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
     return { ok: true, status: 200, json: async () => ({ spans: [] }) };
   });
 }
@@ -77,7 +89,47 @@ describe('FlowTables', () => {
     await waitFor(() => expect(screen.getAllByLabelText('pinned').length).toBeGreaterThan(0));
   });
 
-  it('selects an interaction row on click and shows its summary in the detail panel', async () => {
+  it('fires onRevealSpans with the evidence span ids when Add-to-highlights is clicked', async () => {
+    mockFetch();
+    const onRevealSpans = vi.fn();
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} onRevealSpans={onRevealSpans} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
+    // Select the interaction (its evidence is INTERACTION_EVIDENCE: span-xyz).
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Add to highlights/i }));
+    expect(onRevealSpans).toHaveBeenCalledWith(['span-xyz']);
+  });
+
+  it('shows the highlight color swatch on the pin button (next-free color unpinned, the pin color once pinned)', async () => {
+    mockFetch();
+    const pins = new PinStore();
+    function Host() {
+      const [, force] = React.useReducer((n: number) => n + 1, 0);
+      return <FlowTables traceId="T1" pins={pins} onPinsChange={force} />;
+    }
+    renderWithProviders(<Host />);
+    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+
+    // Unpinned: the swatch previews the color the pin WOULD get (slot 0 =
+    // first palette color #ffd479).
+    const swatch = await screen.findByTestId('highlight-swatch');
+    expect(swatch).toHaveStyle({ background: '#ffd479' });
+    // The swatch carries its own right margin so it doesn't crowd the label
+    // text (PF's default icon gap is too tight for a color chip).
+    expect(swatch).toHaveStyle({ marginRight: '0.375rem' });
+
+    // After pinning, the swatch shows the color the pin actually HAS.
+    await userEvent.click(screen.getByRole('button', { name: /Add to highlights/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Unpin/i })).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('highlight-swatch')).toHaveStyle({ background: '#ffd479' });
+  });
+
+  it('selects an interaction row on click and shows its summary under a Details / Interaction header', async () => {
     mockFetch();
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
@@ -85,10 +137,89 @@ describe('FlowTables', () => {
     // Click the interaction row via its unique span-count cell.
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    // The detail panel opens and echoes the interaction summary.
-    await waitFor(() =>
-      expect(screen.getByText(/Interaction details/i)).toBeInTheDocument(),
-    );
+    // The detail panel is titled "Details" with a leading "Interaction" section.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Details' })).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument();
     expect(screen.getByText('agent calls search')).toBeInTheDocument();
+  });
+
+  it('shows an always-visible detail panel with a placeholder before any selection', async () => {
+    mockFetch();
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
+    // Panel header present, plus a "select something" hint, before any click.
+    expect(screen.getByRole('heading', { name: 'Details' })).toBeInTheDocument();
+    expect(screen.getByText(/Select an entity or interaction/i)).toBeInTheDocument();
+  });
+
+  it('maps entity-evidence roles to glyph+words and links the Parent span id', async () => {
+    mockFetch();
+    const onNavigateToSpan = vi.fn();
+    renderWithProviders(
+      <FlowTables
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        onNavigateToSpan={onNavigateToSpan}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
+    // Select the 'search' entity → its evidence loads.
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    // Role rendered as an icon with a hover tooltip + accessible role text:
+    // discovered_via → the "key" glyph (shares it with anchor), identified_via
+    // → the "dot" glyph. The human role text is present (visually-hidden).
+    await waitFor(() => expect(screen.getByText('discovered via')).toBeInTheDocument());
+    expect(screen.getByText('identified via')).toBeInTheDocument();
+    expect(screen.getByTitle('discovered via')).toHaveClass('dg-role-icon--key');
+    expect(screen.getByTitle('identified via')).toHaveClass('dg-role-icon--dot');
+    // The Parent column renders a clickable span link (parent id span-parent).
+    const parentLink = screen.getByRole('button', { name: /span-parent/i });
+    await userEvent.click(parentLink);
+    expect(onNavigateToSpan).toHaveBeenCalledWith('span-parent');
+  });
+
+  it('highlights only the latest-selected row (entity or interaction), clearing the previous one', async () => {
+    mockFetch();
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
+    // Select an entity first → its row is the sole highlight.
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    const entityRow = within(screen.getByLabelText('Entities')).getByText('search').closest('tr')!;
+    await waitFor(() => expect(entityRow.getAttribute('data-dg-selected')).toBe('active'));
+
+    // Now select an interaction → it becomes the sole highlight; the entity
+    // row's highlight is dropped entirely (no muted breadcrumb).
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    const interactionRow = screen.getByText(/2 \(1 anchor\)/).closest('tr')!;
+    await waitFor(() => expect(interactionRow.getAttribute('data-dg-selected')).toBe('active'));
+    expect(entityRow.getAttribute('data-dg-selected')).toBeNull();
+
+    // Selecting the entity again flips the highlight back and clears the
+    // interaction row — only the latest selection is ever highlighted.
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    await waitFor(() => expect(entityRow.getAttribute('data-dg-selected')).toBe('active'));
+    expect(interactionRow.getAttribute('data-dg-selected')).toBeNull();
+  });
+
+  it('scopes the active-row highlight selector to out-specify PF clickable rows', () => {
+    // jsdom does not apply CSS-file rules to computed style, so the highlight's
+    // *visibility* cannot be asserted here (see project_dg_react_ui memory). The
+    // failure mode this guards is a CSS-specificity regression: PF paints
+    // clickable rows via `.pf-v5-c-table tr:where(...).pf-m-clickable`
+    // (specificity 0-2-1). A bare `tr[data-dg-selected='active']` (0-1-0)
+    // loses, leaving the row visually un-highlighted while the attribute is set.
+    // So assert the shipped selector is scoped through the table + row class.
+    // Vitest runs from the ui/ package root, so resolve from cwd.
+    const css = readFileSync(resolve('src/styles/global.css'), 'utf8');
+    expect(css).toMatch(
+      /\.pf-v5-c-table\s+tr\.pf-v5-c-table__tr\[data-dg-selected='active'\]/,
+    );
+    // And it must NOT be the too-weak bare selector on its own.
+    expect(css).not.toMatch(/(^|\})\s*tr\[data-dg-selected='active'\]\s*\{/);
   });
 });

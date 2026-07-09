@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toolSubtype, computeInteractionDepths, durationMs } from './flow';
+import { toolSubtype, computeInteractionDepths, durationMs, roleMeta } from './flow';
 import type { Entity, Interaction } from './flow';
 
 // Ported from execution_flow_logic.js: tool subtype-by-natural-key-shape, the
@@ -48,6 +48,25 @@ describe('computeInteractionDepths', () => {
     // is depth 0.
     expect(depth.get('orphan')).toBe(0);
     expect(depth.get('a')).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('roleMeta', () => {
+  it('gives the key glyph to both creating-evidence roles (anchor + discovered_via)', () => {
+    expect(roleMeta('anchor')).toEqual({ label: 'anchor', icon: 'key' });
+    expect(roleMeta('discovered_via')).toEqual({ label: 'discovered via', icon: 'key' });
+  });
+
+  it('maps the lower-weight roles to distinct glyphs', () => {
+    // info → content carried; identified_via → repeat sighting (dot);
+    // connector → contributed nothing (thin dash).
+    expect(roleMeta('info')).toEqual({ label: 'info', icon: 'info' });
+    expect(roleMeta('identified_via')).toEqual({ label: 'identified via', icon: 'dot' });
+    expect(roleMeta('connector')).toEqual({ label: 'connector', icon: 'minus' });
+  });
+
+  it('falls through to the raw value with no glyph for an unknown role', () => {
+    expect(roleMeta('something_new')).toEqual({ label: 'something_new', icon: 'none' });
   });
 });
 

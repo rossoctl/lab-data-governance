@@ -1,8 +1,10 @@
+import { createRef } from 'react';
+import { act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../test/renderWithProviders';
-import { SpanTree } from './SpanTree';
+import { SpanTree, type SpanTreeHandle } from './SpanTree';
 import { PinStore } from '../lib/pins';
 import type { Span } from '../types';
 
@@ -110,6 +112,93 @@ describe('SpanTree', () => {
     await userEvent.click(screen.getByRole('button', { name: /expand root-span/i }));
     // The cycle is rendered as a terminal "(cycle)" node, not an infinite tree.
     await waitFor(() => expect(screen.getByText(/\(cycle\)/)).toBeInTheDocument());
+  });
+
+  it('reveal() auto-expands ancestor chains so a deep span becomes visible', async () => {
+    // root → mid → leaf. Children served per-parent; nothing expanded yet.
+    const mid = span({ seq: 2, span_id: 'mid', name: 'mid-span', parent_id: 'root' });
+    const leaf = span({ seq: 3, span_id: 'leaf', name: 'leaf-span', parent_id: 'mid' });
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/spans/root/children')) return { ok: true, status: 200, json: async () => ({ spans: [mid] }) };
+      if (url.includes('/spans/mid/children')) return { ok: true, status: 200, json: async () => ({ spans: [leaf] }) };
+      // single-span fetches for ancestor-chain resolution
+      if (url.endsWith('/spans/leaf')) return { ok: true, status: 200, json: async () => leaf };
+      if (url.endsWith('/spans/mid')) return { ok: true, status: 200, json: async () => mid };
+      if (url.endsWith('/spans/root')) return { ok: true, status: 200, json: async () => ROOT };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    const ref = createRef<SpanTreeHandle>();
+    renderWithProviders(
+      <SpanTree ref={ref} traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
+    );
+    // Only the root is visible initially; the leaf is inside a collapsed subtree.
+    expect(screen.getByText('root-span')).toBeInTheDocument();
+    expect(screen.queryByText('leaf-span')).toBeNull();
+
+    await act(async () => {
+      await ref.current!.reveal(['leaf']);
+    });
+
+    // Ancestors auto-expanded — the leaf row is now rendered, no manual click.
+    await waitFor(() => expect(screen.getByText('leaf-span')).toBeInTheDocument());
+    expect(screen.getByText('mid-span')).toBeInTheDocument();
+  });
+
+  it('reveal() fetches ancestors that were never loaded to resolve the chain', async () => {
+    // The tree only knows the root; a caller reveals a grandchild whose parent
+    // was never loaded, so reveal must fetch mid + leaf individually to learn
+    // the lineage, then expand down.
+    const mid = span({ seq: 2, span_id: 'mid', name: 'mid-span', parent_id: 'root' });
+    const leaf = span({ seq: 3, span_id: 'leaf', name: 'leaf-span', parent_id: 'mid' });
+    const singleFetches: string[] = [];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/spans/root/children')) return { ok: true, status: 200, json: async () => ({ spans: [mid] }) };
+      if (url.includes('/spans/mid/children')) return { ok: true, status: 200, json: async () => ({ spans: [leaf] }) };
+      if (url.endsWith('/spans/leaf')) { singleFetches.push('leaf'); return { ok: true, status: 200, json: async () => leaf }; }
+      if (url.endsWith('/spans/mid')) { singleFetches.push('mid'); return { ok: true, status: 200, json: async () => mid }; }
+      if (url.endsWith('/spans/root')) return { ok: true, status: 200, json: async () => ROOT };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    const ref = createRef<SpanTreeHandle>();
+    renderWithProviders(
+      <SpanTree ref={ref} traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
+    );
+    await act(async () => {
+      await ref.current!.reveal(['leaf']);
+    });
+    await waitFor(() => expect(screen.getByText('leaf-span')).toBeInTheDocument());
+    // The chain was resolved by fetching the unloaded ancestor span(s).
+    expect(singleFetches).toContain('leaf');
+  });
+
+  it('reveal() surfaces a lower-seq target child that forward-paging skipped', async () => {
+    // root has been partially paged to a high-seq child already; the reveal
+    // target is a LOWER-seq child the keyset (cursor=max seq) can't page back
+    // to. reveal must still list it (splice fallback) so the row renders.
+    const hi = span({ seq: 900, span_id: 'hi', name: 'hi-child', parent_id: 'root' });
+    const target = span({ seq: 5, span_id: 'target', name: 'target-child', parent_id: 'root' });
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      // The children endpoint (keyed by cursor) only ever returns the hi child
+      // — forward paging never yields the low-seq target.
+      if (url.includes('/spans/root/children')) return { ok: true, status: 200, json: async () => ({ spans: [hi] }) };
+      if (url.endsWith('/spans/target')) return { ok: true, status: 200, json: async () => target };
+      if (url.endsWith('/spans/root')) return { ok: true, status: 200, json: async () => ROOT };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    const ref = createRef<SpanTreeHandle>();
+    renderWithProviders(
+      <SpanTree ref={ref} traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
+    );
+    // Pre-page root once so it has the hi child loaded (partial page).
+    await userEvent.click(screen.getByRole('button', { name: /expand root-span/i }));
+    await waitFor(() => expect(screen.getByText('hi-child')).toBeInTheDocument());
+
+    await act(async () => {
+      await ref.current!.reveal(['target']);
+    });
+    // The low-seq target is spliced in and renders despite forward-only paging.
+    await waitFor(() => expect(screen.getByText('target-child')).toBeInTheDocument());
+    expect(screen.getByText('hi-child')).toBeInTheDocument(); // pre-loaded sibling kept
   });
 
   it('calls onSelect with the span when a row is clicked', async () => {

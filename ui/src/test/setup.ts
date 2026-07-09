@@ -2,13 +2,8 @@
 // jsdom-based component tests.
 import '@testing-library/jest-dom/vitest';
 
-// jsdom lacks ResizeObserver, which @xyflow/react (React Flow) requires to
-// measure its canvas. A no-op polyfill lets the graph view mount under jsdom;
-// real layout is exercised by entityGraph.test.ts (pure dagre) and Playwright.
-if (typeof globalThis.ResizeObserver === 'undefined') {
-  globalThis.ResizeObserver = class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  };
+// jsdom doesn't implement Element.scrollIntoView; the SpanTree reveal scrolls
+// the first revealed row into view. A no-op keeps that path from throwing.
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = function scrollIntoView() {};
 }

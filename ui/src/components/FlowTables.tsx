@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   Title,
   Spinner,
@@ -7,10 +7,6 @@ import {
   EmptyStateHeader,
   Split,
   SplitItem,
-  DescriptionList,
-  DescriptionListGroup,
-  DescriptionListTerm,
-  DescriptionListDescription,
   Button,
 } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
@@ -21,16 +17,40 @@ import { computeInteractionDepths, durationMs } from '../lib/flow';
 import { formatTime24Utc } from '../lib/recentTraces';
 import type { PinStore } from '../lib/pins';
 import { EntityPill } from './EntityPill';
+import { DetailList } from './DetailList';
+import { RoleIcon } from './RoleIcon';
 import type { Entity, Interaction, SpanEvidence } from '../types';
 
 interface Selection {
   kind: 'interaction' | 'entity';
   id: string;
-  title: string;
+  /** Leading section header inside the panel ('Entity' | 'Interaction'). */
+  sectionTitle: 'Entity' | 'Interaction';
   fields: Array<[string, string]>;
   evidence: SpanEvidence[];
   pinKey: string;
   pinLabel: string;
+}
+
+/** Truncated, clickable span-id cell (Span + Parent columns share this). */
+function SpanLink({
+  spanId,
+  onNavigate,
+}: {
+  spanId: string | null;
+  onNavigate?: (spanId: string) => void;
+}) {
+  if (!spanId) return <>—</>;
+  return (
+    <Button
+      variant="link"
+      isInline
+      onClick={() => onNavigate?.(spanId)}
+      className="dg-mono"
+    >
+      {spanId.length > 16 ? `${spanId.slice(0, 16)}…` : spanId}
+    </Button>
+  );
 }
 
 export interface FlowTablesProps {
@@ -39,6 +59,8 @@ export interface FlowTablesProps {
   onPinsChange: () => void;
   /** Navigate to a span in the tree view (row's span-link). */
   onNavigateToSpan?: (spanId: string) => void;
+  /** Reveal a set of spans in the tree view (fired on Add-to-highlights). */
+  onRevealSpans?: (spanIds: string[]) => void;
 }
 
 /**
@@ -48,10 +70,21 @@ export interface FlowTablesProps {
  * mirroring the tree's highlight store, and lazy span-evidence fetch + a detail
  * panel on row click.
  */
-export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan }: FlowTablesProps) {
+export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan, onRevealSpans }: FlowTablesProps) {
   const interactionsQ = useInteractions(traceId);
   const entitiesQ = useEntities(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // Monotonic click token: each row click bumps it, and a click's async
+  // evidence fetch only commits its setState if it is still the latest click.
+  // Guards the out-of-order race where a slow fetch resolves after a later
+  // click and would otherwise overwrite the selection/highlight.
+  const clickSeq = useRef(0);
+
+  // Highlight state for a row: 'active' if it is the current selection, else
+  // null. Only the latest-selected row (entity or interaction) is highlighted;
+  // `selection` already tracks that single row across both kinds.
+  const rowState = (kind: 'entity' | 'interaction', id: string): 'active' | null =>
+    selection?.kind === kind && selection.id === id ? 'active' : null;
 
   const interactions = useMemo(() => interactionsQ.data ?? [], [interactionsQ.data]);
   const entities = useMemo(() => entitiesQ.data ?? [], [entitiesQ.data]);
@@ -72,16 +105,18 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan }: Fl
   const isEmpty = interactions.length === 0 && entities.length === 0;
 
   async function selectInteraction(ix: Interaction) {
+    const seq = ++clickSeq.current;
     const evidence = await fetchJson<{ spans: SpanEvidence[] }>(
       `/traces/${traceId}/interactions/${ix.id}/spans`,
     )
       .then((r) => r.spans)
       .catch(() => []);
+    if (seq !== clickSeq.current) return; // a newer click superseded this one
     const dur = durationMs(ix.started_at, ix.ended_at);
     setSelection({
       kind: 'interaction',
       id: ix.id,
-      title: 'Interaction details',
+      sectionTitle: 'Interaction',
       fields: [
         ['summary', ix.summary ?? '—'],
         ['interaction_id', ix.id],
@@ -98,15 +133,17 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan }: Fl
   }
 
   async function selectEntity(e: Entity) {
+    const seq = ++clickSeq.current;
     const evidence = await fetchJson<{ spans: SpanEvidence[] }>(
       `/traces/${traceId}/entities/${e.id}/spans`,
     )
       .then((r) => r.spans)
       .catch(() => []);
+    if (seq !== clickSeq.current) return; // a newer click superseded this one
     setSelection({
       kind: 'entity',
       id: e.id,
-      title: 'Entity details',
+      sectionTitle: 'Entity',
       fields: [
         ['display_name', e.display_name],
         ['kind', e.kind],
@@ -124,14 +161,22 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan }: Fl
     if (!selection) return;
     if (pins.isPinned(selection.pinKey)) {
       pins.removePin(selection.pinKey);
+      onPinsChange();
     } else {
-      pins.addPin({
-        key: selection.pinKey,
-        label: selection.pinLabel,
-        spanIds: selection.evidence.map((e) => e.span_id).filter(Boolean),
-      });
+      const spanIds = selection.evidence.map((e) => e.span_id).filter(Boolean);
+      pins.addPin({ key: selection.pinKey, label: selection.pinLabel, spanIds });
+      onPinsChange();
+      // Jump to the tree and reveal the just-highlighted spans (expand their
+      // ancestors so the striped rows are visible). Add-only, not unpin.
+      onRevealSpans?.(spanIds);
     }
-    onPinsChange();
+  }
+
+  // Row highlight: `data-dg-selected="active"` drives the background tint via
+  // global.css for the single selected row. The attribute is omitted when the
+  // row isn't selected, so unselected rows keep the default table styling.
+  function rowProps(kind: 'entity' | 'interaction', id: string) {
+    return { 'data-dg-selected': rowState(kind, id) ?? undefined };
   }
 
   function pinDot(key: string) {
@@ -174,7 +219,7 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan }: Fl
           </Thead>
           <Tbody>
             {entities.map((e) => (
-              <Tr key={e.id} isClickable onRowClick={() => selectEntity(e)}>
+              <Tr key={e.id} isClickable onRowClick={() => selectEntity(e)} {...rowProps('entity', e.id)}>
                 <Td dataLabel="Kind">
                   <EntityPill entity={e} />
                 </Td>
@@ -208,7 +253,7 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan }: Fl
               const caller = ix.caller_entity_id ? entById.get(ix.caller_entity_id) : undefined;
               const callee = ix.callee_entity_id ? entById.get(ix.callee_entity_id) : undefined;
               return (
-                <Tr key={ix.id} isClickable onRowClick={() => selectInteraction(ix)}>
+                <Tr key={ix.id} isClickable onRowClick={() => selectInteraction(ix)} {...rowProps('interaction', ix.id)}>
                   <Td dataLabel="Started" className="dg-mono">
                     {ix.started_at ? formatTime24Utc(ix.started_at) : ''}
                   </Td>
@@ -256,66 +301,84 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan }: Fl
         </Table>
       </SplitItem>
 
-      {selection && (
-        <SplitItem style={{ minWidth: 320 }}>
-          <Title headingLevel="h3" size="md">
-            {selection.title}
-          </Title>
-          <DescriptionList isCompact isHorizontal>
-            {selection.fields.map(([k, v]) => (
-              <DescriptionListGroup key={k}>
-                <DescriptionListTerm>{k}</DescriptionListTerm>
-                <DescriptionListDescription className="dg-mono">{v}</DescriptionListDescription>
-              </DescriptionListGroup>
-            ))}
-          </DescriptionList>
+      {/* The detail panel is always present (fixed column); a placeholder
+          stands in before any row is selected. */}
+      <SplitItem style={{ flex: '0 0 30%', minWidth: 0 }}>
+        <Title headingLevel="h3" size="md">
+          Details
+        </Title>
+        {!selection ? (
+          <div style={{ color: '#888', fontStyle: 'italic', marginTop: '0.75rem' }}>
+            Select an entity or interaction to view its details.
+          </div>
+        ) : (
+          <>
+            <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
+              {selection.sectionTitle}
+            </Title>
+            <DetailList pairs={selection.fields} />
 
-          <Button variant="secondary" isInline onClick={togglePin} style={{ marginTop: '0.5rem' }}>
-            {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
-          </Button>
+            <Button
+              variant="secondary"
+              isInline
+              onClick={togglePin}
+              style={{ marginTop: '0.5rem' }}
+              // A swatch of the highlight color: the current color once pinned,
+              // else a preview of the next-free color the pin would take.
+              icon={
+                <span
+                  data-testid="highlight-swatch"
+                  aria-hidden="true"
+                  style={{
+                    display: 'inline-block',
+                    width: 10,
+                    height: 10,
+                    borderRadius: 2,
+                    border: '1px solid rgba(0, 0, 0, 0.35)',
+                    // Extra gap beyond PF's default icon spacing so the color
+                    // chip doesn't crowd the label text.
+                    marginRight: '0.375rem',
+                    background:
+                      pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
+                  }}
+                />
+              }
+            >
+              {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
+            </Button>
 
-          <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
-            Spans
-          </Title>
-          <Table aria-label="Span evidence" variant="compact">
-            <Thead>
-              <Tr>
-                <Th>Role</Th>
-                <Th>Span</Th>
-                <Th>Parent</Th>
-                <Th>Kind</Th>
-                <Th>Service</Th>
-              </Tr>
-            </Thead>
-            <Tbody>
-              {selection.evidence.map((ev, i) => (
-                <Tr key={`${ev.span_id}-${i}`}>
-                  <Td dataLabel="Role">{ev.role}</Td>
-                  <Td dataLabel="Span">
-                    {ev.span_id ? (
-                      <Button
-                        variant="link"
-                        isInline
-                        onClick={() => onNavigateToSpan?.(ev.span_id)}
-                        className="dg-mono"
-                      >
-                        {ev.span_id.length > 16 ? `${ev.span_id.slice(0, 16)}…` : ev.span_id}
-                      </Button>
-                    ) : (
-                      '—'
-                    )}
-                  </Td>
-                  <Td dataLabel="Parent" className="dg-mono">
-                    {ev.parent_id ?? '—'}
-                  </Td>
-                  <Td dataLabel="Kind">{ev.kind ?? '—'}</Td>
-                  <Td dataLabel="Service">{ev.service_name ?? '—'}</Td>
+            <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
+              Spans
+            </Title>
+            <Table aria-label="Span evidence" variant="compact">
+              <Thead>
+                <Tr>
+                  <Th>Role</Th>
+                  <Th>Span</Th>
+                  <Th>Parent</Th>
+                  <Th>Kind</Th>
+                  <Th>Service</Th>
                 </Tr>
-              ))}
-            </Tbody>
-          </Table>
-        </SplitItem>
-      )}
+              </Thead>
+              <Tbody>
+                {selection.evidence.map((ev, i) => (
+                  <Tr key={`${ev.span_id}-${i}`}>
+                    <Td dataLabel="Role"><RoleIcon role={ev.role} /></Td>
+                    <Td dataLabel="Span">
+                      <SpanLink spanId={ev.span_id} onNavigate={onNavigateToSpan} />
+                    </Td>
+                    <Td dataLabel="Parent">
+                      <SpanLink spanId={ev.parent_id} onNavigate={onNavigateToSpan} />
+                    </Td>
+                    <Td dataLabel="Kind">{ev.kind ?? '—'}</Td>
+                    <Td dataLabel="Service">{ev.service_name ?? '—'}</Td>
+                  </Tr>
+                ))}
+              </Tbody>
+            </Table>
+          </>
+        )}
+      </SplitItem>
     </Split>
   );
 }

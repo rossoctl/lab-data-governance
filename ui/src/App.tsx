@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Link } from 'react-router-dom';
 import {
   Page,
   Masthead,
@@ -24,9 +24,14 @@ export default function App() {
     <Masthead>
       <MastheadMain>
         <MastheadBrand>
-          <Title headingLevel="h1" size="lg">
-            Data Governance
-          </Title>
+          {/* Logo-home convention: the brand always returns to the trace list
+              (/ui/, basename-aware via the router). Redundant with the
+              trace-detail breadcrumb by design — it's muscle memory. */}
+          <Link to="/" className="dg-brand-link">
+            <Title headingLevel="h1" size="lg">
+              Data Governance
+            </Title>
+          </Link>
         </MastheadBrand>
       </MastheadMain>
       <MastheadContent />

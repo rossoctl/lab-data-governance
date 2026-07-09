@@ -15,3 +15,71 @@ body {
 .dg-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* The masthead brand is a logo-home link but should read as the product
+   title, not a hyperlink — inherit color, drop the underline. */
+.dg-brand-link,
+.dg-brand-link:hover,
+.dg-brand-link:focus {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Detail-panel DescriptionLists (span detail + flow detail): make the label
+   the same font size as the value and bold it (PF renders the term smaller by
+   default), and tighten the inter-row gap to the compact-table density. */
+.dg-detail-dl .pf-v5-c-description-list__term,
+.dg-detail-dl .pf-v5-c-description-list__description {
+  font-size: 0.85rem;
+}
+
+.dg-detail-dl .pf-v5-c-description-list__term {
+  font-weight: 700;
+}
+
+.dg-detail-dl {
+  --pf-v5-c-description-list--RowGap: 0.25rem;
+  --pf-v5-c-description-list__group--RowGap: 0.125rem;
+}
+
+/* Entity pills carry a visible border in their kind color. PF paints the kind
+   color on the inner `__content`, so we border the outer element with that
+   same color var (falling back to the neutral label color for the grey/default
+   kind). In-framework tools break to dashed; everything else is solid. */
+.dg-ent-pill {
+  border: 1px solid
+    var(--pf-v5-c-label__content--Color, var(--pf-v5-c-label--Color));
+  border-style: solid;
+  /* Square the PF pill off into a rectangular chip (PF defaults to a fully
+     rounded border-radius). A hair of rounding keeps corners from looking
+     harsh. */
+  border-radius: 2px;
+}
+
+.dg-ent-pill.dg-ent-pill--dashed {
+  border-style: dashed;
+}
+
+/* Row-selection highlight for the flow tables, single-sourced here and keyed
+   on the data-dg-selected attribute the rows carry. Only the latest-selected
+   row (entity or interaction) is `active`; all others carry no attribute.
+   The selector is scoped through `.pf-v5-c-table` and the row class so it
+   out-specifies PF's clickable-row rule
+   (`.pf-v5-c-table tr:where(.pf-v5-c-table__tr).pf-m-clickable`, specificity
+   0-2-1), which otherwise paints its own dark background over ours. */
+.pf-v5-c-table tr.pf-v5-c-table__tr[data-dg-selected='active'] {
+  background: rgba(56, 139, 253, 0.28);
+}
+
+/* Span-evidence role glyphs (see RoleIcon / roleMeta). Visual weight tracks
+   semantic weight: the key (anchor / discovered_via) is full-strength, info
+   and the identified_via dot are normal, and the connector dash is faint —
+   it "contributed nothing classifiable". */
+.dg-role-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.dg-role-icon--minus {
+  opacity: 0.45;
+}
