@@ -59,7 +59,7 @@ Requires openinference telemetry spans
 In some cases agentic spans may describe or represent additional entities - In those cases we will create inferred nodes and possibly inferred edges 
 
 Examples for cases needing inferred nodes:
-1. openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query
+### 1. openinference.instrumentation.claude_agent_sdk.ClaudeAgentSDK.query
 This span represents a call to an LLM. the span represents the current node - the agent (source), and includes information on both the current and target nodes as well as the data flowing between them.
 we can infer:
   1. A new node representing the LLM (target) - agentic scope node "Blue".
@@ -71,7 +71,7 @@ we can infer:
     - from server to agent
 
 
-2. Similarly a tool call Span such as openinference.instrumentation.claude_agent_sdk.{tool_name}
+### 2. Similarly a tool call Span such as openinference.instrumentation.claude_agent_sdk.{tool_name}
 represent a call to a tool from which we can infer the following : 
   1. a new node representing the tool (target) - Agentic scope node "Blue"
   2. A new node representing a transportation node "Teal" (e.g. server)
@@ -81,7 +81,7 @@ represent a call to a tool from which we can infer the following :
     - From the tool itself (target) to server
     - from server to the agent tool call (source)
 
-3. "llm.output_messages.0.message.tool_calls.0.tool_call. function.arguments": "{\"action\": \"store\", \"name\": \"keywords.2.txt\", ..}"
+### 3. "llm.output_messages.0.message.tool_calls.0.tool_call. function.arguments": "{\"action\": \"store\", \"name\": \"keywords.2.txt\", ..}"
 While the complete span represents a call to the LLM - this specific attribute includes information on a tool.
 We can therefore infer two nodes and three edges.
 Inferred nodes:
@@ -95,7 +95,7 @@ Inferred nodes:
     - From the tool itself (target) to server
     - from server to the tool call (source)
 
-4. Inferred agent node. this case happens (for anthropic) When the framework emits only bare leaf LLM spans — no run/agent/wrapper span. The goal here is to infer an agent node by observing that all LLM spans share a single shared parent, in the transportation scope. Example:
+### 4. Inferred agent node. this case happens (for anthropic) When the framework emits only bare leaf LLM spans — no run/agent/wrapper span. The goal here is to infer an agent node by observing that all LLM spans share a single shared parent, in the transportation scope. Example:
 POST /                
  ├─ messages.create   
  └─ messages.create   
@@ -107,6 +107,62 @@ Inferred nodes:
   3. Disconnect the edges but maintain reference from the newly created edges to the original ones 
   
 
+
+
+
+### 5. Inferred missing edges - completing one-sided observed transport chain.
+There may be cases where an observed transport chain (Teal) records only one side of a transmission — the other side emitted no span.
+Look at the span immediately beyond the chain, on the peer-facing end — the child of a send chain, or the parent of a receive chain (the first non-Teal span past the transport region, in the peer's direction):
+   - It does not exist — the chain dangles → the peer is unobserved → infer a new Blue peer (Cases A / B).
+   - It exists and lies in another Blue component → that node is the peer → reconnect (Cases C / D).
+
+Notation: 
+  Blue  = agentic node 
+  Teal… = one or more transport nodes 
+   ⊣ = the chain dangles 
+   ● = an existing observed node
+  [inferred Blue] = materialized peer 
+  
+  A. Observed source, Missing target, traceparent broken:
+        Send is observed; nothing exists beyond the chain: target unobserved. Infer a new Blue peer at the observed chain's far end (stands alone)
+    Observed:
+      Blue ──Teal… ⊣
+    Inferred:
+       Blue ──Teal…──▶ [inferred Blue]
+       
+  B. Missing source, Observed target, traceparent broken (mirror of A): 
+        Receive is observed; nothing exists before the chain: source unobserved. Infer a new Blue peer at the origin end. (Stands alone) 
+    Observed:
+       ⊣ Teal…──▶ Blue
+    Inferred:
+      [inferred Blue] ──Teal…──▶ Blue
+
+  C. — Observed source, Missing target, traceparent not broken, span beyond the chain exists 
+        The span immediately beyond the send (Teal) chain is an observed node → that node is the peer.
+        infer an edge from the end of the chain to the node
+    Observed:  
+      Blue ──Teal…     ● (existing)   
+    Inferred:
+      Blue ──Teal…──▶ ● (existing peer)
+
+Case D — Missing source, Observed target, traceparent not broken, span before the chain exists (mirror of C):
+        The span immediately before the receive (Teal) chain is an observed node → that node is the peer.
+        Infer an edge from the node to the beginning of the chain
+    Observed:                         
+   ● (existing)   Teal…──▶ Blue       
+    Inferred:   
+   ● (existing peer) ──Teal…──▶ Blue
+ 
+
+  Note (explaining C): The span beyond the chain should be the peer, explanation:
+    assume agent is calling an observed agent
+      - target should not be missing and should emit the next set of spans
+    assume agent is calling an unobserved agent
+      - if the target agent is unobserved and traceparent is disconnected, this trace would end here (A)
+      - if the target agent is unobserved and traceparent is not disconnected, this trace would continue - missing the target entity and continue with White/Teal chain to the next entity... not addressed
+      
+
+### Notes & timing
 
 Additional cases may exist which need to be implemented such as tools inferred from input attributes.
 
