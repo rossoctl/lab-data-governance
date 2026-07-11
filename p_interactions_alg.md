@@ -18,12 +18,18 @@ The output are entities and interactions.
 # Definitions:
 -. Event node representing a local entity
 -. Source / Target nodes representing a local and remote entity.
--. white - Initial color of all Nodes and edges, and those not assigned a scope 
--. Blue - Nodes assigned the agentic scope  
--. Teal - nodes assigned the transport scope (e.g. communication, proxy)
--. A white edge representing parent child relationship based on trace parent.
+-. Nodes are assigned colors (based on scope):
+    -. white - Initial color of all Nodes, and those not assigned a scope 
+    -. Blue - Nodes assigned the agentic scope  
+    -. Teal - nodes assigned the transport scope (e.g. communication, proxy)
+-. Edge representing parent child relationship based on trace parent.
 -. Inferred node - a node in the graph we know should exist although we don't have a span emitted representing that node. for example, LLM output requires a call to a tool can produce an inferred node representing that tool.
 -. Inferred edge - an interaction in the graph we know should exist although we don't have a span representing this interaction
+
+# Note about architecture
+The following algorithm should be implemented as a pipeline as much as possible. Each step should be stateless, It should have a clear input, then it should process the input and produce a clear output.
+
+Each step should have its own module containing all relevant implementation - it should be stateless. All information needed in future stages should be added.
 
 
 # Step 1 - Base (white) execution flow graph
@@ -238,7 +244,7 @@ In this we aim to merge terminal entity nodes with entity nodes.
    Iff all conditions hold:
       - A's call-site span is an ancestor of T's chain (request/response)
       - A, B and T are adjacent (No nodes in between)
-   merge the terminal node with node A (While keeping the interactions distinct)
+   merge the terminal entity node with entity node A (While keeping the interactions distinct) 
 
 
 
