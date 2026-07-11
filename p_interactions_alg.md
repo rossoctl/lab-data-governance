@@ -27,9 +27,9 @@ The output are entities and interactions.
 -. Inferred edge - an interaction in the graph we know should exist although we don't have a span representing this interaction
 
 # Note about architecture
-The following algorithm should be implemented as a pipeline as much as possible. Each step should be stateless, It should have a clear input, then it should process the input and produce a clear output.
+The following algorithm should be implemented as a pipeline as much as possible. Each top level step (1,2,3) should be stateless, It should have a clear input, then it should process the input and produce a clear output.
 
-Each step should have its own module containing all relevant implementation - it should be stateless. All information needed in future stages should be added.
+Each step should have its own module containing all relevant implementation - it should be statel Resume next call Stop doing that ess. All information needed in future stages should be add How did you do that where are you ed.
 
 
 # Step 1 - Base (white) execution flow graph
