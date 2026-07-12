@@ -233,8 +233,7 @@ Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor
 In this we aim to merge terminal entity nodes with entity nodes.
  
 1. consider  two entities A and B, e.g. agents.
-    Note: every arrow is an interaction (2 edges: request/response)
-   We can consider two patterns:
+   We can consider two patterns (in each, every arrow is one interaction = two edges, e.g. A ──▶ B: call A→B, response B→A)
    - Call / Return — A calls B and control returns to A:
        A ──▶ B ──▶ A ──▶ ... 
    - Handoff — A passes control to B and does not get it back:
