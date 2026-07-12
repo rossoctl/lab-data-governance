@@ -220,11 +220,12 @@ Consider the following pattern
 (every arrow is one interaction = two edges, e.g. A ──▶ B: call A→B, response B→A)
 
 if we observe: 
-  A ──▶ B, A
+  A ──▶ B, A:
     - An interaction from A to B (A and B are adjacent - no intervening entity/Blue node)
-    - After B the execution returned to A
-We will infer the interaction from B to A: 
+    - Control reached A again, immediately after B 
+We will infer the interaction from B to A (Meaning the response leg - two edges: call B→A, response A→B  )
   A ──▶ B ──▶ A
+
 
 
 
