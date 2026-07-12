@@ -191,20 +191,9 @@ The entity graph is going to be constructed in as follows:
   Next, for all nodes in each sub graph represented by connected Blue and White nodes create a group.
   (Groups without blue can be ignored)
 
-2. Semantically:
-  Combine groups representing the same entity into a single group
+  Each group represents a node in the entity graph 
 
-  For example, An execution graph may include multiple tool calls (e.g. with different arguments) to a file   
-  system, and therefore multiple inferred file system tools.
-  For each one of these tools we will create a group, based on the structural step. However all those tools 
-  represent in reality a single file system tool entity. Therefore all these groups should be combined
 
-  The process of identifying groups represent the same entity is a set of heuristics - and can be based on:
-  - Same tool/service/host/llm name 
-  - Same argument/output types 
-  - nodes from the same scope
-
-Each group represents a node in the entity graph 
 
 Note: Each node in the entity graph should be given a key: This key should reflect the original subgraph and may be from one of the subgraph node spans. in particular if we can identify a node in the subgraph containing a agent/service/tool/host name we should use it as an key 
 If the key is not clear we can call it unknown.
@@ -214,8 +203,8 @@ If the key is not clear we can call it unknown.
 1. Structurally:
   - edges internal to a group are ignored
   - Each path connecting entity nodes should be represented by a single interaction connecting these entity nodes. In other words: each Teal transport chain between two Blue components becomes a single interaction (a bidirectional pair: request edge and respose edge)
-  - A path may exist where only a single entity node is observed at either the start or the end of the path. In other words, There is a teal transport chain between a blue component without a blue component on the other side.
-  In such a case create a single interaction (a bidirectional pair: request edge and respose edge) between the blue component and a terminal entity node.
+  - There may be a path that does not connect entity nodes. Instead the path may have an end starts/end at a node belonging to an entity while the other end does not reach any entity node. In other words, There is a teal transport chain between a blue component without a blue component on the other side.
+  In such a case create a terminal entity node and a single interaction (a bidirectional pair: request edge and respose edge) between the blue component and the Terminal node.
   
  
 
@@ -230,21 +219,35 @@ Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor
 
 ## Step 3.d - merge (entity graph)
 
-In this we aim to merge terminal entity nodes with entity nodes.
+1. Next, we semantically combine enitities (groups)   
+  representing the same entity into a single entity (group)
+
+  For example, An execution graph may include multiple tool calls (e.g. with different arguments) to a file   
+  system, and therefore multiple inferred file system tools.
+  For each one of these tools we will create a group, based on the structural step. However all those tools 
+  represent in reality a single file system tool entity. Therefore all these groups should be combined
+
+  The process of identifying entities (groups) representing the same entity is a set of heuristics - and can be based on:
+  - Same tool/service/host/llm name 
+  - Same argument/output types 
+  - nodes from the same scope
+
+
+2. In the next step we aim to merge terminal entity nodes with entity nodes.
  
-1. consider  two entities A and B, e.g. agents.
-   We can consider two patterns (in each, every arrow is one interaction = two edges, e.g. A ──▶ B: call A→B, response B→A)
+  consider  two entities A and B, e.g. agents.
+  We can consider two patterns (in each, every arrow is one interaction = two edges, e.g. A ──▶ B: call A→B, response B→A)
    - Call / Return — A calls B and control returns to A:
        A ──▶ B ──▶ A ──▶ ... 
    - Handoff — A passes control to B and does not get it back:
        A ──▶ B ──▶ ...   (B may call A, but as a new call, not a return)
 
-   Consider the following observed edges:
+  Consider the following observed edges:
      A ──▶ B ──▶ T (Terminal)
-   Iff all conditions hold:
+  Iff all conditions hold:
       - A's call-site span is an ancestor of T's chain 
       - A, B and T are adjacent (No nodes in between)
-   merge the terminal entity node with entity node A (While keeping the interactions distinct) 
+  merge the terminal entity node with entity node A (While keeping the interactions distinct) 
 
 
 
