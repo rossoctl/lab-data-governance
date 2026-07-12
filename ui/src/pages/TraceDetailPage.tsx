@@ -15,7 +15,7 @@ import {
 } from '@patternfly/react-core';
 
 import { useTrace } from '../api/hooks';
-import { PinStore } from '../lib/pins';
+import { PinStore, colorForSlot } from '../lib/pins';
 import { fetchJson } from '../api/client';
 import { SpanTree, type SpanTreeHandle } from '../components/SpanTree';
 import { SpanDetailPanel } from '../components/SpanDetailPanel';
@@ -291,7 +291,17 @@ export function TraceDetailPage() {
                 <Spinner
                   size="sm"
                   aria-label="highlighting…"
-                  style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }}
+                  // Color the wheel with the first highlight-set stripe color
+                  // (slot 0) so it reads clearly on the dark tab bar and ties
+                  // visually to what's being highlighted. PF draws the spinner
+                  // stroke from --pf-v5-c-spinner--Color, so we set that.
+                  style={
+                    {
+                      marginLeft: '0.5rem',
+                      verticalAlign: 'middle',
+                      '--pf-v5-c-spinner--Color': colorForSlot(0),
+                    } as React.CSSProperties
+                  }
                 />
               )}
             </TabTitleText>
