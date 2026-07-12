@@ -130,7 +130,7 @@ When inferring new edges (interactions) make sure to adjust the order based on t
 
 
 
-## Step 2.d - merge (execution graph)
+## Step 2.d - merge interactions (execution graph)
 
 this step identifies identical interactions - cases where a single interaction is represented more than once in the execution graph.
 Once these are detected, these chains are merged as a unit. 
@@ -202,11 +202,9 @@ If the key is not clear we can call it unknown.
 
 1. Structurally:
   - edges internal to a group are ignored
-  - Each path connecting entity nodes should be represented by a single interaction connecting these entity nodes. In other words: each Teal transport chain between two Blue components becomes a single interaction (a bidirectional pair: request edge and respose edge)
-  - There may be a path that does not connect entity nodes. Instead the path may have an end starts/end at a node belonging to an entity while the other end does not reach any entity node. In other words, There is a teal transport chain between a blue component without a blue component on the other side.
-  In such a case create a terminal entity node and a single interaction (a bidirectional pair: request edge and respose edge) between the blue component and the Terminal node.
-  
- 
+  - Each Teal transport chain between two Blue components becomes a single interaction (a bidirectional pair: request edge and respose edge)
+  - Each teal transport chain with a blue component on one end and no blue component on the other side (no intervening entity/Blue node) becomes a new terminal entity node and a single interaction (a bidirectional pair: request edge and respose edge) between the blue component and the Terminal node.
+   
 
 2. Timing (absolute timestamps):
 The goal in this step is to assign each interaction (call, response) an absolute started_at / ended_at. These are taken from the interaction's anchor span.
@@ -217,10 +215,11 @@ Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor
 ## Step 3.c - infer (entity graph) 
 
 
-## Step 3.d - merge (entity graph)
+## Step 3.d - merge entities (entity graph)
 
 1. Next, we semantically combine enitities (groups)   
   representing the same entity into a single entity (group)
+  while preserving all edges. 
 
   For example, An execution graph may include multiple tool calls (e.g. with different arguments) to a file   
   system, and therefore multiple inferred file system tools.
@@ -233,7 +232,8 @@ Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor
   - nodes from the same scope
 
 
-2. In the next step we aim to merge terminal entity nodes with entity nodes.
+2. In the next step we aim to merge terminal entity nodes with entity nodes. while preserving all edges. 
+
  
   consider  two entities A and B, e.g. agents.
   We can consider two patterns (in each, every arrow is one interaction = two edges, e.g. A ──▶ B: call A→B, response B→A)
@@ -242,11 +242,11 @@ Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor
    - Handoff — A passes control to B and does not get it back:
        A ──▶ B ──▶ ...   (B may call A, but as a new call, not a return)
 
-  Consider the following observed edges:
+  Consider the following ineractions:
      A ──▶ B ──▶ T (Terminal)
   Iff all conditions hold:
       - A's call-site span is an ancestor of T's chain 
-      - A, B and T are adjacent (No nodes in between)
+      - A, B and T are adjacent (no intervening entity/Blue node)
   merge the terminal entity node with entity node A (While keeping the interactions distinct) 
 
 
