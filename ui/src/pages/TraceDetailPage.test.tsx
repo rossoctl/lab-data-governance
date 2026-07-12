@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, waitForElementToBeRemoved } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Routes, Route } from 'react-router-dom';
 import { renderWithProviders } from '../test/renderWithProviders';
@@ -187,6 +187,96 @@ describe('TraceDetailPage', () => {
     );
   });
 
+  it('shows a "highlighting…" spinner while a reveal is in flight, then hides it', async () => {
+    // Add-to-highlights kicks off a cross-view reveal (flow → tree, expand the
+    // pinned spans' ancestors). While that async walk runs, a spinner sits to
+    // the right of the "Span tree" tab caption; it clears once reveal settles.
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+
+    await userEvent.click(await screen.findByText(/1 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Add to highlights/i }));
+
+    // The spinner appears (labelled for a11y) as soon as the reveal is requested.
+    const spinner = await screen.findByLabelText(/highlighting/i);
+    expect(spinner).toBeInTheDocument();
+    // …and is removed once the reveal completes (ancestors expanded + scrolled).
+    await waitForElementToBeRemoved(() => screen.queryByLabelText(/highlighting/i));
+  });
+
+  it('drops the highlighting spinner if the user leaves the tree while a reveal is still in flight', async () => {
+    // Stuck-spinner guard: Add-to-highlights sets the spinner + navigates to the
+    // tree, then the reveal runs an async ancestor walk. If the user clicks back
+    // to the flow tab while that walk is still pending, the reveal's target row
+    // is gone — its .finally() would clear the spinner eventually, but by then a
+    // NEW reveal may own it, so relying on it is wrong. Leaving the tree must
+    // clear the spinner directly. Here we HOLD the reveal's first fetch open so
+    // it is provably still in flight when we switch tabs.
+    let releaseReveal!: () => void;
+    const revealGate = new Promise<void>((r) => { releaseReveal = r; });
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url === '/api/traces/T1') {
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            trace_id: 'T1',
+            listing_root: {
+              seq: 1, trace_id: 'T1', span_id: 'root', parent_id: null,
+              name: 'root-span', started_at: '2026-05-01T12:00:00Z',
+              service_name: 'svc', kind: 'SERVER', error: null, attributes: {},
+            },
+            counts: { total: 2, in_window: 2, error_count: 0 }, in_time_window: true,
+          }),
+        };
+      }
+      if (url.endsWith('/interactions')) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ interactions: [{
+            id: 'i1', caller_entity_id: null, callee_entity_id: null,
+            started_at: '2026-05-01T12:00:00Z', ended_at: '2026-05-01T12:00:01Z',
+            error: false, request_payload_hash: null, response_payload_hash: null,
+            summary: 'the interaction', parent_interaction_id: null,
+            span_count: 1, anchor_count: 1,
+          }] }),
+        };
+      }
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: [] }) };
+      if (url.includes('/interactions/i1/spans')) {
+        return { ok: true, status: 200, json: async () => ({ spans: [
+          { span_id: 'ev-span', role: 'anchor', parent_id: 'root', kind: 'CLIENT', service_name: 'svc' },
+        ] }) };
+      }
+      // reveal()'s first hop: fetch the evidence span by id. Hold it open until
+      // the test releases it, so the reveal is unambiguously in flight.
+      if (url.endsWith('/spans/ev-span')) {
+        await revealGate;
+        return { ok: true, status: 200, json: async () => (
+          { seq: 2, trace_id: 'T1', span_id: 'ev-span', parent_id: 'root', name: 'ev', attributes: {} }
+        ) };
+      }
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+    await userEvent.click(await screen.findByText(/1 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Add to highlights/i }));
+    // Spinner shown while the reveal's fetch is gated open.
+    await screen.findByLabelText(/highlighting/i);
+    // Bounce back to the flow tab while the reveal is still pending.
+    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    // The spinner is cleared by leaving the tree, not left hanging.
+    await waitFor(() =>
+      expect(screen.queryByLabelText(/highlighting/i)).not.toBeInTheDocument(),
+    );
+    // Now let the held reveal finish; its late .finally() must not resurrect the
+    // spinner (the token was bumped on leave, so it no longer matches).
+    releaseReveal();
+    await waitFor(() =>
+      expect(screen.queryByLabelText(/highlighting/i)).not.toBeInTheDocument(),
+    );
+  });
+
   it('writes /flow to the URL when the Interaction flow tab is clicked', async () => {
     mockFetch();
     renderWithProviders(harness(), { route: '/traces/T1/spans' });
@@ -286,5 +376,18 @@ describe('TraceDetailPage', () => {
     // And it is the selected span: the detail panel shows its span_id "child-1"
     // (only present when a span is selected).
     await waitFor(() => expect(screen.getByText('child-1')).toBeInTheDocument());
+  });
+
+  it('does NOT show the highlighting spinner for a ?sel deep-link restore', async () => {
+    // A ?sel deep link fires reveal() too, but that is a page-load restore, not
+    // a user highlight action — so the "highlighting…" spinner must stay hidden
+    // throughout (it belongs to Add-to-highlights / Span-link jumps only).
+    mockFetchWithChild();
+    renderWithProviders(harness(), { route: '/traces/T1/spans?sel=child-1' });
+
+    // Wait until the deep-link reveal has fully run (child surfaced + selected).
+    await waitFor(() => expect(screen.getByText('child-1')).toBeInTheDocument());
+    // No spinner was ever shown for this path.
+    expect(screen.queryByLabelText(/highlighting/i)).not.toBeInTheDocument();
   });
 });

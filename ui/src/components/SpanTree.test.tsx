@@ -220,6 +220,44 @@ describe('SpanTree', () => {
     expect(screen.getByText('hi-child')).toBeInTheDocument(); // pre-loaded sibling kept
   });
 
+  it('reveal() resolves only after a scroll frame has run (spinner stays up until then)', async () => {
+    // The parent brackets a "highlighting…" spinner around reveal(); the promise
+    // must not resolve until reveal has waited a frame to scroll the revealed
+    // row into view, or the spinner would clear before the row is on screen.
+    const mid = span({ seq: 2, span_id: 'mid', name: 'mid-span', parent_id: 'root' });
+    const leaf = span({ seq: 3, span_id: 'leaf', name: 'leaf-span', parent_id: 'mid' });
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/spans/root/children')) return { ok: true, status: 200, json: async () => ({ spans: [mid] }) };
+      if (url.includes('/spans/mid/children')) return { ok: true, status: 200, json: async () => ({ spans: [leaf] }) };
+      if (url.endsWith('/spans/leaf')) return { ok: true, status: 200, json: async () => leaf };
+      if (url.endsWith('/spans/mid')) return { ok: true, status: 200, json: async () => mid };
+      if (url.endsWith('/spans/root')) return { ok: true, status: 200, json: async () => ROOT };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    // Track that the reveal's scroll frame ran before its promise resolved.
+    // (jsdom's scrollIntoView is a no-op stub and the revealed row may not be
+    // committed when the frame fires, so we assert on the frame itself — the
+    // real "wait a frame before resolving" guarantee — not on scrollIntoView.)
+    const realRaf = window.requestAnimationFrame;
+    let framesRun = 0;
+    const rafSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((cb) => realRaf(() => { framesRun += 1; cb(performance.now()); }));
+    const ref = createRef<SpanTreeHandle>();
+    renderWithProviders(
+      <SpanTree ref={ref} traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText('mid-span')).toBeInTheDocument());
+    const framesBefore = framesRun;
+
+    await act(async () => {
+      await ref.current!.reveal(['leaf']);
+      // The promise settled — reveal awaited at least one frame before resolving.
+      expect(framesRun).toBeGreaterThan(framesBefore);
+    });
+    rafSpy.mockRestore();
+  });
+
   it('calls onSelect with the span when a row is clicked', async () => {
     mockChildren([]);
     const onSelect = vi.fn();

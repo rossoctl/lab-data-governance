@@ -276,15 +276,20 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
         return next;
       });
 
-      // Select + scroll the first target after the DOM updates.
+      // Select + scroll the first target after the DOM updates. Resolve this
+      // promise only AFTER the scroll rAF fires, so a caller bracketing a
+      // "highlighting…" spinner around reveal() keeps it up until the revealed
+      // row is actually painted and scrolled into view (not merely queued).
       const firstKey = firstTargets[0];
-      if (firstKey) {
-        const first = wLoaded.get(firstKey);
-        if (first) select(first);
+      if (!firstKey) return;
+      const first = wLoaded.get(firstKey);
+      if (first) select(first);
+      await new Promise<void>((resolve) => {
         requestAnimationFrame(() => {
           rowEls.current.get(firstKey)?.scrollIntoView({ block: 'nearest' });
+          resolve();
         });
-      }
+      });
     },
     [traceId, select],
   );

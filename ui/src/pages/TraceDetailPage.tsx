@@ -64,6 +64,17 @@ export function TraceDetailPage() {
   const treeRef = useRef<SpanTreeHandle>(null);
   const [pendingReveal, setPendingReveal] = useState<string[] | null>(null);
 
+  // "highlighting…" spinner: true while a user-initiated cross-view reveal
+  // (Add-to-highlights / an evidence Span-link) is in flight — from the moment
+  // it is requested (covering the flow→tree tab switch + tree mount) until
+  // reveal() settles (ancestors expanded, first target scrolled into view). A
+  // monotonic token guards overlapping reveals: only the latest clears it, so a
+  // fast earlier reveal can't hide the spinner while a later one still runs. The
+  // ?sel deep-link/reload reveal does NOT set this — it is a page-load restore,
+  // not a highlight action, so it shows no spinner.
+  const [isRevealing, setIsRevealing] = useState(false);
+  const revealTokenRef = useRef(0);
+
   const { data: entry, isLoading, isError } = useTrace(traceId);
   const root = entry?.listing_root ?? null;
 
@@ -87,6 +98,12 @@ export function TraceDetailPage() {
   const revealInTree = useCallback(
     (spanIds: string[]) => {
       if (spanIds.length === 0) return;
+      // Show the spinner from the instant the reveal is requested, so it covers
+      // the tab switch + tree (re)mount latency, not just the async walk. The
+      // token marks THIS request as the latest; the reveal effect clears the
+      // spinner only if its token still matches when reveal() settles.
+      revealTokenRef.current += 1;
+      setIsRevealing(true);
       setPendingReveal(spanIds);
       navigate(`../spans?sel=${encodeURIComponent(spanIds[0])}`, { relative: 'path' });
     },
@@ -113,6 +130,12 @@ export function TraceDetailPage() {
   useEffect(() => {
     if (view !== 'tree') {
       revealedSelRef.current = null; // tree unmounted → forget what it showed
+      // Leaving the tree cancels any in-flight reveal (its target row is gone),
+      // so drop the "highlighting…" spinner rather than let it hang. Bump the
+      // token so a superseded reveal's late .finally() can't clear a spinner a
+      // FUTURE reveal turned back on.
+      revealTokenRef.current += 1;
+      setIsRevealing(false);
       return;
     }
     if (!selParam || !root) return;
@@ -123,7 +146,15 @@ export function TraceDetailPage() {
     const id = requestAnimationFrame(() => {
       const tree = treeRef.current;
       if (!tree) return; // not mounted yet — a later render (root/view) retries
-      tree.reveal(spanIds);
+      // Snapshot the current reveal token; clear the "highlighting…" spinner
+      // only if no newer reveal was requested by the time this one settles
+      // (latest-reveal-wins). reveal() always settles (best-effort, no throw
+      // path) and now resolves AFTER its scroll rAF, so the spinner stays up
+      // until the revealed row is painted and scrolled — then hides.
+      const token = revealTokenRef.current;
+      void tree.reveal(spanIds).finally(() => {
+        if (revealTokenRef.current === token) setIsRevealing(false);
+      });
       revealedSelRef.current = selParam;
       setPendingReveal(null);
     });
@@ -251,7 +282,21 @@ export function TraceDetailPage() {
         onSelect={(_e, key) => goToView(URL_TO_VIEW[String(key)] ?? 'tree')}
         aria-label="Trace views"
       >
-        <Tab eventKey="spans" title={<TabTitleText>Span tree</TabTitleText>} />
+        <Tab
+          eventKey="spans"
+          title={
+            <TabTitleText>
+              Span tree
+              {isRevealing && (
+                <Spinner
+                  size="sm"
+                  aria-label="highlighting…"
+                  style={{ marginLeft: '0.5rem', verticalAlign: 'middle' }}
+                />
+              )}
+            </TabTitleText>
+          }
+        />
         <Tab eventKey="flow" title={<TabTitleText>Interaction flow</TabTitleText>} />
       </Tabs>
 
