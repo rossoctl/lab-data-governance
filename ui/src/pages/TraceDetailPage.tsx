@@ -113,12 +113,12 @@ export function TraceDetailPage() {
   // URL → tree: when the spans tab is active and ?sel names a span, reveal it.
   // If a multi-span reveal is pending (Add-to-highlights), reveal the whole set;
   // otherwise reveal just the ?sel span (deep-link / reload / back restore).
-  // revealedSelRef records the sel the CURRENTLY MOUNTED tree already shows, so
-  // re-renders don't re-fire reveal — but it is cleared whenever we leave the
-  // tree view, because SpanTree unmounts there (view-gated below) and loses all
-  // its expand/select state. Without the reset, tab→flow→Back to the same ?sel
-  // would find the marker still set against a freshly-remounted empty tree and
-  // skip the reveal, leaving the span collapsed and unselected.
+  // revealedSelRef records the sel the tree already revealed, so re-renders
+  // don't re-fire reveal. It is cleared when we leave the tree view: the tree
+  // stays MOUNTED (hidden, not unmounted — see the render below), so its expand
+  // state persists across tab switches, but a fresh deep-link / Add-to-
+  // highlights reveal to the same ?sel after a round-trip should still fire, so
+  // we forget the marker on leave.
   //
   // The effect also depends on `root`: on a cold deep-link the trace is still
   // loading, so SpanTree (gated on `root`) is not yet mounted and treeRef is
@@ -129,7 +129,7 @@ export function TraceDetailPage() {
   const revealedSelRef = useRef<string | null>(null);
   useEffect(() => {
     if (view !== 'tree') {
-      revealedSelRef.current = null; // tree unmounted → forget what it showed
+      revealedSelRef.current = null; // left the tree → allow a later re-reveal
       // Leaving the tree cancels any in-flight reveal (its target row is gone),
       // so drop the "highlighting…" spinner rather than let it hang. Bump the
       // token so a superseded reveal's late .finally() can't clear a spinner a
@@ -318,7 +318,12 @@ export function TraceDetailPage() {
         </Alert>
       ) : (
         <div style={{ marginTop: '1rem' }}>
-          {view === 'tree' && (
+          {/* The tree stays MOUNTED for the page's lifetime and is merely hidden
+              on the flow tab (display:none), so its expand/load/selection state
+              survives a tab round-trip — otherwise switching to flow would
+              unmount it and a return would re-seed from the root (collapsed to
+              depth 1), discarding a prior reveal's expanded ancestor chains. */}
+          <div style={{ display: view === 'tree' ? undefined : 'none' }}>
             <Split hasGutter>
               <SplitItem isFilled>
                 <HighlightLegend pins={pinViews} onRemove={(k) => { pins.removePin(k); bumpPins(); }} />
@@ -337,7 +342,7 @@ export function TraceDetailPage() {
                 <SpanDetailPanel span={selectedSpan} onRefresh={refreshSelected} />
               </SplitItem>
             </Split>
-          )}
+          </div>
 
           {view === 'flow' && (
             <FlowTables

@@ -87,6 +87,44 @@ function mockFetchWithChild() {
   });
 }
 
+// A DEEP mock: root → mid → leaf. Revealing `leaf` expands BOTH root and mid.
+// On a remount, the auto-expand opens only the root (showing mid), so `leaf`
+// surfaces again ONLY if mid's expansion was preserved — the exact state a
+// flow-tab round-trip must not lose.
+const MID = {
+  seq: 2, trace_id: 'T1', span_id: 'mid', parent_id: 'root',
+  name: 'mid-span', started_at: '2026-05-01T12:00:01Z',
+  service_name: 'svc', kind: 'INTERNAL', error: null, attributes: {},
+  observed_at: '2026-05-01T12:00:01Z', arrival_seq: 2, in_time_window: true,
+  status_message: null, events: null, links: null, ended_at: null,
+  otlp: null, scope: null, resource_attributes: null,
+};
+const LEAF = { ...MID, seq: 3, span_id: 'leaf', parent_id: 'mid', name: 'leaf-span' };
+function mockFetchWithGrandchild() {
+  (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+    if (url === '/api/traces/T1') {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          trace_id: 'T1',
+          listing_root: {
+            seq: 1, trace_id: 'T1', span_id: 'root', parent_id: null,
+            name: 'root-span', started_at: '2026-05-01T12:00:00Z',
+            service_name: 'svc', kind: 'SERVER', error: null, attributes: {},
+          },
+          counts: { total: 3, in_window: 3, error_count: 0 }, in_time_window: true,
+        }),
+      };
+    }
+    if (url.endsWith('/spans/leaf')) return { ok: true, status: 200, json: async () => LEAF };
+    if (url.endsWith('/spans/mid')) return { ok: true, status: 200, json: async () => MID };
+    if (url.endsWith('/spans/root')) return { ok: true, status: 200, json: async () => ({ ...MID, span_id: 'root', parent_id: null, name: 'root-span', kind: 'SERVER' }) };
+    if (url.includes('/spans/root/children')) return { ok: true, status: 200, json: async () => ({ spans: [MID] }) };
+    if (url.includes('/spans/mid/children')) return { ok: true, status: 200, json: async () => ({ spans: [LEAF] }) };
+    return { ok: true, status: 200, json: async () => ({ spans: [], interactions: [], entities: [] }) };
+  });
+}
+
 // A mock with one interaction + evidence span, so Add-to-highlights has
 // something to pin and reveal.
 function mockFetchWithFlow() {
@@ -376,6 +414,37 @@ describe('TraceDetailPage', () => {
     // And it is the selected span: the detail panel shows its span_id "child-1"
     // (only present when a span is selected).
     await waitFor(() => expect(screen.getByText('child-1')).toBeInTheDocument());
+  });
+
+  it('keeps the tree expanded state across a flow-tab round-trip', async () => {
+    // Regression: after a reveal expands a DEEP span (root → mid → leaf),
+    // switching to the flow tab and back must NOT collapse the tree to depth 1.
+    // The tree stays mounted (hidden on flow), so mid's expansion survives —
+    // rather than unmounting and re-seeding from the root, whose auto-expand
+    // opens only the root (showing mid), leaving leaf hidden. A tab click drops
+    // ?sel, so nothing could re-reveal leaf; it survives only via kept state.
+    const inTreeRow = (name: string) =>
+      screen.getAllByText(name).some((el) => el.closest('[data-testid="span-row"]') !== null);
+
+    mockFetchWithGrandchild();
+    renderWithProviders(harness(), { route: '/traces/T1/spans?sel=leaf' });
+
+    // Reveal expanded root + mid — the deep leaf row is present in the tree.
+    await waitFor(() => expect(inTreeRow('leaf-span')).toBe(true));
+
+    // Round-trip: to the flow tab, then back to the span tree tab.
+    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
+    );
+    await userEvent.click(screen.getByRole('tab', { name: /Span tree/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/spans'),
+    );
+
+    // The deep leaf row is STILL rendered in the tree (mid still expanded), not
+    // collapsed away to depth 1.
+    expect(inTreeRow('leaf-span')).toBe(true);
   });
 
   it('does NOT show the highlighting spinner for a ?sel deep-link restore', async () => {
