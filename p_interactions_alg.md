@@ -202,8 +202,8 @@ If the key is not clear we can call it unknown.
 
 1. Structurally:
   - edges internal to a group are ignored
-  - Each Teal transport chain between two Blue components becomes a single interaction (a bidirectional pair: request edge and respose edge)
-  - Each teal transport chain with a blue component on one end and no blue component on the other side (no intervening entity/Blue node) becomes a new terminal entity node and a single interaction (a bidirectional pair: request edge and respose edge) between the blue component and the Terminal node.
+  - Each Teal transport chain between two Blue components (no intervening entity/Blue node) becomes a single interaction (a bidirectional pair: request edge and respose edge)
+ 
    
 
 2. Timing (absolute timestamps):
@@ -213,6 +213,19 @@ Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor
 
 
 ## Step 3.c - infer (entity graph) 
+
+Consider the following pattern 
+   - Call / Return — A calls B and control returns to A:
+       A ──▶ B ──▶ A
+(every arrow is one interaction = two edges, e.g. A ──▶ B: call A→B, response B→A)
+
+if we observe: 
+  A ──▶ B, A
+    - An interaction from A to B (A and B are adjacent - no intervening entity/Blue node)
+    - After B the execution returned to A
+We will infer the interaction from B to A: 
+  A ──▶ B ──▶ A
+
 
 
 ## Step 3.d - merge entities (entity graph)
@@ -231,23 +244,6 @@ Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor
   - Same argument/output types 
   - nodes from the same scope
 
-
-2. In the next step we aim to merge terminal entity nodes with entity nodes. while preserving all edges. 
-
- 
-  consider  two entities A and B, e.g. agents.
-  We can consider two patterns (in each, every arrow is one interaction = two edges, e.g. A ──▶ B: call A→B, response B→A)
-   - Call / Return — A calls B and control returns to A:
-       A ──▶ B ──▶ A ──▶ ... 
-   - Handoff — A passes control to B and does not get it back:
-       A ──▶ B ──▶ ...   (B may call A, but as a new call, not a return)
-
-  Consider the following ineractions:
-     A ──▶ B ──▶ T (Terminal)
-  Iff all conditions hold:
-      - A's call-site span is an ancestor of T's chain 
-      - A, B and T are adjacent (no intervening entity/Blue node)
-  merge the terminal entity node with entity node A (While keeping the interactions distinct) 
 
 
 
