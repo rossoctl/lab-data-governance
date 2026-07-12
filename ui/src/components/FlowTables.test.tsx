@@ -206,6 +206,52 @@ describe('FlowTables', () => {
     expect(interactionRow.getAttribute('data-dg-selected')).toBeNull();
   });
 
+  it('lazily fetches and renders an interaction request payload on expand', async () => {
+    // An interaction that carries payload hashes (the common HTTP/MCP case).
+    const withPayload = [
+      {
+        ...INTERACTIONS[0],
+        request_payload_hash: 'reqhash0deadbeef',
+        response_payload_hash: 'resphash0feedface',
+      },
+    ];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.includes('/payloads/reqhash0deadbeef'))
+        return { ok: true, status: 200, json: async () => ({ content_hash: 'reqhash0deadbeef', content_kind: 'json', content: { q: 'flights' }, byte_size: 42 }) };
+      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    // The Payloads section offers Request/Response links (hash prefix shown).
+    // Links show the hash's first 8 chars: 'reqhash0' / 'resphash'.
+    const reqToggle = await screen.findByRole('button', { name: /Request: reqhash0/i });
+    expect(screen.getByRole('button', { name: /Response: resphash/i })).toBeInTheDocument();
+    // The body is NOT fetched until the link is expanded (lazy).
+    expect(screen.queryByText(/"flights"/)).toBeNull();
+    await userEvent.click(reqToggle);
+    // On expand, the decoded content + kind/hash/bytes render.
+    await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
+    expect(screen.getByText('json')).toBeInTheDocument();
+  });
+
+  it('omits the Payloads section for an interaction that carried no payloads', async () => {
+    mockFetch(); // INTERACTIONS[0] has null request/response hashes
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
+    // No Payloads header when both hashes are null.
+    expect(screen.queryByRole('heading', { name: 'Payloads' })).toBeNull();
+  });
+
   it('scopes the active-row highlight selector to out-specify PF clickable rows', () => {
     // jsdom does not apply CSS-file rules to computed style, so the highlight's
     // *visibility* cannot be asserted here (see project_dg_react_ui memory). The

@@ -8,10 +8,12 @@ import {
   Split,
   SplitItem,
   Button,
+  CodeBlock,
+  CodeBlockCode,
 } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 
-import { useInteractions, useEntities } from '../api/hooks';
+import { useInteractions, useEntities, usePayload } from '../api/hooks';
 import { fetchJson } from '../api/client';
 import { computeInteractionDepths, durationMs } from '../lib/flow';
 import { formatTime24Utc } from '../lib/recentTraces';
@@ -30,6 +32,11 @@ interface Selection {
   evidence: SpanEvidence[];
   pinKey: string;
   pinLabel: string;
+  /** Payload content hashes (interactions only) so the panel can lazily fetch
+   *  and show the request/response bodies — ported from the vanilla flow view's
+   *  Req/Resp cells + showPayload(). Null when the interaction carried none. */
+  requestPayloadHash: string | null;
+  responsePayloadHash: string | null;
 }
 
 /** Truncated, clickable span-id cell (Span + Parent columns share this). */
@@ -50,6 +57,56 @@ function SpanLink({
     >
       {spanId.length > 16 ? `${spanId.slice(0, 16)}…` : spanId}
     </Button>
+  );
+}
+
+/**
+ * A collapsible request/response payload. Ported from the vanilla flow view's
+ * Req/Resp cells + showPayload(): a link shows the hash's first 8 chars, and
+ * expanding it lazily fetches `GET /api/payloads/{hash}` and renders the
+ * decoded content plus kind/hash/bytes. Fetch is gated on `open` (usePayload
+ * enabled only once expanded), so an unopened payload costs nothing.
+ */
+function PayloadView({ label, hash }: { label: string; hash: string }) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading, isError } = usePayload(open ? hash : null);
+  return (
+    <div style={{ marginTop: '0.25rem' }}>
+      <Button
+        variant="link"
+        isInline
+        onClick={() => setOpen((o) => !o)}
+        className="dg-mono"
+      >
+        {open ? '▼' : '▶'} {label}: {hash.slice(0, 8)}
+      </Button>
+      {open && (
+        <div style={{ marginTop: '0.25rem' }}>
+          {isLoading ? (
+            <Spinner size="md" aria-label={`Loading ${label} payload`} />
+          ) : isError || !data ? (
+            <div style={{ color: '#f85149', fontSize: '0.85rem' }}>
+              Failed to load payload.
+            </div>
+          ) : (
+            <>
+              <DetailList
+                pairs={[
+                  ['kind', data.content_kind],
+                  ['hash', data.content_hash],
+                  ['bytes', String(data.byte_size)],
+                ]}
+              />
+              <CodeBlock>
+                <CodeBlockCode>
+                  {data.content == null ? '(none)' : JSON.stringify(data.content, null, 2)}
+                </CodeBlockCode>
+              </CodeBlock>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -154,6 +211,8 @@ export function FlowTables({
       evidence,
       pinKey: `interaction:${ix.id}`,
       pinLabel: ix.summary || ix.id,
+      requestPayloadHash: ix.request_payload_hash,
+      responsePayloadHash: ix.response_payload_hash,
     });
     onSelectionChange?.({ iid: ix.id });
   }
@@ -180,6 +239,8 @@ export function FlowTables({
       evidence,
       pinKey: `entity:${e.id}`,
       pinLabel: e.display_name || e.id,
+      requestPayloadHash: null, // entities carry no payload
+      responsePayloadHash: null,
     });
     onSelectionChange?.({ eid: e.id });
   }
@@ -417,6 +478,20 @@ export function FlowTables({
             >
               {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
             </Button>
+
+            {(selection.requestPayloadHash || selection.responsePayloadHash) && (
+              <>
+                <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
+                  Payloads
+                </Title>
+                {selection.requestPayloadHash && (
+                  <PayloadView label="Request" hash={selection.requestPayloadHash} />
+                )}
+                {selection.responsePayloadHash && (
+                  <PayloadView label="Response" hash={selection.responsePayloadHash} />
+                )}
+              </>
+            )}
 
             <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
               Spans

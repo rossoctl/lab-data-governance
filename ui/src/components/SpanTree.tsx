@@ -2,6 +2,7 @@ import {
   useMemo,
   useState,
   useCallback,
+  useEffect,
   useRef,
   forwardRef,
   useImperativeHandle,
@@ -148,6 +149,19 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
     },
     [onSelect],
   );
+
+  // Auto-expand the root on mount so the user sees the first level without a
+  // click, mirroring the vanilla trace_tree renderRoot() (issue #14). Guarded
+  // by a ref keyed on the root so it fires exactly once per trace — not on
+  // StrictMode's double-invoke, and not fighting a later user collapse of the
+  // root. `expand` (a toggle) is safe here because the root starts collapsed.
+  const autoExpandedRoot = useRef<string | null>(null);
+  useEffect(() => {
+    const rootKey = spanKey(root.trace_id, root.span_id);
+    if (autoExpandedRoot.current === rootKey) return;
+    autoExpandedRoot.current = rootKey;
+    void expand(root);
+  }, [root, expand]);
 
   // Latest state snapshots for the imperative reveal (which runs a sequential
   // async walk and must observe its own freshly-fetched data, not a stale

@@ -45,14 +45,33 @@ describe('SpanTree', () => {
     expect(screen.getByText('root-span')).toBeInTheDocument();
   });
 
-  it('lazy-loads children when the root is expanded', async () => {
+  it('auto-expands the root on mount so the first level is visible without a click', async () => {
     mockChildren(CHILDREN);
     renderWithProviders(
       <SpanTree traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
     );
-    await userEvent.click(screen.getByRole('button', { name: /expand root-span/i }));
+    // No expand click — the root auto-expands (vanilla renderRoot parity).
     await waitFor(() => expect(screen.getByText('ok-child')).toBeInTheDocument());
     expect(screen.getByText('bad-child')).toBeInTheDocument();
+  });
+
+  it('lazy-loads a non-root node only when it is expanded', async () => {
+    // Root auto-expands and loads its children; a child's OWN subtree stays
+    // lazy — its grandchildren load only on that child's expand click.
+    const grandchild = span({ seq: 4, span_id: 'gc', name: 'grand-child', parent_id: 'ok-child' });
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/spans/root/children')) return { ok: true, status: 200, json: async () => ({ spans: CHILDREN }) };
+      if (url.includes('/spans/ok-child/children')) return { ok: true, status: 200, json: async () => ({ spans: [grandchild] }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    renderWithProviders(
+      <SpanTree traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText('ok-child')).toBeInTheDocument());
+    // The grandchild is NOT loaded until ok-child is expanded.
+    expect(screen.queryByText('grand-child')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /expand ok-child/i }));
+    await waitFor(() => expect(screen.getByText('grand-child')).toBeInTheDocument());
   });
 
   it('shows an error badge on an error span and a descendant badge on its loaded ancestor', async () => {
@@ -60,7 +79,7 @@ describe('SpanTree', () => {
     renderWithProviders(
       <SpanTree traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
     );
-    await userEvent.click(screen.getByRole('button', { name: /expand root-span/i }));
+    // Root auto-expands, so its children (incl. the error leaf) load on mount.
     await waitFor(() => expect(screen.getByText('bad-child')).toBeInTheDocument());
     // The error leaf carries the per-span Error badge.
     const badRow = screen.getByText('bad-child').closest('[data-testid="span-row"]')!;
@@ -87,7 +106,7 @@ describe('SpanTree', () => {
     renderWithProviders(
       <SpanTree traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
     );
-    await userEvent.click(screen.getByRole('button', { name: /expand root-span/i }));
+    // Auto-expand loads the first (full) page of root's children on mount.
     await waitFor(() => expect(screen.getByText('child-0')).toBeInTheDocument());
     // A full first page → "Load more children" is offered.
     const more = await screen.findByRole('button', { name: /Load more children/i });
@@ -109,7 +128,7 @@ describe('SpanTree', () => {
     renderWithProviders(
       <SpanTree traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
     );
-    await userEvent.click(screen.getByRole('button', { name: /expand root-span/i }));
+    // Root auto-expands and loads its self-referential child.
     // The cycle is rendered as a terminal "(cycle)" node, not an infinite tree.
     await waitFor(() => expect(screen.getByText(/\(cycle\)/)).toBeInTheDocument());
   });
@@ -131,8 +150,9 @@ describe('SpanTree', () => {
     renderWithProviders(
       <SpanTree ref={ref} traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
     );
-    // Only the root is visible initially; the leaf is inside a collapsed subtree.
-    expect(screen.getByText('root-span')).toBeInTheDocument();
+    // Root auto-expands to show mid; the leaf is still inside mid's collapsed
+    // subtree (auto-expand is one level, not recursive).
+    await waitFor(() => expect(screen.getByText('mid-span')).toBeInTheDocument());
     expect(screen.queryByText('leaf-span')).toBeNull();
 
     await act(async () => {
@@ -145,9 +165,9 @@ describe('SpanTree', () => {
   });
 
   it('reveal() fetches ancestors that were never loaded to resolve the chain', async () => {
-    // The tree only knows the root; a caller reveals a grandchild whose parent
-    // was never loaded, so reveal must fetch mid + leaf individually to learn
-    // the lineage, then expand down.
+    // A caller reveals a grandchild (leaf) that was never loaded — auto-expand
+    // only paged in root's direct children (mid), not the leaf — so reveal must
+    // fetch leaf individually to learn its lineage, then expand down.
     const mid = span({ seq: 2, span_id: 'mid', name: 'mid-span', parent_id: 'root' });
     const leaf = span({ seq: 3, span_id: 'leaf', name: 'leaf-span', parent_id: 'mid' });
     const singleFetches: string[] = [];
@@ -189,8 +209,7 @@ describe('SpanTree', () => {
     renderWithProviders(
       <SpanTree ref={ref} traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
     );
-    // Pre-page root once so it has the hi child loaded (partial page).
-    await userEvent.click(screen.getByRole('button', { name: /expand root-span/i }));
+    // Auto-expand pre-pages root once, loading the hi child (a partial page).
     await waitFor(() => expect(screen.getByText('hi-child')).toBeInTheDocument());
 
     await act(async () => {
