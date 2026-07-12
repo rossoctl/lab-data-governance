@@ -289,7 +289,7 @@ export function TraceDetailPage() {
               Span tree
               {isRevealing && (
                 <Spinner
-                  size="sm"
+                  size="md"
                   aria-label="highlighting…"
                   // Color the wheel with the first highlight-set stripe color
                   // (slot 0) so it reads clearly on the dark tab bar and ties
