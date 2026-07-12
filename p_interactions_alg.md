@@ -29,7 +29,7 @@ The output are entities and interactions.
 # Note about architecture
 The following algorithm should be implemented as a pipeline as much as possible. Each top level step (1,2,3) should be stateless, It should have a clear input, then it should process the input and produce a clear output.
 
-Each step should have its own module containing all relevant implementation - it should be statel Resume next call Stop doing that ess. All information needed in future stages should be add How did you do that where are you ed.
+Each step should have its own module containing all relevant implementation. All information needed in future stages should be add Microphone off ed.
 
 
 # Step 1 - Base (white) execution flow graph
@@ -185,7 +185,7 @@ The entity graph is going to be constructed in as follows:
 1. structurally:
   Consider the Blue and Teal nodes in the execution flow graph.
 
-  First we are going to create subgraphs of execution graph nodes by simply dropping teal nodes. 
+  First we are going to create subgraphs of execution graph nodes by simply excluding teal nodes. 
   Each subgraph can contain inferred nodes, observed nodes or both - But these can only be Blue or White. 
 
   Next, for all nodes in each sub graph represented by connected Blue and White nodes create a group.
@@ -213,9 +213,9 @@ If the key is not clear we can call it unknown.
 
 1. Structurally:
   - edges internal to a group are ignored
-  - Each path connecting entity nodes should be represented by a single interaction connecting these entity nodes. In other words: each Teal transport chain between two Blue components becomes a single interaction (a bidirectional pair: call edge and respose edge)
+  - Each path connecting entity nodes should be represented by a single interaction connecting these entity nodes. In other words: each Teal transport chain between two Blue components becomes a single interaction (a bidirectional pair: request edge and respose edge)
   - A path may exist where only a single entity node is observed at either the start or the end of the path. In other words, There is a teal transport chain between a blue component without a blue component on the other side.
-  In such a case create a single interaction (a bidirectional pair: call edge and respose edge) between the blue component and a terminal entity node.
+  In such a case create a single interaction (a bidirectional pair: request edge and respose edge) between the blue component and a terminal entity node.
   
  
 
@@ -233,16 +233,17 @@ Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor
 In this we aim to merge terminal entity nodes with entity nodes.
  
 1. consider  two entities A and B, e.g. agents.
+    Note: every arrow is an interaction (2 edges: request/response)
    We can consider two patterns:
-   - Request / result — A calls B and control returns to A:
+   - Call / Return — A calls B and control returns to A:
        A ──▶ B ──▶ A ──▶ ... 
    - Handoff — A passes control to B and does not get it back:
        A ──▶ B ──▶ ...   (B may call A, but as a new call, not a return)
-       
+
    Consider the following observed edges:
      A ──▶ B ──▶ T (Terminal)
    Iff all conditions hold:
-      - A's call-site span is an ancestor of T's chain (request/response)
+      - A's call-site span is an ancestor of T's chain 
       - A, B and T are adjacent (No nodes in between)
    merge the terminal entity node with entity node A (While keeping the interactions distinct) 
 
