@@ -25,9 +25,10 @@ export default function App() {
       <MastheadMain>
         <MastheadBrand>
           {/* Logo-home convention: the brand always returns to the trace list
-              (/ui/, basename-aware via the router). Redundant with the
-              trace-detail breadcrumb by design — it's muscle memory. */}
-          <Link to="/" className="dg-brand-link">
+              (the canonical /ui/traces, basename-aware via the router).
+              Redundant with the trace-detail breadcrumb by design — it's
+              muscle memory. */}
+          <Link to="/traces" className="dg-brand-link">
             <Title headingLevel="h1" size="lg">
               Data Governance
             </Title>
@@ -40,10 +41,16 @@ export default function App() {
 
   return (
     <Page header={masthead}>
+      {/* URL = single source of truth for UI state (reload/bookmark/back). The
+          list lives at /traces (bare / redirects there); a trace's detail view
+          is a path segment — /traces/{id}/spans (span tree) or /flow
+          (interaction flow) — and bare /traces/{id} canonicalises to /spans. */}
       <Routes>
-        <Route path="/" element={<RecentTracesPage />} />
-        <Route path="/traces/:traceId" element={<TraceDetailPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/" element={<Navigate to="/traces" replace />} />
+        <Route path="/traces" element={<RecentTracesPage />} />
+        <Route path="/traces/:traceId" element={<Navigate to="spans" replace />} />
+        <Route path="/traces/:traceId/:view" element={<TraceDetailPage />} />
+        <Route path="*" element={<Navigate to="/traces" replace />} />
       </Routes>
     </Page>
   );

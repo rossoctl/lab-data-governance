@@ -3,11 +3,26 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Routes, Route } from 'react-router-dom';
 import { renderWithProviders } from '../test/renderWithProviders';
+import { LocationProbe } from '../test/LocationProbe';
 import { TraceDetailPage } from './TraceDetailPage';
 
-// The trace-detail view hosts a two-way switcher: Tree | Flow. Default is
-// Tree; clicking a tab swaps the active view. The trace id comes from the
-// route (:traceId), proving the deep-link contract.
+// The trace-detail view hosts a two-way switcher: Span tree | Interaction flow.
+// The active view is a URL path segment (/traces/{id}/spans | /flow) — the URL
+// is the source of truth, so reload/bookmark/back restore the tab. The trace id
+// and view both come from the route (:traceId/:view).
+
+// Mount the page under the real nested route so :traceId and :view resolve, and
+// include a LocationProbe so tests can assert the URL after a tab click.
+function harness() {
+  return (
+    <>
+      <Routes>
+        <Route path="/traces/:traceId/:view" element={<TraceDetailPage />} />
+      </Routes>
+      <LocationProbe />
+    </>
+  );
+}
 
 function mockFetch() {
   (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
@@ -28,6 +43,46 @@ function mockFetch() {
       };
     }
     // children / interactions / entities — empty is fine for the switcher test.
+    return { ok: true, status: 200, json: async () => ({ spans: [], interactions: [], entities: [] }) };
+  });
+}
+
+// A mock where the root has one child. Used to prove a ?sel deep link to a
+// NON-root span reveals it — the case where the reveal must run against a tree
+// that mounts only after the (async) trace load, so a reveal fired before the
+// tree exists must be retried once it does.
+const CHILD = {
+  seq: 2, trace_id: 'T1', span_id: 'child-1', parent_id: 'root',
+  name: 'child-span', started_at: '2026-05-01T12:00:01Z',
+  service_name: 'svc', kind: 'INTERNAL', error: null, attributes: {},
+  observed_at: '2026-05-01T12:00:01Z', arrival_seq: 2, in_time_window: true,
+  status_message: null, events: null, links: null, ended_at: null,
+  otlp: null, scope: null, resource_attributes: null,
+};
+function mockFetchWithChild() {
+  (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+    if (url === '/api/traces/T1') {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          trace_id: 'T1',
+          listing_root: {
+            seq: 1, trace_id: 'T1', span_id: 'root', parent_id: null,
+            name: 'root-span', started_at: '2026-05-01T12:00:00Z',
+            service_name: 'svc', kind: 'SERVER', error: null, attributes: {},
+          },
+          counts: { total: 2, in_window: 2, error_count: 0 }, in_time_window: true,
+        }),
+      };
+    }
+    // The reveal walk fetches the target span by id, then pages the root's
+    // children so it can splice the child under root.
+    if (url === '/api/traces/T1/spans/child-1') {
+      return { ok: true, status: 200, json: async () => CHILD };
+    }
+    if (url.includes('/spans/root/children')) {
+      return { ok: true, status: 200, json: async () => ({ spans: [CHILD] }) };
+    }
     return { ok: true, status: 200, json: async () => ({ spans: [], interactions: [], entities: [] }) };
   });
 }
@@ -76,81 +131,160 @@ describe('TraceDetailPage', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
-  it('shows the trace id and a two-way view switcher, Tree active by default', async () => {
+  it('shows the trace id and a two-way view switcher, Span tree active for /spans', async () => {
     mockFetch();
-    renderWithProviders(
-      <Routes>
-        <Route path="/traces/:traceId" element={<TraceDetailPage />} />
-      </Routes>,
-      { route: '/traces/T1' },
-    );
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
 
     // Both switcher tabs are present, and no Graph tab remains.
     await waitFor(() => expect(screen.getByRole('tab', { name: /Span tree/i })).toBeInTheDocument());
     expect(screen.getByRole('tab', { name: /Interaction flow/i })).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: /Graph/i })).not.toBeInTheDocument();
 
-    // Tree tab is selected by default.
+    // The /spans segment drives the active tab.
     expect(screen.getByRole('tab', { name: /Span tree/i })).toHaveAttribute(
       'aria-selected',
       'true',
     );
   });
 
+  it('activates the Interaction flow tab for a /flow deep link', async () => {
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Interaction flow/i })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    );
+  });
+
   it('renders a breadcrumb back to the recent-traces list and shows the trace id', async () => {
     mockFetch();
-    renderWithProviders(
-      <Routes>
-        <Route path="/traces/:traceId" element={<TraceDetailPage />} />
-      </Routes>,
-      { route: '/traces/T1' },
-    );
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
 
-    // Crumb 1 is a real link back to the list root.
+    // Crumb 1 is a real link back to the list.
     const backLink = await screen.findByRole('link', { name: /Recent traces/i });
-    expect(backLink).toHaveAttribute('href', '/');
+    expect(backLink).toHaveAttribute('href', '/traces');
     // Crumb 2 (the "you are here" crumb) carries the full trace id.
     expect(screen.getByText('T1')).toBeInTheDocument();
   });
 
-  it('switches to the Span tree when Add-to-highlights is clicked in the flow view', async () => {
+  it('navigates the URL to /spans when Add-to-highlights is clicked in the flow view', async () => {
     mockFetchWithFlow();
-    renderWithProviders(
-      <Routes>
-        <Route path="/traces/:traceId" element={<TraceDetailPage />} />
-      </Routes>,
-      { route: '/traces/T1' },
-    );
-    // Go to the flow view, select the interaction, add it to highlights.
-    const flowTab = await screen.findByRole('tab', { name: /Interaction flow/i });
-    await userEvent.click(flowTab);
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+    // Select the interaction, add it to highlights.
     await userEvent.click(await screen.findByText(/1 \(1 anchor\)/));
     await userEvent.click(await screen.findByRole('button', { name: /Add to highlights/i }));
-    // The view flips back to the Span tree so the highlighted spans are revealed.
+    // The view flips back to the Span tree (URL + active tab) so the highlighted
+    // spans are revealed.
     await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /Span tree/i })).toHaveAttribute('aria-selected', 'true'),
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/spans'),
+    );
+    expect(screen.getByRole('tab', { name: /Span tree/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
     );
   });
 
-  it('switches to the Flow view when the Interaction flow tab is clicked', async () => {
+  it('writes /flow to the URL when the Interaction flow tab is clicked', async () => {
     mockFetch();
-    renderWithProviders(
-      <Routes>
-        <Route path="/traces/:traceId" element={<TraceDetailPage />} />
-      </Routes>,
-      { route: '/traces/T1' },
-    );
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
 
     const flowTab = await screen.findByRole('tab', { name: /Interaction flow/i });
     await userEvent.click(flowTab);
-    await waitFor(() =>
-      expect(flowTab).toHaveAttribute('aria-selected', 'true'),
-    );
+    await waitFor(() => expect(flowTab).toHaveAttribute('aria-selected', 'true'));
+    // The URL reflects the active tab.
+    expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow');
     // Flow view mounted: with no derived data it shows its empty-state hint.
     await waitFor(() =>
       expect(
         screen.getByText(/No interaction data for this trace yet/i),
       ).toBeInTheDocument(),
     );
+  });
+
+  it('redirects an unknown view segment to the canonical /spans', async () => {
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/bogus' });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/spans'),
+    );
+    expect(screen.getByRole('tab', { name: /Span tree/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  // --- Selection round-trip: the flow view's selected row is mirrored into the
+  // URL (?iid / ?eid), so a deep link / reload restores it.
+
+  it('restores the flow interaction selection from ?iid on load', async () => {
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?iid=i1' });
+
+    // The interaction row auto-selects (highlighted) once the tables load, and
+    // its detail panel shows.
+    await waitFor(() =>
+      expect(screen.getByText(/the interaction/i)).toBeInTheDocument(),
+    );
+  });
+
+  it('writes ?iid to the URL when a flow interaction row is selected', async () => {
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+
+    await userEvent.click(await screen.findByText(/1 \(1 anchor\)/));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('iid=i1'),
+    );
+  });
+
+  // --- Tree selection round-trip: clicking a span mirrors it into ?sel, and a
+  // ?sel deep link reveals + selects that span on load.
+
+  it('writes ?sel to the URL when a span row is clicked in the tree', async () => {
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
+
+    // The root span row renders from the listing root; click it to select.
+    const rootRow = await screen.findByText('root-span');
+    await userEvent.click(rootRow);
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('sel=root'),
+    );
+  });
+
+  it('reveals + selects the ?sel span on a spans deep link', async () => {
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/spans?sel=root' });
+
+    await waitFor(() => expect(screen.getByText('root-span')).toBeInTheDocument());
+    // The reveal effect selects the root span, so the detail panel leaves its
+    // empty state and shows the span's sections (Timing appears only when a
+    // span is selected). This proves the ?sel deep link restored the selection.
+    await waitFor(() => expect(screen.getByText('Timing')).toBeInTheDocument());
+    expect(
+      screen.queryByText(/Select a span to view its details/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('reveals + selects a NON-root ?sel span on a cold deep link (tree mounts after load)', async () => {
+    // Regression guard: the reveal must retry once the tree mounts. On a cold
+    // deep link the trace is still loading, so SpanTree is not yet rendered when
+    // the effect first fires; a reveal fired against a null treeRef must not be
+    // marked done, or the child span never surfaces.
+    mockFetchWithChild();
+    renderWithProviders(harness(), { route: '/traces/T1/spans?sel=child-1' });
+
+    // The child is only visible if reveal expanded the root under it — it shows
+    // in the tree row and, once selected, in the detail panel too (≥1 element).
+    await waitFor(() =>
+      expect(screen.getAllByText('child-span').length).toBeGreaterThan(0),
+    );
+    // And it is the selected span: the detail panel shows its span_id "child-1"
+    // (only present when a span is selected).
+    await waitFor(() => expect(screen.getByText('child-1')).toBeInTheDocument());
   });
 });

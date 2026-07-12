@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useMemo, useCallback } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   PageSection,
   Title,
@@ -35,6 +35,16 @@ const WINDOW_MINUTES: Record<Exclude<WindowKey, 'all'>, number> = {
   '24h': 1440,
 };
 
+const WINDOW_KEYS: readonly WindowKey[] = ['15m', '1h', '6h', '24h', 'all'];
+const DEFAULT_WINDOW: WindowKey = '1h';
+
+/** Coerce the `?window=` query value to a valid key, defaulting on garbage. */
+function parseWindowKey(raw: string | null): WindowKey {
+  return raw != null && (WINDOW_KEYS as readonly string[]).includes(raw)
+    ? (raw as WindowKey)
+    : DEFAULT_WINDOW;
+}
+
 /** ISO window bounds for the selected key, or {} for "all time". */
 function windowParams(key: WindowKey): { time_from?: string; time_to?: string } {
   if (key === 'all') return {};
@@ -67,8 +77,44 @@ function toRow(e: TraceListingEntry): Row {
 
 export function RecentTracesPage() {
   const navigate = useNavigate();
-  const [windowKey, setWindowKey] = useState<WindowKey>('1h');
-  const [hideMissingParent, setHideMissingParent] = useState(false);
+
+  // The list view's state lives in the URL so reload/bookmark/back restore it:
+  // `?window=<key>` (default 1h) and `?hideOrphans=1`. We drop a param rather
+  // than write its default, keeping canonical URLs clean (no `?window=1h`,
+  // no `?hideOrphans=0`).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const windowKey = parseWindowKey(searchParams.get('window'));
+  const hideMissingParent = searchParams.get('hideOrphans') === '1';
+
+  const setWindowKey = useCallback(
+    (key: WindowKey) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (key === DEFAULT_WINDOW) next.delete('window');
+          else next.set('window', key);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const setHideMissingParent = useCallback(
+    (checked: boolean) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (checked) next.set('hideOrphans', '1');
+          else next.delete('hideOrphans');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
 
   // Freeze the window bounds per windowKey (NOT per render) so the query key is
   // stable across time and doesn't refetch/re-key on every render.
@@ -156,7 +202,9 @@ export function RecentTracesPage() {
                 <Tr
                   key={row.trace_id}
                   isClickable
-                  onRowClick={() => navigate(`/traces/${encodeURIComponent(row.trace_id)}`)}
+                  onRowClick={() =>
+                    navigate(`/traces/${encodeURIComponent(row.trace_id)}/spans`)
+                  }
                   style={row.in_time_window ? undefined : { opacity: 0.45 }}
                 >
                   <Td dataLabel="Service">{row.service_name || '—'}</Td>

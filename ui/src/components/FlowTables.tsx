@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Title,
   Spinner,
@@ -53,6 +53,12 @@ function SpanLink({
   );
 }
 
+/** Which flow row is selected, mirrored to/from the URL (?iid | ?eid). */
+export interface FlowSelection {
+  iid?: string;
+  eid?: string;
+}
+
 export interface FlowTablesProps {
   traceId: string;
   pins: PinStore;
@@ -61,6 +67,17 @@ export interface FlowTablesProps {
   onNavigateToSpan?: (spanId: string) => void;
   /** Reveal a set of spans in the tree view (fired on Add-to-highlights). */
   onRevealSpans?: (spanIds: string[]) => void;
+  /**
+   * Selection to restore from the URL on load. Once the tables have data, the
+   * matching row auto-selects (deep-link / reload restore). A stale id that
+   * matches no loaded row is ignored (no selection, no crash).
+   */
+  initialSelection?: FlowSelection;
+  /**
+   * Fired when the selected row changes so the parent can mirror it into the
+   * URL. `null` on deselect.
+   */
+  onSelectionChange?: (sel: FlowSelection | null) => void;
 }
 
 /**
@@ -70,7 +87,15 @@ export interface FlowTablesProps {
  * mirroring the tree's highlight store, and lazy span-evidence fetch + a detail
  * panel on row click.
  */
-export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan, onRevealSpans }: FlowTablesProps) {
+export function FlowTables({
+  traceId,
+  pins,
+  onPinsChange,
+  onNavigateToSpan,
+  onRevealSpans,
+  initialSelection,
+  onSelectionChange,
+}: FlowTablesProps) {
   const interactionsQ = useInteractions(traceId);
   const entitiesQ = useEntities(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -130,6 +155,7 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan, onRe
       pinKey: `interaction:${ix.id}`,
       pinLabel: ix.summary || ix.id,
     });
+    onSelectionChange?.({ iid: ix.id });
   }
 
   async function selectEntity(e: Entity) {
@@ -155,6 +181,7 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan, onRe
       pinKey: `entity:${e.id}`,
       pinLabel: e.display_name || e.id,
     });
+    onSelectionChange?.({ eid: e.id });
   }
 
   function togglePin() {
@@ -171,6 +198,50 @@ export function FlowTables({ traceId, pins, onPinsChange, onNavigateToSpan, onRe
       onRevealSpans?.(spanIds);
     }
   }
+
+  // URL → flow: restore the selection named by ?iid / ?eid once the tables have
+  // loaded. Fires once per distinct target id (tracked in appliedInitial) so it
+  // seeds the deep-link/reload selection without fighting later user clicks or
+  // re-firing on every render. A stale id matching no loaded row is a no-op.
+  const appliedInitial = useRef<string | null>(null);
+  useEffect(() => {
+    const target = initialSelection?.iid
+      ? `interaction:${initialSelection.iid}`
+      : initialSelection?.eid
+        ? `entity:${initialSelection.eid}`
+        : null;
+    if (target === null) {
+      appliedInitial.current = null; // URL cleared → allow a future restore
+      return;
+    }
+    if (appliedInitial.current === target) return; // already applied this target
+    // A user row click already selected the row AND wrote the URL (?iid/?eid),
+    // which re-runs this effect via the changed initialSelection. Detect that
+    // the internal selection already matches the target and just record it —
+    // re-selecting would fire a redundant duplicate evidence fetch.
+    const alreadySelected =
+      (initialSelection?.iid && selection?.kind === 'interaction' && selection.id === initialSelection.iid) ||
+      (initialSelection?.eid && selection?.kind === 'entity' && selection.id === initialSelection.eid);
+    if (alreadySelected) {
+      appliedInitial.current = target;
+      return;
+    }
+    if (initialSelection?.iid) {
+      const ix = interactions.find((i) => i.id === initialSelection.iid);
+      if (!ix) return; // not loaded yet (or gone) — retry when data arrives
+      appliedInitial.current = target;
+      void selectInteraction(ix);
+    } else if (initialSelection?.eid) {
+      const e = entities.find((x) => x.id === initialSelection.eid);
+      if (!e) return;
+      appliedInitial.current = target;
+      void selectEntity(e);
+    }
+    // selectInteraction/selectEntity are stable enough for this effect's intent
+    // (they close over traceId + the query data); we key the effect on the ids,
+    // the loaded rows, and the current selection so it runs when any changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSelection?.iid, initialSelection?.eid, interactions, entities, selection]);
 
   // Row highlight: `data-dg-selected="active"` drives the background tint via
   // global.css for the single selected row. The attribute is omitted when the

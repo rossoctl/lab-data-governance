@@ -3,6 +3,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Routes, Route } from 'react-router-dom';
 import { renderWithProviders } from '../test/renderWithProviders';
+import { LocationProbe } from '../test/LocationProbe';
 import { RecentTracesPage } from './RecentTracesPage';
 
 // The recent-traces landing view: renders a row per TraceListingEntry with
@@ -52,7 +53,7 @@ describe('RecentTracesPage', () => {
     expect(screen.getByText(/Real root/)).toBeInTheDocument();
   });
 
-  it('navigates to /traces/:tid when a row is clicked', async () => {
+  it('navigates to the canonical /traces/:tid/spans URL when a row is clicked', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       status: 200,
@@ -61,15 +62,157 @@ describe('RecentTracesPage', () => {
 
     renderWithProviders(
       <Routes>
-        <Route path="/" element={<RecentTracesPage />} />
-        <Route path="/traces/:traceId" element={<div>trace detail T1</div>} />
+        <Route path="/traces" element={<RecentTracesPage />} />
+        <Route path="/traces/:traceId/spans" element={<div>trace detail T1</div>} />
       </Routes>,
+      { route: '/traces' },
     );
 
     await waitFor(() => expect(screen.getByText('api-handler')).toBeInTheDocument());
     await userEvent.click(screen.getByText('api-handler'));
     await waitFor(() =>
       expect(screen.getByText('trace detail T1')).toBeInTheDocument(),
+    );
+  });
+
+  // --- URL-as-state: the time window + hide-orphans checkbox round-trip
+  // through the query string, so reload/bookmark/back restore the list view.
+
+  it('reads the initial time window from ?window and queries all-time (no bounds)', async () => {
+    const calls: string[] = [];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      calls.push(url);
+      return { ok: true, status: 200, json: async () => ({ traces: [entry()] }) };
+    });
+
+    renderWithProviders(<RecentTracesPage />, { route: '/traces?window=all' });
+
+    await waitFor(() => expect(screen.getByText('api-handler')).toBeInTheDocument());
+    // The select reflects the URL.
+    expect((screen.getByLabelText('Time window') as HTMLSelectElement).value).toBe('all');
+    // "all" means no time bounds on the API call.
+    expect(calls.some((u) => u.includes('/api/traces'))).toBe(true);
+    expect(calls.every((u) => !u.includes('time_from') && !u.includes('time_to'))).toBe(true);
+  });
+
+  it('reads a bounded window from ?window and sends time_from to the API', async () => {
+    const calls: string[] = [];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      calls.push(url);
+      return { ok: true, status: 200, json: async () => ({ traces: [entry()] }) };
+    });
+
+    renderWithProviders(<RecentTracesPage />, { route: '/traces?window=6h' });
+
+    await waitFor(() => expect(screen.getByText('api-handler')).toBeInTheDocument());
+    expect((screen.getByLabelText('Time window') as HTMLSelectElement).value).toBe('6h');
+    expect(calls.some((u) => u.includes('time_from'))).toBe(true);
+  });
+
+  it('defaults to the 1h window when ?window is absent or garbage', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ traces: [entry()] }),
+    });
+
+    renderWithProviders(<RecentTracesPage />, { route: '/traces?window=bogus' });
+    await waitFor(() => expect(screen.getByText('api-handler')).toBeInTheDocument());
+    expect((screen.getByLabelText('Time window') as HTMLSelectElement).value).toBe('1h');
+  });
+
+  it('writes the chosen window into ?window when the select changes', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ traces: [entry()] }),
+    });
+
+    renderWithProviders(
+      <>
+        <RecentTracesPage />
+        <LocationProbe />
+      </>,
+      { route: '/traces' },
+    );
+
+    await waitFor(() => expect(screen.getByText('api-handler')).toBeInTheDocument());
+    await userEvent.selectOptions(screen.getByLabelText('Time window'), 'all');
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces?window=all'),
+    );
+  });
+
+  it('does not write ?window=1h for the default (keeps canonical URLs clean)', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ traces: [entry()] }),
+    });
+
+    renderWithProviders(
+      <>
+        <RecentTracesPage />
+        <LocationProbe />
+      </>,
+      { route: '/traces?window=all' },
+    );
+
+    await waitFor(() => expect(screen.getByText('api-handler')).toBeInTheDocument());
+    await userEvent.selectOptions(screen.getByLabelText('Time window'), '1h');
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces'),
+    );
+    expect(screen.getByTestId('location')).not.toHaveTextContent('window=1h');
+  });
+
+  it('reads ?hideOrphans=1 to filter missing-parent traces on load', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        traces: [
+          entry(),
+          entry({
+            trace_id: 'T2',
+            listing_root: {
+              seq: 2, trace_id: 'T2', span_id: 'orphan', parent_id: 'missing',
+              name: 'orphan-root', started_at: '2026-05-01T13:00:00Z',
+              service_name: 'svc-b', kind: 'INTERNAL', error: null,
+            },
+            counts: { total: 1, in_window: 1, error_count: 0 },
+          }),
+        ],
+      }),
+    });
+
+    renderWithProviders(<RecentTracesPage />, { route: '/traces?hideOrphans=1' });
+
+    await waitFor(() => expect(screen.getByText('api-handler')).toBeInTheDocument());
+    // Checkbox reflects the URL, and the orphan row is filtered out.
+    expect((screen.getByLabelText(/Hide missing-parent/i) as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByText('orphan-root')).toBeNull();
+  });
+
+  it('writes ?hideOrphans=1 when the checkbox is toggled on', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ traces: [entry()] }),
+    });
+
+    renderWithProviders(
+      <>
+        <RecentTracesPage />
+        <LocationProbe />
+      </>,
+      { route: '/traces' },
+    );
+
+    await waitFor(() => expect(screen.getByText('api-handler')).toBeInTheDocument());
+    await userEvent.click(screen.getByLabelText(/Hide missing-parent/i));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('hideOrphans=1'),
     );
   });
 
