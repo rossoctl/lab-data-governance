@@ -13,6 +13,7 @@ The output are entities and interactions.
 # Assumptions
 1. Our focus is on agents and agent interactions 
 2. OTEL may be incomplete 
+3. Spans representing tool, llm and agent call account for the request and the response (they alreagy have the result)
 
 
 # Definitions:
@@ -73,8 +74,6 @@ we can infer:
   3. New edges:
     - from Agent to server
     - from server to LLM
-    - From LLM to server
-    - from server to agent
 
 
 ### 2. Similarly a tool call Span such as openinference.instrumentation.claude_agent_sdk.{tool_name}
@@ -84,8 +83,6 @@ represent a call to a tool from which we can infer the following :
   3. New edges:
     - from the agent tool call (source) to server
     - from server to the tool itself (target)
-    - From the tool itself (target) to server
-    - from server to the agent tool call (source)
 
 ### 3. "llm.output_messages.0.message.tool_calls.0.tool_call. function.arguments": "{\"action\": \"store\", \"name\": \"keywords.2.txt\", ..}"
 While the complete span represents a call to the LLM - this specific attribute includes information on a tool.
@@ -98,8 +95,7 @@ Inferred nodes:
     - from the current span to the tool call
     - from the tool call (source) to server
     - from server to the tool itself (target)
-    - From the tool itself (target) to server
-    - from server to the tool call (source)
+   
 
 ### 4. Inferred agent node. 
 this case happens (for anthropic) When the framework emits only bare leaf LLM spans — no run/agent/wrapper span. The goal here is to infer an agent node by observing that all LLM spans share a single shared parent, in the transportation scope. Example:
@@ -121,10 +117,8 @@ Additional cases may exist which need to be implemented such as tools inferred f
 
 Inferred edges ordering/timing:
 When inferring new edges (interactions) make sure to adjust the order based on the execution order. examples: 
-- outgoing edges (calls) are before incoming edges (responses)
 - When tools are derived from LLM spans:
     - The edge between the LLM and the tool call is before the edge between the tool call and the tool itself
-    - the edge between the tool and the tool itself is before the edge between the tool and the tool call (reverse edge)
     - Tool interactions derived from input attributes should happen before interactions with the LLM
     - tool interactions derived from output attributes should happen after interactions with the LLM
 
@@ -135,10 +129,9 @@ When inferring new edges (interactions) make sure to adjust the order based on t
 this step identifies identical interactions - cases where a single interaction is represented more than once in the execution graph.
 Once these are detected, these chains are merged as a unit. 
 
-Specifically, an interaction is a chain (subgraph): Blue source → transport region → Blue target with response legs. Transport region is one or more Teal (and possibly White) nodes (inferred server or observed transport chain). 
+Specifically, an interaction is a chain (subgraph): Blue source → transport region → Blue target. Transport region is one or more Teal (and possibly White) nodes (inferred server or observed transport chain). 
 The goal is to identify chains that represent the same interaction (same processing at the same time) and merges them as a unit — the aligned Blue endpoints and the transport regions collapse pairwise onto one survivor. 
 Each side may be inferred or observed. Matching uses {proximity, same tool name, same execution time, same input/output, inferred-vs-observed, same scope}; the survivor keeps the time of the span that created the interaction.
-
 
 
 For example, Assume a trace including a span for LLM and another span for a tool call
@@ -146,9 +139,9 @@ the execution graph may include nodes inferred from the first span including
 tool call --> Server --> Tool
 In addition it may include nodes inferred from the second span including 
 Server --> Tool
-In such a case they inferred tool call may be merged with the node representing the tool called span, and both pairs of server no nodes and tool nodes should be merged.
+In such a case the inferred tool call may be merged with the node representing the tool call span, and both pairs of server nodes and tool nodes should be merged.
 
-example II: assume we have a tool called retrieving information from a database (Single invocation of the database) followed by multiple interactions with an LLM. in such a case the tool input will appear in all the following LLM spans and may result in multiple inferred database tool calls.
+example II: assume we have a tool call retrieving information from a database (Single invocation of the database) followed by multiple interactions with an LLM. in such a case the tool input will appear in all the following LLM spans and may result in multiple inferred database tool calls.
 since all those inferred nodes represent a single call to the database - They should be merged.
 
 example III: Assume we have an agent with a call site (e.g. a tool call) whose callee was inferred (source Blue -> inferred Teal server -> inferred Blue callee). Assume that the *same* call-site span is also the root of an observed transport chain (Teal) that runs through transport nodes until it reaches observed agentic (Blue) nodes.
@@ -167,7 +160,7 @@ The process of Merging is a set of heuristics - asserting the same exact process
 Timing notes:
 when merging edges account for the timing of each of the edges and maintain the time of the appropriate Span. for example, After a tool call its input may be repeated several times in following spans. in this case the timing of this is interaction should be after the span creating the tool call.
 
-When collapsing the inferred and observed nodes, the result should maintain the observed timestamps. For example, The response from example III should be anchored in the observed response nodes.
+When merging inferred and observed nodes, the result should maintain the observed timestamps. For example, The response from example III should be anchored in the observed response nodes.
 
 
 
@@ -202,30 +195,26 @@ If the key is not clear we can call it unknown.
 
 1. Structurally:
   - edges internal to a group are ignored
-  - Each Teal transport chain between two Blue components (no intervening entity/Blue node) becomes a single interaction (a bidirectional pair: request edge and respose edge)
+  - Each Teal transport chain between two Blue components (no intervening entity/Blue node) becomes a bidirectional pair: request edge and respose edge
  
-   
+   2. Timing (absolute timestamps):
+    The goal in this step is to assign each edge (request, response) an absolute started_at / ended_at. These are taken from the interaction's anchor span.
 
-2. Timing (absolute timestamps):
-The goal in this step is to assign each interaction (call, response) an absolute started_at / ended_at. These are taken from the interaction's anchor span.
+    Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor on the observed span that derived them (the originating agentic span). 
 
-Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor on the observed span that derived them (the originating agentic span). 
-
+    response edge semantic ordering:
+    The response edge, semantically executes after the processing of the agent is complete:  
+    If we observe the following chains between entities: 
+       A ─...─▶ B ─...─▶ C
+    We should create the following edges in the following order:
+      (Request edges)
+       1. A ──▶ B
+       2. B ──▶ C    (C completes)            
+      (response edges)
+       3. C ──▶ B    (B completes)
+       4. B ──▶ A   
 
 ## Step 3.c - infer (entity graph) 
-
-Consider the following pattern 
-   - Call / Return — A calls B and control returns to A:
-       A ──▶ B ──▶ A
-(every arrow is one interaction = two edges, e.g. A ──▶ B: call A→B, response B→A)
-
-if we observe: 
-  A ──▶ B, A:
-    - An interaction from A to B (A and B are adjacent - no intervening entity/Blue node)
-    - Control reached A again, immediately after B 
-We will infer the interaction from B to A (Meaning the response leg - two edges: call B→A, response A→B  )
-  A ──▶ B ──▶ A
-
 
 
 
