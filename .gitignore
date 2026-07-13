@@ -11,3 +11,9 @@ uv.lock
 
 # Pipeline runtime output
 classification/output/
+
+# React SPA build output (ADR-0019): the Containerfile's Node stage copies
+# Vite's dist/ into data_governance/api/ui/ (the _UI_DIR the backend serves).
+# The built assets are generated, never committed — keep only the .gitkeep.
+/data_governance/api/ui/*
+!/data_governance/api/ui/.gitkeep

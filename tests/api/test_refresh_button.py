@@ -1,14 +1,15 @@
-"""End-to-end tests for the Refresh button on the detail panel — issue #50.
+"""Wire-contract tests for the detail-panel Refresh flow — issue #50.
 
-Acceptance criteria covered:
-- AC1: Refresh button is rendered in the detail panel header.
-- AC2: Button starts hidden (display:none) until a span is selected.
+The rendered Refresh button now lives in the React SPA (ADR-0019); its
+DOM-level behaviour (present, hidden-until-selected, error message) is covered
+by the SPA's own tests. What remains here is the **API boundary** the Refresh
+action exercises — unchanged by the UI migration:
+
 - AC3/4: GET /api/traces/{tid}/spans/{sid} is the retrieval endpoint (ADR-0018,
   replacing GET /spans?trace_id&span_id); the response is the full-row Span.
 - AC5: loadedSpans update path — verified through the wire contract
   (the same single-span call the button uses).
-- AC6: Error path — HTTP error shows message in errorEl, panel unchanged.
-- AC7: E2E finalization scenario — the button re-fetches after
+- AC7: E2E finalization scenario — the endpoint re-fetches after
   ended_at/seq/error/status_message have been updated in the DB and the
   fresh values appear on the wire.
 """
@@ -16,11 +17,9 @@ Acceptance criteria covered:
 from __future__ import annotations
 
 import datetime as dt
-import json
 
 import httpx
 import psycopg
-import pytest
 
 UTC = dt.timezone.utc
 
@@ -91,30 +90,6 @@ def _finalize_span(
 
 
 # ---------------------------------------------------------------------------
-# AC1 + AC2: HTML shell — button present and hidden by default
-# ---------------------------------------------------------------------------
-
-
-def test_refresh_button_present_in_shell(api_server, configured_db):
-    """The trace-tree shell must contain the Refresh button element."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
-    assert resp.status_code == 200
-    text = resp.text
-    assert 'id="refresh-btn"' in text, "refresh-btn element missing from shell"
-
-
-def test_refresh_button_hidden_by_default(api_server, configured_db):
-    """The button must start hidden (display:none) — no span is selected
-    on page load."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
-    text = resp.text
-    # The button element must carry style="display:none" (or equivalent).
-    assert 'display:none' in text or 'display: none' in text, (
-        "refresh-btn must be hidden on initial page load"
-    )
-
-
-# ---------------------------------------------------------------------------
 # AC3/4: Wire contract — GET /api/traces/{tid}/spans/{sid} returns the span
 # ---------------------------------------------------------------------------
 
@@ -151,22 +126,6 @@ def test_refresh_wire_contract_no_span_returns_404(api_server, configured_db):
         f"http://127.0.0.1:{api_server.port}/api/traces/T-missing/spans/no-such-span",
     )
     assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# AC6: Error-path behaviour — errorEl shows message on bad fetch
-# ---------------------------------------------------------------------------
-
-
-def test_refresh_button_error_handler_present_in_shell(api_server, configured_db):
-    """The shell JS must reference 'errorEl' inside the refresh handler so
-    HTTP errors surface in the existing error element."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/ui/traces/any")
-    text = resp.text
-    # The error path must assign errorEl.textContent inside the refresh handler.
-    assert "Refresh failed" in text, (
-        "refresh error handler must produce a user-readable 'Refresh failed' message"
-    )
 
 
 # ---------------------------------------------------------------------------

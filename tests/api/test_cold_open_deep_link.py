@@ -26,7 +26,6 @@ import datetime as dt
 
 import httpx
 import psycopg
-import pytest
 
 from data_governance.api import SpansApiServer
 
@@ -101,18 +100,6 @@ def test_trace_route_returns_html_shell(api_server, configured_db):
     assert "text/html" in resp.headers.get("content-type", "")
 
 
-def test_trace_route_is_not_hash_navigation(api_server, configured_db):
-    """Recent-traces click-through must use real /ui/traces/<id> routes, not hashes.
-
-    A ``#/traces/<id>`` href never reaches the server on a paste/reload;
-    only a real path does.  This pins the regression from the early
-    hash-based prototype.
-    """
-    resp = httpx.get(f"{_base_url(api_server)}/ui/")
-    assert "'#/traces/'" not in resp.text
-    assert '"#/traces/"' not in resp.text
-
-
 def test_multiple_distinct_trace_ids_each_served(api_server, configured_db):
     """Different trace IDs each get the same HTML shell — the trace_id is
     consumed by in-page JS from window.location.pathname, not from the HTML."""
@@ -123,24 +110,12 @@ def test_multiple_distinct_trace_ids_each_served(api_server, configured_db):
 
 # ---------------------------------------------------------------------------
 # AC: cold-open fetches the TraceListingEntry singular, no window parameters
+#
+# The cold-open fetch is issued by the React SPA (ADR-0019); which endpoint it
+# calls and that it omits time-window params are covered by the SPA's own tests.
+# The API-side guarantee the SPA relies on — the singular returns the listing
+# root + counts and ignores any window — is asserted directly below.
 # ---------------------------------------------------------------------------
-
-
-def test_cold_open_fetch_uses_traces_singular(api_server, configured_db):
-    """The trace-tree shell must fetch the ``/api/traces/`` singular in the
-    cold-open path, and must NOT include time-window parameters (the singular
-    ignores the window; ADR-0018)."""
-    resp = httpx.get(f"{_base_url(api_server)}/ui/traces/T")
-    html = resp.text
-
-    # The cold-open fetch targets the /api/traces/ resource tree.
-    assert "/api/traces/" in html
-    # The retired multi-shape query surface must not reappear.
-    assert "root_only" not in html
-
-    # Time-window parameters must not appear in the trace-tree shell at all.
-    assert "time_from" not in html
-    assert "time_to" not in html
 
 
 def test_cold_open_endpoint_returns_listing_root_and_counts(api_server, configured_db):
@@ -278,19 +253,11 @@ def test_cold_open_counts_zero_errors_when_no_errors(api_server, configured_db):
 
 
 def test_cold_open_404_for_unknown_trace(api_server, configured_db):
-    """GET /api/traces/T returns 404 when the trace does not exist. The UI
-    renders 'Trace not found.' rather than crashing or hanging."""
+    """GET /api/traces/T returns 404 when the trace does not exist. The SPA
+    renders 'Trace not found.' rather than crashing or hanging — the empty
+    state itself is a SPA concern; here we pin the 404 the SPA keys off."""
     resp = httpx.get(f"{_base_url(api_server)}/api/traces/no-such-trace")
     assert resp.status_code == 404
-
-
-def test_cold_open_shell_contains_empty_state_message(api_server, configured_db):
-    """The trace-tree HTML shell must include the 'trace not found' empty-state
-    text so the in-page JS can surface it without a second round-trip."""
-    resp = httpx.get(f"{_base_url(api_server)}/ui/traces/anything")
-    html = resp.text
-    # The shell's init() renders this when the singular 404s / has no root.
-    assert "not found" in html.lower() or "Trace not found" in html
 
 
 # ---------------------------------------------------------------------------
@@ -368,19 +335,22 @@ def test_cold_open_subtree_expansion_paginates_wide_fanout(api_server, configure
 # ---------------------------------------------------------------------------
 
 
-def test_trace_route_and_index_route_are_separate_real_routes(
+def test_trace_route_and_index_route_are_real_routes(
     api_server, configured_db,
 ):
-    """Both /ui/ and /ui/traces/<id> must be distinct server-side routes so
-    browser history entries are real URLs that survive a reload."""
+    """Both ``/ui/`` and ``/ui/traces/<id>`` are real server-side routes that
+    return 200 so browser history entries are real URLs that survive a reload.
+
+    Post-ADR-0019 both serve the SAME SPA ``index.html`` (React Router,
+    ``basename="/ui"``, distinguishes them client-side) — the point is that
+    neither 404s on a paste/reload, i.e. no hash navigation."""
     index_resp = httpx.get(f"{_base_url(api_server)}/ui/")
     trace_resp = httpx.get(f"{_base_url(api_server)}/ui/traces/abc")
 
     assert index_resp.status_code == 200
+    assert "text/html" in index_resp.headers.get("content-type", "")
     assert trace_resp.status_code == 200
-    # Different HTML shells.
-    assert "Recent traces" in index_resp.text
-    assert "Trace tree" in trace_resp.text
+    assert "text/html" in trace_resp.headers.get("content-type", "")
 
 
 # ---------------------------------------------------------------------------

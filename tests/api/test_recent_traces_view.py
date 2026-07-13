@@ -385,80 +385,16 @@ def test_pagination_by_cursor_advances(api_server, configured_db):
 
 
 # ---------------------------------------------------------------------------
-# UI shell HTML — the implementing slice ships a recent-traces shell
+# UI shell
 # ---------------------------------------------------------------------------
-
-
-def test_ui_shell_served_at_ui(api_server, configured_db):
-    """``GET /ui/`` returns the recent-traces UI shell HTML (ADR-0017)."""
-    resp = httpx.get(f"{_base_url(api_server)}/ui/")
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers.get("content-type", "")
-
-
-def test_ui_shell_calls_traces_listing_endpoint(
-    api_server, configured_db
-):
-    """The shell is wired to call ``/api/traces`` for its initial render —
-    the canonical endpoint for the recent-traces view (ADR-0018)."""
-    resp = httpx.get(f"{_base_url(api_server)}/ui/")
-    assert "/api/traces" in resp.text
-
-
-def test_ui_shell_default_page_size_is_20(api_server, configured_db):
-    """Default page size is 20 (issue #13 spec)."""
-    resp = httpx.get(f"{_base_url(api_server)}/ui/")
-    # The constant should appear in the JS literal that drives the request.
-    assert "20" in resp.text
-
-
-def test_ui_shell_has_design_classes_from_ui_design_doc(
-    api_server, configured_db
-):
-    """Shell carries the design-token CSS classes from
-    ``docs/ui-design.md`` §6 / §7 / §9 (greyed-out + tabular-num count)."""
-    resp = httpx.get(f"{_base_url(api_server)}/ui/")
-    text = resp.text
-    assert "dg-row--out-of-window" in text  # §6 greyed-out
-    assert "dg-window-count" in text  # §7 in_window/total format
-
-
-def test_ui_shell_has_missing_parent_filter_toggle(
-    api_server, configured_db
-):
-    """Shell exposes the filter toggle that hides missing-parent
-    listing roots (issue #13 acceptance criterion)."""
-    resp = httpx.get(f"{_base_url(api_server)}/ui/")
-    # Use a stable id we can hook tests onto.
-    assert 'id="hide-missing-parent"' in resp.text
-
-
-def test_ui_shell_has_time_window_picker(api_server, configured_db):
-    """Shell exposes a time-window selection surface (issue #13:
-    "User-visible time-window selection ... at whatever granularity
-    #11 settled on")."""
-    resp = httpx.get(f"{_base_url(api_server)}/ui/")
-    assert 'id="time-window"' in resp.text
-
-
-def test_ui_logic_js_asset_is_served(api_server, configured_db):
-    """The dedupe / filter helpers ship as a sibling JS asset the
-    shell loads via ``/ui/recent_traces_logic.js``."""
-    resp = httpx.get(
-        f"{_base_url(api_server)}/ui/recent_traces_logic.js"
-    )
-    assert resp.status_code == 200
-    assert "javascript" in resp.headers.get("content-type", "")
-    assert "dedupeByTraceId" in resp.text
-
-
-def test_ui_asset_route_rejects_unknown_files(api_server, configured_db):
-    """The asset route is whitelist-only and never functions as a
-    generic file server (e.g. cannot exfiltrate ``index.html`` or
-    arbitrary files)."""
-    resp = httpx.get(f"{_base_url(api_server)}/ui/index.html")
-    assert resp.status_code == 404
-    resp = httpx.get(f"{_base_url(api_server)}/ui/../api/__init__.py")
-    # Starlette path matcher rejects with 404 anyway, but assert
-    # explicitly so a regression in routing doesn't slip through.
-    assert resp.status_code == 404
+#
+# The recent-traces view is now a React SPA route (ADR-0019), served by the
+# StaticFiles mount + catch-all under /ui/. Its rendered structure (the
+# 5-column table, greyed-out out-of-window rows, the missing-parent filter
+# toggle, the time-window picker, and the dedupe/filter helpers) is covered by
+# the SPA's own Vitest/Playwright suites; the SPA-serving wire contract lives in
+# ``test_spa_serving.py``. The former shell-HTML-string assertions (design-token
+# CSS classes, ``id="hide-missing-parent"``, the ``recent_traces_logic.js``
+# asset whitelist) were retired with the vanilla shell — this module keeps only
+# the ``/api/traces`` acceptance-matrix and pagination boundary above, which the
+# migration does not touch.

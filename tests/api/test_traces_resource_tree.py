@@ -278,10 +278,12 @@ def test_ui_index_serves_shell(api_server, configured_db):
 
 
 def test_ui_trace_tree_page_serves_shell(api_server, configured_db):
+    # Deep link under /ui/ resolves to the SPA shell (ADR-0019 catch-all);
+    # React Router renders the trace-tree view client-side. The served HTML is
+    # the built index.html, so we assert the route + media type, not shell text.
     resp = httpx.get(f"{_base_url(api_server)}/ui/traces/abcdef")
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
-    assert "Trace tree" in resp.text
 
 
 def test_healthz_stays_at_root(api_server, configured_db):
