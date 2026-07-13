@@ -424,7 +424,7 @@ describe('TraceDetailPage', () => {
     // opens only the root (showing mid), leaving leaf hidden. A tab click drops
     // ?sel, so nothing could re-reveal leaf; it survives only via kept state.
     const inTreeRow = (name: string) =>
-      screen.getAllByText(name).some((el) => el.closest('[data-testid="span-row"]') !== null);
+      screen.queryAllByText(name).some((el) => el.closest('[data-testid="span-row"]') !== null);
 
     mockFetchWithGrandchild();
     renderWithProviders(harness(), { route: '/traces/T1/spans?sel=leaf' });
@@ -444,6 +444,40 @@ describe('TraceDetailPage', () => {
 
     // The deep leaf row is STILL rendered in the tree (mid still expanded), not
     // collapsed away to depth 1.
+    expect(inTreeRow('leaf-span')).toBe(true);
+  });
+
+  it('keeps MANUALLY-expanded nodes across a flow-tab round-trip', async () => {
+    // Sibling to the reveal test: a node the user opened BY HAND (clicking its
+    // expand triangle, no highlight/reveal, no ?sel) must also survive the
+    // round-trip. This is the full-state guarantee — not just reveal-expanded
+    // ancestors. Open the page fresh; auto-expand shows root → mid; hand-expand
+    // mid to show leaf; round-trip; leaf must remain visible.
+    const inTreeRow = (name: string) =>
+      screen.queryAllByText(name).some((el) => el.closest('[data-testid="span-row"]') !== null);
+
+    mockFetchWithGrandchild();
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
+
+    // Root auto-expands to show mid; leaf is inside mid's collapsed subtree.
+    await waitFor(() => expect(inTreeRow('mid-span')).toBe(true));
+    expect(inTreeRow('leaf-span')).toBe(false);
+
+    // MANUALLY expand mid by clicking its triangle (aria-label "expand mid-span").
+    await userEvent.click(screen.getByRole('button', { name: /expand mid-span/i }));
+    await waitFor(() => expect(inTreeRow('leaf-span')).toBe(true));
+
+    // Round-trip: to the flow tab, then back to the span tree tab.
+    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
+    );
+    await userEvent.click(screen.getByRole('tab', { name: /Span tree/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/spans'),
+    );
+
+    // The hand-expanded leaf row is STILL rendered — manual expansion survived.
     expect(inTreeRow('leaf-span')).toBe(true);
   });
 
