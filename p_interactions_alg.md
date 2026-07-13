@@ -13,7 +13,7 @@ The output are entities and interactions.
 # Assumptions
 1. Our focus is on agents and agent interactions 
 2. OTEL may be incomplete 
-3. Spans representing tool, llm and agent call account for the request and the response (they alreagy have the result)
+3. Spans representing tool, llm and agent call account for the request and the response (they already have the result)
 
 
 # Definitions:
@@ -30,7 +30,7 @@ The output are entities and interactions.
 # Note about architecture
 The following algorithm should be implemented as a pipeline as much as possible. Each top level step (1,2,3) should be stateless, It should have a clear input, then it should process the input and produce a clear output.
 
-Each step should have its own module containing all relevant implementation. All information needed in future stages should be add Microphone off ed.
+Each step should have its own module containing all relevant implementation. All information needed in future stages should be added.
 
 
 # Step 1 - Base (white) execution flow graph
@@ -86,8 +86,7 @@ represent a call to a tool from which we can infer the following :
 
 ### 3. "llm.output_messages.0.message.tool_calls.0.tool_call. function.arguments": "{\"action\": \"store\", \"name\": \"keywords.2.txt\", ..}"
 While the complete span represents a call to the LLM - this specific attribute includes information on a tool.
-We can therefore infer two nodes and three edges.
-Inferred nodes:
+We can therefore infer:
   1. A new node representing the tool call (The source) - Agentic scope "blue"
   2. A new node representing a transportation node "Teal" (e.g. server)
   3. A new node representing the tool itself (target) - agent scope "blue"
@@ -107,7 +106,7 @@ Inferred nodes:
   2. new inferred edges:
     -. from the transportation (POST) span/node to the agent node
     -. from the agent node to each one of the LLM spans ()
-  3. Disconnect the edges but maintain reference from the newly created edges to the original ones 
+  3. Disconnect the edges (POST --> messages.create) while maintain reference from the newly created edges to the original ones 
   
   
 
@@ -116,20 +115,20 @@ Inferred nodes:
 Additional cases may exist which need to be implemented such as tools inferred from input attributes.
 
 Inferred edges ordering/timing:
-When inferring new edges (interactions) make sure to adjust the order based on the execution order. examples: 
+When inferring new edges make sure to adjust the timings based on the *execution order*. examples: 
 - When tools are derived from LLM spans:
     - The edge between the LLM and the tool call is before the edge between the tool call and the tool itself
-    - Tool interactions derived from input attributes should happen before interactions with the LLM
-    - tool interactions derived from output attributes should happen after interactions with the LLM
+    - Tool call chains derived from input attributes should happen earlier than call chains  with the LLM
+    - tool call chains derived from output attributes should happen later than call chains with the LLM
 
-
+TODO: human - verify the need for this
 
 ## Step 2.d - merge interactions (execution graph)
 
-this step identifies identical call chains - cases where a single exexcuted call chain is represented more than once in the execution graph.
+this step identifies identical call chains - cases where a single excuted call chain is represented more than once in the execution graph.
 Once these are detected, these chains are merged as a unit. 
 
-Specifically, an call chain is a chain (subgraph): Blue source → transport region → Blue target. Transport region is one or more Teal (and possibly White) nodes (inferred server or observed transport chain). 
+Specifically, a call chain is a chain (subgraph): Blue source → transport region → Blue target. Transport region is one or more Teal (and possibly White) nodes (inferred server or observed transport chain). 
 The goal is to identify call chains that represent the same execution path (same processing at the same time) and merges them as a unit — the aligned Blue endpoints and the transport regions collapse pairwise onto one survivor. 
 Each side may be inferred or observed. Matching uses {proximity, same tool name, same execution time, same input/output, inferred-vs-observed, same scope}; the survivor keeps the time of the span that created the call chain.
 
@@ -195,7 +194,7 @@ If the key is not clear we can call it unknown.
 
 1. Structurally:
   - edges internal to a group are ignored
-  - Each Teal transport chain between two Blue components (no intervening entity/Blue node) becomes a bidirectional pair: request edge and respose edge
+  - Each Teal transport chain between two Blue components (no intervening entity/Blue node) becomes a bidirectional pair: request edge and respose edge.
  
    2. Timing (absolute timestamps):
     The goal in this step is to assign each edge (request, response) an absolute started_at / ended_at. These are taken from the interaction's anchor span.
