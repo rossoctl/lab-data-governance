@@ -126,12 +126,12 @@ When inferring new edges (interactions) make sure to adjust the order based on t
 
 ## Step 2.d - merge interactions (execution graph)
 
-this step identifies identical interactions - cases where a single interaction is represented more than once in the execution graph.
+this step identifies identical call chains - cases where a single exexcuted call chain is represented more than once in the execution graph.
 Once these are detected, these chains are merged as a unit. 
 
-Specifically, an interaction is a chain (subgraph): Blue source → transport region → Blue target. Transport region is one or more Teal (and possibly White) nodes (inferred server or observed transport chain). 
-The goal is to identify chains that represent the same interaction (same processing at the same time) and merges them as a unit — the aligned Blue endpoints and the transport regions collapse pairwise onto one survivor. 
-Each side may be inferred or observed. Matching uses {proximity, same tool name, same execution time, same input/output, inferred-vs-observed, same scope}; the survivor keeps the time of the span that created the interaction.
+Specifically, an call chain is a chain (subgraph): Blue source → transport region → Blue target. Transport region is one or more Teal (and possibly White) nodes (inferred server or observed transport chain). 
+The goal is to identify call chains that represent the same execution path (same processing at the same time) and merges them as a unit — the aligned Blue endpoints and the transport regions collapse pairwise onto one survivor. 
+Each side may be inferred or observed. Matching uses {proximity, same tool name, same execution time, same input/output, inferred-vs-observed, same scope}; the survivor keeps the time of the span that created the call chain.
 
 
 For example, Assume a trace including a span for LLM and another span for a tool call
@@ -141,12 +141,12 @@ In addition it may include nodes inferred from the second span including
 Server --> Tool
 In such a case the inferred tool call may be merged with the node representing the tool call span, and both pairs of server nodes and tool nodes should be merged.
 
-example II: assume we have a tool call retrieving information from a database (Single invocation of the database) followed by multiple interactions with an LLM. in such a case the tool input will appear in all the following LLM spans and may result in multiple inferred database tool calls.
+example II: assume we have a tool call retrieving information from a database (Single invocation of the database) followed by multiple call chains to an LLM. in such a case the tool input will appear in all the following LLM spans and may result in multiple inferred database tool calls.
 since all those inferred nodes represent a single call to the database - They should be merged.
 
 example III: Assume we have an agent with a call site (e.g. a tool call) whose callee was inferred (source Blue -> inferred Teal server -> inferred Blue callee). Assume that the *same* call-site span is also the root of an observed transport chain (Teal) that runs through transport nodes until it reaches observed agentic (Blue) nodes.
-In that case the inferred server/callee and the observed transport chain/agentic node are the *same* interaction: the call made was actually served by the observed downstream agent.
-When merging, the inferred server and callee nodes are collapsed into the observed transport chain and agentic (Blue) nodes. The result is a single interaction from the call site to the observed downstream agent (e.g. agent -> agent). For this case, a shared root node is a sufficient signal on its own.
+In that case the inferred server/callee and the observed transport chain/agentic node are the *same* call chain execution: the call made was actually served by the observed downstream agent.
+When merging, the inferred server and callee nodes are collapsed into the observed transport chain and agentic (Blue) nodes. The result is a single call chain from the call site to the observed downstream agent (e.g. agent -> agent). For this case, a shared root node is a sufficient signal on its own.
 
 The process of Merging is a set of heuristics - asserting the same exact processing is observed - and can be based on:
 - proximity in the trace
@@ -158,7 +158,7 @@ The process of Merging is a set of heuristics - asserting the same exact process
 - same root node
 
 Timing notes:
-when merging edges account for the timing of each of the edges and maintain the time of the appropriate Span. for example, After a tool call its input may be repeated several times in following spans. in this case the timing of this is interaction should be after the span creating the tool call.
+when merging edges account for the timing of each of the edges and maintain the time of the appropriate Span. for example, After a tool call its input may be repeated several times in following spans. in this case the timing of this is call chain should be after the span creating the tool call.
 
 When merging inferred and observed nodes, the result should maintain the observed timestamps. For example, The response from example III should be anchored in the observed response nodes.
 
@@ -202,9 +202,9 @@ If the key is not clear we can call it unknown.
 
     Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor on the observed span that derived them (the originating agentic span). 
 
-    response edge semantic ordering:
-    The response edge, semantically executes after the processing of the agent is complete:  
-    If we observe the following chains between entities: 
+    semantic ordering:
+    the response edge, semantically executes after the processing of the agent is complete:  
+    If we observe the following chains between entities (Based on the traceparent): 
        A ─...─▶ B ─...─▶ C
     We should create the following edges in the following order:
       (Request edges)
