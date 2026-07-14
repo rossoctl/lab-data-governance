@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -170,6 +171,50 @@ def test_containerfile_does_not_pin_command_to_one_entrypoint(
         assert "data_governance.api" not in line, (
             f"ENTRYPOINT must not pin the api module; got {line!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# pyproject: torch/transformers live behind the `classification` extra (issue #79)
+# ---------------------------------------------------------------------------
+#
+# ADR-0022: only the classification image installs the ~2 GB torch stack. It must
+# be an OPTIONAL dependency (an extra), never a core dependency — otherwise the
+# shared receiver/UI/interactions image's `uv sync` (which installs no extra)
+# would drag torch in and blow the slim-image contract. These tests pin that the
+# extra exists and carries torch + transformers, and that the core dependency
+# list carries neither.
+
+
+@pytest.fixture(scope="module")
+def pyproject() -> dict:
+    with (REPO_ROOT / "pyproject.toml").open("rb") as fh:
+        return tomllib.load(fh)
+
+
+def test_classification_extra_carries_torch_and_transformers(pyproject: dict) -> None:
+    """A ``classification`` optional-dependency extra bundles the NER model's
+    runtime (torch + transformers), so only the classification image installs
+    them (ADR-0022)."""
+    extras = pyproject["project"].get("optional-dependencies", {})
+    assert "classification" in extras, (
+        "pyproject must declare a `classification` optional-dependency extra "
+        f"(got extras: {sorted(extras)})"
+    )
+    packages = " ".join(extras["classification"]).lower()
+    assert "torch" in packages, "classification extra must include torch"
+    assert "transformers" in packages, "classification extra must include transformers"
+
+
+def test_core_dependencies_are_torch_free(pyproject: dict) -> None:
+    """The shared image installs only core deps (`uv sync --no-dev`, no extra), so
+    torch/transformers must NOT appear in `[project.dependencies]` — otherwise the
+    receiver/UI/interactions image would carry the ML stack it never runs
+    (ADR-0022)."""
+    core = " ".join(pyproject["project"].get("dependencies", [])).lower()
+    assert "torch" not in core, "torch must not be a core dependency (ADR-0022)"
+    assert "transformers" not in core, (
+        "transformers must not be a core dependency (ADR-0022)"
+    )
 
 
 # ---------------------------------------------------------------------------
