@@ -71,8 +71,10 @@ class Payload:
 def process_payload(tx: db.Transaction, payload: Payload) -> None:
     """Derive and persist one **Payload**'s **Classification**, within *tx*.
 
-    Runs the (stubbed) classifier and writes exactly one row into
-    ``payload_classifications`` with ``ON CONFLICT (content_hash) DO NOTHING`` —
+    Runs the classifier (:func:`verdict.classify` — projects the payload's
+    ``content`` into its **Classifiable text**, detects **Findings** through the
+    detector seam, aggregates the verdict; issue #78) and writes exactly one row
+    into ``payload_classifications`` with ``ON CONFLICT (content_hash) DO NOTHING`` —
     write-once and idempotent (ADR-0024): re-processing the same payload after a
     crash is a no-op, never a duplicate row or an in-place mutation.
 

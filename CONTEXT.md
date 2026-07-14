@@ -447,9 +447,14 @@ interaction participant (agent/tool/llm/…). A finding's type is an NER tag
 The processor that reads **Payloads** and derives their **Classification**.
 A Layer-2 processor, sibling of `P-interactions`; projects each **Payload**
 into its **Classifiable text**, runs the fine-tuned NER model over that text to
-detect sensitive spans, then maps those to a sensitivity verdict (see
-`classification/`). Consumes `interaction_payloads`; semantically aware where
-the receiver is not. Runs the NER model **in-process** in the drain loop, and
+detect **Findings**, then aggregates those to a sensitivity verdict. The
+projection + aggregation logic is ported into the package
+(`data_governance/processors/classification/`: `projection`, `logic`, behind the
+`detector` seam) from the reference batch tool `classification/`, which stays as
+the offline-eval harness (the port is parity-tested against it) — mirroring how
+`P-interactions` was ported from its verified prototype. Consumes
+`interaction_payloads`; semantically aware where the receiver is not. Runs the NER
+model **in-process** in the drain loop, and
 ships as its own container image (`data-governance/classification`) — separate
 from the shared receiver/UI/interactions image because its torch + ~500 MB
 model-weight dependency closure diverges heavily (the weights are baked into
@@ -459,8 +464,9 @@ the image; image tag ↔ `model_version`). See ADR-0022 (own image) and ADR-0023
 **Classifiable text**:
 The single natural-language string **P-classification** feeds to the NER
 model for one **Payload** — the payload's human-meaningful prose projected
-out of its JSONB `content` by the **Text projection rule**. Detected entity
-spans are char offsets into this string, not into the stored JSONB.
+out of its JSONB `content` by the **Text projection rule**. Detected **Finding**
+regions are `(start, end)` char offsets into this string, not into the stored
+JSONB.
 
 **Text projection rule**:
 The processor-side rule by which **P-classification** projects a **Payload**'s
