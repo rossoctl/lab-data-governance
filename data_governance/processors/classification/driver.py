@@ -54,6 +54,32 @@ POLL_SECONDS = 5.0
 # How many payloads to pull per drain batch (each is still its own transaction).
 _DRAIN_BATCH = 500
 
+# Content kinds the Text projection rule has (or will have) a dedicated branch
+# for. Any kind NOT in this set — ``unknown`` and any unhandled kind — projects
+# via the whole-JSONB serialization fallback, which is the projection-coverage
+# gap the ``projection_fallbacks_total`` counter tracks (CONTEXT.md **Text
+# projection rule**, issue #81).
+#
+# HOOK for issue #78: the real per-kind projection lands in #78. Until then the
+# verdict stub ignores the payload bytes entirely, so this set is only consulted
+# to emit the coverage signal — no text is actually projected yet. When #78
+# implements the projection rule, this set should become the authoritative list
+# of kinds with a real branch (kept in sync with the rule's ``match``), and the
+# increment below moves to fire on the rule's actual fallback path. The counter
+# name and semantics stay put so the metric is additive across the two issues.
+# Mirrors the Content kind enum (CONTEXT.md) minus ``unknown``.
+_PROJECTABLE_CONTENT_KINDS = frozenset(
+    {
+        "llm_chat_prompt",
+        "llm_completion",
+        "tool_call_arguments",
+        "tool_call_result",
+        "http_request_body",
+        "http_response_body",
+        "agent_message",
+    }
+)
+
 
 @dataclasses.dataclass(frozen=True)
 class Payload:
@@ -82,6 +108,17 @@ def process_payload(tx: db.Transaction, payload: Payload) -> None:
     cursor in the same *tx*, so the classification write and the cursor advance
     commit atomically (ADR-0007).
     """
+    # Projection-coverage signal (issue #81). The **Text projection rule** has no
+    # branch for this payload's **Content kind** (``unknown`` or an unhandled
+    # kind), so projection would fall back to whole-JSONB serialization — count
+    # it. HOOK for #78: today the verdict stub ignores the bytes, so this only
+    # emits the coverage metric; when #78 implements the projection rule this
+    # increment moves onto the rule's real fallback path (same counter, same
+    # semantics — the metric is additive across the two issues). Referenced as a
+    # module global so a test's metrics.make_registry() rebind is picked up.
+    if payload.content_kind not in _PROJECTABLE_CONTENT_KINDS:
+        metrics.projection_fallbacks_total.inc()
+
     v = verdict.classify(payload.content_hash, payload.content_kind, payload.content)
     tx.execute(
         "INSERT INTO payload_classifications "

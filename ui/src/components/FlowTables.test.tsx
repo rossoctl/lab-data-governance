@@ -240,6 +240,80 @@ describe('FlowTables', () => {
     expect(screen.getByText('json')).toBeInTheDocument();
   });
 
+  it('shows the payload Classification verdict (sensitivity + tags + identity bundle + findings) on expand', async () => {
+    const withPayload = [
+      { ...INTERACTIONS[0], request_payload_hash: 'reqhash0deadbeef', response_payload_hash: null },
+    ];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.includes('/payloads/reqhash0deadbeef'))
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            content_hash: 'reqhash0deadbeef', content_kind: 'json',
+            content: { note: 'contact jo@example.com' }, byte_size: 42,
+            classification: {
+              sensitivity_level: 'CONFIDENTIAL',
+              regulatory_tags: ['PII'],
+              contains_identity_bundle: true,
+              is_personalized: true,
+              primary_domain: 'person',
+              findings: [{ entity_type: 'EMAIL', start: 8, end: 22, text: 'jo@example.com' }],
+              model_version: 1,
+            },
+          }),
+        };
+      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    const reqToggle = await screen.findByRole('button', { name: /Request: reqhash0/i });
+    await userEvent.click(reqToggle);
+    // The Classification verdict renders inside the expanded Req cell.
+    await waitFor(() => expect(screen.getByText('CONFIDENTIAL')).toBeInTheDocument());
+    expect(screen.getByText('PII')).toBeInTheDocument();
+    expect(screen.getByText(/identity bundle/i)).toBeInTheDocument();
+    // The finding's detected type + flagged text region.
+    const findings = screen.getByLabelText('Findings');
+    expect(within(findings).getByText('EMAIL')).toBeInTheDocument();
+    expect(within(findings).getByText('jo@example.com')).toBeInTheDocument();
+  });
+
+  it('shows "not yet classified" in the payload cell when classification is null (eventual-consistency window)', async () => {
+    const withPayload = [
+      { ...INTERACTIONS[0], request_payload_hash: 'reqhash0deadbeef', response_payload_hash: null },
+    ];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.includes('/payloads/reqhash0deadbeef'))
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            content_hash: 'reqhash0deadbeef', content_kind: 'json',
+            content: { q: 'flights' }, byte_size: 42, classification: null,
+          }),
+        };
+      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Request: reqhash0/i }));
+    // Null classification renders as the distinct eventual-consistency note,
+    // not as a PUBLIC verdict.
+    await waitFor(() => expect(screen.getByText(/not yet classified/i)).toBeInTheDocument());
+    expect(screen.queryByText('PUBLIC')).toBeNull();
+  });
+
   it('omits the Payloads section for an interaction that carried no payloads', async () => {
     mockFetch(); // INTERACTIONS[0] has null request/response hashes
     renderWithProviders(
