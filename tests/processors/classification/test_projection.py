@@ -104,3 +104,17 @@ def test_kind_without_a_branch_uses_the_same_fallback() -> None:
     assert fallback == projection.project("unknown", content) == json.dumps(
         content, sort_keys=True, ensure_ascii=False
     )
+
+
+def test_is_projectable_reflects_the_branch_set() -> None:
+    """``is_projectable`` is the single source of truth the driver's
+    projection-coverage counter keys off: True for a kind with a real branch,
+    False for ``unknown`` and any unbranched kind (so it can never drift from the
+    fallback path; #81/#78)."""
+    assert projection.is_projectable("llm_chat_prompt") is True
+    assert projection.is_projectable("tool_call_result") is True
+    # Recognised Content kinds without a projection branch yet → fallback.
+    assert projection.is_projectable("http_request_body") is False
+    assert projection.is_projectable("agent_message") is False
+    # The open-world case.
+    assert projection.is_projectable("unknown") is False

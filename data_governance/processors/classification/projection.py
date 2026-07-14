@@ -43,6 +43,16 @@ def project(content_kind: str, content: Any) -> str:
     return branch(content)
 
 
+def is_projectable(content_kind: str) -> bool:
+    """Whether *content_kind* has a dedicated **Text projection rule** branch
+    (rather than taking the whole-JSONB fallback). The single source of truth for
+    the projection-coverage signal: the driver counts a ``projection_fallbacks_total``
+    exactly when this is ``False`` (``unknown`` and any unbranched kind), so the
+    metric can never drift from the branch set below — add a branch and both the
+    projection and its coverage counter move together (issue #81 hook, #78)."""
+    return content_kind in _BRANCHES
+
+
 def _project_llm_messages(content: Any) -> str:
     """``llm_chat_prompt`` / ``llm_completion``: concatenate the messages'
     ``message.content`` bodies. Messages carrying no textual content (e.g. a pure
