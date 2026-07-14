@@ -13,7 +13,6 @@ The output are entities and interactions.
 # Assumptions
 1. Our focus is on agents and agent interactions 
 2. OTEL may be incomplete 
-3. Spans representing tool, llm and agent call account for the request and the response (they already have the result)
 
 
 # Definitions:
@@ -43,6 +42,7 @@ in addition it constructs an edge from its parent node to itself.
 This graph should reflect the traceparent span connectivity.
 
 this is the base graph, were nodes and edges are "white" 
+
 
 # Step 2 - Enrich execution flow graph with scoped semantics 
 
@@ -80,11 +80,11 @@ we can infer:
 represent a call to a tool from which we can infer the following : 
   1. a new node representing the tool (target) - Agentic scope node "Blue"
   2. A new node representing a transportation node "Teal" (e.g. server)
-  3. New edges:
+  3. New edges: 
     - from the agent tool call (source) to server
     - from server to the tool itself (target)
 
-### 3. "llm.output_messages.0.message.tool_calls.0.tool_call. function.arguments": "{\"action\": \"store\", \"name\": \"keywords.2.txt\", ..}"
+### 3. "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"action\": \"store\", \"name\": \"keywords.2.txt\", ..}"
 While the complete span represents a call to the LLM - this specific attribute includes information on a tool.
 We can therefore infer:
   1. A new node representing the tool call (The source) - Agentic scope "blue"
@@ -105,10 +105,10 @@ Inferred nodes:
   1. A new node representing the agent 
   2. new inferred edges:
     -. from the transportation (POST) span/node to the agent node
-    -. from the agent node to each one of the LLM spans ()
+    -. from the agent node to each one of the LLM spans
   3. Disconnect the edges (POST --> messages.create) while maintain reference from the newly created edges to the original ones 
   
-  
+
 ### Notes & timing
 
 Additional cases may exist which need to be implemented such as tools inferred from input attributes.
@@ -120,7 +120,7 @@ Inferred edges ordering/timing:
     - tool call chains derived from output attributes should happen later than call chains with the LLM
 When inferring new edges make sure to adjust/set the timings based on the inferred *execution order*
 
-## Step 2.d - merge interactions (execution graph)
+## Step 2.d - merge call chains (execution graph)
 
 this step identifies identical call chains - cases where a single excuted call chain is represented more than once in the execution graph.
 Once these are detected, these chains are merged as a unit. 
@@ -191,32 +191,51 @@ If the key is not clear we can call it unknown.
 
 1. Structurally:
   - edges internal to a group are ignored
-  - Each Teal transport chain between two Blue components (no intervening entity/Blue node) becomes a bidirectional pair: request edge and respose edge.
+  - Each Teal transport chain between two Blue components (no intervening entity/Blue node) becomes a bidirectional pair: request edge and response edge.
  
-   2. Timing (absolute timestamps):
-    The goal in this step is to assign each edge (request, response) an absolute started_at / ended_at. These are taken from the interaction's anchor span.
+2. Edge ordering:
+  The goal in this step is to assign each edge (request, response) an order (a single global order) in the interactions table. The order should be derived from both the structure and timing. Edges should maintain their anchor span and their relevant timestamps
+  
+  Following is the ordering rule. 
+  Walk the chain tree in execution order. For each entity's outgoing chains (its children):
+    1. Order the children by started_at.
+    2. For each child in turn: emit its request, recurse into its subtree then emit its response.
+    3. Emit the parent's own response.
+  A leaf sibling returns immediately (request then response). 
 
-    Anchor on the *observed* endpoint's span. If both endpoints are inferred, anchor on the observed span that derived them (the originating agentic span). 
-
-    semantic ordering:
-    the response edge, semantically executes after the processing of the agent is complete:  
-    If we observe the following chains between entities (Based on the traceparent): 
+  Observe the following chains between entities:   
+  Example 1:
        A ─...─▶ B ─...─▶ C
-    We should create the following edges in the following order:
+    The order reflecting the structure / execution order:
       (Request edges)
-       1. A ──▶ B
+       1. A ──▶ B   
        2. B ──▶ C    (C completes)            
       (response edges)
-       3. C ──▶ B    (B completes)
-       4. B ──▶ A   
+       3. C ──▶ B  That's amazing  (B completes)
+       4. B ──▶ A    
+
+  Example 2 - Interleaving - maintaining execution order
+       A ─...─▶ B 
+                 B ─...─▶ L
+                 B ─...─▶ T
+                 B ─...─▶ L
+    The order reflecting the structure / execution order:
+       1. A ──▶ B   
+       2. B ──▶ L    (L completes)            
+       3. L ──▶ B    
+       4. B ──▶ T    (T completes)
+       5. T ──▶ B    
+       6. B ──▶ L    (L completes)            
+       7. L ──▶ B    
+       8. B ──▶ A    (B completes)            
 
 ## Step 3.c - infer (entity graph) 
 
-
+Currently empty 
 
 ## Step 3.d - merge entities (entity graph)
 
-1. Next, we semantically combine enitities (groups)   
+1. Next, we semantically combine entities (groups)   
   representing the same entity into a single entity (group)
   while preserving all edges. 
 
