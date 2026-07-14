@@ -121,7 +121,10 @@ def test_run_wakes_on_notify_faster_than_poll(
     registration would miss the notification and flake the timing assertion.
     """
     assert driver.POLL_SECONDS >= 5.0, "test assumes a multi-second poll backstop"
-    caplog.set_level("INFO", logger="data_governance.processors.interactions.driver")
+    # The "listening on …" line is emitted by the shared drain loop
+    # (data_governance.processors._driver, issue #75), not the interactions
+    # driver — capture at the common parent so both loggers are seen.
+    caplog.set_level("INFO", logger="data_governance.processors")
     stop_event = threading.Event()
     thread = _run_in_thread(stop_event, configured_db)
     try:

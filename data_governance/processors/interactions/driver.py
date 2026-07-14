@@ -1,19 +1,33 @@
-"""Cursor-driven driver for the P-interactions processor.
+"""P-interactions adapter over the shared cursor-driven driver.
 
-Drains the ``spans`` table by ``seq`` and processes each span end-to-end. Each
-span is handled in ONE transaction that rehydrates the span's lineage region,
-runs the verbatim per-span procedure, flushes the re-derived region, and
+The generic drain/poll/LISTEN-wake loop lives in
+:mod:`data_governance.processors._driver` (issue #75); this module supplies the
+P-interactions *stream spec* — the ``spans`` batch-fetch, the per-span procedure,
+and the ``dg_spans_inserted`` channel / ``interactions`` cursor name — and keeps
+the two concerns that are genuinely interactions-only:
+
+  * the per-span rehydrate → run → flush procedure (:func:`process_span`), and
+  * the finalization tripwire (:func:`_check_finalization`, #73) — the deferred
+    two-column horizon detector, which is meaningful only for a stream whose
+    items are ``spans`` carrying ``seq``/``arrival_seq``. It stays OUT of the
+    shared loop.
+
+Each span is still handled in ONE transaction that rehydrates the span's lineage
+region, runs the verbatim per-span procedure, flushes the re-derived region, and
 advances the durable cursor (``processor_state``) — all together, so a crash
 mid-span commits nothing and the restart re-processes from the same cursor
-(ADR-0007 recovery; the re-derive is idempotent).
+(ADR-0007 recovery; the re-derive is idempotent). The atomic cursor advance is
+now performed by the shared loop (:func:`_driver.advance_cursor`), in the same
+per-span transaction as the flush.
 
 The loop wakes on two signals (issue #71): a Postgres ``LISTEN`` notification
-fired by the ``dg_spans_inserted`` trigger (migration 0005) when spans land,
-and a periodic poll timeout as the backstop. Both lead to the same action —
-drain whatever is past the cursor — so the notification carries no payload and
-its count is irrelevant. Correctness depends only on the poll backstop; the
+fired by the ``dg_spans_inserted`` trigger (migration 0005) when spans land, and
+a periodic poll timeout as the backstop. Both lead to the same action — drain
+whatever is past the cursor — so the notification carries no payload and its
+count is irrelevant. Correctness depends only on the poll backstop; the
 ``LISTEN`` wake just removes latency. If the listen connection cannot be opened
-or drops mid-run, the loop falls back to pure polling and still makes progress.
+or drops mid-run, the shared loop falls back to pure polling and still makes
+progress.
 """
 
 from __future__ import annotations
@@ -22,6 +36,7 @@ import logging
 import threading
 
 from data_governance import db
+from data_governance.processors import _driver
 from data_governance.retrieval import Span, _COLUMNS, _row_to_span
 
 from . import metrics, procedure, state
@@ -31,7 +46,9 @@ log = logging.getLogger(__name__)
 _SELECT_COLS = ", ".join(_COLUMNS)
 
 # How long the loop sleeps between drains when idle (poll backstop). Also the
-# max time a LISTEN wait blocks before re-draining on the poll path.
+# max time a LISTEN wait blocks before re-draining on the poll path. Exposed at
+# module level (not just on the spec) because tests monkeypatch it to shrink the
+# backstop; the spec below reads it at build time.
 POLL_SECONDS = 5.0
 
 # Channel the spans-insert trigger (migration 0005) notifies on. Must match the
@@ -59,7 +76,9 @@ def _check_finalization(span: Span) -> None:
 
     Increments ``finalization_observed_total`` on every such span and logs a
     single WARNING on the first one. Pure detector — no classification/output
-    change.
+    change. This stays an interactions-only concern (issue #75): it is
+    meaningful only for a ``spans`` stream, so it lives here, not in the shared
+    loop.
     """
     global _finalization_warned  # noqa: PLW0603
     if span.seq == span.arrival_seq:
@@ -85,22 +104,15 @@ def _check_finalization(span: Span) -> None:
 def process_span(tx: db.Transaction, span: Span) -> None:
     """Rehydrate → run the verbatim procedure → flush, within *tx*.
 
-    The caller owns the transaction boundary (so the cursor advance commits
-    atomically with the derived writes).
+    The caller (the shared loop) owns the transaction boundary and advances the
+    cursor in the same *tx*, so the cursor advance commits atomically with the
+    derived writes (ADR-0007).
     """
     _check_finalization(span)
     proc = procedure.Processor()
     state.rehydrate(tx, proc, span)
     proc.process(span)
     state.flush(tx, proc, span)
-
-
-def read_cursor(tx: db.Transaction) -> int:
-    row = tx.fetch_one(
-        "SELECT last_processed_seq FROM processor_state WHERE processor_name = %s",
-        (state.PROCESSOR_NAME,),
-    )
-    return int(row[0]) if row else 0
 
 
 def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[Span]:
@@ -111,113 +123,34 @@ def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[Span]:
     return [_row_to_span(r, in_time_window=True) for r in rows]
 
 
+def _spec() -> _driver.StreamSpec[Span]:
+    """Build the P-interactions stream spec for the shared loop.
+
+    Rebuilt per call so ``POLL_SECONDS`` monkeypatched by a test is picked up.
+    """
+    return _driver.StreamSpec(
+        notify_channel=NOTIFY_CHANNEL,
+        processor_name=state.PROCESSOR_NAME,
+        fetch_batch=_fetch_batch,
+        process_item=process_span,
+        item_seq=lambda span: span.seq,
+        poll_seconds=POLL_SECONDS,
+        batch_size=_DRAIN_BATCH,
+    )
+
+
+def read_cursor(tx: db.Transaction) -> int:
+    """Read the P-interactions durable cursor (delegates to the shared loop)."""
+    return _driver.read_cursor(tx, state.PROCESSOR_NAME)
+
+
 def drain(cursor: int) -> int:
     """Process every span past *cursor*, one transaction per span. Returns the
     new cursor (the seq of the last span processed, or *cursor* if none)."""
-    while True:
-        # Read the next batch in its own short transaction; each span is then
-        # processed (and the cursor advanced) in its own transaction.
-        with db.transaction() as tx:
-            batch = _fetch_batch(tx, cursor, _DRAIN_BATCH)
-        if not batch:
-            return cursor
-        for span in batch:
-            with db.transaction() as tx:
-                process_span(tx, span)
-            cursor = span.seq
-        if len(batch) < _DRAIN_BATCH:
-            return cursor
-
-
-def _poll_loop(stop_event: threading.Event, cursor: int) -> int:
-    """Pure poll-drain loop (the backstop). Sleeps up to POLL_SECONDS between
-    drains. Used when no LISTEN connection is available. Returns the cursor."""
-    while not stop_event.is_set():
-        cursor = drain(cursor)
-        stop_event.wait(timeout=POLL_SECONDS)
-    return cursor
+    return _driver.drain(_spec(), cursor)
 
 
 def run(stop_event: threading.Event, dsn: str) -> None:
-    """Wake-driven drain loop. Returns when *stop_event* is set.
-
-    Drains once, then waits for either a ``LISTEN`` notification (low latency)
-    or the poll timeout (backstop) before each subsequent drain. *dsn* is the
-    libpq URL for the dedicated LISTEN connection (the pool's connections are
-    the wrong shape — ADR-0015); the drain itself still uses the pool.
-
-    If the LISTEN connection cannot be opened or drops mid-run, falls back to a
-    pure poll loop (:func:`_poll_loop`) for the rest of the run — the poll
-    backstop guarantees progress, so a missing/severed NOTIFY only costs
-    latency (issue #71).
-    """
-    with db.transaction() as tx:
-        cursor = read_cursor(tx)
-    log.info("interactions processor starting at cursor seq=%d", cursor)
-
-    # Drain anything already past the cursor before we start waiting, so a span
-    # that landed before LISTEN was registered is not stranded until the first
-    # poll timeout.
-    cursor = drain(cursor)
-
-    # Wake loop, falling back to poll-only if the LISTEN connection is
-    # unavailable. Only a LISTEN-connection failure triggers the fallback —
-    # drain() errors propagate out of run() unchanged (a drain failure is a
-    # pool/DB fault, not a LISTEN-wake fault, and must not be misreported as
-    # one or silently downgraded to polling).
-    try:
-        cursor = _wake_loop(stop_event, cursor, dsn)
-    except _ListenUnavailable as exc:
-        log.warning(
-            "LISTEN wake unavailable (%s); falling back to poll-only drain "
-            "(every %.0fs). Correctness is unaffected; only latency rises.",
-            exc.__cause__,
-            POLL_SECONDS,
-        )
-        cursor = _poll_loop(stop_event, cursor)
-
-    log.info("interactions processor stopped at cursor seq=%d", cursor)
-
-
-class _ListenUnavailable(Exception):
-    """Internal signal: the LISTEN connection could not be opened, or dropped mid-run.
-
-    Raised only for connection-class failures of the LISTEN side; carries the
-    original error as ``__cause__``. Keeps the LISTEN-wake fallback in
-    :func:`run` from ever catching a :func:`drain` error (a pool/DB fault),
-    which must surface, not be downgraded to poll-only.
-    """
-
-
-def _wake_loop(stop_event: threading.Event, cursor: int, dsn: str) -> int:
-    """LISTEN-driven drain loop. Returns the cursor when *stop_event* is set.
-
-    Wraps ONLY the LISTEN-connection operations (open + wait) in connection-error
-    handling, re-raising those as :class:`_ListenUnavailable`. :func:`drain` is
-    called outside that boundary, so a pool/DB fault during drain propagates
-    unchanged and is never misclassified as a LISTEN-wake failure.
-    """
-    try:
-        listen_cm = db.listen(NOTIFY_CHANNEL, dsn)
-        listener = listen_cm.__enter__()
-    except Exception as exc:  # noqa: BLE001 — open failure → maybe fall back
-        if db.is_connection_error(exc):
-            raise _ListenUnavailable(str(exc)) from exc
-        raise
-    try:
-        log.info("interactions processor listening on %r", NOTIFY_CHANNEL)
-        while not stop_event.is_set():
-            # Wake on a notification or the poll timeout; the reason is
-            # irrelevant — we always drain. A LISTEN-connection error here
-            # becomes _ListenUnavailable so run() can fall back to poll-only.
-            try:
-                listener.wait(POLL_SECONDS)
-            except Exception as exc:  # noqa: BLE001 — wait failure → maybe fall back
-                if db.is_connection_error(exc):
-                    raise _ListenUnavailable(str(exc)) from exc
-                raise
-            # Outside the listen-error boundary: drain() exceptions propagate.
-            cursor = drain(cursor)
-    finally:
-        listen_cm.__exit__(None, None, None)
-    return cursor
+    """Wake-driven drain loop over the ``spans`` stream. Returns when
+    *stop_event* is set. See :func:`_driver.run`."""
+    _driver.run(_spec(), stop_event, dsn)
