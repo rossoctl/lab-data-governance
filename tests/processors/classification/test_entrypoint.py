@@ -48,14 +48,39 @@ def test_entrypoint_exits_2_without_database_url() -> None:
     assert "DATABASE_URL" in (proc.stderr.read() if proc.stderr else "")
 
 
-def test_entrypoint_exits_nonzero_on_schema_mismatch(migrated_dsn: str) -> None:
-    """DB forced to a stale revision → process refuses to start (ADR-0002)."""
+def test_entrypoint_exits_3_on_schema_mismatch(migrated_dsn: str) -> None:
+    """DB forced to a stale revision → process refuses to start (ADR-0002).
+
+    Pins the documented contract shared with the receiver / P-interactions
+    entry points: a ``SchemaVersionMismatch`` exits with code 3 specifically
+    (not merely non-zero), and the actionable error names *both* the stale DB
+    revision and the compiled head so an operator sees what's wrong at a glance.
+    This is the CrashLoopBackOff signal k8s surfaces (#81 acceptance).
+    """
+    from data_governance.db.schema_version import compiled_head
+
+    stale = "0000_stale_rev"
+    compiled = compiled_head()
     with psycopg.connect(migrated_dsn) as conn:
-        conn.execute("UPDATE alembic_version SET version_num = '0000_stale_rev'")
+        conn.execute("UPDATE alembic_version SET version_num = %s", (stale,))
     proc = _spawn(migrated_dsn)
     rc = proc.wait(timeout=10)
-    assert rc != 0
-    assert "0000_stale_rev" in (proc.stderr.read() if proc.stderr else "")
+    stderr = proc.stderr.read() if proc.stderr else ""
+    assert rc == 3, f"expected SchemaVersionMismatch exit 3, got {rc}\nstderr:\n{stderr}"
+    assert stale in stderr, f"stale revision not named in stderr:\n{stderr}"
+    assert compiled in stderr, f"compiled head not named in stderr:\n{stderr}"
+
+
+def test_entrypoint_exits_nonzero_when_alembic_version_missing(pg_dsn: str) -> None:
+    """Migrations never ran (no ``alembic_version`` table) → the process refuses
+    to start with an actionable message rather than crashing opaquely later
+    (ADR-0002; mirrors the receiver's startup-check coverage). This is the
+    "init container forgotten" failure mode."""
+    proc = _spawn(pg_dsn)
+    rc = proc.wait(timeout=10)
+    stderr = proc.stderr.read() if proc.stderr else ""
+    assert rc != 0, f"expected non-zero exit on missing schema; got {rc}\nstderr:\n{stderr}"
+    assert "alembic_version" in stderr, f"missing-table message not actionable:\n{stderr}"
 
 
 def test_entrypoint_runs_then_exits_clean_on_sigterm(migrated_dsn: str) -> None:
