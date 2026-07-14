@@ -9,11 +9,14 @@ mapping the tool always was underneath: **Classifiable text** + NER annotations
 summary out.
 
 Terminology follows CONTEXT.md. A detected item is a **Finding**, never a "span"
-(a **Span** is the OTEL row). A finding's ``tag`` is its detected NER type
-(``PN``, ``SSN``); it is *not* an **Entity** (the interaction participant). The
-reference tool named the same field ``entity_type`` and named the whole detected
-item an "entity"; the port renames to the domain vocabulary at the boundary while
-keeping the sensitivity derivation byte-for-byte identical, so
+(a **Span** is the OTEL row). A finding's ``entity_type`` is its detected NER type
+(``PN``, ``SSN``); despite the field name it is *not* an **Entity** (the
+interaction participant) — the name matches the reference tool, the API's inlined
+``findings`` JSON, and the UI's ``Finding`` wire type, so the one key spans the
+whole stack (CONTEXT.md **Finding** pins it as the stored/served contract). The
+reference tool named the whole detected item an "entity"; the port keeps the
+``entity_type`` field name but renames the item to **Finding**, holding the
+sensitivity derivation byte-for-byte identical, so
 ``tests/processors/classification/test_logic_parity.py`` proves equality against
 the real reference source.
 """
@@ -121,7 +124,12 @@ def build_finding(
     )
 
     return {
-        "tag": tag,
+        # The finding's detected NER-tag type. Keyed ``entity_type`` (the name
+        # the reference tool, the API's inlined ``findings`` JSON, and the UI's
+        # ``Finding`` wire type all use) — NOT an **Entity** (the interaction
+        # participant); the key name is the stored/served contract, pinned in
+        # CONTEXT.md's **Finding** definition.
+        "entity_type": tag,
         "start": start,
         "end": end,
         "text": text[start:end] if start < len(text) and end <= len(text) else "",
@@ -140,7 +148,7 @@ def detect_identity_bundles(
     """The identity-bundle patterns whose required tag set is a subset of the
     tags present across *findings* (e.g. ``PN`` + ``SSN`` → the ``name_ssn``
     bundle). A detected bundle forces the document to RESTRICTED."""
-    present_tags = {f["tag"] for f in findings}
+    present_tags = {f["entity_type"] for f in findings}
     detected = []
     for pattern in config["identity_bundle_patterns"]:
         if set(pattern["entities"]).issubset(present_tags):

@@ -435,7 +435,12 @@ its detected entity type (`SSN`, `PN`, `EMAIL`, …), and the sensitivity
 attributes derived for it (`sensitivity_level`, `regulatory_tags`,
 `identifier_type`). A **Classification** carries zero or more findings; the
 document-level verdict is aggregated up from them (plus identity-bundle
-detection across the finding set).
+detection across the finding set). The stored/served JSON shape (the
+`payload_classifications.findings` JSONB, served verbatim on
+`/api/payloads/{hash}` and read by the UI's `Finding` wire type) keys the
+detected type under **`entity_type`** — one spelling across logic, DB, API, and
+UI. (Despite the key name it is an NER tag, not an **Entity**; the name is kept
+for parity with the reference tool and the pre-existing UI type.)
 _Avoid_: "span" for a finding — a **Span** is an OTEL row `(trace_id,
 span_id)`; a finding is a sensitive region of a payload's text. They never
 mean the same thing.

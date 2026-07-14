@@ -66,7 +66,7 @@ def test_injected_detector_drives_a_real_non_public_verdict() -> None:
     assert set(v.regulatory_tags) == {"PII"}
     assert v.primary_domain == "person"
     assert len(v.findings) == 2
-    assert {f["tag"] for f in v.findings} == {"PN", "SSN"}
+    assert {f["entity_type"] for f in v.findings} == {"PN", "SSN"}
     assert v.model_version == 1
 
 

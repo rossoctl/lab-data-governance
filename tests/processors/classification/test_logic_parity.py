@@ -98,10 +98,11 @@ def test_document_summary_matches_reference(text: str, annotations: list[list]) 
 @pytest.mark.parametrize("text,annotations", _FIXTURES)
 def test_findings_match_reference(text: str, annotations: list[list]) -> None:
     """Each **Finding** the ported logic produces equals the reference tool's
-    enhanced entity on the domain-meaningful fields — the detected tag, its char
-    region, the extracted text, and the derived sensitivity attributes. (A
-    finding's type is an NER *tag*; the reference calls the same field
-    ``entity_type``.)"""
+    enhanced entity on the domain-meaningful fields — the detected type
+    (``entity_type``, an NER tag), its char region, the extracted text, and the
+    derived sensitivity attributes. Both the port and the reference key the
+    detected type under ``entity_type`` (the stored/served contract; despite the
+    name it is an NER tag, not an **Entity**)."""
     meta = config.load_entity_metadata()
     cfg = config.load_config()
 
@@ -110,7 +111,7 @@ def test_findings_match_reference(text: str, annotations: list[list]) -> None:
 
     assert len(findings) == len(ref_enhanced)
     for finding, ref in zip(findings, ref_enhanced):
-        assert finding["tag"] == ref["entity_type"]
+        assert finding["entity_type"] == ref["entity_type"]
         assert finding["start"] == ref["start"]
         assert finding["end"] == ref["end"]
         assert finding["text"] == ref["text"]
