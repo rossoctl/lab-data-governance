@@ -13,6 +13,7 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `50-networkpolicy.yaml`       | `NetworkPolicy` for receiver, UI, and Postgres ingress      |
 | `60-ui-httproute.yaml`        | `HTTPRoute` + `ReferenceGrant` exposing the UI on the kagenti shared Gateway |
 | `70-interactions.yaml`        | `Deployment` for the P-interactions processor (no Service)  |
+| `80-classification.yaml`      | `Deployment` for the P-classification processor (no Service) |
 
 ## Topology summary
 
@@ -44,6 +45,22 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
   old pod is gone before the new one starts. It serves a Prometheus
   `/metrics` surface on 9091 in-pod, but — like the receiver's 9090 — v1
   has no monitoring peer, so the port is left undeclared (a v2 concern).
+- **P-classification processor Deployment.** **Single replica** running
+  `python -m data_governance.processors.classification`. Unlike the other
+  three processors it runs its **own** image,
+  `data-governance/classification:latest` (issue #79 / ADR-0022) — the "fat"
+  image built from `Containerfile.classification` with torch + transformers
+  (behind the `classification` extra) and the ~500 MB fine-tuned NER model
+  weights + config baked in (git-LFS materialized at build; image tag ↔
+  `model_version`, ADR-0023). Both the migrate init container and the processor
+  container run this one image, so the pod is self-contained. The model loads
+  **in-process** at startup and classifies each **Payload**'s **Classifiable
+  text** into **Findings** inline in the drain loop — no separate inference
+  service (ADR-0023). Like the interactions processor it is a DB consumer with
+  **no Service and no container ports**, single replica against one shared
+  `processor_state` cursor (the `classification` row), `maxSurge:0` rollout.
+  Higher memory limits (3Gi) than the other processors to hold torch + the
+  resident model.
 - **NetworkPolicy.** Three policies, one per workload. Receiver and UI
   ingress is restricted to the upstream Kagenti namespace, matched by
   the default `kubernetes.io/metadata.name=kagenti` label every
@@ -71,8 +88,17 @@ The `deploy/build-and-load.sh` helper does both steps in one shot:
 It builds the image from `Containerfile` (multi-stage `uv sync --frozen`
 build), tags it as both `data-governance/receiver:latest` and
 `data-governance/ui:latest`, and `kind load docker-image`s both tags into
-the cluster named `kagenti`. Override the cluster name with
-`KIND_CLUSTER=...` and the tag with `IMAGE_TAG=...` if needed.
+the cluster named `kagenti`. It **also** materializes the git-LFS model
+weights and builds + loads the separate P-classification image
+`data-governance/classification:latest` from `Containerfile.classification`
+(issue #79 / ADR-0022 — the fat torch + baked-weights image, distinct from
+the slim shared image). Override the cluster name with `KIND_CLUSTER=...` and
+the tag with `IMAGE_TAG=...` if needed.
+
+> **git-LFS required.** The classification image bakes a ~500 MB git-LFS model
+> artifact; `build-and-load.sh` runs `git lfs pull` before building so the real
+> weights are baked in, not the ~134-byte pointer (ADR-0023). Install git-lfs
+> (<https://git-lfs.com>) if the script errors that it is missing.
 
 The script is idempotent: re-running it rebuilds the image (cache permitting)
 and re-loads the tags. The image's compiled Alembic head matches what the
@@ -106,10 +132,11 @@ git pull --ff-only
 kubectl apply -f deploy/k8s/                                        # usually a no-op; safe to skip if no manifest changes
 kubectl -n data-governance rollout restart \
   deployment/data-governance-receiver deployment/data-governance-ui \
-  deployment/data-governance-interactions
+  deployment/data-governance-interactions deployment/data-governance-classification
 kubectl -n data-governance rollout status deployment/data-governance-receiver --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-ui --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-interactions --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-classification --timeout=180s
 ```
 
 The `rollout restart` is the step that's easy to forget: the manifests
