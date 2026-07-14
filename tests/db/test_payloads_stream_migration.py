@@ -221,13 +221,18 @@ def test_seq_does_not_advance_on_conflict_do_nothing(migrated_dsn: str) -> None:
 # --- migration chain ---------------------------------------------------------
 
 
-def test_head_is_0007(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on this revision (0007)."""
-    with psycopg.connect(migrated_dsn) as conn:
-        (version,) = conn.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
-    assert version == "0007_payloads_cursorable_stream"
+def test_0007_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """A fresh migrate applies 0007 (it is in the chain). The payload stream this
+    revision adds is asserted structurally by the tests above; this pins that the
+    revision is reachable — the head itself has since advanced past 0007 (issue
+    #77's 0008 classifications table), so the head assertion lives there."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    # The revision must be part of the linear history the migrate CLI applies.
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked = {rev.revision for rev in script.walk_revisions()}
+    assert "0007_payloads_cursorable_stream" in walked
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
