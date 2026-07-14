@@ -75,6 +75,76 @@ EXPECTED_DIRECTED_PAIRS = {
 
 EXPECTED_INTERACTION_COUNT = 50
 
+# The full interaction sequence, sorted by `order` alone (ADR-0007 consumer
+# contract: the CLI sorts `key=lambda r: r.order`, the API `ORDER BY "order"`).
+# Each entry is (caller_key, callee_key). Read top-to-bottom this is the execution
+# order the UI renders.
+#
+# GROUND TRUTH — HUMAN-VALIDATED. DO NOT EDIT WITHOUT CONFIRMATION BY A HUMAN.
+# This exact ordering was reviewed and confirmed correct by a human, including
+# the deep-nesting region around order 33–44: the trace nests payment-agent's
+# whole subtree (33–42) and `create_booking` (32/43) inside booking_agent's
+# `call_llm` span, so that outer LLM call's response leg (44) is emitted last
+# when the subtree unwinds — the correct LIFO output GIVEN THIS TRACE AS-IS. The
+# trace's traceparent is what produces this sequence (see this module's header
+# comment — it has some malformed traceparent, e.g. `execute_tool` parented under
+# `call_llm`; the ordering below is the correct output for that input, not a
+# claim the trace itself is well-formed). It is the oracle for this trace, not a
+# snapshot of transient output — a mismatch means the ordering REGRESSED, so fix
+# the code, not this expectation.
+EXPECTED_ORDER = [
+    ("agent:travel-advisor", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:travel-advisor"),
+    ("agent:travel-advisor", "tool:search_destinations"),
+    ("tool:search_destinations", "agent:travel-advisor"),
+    ("agent:travel-advisor", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:travel-advisor"),
+    ("agent:travel-advisor", "tool:get_weather"),
+    ("tool:get_weather", "agent:travel-advisor"),
+    ("agent:travel-advisor", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:travel-advisor"),
+    ("agent:travel-advisor", "tool:get_flights"),
+    ("tool:get_flights", "agent:travel-advisor"),
+    ("agent:travel-advisor", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:travel-advisor"),
+    ("agent:travel-advisor", "agent:research-agent"),
+    ("agent:research-agent", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:research-agent"),
+    ("agent:research-agent", "agent:travel-advisor"),
+    ("agent:travel-advisor", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:travel-advisor"),
+    ("agent:travel-advisor", "agent:booking_agent"),
+    ("agent:booking_agent", "llm:claude-haiku-4-5-20251001"),
+    ("agent:booking_agent", "tool:create_booking"),
+    ("tool:create_booking", "agent:booking_agent"),
+    ("llm:claude-haiku-4-5-20251001", "agent:booking_agent"),
+    ("agent:booking_agent", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:booking_agent"),
+    ("agent:booking_agent", "agent:travel-advisor"),
+    ("agent:travel-advisor", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:travel-advisor"),
+    ("agent:travel-advisor", "agent:booking_agent"),
+    ("agent:booking_agent", "llm:claude-haiku-4-5-20251001"),
+    ("agent:booking_agent", "tool:create_booking"),
+    ("agent:payment-agent", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:payment-agent"),
+    ("agent:payment-agent", "tool:get_payment_info"),
+    ("tool:get_payment_info", "agent:payment-agent"),
+    ("agent:payment-agent", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:payment-agent"),
+    ("agent:payment-agent", "tool:charge_card"),
+    ("tool:charge_card", "agent:payment-agent"),
+    ("agent:payment-agent", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:payment-agent"),
+    ("tool:create_booking", "agent:booking_agent"),
+    ("llm:claude-haiku-4-5-20251001", "agent:booking_agent"),
+    ("agent:booking_agent", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:booking_agent"),
+    ("agent:booking_agent", "agent:travel-advisor"),
+    ("agent:travel-advisor", "llm:claude-haiku-4-5-20251001"),
+    ("llm:claude-haiku-4-5-20251001", "agent:travel-advisor"),
+]
+
 
 def _directed_pairs(result):
     """{(caller_key, callee_key): count} over all interactions."""
@@ -215,3 +285,29 @@ def test_delegation_response_leg_anchors_on_callee_span(
                 f"{resp_span.service_name!r} span {resp_anchor} "
                 f"(expected the callee's {callee_service!r} span)"
             )
+
+
+def test_order_is_dense_unique_ordinal(multi_agent_delegation_trace_spans):
+    """`order` is a dense, unique 0..N-1 global ordinal.
+
+    ADR-0007: consumers sort by `order` alone, so it must be total and unique.
+    """
+    result = extract(multi_agent_delegation_trace_spans)
+    orders = sorted(ix.order for ix in result.interactions)
+    assert orders == list(range(len(result.interactions)))
+
+
+def test_interaction_order_is_exact_sequence(multi_agent_delegation_trace_spans):
+    """The interactions, sorted by `order` alone, match the human-validated walk.
+
+    Pins the exact execution-order sequence (ADR-0007 Step 3.b): consumers sort by
+    `order` only, so this is what the CLI/API/UI render. This is the correct
+    output for this trace given its traceparent as-is (see EXPECTED_ORDER).
+    """
+    result = extract(multi_agent_delegation_trace_spans)
+
+    by_id = {e.id: e.natural_key for e in result.entities}
+    ordered = sorted(result.interactions, key=lambda ix: ix.order)
+    assert [
+        (by_id[ix.caller_entity_id], by_id[ix.callee_entity_id]) for ix in ordered
+    ] == EXPECTED_ORDER

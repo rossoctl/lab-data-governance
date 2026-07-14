@@ -1,5 +1,5 @@
 """Coverage for ADR-0007 / spec **Step 3.b point 2** — the GLOBAL-ORDINAL edge
-ordering in `step3_entity_graph._order_responses_lifo`, which implements a
+ordering in `step3_entity_graph._order_execution_walk`, which implements a
 **recursive execution-order walk** of the chain nesting forest.
 
 `order` is a TRUE GLOBAL ORDINAL: a single monotonic integer sequence across the
@@ -42,7 +42,7 @@ import datetime as dt
 
 from data_governance.processors.p_interactions_proto.graph import EntityEdge
 from data_governance.processors.p_interactions_proto.step3_entity_graph import (
-    _order_responses_lifo,
+    _order_execution_walk,
 )
 from data_governance.retrieval import Span
 
@@ -101,7 +101,7 @@ def test_nested_chains_get_consecutive_lifo_ordinals():
     chain_c = _chain("c")  # inner
     chains = [chain_a, chain_b, chain_c]
 
-    _order_responses_lifo(chains, spans)
+    _order_execution_walk(chains, spans)
 
     ab = chain_a["call"].order  # A→B (outer request)
     bc = chain_b["call"].order  # B→C (inner request)
@@ -129,7 +129,7 @@ def test_nesting_ignores_started_at_direction():
     }
     outer = _chain("a")
     inner = _chain("b")
-    _order_responses_lifo([outer, inner], spans)
+    _order_execution_walk([outer, inner], spans)
 
     # Inner (b) is a traceparent descendant of outer (a): inner response first.
     assert inner["resp"].order < outer["resp"].order
@@ -164,7 +164,7 @@ def test_two_separate_groups_stay_chronological():
     g2_inner = _chain("q2")
 
     # Feed the LATER group first to prove ordering is by anchor, not list order.
-    _order_responses_lifo([g2_outer, g2_inner, g1_outer, g1_inner], spans)
+    _order_execution_walk([g2_outer, g2_inner, g1_outer, g1_inner], spans)
 
     g1_orders = [c[k].order for c in (g1_outer, g1_inner) for k in ("call", "resp")]
     g2_orders = [c[k].order for c in (g2_outer, g2_inner) for k in ("call", "resp")]
@@ -195,7 +195,7 @@ def test_independent_singletons_ordered_by_time_and_deterministic():
     mid = _chain("mid")
     late = _chain("late")
 
-    _order_responses_lifo([late, early, mid], spans)  # scrambled input order
+    _order_execution_walk([late, early, mid], spans)  # scrambled input order
 
     # Chronological by anchor started_at: early < mid < late for BOTH legs.
     assert early["call"].order < mid["call"].order < late["call"].order
@@ -215,8 +215,8 @@ def test_equal_time_groups_break_ties_by_span_id_stably():
     cy = _chain("y")
     cx2 = _chain("x")
     cy2 = _chain("y")
-    _order_responses_lifo([cx, cy], spans)
-    _order_responses_lifo([cy2, cx2], spans)  # opposite list order
+    _order_execution_walk([cx, cy], spans)
+    _order_execution_walk([cy2, cx2], spans)  # opposite list order
 
     # Distinct and stable regardless of input order.
     assert cx["call"].order != cy["call"].order
@@ -232,7 +232,7 @@ def test_single_chain_gets_ordinal_zero():
     """A lone chain is its own group: request 0, response 1."""
     spans = {"a": _span("a", None, 0)}
     only = _chain("a")
-    _order_responses_lifo([only], spans)
+    _order_execution_walk([only], spans)
     assert only["call"].order == 0
     assert only["resp"].order == 1
 
@@ -259,7 +259,7 @@ def test_leaf_siblings_interleave_ordered_by_started_at():
     t = _chain("t")
     l2 = _chain("l2")
     # Scramble input order to prove the walk sorts children by started_at.
-    _order_responses_lifo([l2, b, t, l1], spans)
+    _order_execution_walk([l2, b, t, l1], spans)
 
     seq = [
         b["call"].order,    # A → B
@@ -293,7 +293,7 @@ def test_nested_sibling_fully_unwound_before_next_sibling():
     x = _chain("x")
     y = _chain("y")
     z = _chain("z")
-    _order_responses_lifo([z, y, x, b], spans)  # scrambled
+    _order_execution_walk([z, y, x, b], spans)  # scrambled
 
     seq = [
         b["call"].order,   # A → B

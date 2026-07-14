@@ -1,10 +1,10 @@
 """End-to-end pinning of a second *real* anthropic trace captured from the
-deployment (`trace_4ee02393`, trace id 4ee0239356d61584bb4c3b6965041788).
+deployment (`patent_agent_II`, trace id 4ee0239356d61584bb4c3b6965041788).
 
 A `patent_search` agent makes three `messages.create` LLM calls; two turns'
 outputs each ask for a *different* tool (`file`, then `web_search`), each
 invoked exactly once. This is the output-only, no-replay counterpart to the
-replay-heavy `trace_8e8d7b1e`: it has the same 4-entity / 10-interaction shape
+replay-heavy `patent_agent_I`: it has the same 4-entity / 10-interaction shape
 but no two tool calls merge, so every agent→tool interaction stays in its
 positive (after-LLM) band on its own turn.
 
@@ -19,7 +19,7 @@ from data_governance.processors.p_interactions_proto.extractor import extract
 
 from .conftest import load_trace_spans
 
-MULTITOOL_TRACE = "trace_4ee02393"
+MULTITOOL_TRACE = "patent_agent_II"
 
 
 def _spans():
@@ -56,7 +56,7 @@ def test_interaction_count():
 
 
 def test_tool_calls_order_after_their_llm():
-    """Both tools are evidenced as LLM *output* and (unlike `trace_8e8d7b1e`)
+    """Both tools are evidenced as LLM *output* and (unlike `patent_agent_I`)
     are never replayed, so each stays in the positive (after-LLM) band and
     orders after the LLM call sharing its turn's span."""
     result = extract(_spans())

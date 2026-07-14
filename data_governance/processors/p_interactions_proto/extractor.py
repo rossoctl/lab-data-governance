@@ -282,7 +282,7 @@ def _derive_interactions(
         # is the single source of truth for the interaction's identity, so its
         # times define the interaction's absolute time. (The interaction's SORT
         # position is a separate concern: the global ordinal `order`, set by
-        # `_order_responses_lifo` — consumers sort by `order` alone.) `error`,
+        # `_order_execution_walk` — consumers sort by `order` alone.) `error`,
         # by contrast, still considers the whole call/response
         # pair — either side erroring marks the interaction errored.
         anchor_span = edge_spans[0]

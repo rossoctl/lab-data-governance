@@ -166,7 +166,7 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
     (call band, read off the forward legs) AND a D→S response entity edge that is
     formed HERE structurally (Step 2.c minted only the forward legs — the
     response is NOT read back from a 2.c-minted edge). Response legs are ordered
-    LIFO by traceparent nesting (`_order_responses_lifo`). One interaction per
+    LIFO by traceparent nesting (`_order_execution_walk`). One interaction per
     chain; distinct calls survive as distinct interactions (Step 2.d's Teal-chain
     merge already merged the genuinely-duplicate ones). Both kinds of chain
     reconstruct: an inferred server (one Teal node with forward-only edges) and
@@ -354,7 +354,7 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
 
     # Each entry records one reconstructed chain: its request (call) edge and its
     # response edge, the chain's anchor span (which drives traceparent nesting),
-    # and the Step 2.c call band. `_order_responses_lifo` consumes these after all
+    # and the Step 2.c call band. `_order_execution_walk` consumes these after all
     # chains are emitted to assign the structural request/response `order` (spec
     # Step 3.b point 2 — order derived from STRUCTURE, not timestamps).
     chains: list[dict] = []
@@ -372,7 +372,7 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
         response edge is created HERE, not read back from a 2.c-minted edge. Both
         `order` fields are SEEDED here (the request to its Step 2.c call band, the
         response to `call_order + 1`) and then OVERWRITTEN with a global ordinal by
-        `_order_responses_lifo` after all chains are emitted — every chain is
+        `_order_execution_walk` after all chains are emitted — every chain is
         assigned a globally-unique `order`, so the seed is only a transient
         placeholder (it never survives to a consumer)."""
         call_edge = EntityEdge.make(src_eid, dst_eid, order=call_order)
@@ -449,12 +449,12 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
     )
 
     # Step 3.b edge ordering — structural (LIFO by traceparent nesting).
-    _order_responses_lifo(chains, spans_by_id)
+    _order_execution_walk(chains, spans_by_id)
 
     return entity_graph
 
 
-def _order_responses_lifo(
+def _order_execution_walk(
     chains: list[dict], spans_by_id: dict[str, Span]
 ) -> None:
     """ADR-0007 / spec **Step 3.b point 2** — assign each interaction edge a

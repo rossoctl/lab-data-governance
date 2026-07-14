@@ -6,7 +6,7 @@ these tests feed it a captured snapshot of a real trace rather than spinning up
 Postgres: the snapshot lives in `fixtures/*.json` and is reconstructed into
 `Span` objects here.
 
-`trace_8ae1f64d.json` is the canonical live trace referenced throughout
+`travel_agent_III.json` is the canonical live trace referenced throughout
 ADR-0007 and the openai_agents v1.4.1 span reference — a single travel-advisor
 agent (OpenAI Agents SDK, fronted by an A2A server) calling one LLM and three
 tools. It was captured verbatim from the `spans` table of the data-governance
@@ -14,7 +14,10 @@ deployment with:
 
     SELECT ... FROM spans WHERE trace_id = '8ae1f64d4bb51b750168c6ef1e11a2d8'
 
-so the rows match the `Span` columns 1:1 (ADR-0006: the row *is* the Span).
+so the rows match the `Span` columns 1:1 (ADR-0006: the row *is* the Span). Its
+tests live in the `travel_agent_III/` subpackage, which defines its own
+`canonical_trace_spans` fixture; the `CANONICAL_TRACE_ID` constant stays here as
+the shared ADR-0007 reference.
 """
 
 from __future__ import annotations
@@ -72,10 +75,10 @@ def load_trace_spans(name: str) -> list[Span]:
     return [_row_to_span(r) for r in rows]
 
 
-@pytest.fixture()
-def canonical_trace_spans() -> list[Span]:
-    """Spans of the canonical travel-advisor trace (ADR-0007 examples)."""
-    return load_trace_spans("trace_8ae1f64d")
+# The canonical trace's own `canonical_trace_spans` fixture lives in the
+# `travel_agent_III/` subpackage's conftest (self-contained, like the other
+# per-trace subpackages). `CANONICAL_TRACE_ID` above stays here as the shared
+# ADR-0007 reference constant.
 
 
 # A second travel-advisor trace, captured the same way (verbatim from the
@@ -90,7 +93,7 @@ CLARIFYING_TURN_TRACE_ID = "186b5703acde0532adc6940e9eda3cb1"
 @pytest.fixture()
 def clarifying_turn_trace_spans() -> list[Span]:
     """Spans of a single-LLM-call travel-advisor trace (no tool invoked)."""
-    return load_trace_spans("trace_186b5703")
+    return load_trace_spans("travel_agent_I")
 
 
 # A hand-built `claude_agent_sdk` trace exercising ADR-0007 Step 2.b case 2:
@@ -155,18 +158,18 @@ ANTHROPIC_LIVE_TRACE_ID = "8e8d7b1ee84bd8995e3c951f659292a2"
 @pytest.fixture()
 def anthropic_live_trace_spans() -> list[Span]:
     """Spans of the live 3-turn patent-assistant anthropic trace."""
-    return load_trace_spans("trace_8e8d7b1e")
+    return load_trace_spans("patent_agent_I")
 
 
 # A second real `openinference.instrumentation.anthropic` trace captured
 # verbatim from the deployment's `spans` table. A `patent_search` agent makes
 # three `messages.create` LLM calls; two of the turns' outputs each ask for a
 # *different* tool (`file`, then `web_search`), and each tool is invoked exactly
-# once. Unlike `trace_8e8d7b1e` (where the same tool call is replayed on a later
+# once. Unlike `patent_agent_I` (where the same tool call is replayed on a later
 # turn's INPUT messages and the Step-4 edge merge collapses the replay), here no
 # call repeats — so every output-derived tool interaction stays in its positive
 # (after-LLM) band with no merge. It is the clean multi-tool, output-only
-# counterpart to the replay-heavy `trace_8e8d7b1e`: same 4-entity / 10-interaction
+# counterpart to the replay-heavy `patent_agent_I`: same 4-entity / 10-interaction
 # shape (one observed agent + three inferred peers: the LLM and two tools), but
 # the tool calls are distinct rather than merged.
 ANTHROPIC_MULTITOOL_TRACE_ID = "4ee0239356d61584bb4c3b6965041788"
@@ -175,7 +178,7 @@ ANTHROPIC_MULTITOOL_TRACE_ID = "4ee0239356d61584bb4c3b6965041788"
 @pytest.fixture()
 def anthropic_multitool_trace_spans() -> list[Span]:
     """Spans of the live patent_search anthropic trace (file + web_search)."""
-    return load_trace_spans("trace_4ee02393")
+    return load_trace_spans("patent_agent_II")
 
 
 # A hand-built cross-service trace exercising ADR-0007 Step 3.b for an *observed*

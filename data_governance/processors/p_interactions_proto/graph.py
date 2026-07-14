@@ -245,7 +245,7 @@ class EntityEdge:
 
     `order` is seeded from the originating interaction base-graph edge (see
     `Edge.order`, the Step 2.c intra-turn band) and then OVERWRITTEN by
-    `_order_responses_lifo` with a TRUE GLOBAL ORDINAL (ADR-0007 Step 3.b point 2):
+    `_order_execution_walk` with a TRUE GLOBAL ORDINAL (ADR-0007 Step 3.b point 2):
     a single monotonic sequence across the whole trace — chronological across
     turns, LIFO within a nested delegation. Consumers sort by `order` ALONE.
     """
