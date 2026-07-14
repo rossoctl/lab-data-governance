@@ -215,3 +215,8 @@ OBSERVED_TOOL_TWO_INVOCATIONS_TRACE_ID = "0b00b1e5000000000000000000000001"
 def observed_tool_two_invocations_trace_spans() -> list[Span]:
     """Spans of a google_adk agent invoked twice, each running create_booking."""
     return load_trace_spans("trace_observed_tool_two_invocations")
+
+
+# NOTE: the real 4-agent cross-framework travel-advisor trace
+# (`e8f7f7c4d7b35e5aa4fbdaaae2a90f75`) and its fixture are registered in the
+# `travel_agent_II/` subpackage's own conftest, alongside the tests for it.

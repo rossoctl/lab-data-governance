@@ -546,4 +546,12 @@
       }
     });
   }
+
+  // Default view: "Entities and interactions" (flow). This file is included
+  // last, so every view button's click handler (setView in
+  // execution_flow_logic.js, setAllViews here) is already bound. Clicking the
+  // flow button drives BOTH handler chains — flow shown + loadFlow() kicked
+  // off, tree and graph sections hidden — establishing the initial state
+  // without duplicating that coordination logic.
+  flowBtn.click();
 })();

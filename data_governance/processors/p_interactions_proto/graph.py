@@ -107,15 +107,17 @@ class Edge:
     edge kind: it is a route through a Teal server node, cut at the Step 3.a
     fuse and reconstructed into entity edges there.
 
-    `order` is the intra-turn ordering band carried by the request/response
-    edges of a Teal server, per ADR-0007 "Inferred interaction ordering".
-    Several such edges derived from a *single* span share that span's
-    `started_at`, so `order` breaks the tie. The band encodes the spec rules:
-    input-derived tool calls sit in a negative band (before the LLM), the
-    LLM/agent call+response in {0, 1}, and output-derived tool calls in a
-    positive band (after the LLM); within any call/response pair the call's
-    `order` is one less than its response's. Plain (non-server) edges leave it
-    at 0. `build_entity_graph` copies it onto the resulting `EntityEdge`.
+    `order` is the intra-turn ordering band carried by the FORWARD (request)
+    edges of a Teal server, per ADR-0007 Step 2.c "Inferred call-chain ordering".
+    Several forward call chains derived from a *single* span share that span's
+    `started_at`, so `order` breaks the tie. The band encodes the spec's 2.c
+    rules: input-derived tool calls sit in a negative band (before the LLM), the
+    LLM/agent/one-sided call at 0, and output-derived tool calls in a positive
+    band (after the LLM). Both forward edges of a server (source→server,
+    server→target) carry the same band. Plain (non-server) edges leave it at 0.
+    `build_entity_graph` reads it back onto the request `EntityEdge` and derives
+    the response `EntityEdge.order` from it (Step 3.b `call + 1`, refined by the
+    traceparent-nesting LIFO rule) — the response band is no longer stamped here.
     """
 
     id: str
@@ -172,7 +174,7 @@ class EntityNode:
     an inferred (e.g. unobserved-peer or case-4 agent) node. Inferred entities
     have no observed spans of their own; their span_ids reference the observed
     peer's span(s).
-    `peer_match_key` is the combine key for the Step 3.a semantic combine —
+    `peer_match_key` is the combine key for the Step 3.d semantic combine —
     two inferred entities with the same key represent the same unobserved real
     peer and collapse into one.
     """
@@ -241,10 +243,11 @@ class EntityEdge:
     node rather than re-derivable from the LLM span's own facts. When None the
     extractor derives the payload from the anchor span's `SpanFacts` as usual.
 
-    `order` is copied from the originating interaction base-graph edge (see
-    `Edge.order`). It is the deterministic intra-turn tiebreak for the derived
-    interaction; the extractor sorts by `(started_at, order)` so interactions
-    sharing a span's timestamp keep their spec-mandated order.
+    `order` is seeded from the originating interaction base-graph edge (see
+    `Edge.order`, the Step 2.c intra-turn band) and then OVERWRITTEN by
+    `_order_responses_lifo` with a TRUE GLOBAL ORDINAL (ADR-0007 Step 3.b point 2):
+    a single monotonic sequence across the whole trace — chronological across
+    turns, LIFO within a nested delegation. Consumers sort by `order` ALONE.
     """
 
     id: str

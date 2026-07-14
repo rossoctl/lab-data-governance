@@ -90,10 +90,9 @@ class ProtoInteraction:
     request_payload_hash: str | None
     response_payload_hash: str | None
     summary: str
-    # Intra-turn ordering tiebreak (ADR-0007 "Inferred interaction ordering").
-    # Interactions derived from one span share `started_at`; consumers sort by
-    # `(started_at, order)` so the spec order (input tools → LLM call/response
-    # → output tools; call before response) survives. Copied from
+    # Global ordinal (ADR-0007 Step 3.b point 2): a single monotonic sequence
+    # across the whole trace — chronological across turns, LIFO within a nested
+    # delegation — so consumers sort by `order` ALONE. Copied from
     # `EntityEdge.order`.
     order: int = 0
 
@@ -281,8 +280,10 @@ def _derive_interactions(
         # merged peer carries an earlier turn's span), so `min(started_at)` would
         # drag every turn's interaction to the earliest turn's time. The anchor
         # is the single source of truth for the interaction's identity, so its
-        # times define the interaction's time and its (started_at, order) sort
-        # position. `error`, by contrast, still considers the whole call/response
+        # times define the interaction's absolute time. (The interaction's SORT
+        # position is a separate concern: the global ordinal `order`, set by
+        # `_order_responses_lifo` — consumers sort by `order` alone.) `error`,
+        # by contrast, still considers the whole call/response
         # pair — either side erroring marks the interaction errored.
         anchor_span = edge_spans[0]
         started_at = anchor_span.started_at
@@ -294,8 +295,22 @@ def _derive_interactions(
 
         # Payload shape is chosen by the adapter from `SpanFacts.kind` — the
         # extractor neither inspects raw attributes nor branches on the
-        # natural-key prefix string.
+        # natural-key prefix string. Payloads follow the anchor span, EXCEPT when
+        # the anchor carries none: the A2A-delegation response leg anchors its
+        # *timing* on the responding agent's observed wrapper span (Step 3.b point 2),
+        # which is a payload-less `Kind.OTHER` span, while the delegation's
+        # request/response payloads live on the call-site TOOL span the edge also
+        # pools. So derive the payload shapes from the anchor when it bears a
+        # payload, else from the first pooled span that does (timing/evidence
+        # still follow the anchor). For every ordinary interaction the anchor is
+        # itself payload-bearing, so this picks the anchor unchanged.
         req_shape, resp_shape = payload_shapes_for_facts(extract_facts(anchor_span))
+        if req_shape is None and resp_shape is None:
+            for s in edge_spans[1:]:
+                shapes = payload_shapes_for_facts(extract_facts(s))
+                if shapes != (None, None):
+                    req_shape, resp_shape = shapes
+                    break
         # Step 2.c case 3: a tool inferred from an LLM span's tool_calls carries
         # its arguments on the entity edge (the anchor span is the LLM span, so
         # deriving from its facts would yield the LLM completion, not the tool
@@ -399,10 +414,10 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     # (groups); Step 3.b — each dropped Teal transport chain → a pair of entity
     # edges (one interaction per chain).
     entity_graph = build_entity_graph(working, span_by_id)
-    # Step 3.a (semantic combine) — combine entity nodes representing the same
-    # entity (inferred peers AND observed entities sharing a typed key + kind +
-    # scope), maintaining all edges. `span_by_id` supplies each entity's scope
-    # for the combine key.
+    # Step 3.d (merge entities — entity graph) — combine entity nodes representing
+    # the same entity (inferred peers AND observed entities sharing a typed key +
+    # kind + scope), maintaining all edges. `span_by_id` supplies each entity's
+    # scope for the combine key.
     n_entities_merged = combine_identical_entities(entity_graph, span_by_id)
 
     # Entity naming is applied during output derivation (entities are named from
@@ -433,7 +448,7 @@ def extract(spans: Iterable[Span]) -> ExtractResult:
     )
     notes.append(
         f"entity graph: {len(entity_graph.nodes)} entities, {len(entity_graph.edges)} edges "
-        f"(Step 3.a combined {n_entities_merged} same-entity nodes)"
+        f"(Step 3.d combined {n_entities_merged} same-entity nodes)"
     )
     notes.extend(ix_notes)
 
