@@ -401,6 +401,77 @@ attributes the processor did not recognise: the **Payload** is still stored
 filtering `content_kind = 'unknown'`. Stored on
 `interaction_payloads.content_kind`.
 
+**Classification**:
+The data-governance verdict on the sensitivity of one **Payload** — its
+document-level `sensitivity_level`, the regulatory tags it carries, whether it
+holds an identity bundle, and the set of **Findings** within its body text.
+Produced by **P-classification**, not by `P-interactions`. Keyed to the
+**Payload** by `content_hash`: one classification per content-addressed
+payload, so a body referenced by many **Interactions** or **Traces** is
+classified exactly once (dedup inherited from the payload's content
+addressing). Stored one row per payload in `payload_classifications`, with the
+**Findings** inline as JSONB. Write-once: a **Payload** is immutable
+(content-addressed), so its classification never mutates and there is no
+finalization/`seq`-bump analogue — unlike **Interactions** and **Entities**,
+which mutate in place. Each row is stamped with a monotonic integer
+`model_version` (starts at 1) so classifications from different model/config
+generations are comparable; automatic re-classification on version change is
+deferred — a model upgrade is handled operationally (truncate
+`payload_classifications`, reset the **P-classification** cursor to 0,
+re-classify all payloads). See ADR-0024. Exposed inline on the payload read surface: `GET
+/api/payloads/{hash}` carries a nullable `classification` field — null while
+the **Payload** exists but **P-classification** has not yet run (the
+eventual-consistency window), populated once the verdict lands. Every
+**Payload** is classified uniformly (no per-kind skipping in this increment),
+so a null classification means *exactly* "not yet processed," never "processed
+but skipped" — a payload with no sensitive text gets a real `PUBLIC` /
+zero-**Findings** verdict, not a null. (A future exclude-filter may skip
+selected kinds; that is deferred.)
+
+**Finding**:
+One sensitive item the NER model detected in a **Payload**'s **Classifiable
+text**: a `(start, end)` region (char offsets into the **Classifiable text**),
+its detected entity type (`SSN`, `PN`, `EMAIL`, …), and the sensitivity
+attributes derived for it (`sensitivity_level`, `regulatory_tags`,
+`identifier_type`). A **Classification** carries zero or more findings; the
+document-level verdict is aggregated up from them (plus identity-bundle
+detection across the finding set).
+_Avoid_: "span" for a finding — a **Span** is an OTEL row `(trace_id,
+span_id)`; a finding is a sensitive region of a payload's text. They never
+mean the same thing.
+_Avoid_: calling a finding's detected type an **Entity** — that word is the
+interaction participant (agent/tool/llm/…). A finding's type is an NER tag
+(`PN`, `SSN`), a different taxonomy entirely.
+
+**P-classification**:
+The processor that reads **Payloads** and derives their **Classification**.
+A Layer-2 processor, sibling of `P-interactions`; projects each **Payload**
+into its **Classifiable text**, runs the fine-tuned NER model over that text to
+detect sensitive spans, then maps those to a sensitivity verdict (see
+`classification/`). Consumes `interaction_payloads`; semantically aware where
+the receiver is not. Runs the NER model **in-process** in the drain loop, and
+ships as its own container image (`data-governance/classification`) — separate
+from the shared receiver/UI/interactions image because its torch + ~500 MB
+model-weight dependency closure diverges heavily (the weights are baked into
+the image; image tag ↔ `model_version`). See ADR-0022 (own image) and ADR-0023
+(in-process model, baked-in weights + config).
+
+**Classifiable text**:
+The single natural-language string **P-classification** feeds to the NER
+model for one **Payload** — the payload's human-meaningful prose projected
+out of its JSONB `content` by the **Text projection rule**. Detected entity
+spans are char offsets into this string, not into the stored JSONB.
+
+**Text projection rule**:
+The processor-side rule by which **P-classification** projects a **Payload**'s
+JSONB `content` into its **Classifiable text**, one branch per **Content
+kind** (e.g. concatenate message bodies for `llm_chat_prompt`, take the result
+string for `tool_call_result`). Like the **Payload extraction rule** it
+mirrors, this is a closed set enforced in code that churns as content kinds
+mature. `unknown` (and any kind without a branch) falls back to serializing
+the whole `content` JSONB to a canonical string — best-effort classification
+that also marks the projection-coverage gap.
+
 **TraceListingEntry**:
 One row of the recent-traces UI view — a derived display of a **Trace**,
 anchored on its current **Listing root**. Is the element type of the
@@ -468,3 +539,9 @@ present on both the `GET /api/traces` collection rows and the
 - **"Trace"** vs **"TraceListingEntry"** — the OTEL set of spans vs the UI row
   derived from it. They share `trace_id` but the row's other fields are
   derived and eventually consistent; the trace itself is just the set.
+- **"Span"** in classification — the NER model detects `(start, end)` regions
+  that could naturally be called "spans," but **Span** is the OTEL row. Resolved:
+  a classification detection is a **Finding**, never a span.
+- **"Entity"** in classification — the NER taxonomy calls its tags "entity
+  types" (`PN`, `SSN`), but **Entity** is the interaction participant. Resolved:
+  a **Finding** has a *detected type* (an NER tag); it is not an **Entity**.
