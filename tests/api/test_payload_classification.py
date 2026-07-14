@@ -89,6 +89,44 @@ def test_payload_classification_populates_once_the_row_exists(api_server, config
     assert verdict["model_version"] == 1
 
 
+def test_served_finding_keys_the_detected_type_under_entity_type(
+    api_server, configured_db
+):
+    """A populated **Finding** is served with its detected type under the
+    ``entity_type`` key — the one spelling the classification logic writes, the
+    ``findings`` JSONB stores, the API serves verbatim, and the UI's ``Finding``
+    wire type reads (CONTEXT.md **Finding**). Guards the cross-stack contract so
+    the type key cannot silently drift back to ``tag`` (which would blank the
+    UI's Findings "Type" column once a real detector lands in #79)."""
+    with psycopg.connect(configured_db) as conn:
+        _insert_payload(conn, content_hash="withfinding")
+        # A finding exactly as data_governance...classification.logic.build_finding
+        # emits it: the detected NER-tag type is keyed ``entity_type``.
+        conn.execute(
+            "INSERT INTO payload_classifications "
+            "(content_hash, sensitivity_level, regulatory_tags, "
+            " contains_identity_bundle, is_personalized, primary_domain, "
+            " findings, model_version) "
+            "VALUES (%s, 'CONFIDENTIAL', '{PII}', FALSE, TRUE, 'person', "
+            "'[{\"entity_type\": \"EMAIL\", \"start\": 6, \"end\": 18, "
+            "\"text\": \"jane@doe.org\"}]'::jsonb, 1)",
+            ("withfinding",),
+        )
+        conn.commit()
+
+    verdict = httpx.get(f"{_base_url(api_server)}/api/payloads/withfinding").json()[
+        "classification"
+    ]
+    assert verdict is not None
+    assert len(verdict["findings"]) == 1
+    finding = verdict["findings"][0]
+    # The served finding keys the detected type under entity_type (NOT tag).
+    assert finding["entity_type"] == "EMAIL"
+    assert "tag" not in finding
+    assert finding["text"] == "jane@doe.org"
+    assert (finding["start"], finding["end"]) == (6, 18)
+
+
 def test_payload_still_carries_its_own_fields_alongside_classification(
     api_server, configured_db
 ):

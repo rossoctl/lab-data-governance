@@ -435,7 +435,12 @@ its detected entity type (`SSN`, `PN`, `EMAIL`, …), and the sensitivity
 attributes derived for it (`sensitivity_level`, `regulatory_tags`,
 `identifier_type`). A **Classification** carries zero or more findings; the
 document-level verdict is aggregated up from them (plus identity-bundle
-detection across the finding set).
+detection across the finding set). The stored/served JSON shape (the
+`payload_classifications.findings` JSONB, served verbatim on
+`/api/payloads/{hash}` and read by the UI's `Finding` wire type) keys the
+detected type under **`entity_type`** — one spelling across logic, DB, API, and
+UI. (Despite the key name it is an NER tag, not an **Entity**; the name is kept
+for parity with the reference tool and the pre-existing UI type.)
 _Avoid_: "span" for a finding — a **Span** is an OTEL row `(trace_id,
 span_id)`; a finding is a sensitive region of a payload's text. They never
 mean the same thing.
@@ -447,9 +452,14 @@ interaction participant (agent/tool/llm/…). A finding's type is an NER tag
 The processor that reads **Payloads** and derives their **Classification**.
 A Layer-2 processor, sibling of `P-interactions`; projects each **Payload**
 into its **Classifiable text**, runs the fine-tuned NER model over that text to
-detect sensitive spans, then maps those to a sensitivity verdict (see
-`classification/`). Consumes `interaction_payloads`; semantically aware where
-the receiver is not. Runs the NER model **in-process** in the drain loop, and
+detect **Findings**, then aggregates those to a sensitivity verdict. The
+projection + aggregation logic is ported into the package
+(`data_governance/processors/classification/`: `projection`, `logic`, behind the
+`detector` seam) from the reference batch tool `classification/`, which stays as
+the offline-eval harness (the port is parity-tested against it) — mirroring how
+`P-interactions` was ported from its verified prototype. Consumes
+`interaction_payloads`; semantically aware where the receiver is not. Runs the NER
+model **in-process** in the drain loop, and
 ships as its own container image (`data-governance/classification`) — separate
 from the shared receiver/UI/interactions image because its torch + ~500 MB
 model-weight dependency closure diverges heavily (the weights are baked into
@@ -459,8 +469,9 @@ the image; image tag ↔ `model_version`). See ADR-0022 (own image) and ADR-0023
 **Classifiable text**:
 The single natural-language string **P-classification** feeds to the NER
 model for one **Payload** — the payload's human-meaningful prose projected
-out of its JSONB `content` by the **Text projection rule**. Detected entity
-spans are char offsets into this string, not into the stored JSONB.
+out of its JSONB `content` by the **Text projection rule**. Detected **Finding**
+regions are `(start, end)` char offsets into this string, not into the stored
+JSONB.
 
 **Text projection rule**:
 The processor-side rule by which **P-classification** projects a **Payload**'s

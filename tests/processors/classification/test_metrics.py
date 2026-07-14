@@ -91,3 +91,25 @@ def test_projected_kind_payload_does_not_increment_fallback(
 
     assert registry.get_sample_value("projection_fallbacks_total") == 0.0
     assert registry.get_sample_value("payloads_classified_total") == 1.0
+
+
+def test_unbranched_kind_payload_increments_projection_fallback(
+    configured_db: str,
+) -> None:
+    """A payload whose **Content kind** exists but has no **Text projection rule**
+    branch (e.g. ``http_request_body`` — recognised by P-interactions but not yet
+    projected by P-classification) takes the whole-JSONB fallback and so DOES
+    increment the projection-coverage counter (#81, #78). This pins the counter to
+    the rule's *actual* fallback set (``projection.is_projectable``) rather than a
+    hand-maintained kind list — the earlier hardcoded set treated ``http_*`` /
+    ``agent_message`` as projectable and would have undercounted them."""
+    registry = metrics.make_registry()
+
+    _insert_payload(
+        configured_db, content_hash="h0", content_kind="http_request_body"
+    )
+
+    driver.drain(0)
+
+    assert registry.get_sample_value("projection_fallbacks_total") == 1.0
+    assert registry.get_sample_value("payloads_classified_total") == 1.0
