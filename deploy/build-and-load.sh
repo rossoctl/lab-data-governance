@@ -75,6 +75,25 @@ if ! command -v kind >/dev/null 2>&1; then
     exit 1
 fi
 
+# Refresh uv.lock to match pyproject.toml BEFORE either build. Both Containerfiles
+# `COPY ... uv.lock` and run `uv sync --frozen`, which ABORTS if the lockfile is
+# missing or out of sync with pyproject.toml — and uv.lock is .gitignored, so a
+# checkout carries whatever (possibly stale, possibly absent) lock the host last
+# generated. This matters acutely for the classification image: issue #79 added
+# torch/transformers to pyproject's `classification` extra, so a pre-#79 lock lacks
+# them and `uv sync --frozen --extra classification` would fail the build. `uv lock`
+# is idempotent — a no-op when already in sync. If uv is not installed, we can only
+# proceed when a lockfile already exists (the `--frozen` builds need one either way).
+if command -v uv >/dev/null 2>&1; then
+    echo ">> Refreshing uv.lock to match pyproject.toml (uv lock)"
+    uv lock --project "${REPO_ROOT}"
+elif [[ ! -f "${REPO_ROOT}/uv.lock" ]]; then
+    echo "error: uv.lock is absent and 'uv' is not installed to generate it; the " \
+         "'uv sync --frozen' build step requires a lockfile. Install uv " \
+         "(https://docs.astral.sh/uv/) or provide uv.lock." >&2
+    exit 1
+fi
+
 # Materialize the git-LFS model weights BEFORE building the classification image
 # (ADR-0023). classification/model/<generation>/model.safetensors is a ~500 MB
 # git-LFS artifact; a fresh checkout holds only a ~134-byte pointer. Without this

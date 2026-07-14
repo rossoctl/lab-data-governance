@@ -28,12 +28,14 @@ dependencies = [
 # the classification image installs them: its Containerfile.classification runs
 # `uv sync --frozen --extra classification`, while the shared
 # receiver/UI/interactions image's `uv sync --frozen --no-dev` (no extra) stays
-# slim. The pinned `transformers` floor matches the generation the baked-in model
-# weights were saved with (config.json `transformers_version`); `torch` is the
-# CPU wheel by default (the cluster has no GPU).
+# slim. `transformers` is pinned to the 4.57.x line the baked-in model weights
+# were saved with (config.json `transformers_version` == 4.57.3) so the load path
+# runs on the same generation that trained them — a cross-major bump (5.x) is
+# untested against these weights and is exactly where the loader's breaking
+# changes land. `torch` is the CPU wheel by default (the cluster has no GPU).
 classification = [
     "torch>=2.2",
-    "transformers>=4.44",
+    "transformers>=4.57,<4.58",
 ]
 
 [project.scripts]

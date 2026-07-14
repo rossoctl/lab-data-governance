@@ -542,6 +542,23 @@ def test_build_load_script_materializes_git_lfs_before_build(script_text: str) -
     )
 
 
+def test_build_load_script_refreshes_uv_lock_before_build(script_text: str) -> None:
+    """Both Containerfiles run `uv sync --frozen`, which aborts if `uv.lock` is
+    missing or out of sync with `pyproject.toml`. `uv.lock` is .gitignored, so a
+    checkout carries whatever (possibly stale, possibly absent) lock the host last
+    generated — and issue #79 added torch/transformers to the `classification`
+    extra, so a pre-#79 lock lacks them and `uv sync --frozen --extra classification`
+    would fail the build. The script must `uv lock` (idempotent) before the build so
+    the `--frozen` step resolves against a current lockfile rather than depending on
+    the host having manually re-locked."""
+    assert re.search(r"uv\s+lock\b", script_text), (
+        "build script must run `uv lock` before the `uv sync --frozen` builds so "
+        "the (gitignored) lockfile matches pyproject.toml — otherwise a stale/absent "
+        "lock (e.g. one predating issue #79's torch/transformers extra) fails the "
+        "classification image build"
+    )
+
+
 def test_build_load_script_uses_set_e_or_pipefail(script_text: str) -> None:
     """A multi-step shell script that builds, tags, and loads must abort on
     the first failure — otherwise a failed build silently proceeds to a
