@@ -36,6 +36,8 @@ from data_governance import db
 from data_governance.processors import _driver
 
 from . import metrics, projection, verdict
+from .detector import Detector
+from .verdict import STUB_MODEL_VERSION
 
 # The durable ``processor_state`` cursor row for this stream. Distinct from
 # "interactions" so the two Layer-2 processors keep independent cursors.
@@ -68,7 +70,12 @@ class Payload:
     seq: int
 
 
-def process_payload(tx: db.Transaction, payload: Payload) -> None:
+def process_payload(
+    tx: db.Transaction,
+    payload: Payload,
+    detector: Detector | None = None,
+    model_version: int = STUB_MODEL_VERSION,
+) -> None:
     """Derive and persist one **Payload**'s **Classification**, within *tx*.
 
     Runs the classifier (:func:`verdict.classify` — projects the payload's
@@ -77,6 +84,17 @@ def process_payload(tx: db.Transaction, payload: Payload) -> None:
     into ``payload_classifications`` with ``ON CONFLICT (content_hash) DO NOTHING`` —
     write-once and idempotent (ADR-0024): re-processing the same payload after a
     crash is a no-op, never a duplicate row or an in-place mutation.
+
+    *detector* is the narrow text-in/findings-out seam (ADR-0023) injected at
+    startup: issue #79's in-process NER model in production, ``None`` (→
+    :func:`verdict.classify`'s no-op :class:`~.detector.NullDetector` default)
+    before the model is wired and in the detector-free tests. *model_version*
+    stamps the row with the injected detector's model generation (image tag ↔
+    ``model_version``; ADR-0023/0024) — passed alongside *detector* so a row's
+    **Findings** and its ``model_version`` always agree. Loading the model once at
+    startup and threading it here (not constructing it per payload) keeps the hot
+    path model-load-free; the seam stays narrow so the future move to a remote
+    inference service is a localized change (ADR-0023).
 
     The caller (the shared loop) owns the transaction boundary and advances the
     cursor in the same *tx*, so the classification write and the cursor advance
@@ -95,7 +113,13 @@ def process_payload(tx: db.Transaction, payload: Payload) -> None:
     if not projection.is_projectable(payload.content_kind):
         metrics.projection_fallbacks_total.inc()
 
-    v = verdict.classify(payload.content_hash, payload.content_kind, payload.content)
+    v = verdict.classify(
+        payload.content_hash,
+        payload.content_kind,
+        payload.content,
+        detector=detector,
+        model_version=model_version,
+    )
     tx.execute(
         "INSERT INTO payload_classifications "
         "(content_hash, sensitivity_level, regulatory_tags, "
@@ -135,16 +159,26 @@ def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[Payload]:
     ]
 
 
-def _spec() -> _driver.StreamSpec[Payload]:
+def _spec(
+    detector: Detector | None = None,
+    model_version: int = STUB_MODEL_VERSION,
+) -> _driver.StreamSpec[Payload]:
     """Build the P-classification stream spec for the shared loop.
 
     Rebuilt per call so ``POLL_SECONDS`` monkeypatched by a test is picked up.
+
+    *detector* / *model_version* are bound into the per-item procedure so the
+    shared loop's ``(tx, payload) -> None`` contract is unchanged: the detector is
+    constructed once at startup (issue #79) and closed over here, never
+    re-constructed per payload.
     """
     return _driver.StreamSpec(
         notify_channel=NOTIFY_CHANNEL,
         processor_name=PROCESSOR_NAME,
         fetch_batch=_fetch_batch,
-        process_item=process_payload,
+        process_item=lambda tx, payload: process_payload(
+            tx, payload, detector=detector, model_version=model_version
+        ),
         item_seq=lambda payload: payload.seq,
         poll_seconds=POLL_SECONDS,
         batch_size=_DRAIN_BATCH,
@@ -156,14 +190,33 @@ def read_cursor(tx: db.Transaction) -> int:
     return _driver.read_cursor(tx, PROCESSOR_NAME)
 
 
-def drain(cursor: int) -> int:
+def drain(
+    cursor: int,
+    detector: Detector | None = None,
+    model_version: int = STUB_MODEL_VERSION,
+) -> int:
     """Process every payload past *cursor*, one transaction per payload. Returns
     the new cursor (the seq of the last payload processed, or *cursor* if
-    none)."""
-    return _driver.drain(_spec(), cursor)
+    none).
+
+    *detector* / *model_version* are the injected NER-model seam and its
+    generation (issue #79); ``None`` keeps the no-op NullDetector default (#78)."""
+    return _driver.drain(_spec(detector=detector, model_version=model_version), cursor)
 
 
-def run(stop_event: threading.Event, dsn: str) -> None:
+def run(
+    stop_event: threading.Event,
+    dsn: str,
+    detector: Detector | None = None,
+    model_version: int = STUB_MODEL_VERSION,
+) -> None:
     """Wake-driven drain loop over the ``interaction_payloads`` stream. Returns
-    when *stop_event* is set. See :func:`_driver.run`."""
-    _driver.run(_spec(), stop_event, dsn)
+    when *stop_event* is set. See :func:`_driver.run`.
+
+    *detector* is the in-process NER model loaded once at startup (issue #79),
+    injected into every payload's classification through the narrow seam; its
+    *model_version* stamps the rows. ``None`` (the default) keeps #78's no-op
+    NullDetector behaviour."""
+    _driver.run(
+        _spec(detector=detector, model_version=model_version), stop_event, dsn
+    )
