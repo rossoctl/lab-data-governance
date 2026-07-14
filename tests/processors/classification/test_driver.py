@@ -265,9 +265,18 @@ def test_injected_detector_findings_land_in_the_written_row(configured_db: str) 
 
     row = _classification(configured_db, "ner")
     assert row is not None
+    # The headline #79 acceptance: an SSN in the payload → a RESTRICTED verdict
+    # carrying the corresponding SSN **Finding**, end-to-end through the drain.
     assert row["sensitivity_level"] == "RESTRICTED"
     assert row["contains_identity_bundle"] is True
     assert {f["entity_type"] for f in row["findings"]} == {"PN", "SSN"}
+
+    ssn = next(f for f in row["findings"] if f["entity_type"] == "SSN")
+    assert ssn["sensitivity_level"] == "RESTRICTED"
+    assert (ssn["start"], ssn["end"]) == (11, 22)
+    # The finding's text is sliced from the projected Classifiable text (the
+    # message body), NOT the raw JSONB — proving the projection ran before detect.
+    assert ssn["text"] == "123-45-6789"
 
 
 def test_drain_without_a_detector_keeps_the_null_default(configured_db: str) -> None:
