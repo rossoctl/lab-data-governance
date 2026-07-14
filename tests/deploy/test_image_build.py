@@ -218,6 +218,127 @@ def test_core_dependencies_are_torch_free(pyproject: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Containerfile.classification — the separate P-classification image (issue #79)
+# ---------------------------------------------------------------------------
+#
+# ADR-0022/0023: P-classification ships as its own image
+# (`data-governance/classification`), separate from the shared receiver/UI/
+# interactions image, because its torch + ~500 MB model-weight closure diverges
+# heavily. The dedicated `Containerfile.classification` installs the
+# `classification` extra (torch/transformers) and bakes in — as one unit — the
+# model weights AND both config artifacts (image tag ↔ model_version). These tests
+# pin that structural contract statically; the "image actually builds and the model
+# loads" AC is exercised via build-and-load.sh on the cluster (git-LFS weights are
+# not materialized in a fresh dev checkout), exactly as the shared image's build is.
+
+CLASSIFICATION_CONTAINERFILE = REPO_ROOT / "Containerfile.classification"
+
+
+def test_classification_containerfile_present() -> None:
+    """A dedicated Containerfile.classification exists at the repo root (ADR-0022:
+    classification is the sole split-off image)."""
+    assert CLASSIFICATION_CONTAINERFILE.is_file(), (
+        "expected Containerfile.classification at the repo root for the separate "
+        "P-classification image (ADR-0022)"
+    )
+
+
+@pytest.fixture(scope="module")
+def classification_containerfile_text() -> str:
+    return CLASSIFICATION_CONTAINERFILE.read_text()
+
+
+def test_classification_containerfile_installs_the_extra(
+    classification_containerfile_text: str,
+) -> None:
+    """The classification image installs the `classification` extra (torch +
+    transformers) via uv — that is what makes it the "fat" image (ADR-0022). A
+    plain `uv sync` with no extra would omit the model runtime."""
+    text = classification_containerfile_text
+    assert "uv sync --frozen" in text, (
+        "classification image must install deps via `uv sync --frozen` "
+        "(lockfile-exact, like the shared image)"
+    )
+    assert "--extra classification" in text, (
+        "classification image must `uv sync ... --extra classification` so torch/"
+        "transformers are installed (ADR-0022)"
+    )
+
+
+def test_classification_containerfile_bakes_weights_and_config(
+    classification_containerfile_text: str,
+) -> None:
+    """ADR-0023: the ~500 MB model weights AND both config artifacts are baked into
+    the image as one unit (image tag ↔ model_version). The Containerfile must copy
+    the model directory (weights + config.json) into the image; the config
+    artifacts (classification_config.json + entity CSV) travel with the package
+    already, so the model weights are the piece the image adds."""
+    text = classification_containerfile_text
+    # The model generation directory holds config.json + model.safetensors.
+    assert "classification/model" in text, (
+        "classification image must COPY the model weights directory "
+        "(classification/model/<generation>) into the image (ADR-0023)"
+    )
+
+
+def test_classification_containerfile_points_model_dir_at_the_baked_weights(
+    classification_containerfile_text: str,
+) -> None:
+    """The processor resolves the model from ``CLASSIFICATION_MODEL_DIR`` (default
+    ``/app/model``). The image must put the weights where the processor looks —
+    either by copying to ``/app/model`` or by setting ``CLASSIFICATION_MODEL_DIR``
+    to wherever it copied them — so startup finds the baked-in model (ADR-0023, no
+    runtime fetch)."""
+    text = classification_containerfile_text
+    copies_to_default = "/app/model" in text
+    sets_model_dir_env = re.search(
+        r"ENV\s+.*CLASSIFICATION_MODEL_DIR", text
+    ) or "CLASSIFICATION_MODEL_DIR" in text
+    assert copies_to_default or sets_model_dir_env, (
+        "classification image must bake the weights where the processor resolves "
+        "the model: copy them to /app/model (the default) or set "
+        "CLASSIFICATION_MODEL_DIR to their baked location"
+    )
+
+
+def test_classification_containerfile_runs_the_classification_entrypoint(
+    classification_containerfile_text: str,
+) -> None:
+    """The image's default command (if any) must not pin an entrypoint that fights
+    the k8s `command:` override; and it should be capable of running the
+    classification processor. We assert the classification module is referenced so
+    the image is self-evidently the P-classification image, and that no ENTRYPOINT
+    hardcodes a different module."""
+    text = classification_containerfile_text
+    assert "data_governance.processors.classification" in text, (
+        "classification image should reference the classification entry point"
+    )
+    entrypoint_lines = [
+        line
+        for line in text.splitlines()
+        if re.match(r"^\s*ENTRYPOINT\s+", line, flags=re.IGNORECASE)
+    ]
+    for line in entrypoint_lines:
+        assert "data_governance.processors.otlp_receiver" not in line
+        assert "data_governance.api" not in line
+
+
+def test_classification_containerfile_is_multi_stage(
+    classification_containerfile_text: str,
+) -> None:
+    """Mirror the shared image's multi-stage discipline: a uv builder stage and a
+    slim runtime stage (>=2 FROM lines)."""
+    from_lines = [
+        line
+        for line in classification_containerfile_text.splitlines()
+        if re.match(r"^\s*FROM\s+", line, flags=re.IGNORECASE)
+    ]
+    assert len(from_lines) >= 2, (
+        f"Containerfile.classification must be multi-stage (>=2 FROM), got {from_lines!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Container ignore file (deterministic build inputs)
 # ---------------------------------------------------------------------------
 
