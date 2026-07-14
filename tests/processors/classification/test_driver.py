@@ -28,15 +28,21 @@ from data_governance.processors.classification import driver
 # --- helpers -----------------------------------------------------------------
 
 
-def _insert_payload(dsn: str, *, content_hash: str, content_kind: str = "unknown") -> int:
+def _insert_payload(
+    dsn: str,
+    *,
+    content_hash: str,
+    content_kind: str = "unknown",
+    content: str = "{}",
+) -> int:
     """Insert a content-addressed payload row (DEFAULT-allocated seq) the way
     P-interactions does; return its allocated ``seq``."""
     with psycopg.connect(dsn) as conn:
         (seq,) = conn.execute(
             "INSERT INTO interaction_payloads "
             "(content_hash, content_kind, content, byte_size) "
-            "VALUES (%s, %s, '{}'::jsonb, 2) RETURNING seq",
-            (content_hash, content_kind),
+            "VALUES (%s, %s, %s::jsonb, %s) RETURNING seq",
+            (content_hash, content_kind, content, len(content)),
         ).fetchone()
         conn.commit()
     return int(seq)
@@ -179,10 +185,10 @@ def test_crash_mid_payload_re_processes_from_same_cursor_without_duplicate(
     # Make classifying "boom" raise, simulating a crash after "ok" committed.
     real_classify = driver.verdict.classify
 
-    def _boom(content_hash, content_kind, content):  # noqa: ANN001 — test stub
+    def _boom(content_hash, content_kind, content, **kwargs):  # noqa: ANN001 — test stub
         if content_hash == "boom":
             raise RuntimeError("crash mid-payload")
-        return real_classify(content_hash, content_kind, content)
+        return real_classify(content_hash, content_kind, content, **kwargs)
 
     monkeypatch.setattr(driver.verdict, "classify", _boom)
 
@@ -208,3 +214,99 @@ def test_crash_mid_payload_re_processes_from_same_cursor_without_duplicate(
             "SELECT count(*) FROM payload_classifications"
         ).fetchone()
     assert n == 2, "recovery must classify boom without duplicating ok"
+
+
+# --- detector injection (issue #79) ------------------------------------------
+#
+# Issue #79 swaps the in-process NER model in behind the narrow detector seam
+# (ADR-0023). The seam is injected at the ``verdict.classify(..., detector=...)``
+# call site inside ``process_payload`` — the driver threads an
+# already-constructed detector (loaded once at startup, not per payload) and the
+# model generation it writes. With no detector the drain keeps its #78 behaviour
+# (the no-op NullDetector default → a real PUBLIC/zero-Findings verdict). These
+# tests use a FAKE detector so the whole drain path is exercised without torch or
+# the ~500 MB weights (which are baked into the image, not the dev checkout).
+
+
+class _FakeDetector:
+    """A stand-in :class:`Detector`: returns fixed annotations for any text.
+
+    Lets the drain path be exercised end-to-end without the real torch model —
+    the seam is text-in / annotations-out (ADR-0023), so a fake honouring that
+    shape drives the whole project → detect → aggregate → write path.
+    """
+
+    def __init__(self, annotations: list[tuple[int, int, str]]) -> None:
+        self._annotations = annotations
+
+    def detect(self, text: str) -> list[tuple[int, int, str]]:
+        return list(self._annotations)
+
+
+def test_injected_detector_findings_land_in_the_written_row(configured_db: str) -> None:
+    """A detector injected into the drain produces real **Findings** in the
+    persisted **Classification** row — the model swaps in behind the seam and the
+    write path is unchanged (ADR-0023). The projected text of an ``llm_chat_prompt``
+    payload is its message body; the fake reports a name + SSN in it, so the row is
+    RESTRICTED with two findings and an identity bundle."""
+    content = (
+        '{"messages": [{"message.role": "user", '
+        '"message.content": "John Smith 123-45-6789"}]}'
+    )
+    _insert_payload(
+        configured_db,
+        content_hash="ner",
+        content_kind="llm_chat_prompt",
+        content=content,
+    )
+    detector = _FakeDetector([(0, 10, "PN"), (11, 22, "SSN")])
+
+    driver.drain(0, detector=detector)
+
+    row = _classification(configured_db, "ner")
+    assert row is not None
+    # The headline #79 acceptance: an SSN in the payload → a RESTRICTED verdict
+    # carrying the corresponding SSN **Finding**, end-to-end through the drain.
+    assert row["sensitivity_level"] == "RESTRICTED"
+    assert row["contains_identity_bundle"] is True
+    assert {f["entity_type"] for f in row["findings"]} == {"PN", "SSN"}
+
+    ssn = next(f for f in row["findings"] if f["entity_type"] == "SSN")
+    assert ssn["sensitivity_level"] == "RESTRICTED"
+    assert (ssn["start"], ssn["end"]) == (11, 22)
+    # The finding's text is sliced from the projected Classifiable text (the
+    # message body), NOT the raw JSONB — proving the projection ran before detect.
+    assert ssn["text"] == "123-45-6789"
+
+
+def test_drain_without_a_detector_keeps_the_null_default(configured_db: str) -> None:
+    """No injected detector → the #78 behaviour is preserved: the no-op
+    NullDetector default yields a real PUBLIC / zero-**Findings** verdict, never a
+    null (ADR-0024)."""
+    _insert_payload(
+        configured_db,
+        content_hash="clean79",
+        content_kind="llm_chat_prompt",
+        content='{"messages": [{"message.role": "user", "message.content": "Book a flight."}]}',
+    )
+    driver.drain(0)
+
+    row = _classification(configured_db, "clean79")
+    assert row is not None
+    assert row["sensitivity_level"] == "PUBLIC"
+    assert row["findings"] == []
+
+
+def test_injected_detector_stamps_its_model_version(configured_db: str) -> None:
+    """The model generation the detector represents is stamped on every row it
+    writes: image tag ↔ ``model_version`` (ADR-0023/0024). A drain with an
+    injected model_version writes that version, distinguishing model-era rows from
+    the #78 no-model generation (model_version=1)."""
+    _insert_payload(configured_db, content_hash="mv", content_kind="unknown")
+    detector = _FakeDetector([])
+
+    driver.drain(0, detector=detector, model_version=2)
+
+    row = _classification(configured_db, "mv")
+    assert row is not None
+    assert row["model_version"] == 2

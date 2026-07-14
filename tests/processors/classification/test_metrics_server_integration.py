@@ -81,6 +81,11 @@ def running_processor(migrated_dsn: str):
         "DB_POOL_MAX_SIZE": "2",
         "DB_POOL_TIMEOUT": "5",
         "CLASSIFICATION_METRICS_PORT": str(metrics_port),
+        # Skip the in-process NER-model load (issue #79): this test exercises the
+        # /metrics surface, orthogonal to the model, and the dev/test environment
+        # installs neither torch/transformers (classification-image-only) nor the
+        # ~500 MB weights. Production loads the model — see __main__._build_detector.
+        "CLASSIFICATION_SKIP_MODEL": "1",
     }
     proc = subprocess.Popen(
         [sys.executable, "-m", "data_governance.processors.classification"],

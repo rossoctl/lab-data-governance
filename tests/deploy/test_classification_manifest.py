@@ -120,18 +120,38 @@ def test_main_container_does_not_run_alembic(classification_deployment: dict) ->
     assert "alembic" not in cmd.lower()
 
 
-def test_runs_on_receiver_image(classification_deployment: dict) -> None:
-    """No new image build for the stub (ADR-0022 defers the torch image): init +
-    main both run the shared receiver image."""
+def test_runs_on_classification_image(classification_deployment: dict) -> None:
+    """The real NER model ships as its OWN image (issue #79 / ADR-0022): the
+    classification pod runs ``data-governance/classification:latest`` — the fat
+    image with torch + baked-in weights — NOT the shared receiver image. Both the
+    migrate init container and the processor container run it, so the pod is
+    self-contained on one image (its baked package carries migrate + the
+    schema-version check, whose compiled alembic head matches the shared image's).
+    This is the deliberate flip from the #77 stub, which shared the receiver image
+    while it carried no torch."""
     pod_spec = classification_deployment["spec"]["template"]["spec"]
     init = pod_spec["initContainers"][0]
     main = pod_spec["containers"][0]
     for ctr in (init, main):
-        assert ctr.get("image") == "data-governance/receiver:latest", (
-            f"{ctr.get('name')!r} must run the shared receiver image, got "
-            f"{ctr.get('image')!r}"
+        assert ctr.get("image") == "data-governance/classification:latest", (
+            f"{ctr.get('name')!r} must run the separate classification image "
+            f"(ADR-0022), got {ctr.get('image')!r}"
         )
         assert ctr.get("imagePullPolicy") == "IfNotPresent"
+
+
+def test_does_not_run_the_shared_receiver_image(classification_deployment: dict) -> None:
+    """Guard against a regression to the shared image: NO container in the
+    classification pod may run ``data-governance/receiver:latest``. The whole
+    point of ADR-0022 is that classification's torch closure does not ride on the
+    slim shared image (and vice versa)."""
+    pod_spec = classification_deployment["spec"]["template"]["spec"]
+    for ctr in _iter_containers(pod_spec):
+        _, container = ctr
+        assert container.get("image") != "data-governance/receiver:latest", (
+            f"{container.get('name')!r} must not run the shared receiver image — "
+            "classification ships as its own image (ADR-0022)"
+        )
 
 
 def test_database_url_set(classification_deployment: dict) -> None:

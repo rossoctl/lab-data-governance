@@ -69,6 +69,7 @@ def classify(
     content_kind: str,
     content: object,
     detector: Detector | None = None,
+    model_version: int = STUB_MODEL_VERSION,
 ) -> Verdict:
     """Return the **Classification** verdict for one **Payload**.
 
@@ -81,6 +82,13 @@ def classify(
     future per-payload logging); the verdict is a pure function of *content_kind*
     and *content*. A payload that projects to prose but has no detected findings
     is a real ``PUBLIC`` / zero-**Findings** verdict, not a null and not a skip.
+
+    *model_version* is the model generation stamped on the row (ADR-0023/0024):
+    the ``STUB_MODEL_VERSION`` no-model generation by default, bumped when issue
+    #79's in-process NER model is the injected *detector* (the classification
+    image's tag ↔ the ``model_version`` it writes). The driver passes the two
+    together — the detector produces the **Findings**, its generation stamps the
+    row — so a row's findings and its ``model_version`` never disagree.
     """
     det = detector if detector is not None else _DEFAULT_DETECTOR
 
@@ -98,5 +106,5 @@ def classify(
         is_personalized=result.is_personalized,
         primary_domain=result.primary_domain,
         findings=result.findings,
-        model_version=STUB_MODEL_VERSION,
+        model_version=model_version,
     )

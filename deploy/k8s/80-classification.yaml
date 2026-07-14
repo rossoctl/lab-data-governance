@@ -9,13 +9,21 @@
 # (data_governance/processors/classification/driver.py). It exposes NO Service
 # and declares NO container ports: no inbound traffic.
 #
-# Same image as the receiver — one repo-root Containerfile, one image, tags
-# differ only by `command:`. This tracer-bullet increment (issue #77) writes a
-# trivial PUBLIC/zero-findings stub verdict and carries no torch/model
-# dependency, so it ships in the shared receiver/UI/interactions image. The real
-# NER model (issue #78) ships as its own image (`data-governance/classification`)
-# because its torch + ~500 MB weight closure diverges heavily (ADR-0022/0023);
-# swapping this Deployment's image is the follow-up, the write path stays put.
+# Its OWN image, `data-governance/classification:latest` (issue #79 / ADR-0022) —
+# NOT the shared receiver/UI/interactions image. P-classification runs a
+# fine-tuned NER model on torch + ~500 MB of baked-in weights, a dependency
+# closure that diverges too heavily to fold into the slim shared image (ADR-0022);
+# the model loads in-process at startup with the weights + config baked into the
+# image as one unit, image tag <-> model_version (ADR-0023). Built from
+# Containerfile.classification by deploy/build-and-load.sh. The #77 stub shared
+# the receiver image while it carried no torch; wiring the real model (#79) is the
+# flip to this dedicated image — the write path itself stays put.
+#
+# Both the migrate init container and the processor container run this one image,
+# so the pod is self-contained: the classification image bakes the same
+# data_governance package + alembic.ini as the shared image, so its migrate CLI
+# and startup schema-version check migrate/validate to the identical compiled head
+# (ADR-0002).
 #
 # Single replica (NOT 2 like the receiver). The driver drains payloads against
 # ONE shared `processor_state` cursor with no inter-pod lock; two replicas would
@@ -64,7 +72,7 @@ spec:
         # makes this idempotent — running it from this pod as well as from the
         # receiver replicas is safe (both migrate to the same compiled head).
         - name: migrate
-          image: data-governance/receiver:latest
+          image: data-governance/classification:latest
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "data_governance.db.migrate"]
           # Note: ``DATABASE_URL`` must come AFTER the POSTGRES_* entries it
@@ -104,7 +112,7 @@ spec:
         # defence-in-depth schema-version check on startup (issue #10) and exits
         # non-zero on mismatch, surfacing as CrashLoopBackOff.
         - name: classification
-          image: data-governance/receiver:latest
+          image: data-governance/classification:latest
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "data_governance.processors.classification"]
           # See the ordering note on the migrate init container above —
@@ -139,9 +147,14 @@ spec:
           # probe. Kubernetes restarts the pod on process exit; the startup
           # schema-version check (issue #10) handles the "wrong image" failure
           # mode by exiting non-zero into CrashLoopBackOff.
+          # Sized for the in-process NER model (issue #79): torch + a
+          # ~500 MB RobertaForTokenClassification loaded resident, plus per-payload
+          # inference activations. The #77 stub's 256Mi/1Gi was fine with no model;
+          # the fat image needs materially more headroom, so request 1Gi and cap at
+          # 3Gi. cpu bumped too — inference is CPU-bound (no GPU on the cluster).
           resources:
             requests:
-              cpu: "100m"
-              memory: "256Mi"
-            limits:
+              cpu: "500m"
               memory: "1Gi"
+            limits:
+              memory: "3Gi"

@@ -22,6 +22,22 @@ dependencies = [
     "prometheus-client>=0.20",
 ]
 
+[project.optional-dependencies]
+# P-classification's in-process NER model runtime (issue #79, ADR-0022/0023).
+# torch + transformers (~2 GB installed) live behind this OPTIONAL extra so ONLY
+# the classification image installs them: its Containerfile.classification runs
+# `uv sync --frozen --extra classification`, while the shared
+# receiver/UI/interactions image's `uv sync --frozen --no-dev` (no extra) stays
+# slim. `transformers` is pinned to the 4.57.x line the baked-in model weights
+# were saved with (config.json `transformers_version` == 4.57.3) so the load path
+# runs on the same generation that trained them — a cross-major bump (5.x) is
+# untested against these weights and is exactly where the loader's breaking
+# changes land. `torch` is the CPU wheel by default (the cluster has no GPU).
+classification = [
+    "torch>=2.2",
+    "transformers>=4.57,<4.58",
+]
+
 [project.scripts]
 # Migration CLI is invoked as `python -m data_governance.db.migrate`; no console script in v1.
 
