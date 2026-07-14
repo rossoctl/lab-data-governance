@@ -36,11 +36,38 @@ from data_governance.db.schema_version import (
 from data_governance.processors.otlp_receiver.server import MetricsServer
 
 from . import driver, metrics
+from .detector import Detector, ModelDetector
 
 # Distinct from the receiver's 9090 and the interactions processor's 9091 so a
 # co-located receiver + both processors don't collide on the metrics port.
 # Overridable via CLASSIFICATION_METRICS_PORT (0 = ephemeral, used by tests).
 DEFAULT_METRICS_PORT = 9092
+
+# The model generation this image writes on every ``payload_classifications`` row
+# (ADR-0023/0024: image tag ↔ ``model_version``, a monotonic integer). Generation
+# 1 was the #78 no-model verdict (real projection + logic, no findings); the first
+# generation that runs the in-process fine-tuned NER model is 2. A retrain that
+# changes the weights bumps this alongside a full image rebuild + reload
+# (ADR-0024's truncate-and-reclassify runbook) — there is no hot weight swap.
+MODEL_VERSION = 2
+
+
+def _build_detector() -> Detector | None:
+    """Construct the in-process NER model detector loaded once at startup
+    (ADR-0023), or ``None`` to run the no-op :class:`~.detector.NullDetector`
+    default.
+
+    Returns ``None`` only when the documented test-only ``CLASSIFICATION_SKIP_MODEL``
+    override is set — the dev/test environment installs neither torch/transformers
+    (behind the ``classification`` extra, only in the classification image) nor the
+    ~500 MB git-LFS weights, so the entrypoint/loop tests run with the NullDetector
+    default. Production (the classification image) leaves it unset and loads the
+    real :class:`~.detector.ModelDetector`; a load failure surfaces as a non-zero
+    exit / CrashLoopBackOff rather than silently degrading to no detection.
+    """
+    if os.environ.get("CLASSIFICATION_SKIP_MODEL"):
+        return None
+    return ModelDetector()
 
 
 def _int_env(name: str, default: int) -> int:
@@ -115,10 +142,24 @@ def main() -> int:
         metrics_server.port,
     )
 
+    # Load the in-process NER model ONCE at startup (ADR-0023: not per payload).
+    # This is the slow step; it runs after the cheap schema check so a
+    # wrong-image / missing-migration failure surfaces before the model load.
+    detector = _build_detector()
+    if detector is not None:
+        log.info("classification NER model loaded (model_version=%d)", MODEL_VERSION)
+    else:
+        log.warning(
+            "running with no NER model (CLASSIFICATION_SKIP_MODEL set) — "
+            "payloads get the no-op NullDetector default"
+        )
+
     try:
         # `dsn` drives the dedicated LISTEN connection for low-latency wake
         # (issue #71); the drain itself still uses the pool db.configure() set up.
-        driver.run(stop_event, dsn)
+        # The startup-loaded detector + its model_version are injected into every
+        # payload's classification through the narrow seam (ADR-0023).
+        driver.run(stop_event, dsn, detector=detector, model_version=MODEL_VERSION)
     finally:
         # Stop the metrics surface (no in-flight writes) before closing the pool.
         metrics_server.stop(grace=1.0)
