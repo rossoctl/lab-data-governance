@@ -160,3 +160,20 @@ def test_declares_no_container_ports(classification_deployment: dict) -> None:
         assert not (ctr.get("ports") or []), (
             f"classification {ctr_kind} {ctr.get('name')!r} must declare no ports"
         )
+
+
+def test_does_not_override_metrics_port(classification_deployment: dict) -> None:
+    """Production leaves ``CLASSIFICATION_METRICS_PORT`` unset so the processor
+    serves /metrics on its collision-free code default (9092, distinct from the
+    receiver's 9090 and the interactions 9091; issue #81).
+
+    The env override exists only so tests can run co-located processors without
+    colliding — a manifest that pinned it risks silently re-introducing a
+    collision, so we assert the main container never sets it.
+    """
+    main = classification_deployment["spec"]["template"]["spec"]["containers"][0]
+    env_names = {e["name"] for e in main.get("env") or []}
+    assert "CLASSIFICATION_METRICS_PORT" not in env_names, (
+        "classification deployment must not pin the metrics port — production "
+        "uses the collision-free code default 9092"
+    )
