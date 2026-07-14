@@ -563,10 +563,38 @@ async def _entity_spans_handler(request: Request) -> Response:
     return JSONResponse(data)
 
 
+def _classification_json(row: tuple) -> dict | None:
+    """Shape a ``payload_classifications`` LEFT JOIN slice into the nullable
+    ``classification`` field (ADR-0024).
+
+    The join columns are all-NULL when P-classification has not yet written a
+    verdict for the payload (its PK ``content_hash`` is NOT NULL, so a present
+    row always has one) — that is the eventual-consistency window, surfaced as
+    ``null``. Once the row exists, the document-level verdict + **Findings** +
+    ``model_version`` are returned verbatim (a clean payload is a real
+    ``PUBLIC`` / zero-**Findings** verdict, never a null).
+    """
+    if row[0] is None:  # no payload_classifications row (LEFT JOIN miss)
+        return None
+    return {
+        "sensitivity_level": row[0],
+        "regulatory_tags": list(row[1]) if row[1] is not None else [],
+        "contains_identity_bundle": row[2],
+        "is_personalized": row[3],
+        "primary_domain": row[4],
+        "findings": row[5],
+        "model_version": row[6],
+    }
+
+
 async def _payload_handler(request: Request) -> Response:
     """``GET /api/payloads/{hash}`` — a payload by content hash.
 
-    Backs the flow view's Req/Resp cells.
+    Backs the flow view's Req/Resp cells. Carries the P-classification
+    **Classification** verdict inline as a nullable ``classification`` field
+    (ADR-0024): ``null`` until P-classification has processed the payload,
+    populated with the verdict object once its ``payload_classifications`` row
+    exists.
     """
     h = request.path_params.get("hash")
     if not h:
@@ -575,8 +603,14 @@ async def _payload_handler(request: Request) -> Response:
     def _query() -> dict | None:
         with db.transaction() as tx:
             row = tx.fetch_one(
-                "SELECT content_hash, content_kind, content, byte_size "
-                "FROM interaction_payloads WHERE content_hash = %s",
+                "SELECT p.content_hash, p.content_kind, p.content, p.byte_size, "
+                "       c.sensitivity_level, c.regulatory_tags, "
+                "       c.contains_identity_bundle, c.is_personalized, "
+                "       c.primary_domain, c.findings, c.model_version "
+                "FROM interaction_payloads p "
+                "LEFT JOIN payload_classifications c "
+                "  ON c.content_hash = p.content_hash "
+                "WHERE p.content_hash = %s",
                 (h,),
             )
             if row is None:
@@ -584,6 +618,7 @@ async def _payload_handler(request: Request) -> Response:
             return {
                 "content_hash": row[0], "content_kind": row[1],
                 "content": row[2], "byte_size": row[3],
+                "classification": _classification_json(row[4:]),
             }
 
     try:
