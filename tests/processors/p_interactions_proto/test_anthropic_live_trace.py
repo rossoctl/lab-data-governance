@@ -1,5 +1,5 @@
 """End-to-end pinning of a *real* 3-turn anthropic trace captured from the
-deployment (`trace_8e8d7b1e`, trace id 8e8d7b1ee84bd8995e3c951f659292a2).
+deployment (`patent_agent_I`, trace id 8e8d7b1ee84bd8995e3c951f659292a2).
 
 This is the trace the in-pod CLI runs are verified against. Unlike the
 hand-built two-turn `trace_anthropic_tool_calls`, it has three turns, which is
@@ -22,7 +22,7 @@ from data_governance.processors.p_interactions_proto.extractor import extract
 
 from .conftest import load_trace_spans
 
-LIVE_TRACE = "trace_8e8d7b1e"
+LIVE_TRACE = "patent_agent_I"
 
 
 def _spans():

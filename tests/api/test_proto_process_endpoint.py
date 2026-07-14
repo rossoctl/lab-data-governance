@@ -25,7 +25,7 @@ from data_governance.api import SpansApiServer
 
 _FIXTURE = (
     Path(__file__).resolve().parents[1]
-    / "processors" / "p_interactions_proto" / "fixtures" / "trace_8ae1f64d.json"
+    / "processors" / "p_interactions_proto" / "fixtures" / "travel_agent_III.json"
 )
 _TRACE_ID = "8ae1f64d4bb51b750168c6ef1e11a2d8"
 

@@ -66,15 +66,16 @@ is implemented and what remains deferred.
 > leg is formed structurally at Step 3.b (`build_entity_graph`).
 > `_server_endpoints` distinguishes source from target by edge **direction**
 > (outbound-into-server = source; server-points-to = target), since the old
-> inbound-order signal no longer applies with forward-only edges. **Known
-> divergence (ordering).** The spec's Step 3.b ordering rule was replaced with a
-> **recursive execution-order walk** (siblings interleave, ordered by
-> `started_at`; nested chains fully unwound — see Step 3.b below), but the code
-> (`_order_responses_lifo`) has **not** been updated: it still realises the OLD
-> batch-LIFO behaviour (group a delegation subtree, then emit all requests
-> outer→inner and all responses inner→outer). It does not yet match this spec —
-> flagged as a divergence to be fixed. The per-section as-implemented notes below
-> reflect this.
+> inbound-order signal no longer applies with forward-only edges. **Ordering —
+> now CONFORMS.** The spec's Step 3.b ordering rule is a **recursive
+> execution-order walk** (siblings interleave, ordered by `started_at`; nested
+> chains fully unwound — see Step 3.b below), and the code
+> (`_order_execution_walk`) **now realises it**: a depth-first walk of
+> the chain nesting forest that, for each child, emits its request, recurses into
+> its subtree, then emits its response. This **replaced** the OLD batch-LIFO
+> behaviour (group a delegation subtree, then emit all requests outer→inner and
+> all responses inner→outer). The earlier divergence is **resolved**; the
+> per-section as-implemented notes below reflect the current conforming code.
 >
 > **History (notable revisions this ADR is reconciled to).** Terminal entity nodes
 > were **removed** from the spec (Step 3.b now covers only chains between two Blue
@@ -85,7 +86,12 @@ is implemented and what remains deferred.
 > 3.b now produces every response leg structurally, so 3.c reverts to empty. The
 > **semantic combine** moved from a Step 3.a sub-step to **Step 3.d**. The spec's
 > earlier explicit **Assumption #3** (request-and-response) was **removed** and is
-> now carried as the ADR design rationale above.
+> now carried as the ADR design rationale above. The Step 3.b **ordering** was
+> brought into conformance: the ordering pass (renamed
+> `_order_responses_lifo` → `_order_execution_walk`) was rewritten from the OLD
+> batch-LIFO rule to the spec's **recursive execution-order walk** (interleaving
+> leaf siblings — request, recurse, response), resolving the previously-flagged
+> ordering divergence.
 
 ## Definitions
 
@@ -370,8 +376,7 @@ input attributes — see the ordering note and the as-implemented note below).
 > `synthesize_missing_peers` all wire their pair through a server rather than with
 > a direct edge. The Step 3.a fuse drops Teal and reconstructs the interaction from
 > each server (see Step 3.a); Step 3.b then **forms the response leg structurally**
-> and orders it via `_order_responses_lifo` (which still realises the OLD
-> batch-LIFO ordering — a known divergence from the spec's recursive
+> and orders it via `_order_execution_walk` (which realises the spec's recursive
 > execution-order walk; see Step 3.b below).
 >
 > - **Case 1** is `duplicate_combined_nodes`: for a combined span it creates a
@@ -474,30 +479,31 @@ ordinal removes the timestamp-primary sort and the band reuse.
 > output-derived) — but this band is now an *input* to the final ordering, not the
 > final value.
 >
-> **`_order_responses_lifo` assigns `order` as a global ordinal** (Step 3.b), but
-> **its algorithm is the OLD batch-LIFO rule and does NOT yet match the spec's
-> recursive execution-order walk** — a **known divergence** to be fixed (the spec
-> changed, the code has not). As currently written, using the traceparent
-> `parent_id` map + ancestry walk it: (1) computes each chain's
-> **depth** = number of other chains whose anchor is a traceparent ancestor of it;
-> (2) **groups** chains into delegation subtrees by ancestor/descendant relation
-> (union-find); (3) orders the **groups chronologically** by each group root's
-> `(anchor started_at, Step-2.c call band, anchor span_id)`; (4) within a group
-> lays edges out **batch-LIFO** — all requests outer→inner (by depth), *then* all
-> responses inner→outer; (5) assigns a **single running integer** across groups
-> (chronological) and within groups (LIFO), so `order` is globally unique,
-> deterministic, and total. The divergence: the spec's walk **interleaves** each
-> leaf sibling's response immediately after its request (Example 2 below), whereas
-> this code batches all requests before all responses within a group — so for a
-> parent making sibling calls L, T, L the code emits requests `B→L`, `B→T`, `B→L`
-> then responses `L→B`, `T→B`, `L→B`, instead of the spec's interleaved
-> `B→L`, `L→B`, `B→T`, `T→B`, `B→L`, `L→B`. (Deeply-nested chains — Example 1 —
-> come out the same under both rules.) `started_at` is folded into the group key
-> so separate turns stay chronological;
-> the Step-2.c call band is folded in as a secondary key so same-turn siblings
-> (input tool / LLM / output tool, which share an anchor span and `started_at`)
-> keep their input<LLM<output sequence; `span_id` is the final deterministic
-> tiebreak. `started_at`/`ended_at` themselves are unchanged (anchor span).
+> **`_order_execution_walk` assigns `order` as a global ordinal** (Step 3.b), and
+> **its algorithm now IS the spec's recursive execution-order walk** — the earlier
+> batch-LIFO divergence is **resolved** (the pass was renamed from
+> `_order_responses_lifo` to `_order_execution_walk` to match).
+> Using the traceparent `parent_id` map it: (1) builds a **nesting forest** —
+> chain X is a child of chain Y iff Y's anchor span is the *nearest* chain-anchor
+> ancestor of X's anchor span (walking `parent_id` up from X); chains with no
+> enclosing chain are roots; (2) **orders each node's children** by their request
+> anchor's `(started_at, Step-2.c call band, anchor span_id)`; (3) does a
+> **depth-first execution-order walk** from the roots: for each child in sorted
+> order it emits that child's **request** edge, **recurses into its subtree**, then
+> emits its **response** edge — one single running global counter across the whole
+> forest. So `order` is globally unique, deterministic, and total.
+> The result **interleaves** each leaf sibling's response immediately after its
+> request (Example 2 below): for a parent making sibling calls L, T, L the walk
+> emits `B→L`, `L→B`, `B→T`, `T→B`, `B→L`, `L→B` — request then response per leaf,
+> not all requests then all responses. A sibling with its own nested subtree is
+> **fully unwound** (recurse) before its response, and therefore before the next
+> sibling begins. (Deeply-nested chains — Example 1 — come out `A→B`, `B→C`, `C→B`,
+> `B→A`.) `started_at` orders siblings among themselves and orders
+> top-level/independent roots, so separate turns stay chronological; the Step-2.c
+> call band is the secondary key so same-turn siblings (input tool / LLM / output
+> tool, which share an anchor span and `started_at`) keep their input<LLM<output
+> sequence; `span_id` is the final deterministic tiebreak.
+> `started_at`/`ended_at` themselves are unchanged (anchor span).
 >
 > The reconstructed `EntityEdge.order` surfaces as `ProtoInteraction.order` and the
 > `proto_interactions."order"` column; both the CLI (`key=lambda r: r.order`) and
@@ -762,9 +768,9 @@ agent's node, not the caller's call-site span). Earlier revisions of this ADR
 called the anchor rule an implementation resolution not stated by the spec, and
 numbered it "Step 3.c"; both are now out of date — both the execution-order
 ordering and the anchor-span timestamps live under the spec's Step 3.b (point 2),
-making them spec-stated decisions. (The ordering rule is realised only in part —
-`_order_responses_lifo` still does the OLD batch-LIFO, a known divergence noted
-below; the anchor-span timestamp handling is realised as described.)
+making them spec-stated decisions. (Both are realised: `_order_execution_walk`
+now implements the recursive execution-order walk, and the anchor-span timestamp
+handling is realised as described.)
 
 The rest of this section covers concern (b) — how the anchor span is chosen; the
 `order` (concern (a)) is detailed under "Response reconstruction and
@@ -905,11 +911,10 @@ matter), and Step 3.c is an empty placeholder in the current spec.
 > using edge **direction** (source = the endpoint with an outbound edge *into* the
 > server; target = the endpoint the server points *to*) — the forward-only edges
 > carry a single call band, so direction, not order, disambiguates. The response
-> leg's order is then set by `_order_responses_lifo` — which **still realises the
-> OLD batch-LIFO rule (all requests, then all responses per delegation subtree)
-> and does NOT yet match the spec's recursive execution-order walk** (interleaving
-> leaf siblings); this is a **known divergence** to be fixed, see the
-> `_order_responses_lifo` as-implemented note under Step 2.c and Example 2 above.
+> leg's order is then set by `_order_execution_walk` — which **realises the spec's
+> recursive execution-order walk** (interleaving leaf siblings: request, recurse,
+> response), see the `_order_execution_walk` as-implemented note under Step 2.c
+> and Example 2 above.
 > Because Step 2.d already collapsed duplicate chains,
 > distinct calls between the same two entities remain distinct interactions — one
 > per surviving chain.

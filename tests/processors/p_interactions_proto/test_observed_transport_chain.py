@@ -90,5 +90,5 @@ def test_dangling_transport_leaf_yields_no_extra_interaction():
     no interaction from the observed-chain reconstruction. The live 3-turn
     anthropic trace has 12 observed Teal nodes, none bridging two components, and
     its interaction count must be unchanged (10)."""
-    result = extract(load_trace_spans("trace_8e8d7b1e"))
+    result = extract(load_trace_spans("patent_agent_I"))
     assert len(result.interactions) == 10

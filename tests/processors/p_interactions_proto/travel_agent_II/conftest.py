@@ -1,9 +1,9 @@
 """Fixtures for the `travel_agent_II` trace tests.
 
-`trace_travel_agent_II.json` is a real multi-agent, cross-framework
+`travel_agent_II.json` is a real multi-agent, cross-framework
 travel-advisor trace (`e8f7f7c4d7b35e5aa4fbdaaae2a90f75`) captured verbatim from
 the deployment's `spans` table (ADR-0006: the row IS the Span). Unlike the other
-P-interactions fixtures — single-agent (canonical `trace_8ae1f64d`) or
+P-interactions fixtures — single-agent (canonical `travel_agent_III`) or
 hand-built — this one has FOUR observed agents that delegate to one another
 across THREE instrumentation scopes, bridged by observed a2a / httpx / starlette
 transport:
@@ -43,4 +43,4 @@ MULTI_AGENT_DELEGATION_TRACE_ID = "e8f7f7c4d7b35e5aa4fbdaaae2a90f75"
 @pytest.fixture()
 def multi_agent_delegation_trace_spans() -> list[Span]:
     """Spans of the 4-agent cross-framework travel-advisor delegation trace."""
-    return load_trace_spans("trace_travel_agent_II")
+    return load_trace_spans("travel_agent_II")

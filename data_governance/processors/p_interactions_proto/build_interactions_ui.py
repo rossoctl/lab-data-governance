@@ -1,6 +1,6 @@
 """THROWAWAY — build a standalone HTML view of the entity-interaction graph.
 
-Runs the P-interactions extractor over the `trace_travel_agent_II` fixture and
+Runs the P-interactions extractor over the `travel_agent_II` fixture and
 emits a self-contained `interactions_graph.html`: a graph of entities with each
 interaction drawn as a numbered directed edge (numbered by row in the
 time+order sort, so the execution order is explicit) plus a synchronised
@@ -22,7 +22,7 @@ from . import extractor as E
 
 _FIXTURE = (
     Path(__file__).resolve().parents[3]
-    / "tests/processors/p_interactions_proto/fixtures/trace_travel_agent_II.json"
+    / "tests/processors/p_interactions_proto/fixtures/travel_agent_II.json"
 )
 _OUT = Path(__file__).resolve().parent / "interactions_graph.html"
 
@@ -72,7 +72,7 @@ def build_data() -> dict:
 
     # Call vs. response: derived STRUCTURALLY, not from `order` parity.
     # There is no explicit call/response marker on ProtoInteraction (nor on the
-    # EntityEdge it comes from) — the `_order_responses_lifo` walk knows a chain's
+    # EntityEdge it comes from) — the `_order_execution_walk` walk knows a chain's
     # "call" and "resp" edges but never stamps that onto either object. Under the
     # new global-ordinal walk each chain assigns its request `order` then (after
     # recursing into its subtree) its response `order`, so within a single
@@ -177,7 +177,7 @@ _HTML = r"""<!doctype html>
 <body>
 <header>
   <h1>P-interactions — entity interaction graph</h1>
-  <div class="sub">Fixture <code>trace_travel_agent_II</code> · <span id="entCount"></span> entities ·
+  <div class="sub">Fixture <code>travel_agent_II</code> · <span id="entCount"></span> entities ·
     <span id="ixCount"></span> interactions. Edges numbered by row in the
     global ordinal <code>order</code> sort — the number is the execution position.
     Call = solid, response = dashed. Hover a row or an edge number to highlight.</div>

@@ -39,13 +39,13 @@ the repo's fixtures available on disk:
 
     PI_LOAD_FIXTURE_CONFIRM=1 \
       python -m data_governance.processors.p_interactions_proto.load_fixture \
-      tests/processors/p_interactions_proto/fixtures/trace_186b5703.json
+      tests/processors/p_interactions_proto/fixtures/travel_agent_I.json
 
 Or give just the fixture stem and let it resolve under the fixtures dir:
 
     PI_LOAD_FIXTURE_CONFIRM=1 \
       python -m data_governance.processors.p_interactions_proto.load_fixture \
-      trace_186b5703
+      travel_agent_I
 
 Then reload the UI and select the trace id printed at the end.
 
@@ -71,7 +71,7 @@ from data_governance.processors.otlp_receiver.write_span import (
 from . import cli
 
 # The fixtures the P-interactions tests load from. A bare stem argument
-# (e.g. "trace_186b5703") is resolved relative to here.
+# (e.g. "travel_agent_I") is resolved relative to here.
 _FIXTURES = (
     Path(__file__).resolve().parents[3]
     / "tests"
