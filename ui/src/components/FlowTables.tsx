@@ -20,6 +20,7 @@ import { formatTime24Utc } from '../lib/recentTraces';
 import type { PinStore } from '../lib/pins';
 import { EntityPill } from './EntityPill';
 import { DetailList } from './DetailList';
+import { ClassificationView } from './ClassificationView';
 import { RoleIcon } from './RoleIcon';
 import type { Entity, Interaction, SpanEvidence } from '../types';
 
@@ -102,6 +103,15 @@ function PayloadView({ label, hash }: { label: string; hash: string }) {
                   {data.content == null ? '(none)' : JSON.stringify(data.content, null, 2)}
                 </CodeBlockCode>
               </CodeBlock>
+              {/* The P-classification Classification verdict for this payload
+                  (issue #80): sensitivity level, regulatory tags, identity
+                  bundle, and the Findings. `null` renders as "not yet
+                  classified" (the eventual-consistency window, ADR-0024),
+                  distinct from a real PUBLIC / zero-Findings verdict. */}
+              <div style={{ marginTop: '0.5rem' }}>
+                <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Classification</div>
+                <ClassificationView classification={data.classification} />
+              </div>
             </>
           )}
         </div>
