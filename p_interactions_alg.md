@@ -109,19 +109,16 @@ Inferred nodes:
   3. Disconnect the edges (POST --> messages.create) while maintain reference from the newly created edges to the original ones 
   
   
-
 ### Notes & timing
 
 Additional cases may exist which need to be implemented such as tools inferred from input attributes.
 
 Inferred edges ordering/timing:
-When inferring new edges make sure to adjust the timings based on the *execution order*. examples: 
 - When tools are derived from LLM spans:
     - The edge between the LLM and the tool call is before the edge between the tool call and the tool itself
     - Tool call chains derived from input attributes should happen earlier than call chains  with the LLM
     - tool call chains derived from output attributes should happen later than call chains with the LLM
-
-TODO: human - verify the need for this
+When inferring new edges make sure to adjust/set the timings based on the inferred *execution order*
 
 ## Step 2.d - merge interactions (execution graph)
 
