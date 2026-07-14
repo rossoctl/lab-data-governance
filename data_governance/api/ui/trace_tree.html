@@ -31,9 +31,10 @@
     a.back { color: #92c5f9; font-size: 0.85rem; }
 
     main {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 360px;
-      gap: 1rem;
+      /* Single full-width column — the content (span tree / flow grid) uses
+         the whole page width. The span-detail panel is a floating overlay
+         (see aside.detail below), so it no longer reserves a layout column. */
+      display: block;
       padding: 1rem 1.5rem;
     }
 
@@ -137,15 +138,31 @@
     aside.detail {
       background: #1a1a1a;
       border: 1px solid #2c2c2c;
-      border-radius: 3px;
+      border-radius: 6px;
       padding: 0.75rem 1rem;
       font-size: 0.85rem;
-      align-self: start;
-      position: sticky;
-      top: 1rem;
-      max-height: calc(100vh - 2rem);
+      /* Floating overlay panel, docked to the right. Hidden until a span /
+         interaction / payload is selected (JS toggles `.open`). It floats over
+         the content instead of reserving a layout column, so the flow grid and
+         the span tree get the full page width. */
+      position: fixed;
+      top: 4.5rem;
+      right: 1rem;
+      width: 420px;
+      max-width: calc(100vw - 2rem);
+      max-height: calc(100vh - 6rem);
       overflow: auto;
+      z-index: 1000;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+      display: none;
     }
+    aside.detail.open { display: block; }
+    .detail-close {
+      background: #2a2a2a; color: #c9c9c9; border: 1px solid #444;
+      width: 1.4rem; height: 1.4rem; line-height: 1; cursor: pointer;
+      border-radius: 3px; font-size: 0.95rem; padding: 0;
+    }
+    .detail-close:hover { background: #3a2020; color: #ff9a9a; }
     .detail-header {
       display: flex;
       align-items: center;
@@ -217,10 +234,15 @@
     <span id="trace-id-display" style="color:#888;font-size:0.85rem"></span>
     <span style="flex:1"></span>
     <span id="view-switcher" style="font-size:0.85rem">
-      <button id="view-tree-btn" class="view-btn active" data-view="tree">Span tree</button>
+      <button id="view-tree-btn" class="view-btn" data-view="tree">Span tree</button>
       <button id="view-graph-btn" class="view-btn" data-view="graph">Graphs (proto)</button>
-      <button id="view-flow-btn" class="view-btn" data-view="flow">Entities and interactions (proto)</button>
+      <button id="view-flow-btn" class="view-btn active" data-view="flow">Entities and interactions (proto)</button>
     </span>
+    <!-- UI version stamp — set by execution_flow_logic.js (UI_VERSION). Makes it
+         obvious whether the browser is showing the latest assets vs. a stale
+         cached bundle. -->
+    <span id="ui-version" title="UI build version — bump on each UI change"
+          style="margin-left:0.75rem;font-size:0.72rem;color:#666;font-family:ui-monospace,monospace"></span>
   </header>
   <style>
     .view-btn {
@@ -236,6 +258,7 @@
     .flow-table th { color: #888; font-weight: normal; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
     .flow-table tr:hover { background: #1c1c1c; cursor: pointer; }
     .flow-table tr.selected { background: #2c2c2c; }
+    .flow-table tr.graph-hover { background: #2a2c1c; }
     .ent-pill {
       display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
       font-size: 0.75rem; margin-right: 0.3rem;
@@ -246,8 +269,154 @@
     .ent-pill.tool { background: #1a4a2a; color: #79ffaa; }
     .ent-pill.llm { background: #2a2a4a; color: #b0b0ff; }
     .scope-pill { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px; font-size: 0.75rem; font-family: ui-monospace, monospace; background: #1e2a35; color: #7ec8d8; letter-spacing: 0.02em; cursor: default; }
-    #flow-section h3 { color: #92c5f9; margin: 1rem 0 0.5rem; font-size: 0.9rem; }
+    #flow-section h3 { color: #92c5f9; margin: 0 0 0.5rem; font-size: 0.9rem; }
     #flow-section { display: none; }
+    /* 2×2 quadrant grid: graph | entities  /  sequence | interactions.
+       The two columns and two rows are resizable *together* via draggable
+       splitter rails: dragging the vertical rail resizes BOTH columns across
+       both rows; the horizontal rail resizes BOTH rows across both columns; the
+       center handle does both at once. The split fractions live in the CSS
+       variables --col-split / --row-split (0..1), updated by JS on drag. The
+       6px middle track in each dimension is the splitter itself. */
+    #flow-grid {
+      display: grid;
+      --col-split: 0.5;
+      --row-split: 0.5;
+      /* Overall grid height. Defaults to fit the viewport; the user can drag the
+         bottom handle (#flow-resize-bottom) to make it taller, growing the two
+         bottom quadrants (sequence + interactions) and letting the page scroll.
+         Persisted to localStorage alongside the split fractions. */
+      --grid-height: calc(100vh - 175px);
+      grid-template-columns:
+        minmax(0, calc(var(--col-split) * (100% - 6px)))
+        6px
+        minmax(0, calc((1 - var(--col-split)) * (100% - 6px)));
+      grid-template-rows:
+        minmax(0, calc(var(--row-split) * (100% - 6px)))
+        6px
+        minmax(0, calc((1 - var(--row-split)) * (100% - 6px)));
+      height: var(--grid-height);
+      min-height: 480px;
+    }
+    /* Bottom drag handle: pull down to extend the grid (and thus the bottom
+       row) below the viewport; the page scrolls. Double-click resets height. */
+    #flow-resize-bottom {
+      height: 12px; margin: 2px 0 0; border-radius: 3px;
+      background: #222; cursor: row-resize; transition: background 0.1s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #flow-resize-bottom::after {
+      content: ''; width: 40px; height: 3px; border-radius: 2px; background: #555;
+    }
+    #flow-resize-bottom:hover, #flow-resize-bottom.dragging { background: #4a7bd0; }
+    #flow-resize-bottom:hover::after, #flow-resize-bottom.dragging::after { background: #cfe0ff; }
+    #quad-graph        { grid-column: 1; grid-row: 1; }
+    #quad-entities     { grid-column: 3; grid-row: 1; }
+    #quad-sequence     { grid-column: 1; grid-row: 3; }
+    #quad-interactions { grid-column: 3; grid-row: 3; }
+    /* Splitter rails occupy the middle grid tracks. */
+    #flow-split-v { grid-column: 2; grid-row: 1 / span 3; cursor: col-resize; }
+    #flow-split-h { grid-column: 1 / span 3; grid-row: 2; cursor: row-resize; }
+    #flow-split-c {
+      grid-column: 2; grid-row: 2; cursor: nwse-resize; z-index: 2;
+    }
+    .flow-split { background: #222; border-radius: 3px; transition: background 0.1s; }
+    .flow-split:hover, .flow-split.dragging { background: #4a7bd0; }
+    #flow-split-c { background: #333; }
+    #flow-split-c:hover, #flow-split-c.dragging { background: #4a7bd0; }
+    /* A thin grab-dot pattern hint on the rails. */
+    #flow-split-v { margin: 0 -1px; }
+    #flow-split-h { margin: -1px 0; }
+    .flow-quad {
+      display: flex; flex-direction: column; min-width: 0; min-height: 0;
+      border: 1px solid #222; border-radius: 5px; padding: 0.5rem 0.6rem;
+      background: #121212;
+    }
+    .flow-quad .quad-body { flex: 1 1 auto; min-height: 0; overflow: auto; position: relative; }
+    /* Entity selected/hovered in the entities list. */
+    #entities-table tr[data-entity-id] { cursor: pointer; }
+    #entities-table tr.ent-selected { background: #1e3350; outline: 1px solid #4a7bd0; }
+    /* Flash a table row that was selected by clicking a node/edge/message. */
+    @keyframes row-flash-kf {
+      0% { background: #4a5a10; } 60% { background: #303818; } 100% { background: transparent; }
+    }
+    .flow-table tr.row-flash { animation: row-flash-kf 1.4s ease-out; }
+    /* Entity highlight in the graph (node) and sequence (head/lifeline).
+       Strong: gold fill+stroke on the box, and dim all non-highlighted peers so
+       the selected entity pops. */
+    #flow-graph .fg-node.ent-hi rect,
+    #flow-sequence .sq-head.ent-hi rect {
+      fill: #4a3a10 !important; stroke: #ffd24a !important; stroke-width: 3 !important;
+    }
+    #flow-graph .fg-node.ent-hi text,
+    #flow-sequence .sq-head.ent-hi text { fill: #ffe9a8; }
+    #flow-sequence .sq-lifeline.ent-hi { stroke: #ffd24a; stroke-width: 2.5; stroke-dasharray: none; }
+    /* When an entity is selected, fade the rest so the highlight stands out. */
+    #flow-graph.ent-focus .fg-node:not(.ent-hi),
+    #flow-sequence.ent-focus .sq-head:not(.ent-hi) { opacity: 0.3; }
+    /* Zoom controls + pan cursor. */
+    .zoom-ctrl {
+      position: absolute; left: 8px; bottom: 8px; display: flex; gap: 4px; z-index: 3;
+    }
+    .zoom-ctrl button {
+      width: 24px; height: 24px; padding: 0; line-height: 1; font-size: 14px;
+      background: #1c1c1c; color: #cfe0ff; border: 1px solid #444; border-radius: 4px;
+      cursor: pointer;
+    }
+    .zoom-ctrl button:hover { background: #2a3a55; }
+    #flow-graph svg, #flow-sequence svg { cursor: grab; }
+    #flow-graph svg.panning, #flow-sequence svg.panning { cursor: grabbing; }
+    /* Inside a quadrant the graph/sequence SVGs may exceed the cell; scroll. */
+    #quad-graph .quad-body, #quad-sequence .quad-body { overflow: auto; }
+    /* While dragging a splitter, suppress text selection / iframe capture. */
+    body.flow-resizing { cursor: inherit; user-select: none; }
+    body.flow-resizing * { pointer-events: none; }
+    body.flow-resizing .flow-split { pointer-events: auto; }
+    /* Narrow screens: fall back to a single column (stacked); hide splitters. */
+    @media (max-width: 1000px) {
+      #flow-grid { grid-template-columns: 1fr; grid-template-rows: none; height: auto; }
+      #quad-graph, #quad-entities, #quad-sequence, #quad-interactions { grid-column: 1; grid-row: auto; }
+      #flow-split-v, #flow-split-h, #flow-split-c { display: none; }
+      .flow-quad { min-height: 320px; }
+    }
+    /* Interaction graph (proto) — numbered SVG edges above the table. */
+    #flow-graph { position: relative; background: #0d0d0d; border: 1px solid #2c2c2c; border-radius: 4px; }
+    #flow-graph svg { width: 100%; display: block; }
+    #flow-graph .fg-node rect { fill: #1a1a1a; stroke-width: 1.5; }
+    #flow-graph .fg-node text { fill: #e0e0e0; font-size: 12px; font-weight: 600; pointer-events: none; }
+    #flow-graph .fg-node text.fg-sub { fill: #888; font-size: 10px; font-weight: 400; }
+    #flow-graph .fg-node text.fg-ord { fill: #666; font-size: 13px; font-weight: 700; }
+    #flow-graph .fg-node.dim { opacity: 0.22; }
+    #flow-graph .fg-edge { fill: none; stroke: #5b6478; stroke-width: 1.4; opacity: 0.55; }
+    #flow-graph .fg-edge.resp { stroke-dasharray: 4 3; }
+    #flow-graph .fg-edge.hi { stroke: #ffd24a; stroke-width: 2.6; opacity: 1; }
+    #flow-graph .fg-edge.dim { opacity: 0.07; }
+    #flow-graph .fg-label { cursor: pointer; }
+    #flow-graph .fg-label circle { fill: #20242e; stroke: #5b6478; stroke-width: 1; }
+    #flow-graph .fg-label text { fill: #e0e0e0; font-size: 10px; text-anchor: middle; }
+    #flow-graph .fg-label.hi circle { fill: #ffd24a; stroke: #ffd24a; }
+    #flow-graph .fg-label.hi text { fill: #000; font-weight: 700; }
+    #flow-graph .fg-label.dim { opacity: 0.1; }
+    #flow-graph .fg-legend { position: absolute; top: 6px; right: 10px; font-size: 11px; color: #888; display: flex; gap: 12px; align-items: center; }
+    #flow-graph .fg-legend .sw { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: baseline; }
+    #flow-graph .fg-legend label { cursor: pointer; user-select: none; }
+    /* Sequence diagram (proto) — lifelines + numbered messages, row order. */
+    #flow-sequence { position: relative; background: #0d0d0d; border: 1px solid #2c2c2c; border-radius: 4px; }
+    #flow-sequence svg { width: 100%; display: block; }
+    #flow-sequence .sq-lifeline { stroke: #333; stroke-width: 1; stroke-dasharray: 3 4; }
+    #flow-sequence .sq-head rect { fill: #1a1a1a; stroke-width: 1.5; }
+    #flow-sequence .sq-head text { fill: #e0e0e0; font-size: 12px; font-weight: 600; }
+    #flow-sequence .sq-head text.fg-sub { fill: #888; font-size: 10px; font-weight: 400; }
+    #flow-sequence .sq-head.dim { opacity: 0.22; }
+    #flow-sequence .sq-line { stroke: #5b6478; stroke-width: 1.4; }
+    #flow-sequence .sq-msg.resp .sq-line { stroke-dasharray: 4 3; }
+    #flow-sequence .sq-badge circle { fill: #20242e; stroke: #5b6478; stroke-width: 1; }
+    #flow-sequence .sq-badge text { fill: #e0e0e0; font-size: 10px; text-anchor: middle; }
+    #flow-sequence .sq-msg { cursor: pointer; }
+    #flow-sequence .sq-msg.hi .sq-line { stroke: #ffd24a; stroke-width: 2.6; }
+    #flow-sequence .sq-msg.hi .sq-badge circle { fill: #ffd24a; stroke: #ffd24a; }
+    #flow-sequence .sq-msg.hi .sq-badge text { fill: #000; font-weight: 700; }
+    #flow-sequence .sq-msg.dim { opacity: 0.12; }
     #graph-section { display: none; }
     .node-type-pill {
       display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
@@ -301,21 +470,49 @@
     <section>
       <div id="status">Loading...</div>
       <div id="error"></div>
-      <ul id="tree" class="tree"></ul>
+      <ul id="tree" class="tree" style="display:none"></ul>
       <div id="flow-section">
-        <h3>Entities</h3>
-        <table class="flow-table" id="entities-table">
-          <thead><tr><th>Scope</th><th>Kind</th><th>Display name</th><th>Detected from</th><th>Anchor span</th></tr></thead>
-          <tbody></tbody>
-        </table>
-        <h3>Interactions</h3>
-        <table class="flow-table" id="interactions-table">
-          <thead><tr>
-            <th>Started</th><th>Caller</th><th>→ Callee</th>
-            <th>Status</th><th>Req</th><th>Resp</th><th>Spans</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
+        <!-- 2×2 quadrant layout:
+               top-left  entity graph      | top-right    entity list
+               bot-left  sequence diagram  | bot-right    interactions list -->
+        <div id="flow-grid">
+          <div class="flow-quad" id="quad-graph">
+            <h3>Interaction graph</h3>
+            <div class="quad-body"><div id="flow-graph"></div></div>
+          </div>
+          <div class="flow-quad" id="quad-entities">
+            <h3>Entities</h3>
+            <div class="quad-body">
+              <table class="flow-table" id="entities-table">
+                <thead><tr><th>Display name</th><th>Kind</th><th>Detected from</th><th>Anchor span</th><th>Scope</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="flow-quad" id="quad-sequence">
+            <h3>Sequence diagram</h3>
+            <div class="quad-body"><div id="flow-sequence"></div></div>
+          </div>
+          <div class="flow-quad" id="quad-interactions">
+            <h3>Interactions</h3>
+            <div class="quad-body">
+              <table class="flow-table" id="interactions-table">
+                <thead><tr>
+                  <th>#</th><th>Started</th><th>Caller</th><th>→ Callee</th>
+                  <th>Status</th><th>Req</th><th>Resp</th><th>Spans</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <!-- Splitter rails (drag to resize quadrants together). -->
+          <div class="flow-split" id="flow-split-v" title="Drag to resize columns"></div>
+          <div class="flow-split" id="flow-split-h" title="Drag to resize rows"></div>
+          <div class="flow-split" id="flow-split-c" title="Drag to resize both"></div>
+        </div>
+        <!-- Drag down to extend the grid taller (grows the bottom quadrants —
+             sequence + interactions); double-click to reset. -->
+        <div id="flow-resize-bottom" title="Drag to extend downward · double-click to reset"></div>
         <div id="flow-empty" style="display:none;color:#888;padding:1rem 0">
           No entities or interactions for this trace yet — the prototype extractor
           hasn't run for it (or the trace has no agentic-scope spans).<br><br>
@@ -366,6 +563,7 @@
       <div class="detail-header">
         <h2 id="detail-title">Span detail</h2>
         <button id="refresh-btn" class="refresh-btn" style="display:none" title="Re-fetch this span">Refresh</button>
+        <button id="detail-close" class="detail-close" title="Close (Esc)" aria-label="Close">&times;</button>
       </div>
       <div class="detail-empty" id="detail-empty">
         Select a span to view its details.
@@ -424,8 +622,14 @@
     const treeEl = document.getElementById('tree');
     const traceIdDisplay = document.getElementById('trace-id-display');
     const refreshBtnEl = document.getElementById('refresh-btn');
+    const detailEl = document.getElementById('detail');
     const detailEmptyEl = document.getElementById('detail-empty');
     const detailBodyEl = document.getElementById('detail-body');
+
+    // Floating span-detail panel: close via the × button or Esc.
+    function closeDetail() { detailEl.classList.remove('open'); }
+    document.getElementById('detail-close').addEventListener('click', closeDetail);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDetail(); });
     const detailIdentityEl = document.getElementById('detail-identity');
     const detailTimingEl = document.getElementById('detail-timing');
     const detailStatusEl = document.getElementById('detail-status');
@@ -713,6 +917,7 @@
 
       detailEmptyEl.style.display = 'none';
       detailBodyEl.style.display = '';
+      detailEl.classList.add('open');   // reveal the floating panel
 
       /* Identity */
       detailIdentityEl.innerHTML = '';

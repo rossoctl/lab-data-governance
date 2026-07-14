@@ -171,9 +171,10 @@ CREATE TABLE proto_interactions (
   request_payload_hash   text NULL REFERENCES proto_interaction_payloads(content_hash),
   response_payload_hash  text NULL REFERENCES proto_interaction_payloads(content_hash),
   summary                text NOT NULL,
-  -- Intra-turn ordering tiebreak (ADR-0007 "Inferred interaction ordering").
-  -- "order" is a SQL reserved word, so it is always double-quoted. Consumers
-  -- sort by (started_at, "order").
+  -- Global ordinal `order` (ADR-0007 Step 3.b point 2): a single monotonic
+  -- sequence across the whole trace — chronological across turns, LIFO within a
+  -- nested delegation. "order" is a SQL reserved word, so it is always
+  -- double-quoted. Consumers sort by "order" ALONE.
   "order"                integer NOT NULL DEFAULT 0,
   trace_id               text NOT NULL
 );
@@ -386,11 +387,11 @@ def main() -> int:
 
         print(f"\n--- entities ({len(result.entities)}) ---")
         for e in sorted(result.entities, key=lambda x: x.natural_key):
-            inferred = " (inferred)" if e.inferred else ""
-            print(f"  {e.natural_key:40}{inferred} scopes={e.scope_name}")
+            marker = " (inferred)" if e.inferred else ""
+            print(f"  {e.natural_key:40}{marker} scopes={e.scope_name}")
 
         print(f"\n--- interactions ({len(result.interactions)}) ---")
-        for ix in sorted(result.interactions, key=lambda r: (r.started_at, r.order)):
+        for ix in sorted(result.interactions, key=lambda r: r.order):
             err = "ERR" if ix.error else "ok " if ix.error is False else "?  "
             print(f"  {err}  {ix.summary}")
 

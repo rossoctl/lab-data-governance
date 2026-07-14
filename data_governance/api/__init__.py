@@ -248,7 +248,7 @@ async def _proto_interactions_handler(request: Request) -> Response:
                 "SELECT id::text, caller_entity_id::text, callee_entity_id::text, "
                 "started_at, ended_at, error, request_payload_hash, "
                 'response_payload_hash, summary, "order" '
-                'FROM proto_interactions WHERE trace_id = %s ORDER BY started_at, "order"',
+                'FROM proto_interactions WHERE trace_id = %s ORDER BY "order"',
                 (trace_id,),
             )
             ev = tx.fetch_all(
@@ -434,14 +434,16 @@ async def _proto_graphs_handler(request: Request) -> Response:
             # --- Step 3 entity graph (after fuse) ---
             entity_node_rows = tx.fetch_all(
                 "SELECT n.id, n.label, n.attributes, n.contains_boundary, "
-                "       n.contains_blue, n.contains_teal, n.inferred, n.scopes, "
+                "       n.contains_blue, n.contains_teal, n.inferred, "
+                "       n.scopes, "
                 "       array_agg(ns.span_id ORDER BY ns.span_id) "
                 "         FILTER (WHERE ns.span_id IS NOT NULL) "
                 "FROM proto_entity_nodes n "
                 "LEFT JOIN proto_entity_node_spans ns ON ns.node_id = n.id "
                 "WHERE n.trace_id = %s "
                 "GROUP BY n.id, n.label, n.attributes, n.contains_boundary, "
-                "         n.contains_blue, n.contains_teal, n.inferred, n.scopes "
+                "         n.contains_blue, n.contains_teal, n.inferred, "
+                "         n.scopes "
                 "ORDER BY n.label",
                 (trace_id,),
             )
