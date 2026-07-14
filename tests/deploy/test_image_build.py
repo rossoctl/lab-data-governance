@@ -500,6 +500,48 @@ def test_build_load_script_loads_into_kind_kagenti(script_text: str) -> None:
     )
 
 
+def test_build_load_script_builds_the_classification_image(script_text: str) -> None:
+    """Issue #79/ADR-0022: the script also builds the SECOND image
+    `data-governance/classification:latest` from `Containerfile.classification`
+    (torch + baked weights), distinct from the shared receiver/UI image."""
+    assert "Containerfile.classification" in script_text, (
+        "build script must build from Containerfile.classification (the separate "
+        "P-classification image; ADR-0022)"
+    )
+    assert "data-governance/classification:latest" in script_text, (
+        "build script must produce data-governance/classification:latest"
+    )
+
+
+def test_build_load_script_loads_the_classification_image_into_kind(
+    script_text: str,
+) -> None:
+    """The classification image is `kind load`ed into the kagenti cluster too, so
+    the classification Deployment's IfNotPresent tag resolves on a fresh cluster —
+    like the shared image."""
+    # There must be a kind-load referencing the classification image (literal or
+    # via a variable that expands to it). We assert both the classification image
+    # name and a `kind load docker-image` invocation are present; the shared-image
+    # test already pins the --name kagenti default that this line shares.
+    assert "data-governance/classification" in script_text
+    assert script_text.count("kind load docker-image") >= 2, (
+        "build script must `kind load docker-image` BOTH the shared image and the "
+        "classification image (>=2 loads)"
+    )
+
+
+def test_build_load_script_materializes_git_lfs_before_build(script_text: str) -> None:
+    """ADR-0023: the ~500 MB model weights are a git-LFS artifact that must be
+    MATERIALIZED (not left as a pointer) before the classification build, or the
+    image would bake a 134-byte pointer instead of the weights. The script must
+    run `git lfs` (pull/fetch/checkout) before building the classification image."""
+    assert re.search(r"git\s+lfs\b", script_text), (
+        "build script must materialize git-LFS (e.g. `git lfs pull`) before the "
+        "classification build so the real weights are baked, not the LFS pointer "
+        "(ADR-0023)"
+    )
+
+
 def test_build_load_script_uses_set_e_or_pipefail(script_text: str) -> None:
     """A multi-step shell script that builds, tags, and loads must abort on
     the first failure — otherwise a failed build silently proceeds to a
