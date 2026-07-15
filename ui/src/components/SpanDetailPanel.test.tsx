@@ -14,8 +14,10 @@ const span = (over: Partial<Span>): Span => ({
 });
 
 describe('SpanDetailPanel', () => {
-  it('renders the nine section headings, with Identity renamed to Span', () => {
+  it('renders the eight section headings; the span identity fields sit under the promoted "Span" header', () => {
     render(<SpanDetailPanel span={span({})} onRefresh={() => {}} />);
+    // 'Span' is now the panel header (promoted from a section); the remaining
+    // eight are still their own sections.
     for (const h of ['Span', 'Timing', 'Status', 'Resource', 'Scope', 'OTLP envelope', 'Attributes', 'Events', 'Links']) {
       expect(screen.getByText(h)).toBeInTheDocument();
     }
@@ -23,16 +25,17 @@ describe('SpanDetailPanel', () => {
     expect(screen.queryByText('Identity')).not.toBeInTheDocument();
   });
 
-  it('titles the panel "Details" (not "Span detail")', () => {
+  it('titles a populated panel "Span" (the promoted section name, not the generic "Details")', () => {
     render(<SpanDetailPanel span={span({})} onRefresh={() => {}} />);
-    expect(screen.getByRole('heading', { name: 'Details' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Span' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Details' })).not.toBeInTheDocument();
     expect(screen.queryByText('Span detail')).not.toBeInTheDocument();
   });
 
   it('renders a placeholder and a DISABLED Refresh when no span is selected', () => {
     render(<SpanDetailPanel span={null} onRefresh={() => {}} />);
-    // Header survives, but Refresh is disabled (nothing to re-fetch → no dead
-    // affordance).
+    // Empty state keeps the generic 'Details' header (no target to name yet),
+    // but Refresh is disabled (nothing to re-fetch → no dead affordance).
     expect(screen.getByRole('heading', { name: 'Details' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Refresh/i })).toBeDisabled();
     // A hint stands in for the section body; no span fields.

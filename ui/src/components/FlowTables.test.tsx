@@ -129,7 +129,7 @@ describe('FlowTables', () => {
     expect(screen.getByTestId('highlight-swatch')).toHaveStyle({ background: '#ffd479' });
   });
 
-  it('selects an interaction row on click and shows its summary under a Details / Interaction header', async () => {
+  it('selects an interaction row on click and shows its summary under a promoted "Interaction" header', async () => {
     mockFetch();
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
@@ -137,9 +137,11 @@ describe('FlowTables', () => {
     // Click the interaction row via its unique span-count cell.
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    // The detail panel is titled "Details" with a leading "Interaction" section.
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Details' })).toBeInTheDocument());
-    expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument();
+    // The panel caption is now the selection's own name ('Interaction'), which
+    // folds in what used to be a separate 'Details' header + section header.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
+    // The generic 'Details' caption is gone once something is selected.
+    expect(screen.queryByRole('heading', { name: 'Details' })).not.toBeInTheDocument();
     expect(screen.getByText('agent calls search')).toBeInTheDocument();
   });
 

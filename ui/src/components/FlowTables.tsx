@@ -446,48 +446,66 @@ export function FlowTables({
       {/* The detail panel is always present (fixed column); a placeholder
           stands in before any row is selected. */}
       <SplitItem style={{ flex: '0 0 30%', minWidth: 0 }}>
-        <Title headingLevel="h3" size="md">
-          Details
-        </Title>
         {!selection ? (
-          <div style={{ color: '#888', fontStyle: 'italic', marginTop: '0.75rem' }}>
-            Select an entity or interaction to view its details.
-          </div>
+          // Nothing selected yet: the generic 'Details' caption stands in — no
+          // target to name, and no pin action to offer.
+          <>
+            <Title headingLevel="h3" size="md">
+              Details
+            </Title>
+            <div style={{ color: '#888', fontStyle: 'italic', marginTop: '0.75rem' }}>
+              Select an entity or interaction to view its details.
+            </div>
+          </>
         ) : (
           <>
-            <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
-              {selection.sectionTitle}
-            </Title>
-            <DetailList pairs={selection.fields} />
-
-            <Button
-              variant="secondary"
-              isInline
-              onClick={togglePin}
-              style={{ marginTop: '0.5rem' }}
-              // A swatch of the highlight color: the current color once pinned,
-              // else a preview of the next-free color the pin would take.
-              icon={
-                <span
-                  data-testid="highlight-swatch"
-                  aria-hidden="true"
-                  style={{
-                    display: 'inline-block',
-                    width: 10,
-                    height: 10,
-                    borderRadius: 2,
-                    border: '1px solid rgba(0, 0, 0, 0.35)',
-                    // Extra gap beyond PF's default icon spacing so the color
-                    // chip doesn't crowd the label text.
-                    marginRight: '0.375rem',
-                    background:
-                      pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
-                  }}
-                />
-              }
+            {/* Caption row: the selection's own name ('Entity'/'Interaction')
+                on the left — folding in what used to be a separate leading
+                section header — with the pin toggle glued to the right, matching
+                SpanDetailPanel's Refresh layout. */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                // A little breathing room between the caption and the first
+                // field below (e.g. 'Interaction' → 'summary').
+                marginBottom: '0.5rem',
+              }}
             >
-              {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
-            </Button>
+              <Title headingLevel="h3" size="md">
+                {selection.sectionTitle}
+              </Title>
+              <Button
+                variant="secondary"
+                isInline
+                onClick={togglePin}
+                // A swatch of the highlight color: the current color once
+                // pinned, else a preview of the next-free color the pin would
+                // take.
+                icon={
+                  <span
+                    data-testid="highlight-swatch"
+                    aria-hidden="true"
+                    style={{
+                      display: 'inline-block',
+                      width: 10,
+                      height: 10,
+                      borderRadius: 2,
+                      border: '1px solid rgba(0, 0, 0, 0.35)',
+                      // Extra gap beyond PF's default icon spacing so the color
+                      // chip doesn't crowd the label text.
+                      marginRight: '0.375rem',
+                      background:
+                        pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
+                    }}
+                  />
+                }
+              >
+                {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
+              </Button>
+            </div>
+            <DetailList pairs={selection.fields} />
 
             {(selection.requestPayloadHash || selection.responsePayloadHash) && (
               <>
