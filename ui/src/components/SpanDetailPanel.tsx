@@ -60,6 +60,9 @@ function PanelHeader({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
+        // Keep a gap between caption and button so they never butt together when
+        // the narrow (30%) detail column squeezes the row.
+        gap: '0.5rem',
         // A little breathing room between the caption and the first field below.
         marginBottom: '0.5rem',
       }}
@@ -67,12 +70,15 @@ function PanelHeader({
       <Title headingLevel="h3" size="md">
         {title}
       </Title>
+      {/* Never shrink the button below its label; let the caption absorb any
+          horizontal pressure instead. */}
       <Button
         variant="secondary"
         isInline
         isDisabled={!canRefresh}
         onClick={onRefresh}
         title="Re-fetch this span"
+        style={{ flexShrink: 0 }}
       >
         Refresh
       </Button>

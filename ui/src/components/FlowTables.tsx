@@ -27,7 +27,7 @@ import type { Entity, Interaction, SpanEvidence } from '../types';
 interface Selection {
   kind: 'interaction' | 'entity';
   id: string;
-  /** Leading section header inside the panel ('Entity' | 'Interaction'). */
+  /** The panel's promoted caption for this selection ('Entity' | 'Interaction'). */
   sectionTitle: 'Entity' | 'Interaction';
   fields: Array<[string, string]>;
   evidence: SpanEvidence[];
@@ -448,12 +448,14 @@ export function FlowTables({
       <SplitItem style={{ flex: '0 0 30%', minWidth: 0 }}>
         {!selection ? (
           // Nothing selected yet: the generic 'Details' caption stands in — no
-          // target to name, and no pin action to offer.
+          // target to name, and no pin action to offer. Same caption→content gap
+          // as the populated state and the span panel's empty state (0.5rem on
+          // the caption; no extra top margin on the placeholder).
           <>
-            <Title headingLevel="h3" size="md">
+            <Title headingLevel="h3" size="md" style={{ marginBottom: '0.5rem' }}>
               Details
             </Title>
-            <div style={{ color: '#888', fontStyle: 'italic', marginTop: '0.75rem' }}>
+            <div style={{ color: '#888', fontStyle: 'italic' }}>
               Select an entity or interaction to view its details.
             </div>
           </>
@@ -468,6 +470,9 @@ export function FlowTables({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
+                // Keep a gap between caption and button so they never butt
+                // together when the narrow (30%) detail column squeezes the row.
+                gap: '0.5rem',
                 // A little breathing room between the caption and the first
                 // field below (e.g. 'Interaction' → 'summary').
                 marginBottom: '0.5rem',
@@ -480,6 +485,9 @@ export function FlowTables({
                 variant="secondary"
                 isInline
                 onClick={togglePin}
+                // Never shrink the button below its label ('Add to highlights');
+                // let the caption absorb any horizontal pressure instead.
+                style={{ flexShrink: 0 }}
                 // A swatch of the highlight color: the current color once
                 // pinned, else a preview of the next-free color the pin would
                 // take.

@@ -14,7 +14,7 @@ const span = (over: Partial<Span>): Span => ({
 });
 
 describe('SpanDetailPanel', () => {
-  it('renders the eight section headings; the span identity fields sit under the promoted "Span" header', () => {
+  it('renders the promoted "Span" caption plus its eight section headings', () => {
     render(<SpanDetailPanel span={span({})} onRefresh={() => {}} />);
     // 'Span' is now the panel header (promoted from a section); the remaining
     // eight are still their own sections.

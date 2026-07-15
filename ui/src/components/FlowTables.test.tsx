@@ -139,10 +139,30 @@ describe('FlowTables', () => {
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
     // The panel caption is now the selection's own name ('Interaction'), which
     // folds in what used to be a separate 'Details' header + section header.
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
+    // A string `name` is an exact (normalized) accessible-name match, so this
+    // targets the 'Interaction' caption and not the 'Interactions' table title.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument(),
+    );
     // The generic 'Details' caption is gone once something is selected.
     expect(screen.queryByRole('heading', { name: 'Details' })).not.toBeInTheDocument();
     expect(screen.getByText('agent calls search')).toBeInTheDocument();
+  });
+
+  it('selects an entity row on click and shows it under a promoted "Entity" header', async () => {
+    mockFetch();
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    // The caption is the entity's own name; the generic 'Details' is gone.
+    // A string `name` is an exact (normalized) match, so this targets the
+    // 'Entity' caption and not the 'Entities' table title.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('heading', { name: 'Details' })).not.toBeInTheDocument();
   });
 
   it('shows an always-visible detail panel with a placeholder before any selection', async () => {
