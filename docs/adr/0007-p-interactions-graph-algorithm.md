@@ -11,87 +11,39 @@ to inspect. A single colored base graph makes both the trace structure and the
 scope semantics explicit and inspectable in one place.
 
 This ADR records the design as it tracks `p_interactions_alg.md` (the
-human-owned algorithm spec). The implementation now realises the spec's full
-White/Blue/Teal pipeline (transport coloring, Teal server routing, the case-4
-inferred agent, and the two-graph merge split); the algorithm vocabulary and
-step ordering below follow the spec, and per-section notes record how each step
-is implemented and what remains deferred.
+human-owned algorithm spec). The algorithm vocabulary and step ordering below
+follow the spec; per-section notes record how each step is implemented and what
+remains deferred.
 
-> **Current shape.** The spec is a **three top-level step** pipeline with a
-> **color-based** node vocabulary:
-> - **Step 1** — base (White) execution-flow graph, one node per span, White
+> **Shape.** A **three top-level step** pipeline over a **color-based** node
+> vocabulary:
+> - **Step 1** — base (White) execution-flow graph: one node per span, White
 >   parent→child edges mirroring traceparent.
-> - **Step 2** — enrich the graph with scoped semantics: 2.a transport → **Teal**,
->   2.b agentic → **Blue**, 2.c derive inferred nodes and **forward
->   (request-direction) edges only** (the **call-chain structure**, not
->   bidirectional interactions — cases 1–3 route the call through an inferred Teal
->   server), 2.d **merge identical call chains** on the execution graph. The Step-2
->   object is a **call chain** (`Blue source → transport region → Blue target`,
->   forward only); "interaction" is reserved for Step 3.b.
-> - **Step 3** — entity graph. 3.a creates the entity-graph *nodes* (**structural
->   only**: group connected Blue+White subgraphs, dropping Teal). 3.b creates the
->   entity-graph *edges* and is the **sole** place a bidirectional interaction is
->   formed: each Teal transport chain between two Blue components becomes one
->   interaction (a **request edge and a response edge**), ordered by a **recursive
->   execution-order walk** of the chain tree (children by `started_at`; for each
->   child emit its request, recurse into its subtree, then emit its response;
->   emit the parent's own response). Its point 2 ("Edge ordering") assigns each
->   edge a single global **`order` derived from BOTH structure and timing**
->   (siblings and roots sequenced by `started_at`, nested chains fully unwound),
->   while each edge **separately** keeps its anchor span and that span's
->   `started_at` / `ended_at` — the per-edge anchor timestamps remain a distinct
->   concern from the global ordinal. 3.c ("infer (entity graph)") is a **reserved/empty placeholder**.
->   3.d ("merge entities") semantically **combines** same-entity groups while
->   preserving all edges; Step 3.a stays structural-only.
+> - **Step 2** — enrich with scoped semantics: 2.a transport → **Teal**, 2.b
+>   agentic → **Blue**, 2.c derive inferred nodes and **forward
+>   (request-direction) edges only** (cases 1–3 route the call through an inferred
+>   Teal server), 2.d **merge identical call chains**. The Step-2 object is a
+>   **call chain** (`Blue source → transport region → Blue target`, forward only);
+>   "interaction" is reserved for Step 3.b.
+> - **Step 3** — entity graph. 3.a creates the *nodes* (**structural only**: group
+>   connected Blue+White subgraphs, dropping Teal). 3.b creates the *edges* and is
+>   the **sole** place a bidirectional interaction is formed: each Teal transport
+>   chain between two Blue components becomes one interaction (request edge +
+>   response edge), ordered by a **recursive execution-order walk**. 3.c ("infer
+>   (entity graph)") is a reserved/empty placeholder. 3.d ("merge entities")
+>   semantically **combines** same-entity groups while preserving all edges.
 >
-> Cross-entity calls are the inferred Teal servers routed in Step 2.c and dropped
-> when entity nodes are formed in Step 3.a; there is no separate cross-entity edge
+> Cross-entity calls are the inferred Teal servers routed at Step 2.c and dropped
+> when entity nodes form at Step 3.a; there is no separate cross-entity edge
 > signal.
 >
-> **Design rationale (forward-only 2.c, structural-response 3.b).** The forward /
-> structural split rests on the observation that *tool, llm and agent call spans
-> account for both the request and the response (they already have the result)* —
-> so the forward call chain is derived at Step 2.c and the response leg is
-> reconstructed structurally at Step 3.b. This is an **ADR-side design rationale**,
-> **not** a spec assumption: the current spec's Assumptions section lists only two
-> (*"Our focus is on agents and agent interactions"*, *"OTEL may be incomplete"*).
-> The intra-turn **input/output tool bands** (input-derived tools before the LLM,
-> output-derived after) remain a 2.c forward-edge concern; the
-> call-before-response and response ordering is the Step 3.b
-> recursive execution-order walk.
->
-> **Implementation status.** The code matches this design on the forward /
-> structural split: `_insert_teal_server` mints only the two forward edges at
-> Step 2.c (source→server, server→target, both at the call band), and the response
-> leg is formed structurally at Step 3.b (`build_entity_graph`).
-> `_server_endpoints` distinguishes source from target by edge **direction**
-> (outbound-into-server = source; server-points-to = target), since the old
-> inbound-order signal no longer applies with forward-only edges. **Ordering —
-> now CONFORMS.** The spec's Step 3.b ordering rule is a **recursive
-> execution-order walk** (siblings interleave, ordered by `started_at`; nested
-> chains fully unwound — see Step 3.b below), and the code
-> (`_order_execution_walk`) **now realises it**: a depth-first walk of
-> the chain nesting forest that, for each child, emits its request, recurses into
-> its subtree, then emits its response. This **replaced** the OLD batch-LIFO
-> behaviour (group a delegation subtree, then emit all requests outer→inner and
-> all responses inner→outer). The earlier divergence is **resolved**; the
-> per-section as-implemented notes below reflect the current conforming code.
->
-> **History (notable revisions this ADR is reconciled to).** Terminal entity nodes
-> were **removed** from the spec (Step 3.b now covers only chains between two Blue
-> components; the old 3.d terminal merge is gone), and their code machinery
-> (`terminal` field/columns/wire fields, `merge_terminal_nodes`,
-> `_reconstruct_observed_transport_chains`) removed. The Step 3.c
-> **return-inference** pass (`infer_return_interactions`) was **removed** — Step
-> 3.b now produces every response leg structurally, so 3.c reverts to empty. The
-> **semantic combine** moved from a Step 3.a sub-step to **Step 3.d**. The spec's
-> earlier explicit **Assumption #3** (request-and-response) was **removed** and is
-> now carried as the ADR design rationale above. The Step 3.b **ordering** was
-> brought into conformance: the ordering pass (renamed
-> `_order_responses_lifo` → `_order_execution_walk`) was rewritten from the OLD
-> batch-LIFO rule to the spec's **recursive execution-order walk** (interleaving
-> leaf siblings — request, recurse, response), resolving the previously-flagged
-> ordering divergence.
+> **Design rationale (forward-only 2.c, structural-response 3.b).** *Tool, LLM and
+> agent call spans account for both the request and the response — they already
+> carry the result.* So the forward call chain is derived at Step 2.c and the
+> response leg is reconstructed structurally at Step 3.b. This is an ADR-side
+> design rationale, **not** a spec assumption: the spec's Assumptions section
+> lists only two (*"Our focus is on agents and agent interactions"*, *"OTEL may be
+> incomplete"*).
 
 ## Definitions
 
@@ -172,12 +124,6 @@ without being merged into a real node is recorded with a dedicated boolean
 field — `is_inferred` on colored-base-graph nodes, `inferred` on entity nodes.
 Identification is **never** done by inspecting the node's label or any other
 display string — the field is the single source of truth.
-
-> **Naming note.** These columns were originally `is_synthetic` / `synthetic`.
-> The algorithm vocabulary is "inferred", so they have been renamed to
-> `is_inferred` / `inferred` across the stack (processor, scratch-table
-> schema, API wire shape, and the UI marker). This ADR uses the current
-> `inferred` names throughout.
 
 ## Adapter layer
 
@@ -365,19 +311,15 @@ Cases:
 Additional cases may exist and need implementing (e.g. tools inferred from
 input attributes — see the ordering note and the as-implemented note below).
 
-> **As-implemented note (matches current spec).**
-> Step 2.c mints only the **forward** legs (the call-chain structure), deferring
-> the response leg to Step 3.b — as the spec requires. The inferred-node machinery
-> **routes every call through an inferred Teal server node and mints the two
-> forward request edges at 2.c** — `_insert_teal_server` creates the server
-> (`span_id=""`, `is_inferred=True`) and the two edges (source→server,
-> server→target, both at the call band). No response legs are created here.
-> `duplicate_combined_nodes`, `infer_tool_calls_from_attributes`, and
-> `synthesize_missing_peers` all wire their pair through a server rather than with
-> a direct edge. The Step 3.a fuse drops Teal and reconstructs the interaction from
-> each server (see Step 3.a); Step 3.b then **forms the response leg structurally**
-> and orders it via `_order_execution_walk` (which realises the spec's recursive
-> execution-order walk; see Step 3.b below).
+> **As-implemented note.**
+> The inferred-node machinery routes every call through an inferred Teal server
+> node and mints the two forward request edges — `_insert_teal_server` creates the
+> server (`span_id=""`, `is_inferred=True`) and the two edges (source→server,
+> server→target, both at the call band). `duplicate_combined_nodes`,
+> `infer_tool_calls_from_attributes`, and `synthesize_missing_peers` all wire their
+> pair through a server rather than with a direct edge. The Step 3.a fuse drops Teal
+> and reconstructs the interaction from each server; Step 3.b forms the response leg
+> and orders it via `_order_execution_walk`.
 >
 > - **Case 1** is `duplicate_combined_nodes`: for a combined span it creates a
 >   duplicate node referencing the same span (the LLM target) and routes
@@ -425,13 +367,12 @@ otherwise it falls back to `(unobserved peer of <source>)`. This is
 
 **Inferred call-chain ordering (forward edges, Step 2.c).**
 Several inferred call chains are derived from a *single* span and therefore
-share that span's timestamp — `started_at` alone cannot order them. The spec
-(`p_interactions_alg.md`, "Notes & timing" under Step 2.c, now phrased in terms
-of *call chains* and carrying a *"TODO: human — verify the need for this"*)
-requires an explicit **execution order** for the **forward** legs derived from
-one span. In the current spec this 2.c ordering is the **input/output tool
-banding** only; the **call-before-response** ordering has moved to Step 3.b (the
-recursive execution-order walk below), because Step 2.c no longer mints response legs:
+share that span's timestamp — `started_at` alone cannot order them. The spec's
+"Notes & timing" under Step 2.c (phrased in terms of **inferred edges**) requires
+an explicit **execution order** for the forward legs derived from one span. This
+2.c ordering is the **input/output tool banding** only; the call-before-response
+ordering is Step 3.b (the recursive execution-order walk below), since Step 2.c
+mints no response legs:
 
 1. **Case-3 forward edge order.** For a tool inferred from an LLM span: the
    `current LLM span → tool-call` edge precedes the `tool-call → server → tool`
@@ -458,31 +399,19 @@ chains fully unwound). The value is derived from **both structure and timing**
 (computed at Step 3.b from the recursive execution-order walk of the chain tree —
 siblings and top-level roots sequenced by `started_at`, nested chains unwound by
 structure); the per-edge anchor `started_at` / `ended_at` remain a **separate**
-concern, taken from the anchor span. So timing enters the ordering (for sibling
-and root sequencing) while the per-edge absolute timestamps stay distinct from
-the global ordinal. Because `order`
-is globally total and unique, consumers sort by `order` **only** (the CLI by
-`r.order`, the API by `ORDER BY "order"`) — `started_at` is no longer part of the
-sort key. An earlier revision made `order` a set of *local* bands
-(`100 + 2*depth` / `1001 - 2*depth`, reused per delegation) and sorted by
-`(started_at, order)` with `started_at` primary; that broke within-delegation LIFO
-on real A2A delegations (the callee's run span starts before its own inner spans,
-so the outer response sorted ahead of the inner calls). Making `order` a global
-ordinal removes the timestamp-primary sort and the band reuse.
+concern, taken from the anchor span. Because `order` is globally total and unique,
+consumers sort by `order` **only** (the CLI by `r.order`, the API by
+`ORDER BY "order"`); `started_at` is not part of the sort key.
 
-> **As-implemented note (matches current spec).** The explicit order field is a
-> plain integer carried on the base-graph `Edge` (`Edge.order`). The Step-2.c
-> forward input/output tool banding still exists as an *intra-turn* signal
-> (`infer_tool_calls_from_attributes` reads `SpanFacts.tool_calls` / output and
-> `SpanFacts.input_tool_calls` / input from the anthropic adapter's
-> `llm.input_messages.*` / `llm.output_messages.*`; input-derived < the LLM call <
-> output-derived) — but this band is now an *input* to the final ordering, not the
-> final value.
+> **As-implemented note.** The order field is a plain integer on the base-graph
+> `Edge` (`Edge.order`). The Step-2.c input/output tool banding
+> (`infer_tool_calls_from_attributes` reads `SpanFacts.tool_calls` /
+> `SpanFacts.input_tool_calls` from the anthropic adapter's
+> `llm.output_messages.*` / `llm.input_messages.*`; input-derived < the LLM call <
+> output-derived) is an *input* to the final ordering, not the final value.
 >
-> **`_order_execution_walk` assigns `order` as a global ordinal** (Step 3.b), and
-> **its algorithm now IS the spec's recursive execution-order walk** — the earlier
-> batch-LIFO divergence is **resolved** (the pass was renamed from
-> `_order_responses_lifo` to `_order_execution_walk` to match).
+> `_order_execution_walk` (Step 3.b) assigns `order` as a global ordinal, realising
+> the recursive execution-order walk.
 > Using the traceparent `parent_id` map it: (1) builds a **nesting forest** —
 > chain X is a child of chain Y iff Y's anchor span is the *nearest* chain-anchor
 > ancestor of X's anchor span (walking `parent_id` up from X); chains with no
@@ -503,7 +432,6 @@ ordinal removes the timestamp-primary sort and the band reuse.
 > call band is the secondary key so same-turn siblings (input tool / LLM / output
 > tool, which share an anchor span and `started_at`) keep their input<LLM<output
 > sequence; `span_id` is the final deterministic tiebreak.
-> `started_at`/`ended_at` themselves are unchanged (anchor span).
 >
 > The reconstructed `EntityEdge.order` surfaces as `ProtoInteraction.order` and the
 > `proto_interactions."order"` column; both the CLI (`key=lambda r: r.order`) and
@@ -511,27 +439,21 @@ ordinal removes the timestamp-primary sort and the band reuse.
 > longer in the sort key.
 
 **Step 2.d — Merge call chains (execution graph).**
-The spec's Step 2.d heading is "merge call chains (execution graph)", and its
-body speaks of "identical **call chains**", "same execution path" and "merge call
-chains" — so the Step-2 object being merged is the **call chain**
-(`Blue source → transport region → Blue target`, **forward only**), not the
-bidirectional interaction (which is not formed until Step 3.b). This step
-identifies nodes and/or edges (inferred or observed) in the **execution graph**
-representing the *same call chain* and merges them. "Same call chain" means the
-**same logical occurrence of processing** — one real call — **not** the same
+This step identifies nodes and/or edges (inferred or observed) in the execution
+graph representing the *same call chain* and merges them. "Same call chain" means
+the **same logical occurrence of processing** — one real call — **not** the same
 wall-clock timestamp. (The spec's definition says "the same processing that took
 place at the same time"; this is read as *same occurrence*, because a single
 call's input is often replayed into later spans at different timestamps and must
-still merge — see the database example below and the timing note. Accordingly
-"same execution time" is a matching **signal**, not a requirement.) The spec
-states this as one heuristic-driven step (heuristics below); it does not
-enumerate provenance sub-cases or mandate a node-before-edge order. The code
-function is `merge_identical_interactions` (name kept), which merges call chains.
+still merge — see the database example below and the timing note. So "same
+execution time" is a matching **signal**, not a requirement.) The spec states this
+as one heuristic-driven step; it does not enumerate provenance sub-cases or
+mandate a node-before-edge order. The code function is
+`merge_identical_interactions` (name kept), which merges call chains.
 
 The unit being compared is a **chain (subgraph)**, not an isolated node or edge.
-A call chain is `Blue source → transport region → Blue target` (**forward
-only** — the response legs are not part of the Step-2 object; they are formed at
-Step 3.b), where:
+A call chain is `Blue source → transport region → Blue target` (forward only),
+where:
 - the **Blue** ends are the agentic endpoints — the source's call node and the
   target tool / LLM / agent node;
 - the **transport region** in between is one or more **Teal (and possibly
@@ -672,28 +594,17 @@ derived from **both structure and timing** (siblings and roots sequenced by
 **separately** keeps its anchor span and that span's `started_at` / `ended_at`;
 **Step 3.c** ("infer (entity graph)") is a **reserved/empty
 placeholder** in the current spec; **Step 3.d** is "merge entities" —
-semantically combine same-entity groups while preserving all edges.
-
-> **Numbering reconciliation.** Two things the current spec renumbers relative to
-> earlier ADR revisions. (1) The **semantic combine** moved from a "Step 3.a
-> semantic sub-step" to **Step 3.d**; Step 3.a is now structural-only. (2) The
-> **edge-ordering rule (`order` from structure and timing) plus its anchor-span timing** are
-> numbered under **Step 3.b (point 2)**, not a
-> separate step; an even earlier revision put it under a "Step 3.c". This ADR
-> presents both as **part of Step 3.b** (see "Edge ORDER derives from both
-> structure and timing; the per-edge anchor timestamps are a separate concern" below). **Step 3.c is empty** in
-> the current spec — an earlier revision drafted a return-inference step there,
-> but the redesigned Step 3.b now produces every response (return) leg
-> structurally, so 3.c reverts to a reserved placeholder.
+semantically combine same-entity groups while preserving all edges. The
+edge-ordering rule and its anchor-span timing both live under Step 3.b (point 2),
+not a separate step.
 
 **Step 3.a — Creating the entity-graph nodes (structural only).**
 Consider the Blue and Teal nodes in the execution flow graph; form subgraphs by
 **dropping the Teal nodes**. Each subgraph is a set of connected nodes that can
 only be Blue or White (inferred, observed, or both). For each connected
 Blue+White subgraph, create a **group**. Groups without a Blue node are ignored.
-
-The same-entity **semantic combine** that an earlier revision placed here is now
-**Step 3.d** — see Step 3.d below. Step 3.a is structural grouping only.
+The same-entity semantic combine is **Step 3.d**; Step 3.a is structural grouping
+only.
 
 Each group is one **entity-graph node**. Each entity node is given a
 **key** reflecting its originating subgraph, drawn from one of the subgraph's
@@ -727,54 +638,30 @@ inferred, or a case-4 inferred-agent node was absorbed.)
 > transport-scope enrichment runs. See "Deferred to later stages →
 > Hostname-based entity naming".
 
-**Edge ORDER derives from both structure and timing; the per-edge anchor
-timestamps are a separate concern (Step 3.b, point 2).**
-The spec's **Step 3.b point 2** is headed **"Edge ordering"**, and its
-stated goal is explicit (spec lines 196–197): *"assign each edge (request,
-response) an order (a single global order) in the interactions table. The order
-should be derived from both the structure and timing. Edges should maintain their
-anchor span and their relevant timestamps."* Two **distinct** concerns live here
-and this ADR must not conflate them:
-- **(a) Order — from structure AND timing.** The `order` field is an
-  interaction's ordinal position in the interactions table, and it is derived from
-  **both structure and timing**. The rule is the recursive execution-order walk
-  of the "Response reconstruction and execution-order ordering" section below:
-  order each entity's outgoing chains (children) by `started_at`, and for each
-  child in turn emit its request, recurse into its subtree, then emit its
-  response, finally emitting the parent's own response. So **timing enters the
-  ordering** — sibling chains sharing a parent are sequenced among themselves by
-  `started_at`, and top-level/independent roots are walked in `started_at` order —
-  while **structure** governs nesting (a chain with its own subtree is fully
-  unwound before its response, and before the next sibling begins). Chain X nests
-  inside chain Y iff X's request span is a **traceparent descendant** of Y's
-  request span (X's anchor span is reachable by walking `parent_id` links up from
-  Y's); siblings are chains sharing a parent, neither a traceparent-descendant of
-  the other, and they **interleave** (each leaf sibling returns immediately —
-  request then response). The earlier "order is never derived from `started_at`"
-  framing is **no longer accurate**: `started_at` now drives sibling and root
-  sequencing.
-- **(b) Per-edge anchor timestamps — separate.** Each edge *separately*
-  keeps its **anchor span** and that span's absolute `started_at` / `ended_at`.
-  The anchor is the *observed* endpoint's span (and, when both endpoints are
-  inferred, the observed span that derived them — the originating agentic span).
-  This is the per-edge absolute-time concern kept apart from (a): although timing
-  informs the global ordinal in (a), the anchor's absolute timestamps are a
-  distinct field, and are not themselves the ordinal position.
+**Per-edge anchor timestamps are a separate concern from the global `order`
+(Step 3.b, point 2).**
+Spec Step 3.b point 2 states: *"assign each edge (request, response) an order (a
+single global order) in the interactions table. The order should be derived from
+both the structure and timing. Edges should maintain their anchor span and their
+relevant timestamps."* Two **distinct** concerns live here:
+- **(a) `order` — from structure and timing.** The interaction's ordinal position
+  in the interactions table, produced by the recursive execution-order walk
+  detailed under Step 3.b below (siblings and roots sequenced by `started_at`,
+  nested chains unwound by structure).
+- **(b) Per-edge anchor timestamps — separate.** Each edge keeps its **anchor
+  span** and that span's absolute `started_at` / `ended_at`. The anchor is the
+  *observed* endpoint's span (and, when both endpoints are inferred, the observed
+  span that derived them — the originating agentic span). The anchor's absolute
+  timestamps are a distinct field from the ordinal position in (a).
 
-Step 2.d's timing note carries the complementary merge rule:
-collapsing an inferred chain into an observed one keeps the observed timestamps
-(its example III — the delegation response anchors on the observed downstream
-agent's node, not the caller's call-site span). Earlier revisions of this ADR
-called the anchor rule an implementation resolution not stated by the spec, and
-numbered it "Step 3.c"; both are now out of date — both the execution-order
-ordering and the anchor-span timestamps live under the spec's Step 3.b (point 2),
-making them spec-stated decisions. (Both are realised: `_order_execution_walk`
-now implements the recursive execution-order walk, and the anchor-span timestamp
-handling is realised as described.)
+Step 2.d's timing note carries the complementary merge rule: collapsing an
+inferred chain into an observed one keeps the observed timestamps (its example III
+— the delegation response anchors on the observed downstream agent's node, not the
+caller's call-site span).
 
-The rest of this section covers concern (b) — how the anchor span is chosen; the
-`order` (concern (a)) is detailed under "Response reconstruction and
-execution-order ordering" in Step 3.b below.
+The rest of this section covers concern (b) — how the anchor span is chosen;
+concern (a) is detailed under "Response reconstruction and execution-order
+ordering" in Step 3.b below.
 
 An interaction's `started_at` / `ended_at` are taken from its **anchor span**
 (the entity edge's first pooled span), **not** from an aggregate over every span
@@ -805,12 +692,9 @@ side erroring marks the interaction errored.)
 > `edge_spans`.
 
 **Step 3.b — Creating the entity-graph edges.**
-Structural (point 1) plus edge ordering (point 2). The spec heads point 2
-**"Edge ordering"**: its goal is to assign each edge a single global
-`order` derived from **both structure and timing**, with each edge separately
-keeping its anchor span and that span's timestamps (see "Edge ORDER derives from
-both structure and timing…" above). Given the entity-graph nodes
-(groups) from Step 3.a:
+Structural (point 1) plus edge ordering (point 2 — assign each edge a global
+`order` derived from both structure and timing; anchor timestamps handled
+separately, see above). Given the entity-graph nodes (groups) from Step 3.a:
 
 *Point 1 — structural.* **Step 3.b is the SOLE place a bidirectional interaction
 is formed.** Step 2.c produced only forward call chains; here each is turned into
@@ -859,19 +743,14 @@ before the next sibling starts.
 **This ordering is the interaction's global `order` field**, derived from **both
 structure and timing** — structure governs nesting (which chain's request span is
 a traceparent descendant of which), while `started_at` orders siblings among
-themselves and orders top-level/independent roots. This replaces
-the old Step-2.c "calls before responses" order-band scheme for responses, and
-also replaces the ADR's earlier "responses unwind LIFO all at once" framing (which
-batched all requests then all responses within a delegation subtree); the
-forward-edge input/output tool banding stays at Step 2.c (see "Inferred
-call-chain ordering" above), while the call-before-response and response
-ordering is this Step-3.b recursive execution-order walk.
+themselves and orders top-level/independent roots. The forward-edge input/output
+tool banding stays at Step 2.c (see "Inferred call-chain ordering" above); the
+call-before-response and response ordering is this Step-3.b walk.
 
 A one-sided chain — a Teal transport chain from a Blue component with **no** Blue
-component on the other side — is **not** turned into an interaction here (the
-terminal-node concept was removed from the spec). The current spec's **Step 3.c**
-is an empty placeholder, so a purely one-sided chain simply yields no interaction
-at this stage.
+component on the other side — is **not** turned into an interaction here; Step 3.c
+is an empty placeholder, so a purely one-sided chain yields no interaction at this
+stage.
 
 The mapping is **per chain**, not per entity pair: two *distinct* calls between
 the same pair of entities run through two distinct transport chains and therefore
@@ -881,78 +760,48 @@ multi-node transport region → one interaction), never across sibling chains.
 in Step 2.d, so what reaches Step 3.b are the distinct interactions.) The edges
 of the entity graph are simply these interactions.
 
-*Point 2 — edge ordering (structure and timing), with the per-edge anchor
-timestamps kept separate.*
-The spec heads point 2 "Edge ordering" and its goal is to assign each
-edge a single global **`order`** in the interactions table **derived from both
-structure and timing** (the recursive execution-order walk above — siblings and
-roots by `started_at`, nested chains unwound by structure).
-**Separately**, each edge maintains its **anchor span** and that span's absolute
-`started_at` / `ended_at` — the observed endpoint's span, or (both endpoints
-inferred) the observed span that derived them. The global ordinal and the
-per-edge anchor timestamps are two distinct concerns; this is documented in full
-under "Edge ORDER derives from both structure and timing; the per-edge anchor
-timestamps are a separate concern (Step 3.b, point 2)" above.
+*Point 2 — edge ordering.* Each edge gets a single global `order` derived from
+both structure and timing (the recursive execution-order walk above), while
+separately keeping its anchor span and that span's `started_at` / `ended_at` — the
+two concerns documented under "Per-edge anchor timestamps are a separate concern
+from the global `order`" above.
 
 Step 3.b reconstructs edges **only** for Teal chains between two Blue components;
-the one-sided case an earlier revision covered with a terminal node is no longer
-handled here (terminal machinery removed — see the History note in the top
-matter), and Step 3.c is an empty placeholder in the current spec.
+there is no one-sided-chain handling here, and Step 3.c is an empty placeholder.
 
-> **As-implemented note (matches current spec).** Edge reconstruction is
-> done inside `build_entity_graph` as it drops each Teal chain: **one S→D entity
-> edge (request/call band) and one D→S entity edge (response leg) per dropped
-> Teal transport chain**, the response leg **created here at Step 3.b** (not read
-> back from any 2.c-minted edge). A Teal transport chain is a run of one or more
-> Teal nodes between two Blue components — a single inferred server (Step 2.c,
-> `span_id=""`) is the length-1 case; an observed httpx→starlette hop (Step 2.a)
-> is the multi-node case. Both drop, and both reconstruct: the chain's external
-> source and target are recovered from its incident edges by `_server_endpoints`
-> using edge **direction** (source = the endpoint with an outbound edge *into* the
-> server; target = the endpoint the server points *to*) — the forward-only edges
-> carry a single call band, so direction, not order, disambiguates. The response
-> leg's order is then set by `_order_execution_walk` — which **realises the spec's
-> recursive execution-order walk** (interleaving leaf siblings: request, recurse,
-> response), see the `_order_execution_walk` as-implemented note under Step 2.c
-> and Example 2 above.
-> Because Step 2.d already collapsed duplicate chains,
-> distinct calls between the same two entities remain distinct interactions — one
-> per surviving chain.
+> **As-implemented note.** Edge reconstruction is done inside `build_entity_graph`
+> as it drops each Teal chain: **one S→D entity edge (request/call band) and one
+> D→S entity edge (response leg) per dropped Teal transport chain**, the response
+> leg created here at Step 3.b. A Teal transport chain is a run of one or more Teal
+> nodes between two Blue components — a single inferred server (Step 2.c,
+> `span_id=""`) is the length-1 case; an observed httpx→starlette hop (Step 2.a) is
+> the multi-node case. Both drop, and both reconstruct: the chain's external source
+> and target are recovered from its incident edges by `_server_endpoints` using edge
+> **direction** (source = the endpoint with an outbound edge *into* the server;
+> target = the endpoint the server points *to*) — the forward-only edges carry a
+> single call band, so direction, not order, disambiguates. The response leg's order
+> is then set by `_order_execution_walk`. Because Step 2.d already collapsed
+> duplicate chains, distinct calls between the same two entities remain distinct
+> interactions — one per surviving chain.
 >
 > The entity edge's first `span_id` is its **anchor** — the span the extractor
-> uses for the interaction's payload *and* timing (see "Interaction timing
-> follows the anchor span" above).
+> uses for the interaction's payload *and* timing (see "Per-edge anchor timestamps
+> are a separate concern from the global `order`" above).
 > The anchor is the observed (non-inferred) endpoint's span when one exists, else
 > the source endpoint's; the Teal nodes themselves never anchor (an inferred
 > server carries `span_id=""`; observed transport spans are dropped).
 
 **Step 3.c — Infer (entity graph).**
 The spec's **Step 3.c** ("infer (entity graph)") is a **reserved/empty
-placeholder** in the current revision — the spec has the heading with no body.
-There is no entity-graph inference step at present.
-
-> **Note (history).** An earlier spec revision drafted a **return-inference** step
-> here: given an observed `A → B` where control returns to A immediately after B,
-> infer the `B → A` return interaction (the one-sided-return case the removed
-> terminal node used to stand in for). The current spec **leaves 3.c empty**,
-> because the redesigned **Step 3.b** now produces every response (return) leg
-> **structurally** — each Teal chain between two Blue components already becomes a
-> request/response pair ordered by the recursive execution-order walk — so a
-> separate return-inference step is no longer needed.
->
-> **Implementation status (matches empty spec 3.c).** The return-inference pass
-> from that earlier revision, `infer_return_interactions`, has been **removed** —
-> the function, its `builder.py` re-export, its `extractor.extract()` call, and
-> `test_return_inference.py` are all gone. The pipeline now flows
-> `build_entity_graph → combine_identical_entities` directly, with no entity-graph
-> inference step, matching the empty spec 3.c. (Removal was a no-op on output: the
-> pass only fired for an `A → B` whose `B → A` return was absent, and Step 3.b now
-> emits the return for every chain.)
+placeholder** — the spec has the heading with no body, and there is no
+entity-graph inference step. Step 3.b already produces every response (return) leg
+structurally, so no separate return-inference step is needed. The pipeline flows
+`build_entity_graph → combine_identical_entities` directly.
 
 **Step 3.d — Merge entities (entity graph).**
 The spec's **Step 3.d** ("merge entities") folds entity nodes together **while
-preserving all edges** (interactions stay distinct). With terminal nodes removed
-from the spec, Step 3.d is **solely the semantic same-entity combine**:
+preserving all edges** (interactions stay distinct). It is solely the semantic
+same-entity combine.
 
 **Semantic combine of same-entity groups.** Combine the
 entity nodes (groups from Step 3.a) that represent the *same entity* into one.
@@ -1022,7 +871,7 @@ All scopes contribute spans to a single base graph. Scope semantics are overlaid
 by coloring nodes/edges in place (White → Teal / Blue). There is no separate
 `ScopeGraph` per scope and no `XScopeGraph` merge step.
 
-**Architecture (pipeline / module structure) — now largely CONFORMS.**
+**Architecture (pipeline / module structure).**
 The spec's `# Note about architecture` states a four-part mandate for *how* the
 algorithm should be structured:
 
@@ -1035,68 +884,49 @@ algorithm should be structured:
 This is a structural mandate distinct from the algorithm's *behaviour*, so it is
 recorded here separately from the per-step as-implemented notes.
 
-**Scope of statelessness.** The clarified note scopes statelessness to the
-*top-level steps* — Step 1, Step 2, Step 3 — as wholes. The unit that must have
-"a clear input … and produce a clear output" is the whole top-level step, not
-its sub-steps. In-place mutation *within* a top-level step (notably Step 2's
-colouring passes over the working `BaseGraph`) is an implementation detail
-contained inside that step, not a divergence. This is what reconciles the note
-with the "One base graph … coloured in place" decision above: the base graph is
-Step 2's private working state, created from Step 2's input and handed to Step 3
-as a clear output — the colouring passes that mutate it are sub-steps the note
-does not require to be stateless.
+**Scope of statelessness.** Statelessness is scoped to the *top-level steps* —
+Step 1, Step 2, Step 3 — as wholes. The unit that must have "a clear input … and
+produce a clear output" is the whole top-level step, not its sub-steps. In-place
+mutation *within* a step (notably Step 2's colouring passes over the working
+`BaseGraph`) is an implementation detail contained inside that step: the base
+graph is Step 2's private working state, created from Step 2's input and handed to
+Step 3 as a clear output.
 
-The four sub-mandates and their as-implemented status:
+The four sub-mandates:
 
-1. **Pipeline structure — CONFORMS (at the orchestration level).** `extract()`
-   in `extractor.py` (≈ lines 384–445) *is* a linear pipeline: it calls
-   `build_base_graph` → `color_transport` → `color_agentic` →
+1. **Pipeline structure.** `extract()` in `extractor.py` (≈ lines 384–445) is a
+   linear pipeline: `build_base_graph` → `color_transport` → `color_agentic` →
    `duplicate_combined_nodes` → `infer_tool_calls_from_attributes` →
    `synthesize_missing_peers` → `infer_agent_from_bare_leaf_llms` →
    `merge_identical_interactions` → `flag_between_boundaries` →
    `build_entity_graph` → `combine_identical_entities` →
-   `_derive_entities` / `_derive_interactions`, one after another. (The current
-   spec's Step 3.c is an empty placeholder — no entity-graph inference stage — so
-   nothing sits between `build_entity_graph` and `combine_identical_entities`.)
-   Each spec step maps to a named function called in spec order. The stage
-   sequence is explicit
-   and readable; two intermediate `_snapshot()` copies (post-Step-1 base,
-   post-Step-2 colored) are retained for inspection. As a *sequence of named
-   stages* the pipeline shape holds.
+   `_derive_entities` / `_derive_interactions`, one after another (nothing sits
+   between `build_entity_graph` and `combine_identical_entities` — Step 3.c is
+   empty). Each spec step maps to a named function called in spec order. Two
+   intermediate `_snapshot()` copies (post-Step-1 base, post-Step-2 colored) are
+   retained for inspection.
 
-2. **Statelessness / clear input→output — CONFORMS at the top-level-step
-   boundary.** The clarified note scopes this to the top-level steps (1, 2, 3),
-   and each top-level step now has a clear input and a clear output at its
-   boundary:
+2. **Statelessness / clear input→output**, at the top-level-step boundary:
    - **Step 1** — `build_base_graph(spans) -> BaseGraph`: spans in, base graph
      out.
    - **Step 2** — `BaseGraph -> enriched BaseGraph`: the colour/inference passes
      take the base graph and hand back the same graph, now fully enriched
      (coloured, deduplicated, peers synthesised, boundaries flagged).
    - **Step 3** — `build_entity_graph(graph, spans_by_id) -> EntityGraph`: the
-     coloured graph in, a fresh `EntityGraph` out. This is a clean returned-value
-     seam and marks the Step 2 → Step 3 boundary explicitly.
+     coloured graph in, a fresh `EntityGraph` out — a clean returned-value seam at
+     the Step 2 → Step 3 boundary.
 
-   The in-place colouring/inference functions
-   (`color_transport(graph) -> None`, `color_agentic(...) -> None`,
-   `duplicate_combined_nodes(...) -> None`, `synthesize_missing_peers(...) -> None`,
-   `infer_agent_from_bare_leaf_llms(...) -> None`)
-   are **sub-steps internal to Step 2**. They mutate the step's private working graph
-   in place and return `None`. That mutation is *permitted within a step* — the
-   clarified note only requires statelessness at the top-level-step boundary, not
-   of every sub-step — and is the direct, deliberate consequence of the "One base
-   graph … coloured in place" decision above, which keeps trace structure and
-   scope semantics inspectable in one place. So the sub-steps are still
-   ordering-dependent side-effecting passes on shared state, but that is by design
-   and inside a step's boundary; the top-level steps themselves are clean
-   input→output transforms, so this mandate **CONFORMS**. Pushing statelessness
-   *below* the top-level boundary is deliberately out of scope: turning every
-   colouring pass into a fresh-graph transform would multiply copies of a
-   2,000+-node graph without changing behaviour.
+   The in-place colouring/inference functions (`color_transport`, `color_agentic`,
+   `duplicate_combined_nodes`, `synthesize_missing_peers`,
+   `infer_agent_from_bare_leaf_llms`, all `-> None`) are **sub-steps internal to
+   Step 2**: they mutate the step's private working graph and return `None`. That
+   is permitted within a step and follows directly from the "One base graph …
+   coloured in place" decision. Pushing statelessness *below* the top-level
+   boundary is deliberately out of scope — turning every colouring pass into a
+   fresh-graph transform would multiply copies of a 2,000+-node graph without
+   changing behaviour.
 
-3. **One module per step — CONFORMS.** The clarified note asks that "each step …
-   have its own module containing all relevant implementation," and the code is
-   now split one-module-per-top-level-step:
+3. **One module per step.** The code is split one-module-per-top-level-step:
    - **`step1_build_graph.py`** — Step 1: `build_base_graph` (+ its `_attrs` /
      `_scope_name` helpers).
    - **`step2_base_graph.py`** — all of Step 2 (2.a–2.d): `color_transport` (2.a),
@@ -1105,12 +935,10 @@ The four sub-mandates and their as-implemented status:
      `infer_agent_from_bare_leaf_llms` (2.c cases 1–4), `flag_between_boundaries`,
      `merge_identical_interactions` and `_absorb_inferred_call_into_observed_agent`
      / `_same_processing_signature` (2.d).
-   - **`step3_entity_graph.py`** — all of Step 3 (3.a/3.b/3.d; 3.c is empty in the
-     spec): `build_entity_graph` (3.a structural grouping + 3.b edge
-     reconstruction for two-Blue-component chains) and `combine_identical_entities`
-     (3.d semantic combine). There is no Step 3.c pass (the spec leaves 3.c an
-     empty placeholder), and no terminal machinery (removed — see the top-matter
-     History note).
+   - **`step3_entity_graph.py`** — all of Step 3 (3.a/3.b/3.d; 3.c is empty):
+     `build_entity_graph` (3.a structural grouping + 3.b edge reconstruction for
+     two-Blue-component chains) and `combine_identical_entities` (3.d semantic
+     combine).
    - **`_shared.py`** — cross-step helpers used by both Step 2 and Step 3: node/
      edge predicates (`_node_role`, `_node_kind`, `_node_is_boundary`,
      `_is_server`, `_is_observed_transport`), adjacency (`_white_blue_neighbors`,
@@ -1118,21 +946,18 @@ The four sub-mandates and their as-implemented status:
      (`_insert_teal_server`, `_server_endpoints`, `_server_ids`, `_teal_ids`),
      `_peer_match_key`, and the order-band constants (`_CALL_ORDER`,
      `_RESPONSE_ORDER`, `_INPUT_TOOL_BASE`, `_OUTPUT_TOOL_BASE`).
-   - **`builder.py`** — retained as a thin (~105-line) re-export facade that
-     imports the step functions and shared helpers and re-exports them, so every
-     existing import (`extractor.py`, `cli.py`) keeps working
-     unedited. There is no Step 3.c pass (the spec leaves 3.c empty; see its note
-     above).
-   The *adjacent* concerns stay in their own modules as before: the raw-attribute
-   adapter layer (`adapters.py`), the graph data types (`graph.py`), the
-   classifier facade (`classifiers.py`), the output derivation (`extractor.py`),
-   and the CLI / persistence (`cli.py`). This mandate now **CONFORMS**.
+   - **`builder.py`** — a thin (~105-line) re-export facade importing the step
+     functions and shared helpers, so existing imports (`extractor.py`, `cli.py`)
+     keep working unedited.
+   The *adjacent* concerns stay in their own modules: the raw-attribute adapter
+   layer (`adapters.py`), the graph data types (`graph.py`), the classifier facade
+   (`classifiers.py`), the output derivation (`extractor.py`), and the CLI /
+   persistence (`cli.py`).
 
-4. **Carry-forward of downstream information — CONFORMS.** The spec asks that
-   "all information needed in future stages should be added" (to the data, rather
-   than recomputed or held as hidden cross-step state). The implementation does
-   carry the cross-stage information *on the graph data* rather than in module
-   state:
+4. **Carry-forward of downstream information.** The spec asks that "all
+   information needed in future stages should be added" (to the data, rather than
+   recomputed or held as hidden cross-step state). Cross-stage information is
+   carried *on the graph data*:
    - `Edge.order` — the intra-turn ordering band stamped by Step 2.c at
      derivation time and read back by Step 3.b (`_server_endpoints`) onto
      `EntityEdge.order`, surviving to `ProtoInteraction.order` and the SQL column;
@@ -1144,12 +969,8 @@ The four sub-mandates and their as-implemented status:
      originals they disconnected;
    - pooled `EntityNode` attributes (`absorb`) — every contributing span's
      attributes carried onto the entity.
-   These are genuine carry-forward on the data. Within a top-level step (see
-   mandate 2), some information is available to later *sub-steps* simply because
-   it is still on the step's shared working graph, but the cross-*step* carry-
-   forward the spec means is realised on the data handed across the step
-   boundaries (base graph → enriched graph → entity graph), so this mandate holds
-   cleanly.
+   The cross-*step* carry-forward is realised on the data handed across the step
+   boundaries (base graph → enriched graph → entity graph).
 
 **Coloring is additive, not replacement.**
 Coloring a node Teal or Blue never removes its White edges. This keeps trace
