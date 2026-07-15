@@ -374,11 +374,8 @@ def create_summary(entities: List[Dict], identity_bundles: List[Dict], config: D
             "domains": [],
             "primary_domain": "",
             "regulatory_tags": [],
-            "entity_types_present": [],
             "entities": [],
             "identifier_types_present": [],
-            "data_subjects": [],
-            "granularity": "RECORD",
             "contains_identity_bundle": False,
             "is_personalized": False,
             "personalized_entity_types": [],
@@ -418,11 +415,8 @@ def create_summary(entities: List[Dict], identity_bundles: List[Dict], config: D
         "domains": domains,
         "primary_domain": primary_domain,
         "regulatory_tags": regulatory_tags,
-        "entity_types_present": entity_types,
-        "entities": entity_types,  # List of entity types
+        "entities": entity_types,
         "identifier_types_present": identifier_types,
-        "data_subjects": [],  # Task 9 excluded
-        "granularity": "RECORD",  # Simplified
         "contains_identity_bundle": contains_identity_bundle,
         "is_personalized": is_personalized,
         "personalized_entity_types": personalized_entity_types,
