@@ -48,7 +48,23 @@ COPY README.md ./
 RUN uv sync --frozen --no-dev
 
 # -----------------------------------------------------------------------------
-# Stage 2: runtime — slim Python image with the prebuilt venv copied in
+# Stage 2: ui-builder — build the React SPA with Vite (ADR-0019)
+# -----------------------------------------------------------------------------
+# The data-governance UI is a React 18 + TypeScript + Vite SPA served by the
+# Python backend under /ui/ (one image, one origin, no nginx — ADR-0019). This
+# stage compiles it. Splitting `npm ci` (deps) from the source copy keeps the
+# heavy install layer cacheable across UI-source-only edits, mirroring the uv
+# split above. Vite's `dist/` (index.html + content-hashed assets/) is copied
+# into the runtime image's `_UI_DIR` in stage 3.
+FROM node:22-slim AS ui-builder
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+# -----------------------------------------------------------------------------
+# Stage 3: runtime — slim Python image with the prebuilt venv copied in
 # -----------------------------------------------------------------------------
 # Match the builder's Python minor version so the venv's compiled bytecode
 # and any C-extension shared objects load cleanly.
@@ -72,6 +88,13 @@ COPY --from=builder --chown=app:app /app/.venv /app/.venv
 #                                       schema-version startup check
 COPY --from=builder --chown=app:app /app/alembic.ini /app/alembic.ini
 COPY --from=builder --chown=app:app /app/data_governance /app/data_governance
+
+# Bake the built React SPA into the backend's _UI_DIR
+# (data_governance/api/ui/). The backend serves index.html + the content-hashed
+# assets/ from here (ADR-0019). The receiver and interactions Deployments run
+# the same image and carry these assets unused — accepted as negligible to keep
+# the single-image contract (issue #38).
+COPY --from=ui-builder --chown=app:app /ui/dist /app/data_governance/api/ui
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \

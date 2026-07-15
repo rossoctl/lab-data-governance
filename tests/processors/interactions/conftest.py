@@ -43,15 +43,9 @@ EXPECTED_PAYLOADS = 50
 EXPECTED_INTERACTION_SPAN_ROLES = {"anchor": 35, "connector": 66, "info": 100}
 
 
-@pytest.fixture()
-def configured_db(migrated_dsn: str) -> Iterator[str]:
-    """A migrated DB with the process-wide connection pool pointed at it."""
-    db.close_pool()
-    db.configure(migrated_dsn)
-    try:
-        yield migrated_dsn
-    finally:
-        db.close_pool()
+# ``configured_db`` (a migrated DB with the pool pointed at it) is provided by
+# the parent ``tests/processors/conftest.py`` so every processor's tests share
+# one definition (issue #75).
 
 
 def _admin_url_to_db(admin_dsn: str, dbname: str) -> str:

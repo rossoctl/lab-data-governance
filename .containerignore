@@ -38,3 +38,11 @@ __pycache__
 # never copied into either build stage today, but excluding it from the
 # context keeps build inputs stable and the context small.
 tests
+
+# React SPA (ADR-0019): the Node build stage runs `npm ci` from
+# `ui/package*.json` and builds fresh, so a contributor's local
+# `ui/node_modules` and `ui/dist` must not enter the context — otherwise the
+# image varies with whatever happens to be on disk (the same determinism
+# failure mode above). The Node stage regenerates both inside the build.
+ui/node_modules
+ui/dist

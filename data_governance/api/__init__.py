@@ -1,8 +1,16 @@
 """UI backend REST API — thin Starlette wrapper over the retrieval library.
 
 The surface is resource-oriented and namespaced (ADR-0017): JSON resources
-under ``/api/``, HTML pages and JS assets under ``/ui/``, bare ``/`` a 302 to
+under ``/api/``, the React single-page app under ``/ui/``, bare ``/`` a 302 to
 ``/ui/``, and ``/healthz`` un-prefixed at the root for infra probes.
+
+The ``/ui/`` namespace serves a Vite-built React SPA baked into the image
+(ADR-0019): a ``StaticFiles`` mount at ``/ui/assets`` serves Vite's
+content-hashed bundles, and a catch-all ``/ui`` / ``/ui/{path:path}`` returns
+the SPA ``index.html`` so React Router (``basename="/ui"``) resolves deep links
+like ``/ui/traces/{tid}`` client-side. The former hand-written-shell handlers
+and the ``_UI_ASSETS`` whitelist are gone — content-hashed filenames can't be
+enumerated ahead of time, so the mount replaces the whitelist.
 
 The span reads are a trace/span resource tree (ADR-0018, which retired the
 former single ``GET /spans`` pass-through):
@@ -40,6 +48,7 @@ from starlette.responses import (
     Response,
 )
 from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
 from data_governance import db, retrieval
 
@@ -320,35 +329,32 @@ async def _root_redirect_handler(_request: Request) -> Response:
     return RedirectResponse(url="/ui/", status_code=302)
 
 
-async def _ui_handler(_request: Request) -> Response:
-    """Serve the UI shell ``index.html`` at ``/ui/`` (ADR-0017)."""
-    index = _UI_DIR / "index.html"
-    # Read on every request intentionally — enables hot-reload during development.
-    return HTMLResponse(content=index.read_text())
+async def _spa_index(_request: Request) -> Response:
+    """Serve the React SPA shell ``index.html`` for any ``/ui/*`` path (ADR-0019).
 
+    Backs both ``/ui`` (the shell) and the catch-all ``/ui/{path:path}``. Every
+    client-side route (``/ui/traces/{tid}`` and deeper) returns the same built
+    ``index.html``; React Router (``basename="/ui"``) resolves the path in the
+    browser. Content-hashed bundles are served separately by the ``/ui/assets``
+    StaticFiles mount, so this handler never sees an asset request.
 
-async def _trace_tree_handler(_request: Request) -> Response:
-    """Serve the trace-tree UI shell (issue #14).
+    Read on every request intentionally — cheap, and lets a rebuilt ``dist/``
+    be picked up without a process restart during development.
 
-    Path is ``/ui/traces/{tid}`` (ADR-0017 namespacing). The trace_id is
-    consumed by the in-page JS (it reads ``window.location.pathname`` to
-    learn the target trace, expecting the ``/ui/traces/`` prefix), so the
-    server-side handler is the same static HTML for any trace_id.
+    Returns 503 with a plain-text hint when the SPA build is absent (a
+    build-less checkout / image), symmetrical with the ``check_dir=False`` on
+    the ``/ui/assets`` mount — a missing build is a deploy problem to surface
+    cleanly, not an opaque 500 from an unhandled ``FileNotFoundError``.
     """
-    page = _UI_DIR / "trace_tree.html"
-    return HTMLResponse(content=page.read_text())
-
-
-# Static asset names allowed under ``/ui/`` — kept narrow on purpose so
-# this route never functions as a generic file-server. Add new entries
-# here as the UI grows.
-_UI_ASSETS: frozenset[str] = frozenset(
-    {
-        "recent_traces_logic.js",
-        "trace_tree_logic.js",
-        "execution_flow_logic.js",  # P-interactions execution-flow view
-    }
-)
+    index = _UI_DIR / "index.html"
+    try:
+        return HTMLResponse(content=index.read_text())
+    except FileNotFoundError:
+        return Response(
+            "UI build not found — run the Vite build (see ADR-0019)",
+            status_code=503,
+            media_type="text/plain",
+        )
 
 
 # Row-mapper for the span-evidence the /spans sub-resources return. Shared by
@@ -557,10 +563,38 @@ async def _entity_spans_handler(request: Request) -> Response:
     return JSONResponse(data)
 
 
+def _classification_json(row: tuple) -> dict | None:
+    """Shape a ``payload_classifications`` LEFT JOIN slice into the nullable
+    ``classification`` field (ADR-0024).
+
+    The join columns are all-NULL when P-classification has not yet written a
+    verdict for the payload (its PK ``content_hash`` is NOT NULL, so a present
+    row always has one) — that is the eventual-consistency window, surfaced as
+    ``null``. Once the row exists, the document-level verdict + **Findings** +
+    ``model_version`` are returned verbatim (a clean payload is a real
+    ``PUBLIC`` / zero-**Findings** verdict, never a null).
+    """
+    if row[0] is None:  # no payload_classifications row (LEFT JOIN miss)
+        return None
+    return {
+        "sensitivity_level": row[0],
+        "regulatory_tags": list(row[1]) if row[1] is not None else [],
+        "contains_identity_bundle": row[2],
+        "is_personalized": row[3],
+        "primary_domain": row[4],
+        "findings": row[5],
+        "model_version": row[6],
+    }
+
+
 async def _payload_handler(request: Request) -> Response:
     """``GET /api/payloads/{hash}`` — a payload by content hash.
 
-    Backs the flow view's Req/Resp cells.
+    Backs the flow view's Req/Resp cells. Carries the P-classification
+    **Classification** verdict inline as a nullable ``classification`` field
+    (ADR-0024): ``null`` until P-classification has processed the payload,
+    populated with the verdict object once its ``payload_classifications`` row
+    exists.
     """
     h = request.path_params.get("hash")
     if not h:
@@ -569,8 +603,14 @@ async def _payload_handler(request: Request) -> Response:
     def _query() -> dict | None:
         with db.transaction() as tx:
             row = tx.fetch_one(
-                "SELECT content_hash, content_kind, content, byte_size "
-                "FROM interaction_payloads WHERE content_hash = %s",
+                "SELECT p.content_hash, p.content_kind, p.content, p.byte_size, "
+                "       c.sensitivity_level, c.regulatory_tags, "
+                "       c.contains_identity_bundle, c.is_personalized, "
+                "       c.primary_domain, c.findings, c.model_version "
+                "FROM interaction_payloads p "
+                "LEFT JOIN payload_classifications c "
+                "  ON c.content_hash = p.content_hash "
+                "WHERE p.content_hash = %s",
                 (h,),
             )
             if row is None:
@@ -578,6 +618,7 @@ async def _payload_handler(request: Request) -> Response:
             return {
                 "content_hash": row[0], "content_kind": row[1],
                 "content": row[2], "byte_size": row[3],
+                "classification": _classification_json(row[4:]),
             }
 
     try:
@@ -587,18 +628,6 @@ async def _payload_handler(request: Request) -> Response:
     if data is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse(data)
-
-
-async def _ui_asset_handler(request: Request) -> Response:
-    """Serve a whitelisted static asset under ``/ui/<file>``."""
-    name = request.path_params.get("name", "")
-    if name not in _UI_ASSETS:
-        return Response(status_code=404)
-    asset = _UI_DIR / name
-    if not asset.is_file():
-        return Response(status_code=404)
-    media_type = "application/javascript" if name.endswith(".js") else "text/plain"
-    return Response(content=asset.read_text(), media_type=media_type, status_code=200)
 
 
 # ---------------------------------------------------------------------------
@@ -627,17 +656,20 @@ def build_app() -> Starlette:
             endpoint=_single_span_handler,
             methods=["GET"],
         ),
-        # UI pages + assets, all under /ui/ (ADR-0017). /ui/ is the index
-        # shell; /ui/traces/{tid} is the trace-tree page; /ui/{name} serves a
-        # whitelisted static asset. The page route is two path segments and
-        # the asset route one, so they don't collide.
-        Route("/ui/", endpoint=_ui_handler, methods=["GET"]),
-        Route(
-            "/ui/traces/{tid:str}",
-            endpoint=_trace_tree_handler,
-            methods=["GET"],
+        # React SPA under /ui/ (ADR-0019). Order matters: the /ui/assets mount
+        # is listed BEFORE the catch-all so Vite's content-hashed bundles are
+        # served by StaticFiles (a genuine 404 for a missing asset), and only
+        # non-asset paths fall through to the catch-all that returns index.html
+        # for React Router to resolve client-side. check_dir=False so a fresh
+        # checkout without a Vite build still imports; a real request for a
+        # missing dir just 404s.
+        Mount(
+            "/ui/assets",
+            app=StaticFiles(directory=_UI_DIR / "assets", check_dir=False),
+            name="ui-assets",
         ),
-        Route("/ui/{name:str}", endpoint=_ui_asset_handler, methods=["GET"]),
+        Route("/ui", endpoint=_spa_index, methods=["GET"]),
+        Route("/ui/{path:path}", endpoint=_spa_index, methods=["GET"]),
         # P-interactions execution-flow endpoints. Lists are lean; span
         # provenance is a per-id sub-resource, fetched lazily on drill-in.
         Route(

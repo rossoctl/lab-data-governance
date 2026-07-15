@@ -379,11 +379,15 @@ def _rehydrate_derived(
 
 
 def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
-    """Write the re-derived region back to the DB and advance the cursor.
+    """Write the re-derived region back to the DB, within *tx*.
 
     The interaction_spans delete-scope is ``proc._repaired_span_ids`` (the spans
     whose ownership this dispatch actually re-derived), NOT the loaded lineage.
     No FKs between derived tables (#69), so no parent-null two-pass is needed.
+
+    The durable cursor advance is NOT written here (issue #75): the shared drain
+    loop advances ``processor_state`` in this same *tx* after ``flush`` returns,
+    so the advance still commits atomically with these derived writes (ADR-0007).
     """
     # 1. entities — id is deterministic (uuid5 of natural_key), so re-derives
     #    collapse on natural_key.
@@ -517,10 +521,7 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
             (es.entity_id, es.trace_id, es.span_id, es.role),
         )
 
-    # 6. cursor advance — in the SAME transaction (ADR-0007 recovery).
-    tx.execute(
-        "INSERT INTO processor_state (processor_name, last_processed_seq, updated_at) "
-        "VALUES (%s, %s, now()) ON CONFLICT (processor_name) DO UPDATE SET "
-        "last_processed_seq = EXCLUDED.last_processed_seq, updated_at = now()",
-        (PROCESSOR_NAME, span.seq),
-    )
+    # NOTE: the durable cursor advance is intentionally NOT written here — the
+    # shared drain loop (:func:`data_governance.processors._driver.drain`)
+    # advances ``processor_state`` in this SAME transaction after ``flush``
+    # returns, so a crash mid-span still commits nothing (ADR-0007 recovery).

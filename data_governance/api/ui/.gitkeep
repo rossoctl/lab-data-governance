@@ -1,0 +1,7 @@
+# Build-output target for the React SPA (ADR-0019).
+#
+# `data_governance.api._UI_DIR` points here. In the container image the
+# Containerfile's Node build stage copies Vite's `dist/` into this directory
+# (index.html + assets/). In source control the directory is intentionally
+# empty except this file — the built assets are generated, never committed.
+# See data-governance/ui/ for the React source.

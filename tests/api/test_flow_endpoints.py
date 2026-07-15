@@ -149,16 +149,8 @@ def test_unknown_ids_return_empty_spans_not_404(seeded, api_server):
     assert ix.status_code == 200 and ix.json() == {"spans": []}
     assert ent.status_code == 200 and ent.json() == {"spans": []}
 
-
-def test_flow_logic_parses_ui_traces_page_prefix(api_server):
-    """getTraceId() in execution_flow_logic.js must read the trace id from the
-    ADR-0017 page path ``/ui/traces/<tid>``, not the retired ``/traces/<hex>``.
-
-    The flow view early-returns on a null trace id, so a stale parser leaves the
-    Interaction-flow view permanently empty on the live page — a break the
-    API-boundary tests above cannot see. Pin the parser's page-prefix contract
-    on the served asset."""
-    js = httpx.get(f"{_base_url(api_server)}/ui/execution_flow_logic.js").text
-    assert "/ui/traces/" in js
-    # The retired hex-only /traces/ page parser must be gone.
-    assert "/^\\/traces\\/" not in js
+    # NOTE: the flow view's trace-id parsing moved from
+    # execution_flow_logic.js's getTraceId() into the React SPA (React Router
+    # useParams over ``/ui/traces/:tid``); its page-prefix contract is covered
+    # by the SPA's own tests. The API-boundary tests above are what this module
+    # continues to own.
