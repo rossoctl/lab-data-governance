@@ -30,7 +30,7 @@ bidirectionality, the error signal, payloads/evidence, and ordering are in
 
 from __future__ import annotations
 
-from data_governance.processors.p_interactions_proto.extractor import extract
+from data_governance.processors.interactions.graph.extractor import extract
 
 # Expected entity set: natural_key -> inferred?  (the stable, ADR-0025
 # sanctioned signals — never the display string, which is "unknown" here).

@@ -1,6 +1,6 @@
 """Fixtures for the P-interactions graph-prototype tests.
 
-The extractor (`p_interactions_proto.extractor.extract`) is a pure function
+The extractor (`interactions.graph.extractor.extract`) is a pure function
 over a list of `retrieval.Span` objects — it does not touch the database. So
 these tests feed it a captured snapshot of a real trace rather than spinning up
 Postgres: the snapshot lives in `fixtures/*.json` and is reconstructed into

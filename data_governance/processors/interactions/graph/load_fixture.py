@@ -1,31 +1,28 @@
-"""Load a captured test fixture into the live `spans` table, then run the
-P-interactions processor over it — so a fixture-only trace becomes viewable
-in the UI. THROWAWAY (prototype tooling, same status as cli.py).
+"""Dev tool: load a captured test fixture into the live `spans` table, then run
+the graph debug CLI over it — so a fixture-only trace becomes inspectable via the
+intermediate graph tables.
 
 WHY THIS EXISTS
 ---------------
-The P-interactions tests validate the extractor as a *pure function* over a
-list of Spans loaded from `tests/.../fixtures/*.json` — they never touch the
-database (see that package's conftest). The CLI (`cli.py`), by contrast, reads
-spans *from* Postgres and writes the `proto_*` result tables the UI renders.
+The graph tests validate the extractor as a *pure function* over a list of Spans
+loaded from `tests/.../fixtures/*.json` — they never touch the database (see that
+package's conftest). The debug CLI (`cli.py`), by contrast, reads spans *from*
+Postgres and writes the intermediate `proto_base_*` / `proto_colored_*` /
+`proto_entity_*` graph tables.
 
-So a trace that exists only as a test fixture cannot be seen in the UI: the
-CLI finds no spans for it in Postgres and produces nothing. This script bridges
-that gap by doing, in order:
+So a trace that exists only as a test fixture has no spans in Postgres for the CLI
+to read. This script bridges that gap by doing, in order:
 
   1. INSERT the fixture's span rows into the `spans` table (via the receiver's
      own `write_span`, so ON CONFLICT / finalization semantics match real
      ingestion — re-running is idempotent).
-  2. Invoke the normal CLI processor (`cli.main`) for that trace_id, which
-     reads those now-present spans, runs `extract()`, and writes `proto_*`.
-
-After both steps the UI has everything it needs: `proto_*` for the
-entities/interactions AND `spans` for the per-span evidence join.
+  2. Invoke the debug CLI (`cli.main`) for that trace_id, which reads those
+     now-present spans, runs `extract()`, and writes the intermediate graph tables.
 
   !!! This WRITES TO WHATEVER `DATABASE_URL` POINTS AT. !!!
   Pointed at the deployment's Postgres, it mutates shared, persistent state
-  (inserts spans + drops/recreates the proto_* scratch tables). That is why it
-  is DISABLED BY DEFAULT and refuses to run without an explicit opt-in.
+  (inserts spans + drops/recreates the intermediate proto_* graph tables). That is
+  why it is DISABLED BY DEFAULT and refuses to run without an explicit opt-in.
 
 HOW TO ENABLE
 -------------
@@ -38,13 +35,13 @@ From inside the data-governance pod (where DATABASE_URL is already set), with
 the repo's fixtures available on disk:
 
     PI_LOAD_FIXTURE_CONFIRM=1 \
-      python -m data_governance.processors.p_interactions_proto.load_fixture \
-      tests/processors/p_interactions_proto/fixtures/travel_agent_I.json
+      python -m data_governance.processors.interactions.graph.load_fixture \
+      tests/processors/interactions/graph/fixtures/travel_agent_I.json
 
 Or give just the fixture stem and let it resolve under the fixtures dir:
 
     PI_LOAD_FIXTURE_CONFIRM=1 \
-      python -m data_governance.processors.p_interactions_proto.load_fixture \
+      python -m data_governance.processors.interactions.graph.load_fixture \
       travel_agent_I
 
 Then reload the UI and select the trace id printed at the end.
@@ -73,10 +70,11 @@ from . import cli
 # The fixtures the P-interactions tests load from. A bare stem argument
 # (e.g. "travel_agent_I") is resolved relative to here.
 _FIXTURES = (
-    Path(__file__).resolve().parents[3]
+    Path(__file__).resolve().parents[4]
     / "tests"
     / "processors"
-    / "p_interactions_proto"
+    / "interactions"
+    / "graph"
     / "fixtures"
 )
 
@@ -187,13 +185,13 @@ def main() -> int:
     finally:
         db.close_pool()
 
-    # Step 2: run the normal P-interactions processor over the loaded trace.
+    # Step 2: run the graph debug CLI over the loaded trace.
     # cli.main() reads argv, so hand it the trace id we just loaded.
-    print(f"\nrunning P-interactions processor for {trace_id}...\n")
+    print(f"\nrunning graph debug CLI for {trace_id}...\n")
     sys.argv = [sys.argv[0], trace_id]
     rc = cli.main()
     if rc == 0:
-        print(f"\nloaded + processed {trace_id} — open it in the UI.")
+        print(f"\nloaded + processed {trace_id} — inspect its intermediate graph tables.")
     return rc
 
 

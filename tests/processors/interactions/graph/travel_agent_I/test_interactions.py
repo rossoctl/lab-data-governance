@@ -19,7 +19,7 @@ around).
 
 from __future__ import annotations
 
-from data_governance.processors.p_interactions_proto.extractor import extract
+from data_governance.processors.interactions.graph.extractor import extract
 
 # Expected directed call pairs: (caller_key, callee_key) -> count.
 #

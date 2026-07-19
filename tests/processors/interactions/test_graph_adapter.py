@@ -3,7 +3,7 @@
 These are PURE (no DB): they run the graph algorithm's ``extract`` over the same
 captured fixtures the algorithm's own suite uses, then assert the adapter's
 ``ProductionRows`` satisfy the production schema's contracts. The graph algorithm's
-own output is validated by ``tests/processors/p_interactions_proto`` — here we only
+own output is validated by ``tests/processors/interactions/graph`` — here we only
 assert the mapping to production shape.
 
 The DB round-trip (``adapt`` → ``state.flush`` against Postgres, ENUM acceptance,
@@ -16,8 +16,8 @@ from __future__ import annotations
 import pytest
 
 from data_governance.processors.interactions import graph_adapter, procedure
-from data_governance.processors.p_interactions_proto.extractor import extract
-from tests.processors.p_interactions_proto.conftest import load_trace_spans
+from data_governance.processors.interactions.graph.extractor import extract
+from tests.processors.interactions.graph.conftest import load_trace_spans
 
 # The production entity_kind Postgres ENUM (migration 0004).
 ENTITY_KINDS = {"user", "client", "agent", "tool", "llm", "service"}

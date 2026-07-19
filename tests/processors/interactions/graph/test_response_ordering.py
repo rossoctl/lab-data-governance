@@ -40,8 +40,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from data_governance.processors.p_interactions_proto.graph import EntityEdge
-from data_governance.processors.p_interactions_proto.step3_entity_graph import (
+from data_governance.processors.interactions.graph.graph import EntityEdge
+from data_governance.processors.interactions.graph.step3_entity_graph import (
     _order_execution_walk,
 )
 from data_governance.retrieval import Span

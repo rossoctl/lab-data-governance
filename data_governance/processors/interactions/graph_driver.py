@@ -3,7 +3,7 @@
 The alternative to the streaming driver (:mod:`.driver`), selected by
 ``INTERACTIONS_ALGORITHM=graph``. It writes the SAME production tables through the
 SAME write path (:func:`state.flush`); only the derivation differs — the batch
-graph algorithm (:func:`p_interactions_proto.extractor.extract`) replaces the
+graph algorithm (:func:`interactions.graph.extractor.extract`) replaces the
 per-span streaming procedure.
 
 **Re-run-per-span.** The batch algorithm needs a whole trace, but the shared loop
@@ -37,7 +37,7 @@ from data_governance.retrieval import Span, _COLUMNS, _row_to_span
 
 from . import graph_adapter, state
 from .driver import NOTIFY_CHANNEL, POLL_SECONDS, _DRAIN_BATCH
-from ..p_interactions_proto.extractor import extract
+from .graph.extractor import extract
 
 log = logging.getLogger(__name__)
 

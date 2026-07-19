@@ -18,7 +18,7 @@ not an independently-observed callee. This mirrors the legitimate case in
 
 from __future__ import annotations
 
-from data_governance.processors.p_interactions_proto.extractor import extract
+from data_governance.processors.interactions.graph.extractor import extract
 
 
 def _pairs(result):

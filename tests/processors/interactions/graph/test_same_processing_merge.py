@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from data_governance.processors.p_interactions_proto import builder as B
-from data_governance.processors.p_interactions_proto.graph import (
+from data_governance.processors.interactions.graph import builder as B
+from data_governance.processors.interactions.graph.graph import (
     BLUE,
     EntityEdge,
     EntityGraph,

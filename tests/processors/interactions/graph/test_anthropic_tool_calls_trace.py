@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import json
 
-from data_governance.processors.p_interactions_proto.extractor import extract
+from data_governance.processors.interactions.graph.extractor import extract
 
 from .conftest import load_trace_spans
 

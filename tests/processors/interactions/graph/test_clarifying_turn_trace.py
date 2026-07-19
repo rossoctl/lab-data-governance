@@ -30,7 +30,7 @@ assert on the key, not the display name.
 
 from __future__ import annotations
 
-from data_governance.processors.p_interactions_proto.extractor import extract
+from data_governance.processors.interactions.graph.extractor import extract
 
 # Expected entity set: natural_key -> inferred?  Only the observed agent and
 # the single LLM peer it calls. No tools — the mcp_tools spans are discovery,

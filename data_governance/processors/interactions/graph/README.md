@@ -3,7 +3,7 @@
 The graph-based P-interactions algorithm (ADR-0025): a batch derivation of
 **entities** and **interactions** from a trace's spans, answering **does this
 produce a sensible execution flow on real Kagenti agent traces?** — validated
-against the captured fixtures in `tests/processors/p_interactions_proto/`.
+against the captured fixtures in `tests/processors/interactions/graph/`.
 
 It is now one of the two production algorithms (the other being the streaming
 `processors/interactions/`), selected by `INTERACTIONS_ALGORITHM=graph`. The pure
@@ -11,11 +11,13 @@ core is `extractor.extract(spans)`; `interactions/graph_adapter.py` maps its out
 onto the production schema and `interactions/graph_driver.py` drives it into the
 real tables via `state.flush`.
 
-The package still carries its `p_interactions_proto` name and per-step module
-layout; a rename to `interactions/graph/` is pending (plan Step 5). The `cli.py`
-tool is dev/debug only — it materialises the intermediate graph tables for
-eyeballing the coloring/inference, and does NOT write the final tables (the
-production driver does).
+The package lives at `data_governance/processors/interactions/graph/` (a
+sub-package of the production `interactions/` package, alongside the streaming
+algorithm and the shared identity code) and keeps its per-step module layout
+(`step1_build_graph`, `step2_base_graph`, `step3_entity_graph`, wired by
+`builder`). The `cli.py` tool is dev/debug only — it materialises the intermediate
+graph tables for eyeballing the coloring/inference, and does NOT write the final
+tables (the production driver does).
 
 ## Assumptions baked in (revisit after seeing output)
 
@@ -65,7 +67,7 @@ coloring/inference):
 
 ```bash
 DATABASE_URL="postgres://..." \
-  python -m data_governance.processors.p_interactions_proto.cli <trace_id>
+  python -m data_governance.processors.interactions.graph.cli <trace_id>
 ```
 
 The debug CLI drops + recreates the intermediate `proto_base_*` / `proto_colored_*`

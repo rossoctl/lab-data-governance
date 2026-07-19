@@ -1,7 +1,7 @@
 """Debug tool: materialise the graph algorithm's INTERMEDIATE graphs.
 
 Usage:
-  python -m data_governance.processors.p_interactions_proto.cli <trace_id>
+  python -m data_governance.processors.interactions.graph.cli <trace_id>
 
 Reads a trace's spans from Postgres, runs the graph extractor, and writes the
 intermediate graph tables so the algorithm's coloring/inference can be eyeballed.

@@ -1,6 +1,6 @@
 """Adapt the graph algorithm's ``ExtractResult`` to the production schema.
 
-The batch graph algorithm (``processors.p_interactions_proto``) derives the same
+The batch graph algorithm (``processors.interactions.graph``) derives the same
 **Entities** and **Interactions** as the streaming algorithm, but emits its own
 prototype-shaped rows (coarse ``natural_key`` labels with no ``kind`` column,
 run-unstable ``uuid4`` ids, no ``seq``). This module maps one ``ExtractResult``
@@ -47,8 +47,8 @@ from data_governance.retrieval import Span
 
 from . import caller_inference as ci
 from . import procedure
-from ..p_interactions_proto.extractor import ExtractResult
-from ..p_interactions_proto.graph import EntityNode
+from .graph.extractor import ExtractResult
+from .graph.graph import EntityNode
 
 
 # ---------------------------------------------------------------------------

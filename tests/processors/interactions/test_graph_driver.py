@@ -22,12 +22,13 @@ from pathlib import Path
 from data_governance import db
 from data_governance.processors.interactions import graph_driver
 from data_governance.processors.otlp_receiver.write_span import write_span
-from data_governance.processors.p_interactions_proto.load_fixture import _row_to_span_row
+from data_governance.processors.interactions.graph.load_fixture import _row_to_span_row
 
 _FIXTURES = (
     Path(__file__).resolve().parents[2]
     / "processors"
-    / "p_interactions_proto"
+    / "interactions"
+    / "graph"
     / "fixtures"
 )
 
