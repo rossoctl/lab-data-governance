@@ -119,7 +119,52 @@ def test_interaction_seq_matches_anchor_span(fixture: str) -> None:
         if anchor is not None:
             assert ix.seq == anchor.seq
             assert ix.original_seq == anchor.seq
-        assert ix.parent_interaction_id is None  # NULL in the first cut
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_parent_interaction_forest_is_well_formed(fixture: str) -> None:
+    """parent_interaction_id forms a valid ADR-0008 forest: every non-NULL parent
+    resolves to another emitted interaction, no interaction is its own parent, and
+    there are no cycles."""
+    _, rows = _adapt(fixture)
+    by_id = {ix.id: ix for ix in rows.interactions_by_anchor.values()}
+    for ix in by_id.values():
+        pid = ix.parent_interaction_id
+        if pid is None:
+            continue
+        assert pid in by_id, f"{fixture}: parent {pid[:8]} is not an emitted interaction"
+        assert pid != ix.id, f"{fixture}: interaction is its own parent"
+    # No cycles: walking parents from any node terminates at NULL.
+    for start in by_id:
+        seen: set[str] = set()
+        cur = start
+        while cur is not None:
+            assert cur not in seen, f"{fixture}: parent cycle at {cur[:8]}"
+            seen.add(cur)
+            cur = by_id[cur].parent_interaction_id
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_parent_is_a_true_ancestor_by_span(fixture: str) -> None:
+    """A derived parent's anchor span must be a real span-tree ancestor of the
+    child's anchor (ADR-0008: parent = first enclosing anchor up the parent chain)."""
+    spans, rows = _adapt(fixture)
+    span_by_id = {s.span_id: s for s in spans}
+    by_id = {ix.id: ix for ix in rows.interactions_by_anchor.values()}
+    for ix in by_id.values():
+        if ix.parent_interaction_id is None:
+            continue
+        parent_anchor = by_id[ix.parent_interaction_id].primary_anchor_span_id
+        # Walk ix's anchor ancestry; the parent's anchor must appear.
+        cur = span_by_id.get(ix.primary_anchor_span_id)
+        cur = span_by_id.get(cur.parent_id) if cur and cur.parent_id else None
+        found = False
+        while cur is not None:
+            if cur.span_id == parent_anchor:
+                found = True
+                break
+            cur = span_by_id.get(cur.parent_id) if cur.parent_id else None
+        assert found, f"{fixture}: parent anchor is not an ancestor of the child"
 
 
 def test_co_anchored_inferred_tool_call_stays_distinct() -> None:

@@ -27,12 +27,12 @@ Single-source-of-truth choices (CLAUDE.md):
   ``ProductionRows`` holder exposing exactly the six attributes ``state.flush``
   reads; no SQL lives here.
 
-Known first-cut limitations (recorded in ADR-0025, closed in follow-ups):
+``parent_interaction_id`` is derived by :func:`_compute_parents` — the same
+ADR-0008 forest walk the streaming algorithm uses, so both algorithms produce an
+equivalent interaction tree.
 
-- ``parent_interaction_id`` is left ``NULL`` — the graph algorithm expresses
-  nesting through its global ``order`` ordinal, which has no column in the
-  production schema; unifying it with the streaming algorithm's ADR-0008 parent
-  walk is a driver-phase concern.
+Known first-cut limitation (ADR-0025 follow-up):
+
 - Only ``anchor``-role ``interaction_spans`` are emitted (the graph algorithm's
   prototype output carries one evidence span per interaction). The ``info`` /
   ``connector`` "territory" rows the streaming algorithm attaches are a documented
@@ -208,6 +208,49 @@ def _owning_agent_nk(
             if caller is not None and caller.kind == "agent":
                 return caller.natural_key
     return None
+
+
+def _compute_parents(
+    interactions: list[procedure.ProtoInteraction],
+    span_by_id: dict[str, Span],
+) -> None:
+    """Fill each interaction's ``parent_interaction_id`` in place, per ADR-0008.
+
+    Same forest rule as the streaming algorithm's ``_compute_parent_interaction``:
+    for interaction ``I``, walk up ``I``'s primary anchor span's ``parent_id`` chain;
+    the first ANCESTOR span that is the primary anchor of a *different* interaction
+    is ``I``'s parent. No enclosing anchor → NULL (a top-level interaction). This
+    gives the graph algorithm the same interaction forest the streaming algorithm
+    produces, so consumers walking ``parent_interaction_id`` behave identically
+    regardless of ``INTERACTIONS_ALGORITHM``.
+
+    The walk starts at the anchor's ``parent_id`` (ancestors only), so co-anchored
+    interactions (an LLM call + a tool call inferred from that LLM's ``tool_calls``,
+    sharing one real anchor span) are never each other's parent — they are siblings.
+    When several interactions share one anchor span, the map resolves to a single
+    deterministic representative (lowest id) so the ancestor lookup is stable.
+    """
+    # real anchor span id -> the interaction anchored there (deterministic pick).
+    ix_by_anchor: dict[str, procedure.ProtoInteraction] = {}
+    for ix in interactions:
+        prior = ix_by_anchor.get(ix.primary_anchor_span_id)
+        if prior is None or ix.id < prior.id:
+            ix_by_anchor[ix.primary_anchor_span_id] = ix
+
+    for ix in interactions:
+        anchor = span_by_id.get(ix.primary_anchor_span_id)
+        parent_id = None
+        cur = anchor
+        while cur is not None and cur.parent_id:
+            parent = span_by_id.get(cur.parent_id)
+            if parent is None:
+                break
+            owner = ix_by_anchor.get(parent.span_id)
+            if owner is not None and owner.id != ix.id:
+                parent_id = owner.id
+                break
+            cur = parent
+        ix.parent_interaction_id = parent_id
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +480,10 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
                 role="anchor",
             )
         )
+
+    # parent_interaction_id: the ADR-0008 forest, derived once every interaction
+    # exists (the walk needs the full anchor→interaction map).
+    _compute_parents(list(interactions_by_anchor.values()), span_by_id)
 
     # entity_spans: provenance link for every span of every resolved entity.
     for n in entity_graph.nodes:
