@@ -1,0 +1,98 @@
+# P-classification container image (issue #79, ADR-0022 + ADR-0023).
+#
+# The SEPARATE image `data-governance/classification` — distinct from the single
+# shared image the receiver, UI, and interactions Deployments run (issue #38).
+# P-classification runs a fine-tuned NER model (a ~500 MB
+# `RobertaForTokenClassification` git-LFS artifact) on top of torch +
+# transformers, a dependency closure that diverges too heavily to fold into the
+# shared image (ADR-0022). So it ships here, on its own.
+#
+# What this image bakes in as one unit (ADR-0023 — image tag ↔ model_version):
+#   - the `classification` optional-dependency extra (torch + transformers)
+#   - the model weights + config.json (classification/model/<generation>/),
+#     materialized from git-LFS by build-and-load.sh BEFORE the build
+#   - the base tokenizer, pre-fetched into a baked HF cache so startup does NO
+#     network fetch (the cluster's egress is flaky; ADR-0023)
+#   - the two classification config artifacts (classification_config.json + the
+#     entity-metadata CSV) already travel INSIDE the data_governance package
+#     (data_governance/processors/classification/_config_data/, issue #78)
+#
+# The build is uv-native like the shared Containerfile: deps come from
+# `pyproject.toml + uv.lock` via `uv sync --frozen`, here WITH `--extra
+# classification` so torch/transformers are installed (the shared image installs
+# no extra and stays slim). There is no Node/UI stage — P-classification serves no
+# UI. The runtime carries alembic.ini + the migrations tree so the init container's
+# migrate CLI and the startup schema-version check (ADR-0002) resolve.
+
+# -----------------------------------------------------------------------------
+# Stage 1: builder — resolve + install deps (incl. the classification extra),
+# and pre-fetch the base tokenizer into a cache we bake into the runtime.
+# -----------------------------------------------------------------------------
+FROM ghcr.io/astral-sh/uv:0.5.11-python3.11-bookworm-slim AS builder
+
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_DOWNLOADS=0
+
+WORKDIR /app
+
+# Install only the deps first (cacheable across source-only edits), WITH the
+# classification extra so torch + transformers land in the venv. The shared image
+# omits `--extra` and never installs them (ADR-0022).
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev --extra classification
+
+# Install the project itself into the environment.
+COPY alembic.ini ./
+COPY data_governance ./data_governance
+COPY README.md ./
+RUN uv sync --frozen --no-dev --extra classification
+
+# Pre-fetch the base tokenizer into an image-local HF cache so the runtime does
+# NO network fetch at startup (ADR-0023: the cluster's egress is flaky). The
+# tokenizer id must match data_governance.processors.classification.model.BASE_TOKENIZER.
+ENV HF_HOME=/opt/hf-cache
+RUN /app/.venv/bin/python -c "\
+from transformers import AutoTokenizer; \
+AutoTokenizer.from_pretrained('ibm-granite/granite-embedding-125m-english')"
+
+# -----------------------------------------------------------------------------
+# Stage 2: runtime — slim Python with the prebuilt venv, model weights, and the
+# tokenizer cache copied in.
+# -----------------------------------------------------------------------------
+FROM python:3.11-slim-bookworm AS runtime
+
+RUN groupadd --system --gid 1001 app \
+    && useradd --system --uid 1001 --gid app --create-home --home-dir /home/app app
+
+WORKDIR /app
+
+# The venv (torch + transformers included) and the source tree + alembic config.
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+COPY --from=builder --chown=app:app /app/alembic.ini /app/alembic.ini
+COPY --from=builder --chown=app:app /app/data_governance /app/data_governance
+
+# The baked HF cache (base tokenizer) — read at startup via HF_HOME, no network.
+COPY --from=builder --chown=app:app /opt/hf-cache /opt/hf-cache
+
+# Bake the model weights + config.json where the processor resolves the model.
+# build-and-load.sh materializes this git-LFS artifact BEFORE the build; the tag
+# `20260304` is the model generation (image tag ↔ model_version, ADR-0023). The
+# processor reads CLASSIFICATION_MODEL_DIR (default /app/model), set below.
+COPY --chown=app:app classification/model/20260304 /app/model
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/opt/hf-cache \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    CLASSIFICATION_MODEL_DIR=/app/model
+
+USER app
+
+# The k8s Deployment sets `command:` to the classification entry point:
+#   python -m data_governance.processors.classification
+# A default CMD keeps the image runnable standalone for ad-hoc inspection. No
+# ENTRYPOINT, so the k8s command override wins cleanly.
+CMD ["python", "-m", "data_governance.processors.classification"]

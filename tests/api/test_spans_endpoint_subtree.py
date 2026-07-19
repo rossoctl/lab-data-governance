@@ -1,11 +1,13 @@
-"""Tests for GET /spans subtree-expansion query path — issue #14.
+"""Tests for the subtree-expansion resource — issue #14.
 
 The trace-tree UI's lazy expansion calls
-``GET /spans?trace_id=T&parent_id=P&cursor=...&limit=...``. This file
-asserts that surface end-to-end through the Starlette app: parameter
-plumbing, sort order, cursor pagination, and the trace-tree render
-columns (``kind``, ``error``, ``status_message``, ``events``,
-``links``) are present on JSON-serialized rows.
+``GET /api/traces/{tid}/spans/{sid}/children?cursor=...&limit=...``
+(ADR-0018 replaced the ``GET /spans?trace_id&parent_id`` query shape). This
+file asserts that surface end-to-end through the Starlette app: direct-children
+scoping, sort order, cursor pagination, and the trace-tree render columns
+(``kind``, ``error``, ``status_message``, ``events``, ``links``) present on
+JSON-serialized rows (fetched via the whole-trace collection
+``GET /api/traces/{tid}/spans``).
 """
 
 from __future__ import annotations
@@ -72,11 +74,15 @@ def _insert(
 
 
 # ---------------------------------------------------------------------------
-# parent_id over the wire
+# Direct children over the wire
 # ---------------------------------------------------------------------------
 
 
-def test_parent_id_returns_direct_children(api_server, configured_db):
+def _children_url(server: SpansApiServer, trace_id: str, parent_id: str) -> str:
+    return f"{_base_url(server)}/api/traces/{trace_id}/spans/{parent_id}/children"
+
+
+def test_children_returns_direct_children(api_server, configured_db):
     with psycopg.connect(configured_db) as conn:
         _insert(
             conn, trace_id="T", span_id="root", name="root",
@@ -94,28 +100,14 @@ def test_parent_id_returns_direct_children(api_server, configured_db):
             started_at=dt.datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
         )
 
-    resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"trace_id": "T", "parent_id": "root"},
-    )
+    resp = httpx.get(_children_url(api_server, "T", "root"))
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["counts"] is None
     assert [s["span_id"] for s in body["spans"]] == ["c1"]
 
 
-def test_parent_id_without_trace_id_returns_400(api_server, configured_db):
-    """The library raises (parent_id requires trace_id, #12) — the API
-    surfaces it as 400."""
-    resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"parent_id": "p"},
-    )
-    assert resp.status_code == 400
-    assert "parent_id" in resp.json()["error"]
-
-
-def test_parent_id_sort_seq_asc_over_wire(api_server, configured_db):
+def test_children_sort_seq_asc_over_wire(api_server, configured_db):
     """PROJECT.md §6 Path 3 over the wire: parent_id set → seq asc.
 
     Insert children with ``started_at`` deliberately uncorrelated
@@ -142,16 +134,13 @@ def test_parent_id_sort_seq_asc_over_wire(api_server, configured_db):
             started_at=dt.datetime(2026, 5, 1, 11, 0, tzinfo=UTC),
         )
 
-    resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"trace_id": "T", "parent_id": "root"},
-    )
+    resp = httpx.get(_children_url(api_server, "T", "root"))
     assert [s["span_id"] for s in resp.json()["spans"]] == [
         "c-arrived-first", "c-arrived-second",
     ]
 
 
-def test_parent_id_paginates_wide_fanout_over_wire(
+def test_children_paginate_wide_fanout_over_wire(
     api_server, configured_db,
 ):
     """A parent with > limit children paginates across multiple calls,
@@ -173,13 +162,11 @@ def test_parent_id_paginates_wide_fanout_over_wire(
     seen: list[str] = []
     cursor: int | None = None
     for _ in range(10):
-        params: dict[str, object] = {
-            "trace_id": "T", "parent_id": "p", "limit": 3,
-        }
+        params: dict[str, object] = {"limit": 3}
         if cursor is not None:
             params["cursor"] = cursor
         page = httpx.get(
-            f"{_base_url(api_server)}/spans", params=params
+            _children_url(api_server, "T", "p"), params=params
         ).json()
         if not page["spans"]:
             break
@@ -215,7 +202,7 @@ def test_render_columns_serialized_for_trace_tree(api_server, configured_db):
         )
 
     body = httpx.get(
-        f"{_base_url(api_server)}/spans", params={"trace_id": "T"},
+        f"{_base_url(api_server)}/api/traces/T/spans",
     ).json()
     [row] = body["spans"]
     assert row["kind"] == "SERVER"
@@ -237,7 +224,7 @@ def test_render_columns_default_to_none(api_server, configured_db):
         )
 
     body = httpx.get(
-        f"{_base_url(api_server)}/spans", params={"trace_id": "T"},
+        f"{_base_url(api_server)}/api/traces/T/spans",
     ).json()
     [row] = body["spans"]
     assert row["error"] is None

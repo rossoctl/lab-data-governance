@@ -1,13 +1,19 @@
-"""Tests for GET /spans listing-roots / time-window slice — issue #12.
+"""Tests for the recent-traces listing / time-window slice — issue #12.
 
-Covers the REST surface inheriting the new ``get_spans`` parameters:
+Covers the ``GET /api/traces`` surface that inherits the ``get_spans``
+listing-root parameters (ADR-0018 retired the ``GET /spans?root_only=true``
+shape these once exercised):
 
 - ``time_from`` / ``time_to`` ISO-8601 parsing (Z and explicit offset),
   naive-datetime rejection.
-- ``root_only`` query parameter.
-- ``parent_id`` query parameter (only its compatibility-raise behaviour
-  is tested at this slice; the actual subtree query lands in #13).
-- ``GetSpansResult.counts`` JSON encoding.
+- listing-root selection + per-trace **Trace counts** on the
+  **TraceListingEntry**.
+- ``in_time_window`` on the entry.
+
+The parameter-compatibility raises (``root_only`` vs ``span_id`` /
+``parent_id``, ``parent_id`` requires ``trace_id``) no longer have an HTTP
+surface — those illegal combinations are unexpressible in the resource tree —
+so they are covered at the library level under ``tests/retrieval/``.
 """
 
 from __future__ import annotations
@@ -80,7 +86,7 @@ def _insert(
 def test_naive_iso_time_from_returns_400(api_server, configured_db):
     # No "Z", no offset.
     resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
+        f"{_base_url(api_server)}/api/traces",
         params={"time_from": "2026-05-01T12:00:00"},
     )
     assert resp.status_code == 400
@@ -89,7 +95,7 @@ def test_naive_iso_time_from_returns_400(api_server, configured_db):
 
 def test_naive_iso_time_to_returns_400(api_server, configured_db):
     resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
+        f"{_base_url(api_server)}/api/traces",
         params={"time_to": "2026-05-01T12:00:00"},
     )
     assert resp.status_code == 400
@@ -104,12 +110,11 @@ def test_iso_with_z_accepted(api_server, configured_db):
         )
 
     resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
+        f"{_base_url(api_server)}/api/traces",
         params={"time_from": "2026-05-01T11:00:00Z"},
     )
     assert resp.status_code == 200
-    spans = resp.json()["spans"]
-    assert len(spans) == 1
+    assert len(resp.json()["traces"]) == 1
 
 
 def test_iso_with_explicit_offset_accepted(api_server, configured_db):
@@ -120,28 +125,27 @@ def test_iso_with_explicit_offset_accepted(api_server, configured_db):
         )
 
     resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
+        f"{_base_url(api_server)}/api/traces",
         params={"time_from": "2026-05-01T13:00:00+02:00"},  # = 11:00 UTC
     )
     assert resp.status_code == 200
-    spans = resp.json()["spans"]
-    assert len(spans) == 1
+    assert len(resp.json()["traces"]) == 1
 
 
 def test_garbage_iso_returns_400(api_server, configured_db):
     resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
+        f"{_base_url(api_server)}/api/traces",
         params={"time_from": "not-a-date"},
     )
     assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
-# root_only query parameter
+# Listing roots + per-trace counts on the TraceListingEntry
 # ---------------------------------------------------------------------------
 
 
-def test_root_only_true_returns_listing_roots_with_counts(
+def test_traces_returns_listing_roots_with_counts(
     api_server, configured_db
 ):
     # Trace A: real root + child
@@ -158,32 +162,13 @@ def test_root_only_true_returns_listing_roots_with_counts(
             error=True,
         )
 
-    resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"root_only": "true"},
-    )
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces")
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["spans"]) == 1
-    assert body["spans"][0]["span_id"] == "rA"
-
-    counts = body["counts"]
-    assert counts is not None
-    assert counts["A"] == {"total": 2, "in_window": 2, "error_count": 1}
-
-
-def test_root_only_false_counts_is_null(api_server, configured_db):
-    with psycopg.connect(configured_db) as conn:
-        _insert(
-            conn, trace_id="t", span_id="s", name="x",
-            parent_id=None,
-            started_at=dt.datetime(2026, 5, 1, 12, tzinfo=UTC),
-        )
-
-    resp = httpx.get(f"{_base_url(api_server)}/spans")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["counts"] is None
+    assert len(body["traces"]) == 1
+    entry = body["traces"][0]
+    assert entry["listing_root"]["span_id"] == "rA"
+    assert entry["counts"] == {"total": 2, "in_window": 2, "error_count": 1}
 
 
 def test_in_time_window_in_response(api_server, configured_db):
@@ -202,47 +187,17 @@ def test_in_time_window_in_response(api_server, configured_db):
         )
 
     resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
+        f"{_base_url(api_server)}/api/traces",
         params={
-            "root_only": "true",
             "time_from": "2026-05-01T10:00:00Z",
             "time_to": "2026-05-01T14:00:00Z",
         },
     )
     assert resp.status_code == 200
-    spans = resp.json()["spans"]
-    assert len(spans) == 1
-    assert spans[0]["span_id"] == "r"
-    assert spans[0]["in_time_window"] is False
-
-
-# ---------------------------------------------------------------------------
-# Parameter compatibility raises round-trip as 400
-# ---------------------------------------------------------------------------
-
-
-def test_parent_id_without_trace_id_returns_400(api_server, configured_db):
-    resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"parent_id": "some-parent"},
-    )
-    assert resp.status_code == 400
-
-
-def test_root_only_with_span_id_returns_400(api_server, configured_db):
-    resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"root_only": "true", "trace_id": "t", "span_id": "s"},
-    )
-    assert resp.status_code == 400
-
-
-def test_root_only_with_parent_id_returns_400(api_server, configured_db):
-    resp = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"root_only": "true", "trace_id": "t", "parent_id": "p"},
-    )
-    assert resp.status_code == 400
+    traces = resp.json()["traces"]
+    assert len(traces) == 1
+    assert traces[0]["listing_root"]["span_id"] == "r"
+    assert traces[0]["in_time_window"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +205,7 @@ def test_root_only_with_parent_id_returns_400(api_server, configured_db):
 # ---------------------------------------------------------------------------
 
 
-def test_root_only_response_shape(api_server, configured_db):
+def test_traces_response_shape(api_server, configured_db):
     with psycopg.connect(configured_db) as conn:
         _insert(
             conn, trace_id="X", span_id="rX", name="rX",
@@ -258,10 +213,12 @@ def test_root_only_response_shape(api_server, configured_db):
             started_at=dt.datetime(2026, 5, 1, 12, tzinfo=UTC),
         )
 
-    resp = httpx.get(
-        f"{_base_url(api_server)}/spans", params={"root_only": "true"}
-    )
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces")
     assert resp.status_code == 200
-    # Re-parse to make sure JSON is well-formed and contains both keys.
+    # Re-parse to make sure JSON is well-formed and has the TraceListingEntry shape.
     body = json.loads(resp.text)
-    assert set(body.keys()) == {"spans", "counts"}
+    assert set(body.keys()) == {"traces"}
+    (entry,) = body["traces"]
+    assert set(entry.keys()) == {
+        "trace_id", "listing_root", "counts", "in_time_window"
+    }

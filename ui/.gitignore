@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+*.local
+playwright-report
+test-results
+.vitest
+# tsc -b composite build artifacts
+*.tsbuildinfo
+vite.config.d.ts
+vite.config.js

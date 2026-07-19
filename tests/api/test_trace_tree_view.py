@@ -1,47 +1,38 @@
-"""End-to-end tests for the trace-tree UI view — issue #14.
+"""Wire-contract tests for the trace-tree view's data layer — issue #14.
 
-The trace-tree view replaces the recent-traces row's click-through
-target. Reaching it: the user clicks a recent-traces row; the JS
-caches the listing-root ``Span`` in sessionStorage and navigates to
-``/trace/<trace_id>`` (a real route, not a hash). The shell at that
-route reads the anchor from sessionStorage and lazy-expands subtrees
-via ``GET /spans?trace_id=T&parent_id=P&cursor=...``.
+The trace-tree view is now a React SPA route (ADR-0019) reached from a
+recent-traces row: the SPA caches the listing-root ``Span`` in sessionStorage
+and navigates to ``/ui/traces/<trace_id>`` (React Router, ``basename="/ui"``),
+then lazy-expands subtrees via ``GET /api/traces/T/spans/P/children?cursor=...``
+(ADR-0018).
 
-These tests exercise the AC matrix from issue #14:
+These tests exercise the **API boundary** the view drives — unchanged by the UI
+migration:
 
 - Multi-level trace with errors at varying depths
-- Lazy-expansion descendant-badge appearance (data layer test ensures
-  ancestors are flagged after each subtree-load)
 - Wide-fanout pagination (parent with > limit children)
-- Detail-panel content on click (attributes / events / links present
-  in the JSON the UI consumes)
-- v1 limitation: errors inside collapsed subtrees do NOT propagate
+- Detail-panel content (attributes / events / links present in the JSON the UI
+  consumes)
+
+The descendant-error-badge walker (``descendantErrorAncestors``) moved from the
+Node-driven ``trace_tree_logic.js`` to the SPA's ``src/lib/traceTree.ts`` and is
+covered by Vitest, including the v1 collapsed-subtree limitation. The former
+shell-HTML-string assertions (``/ui/traces`` shell content, the retired
+``trace_tree_logic.js`` asset whitelist, the sessionStorage handoff) went with
+the vanilla shell; the SPA-serving wire contract lives in ``test_spa_serving.py``.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
-import shutil
-import subprocess
-from pathlib import Path
 
 import httpx
 import psycopg
-import pytest
 
 from data_governance.api import SpansApiServer
 
 UTC = dt.timezone.utc
-
-_LOGIC_JS = (
-    Path(__file__).resolve().parents[2]
-    / "data_governance" / "api" / "ui" / "trace_tree_logic.js"
-)
-
-
-def _have_node() -> bool:
-    return shutil.which("node") is not None
 
 
 def _base_url(server: SpansApiServer) -> str:
@@ -208,11 +199,8 @@ def test_listing_root_anchor_carries_render_columns(
     with psycopg.connect(configured_db) as conn:
         _seed_multi_level_trace_with_errors(conn)
 
-    body = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"root_only": "true", "trace_id": "T"},
-    ).json()
-    [root] = body["spans"]
+    entry = httpx.get(f"{_base_url(api_server)}/api/traces/T").json()
+    root = entry["listing_root"]
     assert root["span_id"] == "root"
     assert root["kind"] == "INTERNAL"
     # OTLP UNSET on the seeded root → null
@@ -220,16 +208,16 @@ def test_listing_root_anchor_carries_render_columns(
 
 
 def test_lazy_expansion_walks_all_levels(api_server, configured_db):
-    """Walk the tree top-down with ``GET /spans?trace_id=T&parent_id=P``
-    calls and assert every level surfaces. This is the data-shape the
-    UI's lazy-expansion drives."""
+    """Walk the tree top-down with
+    ``GET /api/traces/T/spans/P/children`` calls and assert every level
+    surfaces. This is the data-shape the UI's lazy-expansion drives."""
     with psycopg.connect(configured_db) as conn:
         _seed_multi_level_trace_with_errors(conn)
 
     def children(parent: str) -> list[dict]:
         return httpx.get(
-            f"{_base_url(api_server)}/spans",
-            params={"trace_id": "T", "parent_id": parent, "limit": 50},
+            f"{_base_url(api_server)}/api/traces/T/spans/{parent}/children",
+            params={"limit": 50},
         ).json()["spans"]
 
     level1 = children("root")
@@ -251,8 +239,8 @@ def test_error_spans_at_varying_depths(api_server, configured_db):
         _seed_multi_level_trace_with_errors(conn)
 
     spans = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"trace_id": "T", "limit": 500},
+        f"{_base_url(api_server)}/api/traces/T/spans",
+        params={"limit": 500},
     ).json()["spans"]
 
     by_id = {s["span_id"]: s for s in spans}
@@ -278,17 +266,14 @@ def test_wide_fanout_parent_paginates_lazily(api_server, configured_db):
     with psycopg.connect(configured_db) as conn:
         _seed_multi_level_trace_with_errors(conn)
 
+    base = f"{_base_url(api_server)}/api/traces/T/spans/batch/children"
     seen: list[str] = []
     cursor: int | None = None
     for _ in range(10):
-        params: dict[str, object] = {
-            "trace_id": "T", "parent_id": "batch", "limit": 5,
-        }
+        params: dict[str, object] = {"limit": 5}
         if cursor is not None:
             params["cursor"] = cursor
-        page = httpx.get(
-            f"{_base_url(api_server)}/spans", params=params
-        ).json()
+        page = httpx.get(base, params=params).json()
         if not page["spans"]:
             break
         seen.extend(s["span_id"] for s in page["spans"])
@@ -305,13 +290,13 @@ def test_wide_fanout_parent_paginates_lazily(api_server, configured_db):
 def test_detail_panel_payload_for_loaded_span(api_server, configured_db):
     """The detail panel renders ``attributes``, ``events``, ``links``
     as pretty-printed JSON. The data the panel consumes comes from the
-    /spans response — assert all three are present on the wire."""
+    whole-trace spans response — assert all three are present on the wire."""
     with psycopg.connect(configured_db) as conn:
         _seed_multi_level_trace_with_errors(conn)
 
     spans = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"trace_id": "T", "limit": 500},
+        f"{_base_url(api_server)}/api/traces/T/spans",
+        params={"limit": 500},
     ).json()["spans"]
     by_id = {s["span_id"]: s for s in spans}
 
@@ -324,267 +309,3 @@ def test_detail_panel_payload_for_loaded_span(api_server, configured_db):
     # ok-leaf is the negative case — no events/links
     assert by_id["ok-leaf"]["events"] is None
     assert by_id["ok-leaf"]["links"] is None
-
-
-# ---------------------------------------------------------------------------
-# AC: lazy-expansion descendant-badge appearance
-#
-# This is the marquee end-to-end check from issue #14: as the user
-# expands subtrees, ancestors of error spans receive the
-# descendant-error badge. The check is data-layer (Node-driven) so it
-# runs without a browser — the same pattern used for the recent-traces
-# helpers.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.skipif(
-    not _have_node(), reason="node is not installed; skipping UI-logic tests"
-)
-def test_descendant_badge_appears_progressively_as_subtrees_load(
-    api_server, configured_db,
-):
-    """Walks the trace one level at a time using the real /spans API
-    and feeds the loaded set into ``trace_tree_logic.js``. After each
-    expansion the JS reports which (trace_id|span_id) keys carry the
-    descendant-error badge. We assert the badge appears on the *first*
-    expansion that surfaces an error span and that it spreads up the
-    chain as deeper levels load.
-
-    This exercises the v1 limitation: until the failing branch is
-    expanded, no ancestor badge appears.
-    """
-    with psycopg.connect(configured_db) as conn:
-        _seed_multi_level_trace_with_errors(conn)
-
-    def fetch_root() -> dict:
-        body = httpx.get(
-            f"{_base_url(api_server)}/spans",
-            params={"root_only": "true", "trace_id": "T"},
-        ).json()
-        return body["spans"][0]
-
-    def fetch_children(parent_id: str) -> list[dict]:
-        return httpx.get(
-            f"{_base_url(api_server)}/spans",
-            params={"trace_id": "T", "parent_id": parent_id, "limit": 50},
-        ).json()["spans"]
-
-    def flagged(loaded: list[dict]) -> set[str]:
-        script = (
-            f"const M = require({json.dumps(str(_LOGIC_JS))});\n"
-            f"const spans = {json.dumps(loaded)};\n"
-            "const idx = M.buildParentIndex(spans);\n"
-            "const out = Array.from("
-            "M.descendantErrorAncestors(spans, idx)"
-            ");\n"
-            "process.stdout.write(JSON.stringify(out));\n"
-        )
-        result = subprocess.run(
-            ["node", "-e", script],
-            check=False, capture_output=True, text=True,
-        )
-        assert result.returncode == 0, result.stderr
-        return set(json.loads(result.stdout))
-
-    # Step 1: only the root is loaded. No errors visible -> no badges.
-    loaded = [fetch_root()]
-    assert flagged(loaded) == set()
-
-    # Step 2: expand root. http-call, server-handler, batch arrive.
-    # server-handler is itself an error span — but that's the *error*
-    # badge, not the descendant-error badge. The walker excludes the
-    # error span from its own ancestor set, so root should NOT yet be
-    # flagged purely from server-handler... wait, actually root *is*
-    # an ancestor of server-handler (an error span), so root *should*
-    # be flagged on this expansion. v1 limitation only kicks in for
-    # error spans whose parent chain isn't loaded.
-    loaded.extend(fetch_children("root"))
-    f = flagged(loaded)
-    assert "T|root" in f, (
-        "root is the loaded ancestor of server-handler (error=true); "
-        "should be flagged once root's children land"
-    )
-    # http-call has not yet revealed its db-query failure, so http-call
-    # itself is NOT yet flagged.
-    assert "T|http-call" not in f
-
-    # Step 3: expand http-call -> db-query (deep error) lands. Now
-    # http-call must be flagged (parent chain to db-query goes through it).
-    loaded.extend(fetch_children("http-call"))
-    f = flagged(loaded)
-    assert "T|http-call" in f, (
-        "after expanding http-call's subtree, db-query (error=true) is "
-        "loaded — http-call is its loaded ancestor and must carry the "
-        "descendant-error badge"
-    )
-    assert "T|root" in f  # still flagged
-
-    # The error span itself never carries the descendant-error badge —
-    # that's the per-span error badge's job (the two badges are
-    # visually distinct per docs/ui-design.md §2 / §3).
-    assert "T|db-query" not in f
-    assert "T|server-handler" not in f
-
-
-@pytest.mark.skipif(
-    not _have_node(), reason="node is not installed; skipping UI-logic tests"
-)
-def test_v1_limitation_collapsed_subtree_does_not_propagate_badge(
-    api_server, configured_db,
-):
-    """v1 limitation, explicit. Load only the root and its direct
-    children. db-query (deep error) is in a still-collapsed subtree
-    under http-call — its ancestor chain therefore carries no badge
-    yet. The user must drill in to surface it."""
-    with psycopg.connect(configured_db) as conn:
-        _insert(
-            conn, trace_id="U", span_id="root", name="root",
-            kind="INTERNAL", parent_id=None,
-            started_at=dt.datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
-        )
-        _insert(
-            conn, trace_id="U", span_id="middle", name="middle",
-            kind="INTERNAL", parent_id="root",
-            started_at=dt.datetime(2026, 5, 1, 10, 0, 1, tzinfo=UTC),
-        )
-        _insert(
-            conn, trace_id="U", span_id="hidden-error", name="hidden-error",
-            kind="INTERNAL", parent_id="middle",
-            started_at=dt.datetime(2026, 5, 1, 10, 0, 2, tzinfo=UTC),
-            error=True, status_message="boom",
-        )
-
-    root = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"root_only": "true", "trace_id": "U"},
-    ).json()["spans"][0]
-    direct_children = httpx.get(
-        f"{_base_url(api_server)}/spans",
-        params={"trace_id": "U", "parent_id": "root", "limit": 50},
-    ).json()["spans"]
-
-    loaded = [root] + direct_children
-    script = (
-        f"const M = require({json.dumps(str(_LOGIC_JS))});\n"
-        f"const spans = {json.dumps(loaded)};\n"
-        "const idx = M.buildParentIndex(spans);\n"
-        "const out = Array.from("
-        "M.descendantErrorAncestors(spans, idx)"
-        ");\n"
-        "process.stdout.write(JSON.stringify(out));\n"
-    )
-    result = subprocess.run(
-        ["node", "-e", script],
-        check=False, capture_output=True, text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    flagged = set(json.loads(result.stdout))
-
-    # Neither root nor middle is flagged — hidden-error is in a
-    # collapsed subtree (its ancestor middle's children were never
-    # fetched), so the walker has no path from any error span to root.
-    assert "U|root" not in flagged
-    assert "U|middle" not in flagged
-
-
-# ---------------------------------------------------------------------------
-# UI shell HTML for the trace-tree route
-# ---------------------------------------------------------------------------
-
-
-def test_trace_tree_route_serves_shell_for_any_trace_id(
-    api_server, configured_db,
-):
-    """``GET /trace/<trace_id>`` returns the trace-tree shell HTML.
-    The trace_id is consumed by in-page JS so the same HTML is served
-    for any value."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/abcdef")
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers.get("content-type", "")
-    assert "Trace tree" in resp.text
-
-
-def test_trace_tree_shell_loads_logic_js_asset(api_server, configured_db):
-    """The shell pulls in ``trace_tree_logic.js`` for the descendant-
-    badge walker."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/anything")
-    assert "/ui/trace_tree_logic.js" in resp.text
-
-
-def test_trace_tree_logic_js_asset_is_served(api_server, configured_db):
-    """The asset must be on the whitelist — ``/ui/<name>`` is whitelist-
-    only by design (docs/ui-design.md / PROJECT.md §7)."""
-    resp = httpx.get(
-        f"{_base_url(api_server)}/ui/trace_tree_logic.js"
-    )
-    assert resp.status_code == 200
-    assert "javascript" in resp.headers.get("content-type", "")
-    assert "descendantErrorAncestors" in resp.text
-    assert "buildParentIndex" in resp.text
-
-
-def test_ui_assets_are_served_no_cache(api_server, configured_db):
-    """UI assets and the HTML shells must carry ``Cache-Control: no-cache``.
-
-    The served image is rebuilt in place under the same ``:latest`` tag, so
-    the bytes behind a URL change without the URL changing. Without a cache
-    directive the browser keeps serving the pre-rebuild JS, which presents
-    as "ran the prototype CLI but the Flow panel still says it hasn't."
-    ``no-cache`` forces revalidation so a rebuilt asset is always picked up.
-    """
-    base = _base_url(api_server)
-    for path in (
-        "/ui/trace_tree_logic.js",
-        "/ui/execution_flow_logic.js",
-        "/trace/anything",
-    ):
-        resp = httpx.get(f"{base}{path}")
-        assert resp.status_code == 200
-        assert resp.headers.get("cache-control") == "no-cache", path
-
-
-def test_proto_empty_states_have_process_button(api_server, configured_db):
-    """Both proto empty states carry a 'Process this trace' button so the
-    extractor can be run on demand from the UI (no shell into the pod)."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/anything")
-    body = resp.text
-    # One button per empty state (flow + graph).
-    assert body.count("data-proto-process") == 2
-    assert "Process this trace" in body
-
-
-def test_trace_tree_shell_calls_subtree_endpoint(api_server, configured_db):
-    """The shell's lazy-expansion fetches ``/spans?trace_id=...&
-    parent_id=...``. Smoke-check the endpoint string is present so a
-    refactor doesn't silently break the contract."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/x")
-    assert "parent_id" in resp.text
-    assert "/spans?" in resp.text or "'/spans?'" in resp.text or (
-        "/spans" in resp.text
-    )
-
-
-def test_trace_tree_shell_reads_listing_root_from_session_storage(
-    api_server, configured_db,
-):
-    """The click-through handoff is via sessionStorage key
-    ``dg.listingRoot.<trace_id>`` — see openTrace() in the recent-
-    traces shell. The trace-tree shell must read the same key (so the
-    anchor doesn't need re-fetching)."""
-    resp = httpx.get(f"{_base_url(api_server)}/trace/x")
-    assert "dg.listingRoot." in resp.text
-
-
-def test_recent_traces_shell_links_to_real_trace_tree_route(
-    api_server, configured_db,
-):
-    """Recent-traces row click-through must navigate to ``/trace/<id>``
-    (real route), not a hash. Hash navigation never reaches the server,
-    so the previously-shipped ``#/trace/<id>`` href would never load
-    the trace-tree shell. This test pins the regression."""
-    resp = httpx.get(f"{_base_url(api_server)}/")
-    text = resp.text
-    assert "/trace/" in text
-    # Defend against an accidental return to hash navigation.
-    assert "'#/trace/'" not in text
-    assert '"#/trace/"' not in text

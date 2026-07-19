@@ -1,0 +1,92 @@
+>> receiver pod: data-governance-receiver-7fcf8b74f5-9lcz6
+>> copying prototype files to /app/data_governance/processors/p_interactions_proto
+Defaulted container "receiver" out of: receiver, migrate (init)
+  copied procedure.py
+Defaulted container "receiver" out of: receiver, migrate (init)
+  copied anchor_rules.py
+Defaulted container "receiver" out of: receiver, migrate (init)
+  copied caller_inference.py
+Defaulted container "receiver" out of: receiver, migrate (init)
+  copied extractor.py
+Defaulted container "receiver" out of: receiver, migrate (init)
+  copied cli.py
+Defaulted container "receiver" out of: receiver, migrate (init)
+  copied __init__.py
+>> running CLI: python -m data_governance.processors.p_interactions_proto.cli 2b7b88e0f0df1fc9936b9a31f26aebc3
+
+fetching spans for 2b7b88e0f0df1fc9936b9a31f26aebc3...
+  fetched 281 spans
+running per-span procedure (scramble=False)...
+
+--- entities ---
+  [agent  ] booking-agent                            [travel_advisor]  (service.name + openinference.project.name (canonical))
+  [agent  ] payment-agent                            [travel_advisor]  (service.name + openinference.project.name (canonical))
+  [agent  ] research-agent                           [travel_advisor]  (service.name + openinference.project.name (canonical))
+  [agent  ] travel-advisor                           [travel_advisor]  (service.name + openinference.project.name (canonical))
+  [client ] 10.244.0.1                                (net.peer.ip)
+  [llm    ] claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com  (OpenInference LLM span)
+  [service] psp-mock                                  (external HTTP host on CLIENT span)
+  [tool   ] charge_card                              [travel_advisor]  (deployed tool service (canonical))
+  [tool   ] create_booking                           [travel_advisor]  (deployed tool service (canonical))
+  [tool   ] get_flights                              [travel_advisor]  (deployed tool service (canonical))
+  [tool   ] get_payment_info                         [travel_advisor]  (deployed tool service (canonical))
+  [tool   ] get_weather                              [travel_advisor]  (deployed tool service (canonical))
+  [tool   ] search_destinations                      [travel_advisor]  (deployed tool service (canonical))
+  [tool   ] delegate_to_booking_agent                 (OpenInference TOOL span (in-process))
+  [tool   ] delegate_to_research_agent                (OpenInference TOOL span (in-process))
+
+--- interactions (31) ---
+  ok   [orphan-server     ] 10.244.0.1 → travel-advisor
+    ok   [openinference-llm ] travel-advisor → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+    ok   [openinference-tool] travel-advisor → search_destinations
+    ok   [openinference-llm ] travel-advisor → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+    ok   [openinference-tool] travel-advisor → get_weather
+    ok   [openinference-llm ] travel-advisor → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+    ok   [openinference-tool] travel-advisor → get_flights
+    ok   [openinference-llm ] travel-advisor → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+    ok   [openinference-tool] travel-advisor → delegate_to_research_agent
+      ok   [cross-service     ] travel-advisor → research-agent
+        ok   [openinference-llm ] research-agent → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+    ok   [openinference-llm ] travel-advisor → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+    ok   [openinference-tool] travel-advisor → delegate_to_booking_agent
+      ok   [cross-service     ] travel-advisor → booking-agent
+        ok   [openinference-llm ] booking-agent → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+          ok   [openinference-tool] booking-agent → create_booking
+        ok   [openinference-llm ] booking-agent → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+    ok   [openinference-llm ] travel-advisor → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+    ok   [openinference-tool] travel-advisor → delegate_to_booking_agent
+      ok   [cross-service     ] travel-advisor → booking-agent
+        ok   [openinference-llm ] booking-agent → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+          ok   [openinference-tool] booking-agent → create_booking
+            ok   [cross-service     ] create_booking → payment-agent
+              ok   [openinference-llm ] payment-agent → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+              ok   [openinference-tool] payment-agent → get_payment_info
+              ok   [openinference-llm ] payment-agent → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+              ok   [openinference-tool] payment-agent → charge_card
+                ?    [external-http     ] charge_card → psp-mock
+              ok   [openinference-llm ] payment-agent → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+        ok   [openinference-llm ] booking-agent → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+    ok   [openinference-llm ] travel-advisor → claude-haiku-4-5-20251001 @ ete-litellm.ai-models.vpc-int.res.ibm.com
+
+--- payloads (50) ---
+  llm_chat_prompt          15
+  llm_completion           15
+  tool_call_arguments      10
+  tool_call_result         10
+
+--- entity_spans summary ---
+  discovered_via     15
+  identified_via     47
+
+--- interaction_spans roles ---
+  anchor             35
+  connector          66
+  info               100
+
+last_processed_seq = 152511
+
+--- notes ---
+  - produced 31 active interactions (+0 retracted), 201 interaction_spans rows, 15 active entities (+0 retracted), 62 entity_spans rows, 50 unique payloads
+
+writing scratch tables...
+done.

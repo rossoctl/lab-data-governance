@@ -1,0 +1,10 @@
+# Core ML dependencies (Stage 1 — NER prediction)
+torch
+transformers
+tqdm
+
+# NOTE: The default PyPI torch build is CPU-only.
+# For GPU support, install torch manually from https://pytorch.org/get-started/locally/
+# before running: pip install -r requirements.txt
+# Example for CUDA 12.1:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121

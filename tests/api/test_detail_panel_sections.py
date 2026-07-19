@@ -1,10 +1,12 @@
-"""End-to-end tests for the detail-panel nine-section layout — issue #49.
+"""Wire-contract tests for the full-row Span the detail panel renders — issue #49.
 
-Verifies:
+The nine-section detail-panel layout now lives in the React SPA (ADR-0019); its
+rendered structure is covered by the SPA's own tests. What remains here is the
+**API boundary** that feeds the panel — unchanged by the UI migration:
+
 - ``Span`` carries the new full-row fields over the wire.
-- ``GET /spans`` JSON response includes every new field.
-- The trace-tree HTML shell contains all nine section headings.
-- The ``selectSpan`` logic correctly uses the new fields.
+- The ``GET /api/traces/{tid}/spans`` JSON response includes every new field
+  (ADR-0018; was ``GET /spans?trace_id``), and nullable fields surface as null.
 """
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ import json
 
 import httpx
 import psycopg
-import pytest
 
 UTC = dt.timezone.utc
 
@@ -71,18 +72,17 @@ def _insert_finalized_error_span(conn) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wire-level: new fields present in GET /spans response
+# Wire-level: new fields present in the whole-trace spans response
 # ---------------------------------------------------------------------------
 
 
 def test_new_fields_present_on_wire(api_server, configured_db):
-    """Every new ADR-0006 field surfaces on the /spans JSON response."""
+    """Every new ADR-0006 field surfaces on the whole-trace spans JSON."""
     with psycopg.connect(configured_db) as conn:
         _insert_finalized_error_span(conn)
 
     spans = httpx.get(
-        f"http://127.0.0.1:{api_server.port}/spans",
-        params={"trace_id": "trace-full"},
+        f"http://127.0.0.1:{api_server.port}/api/traces/trace-full/spans",
     ).json()["spans"]
     assert len(spans) == 1
     s = spans[0]
@@ -129,8 +129,7 @@ def test_nullable_fields_surface_as_null_for_minimal_span(
         conn.commit()
 
     spans = httpx.get(
-        f"http://127.0.0.1:{api_server.port}/spans",
-        params={"trace_id": "trace-min"},
+        f"http://127.0.0.1:{api_server.port}/api/traces/trace-min/spans",
     ).json()["spans"]
     assert len(spans) == 1
     s = spans[0]
@@ -142,106 +141,3 @@ def test_nullable_fields_surface_as_null_for_minimal_span(
     # observed_at and arrival_seq are NOT NULL on the table
     assert s["observed_at"] is not None
     assert isinstance(s["arrival_seq"], int)
-
-
-# ---------------------------------------------------------------------------
-# HTML shell: nine section headings are present
-# ---------------------------------------------------------------------------
-
-
-def test_trace_tree_shell_has_nine_section_headings(api_server, configured_db):
-    """The trace-tree HTML shell must contain all nine section headings
-    so the detail panel renders the correct structure for any span."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
-    assert resp.status_code == 200
-    text = resp.text
-
-    for heading in (
-        "Identity",
-        "Timing",
-        "Status",
-        "Resource",
-        "Scope",
-        "OTLP envelope",
-        "Attributes",
-        "Events",
-        "Links",
-    ):
-        assert heading in text, f"section heading {heading!r} missing from shell"
-
-    # AC8: Resource/Scope/OTLP envelope must fall back to '(none)' when null.
-    assert "(none)" in text, (
-        "_jsonPre null-fallback '(none)' missing from shell; "
-        "AC8 requires Resource/Scope/OTLP to render as '(none)' when null"
-    )
-
-
-def test_trace_tree_shell_has_select_span_fields(api_server, configured_db):
-    """The selectSpan function must reference the new ADR-0006 field names
-    so the JS detail panel is wired up correctly."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
-    assert resp.status_code == 200
-    text = resp.text
-
-    for field in (
-        "arrival_seq",
-        "ended_at",
-        "observed_at",
-        "resource_attributes",
-        "scope",
-        "otlp",
-    ):
-        assert field in text, (
-            f"field {field!r} not found in shell JS — selectSpan may be missing it"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Identity section: seven dt/dd pairs
-# ---------------------------------------------------------------------------
-
-
-def test_detail_panel_identity_section_fields(api_server, configured_db):
-    """The shell contains all seven Identity dt labels."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
-    text = resp.text
-
-    for label in ("trace_id", "span_id", "parent_id", "kind",
-                  "service_name", "seq", "arrival_seq"):
-        assert label in text, f"Identity label {label!r} missing"
-
-
-# ---------------------------------------------------------------------------
-# Status tristate: error / ok / unset text rendering
-# ---------------------------------------------------------------------------
-
-
-def test_status_rendering_logic_in_shell(api_server, configured_db):
-    """The shell must contain the Status tristate logic:
-    'Error:', 'OK', 'Unset'."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
-    text = resp.text
-
-    assert "Error:" in text
-    assert "'OK'" in text or '"OK"' in text or "=== 'OK'" in text or "textContent = 'OK'" in text or "OK" in text
-    assert "Unset" in text
-
-
-# ---------------------------------------------------------------------------
-# Timing: (not finalized) fallback and duration
-# ---------------------------------------------------------------------------
-
-
-def test_timing_not_finalized_text_in_shell(api_server, configured_db):
-    """The shell must include the '(not finalized)' fallback for ended_at."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
-    assert "(not finalized)" in resp.text
-
-
-def test_timing_duration_computed_in_shell(api_server, configured_db):
-    """The shell JS must compute duration from ended_at - started_at."""
-    resp = httpx.get(f"http://127.0.0.1:{api_server.port}/trace/any")
-    text = resp.text
-    assert "duration" in text
-    assert "ended_at" in text
-    assert "started_at" in text

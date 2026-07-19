@@ -298,6 +298,168 @@ def test_receiver_service_grpc_port_is_grpc(receiver_service: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# P-interactions processor Deployment (issue #74)
+# ---------------------------------------------------------------------------
+#
+# A DB consumer, not an inbound API: same image as the receiver, command
+# overridden to the interactions entry point, no Service and no container
+# ports. Single replica because the driver drains against one shared
+# `processor_state` cursor with no inter-pod lock (driver.py) — two pods would
+# double-process. The assertions below mirror the receiver's
+# init-container/main-container shape and pin the deliberate differences.
+
+
+@pytest.fixture(scope="module")
+def interactions_deployment(docs: list[dict]) -> dict:
+    deps = _by_kind(docs, "Deployment", "data-governance-interactions")
+    assert len(deps) == 1, (
+        "expected exactly one Deployment named data-governance-interactions"
+    )
+    return deps[0]
+
+
+def test_interactions_single_replica(interactions_deployment: dict) -> None:
+    """Single-cursor drainer: must NOT run two concurrent pods.
+
+    The driver advances one shared ``processor_state`` cursor with no
+    inter-pod lock; two replicas would poll the same cursor, double-process
+    spans, and contend on derived-table writes. Issue #74 pins one replica.
+    """
+    assert interactions_deployment["spec"]["replicas"] == 1, (
+        "interactions processor must run a single replica — it is a "
+        "single-cursor DB drainer, not an HA service"
+    )
+
+
+def test_interactions_rollout_does_not_surge_a_second_pod(
+    interactions_deployment: dict,
+) -> None:
+    """RollingUpdate must tear the old pod down before the new one starts.
+
+    A surge-first rollout (maxSurge>=1) would briefly run two pods against the
+    one cursor during a *voluntary* (controller-driven) rollout. maxSurge:0 +
+    maxUnavailable:1 makes the rollout old-pod-gone-first. This does NOT cover
+    involuntary disruption (node drain / eviction can overlap two pods); that
+    window is made safe by the idempotent per-span re-derive (ADR-0007), not
+    by this strategy.
+    """
+    strategy = interactions_deployment["spec"].get("strategy") or {}
+    assert strategy.get("type", "RollingUpdate") == "RollingUpdate"
+    ru = strategy.get("rollingUpdate") or {}
+    assert ru.get("maxSurge") == 0, (
+        "interactions rollout must set maxSurge:0 so no second pod is created "
+        "during a rollout (two pods would share the one cursor)"
+    )
+    assert ru.get("maxUnavailable") == 1, (
+        "interactions rollout must allow maxUnavailable:1 so the single pod "
+        "can be torn down before its replacement starts"
+    )
+
+
+def test_interactions_has_init_container_running_migrate(
+    interactions_deployment: dict,
+) -> None:
+    """ADR-0002: init container runs the migrate CLI to head, like the receiver."""
+    pod_spec = interactions_deployment["spec"]["template"]["spec"]
+    init_containers = pod_spec.get("initContainers") or []
+    assert init_containers, (
+        "interactions pod must declare an init container running migrate"
+    )
+    migrate_cmds = []
+    for ic in init_containers:
+        cmd = ic.get("command") or []
+        args = ic.get("args") or []
+        migrate_cmds.append(" ".join(cmd + args))
+    assert any(
+        "data_governance.db.migrate" in c for c in migrate_cmds
+    ), f"init container must invoke `python -m data_governance.db.migrate`, got {migrate_cmds!r}"
+
+
+def test_interactions_main_container_runs_processor(
+    interactions_deployment: dict,
+) -> None:
+    """Main container runs ``python -m data_governance.processors.interactions``."""
+    pod_spec = interactions_deployment["spec"]["template"]["spec"]
+    containers = pod_spec.get("containers") or []
+    assert containers, "interactions Deployment must have at least one container"
+    main = containers[0]
+    cmd = " ".join((main.get("command") or []) + (main.get("args") or []))
+    assert "data_governance.processors.interactions" in cmd, (
+        f"main container must invoke the interactions entry point, got {cmd!r}"
+    )
+
+
+def test_interactions_main_container_does_not_run_alembic(
+    interactions_deployment: dict,
+) -> None:
+    """PROJECT.md §3: the processor container itself does NOT run Alembic."""
+    pod_spec = interactions_deployment["spec"]["template"]["spec"]
+    main = pod_spec["containers"][0]
+    cmd = " ".join((main.get("command") or []) + (main.get("args") or []))
+    assert "data_governance.db.migrate" not in cmd, (
+        "main container must not run `migrate`; that is the init container's job"
+    )
+    assert "alembic" not in cmd.lower(), "main container must not invoke alembic"
+
+
+def test_interactions_runs_on_receiver_image(
+    interactions_deployment: dict,
+) -> None:
+    """No new image build: init + main both run the receiver image (issue #38)."""
+    pod_spec = interactions_deployment["spec"]["template"]["spec"]
+    init = pod_spec["initContainers"][0]
+    main = pod_spec["containers"][0]
+    for ctr in (init, main):
+        assert ctr.get("image") == "data-governance/receiver:latest", (
+            f"{ctr.get('name')!r} must run the receiver image (one image, two "
+            f"tags, deployments differ only by command:), got {ctr.get('image')!r}"
+        )
+        assert ctr.get("imagePullPolicy") == "IfNotPresent", (
+            f"{ctr.get('name')!r} must set imagePullPolicy: IfNotPresent"
+        )
+
+
+def test_interactions_database_url_set(interactions_deployment: dict) -> None:
+    """The processor and migrate CLIs read ``DATABASE_URL`` (see __main__.py / migrate.py)."""
+    pod_spec = interactions_deployment["spec"]["template"]["spec"]
+    init = pod_spec["initContainers"][0]
+    main = pod_spec["containers"][0]
+    for ctr in (init, main):
+        env = {e["name"]: e for e in ctr.get("env") or []}
+        assert "DATABASE_URL" in env, f"{ctr['name']} must set DATABASE_URL"
+
+
+def test_interactions_has_no_service(docs: list[dict]) -> None:
+    """Deliberate difference from the receiver: the processor has no Service.
+
+    It is a poll/LISTEN DB consumer with no inbound API, so nothing should
+    route traffic at it.
+    """
+    svcs = _by_kind(docs, "Service", "data-governance-interactions")
+    assert not svcs, (
+        "interactions processor must NOT declare a Service — it has no inbound "
+        f"API (found {[s.get('metadata', {}).get('name') for s in svcs]!r})"
+    )
+
+
+def test_interactions_declares_no_container_ports(
+    interactions_deployment: dict,
+) -> None:
+    """No container ports: nothing inbound to declare (issue #74 AC).
+
+    The in-pod Prometheus /metrics surface (9091) is intentionally left
+    undeclared and unexposed in v1, matching the receiver's 9090 not being
+    opened by the v1 NetworkPolicy — v1 has no monitoring peer.
+    """
+    pod_spec = interactions_deployment["spec"]["template"]["spec"]
+    for ctr_kind, ctr in _iter_containers(pod_spec):
+        assert not (ctr.get("ports") or []), (
+            f"interactions {ctr_kind} {ctr.get('name')!r} must declare no "
+            f"ports — the processor has no inbound API (got {ctr.get('ports')!r})"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Postgres StatefulSet
 # ---------------------------------------------------------------------------
 
@@ -672,6 +834,7 @@ def test_container_env_placeholder_references_resolve_in_order(
     expected_workloads = {
         "data-governance-receiver",
         "data-governance-ui",
+        "data-governance-interactions",
     }
     seen_workloads: set[str] = set()
     for kind, name, path, pod_spec in _iter_pod_specs(docs):

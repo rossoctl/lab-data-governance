@@ -1,0 +1,83 @@
+{
+  "identity_bundle_patterns": [
+    {
+      "name": "name_dob",
+      "entities": [
+        "PN",
+        "DOB"
+      ],
+      "description": "Person name + Date of birth"
+    },
+    {
+      "name": "name_address",
+      "entities": [
+        "PN",
+        "ADDRESS"
+      ],
+      "description": "Person name + Address"
+    },
+    {
+      "name": "name_phone",
+      "entities": [
+        "PN",
+        "PHONE"
+      ],
+      "description": "Person name + Phone number"
+    },
+    {
+      "name": "name_email",
+      "entities": [
+        "PN",
+        "EMAIL"
+      ],
+      "description": "Person name + Email"
+    },
+    {
+      "name": "name_ssn",
+      "entities": [
+        "PN",
+        "SSN"
+      ],
+      "description": "Person name + SSN"
+    },
+    {
+      "name": "email_phone",
+      "entities": [
+        "EMAIL",
+        "PHONE"
+      ],
+      "description": "Email + Phone"
+    },
+    {
+      "name": "full_financial",
+      "entities": [
+        "PN",
+        "BAN",
+        "RN"
+      ],
+      "description": "Name + Bank account + Routing number"
+    },
+    {
+      "name": "medical_record",
+      "entities": [
+        "PN",
+        "MRN"
+      ],
+      "description": "Name + Medical record number"
+    },
+    {
+      "name": "payment_card_full",
+      "entities": [
+        "PN",
+        "PCN"
+      ],
+      "description": "Name + Payment card number"
+    }
+  ],
+  "classification_hierarchy": [
+    "PUBLIC",
+    "INTERNAL",
+    "CONFIDENTIAL",
+    "RESTRICTED"
+  ]
+}

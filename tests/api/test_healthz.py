@@ -6,8 +6,9 @@ crashloop after readinessProbe failures.
 
 Like the receiver's healthz (PROJECT.md §5.1), the probe answers 200 when
 Postgres is reachable, 503 otherwise. The UI backend's whole job is to
-serve ``GET /spans``, which fans out to Postgres — making "Postgres
-reachable" the right liveness signal.
+serve the ``/api/`` resource tree, which fans out to Postgres — making
+"Postgres reachable" the right liveness signal. The probe stays un-prefixed
+at the root (ADR-0017).
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ def test_healthz_returns_200_when_postgres_reachable(api_server, configured_db):
 def test_healthz_returns_503_when_postgres_unreachable(api_server, configured_db):
     """Closing the connection pool simulates Postgres being unreachable.
 
-    The UI backend's ``GET /spans`` would already 5xx in this state — the
+    The UI backend's ``/api/`` reads would already 5xx in this state — the
     probe needs to flip readiness so k8s stops sending traffic.
     """
     db.close_pool()

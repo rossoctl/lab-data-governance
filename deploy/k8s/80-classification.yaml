@@ -1,0 +1,160 @@
+---
+# P-classification processor Deployment — a DB consumer, NOT an inbound API.
+#
+# Sibling of the P-interactions processor (70-interactions.yaml): it drains the
+# `interaction_payloads` stream by `seq` (migration 0007) and writes one
+# write-once Classification row per payload into `payload_classifications`
+# (migration 0008), advancing its own durable cursor in `processor_state` (the
+# `classification` row) via the shared cursor-driven driver
+# (data_governance/processors/classification/driver.py). It exposes NO Service
+# and declares NO container ports: no inbound traffic.
+#
+# Its OWN image, `data-governance/classification:latest` (issue #79 / ADR-0022) —
+# NOT the shared receiver/UI/interactions image. P-classification runs a
+# fine-tuned NER model on torch + ~500 MB of baked-in weights, a dependency
+# closure that diverges too heavily to fold into the slim shared image (ADR-0022);
+# the model loads in-process at startup with the weights + config baked into the
+# image as one unit, image tag <-> model_version (ADR-0023). Built from
+# Containerfile.classification by deploy/build-and-load.sh. The #77 stub shared
+# the receiver image while it carried no torch; wiring the real model (#79) is the
+# flip to this dedicated image — the write path itself stays put.
+#
+# Both the migrate init container and the processor container run this one image,
+# so the pod is self-contained: the classification image bakes the same
+# data_governance package + alembic.ini as the shared image, so its migrate CLI
+# and startup schema-version check migrate/validate to the identical compiled head
+# (ADR-0002).
+#
+# Single replica (NOT 2 like the receiver). The driver drains payloads against
+# ONE shared `processor_state` cursor with no inter-pod lock; two replicas would
+# poll the same cursor concurrently and double-process. What keeps that
+# correctness-safe is that the per-payload write is write-once and idempotent
+# (ON CONFLICT (content_hash) DO NOTHING; ADR-0024) — a brief overlap of two
+# pods only duplicates work, never a row.
+#
+# RollingUpdate with maxSurge:0 / maxUnavailable:1 keeps a VOLUNTARY
+# (controller-driven) rollout from ever creating a second pod: the old pod is
+# torn down before the replacement starts. It does NOT cover involuntary
+# disruption (node drain / eviction can briefly overlap two cursors) —
+# idempotency, not the rollout strategy, is what makes that window safe.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-governance-classification
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-classification
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 1
+  strategy:
+    # Single-cursor drainer: don't create a second pod during a rollout (see
+    # the header note — involuntary eviction can still briefly overlap; that
+    # window is made safe by the write-once idempotent per-payload write, not by
+    # this strategy). maxSurge:0 + maxUnavailable:1 tears down the old pod before
+    # the replacement starts, the opposite of the receiver's surge-first rollout.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-classification
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-governance-classification
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      initContainers:
+        # ADR-0002: each pod runs `python -m data_governance.db.migrate` to
+        # head before the processor container starts. Alembic's version table
+        # makes this idempotent — running it from this pod as well as from the
+        # receiver replicas is safe (both migrate to the same compiled head).
+        - name: migrate
+          image: data-governance/classification:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.db.migrate"]
+          # Note: ``DATABASE_URL`` must come AFTER the POSTGRES_* entries it
+          # references. Kubernetes only substitutes ``$(VAR)`` against names
+          # defined earlier in the same env list — a forward reference reaches
+          # the container as literal ``$(VAR)`` and breaks DSN parsing (issue
+          # #40). The placeholder-ordering regression test in
+          # tests/deploy/test_manifests.py pins this across every manifest.
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"
+      containers:
+        # The processor container runs the classification entry point. Like the
+        # receiver (PROJECT.md §3), it does NOT run Alembic itself — the init
+        # container is the schema-ordering gate. The entry point performs a
+        # defence-in-depth schema-version check on startup (issue #10) and exits
+        # non-zero on mismatch, surfacing as CrashLoopBackOff.
+        - name: classification
+          image: data-governance/classification:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.processors.classification"]
+          # See the ordering note on the migrate init container above —
+          # ``DATABASE_URL`` must come after the POSTGRES_* entries it references
+          # (issue #40). Env block is the interactions processor's verbatim.
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          # No ports / no Service: the processor has no inbound API. It serves a
+          # Prometheus /metrics surface on 9092 in-pod
+          # (data_governance/processors/classification/__main__.py), but — like
+          # the receiver's 9090 and the interactions processor's 9091, which the
+          # v1 NetworkPolicy also does not open — v1 has no monitoring peer, so
+          # the port is intentionally left undeclared and unexposed.
+          #
+          # No liveness/readiness probes: there is no HTTP serving surface to
+          # probe. Kubernetes restarts the pod on process exit; the startup
+          # schema-version check (issue #10) handles the "wrong image" failure
+          # mode by exiting non-zero into CrashLoopBackOff.
+          # Sized for the in-process NER model (issue #79): torch + a
+          # ~500 MB RobertaForTokenClassification loaded resident, plus per-payload
+          # inference activations. The #77 stub's 256Mi/1Gi was fine with no model;
+          # the fat image needs materially more headroom, so request 1Gi and cap at
+          # 3Gi. cpu bumped too — inference is CPU-bound (no GPU on the cluster).
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              memory: "3Gi"
