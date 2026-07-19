@@ -1,0 +1,147 @@
+"""Adapter tests: graph ``ExtractResult`` → production row model.
+
+These are PURE (no DB): they run the graph algorithm's ``extract`` over the same
+captured fixtures the algorithm's own suite uses, then assert the adapter's
+``ProductionRows`` satisfy the production schema's contracts. The graph algorithm's
+own output is validated by ``tests/processors/p_interactions_proto`` — here we only
+assert the mapping to production shape.
+
+The DB round-trip (``adapt`` → ``state.flush`` against Postgres, ENUM acceptance,
+idempotent re-run) lives in ``test_graph_adapter_db.py`` (testcontainers), which is
+skipped where Docker is unavailable.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from data_governance.processors.interactions import graph_adapter, procedure
+from data_governance.processors.p_interactions_proto.extractor import extract
+from tests.processors.p_interactions_proto.conftest import load_trace_spans
+
+# The production entity_kind Postgres ENUM (migration 0004).
+ENTITY_KINDS = {"user", "client", "agent", "tool", "llm", "service"}
+
+# Every captured fixture the graph algorithm's suite pins.
+FIXTURES = [
+    "travel_agent_I",
+    "travel_agent_II",
+    "travel_agent_III",
+    "patent_agent_I",
+    "patent_agent_II",
+    "trace_anthropic_tool_calls",
+    "trace_claude_subagent",
+    "trace_cross_service_transport",
+    "trace_inferred_observed_merge",
+    "trace_observed_tool_two_invocations",
+]
+
+
+def _adapt(name: str):
+    spans = load_trace_spans(name)
+    return spans, graph_adapter.adapt(extract(spans), spans)
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_entity_kinds_are_in_the_enum(fixture: str) -> None:
+    """Every emitted entity kind is one of the six production ENUM values —
+    otherwise the INSERT would be rejected at write time."""
+    _, rows = _adapt(fixture)
+    assert rows.entities, f"{fixture}: expected at least one entity"
+    for e in rows.entities.values():
+        assert e.kind in ENTITY_KINDS, f"{fixture}: bad kind {e.kind!r} ({e.natural_key})"
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_entity_ids_are_deterministic_uuid5_of_natural_key(fixture: str) -> None:
+    """Entity id must be uuid5 of the natural_key so the same logical entity
+    collapses onto one row across algorithms and re-runs."""
+    _, rows = _adapt(fixture)
+    for nk, e in rows.entities.items():
+        assert e.natural_key == nk  # dict is keyed by natural_key
+        assert e.id == procedure._entity_id(e.natural_key)
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_interaction_ids_are_deterministic(fixture: str) -> None:
+    """Interaction id must reproduce from (trace_id, anchor_span/callee_nk) and be
+    unique — co-anchored inferred calls must not collide."""
+    _, rows = _adapt(fixture)
+    ids = [ix.id for ix in rows.interactions_by_anchor.values()]
+    assert len(ids) == len(set(ids)), f"{fixture}: duplicate interaction ids"
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_interaction_spans_are_unique_per_trace_span(fixture: str) -> None:
+    """Main's UNIQUE(trace_id, span_id) on interaction_spans is a load-bearing
+    guardrail (ADR-0011). The adapter must never emit two rows sharing it — a
+    co-anchored call gets a synthetic span_id instead."""
+    _, rows = _adapt(fixture)
+    seen: set[tuple[str, str]] = set()
+    for r in rows.interaction_spans:
+        key = (r.trace_id, r.span_id)
+        assert key not in seen, f"{fixture}: duplicate interaction_span {key}"
+        seen.add(key)
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_interactions_reference_resolved_entities(fixture: str) -> None:
+    """Every interaction's caller/callee id points at an emitted entity — no
+    dangling endpoints."""
+    _, rows = _adapt(fixture)
+    entity_ids = {e.id for e in rows.entities.values()}
+    for ix in rows.interactions_by_anchor.values():
+        assert ix.caller_entity_id in entity_ids, f"{fixture}: dangling caller"
+        assert ix.callee_entity_id in entity_ids, f"{fixture}: dangling callee"
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_payload_hashes_are_referenced_and_present(fixture: str) -> None:
+    """Every payload hash referenced by an interaction exists in the payload set
+    (content-addressed FK), and hashes reuse the graph algorithm's own values."""
+    spans, rows = _adapt(fixture)
+    proto = extract(spans)
+    proto_hashes = {p.content_hash for p in proto.payloads}
+    for ix in rows.interactions_by_anchor.values():
+        for h in (ix.request_payload_hash, ix.response_payload_hash):
+            if h is not None:
+                assert h in rows.payloads, f"{fixture}: payload {h[:8]} missing"
+                assert h in proto_hashes, f"{fixture}: hash diverged from proto"
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_interaction_seq_matches_anchor_span(fixture: str) -> None:
+    """seq/original_seq are taken from the anchor span (mirrors _materialise)."""
+    spans, rows = _adapt(fixture)
+    span_by_id = {s.span_id: s for s in spans}
+    for ix in rows.interactions_by_anchor.values():
+        anchor = span_by_id.get(ix.primary_anchor_span_id)
+        if anchor is not None:
+            assert ix.seq == anchor.seq
+            assert ix.original_seq == anchor.seq
+        assert ix.parent_interaction_id is None  # NULL in the first cut
+
+
+def test_co_anchored_inferred_tool_call_stays_distinct() -> None:
+    """The inferred-tool traces anchor an LLM call and a tool call on the SAME
+    LLM span. Both must survive as distinct interactions."""
+    _, rows = _adapt("patent_agent_I")
+    summaries = sorted(ix.summary for ix in rows.interactions_by_anchor.values())
+    # Expect both the LLM calls and the inferred database + file tool calls.
+    assert any("tool:database" in s for s in summaries)
+    assert any("tool:file" in s for s in summaries)
+    assert any("llm:" in s for s in summaries)
+
+
+def test_single_turn_trace_maps_one_interaction() -> None:
+    """The single-clarifying-turn travel trace: one observed agent, one inferred
+    llm, one agent→llm interaction."""
+    _, rows = _adapt("travel_agent_I")
+    kinds = sorted(e.kind for e in rows.entities.values())
+    assert kinds == ["agent", "llm"]
+    assert len(rows.interactions_by_anchor) == 1
+    (ix,) = rows.interactions_by_anchor.values()
+    caller = next(e for e in rows.entities.values() if e.id == ix.caller_entity_id)
+    callee = next(e for e in rows.entities.values() if e.id == ix.callee_entity_id)
+    assert caller.kind == "agent"
+    assert callee.kind == "llm"
