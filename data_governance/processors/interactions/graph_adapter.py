@@ -144,6 +144,19 @@ def _representative_identity(
                 ident = ci.deployed_tool_identity(s)
                 if ident is not None:
                     return ident
+        # An INFERRED tool (Step 2.c: inferred from an LLM's tool_calls) has no
+        # TOOL span of its own — its pooled spans are the LLM's. Build the
+        # in-process identity from the label's tool name so it collides with an
+        # observed in-process tool of the same name under the same agent.
+        if node.inferred and owning_agent_nk is not None:
+            name = (node.label or "tool:").split(":", 1)[1] or "(unnamed tool)"
+            return ci.Identity(
+                kind="tool",
+                natural_key=f"tool:{owning_agent_nk}:{name}",
+                display_name=name,
+                project_name=None,
+                detected_from="inferred",
+            )
 
     if kind == "agent" or kind is None:
         # Prefer an AGENT/CHAIN span so canonical service naming applies.
@@ -154,8 +167,15 @@ def _representative_identity(
             if ident is not None:
                 return ident
 
-    # Fallbacks for nodes whose kind didn't resolve above: external service, then
-    # the caller ladder (user/client), then any named service as an agent.
+    # An inferred node NEVER falls through to the caller ladder — it has no spans
+    # of its own, so the ladder would mint a phantom client from a borrowed peer
+    # span. Its kind came from the label; if we could not build a rich key above,
+    # skip it (guarded by tests: no phantom client/service entities).
+    if node.inferred:
+        return None
+
+    # Fallbacks for OBSERVED nodes whose kind didn't resolve above: external
+    # service, then the caller ladder (user/client), then any named service.
     for s in node_spans:
         ident = ci.service_identity_from_client(s)
         if ident is not None:
@@ -215,12 +235,16 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         if ident is not None:
             node_identity[n.id] = ident
 
-    # --- pass 2: re-resolve in-process tools now that agent keys are known -----
+    # --- pass 2: resolve in-process tools now that agent keys are known --------
+    # An in-process tool's natural_key nests its owning agent's key, so the owner
+    # (the caller entity on the incoming edge) must be resolved first (pass 1). This
+    # covers BOTH observed in-process tools (own OI TOOL span) and inferred ones
+    # (Step 2.c, inferred from an LLM's tool_calls — no TOOL span, only the LLM's
+    # spans pooled). Both are coarse kind `tool` with no deployed `/mcp` signal.
     for n in entity_graph.nodes:
         ns = _node_spans(n)
         is_inprocess_tool = (
             _coarse_kind(n) == "tool"
-            and any(ci._is_oi_kind(s, "TOOL") for s in ns)
             and not any(_is_mcp_server(s) for s in ns)
         )
         if is_inprocess_tool:
@@ -344,9 +368,18 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
     # span_id already claimed by an anchor row → synthesize a distinct one for the
     # next co-anchored call so main's UNIQUE(trace_id, span_id) is never violated
     # and main's flush + PK stay untouched ([[project_two_interaction_algorithms]]).
+    # Iterate groups in a STABLE order (anchor span id, then callee natural key)
+    # so which co-anchored call keeps the real span_id — and thus every derived
+    # interaction_spans row — is identical across re-runs, letting the driver's
+    # per-span re-derivation collapse on ON CONFLICT instead of accumulating.
     claimed_spans: set[str] = set()
 
-    for key, legs in groups.items():
+    def _group_sort_key(item: tuple) -> tuple[str, str]:
+        key, legs = item
+        callee_nk = min(legs, key=lambda leg: leg.pi.order).callee_nk or "unknown"
+        return (group_anchor[key], callee_nk)
+
+    for key, legs in sorted(groups.items(), key=_group_sort_key):
         anchor_span_id = group_anchor[key]
         anchor_span = span_by_id.get(anchor_span_id)
         seq = anchor_span.seq if anchor_span is not None else 0
