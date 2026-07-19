@@ -15,6 +15,14 @@ human-owned algorithm spec). The algorithm vocabulary and step ordering below
 follow the spec; per-section notes record how each step is implemented and what
 remains deferred.
 
+> **Status: production.** This algorithm is now a selectable production peer of
+> the streaming algorithm (ADR-0007), not a throwaway prototype. It writes the
+> real `entities` / `interactions` tables via the shared `state.flush`, selected
+> by `INTERACTIONS_ALGORITHM=graph`. See **Production integration** at the end for
+> where it lives, how it maps onto the production schema, and the follow-ups
+> (parent forest, territory rows, co-anchored uniqueness) that are now closed. The
+> algorithm-design sections below are unchanged.
+
 > **Shape.** A **three top-level step** pipeline over a **color-based** node
 > vocabulary:
 > - **Step 1** — base (White) execution-flow graph: one node per span, White
@@ -1125,25 +1133,78 @@ scope coloring over a single base graph.
 
 ## Consequences
 
-- The prototype writes three sets of scratch tables for inspection: the base
-  graph (after Step 1); the colored execution graph (after Step 2 coloring,
-  inference, and the Step 2.d merge); and the entity graph (after Step 3
-  entity-node grouping and edge creation). The UI surfaces these as the
-  execution graph **before** entity formation and the entity graph **after** it,
-  in the "Graphs (proto)" tab.
-- The colored-base-graph node row (`proto_colored_nodes`) carries an
+- The algorithm is a production peer of the streaming algorithm (see
+  **Production integration** below); it writes the real `entities` /
+  `interactions` / `interaction_spans` / `interaction_payloads` tables, not
+  prototype scratch tables. A dev/debug CLI still materialises three
+  *intermediate* graph tables for inspection — the base graph (after Step 1),
+  the colored execution graph (after Step 2 coloring, inference, and the Step 2.d
+  merge), and the entity graph (after Step 3 grouping and edge creation) — but the
+  final `proto_*` output tables and the "Graphs (proto)" UI tab that surfaced them
+  are retired.
+- The intermediate debug tables keep the inferred-node markers: the
+  colored-base-graph node row (`proto_colored_nodes`) carries an
   `is_inferred boolean NOT NULL DEFAULT false` column, and the entity-node row
   (`proto_entity_nodes`) carries an `inferred boolean NOT NULL DEFAULT false`
   column. These are the sole sanctioned signals for "is this an inferred node?"
-  — the `label` column is display-only. The *column* names differ by graph
-  (`is_inferred` on base/colored rows, `inferred` on the entity row), but on the
-  `/proto/graphs/{trace_id}` wire all three graphs expose the marker under one
-  uniform field name, `is_inferred`, so the UI reads a single boolean shape
-  across base / colored / entity.
-- The "Graphs (proto)" UI surfaces inferred peers via an `inferred` marker pill
-  (`marker-inferred`),
-  showing counts in the colored-graph and entity-graph summary lines. Each pill
-  is rendered by reading the boolean field; the label string is never inspected.
+  — the `label` column is display-only. (In production the inferred signal rides
+  the entity's `detected_from = "inferred"`, per **Production integration**.)
 - Non-agentic scopes contribute no entities at this stage. Scopes that emit no
   agentic spans at all will not appear in the entity graph until the enrichment
   stage runs.
+
+## Production integration
+
+The algorithm ships as one of two production interaction algorithms, selected by
+the `INTERACTIONS_ALGORITHM` env flag (`streaming` — the ADR-0007 algorithm — vs
+`graph`, this one; default `streaming`). Both write the SAME schema through the
+SAME write path (`interactions.state.flush`); only the derivation differs, and only
+one runs at a time so they share the `interactions` `processor_state` cursor.
+
+- **Location.** The algorithm lives at `processors/interactions/graph/` (moved out
+  of the throwaway-named `p_interactions_proto/`), a sub-package of the production
+  `interactions/` package alongside the streaming algorithm and the shared identity
+  code (`caller_inference`, `procedure`, `state`).
+- **Adapter (`graph_adapter.py`).** Maps one `ExtractResult` onto the production
+  row model. Entity identity is **re-derived** from each entity node's real spans
+  via `caller_inference` (the streaming algorithm's own builders) rather than
+  translated from the prototype's coarse `llm:` / `tool:` / `agent:` label — so the
+  6-value `entity_kind` ENUM and the rich natural keys are byte-identical to the
+  streaming algorithm's, and the same logical entity collapses onto one `entities`
+  row (id = `uuid5(natural_key)`) regardless of which algorithm wrote it. Payloads
+  reuse the graph's own content-hashes (identical `content_kind` values + hashing),
+  so `interaction_payloads` rows collapse across algorithms for free.
+- **Driver (`graph_driver.py`).** Re-run-per-span over the shared cursor loop: on
+  each arriving span it re-derives that span's whole trace (extract → adapt → flush
+  in one transaction). Idempotent — the deterministic `uuid5` ids collapse
+  re-derives on `ON CONFLICT`, so re-deriving a trace as later spans arrive
+  converges rather than duplicating.
+
+### Follow-ups now closed
+
+The three items originally deferred out of the first production cut are done:
+
+- **`parent_interaction_id` — the ADR-0008 forest.** Derived by
+  `graph_adapter._compute_parents` with the identical walk the streaming algorithm
+  uses (`procedure._compute_parent_interaction`): up the interaction's primary
+  anchor span's parent chain, the first ancestor that is another interaction's
+  primary anchor is the parent, else NULL (top-level). Co-anchored siblings (an LLM
+  call + a tool call inferred from that LLM's `tool_calls`, sharing one real anchor
+  span) never parent each other — the walk starts at the anchor's parent, ancestors
+  only. Both algorithms therefore produce an equivalent interaction tree.
+- **`interaction_spans` territory (`info` / `connector`).** Every non-anchor span is
+  attached to its innermost enclosing interaction (`graph_adapter._innermost_owner`,
+  mirroring `procedure._innermost_owner_for`): `info` if it carries payload/error
+  evidence, else `connector`. Coverage is naturally sparser than the streaming
+  algorithm's because the graph anchors interactions on the callee-side **leaf**
+  span (small subtree) while the streaming algorithm anchors higher on the
+  agent/CHAIN wrapper — the ADR-0008 rule is identical, only the anchor depth
+  differs. The transport/framework spans this algorithm collapses to Teal in Step 3
+  are intentionally left unattributed.
+- **Co-anchored interactions vs `UNIQUE(trace_id, span_id)`.** When an LLM call and
+  a tool call inferred from that LLM share one real anchor span, they are distinct
+  interactions (id folds in the callee natural key). The first keeps the real
+  span's `interaction_spans` anchor row; a co-anchored sibling gets a synthetic
+  `<span_id>#<callee_nk>` row, so the streaming algorithm's load-bearing
+  `UNIQUE(trace_id, span_id)` guardrail (ADR-0011) holds and its `flush` + schema
+  stay untouched.
