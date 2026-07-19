@@ -1,17 +1,21 @@
-# P-interactions prototype (THROWAWAY)
+# P-interactions graph algorithm
 
-Throwaway logic prototype answering: **does the proposed P-interactions
-algorithm produce a sensible execution flow when run on real Kagenti agent
-traces?**
+The graph-based P-interactions algorithm (ADR-0025): a batch derivation of
+**entities** and **interactions** from a trace's spans, answering **does this
+produce a sensible execution flow on real Kagenti agent traces?** — validated
+against the captured fixtures in `tests/processors/p_interactions_proto/`.
 
-The grilling session in CONTEXT.md / docs/PROJECT.md left several questions
-open. This prototype picks the most defensible answer for each, runs the
-algorithm against real spans, and exposes the output through a small UI tab
-so the result can be eyeballed.
+It is now one of the two production algorithms (the other being the streaming
+`processors/interactions/`), selected by `INTERACTIONS_ALGORITHM=graph`. The pure
+core is `extractor.extract(spans)`; `interactions/graph_adapter.py` maps its output
+onto the production schema and `interactions/graph_driver.py` drives it into the
+real tables via `state.flush`.
 
-The contents of this directory will be deleted once the algorithm has been
-either validated (folded into a real `data_governance/processors/p_interactions/`
-module) or rejected (back to the grilling table).
+The package still carries its `p_interactions_proto` name and per-step module
+layout; a rename to `interactions/graph/` is pending (plan Step 5). The `cli.py`
+tool is dev/debug only — it materialises the intermediate graph tables for
+eyeballing the coloring/inference, and does NOT write the final tables (the
+production driver does).
 
 ## Assumptions baked in (revisit after seeing output)
 
@@ -32,8 +36,10 @@ module) or rejected (back to the grilling table).
   - `external_service` — referenced via CLIENT POST `attributes['http.url']`
     host, no SERVER span anywhere with that service.
   - `user` — not detected by this prototype (no UI annotation present).
-- **Identity:** UUIDs for `entities.id` and `interactions.id`. OTEL anchor
-  carried only via `interaction_spans`.
+- **Identity (prototype only):** UUIDs for the graph's own `entities.id` and
+  `interactions.id`. In production these are re-derived deterministically by
+  `interactions/graph_adapter.py` (uuid5 of the natural key / anchor) — see
+  ADR-0025 and the adapter.
 - **Payload extraction:**
   - `llm.input_messages.*` → `llm_chat_prompt`
   - `llm.output_messages.*` → `llm_completion`
@@ -47,12 +53,21 @@ module) or rejected (back to the grilling table).
 
 ## Run
 
+**Production** (derive into the real `entities` / `interactions` tables):
+
 ```bash
-DATABASE_URL="postgres://..." \
-  python -m data_governance.processors.p_interactions_proto.cli \
-    05c6095d1f863dcb3b209ef4761829e1
+INTERACTIONS_ALGORITHM=graph DATABASE_URL="postgres://..." \
+  python -m data_governance.processors.interactions
 ```
 
-Writes to scratch tables `proto_entities`, `proto_interactions`,
-`proto_interaction_spans`, `proto_interaction_payloads`. The scratch
-tables are dropped and recreated on each run.
+**Debug** (materialise the intermediate graph tables for one trace, to eyeball the
+coloring/inference):
+
+```bash
+DATABASE_URL="postgres://..." \
+  python -m data_governance.processors.p_interactions_proto.cli <trace_id>
+```
+
+The debug CLI drops + recreates the intermediate `proto_base_*` / `proto_colored_*`
+/ `proto_entity_*` tables on each run and writes only those — the final entities /
+interactions live in the production tables, written by the driver above.
