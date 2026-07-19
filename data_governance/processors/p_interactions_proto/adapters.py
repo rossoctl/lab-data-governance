@@ -41,7 +41,7 @@ algorithm consumes.
 
 WHAT THE ALGORITHM ACTUALLY NEEDS
 ----------------------------------
-Per ADR-0007 the graph algorithm needs four things from a span:
+Per ADR-0025 the graph algorithm needs four things from a span:
 
   * Is this span a protocol boundary, and on which side (caller / callee /
     combined)? — Steps 2.a, 2.b.
@@ -116,7 +116,7 @@ class Role(str, Enum):
     The asymmetry with `Kind` is deliberate. `Kind.AGENT` covers both
     real agent-call spans and agent-run wrappers; only the adapter can
     tell them apart. Synthesizing a peer for every AGENT-kind span would
-    inflate the entity graph with non-call edges (see ADR-0007 Key decisions).
+    inflate the entity graph with non-call edges (see ADR-0025 Key decisions).
     """
 
     SOURCE = "SOURCE"
@@ -151,7 +151,7 @@ class SpanFacts:
     no messages were captured.
     `request_value` / `response_value` — opaque request/response payload
     (e.g. tool call arguments / result). None when not present.
-    `tool_calls` — OUTPUT-side tool calls evidenced on an LLM span (ADR-0007
+    `tool_calls` — OUTPUT-side tool calls evidenced on an LLM span (ADR-0025
     Step 2.c case 3) — what the model asked to invoke *as a result of* this
     call. Each dict is `{"name": str, "arguments": Any, "id": str | None}`
     (the `id` is the framework's tool_call id, used by Step 2.d edge merge to
@@ -329,13 +329,13 @@ def _extract_tool_calls(span: Span, msgs_prefix: str) -> list[dict[str, Any]] | 
 
 def _extract_output_tool_calls(span: Span) -> list[dict[str, Any]] | None:
     """OUTPUT-side tool calls the model asked to invoke *as a result of* this
-    call (ADR-0007 Step 2.c case 3, rule 4 — ordered after the LLM)."""
+    call (ADR-0025 Step 2.c case 3, rule 4 — ordered after the LLM)."""
     return _extract_tool_calls(span, _OI_OUTPUT_MSGS_PREFIX)
 
 
 def _extract_input_tool_calls(span: Span) -> list[dict[str, Any]] | None:
     """INPUT-side tool calls — a prior turn's tool use replayed back into the
-    request (ADR-0007 Step 2.c case 3, rule 3 — ordered before the LLM).
+    request (ADR-0025 Step 2.c case 3, rule 3 — ordered before the LLM).
 
     Per the human spec these are materialised as their own inferred tool
     interactions even when they replay a call already seen on an earlier span's
@@ -533,7 +533,7 @@ def _oi_kind(span: Span) -> Kind:
 def _oi_natural_key(span: Span, kind: Kind) -> str | None:
     """Build the merge-key string for an openinference boundary span.
 
-    Per ADR-0007 the key is the originating boundary's identifying
+    Per ADR-0025 the key is the originating boundary's identifying
     attribute, prefixed by kind. No service/host fallbacks (those would
     over-merge across distinct entities behind the same proxy).
 
@@ -810,7 +810,7 @@ class _ClaudeAgentSDKAdapter:
       * `ClaudeAgentSDK.{tool_name}` / `ClaudeAgentSDK.Subagent` —
         AGENT kind, tool / sub-agent dispatch. `agent.name` carries the
         dispatched target's name (the span-name suffix is the fallback).
-        A SOURCE boundary (ADR-0007 Step 2.c case 2): the dispatched
+        A SOURCE boundary (ADR-0025 Step 2.c case 2): the dispatched
         target emits no observed span, so Step 2.c's one-sided stubbing
         infers the target peer keyed on `natural_key`. Sub-agent and
         local tool take the same path — the suffix is the peer identity
@@ -855,7 +855,7 @@ class _ClaudeAgentSDKAdapter:
             return SpanFacts(kind=Kind.OTHER, role=Role.NONE, display_label=_service(span))
 
         # Tool / sub-agent dispatch: ClaudeAgentSDK.{tool_name} | Subagent.
-        # ADR-0007 Step 2.c case 2: the span name carries the dispatched
+        # ADR-0025 Step 2.c case 2: the span name carries the dispatched
         # target's name and kind=AGENT, but the target emits no observed
         # span of its own. Treat it as a SOURCE boundary keyed on
         # `agent:<name>`; Step 2.c's one-sided stubbing then synthesizes
@@ -987,7 +987,7 @@ class _AnthropicAdapter:
         `llm.output_messages.0.message.tool_calls.{k}.tool_call.function.name`/
         `.arguments`. This adapter surfaces them on `SpanFacts.tool_calls`,
         which `builder.infer_tool_calls_from_attributes` turns into inferred
-        tool nodes (ADR-0007 Step 2.c case 3). This is the one framework that
+        tool nodes (ADR-0025 Step 2.c case 3). This is the one framework that
         opts into attribute-derived tool inference, because the tool execution
         is genuinely unobserved here (contrast openai_agents, which emits a
         real tool-execution span).
@@ -1039,7 +1039,7 @@ def _generic_oi_extract(span: Span) -> SpanFacts:
     Agents, and the `*` fallback for unprofiled frameworks (LangChain,
     LiteLLM, Haystack, …).
 
-    Boundary role per ADR-0007: LLM and TOOL kinds map to `Role.SOURCE`
+    Boundary role per ADR-0025: LLM and TOOL kinds map to `Role.SOURCE`
     (LLM-kind alone is sufficient call evidence; TOOL-kind carries
     target identity in `tool.name` and payloads in `input.value` /
     `output.value`). AGENT-kind wrappers map to `Role.NONE` — without
@@ -1136,7 +1136,7 @@ def _parse_scope(scope_name: str) -> tuple[str | None, str | None]:
     if scope_name.startswith("openinference.instrumentation."):
         framework = scope_name[len("openinference.instrumentation."):] or None
         return ("openinference", framework)
-    # Other agentic scopes (a2a, mcp) deferred per ADR-0007.
+    # Other agentic scopes (a2a, mcp) deferred per ADR-0025.
     return (None, None)
 
 
@@ -1145,7 +1145,7 @@ def is_agentic_scope(scope_name: str) -> bool:
     return root is not None
 
 
-# Transport-scope OTel instrumentation scopes (ADR-0007 Step 2.a "transport
+# Transport-scope OTel instrumentation scopes (ADR-0025 Step 2.a "transport
 # scope — communication / proxy"). The spec names httpx / starlette / asgi;
 # aiohttp is the common async-HTTP-client sibling. This is the single place the
 # raw transport scope strings live, keeping the adapter-layer isolation rule

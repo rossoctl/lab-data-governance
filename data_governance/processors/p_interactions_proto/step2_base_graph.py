@@ -1,6 +1,6 @@
 """Step 2 — enrich the execution-flow graph (Step 2.a–2.d). THROWAWAY.
 
-ADR-0007:
+ADR-0025:
   Step 2.a — transport coloring (Teal): `color_transport`.
   Step 2.b — agentic coloring (Blue) + Blue chain edges: `color_agentic`.
   Step 2.c — extend the execution graph with inferred nodes and edges:
@@ -143,7 +143,7 @@ def color_agentic(graph: BaseGraph, spans_by_id: dict[str, Span]) -> None:
                 # separated by a transport hop are NOT the same entity, so do not
                 # link them and do not traverse past the Teal node. Otherwise the
                 # Blue chain edge would bridge the transport region and defeat the
-                # Step 3.a Teal cut (ADR-0007 Step 3.a/3.b: the Teal chain is the
+                # Step 3.a Teal cut (ADR-0025 Step 3.a/3.b: the Teal chain is the
                 # entity boundary, reconstructed as a cross-entity interaction).
                 continue
             if cur.color == BLUE:
@@ -176,7 +176,7 @@ def duplicate_combined_nodes(graph: BaseGraph, spans_by_id: dict[str, Span]) -> 
     call). The duplicate has no traceparent neighbours. Route the FORWARD call
     through an inferred Teal server: original(source) → server → duplicate(target)
     (request only). The response leg (duplicate → original) is formed
-    structurally at Step 3.b (ADR-0007 Step 2.c: forward legs only)."""
+    structurally at Step 3.b (ADR-0025 Step 2.c: forward legs only)."""
     new_nodes: list[Node] = []
     new_edges: list[Edge] = []
     for node in graph.nodes:
@@ -224,7 +224,7 @@ def duplicate_combined_nodes(graph: BaseGraph, spans_by_id: dict[str, Span]) -> 
 def infer_tool_calls_from_attributes(
     graph: BaseGraph, spans_by_id: dict[str, Span]
 ) -> None:
-    """ADR-0007 Step 2.c case 3 — materialise inferred tool nodes from an LLM
+    """ADR-0025 Step 2.c case 3 — materialise inferred tool nodes from an LLM
     span's `tool_calls`, both output- and input-side.
 
     Some agentic spans evidence a *tool the model asked to invoke* in an
@@ -234,7 +234,7 @@ def infer_tool_calls_from_attributes(
     model asked for *as a result of* this call) and `SpanFacts.input_tool_calls`
     (input side, a prior turn's tool use replayed back into the request). For
     each tool call we infer the three nodes and three FORWARD edges the current
-    spec mandates (ADR-0007 Step 2.c case 3 — forward legs only):
+    spec mandates (ADR-0025 Step 2.c case 3 — forward legs only):
 
       * a **tool-call node** (the source — the act of calling, inside the LLM's
         turn): Blue, role=SOURCE, kind=TOOL;
@@ -250,7 +250,7 @@ def infer_tool_calls_from_attributes(
     The response leg (tool → tool-call) is NOT minted here; it is formed
     structurally at Step 3.b (ordered by the traceparent-nesting LIFO rule).
 
-    **Ordering (ADR-0007 Step 2.c "Inferred call-chain ordering").** Output-
+    **Ordering (ADR-0025 Step 2.c "Inferred call-chain ordering").** Output-
     derived tools are ordered *after* the LLM call chain (positive band);
     input-derived tools *before* it (negative band). The call-before-response
     ordering has moved to Step 3.b. The Blue fold edge (a) carries no
@@ -398,7 +398,7 @@ def synthesize_missing_peers(graph: BaseGraph, spans_by_id: dict[str, Span]) -> 
     """For every boundary node with no call-chain edges, create an inferred
     peer (is_inferred=True) referencing the same span and route the FORWARD
     call between them through an inferred Teal server (source→server→target). The
-    response leg is formed structurally at Step 3.b (ADR-0007 Step 2.c: forward
+    response leg is formed structurally at Step 3.b (ADR-0025 Step 2.c: forward
     legs only).
 
     A boundary node with no interaction edges indicates that the peer side of
@@ -495,7 +495,7 @@ def synthesize_missing_peers(graph: BaseGraph, spans_by_id: dict[str, Span]) -> 
 def infer_agent_from_bare_leaf_llms(
     graph: BaseGraph, spans_by_id: dict[str, Span]
 ) -> None:
-    """ADR-0007 Step 2.c case 4 — infer an agent node when the framework emits
+    """ADR-0025 Step 2.c case 4 — infer an agent node when the framework emits
     only bare leaf LLM spans (no run/agent/wrapper span).
 
     Pattern (raw-anthropic): a transport-scope (Teal) parent whose direct Blue
@@ -587,7 +587,7 @@ def infer_agent_from_bare_leaf_llms(
 
         agent = Node.make(span_id="", scope=parent.scope, color=BLUE)
         agent.is_inferred = True
-        # Typed `agent:` prefix (ADR-0007 natural-key prefixes) — this case-4
+        # Typed `agent:` prefix (ADR-0025 natural-key prefixes) — this case-4
         # agent has no `agent.name` attribute, so its identity is the service
         # name; prefix it so the Step 3.a semantic combine keys on it (its guard
         # requires a typed prefix) and the natural_key is consistent with the
@@ -596,7 +596,7 @@ def infer_agent_from_bare_leaf_llms(
         agent.attributes["_is_boundary"] = False
         agent.attributes["_kind"] = _KIND_AGENT
         # Force the fused entity inferred even though it absorbs observed LLM
-        # spans — the *agent* is what was inferred (ADR-0007 Step 2.c case 4).
+        # spans — the *agent* is what was inferred (ADR-0025 Step 2.c case 4).
         agent.attributes["_inferred_agent"] = True
         new_nodes.append(agent)
 
@@ -718,7 +718,7 @@ def _rewire_edges(graph: BaseGraph, redirect: dict[str, str]) -> None:
 def merge_identical_interactions(
     graph: BaseGraph, spans_by_id: dict[str, Span]
 ) -> tuple[int, int]:
-    """ADR-0007 / spec **Step 2.d** — node-and-edge merge on the execution-flow
+    """ADR-0025 / spec **Step 2.d** — node-and-edge merge on the execution-flow
     (base) graph, before the Step 3.a entity grouping.
 
     The spec states Step 2.d as one heuristic-driven merge over any
@@ -892,7 +892,7 @@ def merge_identical_interactions(
     # (Convergence of repeatedly-called typed callee peers happens in Step 3.a
     # (semantic combine, `combine_identical_entities`) on the entity graph, per the spec's two-graph
     # split. The single-agent bare-leaf case is produced upstream by the Step
-    # 2.c case 4 inferred-agent construction — see ADR-0007 Step 2.c case 4.)
+    # 2.c case 4 inferred-agent construction — see ADR-0025 Step 2.c case 4.)
 
     # --- Teal-chain (server) merge ----------------------------------------
     # Two Teal servers are the same call chain when they connect the same two
@@ -999,7 +999,7 @@ def merge_identical_interactions(
 
     # --- Inferred call site absorbed by an observed transport chain (A2A ---
     # delegation).
-    # ADR-0007 Step 2.d rule 4 / spec example III. An agent's call site (an
+    # ADR-0025 Step 2.d rule 4 / spec example III. An agent's call site (an
     # openinference TOOL span, e.g. `delegate_to_research_agent`) has an inferred
     # one-sided callee chain — `source Blue → inferred Teal server → inferred Blue
     # callee peer` (from `synthesize_missing_peers`). The SAME call-site span is
@@ -1027,7 +1027,7 @@ def merge_identical_interactions(
 def _absorb_inferred_call_into_observed_agent(
     graph: BaseGraph, spans_by_id: dict[str, Span]
 ) -> int:
-    """ADR-0007 Step 2.d rule 4 — see the block comment at the call site.
+    """ADR-0025 Step 2.d rule 4 — see the block comment at the call site.
 
     For each inferred one-sided call (an inferred Teal server whose source is an
     observed call-site node and whose target is an inferred callee peer), test

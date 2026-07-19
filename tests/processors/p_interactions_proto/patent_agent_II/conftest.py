@@ -7,7 +7,7 @@ agent makes three `messages.create` LLM calls; two of the turns' outputs each as
 for a *different* tool (`file`, then `web_search`), and each tool is invoked
 exactly once.
 
-Like `patent_agent_I` this is the **anthropic bare-leaf** case (ADR-0007 Step 2.c
+Like `patent_agent_I` this is the **anthropic bare-leaf** case (ADR-0025 Step 2.c
 case 4): the framework emits only bare leaf LLM spans sharing a single transport
 (`POST /`) parent, no run/agent/wrapper span, so the agent is *inferred*. Every
 entity is inferred — the agent (case 4), the remote LLM, and the two tools. Four

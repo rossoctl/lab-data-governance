@@ -4,14 +4,14 @@ Companion to `test_entities.py` (the entity-set stage). This pins the *edges* of
 the P-interactions graph for trace `e8f7f7c4d7b35e5aa4fbdaaae2a90f75`: the calls
 between the entities, with direction, count, error signal, and evidence.
 
-Per ADR-0007 each call site becomes a *pair* of Black edges — source→target
+Per ADR-0025 each call site becomes a *pair* of Black edges — source→target
 (request) and target→source (response) — so a caller and each peer are joined in
 both directions, and the extractor turns every Black edge into one
 ProtoInteraction. We assert on the directed (caller_key -> callee_key) pair
-counts (entity identity is the `natural_key`, the stable ADR-0007 signal).
+counts (entity identity is the `natural_key`, the stable ADR-0025 signal).
 
 The travel-advisor's two delegations are `agent → agent` interactions, NOT calls
-to `tool:delegate_to_*` peers: per ADR-0007 Step 2.d rule 4 each delegation call
+to `tool:delegate_to_*` peers: per ADR-0025 Step 2.d rule 4 each delegation call
 site is the shared root of an inferred callee chain and an observed transport
 chain reaching the downstream agent, so the observed agent wins. They appear as
 `agent:travel-advisor → agent:research-agent` and
@@ -42,7 +42,7 @@ from data_governance.processors.p_interactions_proto.extractor import extract
 # The per-caller call counts (travel-advisor calls the LLM 7x, booking_agent 4x,
 # etc.) are the shape currently produced from the trace's spans.
 #
-# The two delegations are `agent → agent` (ADR-0007 Step 2.d rule 4), not calls
+# The two delegations are `agent → agent` (ADR-0025 Step 2.d rule 4), not calls
 # to `tool:delegate_to_*` peers: travel-advisor → research-agent (1x) and
 # travel-advisor → booking_agent (2x, booking is invoked twice), each with a
 # matching response leg.
@@ -75,7 +75,7 @@ EXPECTED_DIRECTED_PAIRS = {
 
 EXPECTED_INTERACTION_COUNT = 50
 
-# The full interaction sequence, sorted by `order` alone (ADR-0007 consumer
+# The full interaction sequence, sorted by `order` alone (ADR-0025 consumer
 # contract: the CLI sorts `key=lambda r: r.order`, the API `ORDER BY "order"`).
 # Each entry is (caller_key, callee_key). Read top-to-bottom this is the execution
 # order the UI renders.
@@ -168,7 +168,7 @@ def test_interaction_pairs_and_counts(multi_agent_delegation_trace_spans):
 def test_interactions_are_bidirectional(multi_agent_delegation_trace_spans):
     """Every call site appears as both caller->peer and peer->caller.
 
-    ADR-0007 Step 2.c adds bidirectional Black edges for each call site, so the
+    ADR-0025 Step 2.c adds bidirectional Black edges for each call site, so the
     forward and return counts for any pair must match.
     """
     result = extract(multi_agent_delegation_trace_spans)
@@ -205,7 +205,7 @@ def test_delegation_response_leg_anchors_on_callee_span(
     multi_agent_delegation_trace_spans,
 ):
     """An A2A-delegation response leg anchors on the CALLEE agent's own span, not
-    the caller's `delegate_to_*` call-site span (ADR-0007 Step 3.c / Step 2.d
+    the caller's `delegate_to_*` call-site span (ADR-0025 Step 3.c / Step 2.d
     rule 4).
 
     Each `agent → agent` delegation is a pair of legs that pool the SAME spans —
@@ -290,7 +290,7 @@ def test_delegation_response_leg_anchors_on_callee_span(
 def test_order_is_dense_unique_ordinal(multi_agent_delegation_trace_spans):
     """`order` is a dense, unique 0..N-1 global ordinal.
 
-    ADR-0007: consumers sort by `order` alone, so it must be total and unique.
+    ADR-0025: consumers sort by `order` alone, so it must be total and unique.
     """
     result = extract(multi_agent_delegation_trace_spans)
     orders = sorted(ix.order for ix in result.interactions)
@@ -300,7 +300,7 @@ def test_order_is_dense_unique_ordinal(multi_agent_delegation_trace_spans):
 def test_interaction_order_is_exact_sequence(multi_agent_delegation_trace_spans):
     """The interactions, sorted by `order` alone, match the human-validated walk.
 
-    Pins the exact execution-order sequence (ADR-0007 Step 3.b): consumers sort by
+    Pins the exact execution-order sequence (ADR-0025 Step 3.b): consumers sort by
     `order` only, so this is what the CLI/API/UI render. This is the correct
     output for this trace given its traceparent as-is (see EXPECTED_ORDER).
     """

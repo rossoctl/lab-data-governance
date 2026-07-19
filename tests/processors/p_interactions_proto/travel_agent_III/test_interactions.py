@@ -4,11 +4,11 @@ Companion to `test_entities.py` (the entity-set stage). This pins the *edges* of
 the P-interactions graph for trace `8ae1f64d4bb51b750168c6ef1e11a2d8`: the calls
 between the entities, with direction, count, error signal, evidence, and order.
 
-Per ADR-0007 Step 3.b each call site becomes a *pair* of edges — source→target
+Per ADR-0025 Step 3.b each call site becomes a *pair* of edges — source→target
 (request) and target→source (response) — so the agent and each peer are joined
 in both directions, and the extractor turns every edge into one ProtoInteraction.
 We assert on the directed (caller_key, callee_key) pair counts (entity identity
-is the `natural_key`, the stable ADR-0007 signal).
+is the `natural_key`, the stable ADR-0025 signal).
 
 Unique to this trace: the two `get_flights` calls ERRORED — the only error
 signal across the whole trace-fixture suite. Both directions of each errored call
@@ -45,14 +45,14 @@ EXPECTED_DIRECTED_PAIRS = {
 
 EXPECTED_INTERACTION_COUNT = 18
 
-# The full ordered interaction sequence, sorted by `order` alone (the ADR-0007
+# The full ordered interaction sequence, sorted by `order` alone (the ADR-0025
 # consumer contract: the CLI sorts `key=lambda r: r.order`, the API `ORDER BY
 # "order"`). Each entry is (caller_key, callee_key). Read top-to-bottom this is
 # the execution order the UI renders.
 #
 # GROUND TRUTH — HUMAN-VALIDATED. DO NOT EDIT WITHOUT CONFIRMATION BY A HUMAN.
 # Five agent↔LLM turns, with each tool call interleaved right after the LLM turn
-# whose output requested it (leaf tool returns immediately — ADR-0007 Step 3.b
+# whose output requested it (leaf tool returns immediately — ADR-0025 Step 3.b
 # recursive execution-order walk). The two `get_flights` calls (orders 10-11 and
 # 14-15) are the errored ones. It is the oracle, not a snapshot; a mismatch means
 # the ordering REGRESSED — fix the code.
@@ -100,7 +100,7 @@ def test_interaction_pairs_and_counts(canonical_trace_spans):
 def test_interactions_are_bidirectional(canonical_trace_spans):
     """Every call site appears as both source->peer and peer->source.
 
-    ADR-0007 Step 3.b forms one request + one response leg per call site, so the
+    ADR-0025 Step 3.b forms one request + one response leg per call site, so the
     forward and return counts for any pair must match.
     """
     result = extract(canonical_trace_spans)
@@ -154,7 +154,7 @@ def test_interactions_have_payloads_and_evidence(canonical_trace_spans):
 def test_interaction_order_is_exact_sequence(canonical_trace_spans):
     """The interactions, sorted by `order` alone, match the human-validated walk.
 
-    Pins the exact 0..17 execution-order sequence (ADR-0007 Step 3.b): consumers
+    Pins the exact 0..17 execution-order sequence (ADR-0025 Step 3.b): consumers
     sort by `order` only, so this is what the CLI/API/UI render. It also asserts
     `order` is a dense, unique 0..N-1 global ordinal (no gaps, no ties).
     """

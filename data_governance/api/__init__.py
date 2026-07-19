@@ -464,7 +464,7 @@ async def _proto_graphs_handler(request: Request) -> Response:
                     # Step 3.a marker: surfaced as `is_inferred` on the wire so
                     # the UI uses one boolean shape across base / colored /
                     # entity graphs. Source column on the entity row is
-                    # `inferred` (no `is_` prefix) — see ADR-0007.
+                    # `inferred` (no `is_` prefix) — see ADR-0025.
                     "is_inferred": r[6],
                     "flagged": False,
                 }

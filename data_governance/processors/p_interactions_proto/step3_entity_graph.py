@@ -1,6 +1,6 @@
 """Step 3 — build the entity graph (Step 3.a / 3.b / 3.d). THROWAWAY.
 
-ADR-0007:
+ADR-0025:
   Step 3.a — structural grouping (nodes) + Step 3.b (edges):
              `build_entity_graph` (with `_observed_transport_chains`).
   Step 3.d — semantic combine of same-entity groups: `combine_identical_entities`.
@@ -88,7 +88,7 @@ def _reconstruct_two_component_transport_chains(
     spans_by_id: dict[str, Span],
     emit,
 ) -> None:
-    """ADR-0007 Step 3.b for observed transport chains — reconstruct one
+    """ADR-0025 Step 3.b for observed transport chains — reconstruct one
     interaction per observed Teal chain that bridges **two distinct Blue
     components** (a cross-service `agent→httpx→starlette→agent` hop).
 
@@ -140,7 +140,7 @@ def _reconstruct_two_component_transport_chains(
         if len(endpoint_by_entity) > 2:
             entity_graph.notes.append(
                 f"observed transport chain touches {len(endpoint_by_entity)} "
-                "entities; >2-way transport reconstruction is deferred (ADR-0007)"
+                "entities; >2-way transport reconstruction is deferred (ADR-0025)"
             )
             continue
 
@@ -187,7 +187,7 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
     teal_ids = _teal_ids(graph)
 
     # Build undirected adjacency over edges that do NOT touch ANY Teal node.
-    # Dropping Teal is the entity cut (ADR-0007 Step 3.a "drop the Teal nodes"):
+    # Dropping Teal is the entity cut (ADR-0025 Step 3.a "drop the Teal nodes"):
     # neither an inferred `source→server→target` route nor an observed transport
     # hop `agent→httpx→starlette→agent` connects its two Blue ends here, so they
     # group into separate entities.
@@ -431,7 +431,7 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
             src, tgt, src_eid, dst_eid, call_order=call_order, resp_order=resp_order
         )
 
-    # --- Observed transport chains (Step 2.a / ADR-0007 Step 3.b) ---------
+    # --- Observed transport chains (Step 2.a / ADR-0025 Step 3.b) ---------
     # An observed transport chain is a maximal connected run of observed Teal
     # nodes (real httpx/starlette/asgi spans colored Teal in Step 2.a). Unlike an
     # inferred server it has no order bands and no request/response edge split —
@@ -457,7 +457,7 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
 def _order_execution_walk(
     chains: list[dict], spans_by_id: dict[str, Span]
 ) -> None:
-    """ADR-0007 / spec **Step 3.b point 2** — assign each interaction edge a
+    """ADR-0025 / spec **Step 3.b point 2** — assign each interaction edge a
     `order` that is a TRUE GLOBAL ORDINAL: a single monotonic integer sequence
     across the ENTIRE trace such that sorting the interactions by `order` ALONE
     yields the correct display. `order` is derived from **both structure and
@@ -588,7 +588,7 @@ def _order_execution_walk(
 def combine_identical_entities(
     entity_graph: EntityGraph, spans_by_id: dict[str, Span] | None = None
 ) -> int:
-    """ADR-0007 / spec **Step 3.d semantic combine** — combine entity-graph nodes
+    """ADR-0025 / spec **Step 3.d semantic combine** — combine entity-graph nodes
     (groups) representing the *same* entity, maintaining edges (re-pointing
     source/target to the survivor).
 

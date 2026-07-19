@@ -1,7 +1,7 @@
-"""Coverage for ADR-0007 Step 3.b reconstruction of an *observed* transport
+"""Coverage for ADR-0025 Step 3.b reconstruction of an *observed* transport
 chain (as opposed to an inferred Teal server).
 
-ADR-0007 Step 3.a/3.b: the entity fuse drops **all** Teal nodes — inferred
+ADR-0025 Step 3.a/3.b: the entity fuse drops **all** Teal nodes — inferred
 servers *and* observed transport spans — and each Teal chain between two Blue
 components becomes one interaction. Before this was implemented the fuse keyed
 solely on the inferred `_server` marker, so an observed `httpx→starlette` hop

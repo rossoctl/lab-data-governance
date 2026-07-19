@@ -1,4 +1,4 @@
-"""Coverage for ADR-0007 / spec **Step 3.b point 2** — the GLOBAL-ORDINAL edge
+"""Coverage for ADR-0025 / spec **Step 3.b point 2** — the GLOBAL-ORDINAL edge
 ordering in `step3_entity_graph._order_execution_walk`, which implements a
 **recursive execution-order walk** of the chain nesting forest.
 

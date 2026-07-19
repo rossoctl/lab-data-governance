@@ -88,7 +88,7 @@ CREATE TABLE proto_colored_nodes (
   is_boundary         boolean NOT NULL DEFAULT false,
   is_target_duplicate boolean NOT NULL DEFAULT false,
   -- Set by Step 2.c / Step 2.d on the materialised inferred (e.g. unobserved-peer)
-  -- node. Per ADR-0007: this column is the sole sanctioned signal for
+  -- node. Per ADR-0025: this column is the sole sanctioned signal for
   -- "inferred node"; do not parse the `label` column for that purpose.
   is_inferred         boolean NOT NULL DEFAULT false,
   flagged             boolean NOT NULL DEFAULT false,
@@ -114,7 +114,7 @@ CREATE TABLE proto_entity_nodes (
   contains_boundary  boolean NOT NULL DEFAULT false,
   contains_blue      boolean NOT NULL DEFAULT false,
   contains_teal      boolean NOT NULL DEFAULT false,
-  -- Per ADR-0007 Step 3.a: true iff every absorbed node was inferred.
+  -- Per ADR-0025 Step 3.a: true iff every absorbed node was inferred.
   -- This column is the sole sanctioned signal for "inferred entity"; do not
   -- parse the `label` column for that purpose.
   inferred           boolean NOT NULL DEFAULT false,
@@ -139,7 +139,7 @@ CREATE TABLE proto_entity_edges (
 CREATE TABLE proto_entities (
   id             text PRIMARY KEY,
   -- natural_key carries the kind as a typed prefix (`llm:` / `tool:` /
-  -- `agent:`) per ADR-0007 "Natural-key prefixes (an implementation construct,
+  -- `agent:`) per ADR-0025 "Natural-key prefixes (an implementation construct,
   -- not a spec vocabulary)". Consumers split on `:` rather than reading a
   -- separate kind column.
   natural_key    text NOT NULL,
@@ -147,7 +147,7 @@ CREATE TABLE proto_entities (
   detected_from  text NOT NULL,
   scope_name     text NOT NULL,
   anchor_span_id text NULL,
-  -- Per ADR-0007: inferred identity is a typed boolean, never derived
+  -- Per ADR-0025: inferred identity is a typed boolean, never derived
   -- from label/natural_key parsing. UI and downstream queries filter on
   -- this column.
   inferred       boolean NOT NULL DEFAULT false,
@@ -171,7 +171,7 @@ CREATE TABLE proto_interactions (
   request_payload_hash   text NULL REFERENCES proto_interaction_payloads(content_hash),
   response_payload_hash  text NULL REFERENCES proto_interaction_payloads(content_hash),
   summary                text NOT NULL,
-  -- Global ordinal `order` (ADR-0007 Step 3.b point 2): a single monotonic
+  -- Global ordinal `order` (ADR-0025 Step 3.b point 2): a single monotonic
   -- sequence across the whole trace — chronological across turns, LIFO within a
   -- nested delegation. "order" is a SQL reserved word, so it is always
   -- double-quoted. Consumers sort by "order" ALONE.

@@ -1,6 +1,6 @@
 """Entities/interactions for an `openinference.instrumentation.anthropic` trace.
 
-Pins ADR-0007 Step 2.b case 3 (tool nodes inferred from an LLM span's output
+Pins ADR-0025 Step 2.b case 3 (tool nodes inferred from an LLM span's output
 `tool_calls` attribute) and the dedicated anthropic adapter end-to-end.
 
 The fixture is a `patent-assistant` service making two `messages.create` LLM

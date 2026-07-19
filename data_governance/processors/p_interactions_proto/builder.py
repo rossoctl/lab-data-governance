@@ -1,6 +1,6 @@
 """Graph construction for the p_interactions prototype. THROWAWAY.
 
-Implements the algorithm described in docs/adr/0007-p-interactions-graph-algorithm.md.
+Implements the algorithm described in docs/adr/0025-p-interactions-graph-algorithm.md.
 
 **Architecture (per the human spec's "Note about architecture" — one module per
 top-level step).** The implementation is split across per-top-level-step modules;

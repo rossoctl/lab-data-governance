@@ -16,7 +16,7 @@ transport:
 Each agent's tool calls are one-sided observations (only the caller emitted
 spans), so Step 2.c stubs inferred peers for them. The two `delegate_to_*` call
 sites travel-advisor uses to reach the sub-agents do NOT become `tool:` peers:
-per ADR-0007 Step 2.d rule 4 each is the shared root of an inferred callee chain
+per ADR-0025 Step 2.d rule 4 each is the shared root of an inferred callee chain
 and an observed transport chain reaching the downstream agent, so the observed
 agent wins (they surface as `agent → agent` interactions, not `tool:delegate_*`
 entities). The LLM calls across the agents converge on a single inferred

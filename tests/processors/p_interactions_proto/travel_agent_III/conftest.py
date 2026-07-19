@@ -1,7 +1,7 @@
 """Fixtures for the `travel_agent_III` trace tests.
 
 `travel_agent_III.json` is the canonical live travel-advisor trace
-(`8ae1f64d4bb51b750168c6ef1e11a2d8`) referenced throughout ADR-0007 and the
+(`8ae1f64d4bb51b750168c6ef1e11a2d8`) referenced throughout ADR-0025 and the
 openai_agents v1.4.1 span reference, captured verbatim from the deployment's
 `spans` table (ADR-0006: the row IS the Span). A single travel-advisor agent
 (OpenAI Agents SDK, fronted by an A2A server) calls one LLM and three tools
@@ -17,7 +17,7 @@ Five entities: one observed agent + one inferred LLM + three inferred tools.
 
 The span-row loader lives in the parent package's conftest; we reuse it here so
 the row→Span mapping stays a single source of truth (ADR-0006). `CANONICAL_TRACE_ID`
-also stays in the parent conftest as the shared ADR-0007 reference constant.
+also stays in the parent conftest as the shared ADR-0025 reference constant.
 """
 
 from __future__ import annotations
@@ -34,5 +34,5 @@ CANONICAL_TRACE_ID = "8ae1f64d4bb51b750168c6ef1e11a2d8"
 
 @pytest.fixture()
 def canonical_trace_spans() -> list[Span]:
-    """Spans of the canonical travel-advisor trace (ADR-0007 examples)."""
+    """Spans of the canonical travel-advisor trace (ADR-0025 examples)."""
     return load_trace_spans("travel_agent_III")

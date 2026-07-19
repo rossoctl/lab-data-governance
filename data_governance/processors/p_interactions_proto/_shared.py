@@ -89,7 +89,7 @@ def _server_ids(graph: BaseGraph) -> set[str]:
 
 def _teal_ids(graph: BaseGraph) -> set[str]:
     """Every Teal node — inferred servers (Step 2.c) *and* observed transport
-    spans (Step 2.a). This is the full set the Step 3.a fuse drops: ADR-0007
+    spans (Step 2.a). This is the full set the Step 3.a fuse drops: ADR-0025
     Step 3.a forms entity subgraphs by "dropping the Teal nodes", so a Teal node
     of either provenance is the boundary between two entities, and the Teal chain
     between two Blue components becomes one interaction (Step 3.b).
@@ -98,7 +98,7 @@ def _teal_ids(graph: BaseGraph) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Forward call-chain order bands (ADR-0007 Step 2.c "Inferred call-chain
+# Forward call-chain order bands (ADR-0025 Step 2.c "Inferred call-chain
 # ordering" — the input/output tool banding on the FORWARD edges only)
 # ---------------------------------------------------------------------------
 #
@@ -130,7 +130,7 @@ _OUTPUT_TOOL_BASE = 40   # output tool k: call = 40+3k
 
 
 # ---------------------------------------------------------------------------
-# Teal server insertion (ADR-0007 Step 2.c — route the FORWARD call through a
+# Teal server insertion (ADR-0025 Step 2.c — route the FORWARD call through a
 # transport node)
 # ---------------------------------------------------------------------------
 #
@@ -157,7 +157,7 @@ def _insert_teal_server(
 
         source →(call) server →(call) target      (the outgoing request)
 
-    Per ADR-0007 Step 2.c (Assumption #3), Step 2.c mints the FORWARD legs only
+    Per ADR-0025 Step 2.c (Assumption #3), Step 2.c mints the FORWARD legs only
     — the call-chain structure. The response leg (target→source) is formed
     structurally at Step 3.b and ordered by the traceparent-nesting LIFO rule,
     not minted here. The server has `span_id=""` (it references no real span, so
@@ -170,7 +170,7 @@ def _insert_teal_server(
     server.attributes["_server"] = True
 
     # Forward request only: source → server → target (call band). No response
-    # legs — Step 3.b forms the response structurally (ADR-0007 Step 3.b).
+    # legs — Step 3.b forms the response structurally (ADR-0025 Step 3.b).
     e_src_srv = Edge.make(source.id, server.id, BLUE, order=call_order)
     e_srv_tgt = Edge.make(server.id, target.id, BLUE, order=call_order)
     return server, [e_src_srv, e_srv_tgt]
@@ -224,7 +224,7 @@ def _peer_match_key(node: Node, spans_by_id: dict[str, Span]) -> str | None:
     the Step 3.a semantic combine. Two inferred peers stubbing the same real
     callee from different sources end up with the same key.
 
-    Per ADR-0007, the key is "the source-span identifying attribute used by
+    Per ADR-0025, the key is "the source-span identifying attribute used by
     the originating boundary's classifier". The actual attribute lookup
     lives in `adapters.py`, dispatched on (scope, framework, version);
     here we just ask the matching adapter for `SpanFacts.natural_key`.
@@ -245,7 +245,7 @@ def _peer_match_key(node: Node, spans_by_id: dict[str, Span]) -> str | None:
 def _white_blue_neighbors(graph: BaseGraph) -> dict[str, set[str]]:
     """Undirected adjacency over edges that do NOT touch a Teal node — the
     same connectivity Step 3.a uses to form entities. Teal is the entity cut
-    (ADR-0007 Step 3.a drops all Teal): both an inferred `source→server→target`
+    (ADR-0025 Step 3.a drops all Teal): both an inferred `source→server→target`
     route and an observed transport hop `agent→httpx→starlette→agent` fail to
     connect their two Blue ends here, so a caller and its callee stay in
     different components. Used by Step 2.d as a proximity guard: an inferred node

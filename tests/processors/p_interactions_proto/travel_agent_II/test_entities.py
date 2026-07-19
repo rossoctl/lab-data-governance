@@ -1,6 +1,6 @@
 """Entities extracted from the real 4-agent cross-framework travel-advisor trace.
 
-This pins the P-interactions graph algorithm (ADR-0007) against the real trace
+This pins the P-interactions graph algorithm (ADR-0025) against the real trace
 `e8f7f7c4d7b35e5aa4fbdaaae2a90f75` — the first fixture here where multiple fully
 instrumented agents delegate to one another across different frameworks.
 
@@ -27,19 +27,19 @@ The travel-advisor's two `delegate_to_*` call sites (`delegate_to_research_agent
 `delegate_to_booking_agent`) are NOT tools/entities. Each is an openinference
 TOOL span that is the shared traceparent root of both an inferred one-sided
 callee chain AND an observed a2a/httpx/starlette transport chain reaching the
-downstream agent — so ADR-0007 Step 2.d rule 4 collapses them: the observed
+downstream agent — so ADR-0025 Step 2.d rule 4 collapses them: the observed
 downstream agent wins over the synthetic `tool:` peer, and the delegation
 surfaces as an `agent → agent` interaction (travel-advisor → research-agent /
 booking_agent), not a call to a `tool:delegate_to_*` entity. (See
 `_absorb_inferred_call_into_observed_agent` in builder.py.)
 
-Per ADR-0007 the four agents are the `observed` entities; the six tools and
+Per ADR-0025 the four agents are the `observed` entities; the six tools and
 the one LLM are `inferred`. Eleven entities total (4 + 6 + 1).
 
 Entity identity is the `natural_key` (`agent:` / `tool:` prefixes). Although
 `display_name` is a real service name here (not "unknown" as in the canonical
 trace), we still assert on the stable signals — `natural_key`, `inferred`,
-`detected_from` — per ADR-0007 ("Natural-key prefixes are part of the public
+`detected_from` — per ADR-0025 ("Natural-key prefixes are part of the public
 algorithm vocabulary"; "Inferred identity is a boolean field, not a label").
 
 STAGE 1 — this file validates the *entity set* only. Interaction pairs/counts,
@@ -51,7 +51,7 @@ from __future__ import annotations
 
 from data_governance.processors.p_interactions_proto.extractor import extract
 
-# Expected entity set: natural_key -> inferred?  (the stable, ADR-0007
+# Expected entity set: natural_key -> inferred?  (the stable, ADR-0025
 # sanctioned signals — never the display string).
 #
 # GROUND TRUTH — DO NOT EDIT TO MATCH THE CODE. This set was reviewed and
@@ -67,7 +67,7 @@ EXPECTED_ENTITIES = {
     "agent:booking_agent": False,
     "agent:payment-agent": False,
     # The six tools they call — one-sided observations, stubbed + combined.
-    # NOTE: the two `delegate_to_*` "tools" are NOT here. Per ADR-0007 Step 2.d
+    # NOTE: the two `delegate_to_*` "tools" are NOT here. Per ADR-0025 Step 2.d
     # rule 4 each delegation call site is the shared root of an inferred callee
     # chain AND an observed transport chain reaching the downstream agent, so the
     # observed agent wins and the delegation becomes an `agent → agent` edge
@@ -117,7 +117,7 @@ def test_four_observed_agents_rest_inferred(multi_agent_delegation_trace_spans):
         "llm:claude-haiku-4-5-20251001",
     }
 
-    # detected_from and the inferred boolean agree on every entity — ADR-0007
+    # detected_from and the inferred boolean agree on every entity — ADR-0025
     # "Inferred identity is a boolean field, not a label convention".
     for e in result.entities:
         expected = "inferred" if e.inferred else "observed"

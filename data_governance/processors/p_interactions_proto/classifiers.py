@@ -1,6 +1,6 @@
 """Agentic-scope classifier facade for the graph prototype. THROWAWAY.
 
-Per ADR-0007, the current algorithm covers the **openinference** agentic
+Per ADR-0025, the current algorithm covers the **openinference** agentic
 scope only. a2a and mcp are deferred — their adapters do not exist yet.
 
 This module is now a thin facade over `adapters.py`: every per-framework

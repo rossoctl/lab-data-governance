@@ -4,10 +4,10 @@ Companion to `test_entities.py` (the entity-set stage). This pins the *edges* of
 the P-interactions graph for trace `186b5703acde0532adc6940e9eda3cb1`: the single
 agent↔LLM call, with direction, count, error signal, evidence, and order.
 
-Per ADR-0007 Step 3.b the one call site becomes a *pair* of edges —
+Per ADR-0025 Step 3.b the one call site becomes a *pair* of edges —
 source→target (request) and target→source (response) — so the extractor emits
 exactly two ProtoInteractions. We assert on the directed (caller_key, callee_key)
-pair counts (entity identity is the `natural_key`, the stable ADR-0007 signal).
+pair counts (entity identity is the `natural_key`, the stable ADR-0025 signal).
 
 GROUND TRUTH — HUMAN-VALIDATED. DO NOT EDIT WITHOUT CONFIRMATION BY A HUMAN. The
 interaction set below was reviewed and confirmed correct by a human against the
@@ -32,7 +32,7 @@ EXPECTED_DIRECTED_PAIRS = {
 
 EXPECTED_INTERACTION_COUNT = 2
 
-# The full ordered interaction sequence, sorted by `order` alone (the ADR-0007
+# The full ordered interaction sequence, sorted by `order` alone (the ADR-0025
 # consumer contract: the CLI sorts `key=lambda r: r.order`, the API `ORDER BY
 # "order"`). Each entry is (caller_key, callee_key).
 #
@@ -68,7 +68,7 @@ def test_interaction_pairs_and_counts(clarifying_turn_trace_spans):
 def test_interactions_are_bidirectional(clarifying_turn_trace_spans):
     """The call site appears as both caller->peer and peer->caller.
 
-    ADR-0007 Step 3.b forms one request + one response leg per call site, so the
+    ADR-0025 Step 3.b forms one request + one response leg per call site, so the
     forward and return counts for the pair must match.
     """
     result = extract(clarifying_turn_trace_spans)
@@ -104,7 +104,7 @@ def test_interactions_have_payloads_and_evidence(clarifying_turn_trace_spans):
 def test_interaction_order_is_exact_sequence(clarifying_turn_trace_spans):
     """The interactions, sorted by `order` alone, match the human-validated walk.
 
-    Pins the exact 0..1 execution-order sequence (ADR-0007 Step 3.b): consumers
+    Pins the exact 0..1 execution-order sequence (ADR-0025 Step 3.b): consumers
     sort by `order` only, so this is what the CLI/API/UI render. It also asserts
     `order` is a dense, unique 0..N-1 global ordinal (no gaps, no ties).
     """

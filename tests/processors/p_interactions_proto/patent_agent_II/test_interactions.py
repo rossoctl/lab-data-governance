@@ -4,11 +4,11 @@ Companion to `test_entities.py` (the entity-set stage). This pins the *edges* of
 the P-interactions graph for trace `4ee0239356d61584bb4c3b6965041788`: the calls
 between the entities, with direction, count, error signal, and evidence.
 
-Per ADR-0007 Step 3.b each call site becomes a *pair* of edges — source→target
+Per ADR-0025 Step 3.b each call site becomes a *pair* of edges — source→target
 (request) and target→source (response) — so the agent and each peer are joined
 in both directions, and the extractor turns every edge into one ProtoInteraction.
 We assert on the directed (caller_key -> callee_key) pair counts (entity identity
-is the `natural_key`, the stable ADR-0007 signal).
+is the `natural_key`, the stable ADR-0025 signal).
 
 The three agent→LLM turns stay three distinct interactions (three distinct
 `started_at` — timing follows the anchor span). Unlike `patent_agent_I`, NO tool
@@ -46,7 +46,7 @@ EXPECTED_DIRECTED_PAIRS = {
 
 EXPECTED_INTERACTION_COUNT = 10
 
-# The full ordered interaction sequence, sorted by `order` alone (the ADR-0007
+# The full ordered interaction sequence, sorted by `order` alone (the ADR-0025
 # consumer contract: the CLI sorts `key=lambda r: r.order`, the API `ORDER BY
 # "order"`). Each entry is (caller_key, callee_key). Read top-to-bottom this is
 # the execution order the UI renders.
@@ -55,7 +55,7 @@ EXPECTED_INTERACTION_COUNT = 10
 # was reviewed and confirmed correct by a human against the real trace: three
 # agent↔LLM turns, and after the turns whose LLM output asks for a tool the
 # agent↔tool call interleaves immediately (leaf tool returns right after its
-# request — ADR-0007 Step 3.b recursive execution-order walk). It is the oracle,
+# request — ADR-0025 Step 3.b recursive execution-order walk). It is the oracle,
 # not a snapshot; a mismatch means the ordering REGRESSED — fix the code.
 EXPECTED_ORDER = [
     ("agent:patent_search", "llm:claude-haiku-4-5-20251001"),   # turn 1: call LLM
@@ -93,7 +93,7 @@ def test_interaction_pairs_and_counts(patent_search_trace_spans):
 def test_interactions_are_bidirectional(patent_search_trace_spans):
     """Every call site appears as both caller->peer and peer->caller.
 
-    ADR-0007 Step 3.b forms one request + one response leg per call site, so the
+    ADR-0025 Step 3.b forms one request + one response leg per call site, so the
     forward and return counts for any pair must match.
     """
     result = extract(patent_search_trace_spans)
@@ -129,7 +129,7 @@ def test_interactions_have_payloads_and_evidence(patent_search_trace_spans):
 def test_interaction_order_is_exact_sequence(patent_search_trace_spans):
     """The interactions, sorted by `order` alone, match the human-validated walk.
 
-    Pins the exact 0..9 execution-order sequence (ADR-0007 Step 3.b): consumers
+    Pins the exact 0..9 execution-order sequence (ADR-0025 Step 3.b): consumers
     sort by `order` only, so this is what the CLI/API/UI render. It also asserts
     `order` is a dense, unique 0..N-1 global ordinal (no gaps, no ties).
     """

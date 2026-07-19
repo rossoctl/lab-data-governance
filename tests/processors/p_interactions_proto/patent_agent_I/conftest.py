@@ -10,7 +10,7 @@ on their INPUT messages.
 
 This is the **anthropic bare-leaf** case: the framework emits only bare leaf LLM
 spans (`messages.create`) sharing a single transport (`POST /`) parent — there is
-NO run/agent/wrapper span. So per ADR-0007 Step 2.c case 4 the agent itself is
+NO run/agent/wrapper span. So per ADR-0025 Step 2.c case 4 the agent itself is
 *inferred* (`infer_agent_from_bare_leaf_llms`). Unlike `travel_agent_II` (four
 observed agents), every entity in this trace is inferred: the agent (case 4), the
 remote LLM (one-sided, emits no spans), and the two tools (one-sided

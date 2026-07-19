@@ -1,8 +1,8 @@
 """Entities extracted from the canonical travel-advisor trace.
 
-This pins the P-interactions graph algorithm (ADR-0007) against the real trace
+This pins the P-interactions graph algorithm (ADR-0025) against the real trace
 `8ae1f64d4bb51b750168c6ef1e11a2d8` — the canonical trace referenced throughout
-ADR-0007 and the openai_agents v1.4.1 span reference.
+ADR-0025 and the openai_agents v1.4.1 span reference.
 
 What the trace contains (from the openinference openai_agents v1.4.1 spans):
 
@@ -11,7 +11,7 @@ What the trace contains (from the openinference openai_agents v1.4.1 spans):
   * one LLM it calls — `claude-haiku-4-5-20251001`;
   * three tools it calls — `get_flights`, `get_weather`, `search_destinations`.
 
-Per ADR-0007 the LLM and tools are *one-sided* observations: only the caller
+Per ADR-0025 the LLM and tools are *one-sided* observations: only the caller
 (the agent) emitted spans, so Step 2.c stubs each peer as an **inferred** entity
 and Step 3.d combines the per-call-site stubs of the same peer into one. The
 agent is the lone `observed` entity (openai_agents emits a proper run span,
@@ -20,7 +20,7 @@ inferred). Five entities total.
 
 Entity identity is the `natural_key` (`llm:` / `tool:` / `agent:` prefixes) —
 `display_name` is `"unknown"` at Step 3.a for the peers, so we assert on the key
-and the `inferred` boolean, never the display string (ADR-0007 "Inferred
+and the `inferred` boolean, never the display string (ADR-0025 "Inferred
 identity is a boolean field, not a label convention").
 
 STAGE 1 — this file validates the *entity set* only. Interaction pairs/counts,
@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from data_governance.processors.p_interactions_proto.extractor import extract
 
-# Expected entity set: natural_key -> inferred?  (the stable, ADR-0007
+# Expected entity set: natural_key -> inferred?  (the stable, ADR-0025
 # sanctioned signals — never the display string, which is "unknown" here).
 #
 # GROUND TRUTH — HUMAN-VALIDATED. DO NOT EDIT WITHOUT CONFIRMATION BY A HUMAN.
@@ -78,7 +78,7 @@ def test_one_observed_agent_rest_inferred(canonical_trace_spans):
         "tool:search_destinations",
     }
 
-    # detected_from and the inferred boolean agree — ADR-0007 "Inferred identity
+    # detected_from and the inferred boolean agree — ADR-0025 "Inferred identity
     # is a boolean field, not a label convention".
     for e in result.entities:
         expected = "inferred" if e.inferred else "observed"
