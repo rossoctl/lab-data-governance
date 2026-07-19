@@ -31,12 +31,15 @@ Single-source-of-truth choices (CLAUDE.md):
 ADR-0008 forest walk the streaming algorithm uses, so both algorithms produce an
 equivalent interaction tree.
 
-Known first-cut limitation (ADR-0025 follow-up):
-
-- Only ``anchor``-role ``interaction_spans`` are emitted (the graph algorithm's
-  prototype output carries one evidence span per interaction). The ``info`` /
-  ``connector`` "territory" rows the streaming algorithm attaches are a documented
-  gap; the raw material (``EntityNode.span_ids``) exists for a follow-up.
+``interaction_spans`` carry the full ADR-0008 territory: the ``anchor`` row plus
+``info`` / ``connector`` rows for every non-anchor span attached to its innermost
+enclosing interaction (see :func:`_innermost_owner`, mirroring the streaming
+algorithm's ``_innermost_owner_for``). Coverage is naturally sparser than the
+streaming algorithm's because the graph anchors interactions on the callee-side
+LEAF span (its subtree is small), whereas the streaming algorithm anchors higher
+on the agent/CHAIN wrapper. The rule is identical; the anchor depth differs. The
+transport/framework spans the graph collapses to Teal in Step 3 are intentionally
+not attributed to any interaction.
 """
 
 from __future__ import annotations
@@ -207,6 +210,45 @@ def _owning_agent_nk(
             caller = node_identity.get(ee.from_node_id)
             if caller is not None and caller.kind == "agent":
                 return caller.natural_key
+    return None
+
+
+def _has_payload_or_error(span: Span) -> bool:
+    """A non-anchor span is ``info`` (carries payload/error/exception evidence)
+    vs ``connector`` (territory only). Mirrors the streaming algorithm's
+    ``procedure._has_payload_or_error`` so the role split matches."""
+    if span.error is not None:
+        return True
+    for k in span.attributes or {}:
+        if k.startswith("llm.input_messages.") or k.startswith("llm.output_messages."):
+            return True
+        if k in ("input.value", "output.value", "http.request.body", "http.response.body"):
+            return True
+    return False
+
+
+def _innermost_owner(
+    span: Span,
+    span_by_id: dict[str, Span],
+    ix_by_anchor: dict[str, procedure.ProtoInteraction],
+) -> procedure.ProtoInteraction | None:
+    """The interaction whose anchor is the nearest ancestor-or-self of *span* on
+    the same canonical service — its innermost enclosing territory. Mirrors
+    ``procedure._innermost_owner_for`` (ADR-0008), so graph territory ownership
+    matches the streaming algorithm's."""
+    sp_canon = ci.canonical_service_name(span)
+    cur: Span | None = span
+    while cur is not None:
+        ix = ix_by_anchor.get(cur.span_id)
+        if ix is not None:
+            an = span_by_id.get(ix.primary_anchor_span_id)
+            an_canon = ci.canonical_service_name(an) if an is not None else None
+            # A span only belongs to an interaction on its own canonical service.
+            if not (sp_canon and an_canon and sp_canon != an_canon):
+                return ix
+        if cur.parent_id is None:
+            break
+        cur = span_by_id.get(cur.parent_id)
     return None
 
 
@@ -483,7 +525,37 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
 
     # parent_interaction_id: the ADR-0008 forest, derived once every interaction
     # exists (the walk needs the full anchor→interaction map).
-    _compute_parents(list(interactions_by_anchor.values()), span_by_id)
+    all_interactions = list(interactions_by_anchor.values())
+    _compute_parents(all_interactions, span_by_id)
+
+    # interaction_spans territory (info/connector): every non-anchor span in the
+    # trace goes to its innermost enclosing interaction (ADR-0008), mirroring the
+    # streaming algorithm's _repair_after_arrival. This gives each interaction the
+    # per-span evidence list the anchor-only first cut lacked. The real anchor spans
+    # are already represented by anchor rows, so they are excluded here — that keeps
+    # UNIQUE(trace_id, span_id) intact (each span → exactly one interaction_spans
+    # row). Deterministic pick when several interactions share one anchor span.
+    ix_by_anchor: dict[str, procedure.ProtoInteraction] = {}
+    for ix in all_interactions:
+        prior = ix_by_anchor.get(ix.primary_anchor_span_id)
+        if prior is None or ix.id < prior.id:
+            ix_by_anchor[ix.primary_anchor_span_id] = ix
+    anchor_span_ids = {ix.primary_anchor_span_id for ix in all_interactions}
+    for s in span_by_id.values():
+        if s.parent_id is None or s.span_id in anchor_span_ids:
+            continue  # trace root never attached; anchors are emit-once
+        owner = _innermost_owner(s, span_by_id, ix_by_anchor)
+        if owner is None:
+            continue
+        role = "info" if _has_payload_or_error(s) else "connector"
+        interaction_spans.append(
+            procedure.ProtoInteractionSpan(
+                interaction_id=owner.id,
+                trace_id=s.trace_id,
+                span_id=s.span_id,
+                role=role,
+            )
+        )
 
     # entity_spans: provenance link for every span of every resolved entity.
     for n in entity_graph.nodes:

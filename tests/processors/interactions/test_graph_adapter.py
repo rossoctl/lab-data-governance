@@ -190,3 +190,53 @@ def test_single_turn_trace_maps_one_interaction() -> None:
     callee = next(e for e in rows.entities.values() if e.id == ix.callee_entity_id)
     assert caller.kind == "agent"
     assert callee.kind == "llm"
+
+
+# --- interaction_spans territory (info/connector, ADR-0008) -----------------
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_interaction_span_roles_are_valid(fixture: str) -> None:
+    """Every interaction_spans row carries a valid role, and exactly one anchor row
+    per interaction (co-anchored calls use a synthetic span_id, still one anchor)."""
+    _, rows = _adapt(fixture)
+    from collections import Counter
+
+    for r in rows.interaction_spans:
+        assert r.role in {"anchor", "info", "connector"}, f"{fixture}: bad role {r.role!r}"
+    anchors = Counter(
+        r.interaction_id for r in rows.interaction_spans if r.role == "anchor"
+    )
+    for ix in rows.interactions_by_anchor.values():
+        assert anchors[ix.id] == 1, f"{fixture}: {ix.id[:8]} has {anchors[ix.id]} anchors"
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_territory_spans_own_a_true_ancestor_anchor(fixture: str) -> None:
+    """A non-anchor (info/connector) span's owning interaction must be anchored on
+    an ancestor-or-self of that span (ADR-0008 innermost-territory rule)."""
+    spans, rows = _adapt(fixture)
+    span_by_id = {s.span_id: s for s in spans}
+    by_id = {ix.id: ix for ix in rows.interactions_by_anchor.values()}
+    for r in rows.interaction_spans:
+        if r.role == "anchor":
+            continue
+        owner_anchor = by_id[r.interaction_id].primary_anchor_span_id
+        cur = span_by_id.get(r.span_id)
+        found = False
+        while cur is not None:
+            if cur.span_id == owner_anchor:
+                found = True
+                break
+            cur = span_by_id.get(cur.parent_id) if cur.parent_id else None
+        assert found, f"{fixture}: territory span {r.span_id[:8]} owner is not an ancestor-anchor"
+
+
+def test_territory_adds_info_and_connector_rows() -> None:
+    """A multi-turn delegation trace whose anchors have payload-bearing descendants
+    yields both info (payload/error) and connector (traceability-only) rows on top
+    of the anchors — the per-interaction evidence the anchor-only cut lacked."""
+    _, rows = _adapt("travel_agent_II")
+    roles = {r.role for r in rows.interaction_spans}
+    assert "info" in roles
+    assert "connector" in roles
