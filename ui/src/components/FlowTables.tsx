@@ -15,7 +15,11 @@ import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 
 import { useInteractions, useEntities, usePayload } from '../api/hooks';
 import { fetchJson } from '../api/client';
-import { computeInteractionDepths, durationMs } from '../lib/flow';
+import {
+  computeInteractionDepths,
+  legOfType,
+  requestOccurredAt,
+} from '../lib/flow';
 import { formatTime24Utc } from '../lib/recentTraces';
 import type { PinStore } from '../lib/pins';
 import { EntityPill } from './EntityPill';
@@ -204,7 +208,11 @@ export function FlowTables({
       .then((r) => r.spans)
       .catch(() => []);
     if (seq !== clickSeq.current) return; // a newer click superseded this one
-    const dur = durationMs(ix.started_at, ix.ended_at);
+    // Timing/payload now live on the request/response legs (ADR-0025). The
+    // request leg brackets the call start, the response leg its end; duration
+    // is the API's computed value (null = response in flight).
+    const reqLeg = legOfType(ix, 'request');
+    const respLeg = legOfType(ix, 'response');
     setSelection({
       kind: 'interaction',
       id: ix.id,
@@ -214,15 +222,17 @@ export function FlowTables({
         ['interaction_id', ix.id],
         ['anchor span(s)', evidence.filter((e) => e.role === 'anchor').map((e) => e.span_id).join(', ') || '—'],
         ['evidence spans', String(evidence.length)],
-        ['started_at', ix.started_at ?? '—'],
-        ['ended_at', ix.ended_at ?? '—'],
-        ...(dur ? ([['duration', `${dur} ms`]] as Array<[string, string]>) : []),
+        ['request_at', reqLeg?.occurred_at ?? '—'],
+        ['response_at', respLeg?.occurred_at ?? '—'],
+        ...(ix.duration_seconds != null
+          ? ([['duration', `${(ix.duration_seconds * 1000).toFixed(0)} ms`]] as Array<[string, string]>)
+          : []),
       ],
       evidence,
       pinKey: `interaction:${ix.id}`,
       pinLabel: ix.summary || ix.id,
-      requestPayloadHash: ix.request_payload_hash,
-      responsePayloadHash: ix.response_payload_hash,
+      requestPayloadHash: reqLeg?.payload_hash ?? null,
+      responsePayloadHash: respLeg?.payload_hash ?? null,
     });
     onSelectionChange?.({ iid: ix.id });
   }
@@ -397,7 +407,7 @@ export function FlowTables({
               return (
                 <Tr key={ix.id} isClickable onRowClick={() => selectInteraction(ix)} {...rowProps('interaction', ix.id)}>
                   <Td dataLabel="Started" className="dg-mono">
-                    {ix.started_at ? formatTime24Utc(ix.started_at) : ''}
+                    {requestOccurredAt(ix) ? formatTime24Utc(requestOccurredAt(ix)!) : ''}
                   </Td>
                   <Td>{pinDot(`interaction:${ix.id}`)}</Td>
                   <Td dataLabel="Caller">
@@ -425,9 +435,9 @@ export function FlowTables({
                     )}
                   </Td>
                   <Td dataLabel="Status">
-                    {ix.error === true ? (
+                    {ix.any_error === true ? (
                       <span style={{ color: '#f85149' }}>ERROR</span>
-                    ) : ix.error === false ? (
+                    ) : ix.any_error === false ? (
                       <span style={{ color: '#6acf6a' }}>ok</span>
                     ) : (
                       '—'
