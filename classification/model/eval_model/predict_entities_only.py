@@ -76,11 +76,11 @@ def validate_output(input_data, output_data, expected_tags=None):
         # Validate each entity
         text = out.get('text', '')
         for j, entity in enumerate(entities):
-            if not isinstance(entity, list) or len(entity) != 3:
-                errors.append(f"Line {i}, Entity {j}: Invalid format (must be [start, end, tag]) for index {inp.get('index')}")
+            if not isinstance(entity, list) or len(entity) not in (3, 4):
+                errors.append(f"Line {i}, Entity {j}: Invalid format (must be [start, end, tag] or [start, end, tag, confidence]) for index {inp.get('index')}")
                 continue
             
-            start, end, tag = entity
+            start, end, tag = entity[0], entity[1], entity[2]
             
             # Check positions are valid
             if not isinstance(start, int) or not isinstance(end, int):
@@ -226,9 +226,9 @@ def predict_entities_from_jsonl(model_folder, input_file=None, validate_tags=Fal
             try:
                 predicted_entities = predict_entities(text, model, tokenizer, id2label, device, is_cuda)
                 
-                # Convert to required format: [[start, end, "TAG"], ...]
+                # Convert to required format: [[start, end, "TAG", confidence], ...]
                 entities = [
-                    [ent['start'], ent['end'], ent['label']]
+                    [ent['start'], ent['end'], ent['label'], ent['confidence']]
                     for ent in predicted_entities
                 ]
                 
@@ -236,7 +236,7 @@ def predict_entities_from_jsonl(model_folder, input_file=None, validate_tags=Fal
                 if entities:
                     records_with_entities += 1
                     total_entities += len(entities)
-                    for _, _, tag in entities:
+                    for _, _, tag, *_ in entities:
                         entity_types[tag] = entity_types.get(tag, 0) + 1
                 
                 # Create output record

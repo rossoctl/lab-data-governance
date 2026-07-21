@@ -196,7 +196,8 @@ def enhance_entity(entity: List, text: str, entity_metadata: Dict, config: Dict)
     Returns:
         Enhanced entity object with all classification attributes
     """
-    start, end, tag = entity
+    start, end, tag = entity[0], entity[1], entity[2]
+    confidence = entity[3] if len(entity) > 3 else 1.0
     
     # Get base classification
     classification = get_base_classification(tag, entity_metadata, config)
@@ -223,7 +224,7 @@ def enhance_entity(entity: List, text: str, entity_metadata: Dict, config: Dict)
         "regulatory_tags": classification["regulatory_tags"].copy(),
         "identifier_type": classification["identifier_type"],
         "sensitivity_level": entity_sensitivity,
-        "confidence": 1.0,
+        "confidence": confidence,
         "is_personalized": is_personalized
     }
     
