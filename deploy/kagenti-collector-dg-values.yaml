@@ -1,0 +1,51 @@
+# Helm values overlay for the kagenti-deps chart: fan the collector's
+# traces/phoenix pipeline out to the data-governance receiver DECLARATIVELY,
+# as a chart value — the persistent alternative to the live-ConfigMap
+# `patch-kagenti-collector.sh` (issue #42, cross-repo half).
+#
+# WHY this exists: the patch script edits the live ConfigMap in place, so an
+# upstream re-apply of the kagenti collector ConfigMap (chart upgrade, cluster
+# recreate) drops the DG exporter until the script is re-run. Wiring the same
+# exporter in as a chart value makes it survive `helm upgrade` natively.
+#
+# Apply (when you own the kagenti-deps release):
+#   helm upgrade kagenti-deps <kagenti-chart>/charts/kagenti-deps \
+#     -n kagenti-system --reuse-values \
+#     -f deploy/kagenti-collector-dg-values.yaml
+#
+# This layers onto the chart's default `otel.collector.phoenixConfig`
+# (kagenti-deps values.yaml) — which already runs the traces/phoenix pipeline
+# with the genai->openinference transform. We add ONE exporter and re-list the
+# pipeline's exporters to include it (Helm replaces lists, so the phoenix
+# exporter must be repeated, not just appended).
+#
+# CAVEATS (why this is the stretch/D4 path, not a drop-in for every cluster):
+#   1. Requires owning the kagenti-deps Helm release. The DG deploy today does
+#      NOT install kagenti — it patches an existing collector. Use this only
+#      where you drive the kagenti install/upgrade.
+#   2. No effect when the collector ConfigMap is operator-managed
+#      (`otelBootstrap.operatorManaged=true`): the chart does not render the
+#      ConfigMap in that mode (see otel-collector.yaml), so the value never
+#      reaches the collector. Use the patch script (or the operator's own
+#      config surface) there.
+#   3. DG export stays OPT-IN. This overlay is intentionally NOT folded into the
+#      upstream chart default — a stock kagenti install has no DG receiver to
+#      send to. Apply it only on clusters where DG is deployed.
+#
+# The endpoint/tls mirror patch-kagenti-collector.sh exactly, so switching
+# between the two paths is a no-op for the collector's behavior.
+otel:
+  collector:
+    phoenixConfig:
+      exporters:
+        otlp/data_governance:
+          endpoint: data-governance-receiver.data-governance.svc.cluster.local:4317
+          tls:
+            insecure: true
+      service:
+        pipelines:
+          traces/phoenix:
+            # Full list (Helm replaces lists): keep phoenix, add data_governance.
+            exporters:
+              - otlp/phoenix
+              - otlp/data_governance

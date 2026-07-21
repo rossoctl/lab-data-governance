@@ -10,6 +10,12 @@
 # script is safe to re-run, and an upstream re-apply of the kagenti
 # ConfigMap simply requires re-running this script to re-add the patch.
 #
+# Declarative alternative (survives helm upgrade instead of needing a re-run):
+# deploy/kagenti-collector-dg-values.yaml wires the SAME otlp/data_governance
+# exporter into the traces/phoenix pipeline as a kagenti-deps chart value. Use
+# it where you own the kagenti-deps Helm release and the collector ConfigMap is
+# Helm-managed (not operatorManaged). See that file's header for caveats.
+#
 # Run from anywhere; paths are resolved relative to this file.
 #
 # Usage:
