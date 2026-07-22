@@ -17,20 +17,55 @@ export interface Entity {
   detected_from: string;
 }
 
-/** A derived interaction (ADR-0013) for one trace. */
+/** One temporal half of an interaction (ADR-0025): a request or a response. */
+export interface InteractionLeg {
+  leg_type: 'request' | 'response';
+  occurred_at: string | null;
+  payload_hash: string | null;
+  error: boolean | null;
+  seq: number;
+}
+
+/**
+ * A derived interaction (ADR-0025) for one trace: a parent identity row plus
+ * one or two request/response `legs`. The leg-dependent fields (timing,
+ * payload, error) live on the legs; the accessors below project them back for
+ * display. `duration_seconds` is computed by the API (null = response in
+ * flight); `any_error` aggregates the legs.
+ */
 export interface Interaction {
   id: string;
   caller_entity_id: string | null;
   callee_entity_id: string | null;
-  started_at: string | null;
-  ended_at: string | null;
-  error: boolean | null;
-  request_payload_hash: string | null;
-  response_payload_hash: string | null;
   summary: string | null;
   parent_interaction_id: string | null;
+  legs: InteractionLeg[];
+  duration_seconds: number | null;
+  any_error: boolean | null;
   span_count: number;
   anchor_count: number;
+}
+
+/** The request (or response) leg of an interaction, if present. */
+export function legOfType(
+  ix: Pick<Interaction, 'legs'>,
+  legType: 'request' | 'response',
+): InteractionLeg | null {
+  return (ix.legs ?? []).find((l) => l.leg_type === legType) ?? null;
+}
+
+/**
+ * The interaction's start = its request leg's `occurred_at` (ADR-0025). The
+ * flow table orders and displays on this, exactly as it used to read
+ * `started_at` off the interaction row.
+ */
+export function requestOccurredAt(ix: Pick<Interaction, 'legs'>): string | null {
+  return legOfType(ix, 'request')?.occurred_at ?? null;
+}
+
+/** The interaction's end = its response leg's `occurred_at`, if any. */
+export function responseOccurredAt(ix: Pick<Interaction, 'legs'>): string | null {
+  return legOfType(ix, 'response')?.occurred_at ?? null;
 }
 
 export type ToolSubtype = 'in-framework' | 'deployed';

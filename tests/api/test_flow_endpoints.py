@@ -68,20 +68,35 @@ def seeded(configured_db: str) -> str:
             "VALUES (%s, %s, 's-ent', 'identified_via')",
             (_ENT_ID, _TID),
         )
+        # Parent interactions row is identity only (ADR-0025).
         conn.execute(
             "INSERT INTO interactions (id, trace_id, caller_entity_id, "
-            "callee_entity_id, summary, original_seq) "
-            "VALUES (%s, %s, %s, %s, 'did a thing', 1)",
+            "callee_entity_id, summary) "
+            "VALUES (%s, %s, %s, %s, 'did a thing')",
             (_IX_ID, _TID, _ENT_ID, _ENT_ID),
         )
+        # Two legs: a request leg with a payload and a NULL-payload response leg
+        # (occurred_at brackets the call; duration = response - request = 2s).
         conn.execute(
-            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, role) "
-            "VALUES (%s, %s, 's-anchor', 'anchor')",
+            "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
+            "payload_hash, error, original_seq) "
+            "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false, 1)",
+            (_IX_ID,),
+        )
+        conn.execute(
+            "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
+            "payload_hash, error, original_seq) "
+            "VALUES (%s, 'response', '2026-01-01T00:00:02Z', 'resphash', true, 2)",
+            (_IX_ID,),
+        )
+        conn.execute(
+            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, "
+            "role, leg_type) VALUES (%s, %s, 's-anchor', 'anchor', 'request')",
             (_IX_ID, _TID),
         )
         conn.execute(
-            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, role) "
-            "VALUES (%s, %s, 's-info', 'info')",
+            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, "
+            "role, leg_type) VALUES (%s, %s, 's-info', 'info', 'request')",
             (_IX_ID, _TID),
         )
         conn.commit()
@@ -101,6 +116,50 @@ def test_interactions_list_has_counts_and_no_bulk_maps(seeded, api_server):
     # The span rows themselves are NOT inlined on the list.
     assert "spans" not in ix
     assert "spans_by_interaction" not in body
+
+
+def test_interactions_carry_nested_legs(seeded, api_server):
+    """ADR-0025: each interaction carries its request/response legs nested,
+    plus a computed duration and an aggregate any_error over the legs."""
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    # Identity on the interaction itself.
+    assert ix["caller_entity_id"] == _ENT_ID
+    assert ix["callee_entity_id"] == _ENT_ID
+    assert ix["summary"] == "did a thing"
+    # The leg-dependent fields moved off the interaction (ADR-0025).
+    for gone in ("started_at", "ended_at", "request_payload_hash",
+                 "response_payload_hash", "error"):
+        assert gone not in ix, gone
+    # Legs nested, keyed by leg_type, request first.
+    legs = {leg["leg_type"]: leg for leg in ix["legs"]}
+    assert set(legs) == {"request", "response"}
+    assert legs["request"]["payload_hash"] == "reqhash"
+    assert legs["request"]["error"] is False
+    assert legs["response"]["payload_hash"] == "resphash"
+    assert legs["response"]["error"] is True
+    # Duration = response.occurred_at - request.occurred_at = 2 seconds.
+    assert ix["duration_seconds"] == 2.0
+    # any_error aggregates the legs (the response leg errored).
+    assert ix["any_error"] is True
+
+
+def test_interaction_duration_null_when_response_leg_absent(
+    seeded, api_server, configured_db
+):
+    """A request-only interaction (response still in flight) has null duration —
+    the 'response pending' signal, not an error (ADR-0025)."""
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "DELETE FROM interaction_legs WHERE interaction_id = %s "
+            "AND leg_type = 'response'",
+            (_IX_ID,),
+        )
+        conn.commit()
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert {leg["leg_type"] for leg in ix["legs"]} == {"request"}
+    assert ix["duration_seconds"] is None
 
 
 def test_entities_list_is_lean(seeded, api_server):
@@ -125,8 +184,12 @@ def test_interaction_spans_sub_resource(seeded, api_server):
     by_id = {s["span_id"]: s for s in spans}
     assert by_id["s-anchor"]["role"] == "anchor"
     assert by_id["s-info"]["role"] == "info"
-    # Provenance shape: joined-through span fields present.
-    assert set(spans[0]) == {"span_id", "role", "parent_id", "kind", "service_name"}
+    # Provenance shape: joined-through span fields present, plus the leg the
+    # span evidences (ADR-0025).
+    assert set(spans[0]) == {
+        "span_id", "role", "parent_id", "kind", "service_name", "leg_type"
+    }
+    assert by_id["s-anchor"]["leg_type"] == "request"
 
 
 def test_entity_spans_sub_resource(seeded, api_server):

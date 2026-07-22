@@ -372,6 +372,39 @@ def _span_evidence_row(row: tuple) -> dict:
     }
 
 
+def _request_occurred_at(legs: list[dict]) -> str | None:
+    """The request leg's ``occurred_at`` (ISO string), or None."""
+    for leg in legs:
+        if leg["leg_type"] == "request":
+            return leg["occurred_at"]
+    return None
+
+
+def _leg_duration(legs: list[dict]) -> float | None:
+    """Seconds between the request and response legs' ``occurred_at``, or None
+    when either leg is absent (ADR-0025: null duration = "response in flight").
+    Computed on read, never stored, so a later-finalizing response leg can never
+    leave a stale value behind."""
+    by_type = {leg["leg_type"]: leg["occurred_at"] for leg in legs}
+    req, resp = by_type.get("request"), by_type.get("response")
+    if req is None or resp is None:
+        return None
+    return (
+        dt.datetime.fromisoformat(resp) - dt.datetime.fromisoformat(req)
+    ).total_seconds()
+
+
+def _legs_any_error(legs: list[dict]) -> bool | None:
+    """Aggregate error across the legs: True if any leg errored, False if any
+    leg is a definite success and none errored, else None (unknown)."""
+    errs = [leg["error"] for leg in legs]
+    if any(e is True for e in errs):
+        return True
+    if any(e is False for e in errs):
+        return False
+    return None
+
+
 def _derived_tables_exist(tx) -> bool:
     """Whether the interactions migration has run on this DB.
 
@@ -393,10 +426,14 @@ async def _interactions_handler(request: Request) -> Response:
     """``GET /api/traces/{tid}/interactions`` — derived interactions.
 
     Returns the interactions the in-cluster processor materialised for a
-    trace (schema is the productized one, ADR-0013). Each row carries
-    ``span_count`` / ``anchor_count`` so the flow table can show evidence
-    sizing without pulling every span; the spans themselves are fetched
-    per-row from ``/api/traces/{tid}/interactions/{iid}/spans``.
+    trace (parent identity row + nested request/response legs, ADR-0025). Each
+    row carries ``span_count`` / ``anchor_count`` so the flow table can show
+    evidence sizing without pulling every span; the spans themselves are fetched
+    per-row from ``/api/traces/{tid}/interactions/{iid}/spans``. ``legs`` (one
+    or two, request first) carry the per-leg ``occurred_at`` / ``payload_hash``
+    / ``error``; ``duration_seconds`` = response − request occurrence (null when
+    the response leg is absent — the "response in flight" signal); ``any_error``
+    aggregates the legs.
     """
     trace_id = request.path_params.get("tid")
     if not trace_id:
@@ -408,12 +445,32 @@ async def _interactions_handler(request: Request) -> Response:
                 return {"interactions": []}
             interactions = tx.fetch_all(
                 "SELECT id::text, caller_entity_id::text, callee_entity_id::text, "
-                "started_at, ended_at, error, request_payload_hash, "
-                "response_payload_hash, summary, parent_interaction_id::text "
-                "FROM interactions WHERE trace_id = %s "
-                "ORDER BY started_at",
+                "summary, parent_interaction_id::text "
+                "FROM interactions WHERE trace_id = %s",
                 (trace_id,),
             )
+            # Legs for this trace's interactions — one scan, request leg first
+            # so the sequence diagram draws request-then-response.
+            leg_rows = tx.fetch_all(
+                "SELECT l.interaction_id::text, l.leg_type::text, l.occurred_at, "
+                "l.payload_hash, l.error, l.seq "
+                "FROM interaction_legs l "
+                "JOIN interactions i ON i.id = l.interaction_id "
+                "WHERE i.trace_id = %s "
+                "ORDER BY l.interaction_id, l.leg_type",
+                (trace_id,),
+            )
+            legs_by_ix: dict[str, list[dict]] = {}
+            for iid, leg_type, occurred_at, payload_hash, error, seq in leg_rows:
+                legs_by_ix.setdefault(iid, []).append(
+                    {
+                        "leg_type": leg_type,
+                        "occurred_at": occurred_at.isoformat() if occurred_at else None,
+                        "payload_hash": payload_hash,
+                        "error": error,
+                        "seq": seq,
+                    }
+                )
             # Per-interaction span aggregate — one grouped scan of the link
             # table, so the row count stays O(1) fetches regardless of trace
             # size.
@@ -425,23 +482,23 @@ async def _interactions_handler(request: Request) -> Response:
                 (trace_id,),
             )
             counts = {r[0]: (r[1], r[2]) for r in count_rows}
-            return {
-                "interactions": [
-                    {
-                        "id": r[0], "caller_entity_id": r[1], "callee_entity_id": r[2],
-                        "started_at": r[3].isoformat() if r[3] else None,
-                        "ended_at": r[4].isoformat() if r[4] else None,
-                        "error": r[5],
-                        "request_payload_hash": r[6],
-                        "response_payload_hash": r[7],
-                        "summary": r[8],
-                        "parent_interaction_id": r[9],
-                        "span_count": counts.get(r[0], (0, 0))[0],
-                        "anchor_count": counts.get(r[0], (0, 0))[1],
-                    }
-                    for r in interactions
-                ],
-            }
+
+            rows = [
+                {
+                    "id": r[0], "caller_entity_id": r[1], "callee_entity_id": r[2],
+                    "summary": r[3], "parent_interaction_id": r[4],
+                    "legs": legs_by_ix.get(r[0], []),
+                    "duration_seconds": _leg_duration(legs_by_ix.get(r[0], [])),
+                    "any_error": _legs_any_error(legs_by_ix.get(r[0], [])),
+                    "span_count": counts.get(r[0], (0, 0))[0],
+                    "anchor_count": counts.get(r[0], (0, 0))[1],
+                }
+                for r in interactions
+            ]
+            # Order by the request leg's occurrence so the flow list stays
+            # chronological (the parent no longer carries started_at).
+            rows.sort(key=lambda ix: _request_occurred_at(ix["legs"]) or "")
+            return {"interactions": rows}
 
     try:
         data = await asyncio.to_thread(_query)
@@ -513,14 +570,21 @@ async def _interaction_spans_handler(request: Request) -> Response:
             if not _derived_tables_exist(tx):
                 return {"spans": []}
             rows = tx.fetch_all(
-                "SELECT s.span_id, pis.role, s.parent_id, s.kind, s.service_name "
+                "SELECT s.span_id, pis.role, s.parent_id, s.kind, s.service_name, "
+                "pis.leg_type::text "
                 "FROM interaction_spans pis "
                 "LEFT JOIN spans s "
                 "  ON s.trace_id = pis.trace_id AND s.span_id = pis.span_id "
                 "WHERE pis.trace_id = %s AND pis.interaction_id = %s",
                 (trace_id, interaction_id),
             )
-            return {"spans": [_span_evidence_row(r) for r in rows]}
+            # ADR-0025: a span attributes to a specific leg. Extend the shared
+            # evidence-row shape with leg_type (entity_spans have no leg).
+            return {
+                "spans": [
+                    {**_span_evidence_row(r[:5]), "leg_type": r[5]} for r in rows
+                ]
+            }
 
     try:
         data = await asyncio.to_thread(_query)

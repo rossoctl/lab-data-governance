@@ -88,13 +88,14 @@ def test_findings_is_jsonb_and_model_version_is_integer(migrated_dsn: str) -> No
 # --- migration chain ---------------------------------------------------------
 
 
-def test_head_is_0008(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on this revision (0008)."""
+def test_head_is_0009(migrated_dsn: str) -> None:
+    """Applying the chain to head lands on the current head revision (0009 —
+    the interaction-legs split, ADR-0025, chained after 0008)."""
     with psycopg.connect(migrated_dsn) as conn:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0008_payload_classifications"
+    assert version == "0009_interaction_legs"
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:

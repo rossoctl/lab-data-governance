@@ -14,9 +14,12 @@ classification can run unchanged:
      arrival path (``is_finalization=False`` → ``_dispatch``).
   2. the caller runs ``proc.process(span)`` (verbatim).
   3. ``flush(tx, proc, span, region)`` — write the re-derived region back:
-     upsert entities / payloads / interactions / entity_spans, and
-     region-scoped delete+reinsert of the info/connector interaction_spans
-     (anchors are emit-once and never deleted), then advance the cursor.
+     upsert entities / payloads / entity_spans and, per ADR-0025, project each
+     in-memory interaction into its parent identity row + request/response
+     ``interaction_legs`` rows (the boundary projection — ``procedure.py`` still
+     holds one interaction per anchor), and region-scoped delete+reinsert of the
+     info/connector interaction_spans (anchors are emit-once and never deleted),
+     then advance the cursor.
 
 The lineage horizon (``seq <= S.seq``) is the load-bearing line: it makes the
 DB-backed processor see exactly the in-memory prototype's arrived set, so the
@@ -36,6 +39,25 @@ from data_governance.retrieval import Span, _COLUMNS, _row_to_span
 from . import procedure
 
 PROCESSOR_NAME = "interactions"
+
+# --- leg projection (ADR-0025) ----------------------------------------------
+# The one place the request/response <-> (timestamp, payload) mapping lives, so
+# the flush projection and the rehydrate fold-back cannot drift apart. The
+# current (Case-X) source has one in-memory ProtoInteraction; the request leg
+# carries its start-side (started_at, request payload), the response leg its
+# end-side (ended_at, response payload). error / seq / original_seq are shared
+# across both derived legs (see the Leg-provenance term in CONTEXT.md).
+
+
+def _legs_of(ix: procedure.ProtoInteraction) -> list[tuple[str, Any, str | None]]:
+    """Forward projection: one interaction -> [(leg_type, occurred_at,
+    payload_hash), ...], request leg first. Both legs are always emitted so the
+    parent is never leg-less (ADR-0025)."""
+    return [
+        ("request", ix.started_at, ix.request_payload_hash),
+        ("response", ix.ended_at, ix.response_payload_hash),
+    ]
+
 
 _SELECT_COLS = ", ".join(_COLUMNS)
 
@@ -280,28 +302,56 @@ def _rehydrate_derived(
 
     if visible_ix:
         iph = ", ".join(["%s"] * len(visible_ix))
+        # Identity from the parent interactions row (ADR-0025).
         irows = tx.fetch_all(
             f"SELECT id, trace_id, parent_interaction_id, caller_entity_id, "
-            f"callee_entity_id, started_at, ended_at, error, request_payload_hash, "
-            f"response_payload_hash, summary, seq, original_seq "
+            f"callee_entity_id, summary "
             f"FROM interactions WHERE id IN ({iph})",
             list(visible_ix),
         )
-        for ix_id, tid, parent, caller, callee, started, ended, err, reqh, resph, summary, seq, oseq in irows:
+        # Leg-dependent fields from interaction_legs — the read half of the flush
+        # boundary projection: fold the request leg back into started_at /
+        # request_payload_hash and the response leg into ended_at /
+        # response_payload_hash, so the in-memory ProtoInteraction stays the
+        # single-row shape procedure.py expects (unchanged). error/seq/original_seq
+        # are shared across the derived legs; take them off whichever leg carries
+        # them (prefer the request leg's seq — the one the flush stamped).
+        legrows = tx.fetch_all(
+            f"SELECT interaction_id, leg_type::text, occurred_at, payload_hash, "
+            f"error, seq, original_seq FROM interaction_legs "
+            f"WHERE interaction_id IN ({iph})",
+            list(visible_ix),
+        )
+        legs_by_ix: dict[str, dict[str, tuple]] = {}
+        for ix_id, leg_type, occurred_at, payload_hash, err, seq, oseq in legrows:
+            legs_by_ix.setdefault(ix_id, {})[leg_type] = (
+                occurred_at, payload_hash, err, seq, oseq,
+            )
+        for ix_id, tid, parent, caller, callee, summary in irows:
             primary_anchor = anchor_of.get(ix_id)
             if primary_anchor is None:
                 continue  # no anchor row — data-integrity surprise, skip
+            legs = legs_by_ix.get(ix_id, {})
+            req = legs.get("request")
+            resp = legs.get("response")
+            # seq / original_seq / error are shared across the current source's
+            # derived legs; the request leg is authoritative (both were written
+            # with the same value), fall back to the response leg then defaults.
+            authoritative = req or resp
+            seq = authoritative[3] if authoritative else 0
+            oseq = authoritative[4] if authoritative else 0
+            err = authoritative[2] if authoritative else None
             proc.interactions_by_anchor[primary_anchor] = procedure.ProtoInteraction(
                 id=ix_id,
                 trace_id=tid,
                 parent_interaction_id=parent,
                 caller_entity_id=caller,
                 callee_entity_id=callee,
-                started_at=started,
-                ended_at=ended,
+                started_at=req[0] if req else None,
+                ended_at=resp[0] if resp else None,
                 error=err,
-                request_payload_hash=reqh,
-                response_payload_hash=resph,
+                request_payload_hash=req[1] if req else None,
+                response_payload_hash=resp[1] if resp else None,
                 summary=summary,
                 seq=seq,
                 original_seq=oseq,
@@ -415,25 +465,46 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
             (p.content_hash, p.content_kind, _json.dumps(p.content, default=str), p.byte_size),
         )
 
-    # 3. interactions — id deterministic; parent_interaction_id written directly.
+    # 3. interactions + interaction_legs (ADR-0025 boundary projection).
+    #    The verified in-memory ProtoInteraction is still ONE object per anchor;
+    #    the split into a parent identity row + a request leg + a response leg
+    #    happens HERE, at the write boundary, so procedure.py is unchanged.
+    #    id / seq deterministic; parent_interaction_id written directly.
+    #
+    #    Parent = identity shared across both legs (id, trace_id,
+    #    parent_interaction_id, caller/callee, summary). No seq on the parent.
     for ix in proc.interactions_by_anchor.values():
         tx.execute(
             "INSERT INTO interactions (id, trace_id, parent_interaction_id, "
-            "caller_entity_id, callee_entity_id, started_at, ended_at, error, "
-            "request_payload_hash, response_payload_hash, summary, seq, original_seq) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "caller_entity_id, callee_entity_id, summary) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (id) DO UPDATE SET "
             "parent_interaction_id = EXCLUDED.parent_interaction_id, "
-            "started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at, "
-            "error = EXCLUDED.error, "
-            "request_payload_hash = EXCLUDED.request_payload_hash, "
-            "response_payload_hash = EXCLUDED.response_payload_hash, "
-            "summary = EXCLUDED.summary, seq = EXCLUDED.seq",
+            "caller_entity_id = EXCLUDED.caller_entity_id, "
+            "callee_entity_id = EXCLUDED.callee_entity_id, "
+            "summary = EXCLUDED.summary",
             (ix.id, ix.trace_id, ix.parent_interaction_id, ix.caller_entity_id,
-             ix.callee_entity_id, ix.started_at, ix.ended_at, ix.error,
-             ix.request_payload_hash, ix.response_payload_hash, ix.summary,
-             ix.seq, ix.original_seq),
+             ix.callee_entity_id, ix.summary),
         )
+        # Legs via the shared `_legs_of` projection (request first). For the
+        # current (Case-X) source both legs derive from the one span, so they
+        # share the interaction's seq and its error (a "derived" leg — the
+        # request/response timings bracket the one synchronous call; see the
+        # Leg-provenance term in CONTEXT.md). occurred_at may be NULL if the span
+        # had no start/end yet; the authoritative recompute (step 4b) folds the
+        # leg's territory in.
+        for leg_type, occurred_at, payload_hash in _legs_of(ix):
+            tx.execute(
+                "INSERT INTO interaction_legs (interaction_id, leg_type, "
+                "occurred_at, payload_hash, error, seq, original_seq) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
+                "occurred_at = EXCLUDED.occurred_at, "
+                "payload_hash = EXCLUDED.payload_hash, "
+                "error = EXCLUDED.error, seq = EXCLUDED.seq",
+                (ix.id, leg_type, occurred_at, payload_hash, ix.error,
+                 ix.seq, ix.original_seq),
+            )
 
     # 4. interaction_spans — scoped to the span_ids _repair_after_arrival
     #    actually re-derived this dispatch (proc._repaired_span_ids), NOT the
@@ -459,15 +530,20 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
         # from the DB and re-writing them is a harmless no-op we skip for clarity.
         if r.role != "anchor" and r.span_id not in repaired:
             continue
+        # leg_type (ADR-0025): the current (Case-X) source has one span per
+        # interaction carrying both payloads, so its evidence attributes to the
+        # 'request' leg — the primary. The future (Case-Y) source, whose request
+        # and response spans are distinct, will stamp each span with its own leg.
         tx.execute(
-            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, role) "
-            "VALUES (%s, %s, %s, %s) "
+            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, "
+            "role, leg_type) VALUES (%s, %s, %s, %s, 'request') "
             "ON CONFLICT (trace_id, span_id) DO UPDATE SET "
-            "interaction_id = EXCLUDED.interaction_id, role = EXCLUDED.role",
+            "interaction_id = EXCLUDED.interaction_id, role = EXCLUDED.role, "
+            "leg_type = EXCLUDED.leg_type",
             (r.interaction_id, r.trace_id, r.span_id, r.role),
         )
 
-    # 4b. Authoritative aggregate recompute (started_at / ended_at / error).
+    # 4b. Authoritative aggregate recompute, now folded onto the LEGS (ADR-0025).
     #
     # The in-memory fold in _update_aggregates keeps ix's window monotonic, but
     # it can only fold spans that are in the arriving span's lineage index. A
@@ -479,6 +555,12 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
     # persisted interaction_spans — every attached span contributes exactly once,
     # regardless of whether it was ever in the in-memory index.
     #
+    # The leg projection: the request leg's occurred_at is the interaction's
+    # min(started_at) over its territory; the response leg's occurred_at is the
+    # max(ended_at). error folds onto BOTH legs (the current derived-leg source
+    # shares one error across the synchronous call). We compute the aggregate
+    # once and update both leg rows.
+    #
     # The `s.seq <= %s` horizon (= this span's seq) is mandatory: it mirrors the
     # rehydrate horizon (risk R1 above) so re-processing an early span against a
     # fully-populated DB sees exactly its arrived set, not the whole trace.
@@ -486,12 +568,13 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
     # widen the persisted window — never narrow it.
     for ix in proc.interactions_by_anchor.values():
         tx.execute(
-            "UPDATE interactions AS i SET "
-            "started_at = LEAST(i.started_at, agg.min_started), "
-            "ended_at = GREATEST(i.ended_at, agg.max_ended), "
-            "error = CASE WHEN agg.any_error IS TRUE OR i.error IS TRUE THEN TRUE "
-            "            WHEN agg.any_error IS FALSE OR i.error IS FALSE THEN FALSE "
-            "            ELSE i.error END "
+            "UPDATE interaction_legs AS l SET "
+            "occurred_at = CASE l.leg_type "
+            "    WHEN 'request' THEN LEAST(l.occurred_at, agg.min_started) "
+            "    ELSE GREATEST(l.occurred_at, agg.max_ended) END, "
+            "error = CASE WHEN agg.any_error IS TRUE OR l.error IS TRUE THEN TRUE "
+            "            WHEN agg.any_error IS FALSE OR l.error IS FALSE THEN FALSE "
+            "            ELSE l.error END "
             "FROM (SELECT min(s.started_at) AS min_started, "
             "             max(s.ended_at) AS max_ended, "
             "             bool_or(s.error) AS any_error "
@@ -499,7 +582,7 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
             "      JOIN spans s ON s.trace_id = isp.trace_id "
             "                  AND s.span_id = isp.span_id "
             "      WHERE isp.interaction_id = %s AND s.seq <= %s) AS agg "
-            "WHERE i.id = %s",
+            "WHERE l.interaction_id = %s",
             (ix.id, span.seq, ix.id),
         )
 

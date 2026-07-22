@@ -1,4 +1,16 @@
+---
+status: superseded by ADR-0025
+---
+
 # Interactions are a single row in v2; the request/response two-leg model is deferred
+
+> **Superseded by ADR-0025.** The Case-Y trigger this ADR named ("a future
+> trace fixture that genuinely needs independent request/response lifecycles")
+> is now anticipated from a concrete upstream source, so the split is
+> un-deferred — as a two-*table* model (parent identity row +
+> `interaction_legs`), not the single-`(id, direction)`-table shape sketched
+> below. The current verified algorithm is unchanged; the split is a
+> write-boundary projection. See ADR-0025.
 
 The CONTEXT.md **Interaction leg** (`direction`) term describes an
 **Interaction** as **two rows** keyed `(id, direction)` — a `request` leg

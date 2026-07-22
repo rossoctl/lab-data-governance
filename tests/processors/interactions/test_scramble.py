@@ -71,7 +71,13 @@ def _role_counts(dsn: str, table: str) -> dict[str, int]:
 # split is provenance only (it touches none of the graph) and is not
 # arrival-independent in this slice — see the note in state.flush. The scramble
 # gate guards the graph; entity_spans is checked on total count below.
-_GRAPH_TABLES = ("entities", "interactions", "interaction_spans", "payloads")
+_GRAPH_TABLES = (
+    "entities",
+    "interactions",
+    "interaction_legs",
+    "interaction_spans",
+    "payloads",
+)
 
 
 def test_scramble_derives_identical_graph(
@@ -206,7 +212,7 @@ def test_scramble_delegate_tool_is_caller_of_its_a2a_leg(
                 JOIN entities callee ON callee.id = i.callee_entity_id
                 WHERE callee.display_name = %s AND callee.kind = 'agent'
                   AND caller.kind = 'tool'
-                ORDER BY i.seq
+                ORDER BY i.id
                 """,
                 (sub_agent,),
             ).fetchall()

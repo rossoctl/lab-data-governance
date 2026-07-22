@@ -15,12 +15,27 @@ const ENTITIES = [
 const INTERACTIONS = [
   {
     id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2',
-    started_at: '2026-05-01T12:00:00Z', ended_at: '2026-05-01T12:00:01Z',
-    error: false, request_payload_hash: null, response_payload_hash: null,
     summary: 'agent calls search', parent_interaction_id: null,
+    legs: [
+      { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: null, error: false, seq: 1 },
+      { leg_type: 'response', occurred_at: '2026-05-01T12:00:01Z', payload_hash: null, error: false, seq: 2 },
+    ],
+    duration_seconds: 1, any_error: false,
     span_count: 2, anchor_count: 1,
   },
 ];
+
+/** Replace one interaction's leg payload hashes (the test helper the payload
+ *  cases below use, now that hashes live on legs — ADR-0025). */
+function withLegHashes(reqHash: string | null, respHash: string | null) {
+  return {
+    ...INTERACTIONS[0],
+    legs: [
+      { ...INTERACTIONS[0].legs[0], payload_hash: reqHash },
+      { ...INTERACTIONS[0].legs[1], payload_hash: respHash },
+    ],
+  };
+}
 
 // Evidence rows returned for the entity/interaction /spans sub-resources.
 const ENTITY_EVIDENCE = [
@@ -229,14 +244,9 @@ describe('FlowTables', () => {
   });
 
   it('lazily fetches and renders an interaction request payload on expand', async () => {
-    // An interaction that carries payload hashes (the common HTTP/MCP case).
-    const withPayload = [
-      {
-        ...INTERACTIONS[0],
-        request_payload_hash: 'reqhash0deadbeef',
-        response_payload_hash: 'resphash0feedface',
-      },
-    ];
+    // An interaction that carries payload hashes (the common HTTP/MCP case) —
+    // now on the request/response legs (ADR-0025).
+    const withPayload = [withLegHashes('reqhash0deadbeef', 'resphash0feedface')];
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
       if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
       if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
@@ -264,7 +274,7 @@ describe('FlowTables', () => {
 
   it('shows the payload Classification verdict (sensitivity + tags + identity bundle + findings) on expand', async () => {
     const withPayload = [
-      { ...INTERACTIONS[0], request_payload_hash: 'reqhash0deadbeef', response_payload_hash: null },
+      withLegHashes('reqhash0deadbeef', null),
     ];
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
       if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
@@ -308,7 +318,7 @@ describe('FlowTables', () => {
 
   it('shows "not yet classified" in the payload cell when classification is null (eventual-consistency window)', async () => {
     const withPayload = [
-      { ...INTERACTIONS[0], request_payload_hash: 'reqhash0deadbeef', response_payload_hash: null },
+      withLegHashes('reqhash0deadbeef', null),
     ];
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
       if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
