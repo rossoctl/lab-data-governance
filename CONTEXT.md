@@ -168,9 +168,12 @@ Eventually consistent: an interaction's `caller_entity_id`,
 `callee_entity_id`, payload hashes, and aggregated `error` may be mutated
 in place as more spans arrive (late parents, **Finalization**,
 **Interaction reconciliation**). Identity (`id`) is stable across
-mutations; `seq` advances per mutation; `original_seq` preserves the seq
-at creation, mirroring ADR-0004's `arrival_seq` one layer up. Stream
-consumers cursor on `seq`; `original_seq` lets them distinguish
+mutations. Per ADR-0025 an interaction is a **parent identity row**
+(`interactions`) plus one or two **Interaction leg**s (`interaction_legs`):
+the payload hash, `occurred_at`, `error`, and `seq` / `original_seq` live on
+the *leg* (each leg finalizes independently and cursors on its own `seq`);
+the parent carries only shared identity and has no `seq`. Stream consumers
+cursor `interaction_legs` on `seq`; `original_seq` lets them distinguish
 first-emission rows from mutations. There is no "complete" flag —
 consumers see the current state at query time. Anchor rules set
 identity (`caller_entity_id`, `callee_entity_id`) on creation only;
@@ -181,31 +184,64 @@ late-arriving CLIENT parent retargeting the caller, ADR-0007) or by
 callee, ADR-0011). The general invariant: more-informed values are
 never replaced with less-informed ones.
 
-**Interaction leg** (`direction`) _(deferred — not implemented in v2; the
-shipped `interactions` schema is single-row, see ADR-0013)_:
-The intended-future model in which a single directed call (**Interaction**)
-is recorded as **two rows**, not
-one: a `request` leg and a `response` leg, sharing one logical `id` and
-keyed `(id, direction)`. Both legs carry the *same* orientation —
-`caller_entity_id` and `callee_entity_id` are identical on both, since a
-response is the return value of the caller→callee call, not a new
-callee→caller call. The legs differ in: payload (`request` carries the
-request payload hash, `response` the response payload hash), timing
-(`request` knowable at call start, `response` only on **Finalization** /
-stream completion), error/status, and lifecycle — each leg has its own
-`seq` / `original_seq` / `retracted_at` and finalizes independently. The
-two legs **cross-reference each other** by their shared `id`. Identity-
-defining fields (caller, callee, anchor, `parent_interaction_id`) live at
-the `id` level and are shared; both legs of an interaction always agree on
-them. The **Interaction tree** (`parent_interaction_id`) and the unique
-span-ownership invariant (ADR-0011) both key on `id`, not on the leg — so
-splitting into legs leaves ADR-0008 and ADR-0011's `(trace_id, span_id)`
-uniqueness untouched. Drivers: request/response are temporally asymmetric,
-have independent lifecycles (streaming responses), draw as two arrows on
-an execution-flow diagram, and carry independent governance policy
-(classification, retention, redaction) per leg.
-_Avoid_: treating `response` as a callee→caller edge — the edge
-orientation is identical on both legs; only `direction` distinguishes them.
+**Interaction leg** (`leg_type`):
+A single directed call (**Interaction**) is recorded as a **parent identity
+row** (`interactions`) plus **one or two leg rows** (`interaction_legs`), keyed
+`(interaction_id, leg_type)` with `leg_type ∈ {request, response}`. This is a
+**two-table** split (ADR-0025), not the single-`(id, direction)`-table shape
+first sketched here: identity that is identical across legs lives *once* on the
+parent, and only the leg-dependent, independently-finalizing fields live on the
+leg. So leg disagreement on identity is inexpressible by construction, not
+merely by convention.
+- **On the parent** (`interactions`, one row per call): `id`, `trace_id`,
+  `parent_interaction_id`, `caller_entity_id`, `callee_entity_id`, `summary`.
+  Both legs necessarily share these — a response is the return value of the
+  caller→callee call, not a new callee→caller call. The parent has **no `seq`**
+  and is not independently cursorable (identity is immutable once decided); it
+  is a join target for identity.
+- **On the leg** (`interaction_legs`): `leg_type`, `occurred_at` (the request
+  leg's is the call-start time, the response leg's the completion time),
+  `payload_hash` (request vs response body), `error`, and its own `seq` /
+  `original_seq`. Each leg finalizes independently and advances its own `seq` —
+  this per-leg cursor is the mechanism that lets a stream consumer see "response
+  landed" as a distinct event from "request sent". `interaction_legs_seq`
+  replaces the retired `interactions_seq` as the cursorable stream.
+The **Interaction tree** (`parent_interaction_id`) and the unique span-ownership
+invariant (ADR-0011) both key on the parent `interaction_id`, not on the leg —
+so the split leaves ADR-0008 and ADR-0011's `(trace_id, span_id)` uniqueness
+untouched (`interaction_spans` gains a `leg_type` column so a span attributes to
+a specific leg, but its PK stays `(trace_id, span_id)`). **Duration** is
+computed on read (`response.occurred_at − request.occurred_at`), **null when the
+response leg is absent** — the "response in flight" signal — never stored. A
+parent is never leg-less: it is created together with its request leg. Drivers:
+request/response are temporally asymmetric, have independent lifecycles
+(streaming responses), draw as two arrows on an execution-flow diagram, and
+carry independent governance policy (classification, retention, redaction,
+`error`) per leg.
+_Avoid_: treating `response` as a callee→caller edge — the edge orientation is
+identical on both legs (caller/callee live on the shared parent); only
+`leg_type` distinguishes them.
+
+**Leg provenance** (derived vs. observed):
+Whether an **Interaction leg**'s timing is independently observed or projected
+from a single span. The `P-interactions` current source is Case-X (one span
+carries both request and response payloads, known at once): `state.flush`
+projects its one internal interaction into a request leg (`occurred_at =
+started_at`) and a **derived** response leg (`occurred_at = ended_at`) — two
+legs of a synchronous call bracketed `started_at → ended_at`, sharing the one
+span as evidence and the same `seq`. This is honest (those timestamps genuinely
+bound the call) but is *not* an independent lifecycle. A future Case-Y source
+(two spans, distinct `span_id`s, shared exchange id, arriving at different
+times) produces **observed** legs: each leg's `occurred_at`/`error`/`seq` comes
+from its own span and finalizes independently. Consumers reading a `response`
+leg's `occurred_at` as "when the response actually happened" are correct for
+observed legs and approximately correct (= call return time) for derived ones.
+The split into legs is a **boundary projection** for the current source — the
+verified `--scramble`-gated algorithm still holds one interaction internally and
+is unchanged (ADR-0025); only the future source needs a new algorithm, deferred
+until a trace fixture exists.
+_Avoid_: assuming every `response` leg was observed from its own span — derived
+legs share the request span.
 
 **Anchor span**:
 A **Span** whose presence triggered the creation of an **Interaction**
@@ -363,9 +399,10 @@ ADR-0004 one layer up — see ADR-0007.
 **Payload**:
 The request or response body of an **Interaction**, canonicalized by
 `P-interactions` into a normalized form, content-addressed by hashing that
-canonical form, and stored once in `interaction_payloads`. An **Interaction**
-references its request and response payloads (if any) via nullable
-`request_payload_hash` / `response_payload_hash` columns. The source bytes
+canonical form, and stored once in `interaction_payloads`. Each **Interaction
+leg** references its payload (if any) via its nullable `payload_hash` column
+(the request leg the request body, the response leg the response body; ADR-0025
+moved these off the parent `interactions` row). The source bytes
 still live in `spans.attributes` (the receiver doesn't extract); the payload
 row is the processor's *decided* representation, not the raw attribute value.
 Dedup is per-hash over the canonical form: two raw representations that

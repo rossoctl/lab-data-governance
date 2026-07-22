@@ -254,23 +254,32 @@ def snapshot(dsn: str) -> dict[str, list]:
                 "SELECT id, kind, natural_key, display_name, project_name, "
                 "detected_from FROM entities ORDER BY natural_key"
             ),
-            # started_at/ended_at ARE compared: they must be arrival-invariant
-            # (they are min/max folds over the interaction's territory spans, and
-            # _update_aggregates folds into the persisted value so a lineage-
-            # scoped re-aggregate cannot narrow the window).
+            # The parent interactions row is identity only (ADR-0025); its
+            # columns are all arrival-invariant.
             "interactions": rows(
                 "SELECT id, trace_id, parent_interaction_id, caller_entity_id, "
-                "callee_entity_id, started_at, ended_at, error, "
-                "request_payload_hash, response_payload_hash, "
-                "summary FROM interactions ORDER BY id"
+                "callee_entity_id, summary FROM interactions ORDER BY id"
+            ),
+            # The leg-dependent fields moved to interaction_legs (ADR-0025).
+            # occurred_at/error ARE compared: they must be arrival-invariant
+            # (occurred_at is a min/max fold over the leg's territory spans, and
+            # the aggregate recompute folds into the persisted value so a
+            # lineage-scoped re-aggregate cannot narrow the window). seq /
+            # original_seq are omitted for the same reason entity seqs are:
+            # they are frozen to the first-touching span and arrival-order
+            # dependent (write-only passenger fields).
+            "interaction_legs": rows(
+                "SELECT interaction_id, leg_type::text, occurred_at, "
+                "payload_hash, error FROM interaction_legs "
+                "ORDER BY interaction_id, leg_type"
             ),
             "entity_spans": rows(
                 "SELECT entity_id, trace_id, span_id, role FROM entity_spans "
                 "ORDER BY trace_id, span_id, entity_id, role"
             ),
             "interaction_spans": rows(
-                "SELECT interaction_id, trace_id, span_id, role FROM interaction_spans "
-                "ORDER BY trace_id, span_id"
+                "SELECT interaction_id, trace_id, span_id, role, leg_type::text "
+                "FROM interaction_spans ORDER BY trace_id, span_id"
             ),
             "payloads": rows(
                 "SELECT content_hash, content_kind, byte_size FROM interaction_payloads "

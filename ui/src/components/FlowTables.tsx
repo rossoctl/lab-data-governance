@@ -15,7 +15,11 @@ import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 
 import { useInteractions, useEntities, usePayload } from '../api/hooks';
 import { fetchJson } from '../api/client';
-import { computeInteractionDepths, durationMs } from '../lib/flow';
+import {
+  computeInteractionDepths,
+  legOfType,
+  requestOccurredAt,
+} from '../lib/flow';
 import { formatTime24Utc } from '../lib/recentTraces';
 import type { PinStore } from '../lib/pins';
 import { EntityPill } from './EntityPill';
@@ -27,7 +31,7 @@ import type { Entity, Interaction, SpanEvidence } from '../types';
 interface Selection {
   kind: 'interaction' | 'entity';
   id: string;
-  /** Leading section header inside the panel ('Entity' | 'Interaction'). */
+  /** The panel's promoted caption for this selection ('Entity' | 'Interaction'). */
   sectionTitle: 'Entity' | 'Interaction';
   fields: Array<[string, string]>;
   evidence: SpanEvidence[];
@@ -204,7 +208,11 @@ export function FlowTables({
       .then((r) => r.spans)
       .catch(() => []);
     if (seq !== clickSeq.current) return; // a newer click superseded this one
-    const dur = durationMs(ix.started_at, ix.ended_at);
+    // Timing/payload now live on the request/response legs (ADR-0025). The
+    // request leg brackets the call start, the response leg its end; duration
+    // is the API's computed value (null = response in flight).
+    const reqLeg = legOfType(ix, 'request');
+    const respLeg = legOfType(ix, 'response');
     setSelection({
       kind: 'interaction',
       id: ix.id,
@@ -214,15 +222,17 @@ export function FlowTables({
         ['interaction_id', ix.id],
         ['anchor span(s)', evidence.filter((e) => e.role === 'anchor').map((e) => e.span_id).join(', ') || '—'],
         ['evidence spans', String(evidence.length)],
-        ['started_at', ix.started_at ?? '—'],
-        ['ended_at', ix.ended_at ?? '—'],
-        ...(dur ? ([['duration', `${dur} ms`]] as Array<[string, string]>) : []),
+        ['request_at', reqLeg?.occurred_at ?? '—'],
+        ['response_at', respLeg?.occurred_at ?? '—'],
+        ...(ix.duration_seconds != null
+          ? ([['duration', `${(ix.duration_seconds * 1000).toFixed(0)} ms`]] as Array<[string, string]>)
+          : []),
       ],
       evidence,
       pinKey: `interaction:${ix.id}`,
       pinLabel: ix.summary || ix.id,
-      requestPayloadHash: ix.request_payload_hash,
-      responsePayloadHash: ix.response_payload_hash,
+      requestPayloadHash: reqLeg?.payload_hash ?? null,
+      responsePayloadHash: respLeg?.payload_hash ?? null,
     });
     onSelectionChange?.({ iid: ix.id });
   }
@@ -397,7 +407,7 @@ export function FlowTables({
               return (
                 <Tr key={ix.id} isClickable onRowClick={() => selectInteraction(ix)} {...rowProps('interaction', ix.id)}>
                   <Td dataLabel="Started" className="dg-mono">
-                    {ix.started_at ? formatTime24Utc(ix.started_at) : ''}
+                    {requestOccurredAt(ix) ? formatTime24Utc(requestOccurredAt(ix)!) : ''}
                   </Td>
                   <Td>{pinDot(`interaction:${ix.id}`)}</Td>
                   <Td dataLabel="Caller">
@@ -425,9 +435,9 @@ export function FlowTables({
                     )}
                   </Td>
                   <Td dataLabel="Status">
-                    {ix.error === true ? (
+                    {ix.any_error === true ? (
                       <span style={{ color: '#f85149' }}>ERROR</span>
-                    ) : ix.error === false ? (
+                    ) : ix.any_error === false ? (
                       <span style={{ color: '#6acf6a' }}>ok</span>
                     ) : (
                       '—'
@@ -446,48 +456,74 @@ export function FlowTables({
       {/* The detail panel is always present (fixed column); a placeholder
           stands in before any row is selected. */}
       <SplitItem style={{ flex: '0 0 30%', minWidth: 0 }}>
-        <Title headingLevel="h3" size="md">
-          Details
-        </Title>
         {!selection ? (
-          <div style={{ color: '#888', fontStyle: 'italic', marginTop: '0.75rem' }}>
-            Select an entity or interaction to view its details.
-          </div>
+          // Nothing selected yet: the generic 'Details' caption stands in — no
+          // target to name, and no pin action to offer. Same caption→content gap
+          // as the populated state and the span panel's empty state (0.5rem on
+          // the caption; no extra top margin on the placeholder).
+          <>
+            <Title headingLevel="h3" size="md" style={{ marginBottom: '0.5rem' }}>
+              Details
+            </Title>
+            <div style={{ color: '#888', fontStyle: 'italic' }}>
+              Select an entity or interaction to view its details.
+            </div>
+          </>
         ) : (
           <>
-            <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
-              {selection.sectionTitle}
-            </Title>
-            <DetailList pairs={selection.fields} />
-
-            <Button
-              variant="secondary"
-              isInline
-              onClick={togglePin}
-              style={{ marginTop: '0.5rem' }}
-              // A swatch of the highlight color: the current color once pinned,
-              // else a preview of the next-free color the pin would take.
-              icon={
-                <span
-                  data-testid="highlight-swatch"
-                  aria-hidden="true"
-                  style={{
-                    display: 'inline-block',
-                    width: 10,
-                    height: 10,
-                    borderRadius: 2,
-                    border: '1px solid rgba(0, 0, 0, 0.35)',
-                    // Extra gap beyond PF's default icon spacing so the color
-                    // chip doesn't crowd the label text.
-                    marginRight: '0.375rem',
-                    background:
-                      pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
-                  }}
-                />
-              }
+            {/* Caption row: the selection's own name ('Entity'/'Interaction')
+                on the left — folding in what used to be a separate leading
+                section header — with the pin toggle glued to the right, matching
+                SpanDetailPanel's Refresh layout. */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                // Keep a gap between caption and button so they never butt
+                // together when the narrow (30%) detail column squeezes the row.
+                gap: '0.5rem',
+                // A little breathing room between the caption and the first
+                // field below (e.g. 'Interaction' → 'summary').
+                marginBottom: '0.5rem',
+              }}
             >
-              {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
-            </Button>
+              <Title headingLevel="h3" size="md">
+                {selection.sectionTitle}
+              </Title>
+              <Button
+                variant="secondary"
+                isInline
+                onClick={togglePin}
+                // Never shrink the button below its label ('Add to highlights');
+                // let the caption absorb any horizontal pressure instead.
+                style={{ flexShrink: 0 }}
+                // A swatch of the highlight color: the current color once
+                // pinned, else a preview of the next-free color the pin would
+                // take.
+                icon={
+                  <span
+                    data-testid="highlight-swatch"
+                    aria-hidden="true"
+                    style={{
+                      display: 'inline-block',
+                      width: 10,
+                      height: 10,
+                      borderRadius: 2,
+                      border: '1px solid rgba(0, 0, 0, 0.35)',
+                      // Extra gap beyond PF's default icon spacing so the color
+                      // chip doesn't crowd the label text.
+                      marginRight: '0.375rem',
+                      background:
+                        pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
+                    }}
+                  />
+                }
+              >
+                {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
+              </Button>
+            </div>
+            <DetailList pairs={selection.fields} />
 
             {(selection.requestPayloadHash || selection.responsePayloadHash) && (
               <>

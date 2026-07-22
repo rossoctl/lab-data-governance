@@ -116,6 +116,15 @@ from .caller_inference import (
 _NS_ENTITY = uuid.UUID("6f8d1c2e-0a3b-4d5e-8f90-1a2b3c4d5e6f")
 _NS_INTERACTION = uuid.UUID("9c7e2b4a-1d6f-4a8b-9c0d-2e3f4a5b6c7d")
 
+# Well-known liveness/readiness probe path segments. A CLIENT egress whose final
+# path segment is one of these is an infrastructure probe, not a business
+# external-http interaction — excluded in `_external_http_host` gate 1 alongside
+# `/mcp` and `/.well-known/*`. Matched on the exact final segment (not a
+# substring) so a business path like `/healthcheckups` is not mis-declined.
+_PROBE_PATHS = frozenset(
+    {"healthz", "readyz", "livez", "healthcheck", "health", "ping"}
+)
+
 
 def _entity_id(natural_key: str) -> str:
     return str(uuid.uuid5(_NS_ENTITY, natural_key))
@@ -1175,6 +1184,22 @@ class Processor:
 
             path = (urlparse(url).path or "").rstrip("/")
             if path.endswith("/mcp") or "/.well-known/" in (path + "/"):
+                return None
+            # Liveness/readiness probes are infrastructure noise, not business
+            # interactions — but the external-http rule fires once per CLIENT
+            # egress, so an unfiltered `GET /healthz` to a host surfaces as a
+            # duplicate `tool → service` interaction alongside the real business
+            # call to the same host. Exclude the well-known probe paths by their
+            # OWN final path segment — a POSITIVE, CLIENT-LOCAL signal in the
+            # same family as the `/mcp` and `/.well-known/*` gates above, so it
+            # keeps the order-independence guarantee (decided from the egress's
+            # own URL, never from a sibling's presence/absence). Exact segment
+            # match (not substring) so a business path like `/healthcheckups`
+            # is not mis-declined. Exclusion-gap caveat (ADR-0012 stance): a real
+            # business endpoint genuinely mounted at one of these paths would be
+            # mis-declined; revisit if such a fixture appears.
+            last_segment = path.rsplit("/", 1)[-1]
+            if last_segment in _PROBE_PATHS:
                 return None
             # Gate 0 (A2A agent-call shape): a CLIENT POST to the bare root path
             # `/` is an A2A sub-agent invocation (the a2a SDK posts JSON-RPC to

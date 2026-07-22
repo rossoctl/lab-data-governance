@@ -104,6 +104,52 @@ explanation and the `rollout status` waits.
 - `DB_POOL_TIMEOUT` — seconds to wait for a connection from the pool before
   raising `PoolTimeout` (default 30).
 
+## Loading a trace or a fixture
+
+`tools/load_trace.py` replays a captured span fixture (a snapshot of `spans`
+rows, e.g. `travel_agent_II.json`) through the live OTLP receiver over gRPC or
+HTTP, exercising the full ingest path.
+(It rebuilds the OTLP protobuf by hand —
+inverting `otlp_receiver/translate.py` — so fields the SDK exporter would drop
+(`kind`, `Status`, `events`, `links`, `scope`, the `otlp` envelope) survive.
+Unlike `load_fixture.py`, it talks only OTLP and never touches the database.)
+
+Send it to the `data-governance-receiver` pod. In the Kind deployment its
+OTLP ports aren't on the host, so port-forward first:
+
+```sh
+kubectl -n data-governance port-forward svc/data-governance-receiver 4317:4317 4318:4318 &
+python tools/load_trace.py travel_agent_II                 # gRPC :4317 (default)
+python tools/load_trace.py travel_agent_II --transport http  # HTTP :4318
+python tools/load_trace.py travel_agent_II --dry-run         # build + count only
+python tools/load_trace.py travel_agent_II --now             # shift times to now
+```
+
+`--now` shifts all timestamps by one offset so the trace ends now (durations
+preserved), making it read as just-arrived in the UI.
+
+Takes a full path, `*.json` path, or bare stem. Override the target with
+`--endpoint` (gRPC wants a bare `host:port`, HTTP wants a full URL):
+
+```sh
+python tools/load_trace.py travel_agent_II --endpoint otel-collector:4317
+python tools/load_trace.py travel_agent_II --transport http --endpoint http://otel-collector:4318
+```
+
+On a transport or receiver error (e.g. gRPC `UNAVAILABLE`, or HTTP 503 when
+the receiver's DB is down — ADR-0003) the tool exits non-zero with a
+`retryable, no spans persisted` message rather than a raw traceback.
+
+A fixture is a JSON array of span objects, one per span, mirroring the `spans`
+columns. Required per span: `trace_id` (32-hex), `span_id` (16-hex), `name`,
+`started_at` (ISO-8601). Optional: `parent_id` (16-hex; omit/`null` for a root),
+`kind` (`INTERNAL`/`SERVER`/`CLIENT`/`PRODUCER`/`CONSUMER`), `ended_at`,
+`error` (`true`/`false`/`null`), `status_message`, `service_name`,
+`attributes` (object), `events`/`links` (arrays), `scope` (`{name, version,
+attributes}`), `resource_attributes` (object), `otlp` (envelope: `flags`,
+`trace_state`, `dropped_*_count`). DB-assigned columns (`seq`, `arrival_seq`,
+`observed_at`) may be present but are ignored on replay.
+
 ## Issue scope
 
 This README and the scaffolding it documents land with issue #2 (Layer 1 db

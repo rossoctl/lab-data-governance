@@ -148,9 +148,12 @@ function mockFetchWithFlow() {
         ok: true, status: 200,
         json: async () => ({ interactions: [{
           id: 'i1', caller_entity_id: null, callee_entity_id: null,
-          started_at: '2026-05-01T12:00:00Z', ended_at: '2026-05-01T12:00:01Z',
-          error: false, request_payload_hash: null, response_payload_hash: null,
           summary: 'the interaction', parent_interaction_id: null,
+          legs: [
+            { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: null, error: false, seq: 1 },
+            { leg_type: 'response', occurred_at: '2026-05-01T12:00:01Z', payload_hash: null, error: false, seq: 2 },
+          ],
+          duration_seconds: 1, any_error: false,
           span_count: 1, anchor_count: 1,
         }] }),
       };
@@ -272,9 +275,12 @@ describe('TraceDetailPage', () => {
           ok: true, status: 200,
           json: async () => ({ interactions: [{
             id: 'i1', caller_entity_id: null, callee_entity_id: null,
-            started_at: '2026-05-01T12:00:00Z', ended_at: '2026-05-01T12:00:01Z',
-            error: false, request_payload_hash: null, response_payload_hash: null,
             summary: 'the interaction', parent_interaction_id: null,
+            legs: [
+              { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: null, error: false, seq: 1 },
+              { leg_type: 'response', occurred_at: '2026-05-01T12:00:01Z', payload_hash: null, error: false, seq: 2 },
+            ],
+            duration_seconds: 1, any_error: false,
             span_count: 1, anchor_count: 1,
           }] }),
         };

@@ -124,6 +124,7 @@ def test_all_derived_tables_exist(migrated_dsn: str) -> None:
         "entities",
         "entity_spans",
         "interactions",
+        "interaction_legs",
         "interaction_spans",
         "interaction_payloads",
         "processor_state",
@@ -225,25 +226,37 @@ class TestEntities:
         assert "retracted_at" not in _columns(migrated_dsn, "entities")
 
 
-# --- interactions: single row (ADR-0013) -------------------------------------
+# --- interactions: parent identity row (ADR-0025) ----------------------------
 
 
 class TestInteractions:
-    def test_is_single_row_with_both_payload_hashes(self, migrated_dsn: str) -> None:
+    def test_is_identity_only_no_leg_fields(self, migrated_dsn: str) -> None:
+        """ADR-0025 moved the leg-dependent fields to interaction_legs — the
+        parent holds only identity shared across both legs."""
         cols = _columns(migrated_dsn, "interactions")
-        assert "request_payload_hash" in cols
-        assert "response_payload_hash" in cols
-
-    def test_no_direction_column(self, migrated_dsn: str) -> None:
-        """ADR-0013: no (id, direction) two-leg model."""
-        assert "direction" not in _columns(migrated_dsn, "interactions")
+        for c in (
+            "request_payload_hash",
+            "response_payload_hash",
+            "started_at",
+            "ended_at",
+            "error",
+            "seq",
+            "original_seq",
+        ):
+            assert c not in cols, c
 
     def test_id_is_sole_primary_key(self, migrated_dsn: str) -> None:
         assert _pk_columns(migrated_dsn, "interactions") == ["id"]
 
-    def test_keeps_trace_id_seq_original_seq(self, migrated_dsn: str) -> None:
+    def test_keeps_identity_columns(self, migrated_dsn: str) -> None:
         cols = _columns(migrated_dsn, "interactions")
-        for c in ("trace_id", "seq", "original_seq"):
+        for c in (
+            "trace_id",
+            "parent_interaction_id",
+            "caller_entity_id",
+            "callee_entity_id",
+            "summary",
+        ):
             assert c in cols, c
 
     def test_drops_prototype_only_columns(self, migrated_dsn: str) -> None:
@@ -252,18 +265,58 @@ class TestInteractions:
             assert c not in cols, c
 
 
+# --- interaction_legs: the two-leg split (ADR-0025) --------------------------
+
+
+class TestInteractionLegs:
+    def test_table_exists(self, migrated_dsn: str) -> None:
+        assert _table_exists(migrated_dsn, "interaction_legs")
+
+    def test_leg_type_enum_labels(self, migrated_dsn: str) -> None:
+        assert _enum_labels(migrated_dsn, "leg_type") == ["request", "response"]
+
+    def test_leg_type_column_is_enum_typed(self, migrated_dsn: str) -> None:
+        assert _column_udt(migrated_dsn, "interaction_legs", "leg_type") == "leg_type"
+
+    def test_pk_is_interaction_id_and_leg_type(self, migrated_dsn: str) -> None:
+        """PK (interaction_id, leg_type): at most one request + one response leg
+        per interaction (ADR-0025)."""
+        assert _pk_columns(migrated_dsn, "interaction_legs") == [
+            "interaction_id",
+            "leg_type",
+        ]
+
+    def test_has_leg_dependent_columns(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "interaction_legs")
+        for c in ("occurred_at", "payload_hash", "error", "seq", "original_seq"):
+            assert c in cols, c
+
+    def test_occurred_at_is_timestamptz(self, migrated_dsn: str) -> None:
+        cols = _columns(migrated_dsn, "interaction_legs")
+        assert cols["occurred_at"]["data_type"] == "timestamp with time zone"
+
+
 # --- span-attachment tables --------------------------------------------------
 
 
 class TestSpanAttachmentTables:
     def test_interaction_spans_unique_trace_span(self, migrated_dsn: str) -> None:
-        """ADR-0011 §3: a span belongs to at most one interaction."""
+        """ADR-0011 §3: a span belongs to at most one interaction. Unchanged by
+        the leg split — both legs of the current source cite the same one span
+        (ADR-0025)."""
         assert ("trace_id", "span_id") in _unique_column_sets(
             migrated_dsn, "interaction_spans"
         )
 
     def test_interaction_spans_keeps_trace_id(self, migrated_dsn: str) -> None:
         assert "trace_id" in _columns(migrated_dsn, "interaction_spans")
+
+    def test_interaction_spans_has_leg_type(self, migrated_dsn: str) -> None:
+        """ADR-0025: span evidence attributes to a specific leg — the future
+        source's response span belongs to the response leg."""
+        assert (
+            _column_udt(migrated_dsn, "interaction_spans", "leg_type") == "leg_type"
+        )
 
     def test_entity_spans_keeps_trace_id(self, migrated_dsn: str) -> None:
         assert "trace_id" in _columns(migrated_dsn, "entity_spans")
@@ -274,7 +327,9 @@ class TestSpanAttachmentTables:
 
 class TestSequences:
     def test_both_sequences_exist(self, migrated_dsn: str) -> None:
-        for name in ("entities_seq", "interactions_seq"):
+        """ADR-0025 retired interactions_seq (the parent is not cursorable) in
+        favour of interaction_legs_seq (each leg finalizes independently)."""
+        for name in ("entities_seq", "interaction_legs_seq"):
             with psycopg.connect(migrated_dsn) as conn:
                 row = conn.execute(
                     "SELECT 1 FROM information_schema.sequences "
@@ -282,6 +337,14 @@ class TestSequences:
                     (name,),
                 ).fetchone()
             assert row is not None, name
+
+    def test_interactions_seq_retired(self, migrated_dsn: str) -> None:
+        with psycopg.connect(migrated_dsn) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.sequences "
+                "WHERE sequence_schema = 'public' AND sequence_name = 'interactions_seq'"
+            ).fetchone()
+        assert row is None
 
     def test_entities_seq_allocates_monotonically(self, migrated_dsn: str) -> None:
         """A writer that omits ``seq`` relies on the DEFAULT and must still get

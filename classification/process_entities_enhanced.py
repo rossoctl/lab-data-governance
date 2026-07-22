@@ -196,7 +196,8 @@ def enhance_entity(entity: List, text: str, entity_metadata: Dict, config: Dict)
     Returns:
         Enhanced entity object with all classification attributes
     """
-    start, end, tag = entity
+    start, end, tag = entity[0], entity[1], entity[2]
+    confidence = entity[3] if len(entity) > 3 else 1.0
     
     # Get base classification
     classification = get_base_classification(tag, entity_metadata, config)
@@ -223,7 +224,7 @@ def enhance_entity(entity: List, text: str, entity_metadata: Dict, config: Dict)
         "regulatory_tags": classification["regulatory_tags"].copy(),
         "identifier_type": classification["identifier_type"],
         "sensitivity_level": entity_sensitivity,
-        "confidence": 1.0,
+        "confidence": confidence,
         "is_personalized": is_personalized
     }
     
@@ -374,11 +375,8 @@ def create_summary(entities: List[Dict], identity_bundles: List[Dict], config: D
             "domains": [],
             "primary_domain": "",
             "regulatory_tags": [],
-            "entity_types_present": [],
             "entities": [],
             "identifier_types_present": [],
-            "data_subjects": [],
-            "granularity": "RECORD",
             "contains_identity_bundle": False,
             "is_personalized": False,
             "personalized_entity_types": [],
@@ -418,11 +416,8 @@ def create_summary(entities: List[Dict], identity_bundles: List[Dict], config: D
         "domains": domains,
         "primary_domain": primary_domain,
         "regulatory_tags": regulatory_tags,
-        "entity_types_present": entity_types,
-        "entities": entity_types,  # List of entity types
+        "entities": entity_types,
         "identifier_types_present": identifier_types,
-        "data_subjects": [],  # Task 9 excluded
-        "granularity": "RECORD",  # Simplified
         "contains_identity_bundle": contains_identity_bundle,
         "is_personalized": is_personalized,
         "personalized_entity_types": personalized_entity_types,
