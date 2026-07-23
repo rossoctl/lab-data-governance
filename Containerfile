@@ -58,9 +58,17 @@ RUN uv sync --frozen --no-dev
 # into the runtime image's `_UI_DIR` in stage 3.
 FROM node:22-slim AS ui-builder
 WORKDIR /ui
+# Build-time version stamp for the UI masthead. The .git tree is NOT in the
+# build context, so vite.config.ts cannot derive the version from git here; the
+# host computes it (git short-SHA + date) and passes it in as a build-arg, which
+# we expose to `npm run build` via APP_VERSION. Defaults to 'dev' for a plain
+# `podman build` with no --build-arg. Placed AFTER `npm ci` so a changed version
+# doesn't bust the cached deps layer.
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
 COPY ui/ ./
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
 RUN npm run build
 
 # -----------------------------------------------------------------------------
