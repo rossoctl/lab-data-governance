@@ -12,6 +12,7 @@ same trace is idempotent (deterministic ids collapse on ``ON CONFLICT``).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,9 @@ from data_governance.processors.interactions import graph_adapter, state
 from data_governance.processors.otlp_receiver.write_span import write_span
 from data_governance.processors.interactions.graph.extractor import extract
 from data_governance.processors.interactions.graph.load_fixture import _row_to_span_row
+from tests.processors.interactions.graph.travel_agent_II.test_interactions import (
+    EXPECTED_ORDER,
+)
 
 _FIXTURES = (
     Path(__file__).resolve().parents[2]
@@ -168,3 +172,88 @@ def test_graph_legs_persist_request_response_from_own_edges(configured_db: str) 
         # step 4b left the graph-supplied occurred_at intact (response is the
         # responding span's completion, so never before the request's start).
         assert resp_occ >= req_occ, iid
+
+
+def _short_key(kind: str, natural_key: str) -> str:
+    """Collapse the adapter's rich entity key back to the extractor's short
+    natural-key vocabulary (what ``EXPECTED_ORDER`` uses). The adapter re-derives
+    entities with Step-3.a group keys (``agent:(group,service)``), fully-qualified
+    llm keys (``llm:<host>/<model>``) and scoped tool keys
+    (``tool:agent:(...):<name>``); the extractor's oracle uses the bare
+    ``agent:<service>`` / ``llm:<model>`` / ``tool:<name>``."""
+    # The natural_key already carries its own ``<kind>:`` prefix; strip it so we
+    # can re-prefix uniformly below.
+    body = natural_key[len(kind) + 1 :] if natural_key.startswith(f"{kind}:") else natural_key
+    m = re.match(r"\((?:[^,]*),([^)]*)\)$", body)
+    if kind == "agent" and m:
+        short = m.group(1)
+    elif kind == "llm":
+        short = body.rsplit("/", 1)[-1]
+    elif kind == "tool":
+        short = body.rsplit(":", 1)[-1]
+    else:
+        short = body
+    # Service names hyphenate where natural keys may use underscores
+    # (booking_agent vs booking-agent); normalise for a vocabulary-free compare.
+    return f"{kind}:{short}".replace("_", "-")
+
+
+def test_persisted_leg_seq_is_globally_unique_and_matches_expected_order(
+    configured_db: str,
+) -> None:
+    """END-TO-END guard for the whole derive-and-persist process (the bug where a
+    self-paired one-sided call gave two legs the SAME ``seq``): after
+    ``adapt`` → ``state.flush`` against the real schema, the persisted
+    ``interaction_legs`` of the human-validated ``travel_agent_II`` trace must have
+
+      1. GLOBALLY-UNIQUE ``seq`` — one row per graph edge, never a duplicate; and
+      2. a ``seq`` ordering that reproduces the oracle ``EXPECTED_ORDER`` EXACTLY
+         (request leg = caller→callee, response leg = callee→caller).
+
+    This is the invariant the fixture-level `extract`/`adapt` tests could not
+    catch on their own once the rows are written: it reads them straight back out
+    of Postgres, so a regression in the adapter OR the flush write path fails here.
+    """
+    trace_id = _load_into_db("travel_agent_II")
+    spans = _read_trace(trace_id)
+    rows = graph_adapter.adapt(extract(spans), spans)
+    _flush(rows, _sentinel(spans))
+
+    with db.transaction() as tx:
+        leg_rows = tx.fetch_all(
+            "SELECT l.seq, l.leg_type::text, "
+            "ec.kind::text, ec.natural_key, ee.kind::text, ee.natural_key "
+            "FROM interaction_legs l "
+            "JOIN interactions i ON i.id = l.interaction_id "
+            "JOIN entities ec ON ec.id = i.caller_entity_id "
+            "JOIN entities ee ON ee.id = i.callee_entity_id "
+            "WHERE i.trace_id = %s "
+            "ORDER BY l.seq",
+            (trace_id,),
+        )
+
+    seqs = [r[0] for r in leg_rows]
+    assert len(seqs) == len(EXPECTED_ORDER), (
+        f"persisted {len(seqs)} legs, expected {len(EXPECTED_ORDER)}"
+    )
+    # (1) No two persisted legs share a seq — the exact invariant the self-pair
+    # bug violated (72 legs / 50 distinct seq in the live DB before the fix).
+    assert len(set(seqs)) == len(seqs), f"duplicate leg seq persisted: {seqs}"
+    assert seqs == sorted(seqs) and seqs[0] == 0 and seqs[-1] == len(seqs) - 1, (
+        f"seq is not the dense 0..N-1 ordinal: {seqs}"
+    )
+
+    # (2) The seq ordering reproduces the human-validated execution order. The
+    # interaction stores caller→callee (the request sense); a response leg's
+    # displayed direction is the swap (callee→caller).
+    persisted_order = []
+    for seq, leg_type, ck, cnk, ek, enk in leg_rows:
+        caller, callee = _short_key(ck, cnk), _short_key(ek, enk)
+        persisted_order.append(
+            (caller, callee) if leg_type == "request" else (callee, caller)
+        )
+
+    expected = [
+        (c.replace("_", "-"), e.replace("_", "-")) for c, e in EXPECTED_ORDER
+    ]
+    assert persisted_order == expected

@@ -490,9 +490,13 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
 
     # Stack-match each pair into (request_leg, response_leg) calls. The request
     # direction is the one carrying the lowest-`order` edge of the pair; a reverse
-    # edge pops the nearest unclosed request. A lone edge (one-sided chain, no
-    # response reconstructed) pairs with itself so the parent is never leg-less.
-    calls: list[tuple[_Leg, _Leg]] = []
+    # edge pops the nearest unclosed request. NEVER fabricate a leg: each _Leg is
+    # exactly one real graph edge, so a call maps a forward edge to `request` and,
+    # if it exists, its matching reverse edge to `response`. A forward edge with no
+    # matching reverse → `(req, None)` (request only, no response observed); a
+    # reverse edge with no open forward → `(None, resp)` (degenerate/out-of-order).
+    # Downstream emits a LegRow only for the legs that are present.
+    calls: list[tuple[_Leg | None, _Leg | None]] = []
     for pair_legs in by_pair.values():
         pair_legs.sort(key=lambda leg: leg.pi.order)
         fwd = (pair_legs[0].caller_eid, pair_legs[0].callee_eid)
@@ -503,9 +507,9 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             elif stack:
                 calls.append((stack.pop(), leg))  # (request, response)
             else:
-                calls.append((leg, leg))  # unbalanced reverse — degenerate, self-pair
+                calls.append((None, leg))  # unbalanced reverse — response with no request
         for leftover in stack:
-            calls.append((leftover, leftover))  # request with no observed response
+            calls.append((leftover, None))  # request with no observed response
 
     # span_id already claimed by an anchor row → synthesize a distinct one for the
     # next co-anchored call so main's UNIQUE(trace_id, span_id) is never violated
@@ -516,19 +520,36 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
     # driver's per-span re-derivation collapse on ON CONFLICT instead of accumulating.
     claimed_spans: set[str] = set()
 
-    def _call_sort_key(call: tuple[_Leg, _Leg]) -> tuple[str, str]:
-        req_leg, _ = call
-        return (req_leg.anchor_span_id, req_leg.callee_nk or "unknown")
+    def _call_sort_key(call: tuple[_Leg | None, _Leg | None]) -> tuple[str, str]:
+        # Key off whichever leg is present (request preferred); a call always has
+        # at least one real edge, so `primary` is never None.
+        primary = call[0] or call[1]
+        assert primary is not None
+        return (primary.anchor_span_id, primary.callee_nk or "unknown")
 
     for req_leg, resp_leg in sorted(calls, key=_call_sort_key):
-        anchor_span_id = req_leg.anchor_span_id
+        # The call's identity/direction/anchor come from whichever real edge is
+        # present — request edge preferred (it defines the caller→callee sense);
+        # a response-only call falls back to the response edge (whose direction is
+        # callee→caller, so its caller/callee are the interaction's, swapped).
+        primary = req_leg or resp_leg
+        assert primary is not None
+        anchor_span_id = primary.anchor_span_id
         anchor_span = span_by_id.get(anchor_span_id)
         seq = anchor_span.seq if anchor_span is not None else 0
-        # trace_id from the request edge's anchor interaction_spans row.
-        trace_id = anchor_by_ix_id[req_leg.pi.id].trace_id
+        # trace_id / callee_nk / direction come from `primary` (whichever real edge
+        # is present). The request edge is caller→callee directly; a response-only
+        # call's `primary` is the response edge (callee→caller), so swap it back to
+        # the interaction's caller→callee sense.
+        trace_id = anchor_by_ix_id[primary.pi.id].trace_id
+        if req_leg is not None:
+            caller_eid, callee_eid = primary.caller_eid, primary.callee_eid
+            callee_nk = primary.callee_nk or "unknown"
+        else:
+            caller_eid, callee_eid = primary.callee_eid, primary.caller_eid
+            callee_nk = nk_by_node.get(primary.pi.caller_entity_id, "") or "unknown"
 
-        callee_nk = req_leg.callee_nk or "unknown"
-        # The id folds in the request edge's global `order`, not just the anchor +
+        # The id folds in the primary edge's global `order`, not just the anchor +
         # callee: two DISTINCT calls of the same pair can share one anchor span and
         # callee (e.g. an agent dispatching `get_weather` twice — both request edges
         # anchor on the one agent span). `order` is globally unique per edge, so it
@@ -537,32 +558,38 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         # LLM call + an inferred tool call on one LLM span) already differ by
         # callee_nk; folding order in as well is harmless there.
         ix_id = procedure._interaction_id(
-            trace_id, f"{anchor_span_id}/{callee_nk}/{req_leg.pi.order}"
+            trace_id, f"{anchor_span_id}/{callee_nk}/{primary.pi.order}"
         )
 
-        # Each leg keeps its OWN edge's payload; error unions the pair (either side
-        # erroring marks the call errored — extractor's whole-pair rule).
-        req_hash = req_leg.req
-        resp_hash = resp_leg.resp
-        errors = [req_leg.pi.error, resp_leg.pi.error]
+        # Each leg keeps its OWN edge's payload; error unions the present legs
+        # (either side erroring marks the call errored — extractor's whole-pair rule).
+        req_hash = req_leg.req if req_leg is not None else None
+        resp_hash = resp_leg.resp if resp_leg is not None else None
+        errors = [
+            leg.pi.error for leg in (req_leg, resp_leg) if leg is not None
+        ]
         error = True if any(e for e in errors) else (
             False if any(e is False for e in errors) else None
         )
+        # Timing: start = request edge's start (fall back to the response edge when
+        # request-less); end = response edge's end (None when no response observed).
+        started_at = (req_leg or resp_leg).pi.started_at
+        ended_at = resp_leg.pi.ended_at if resp_leg is not None else None
 
         interactions_by_anchor[anchor_span_id if anchor_span_id not in claimed_spans
-                               else f"{anchor_span_id}/{callee_nk}/{req_leg.pi.order}"] = (
+                               else f"{anchor_span_id}/{callee_nk}/{primary.pi.order}"] = (
             procedure.ProtoInteraction(
                 id=ix_id,
                 trace_id=trace_id,
                 parent_interaction_id=None,
-                caller_entity_id=req_leg.caller_eid,
-                callee_entity_id=req_leg.callee_eid,
-                started_at=req_leg.pi.started_at,
-                ended_at=req_leg.pi.ended_at,
+                caller_entity_id=caller_eid,
+                callee_entity_id=callee_eid,
+                started_at=started_at,
+                ended_at=ended_at,
                 error=error,
                 request_payload_hash=req_hash,
                 response_payload_hash=resp_hash,
-                summary=req_leg.pi.summary,
+                summary=primary.pi.summary,
                 seq=seq,
                 original_seq=seq,
                 anchor_rule="graph",
@@ -574,29 +601,35 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         # response leg reflects the responding endpoint's own anchor span — its
         # `ended_at` (genuinely distinct from the request edge's for an A2A
         # delegation, where the two legs split anchors), its own payload/error,
-        # and its own global `order` as the leg `seq`/`original_seq`. This is what
-        # distinguishes the two legs when they SHARE an anchor span (the ordinary
-        # case: identical timing, so `leg_type` + the order-derived `seq` is the
-        # only signal). `state.flush` writes these instead of deriving legs from
+        # and its own global `order` as the leg `seq`/`original_seq`. NEVER
+        # fabricate a leg: emit a LegRow only for a leg backed by a real edge. A
+        # request-less call has only a response leg; a response-less call only a
+        # request leg. `state.flush` writes these instead of deriving legs from
         # the collapsed ProtoInteraction's started_at/ended_at.
-        legs_by_ix[ix_id] = [
-            LegRow(
-                leg_type="request",
-                occurred_at=req_leg.pi.started_at,
-                payload_hash=req_hash,
-                error=req_leg.pi.error,
-                seq=req_leg.pi.order,
-                original_seq=req_leg.pi.order,
-            ),
-            LegRow(
-                leg_type="response",
-                occurred_at=resp_leg.pi.ended_at,
-                payload_hash=resp_hash,
-                error=resp_leg.pi.error,
-                seq=resp_leg.pi.order,
-                original_seq=resp_leg.pi.order,
-            ),
-        ]
+        legs: list[LegRow] = []
+        if req_leg is not None:
+            legs.append(
+                LegRow(
+                    leg_type="request",
+                    occurred_at=req_leg.pi.started_at,
+                    payload_hash=req_hash,
+                    error=req_leg.pi.error,
+                    seq=req_leg.pi.order,
+                    original_seq=req_leg.pi.order,
+                )
+            )
+        if resp_leg is not None:
+            legs.append(
+                LegRow(
+                    leg_type="response",
+                    occurred_at=resp_leg.pi.ended_at,
+                    payload_hash=resp_hash,
+                    error=resp_leg.pi.error,
+                    seq=resp_leg.pi.order,
+                    original_seq=resp_leg.pi.order,
+                )
+            )
+        legs_by_ix[ix_id] = legs
 
         # One anchor interaction_spans row. Use the real span for the first call on
         # it; a synthetic `<span>#<callee_nk>#<order>` id for any co-anchored call

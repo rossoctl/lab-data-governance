@@ -200,7 +200,7 @@ If the key is not clear we can call it unknown.
   Walk the chain tree in execution order. For each entity's outgoing chains (its children):
     1. Order the children by started_at.
     2. For each child in turn: emit its request, recurse into its subtree then emit its response.
-    3. Emit the parent's own response.
+    3. Emit the parent's own response. (Keep reference to the related request)
   A leaf sibling returns immediately (request then response). 
 
   Observe the following chains between entities:   
@@ -211,7 +211,7 @@ If the key is not clear we can call it unknown.
        1. A ──▶ B   
        2. B ──▶ C    (C completes)            
       (response edges)
-       3. C ──▶ B  That's amazing  (B completes)
+       3. C ──▶ B    (B completes)
        4. B ──▶ A    
 
   Example 2 - Interleaving - maintaining execution order

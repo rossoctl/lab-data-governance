@@ -178,23 +178,34 @@ def test_co_anchored_inferred_tool_call_stays_distinct() -> None:
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)
-def test_every_interaction_has_request_and_response_legs(fixture: str) -> None:
-    """ADR-0025: `adapt` supplies explicit per-leg rows via `legs_by_ix`, one
-    request + one response per interaction, and the request leg's `seq` (the
-    request edge's global `order`) never exceeds the response leg's — so
-    request-before-response ordering survives into the schema even when the two
-    edges share an anchor span with identical timing."""
+def test_legs_are_real_edges_never_fabricated(fixture: str) -> None:
+    """ADR-0025: `adapt` supplies explicit per-leg rows via `legs_by_ix`. Each leg
+    is backed by a REAL graph edge — the adapter never fabricates one. So an
+    interaction has a request leg and/or a response leg (1 or 2, never zero, never
+    a duplicated type), and every leg's `seq` (its edge's global `order`) is
+    GLOBALLY UNIQUE across the whole trace — the invariant a self-paired leg used
+    to violate by giving two legs the same `order`. Where both legs exist, request
+    precedes response (`seq` strictly lower)."""
     _, rows = _adapt(fixture)
     assert rows.legs_by_ix is not None
     assert set(rows.legs_by_ix) == {ix.id for ix in rows.interactions_by_anchor.values()}
+    all_seqs: list[int] = []
     for ix_id, legs in rows.legs_by_ix.items():
         types = sorted(leg.leg_type for leg in legs)
-        assert types == ["request", "response"], f"{fixture}: {ix_id[:8]} legs {types}"
-        req = next(leg for leg in legs if leg.leg_type == "request")
-        resp = next(leg for leg in legs if leg.leg_type == "response")
-        # `seq`/`original_seq` are the edge's global `order` (request <= response).
-        assert req.seq == req.original_seq and resp.seq == resp.original_seq
-        assert req.seq <= resp.seq, f"{fixture}: request seq {req.seq} > response {resp.seq}"
+        assert types in (["request"], ["response"], ["request", "response"]), (
+            f"{fixture}: {ix_id[:8]} legs {types}"
+        )
+        for leg in legs:
+            assert leg.seq == leg.original_seq
+            all_seqs.append(leg.seq)
+        req = next((leg for leg in legs if leg.leg_type == "request"), None)
+        resp = next((leg for leg in legs if leg.leg_type == "response"), None)
+        if req is not None and resp is not None:
+            assert req.seq < resp.seq, (
+                f"{fixture}: request seq {req.seq} !< response {resp.seq}"
+            )
+    # No two legs anywhere in the trace share a `seq` (global ordinal per edge).
+    assert len(all_seqs) == len(set(all_seqs)), f"{fixture}: duplicate leg seq: {all_seqs}"
 
 
 def test_a2a_response_leg_uses_the_responding_span_not_the_request_edge() -> None:
