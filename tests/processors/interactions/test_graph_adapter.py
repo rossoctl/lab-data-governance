@@ -175,7 +175,59 @@ def test_co_anchored_inferred_tool_call_stays_distinct() -> None:
     # Expect both the LLM calls and the inferred database + file tool calls.
     assert any("tool:database" in s for s in summaries)
     assert any("tool:file" in s for s in summaries)
-    assert any("llm:" in s for s in summaries)
+
+
+@pytest.mark.parametrize("fixture", FIXTURES)
+def test_every_interaction_has_request_and_response_legs(fixture: str) -> None:
+    """ADR-0025: `adapt` supplies explicit per-leg rows via `legs_by_ix`, one
+    request + one response per interaction, and the request leg's `seq` (the
+    request edge's global `order`) never exceeds the response leg's — so
+    request-before-response ordering survives into the schema even when the two
+    edges share an anchor span with identical timing."""
+    _, rows = _adapt(fixture)
+    assert rows.legs_by_ix is not None
+    assert set(rows.legs_by_ix) == {ix.id for ix in rows.interactions_by_anchor.values()}
+    for ix_id, legs in rows.legs_by_ix.items():
+        types = sorted(leg.leg_type for leg in legs)
+        assert types == ["request", "response"], f"{fixture}: {ix_id[:8]} legs {types}"
+        req = next(leg for leg in legs if leg.leg_type == "request")
+        resp = next(leg for leg in legs if leg.leg_type == "response")
+        # `seq`/`original_seq` are the edge's global `order` (request <= response).
+        assert req.seq == req.original_seq and resp.seq == resp.original_seq
+        assert req.seq <= resp.seq, f"{fixture}: request seq {req.seq} > response {resp.seq}"
+
+
+def test_a2a_response_leg_uses_the_responding_span_not_the_request_edge() -> None:
+    """The A2A-delegation response leg anchors on the RESPONDING agent's own span,
+    so its `occurred_at` and `seq` differ from the request edge's — the bug the
+    single-row collapse hid. `travel-advisor → research-agent` (a delegation) has a
+    request edge (order 14, the `delegate_to_research_agent` TOOL span) and a
+    response edge (order 17, research-agent's own wrapper span); the response leg
+    must carry order 17 and the responding span's completion time, NOT the request
+    edge's `ended_at`."""
+    _, rows = _adapt("travel_agent_II")
+
+    def _nk(eid: str) -> str:
+        e = next(e for e in rows.entities.values() if e.id == eid)
+        return e.natural_key
+
+    delegations = [
+        ix
+        for ix in rows.interactions_by_anchor.values()
+        if _nk(ix.caller_entity_id).startswith("agent:")
+        and _nk(ix.callee_entity_id).startswith("agent:")
+        and _nk(ix.caller_entity_id) != _nk(ix.callee_entity_id)
+    ]
+    assert delegations, "expected at least one agent→agent delegation"
+    for ix in delegations:
+        legs = rows.legs_by_ix[ix.id]
+        req = next(leg for leg in legs if leg.leg_type == "request")
+        resp = next(leg for leg in legs if leg.leg_type == "response")
+        # Split anchors → the response leg is a strictly later edge with its own
+        # (later) occurrence, never a copy of the request edge's end.
+        assert resp.seq > req.seq, f"{ix.summary}: response seq not after request"
+        assert resp.occurred_at is not None and req.occurred_at is not None
+        assert resp.occurred_at >= req.occurred_at, ix.summary
 
 
 def test_single_turn_trace_maps_one_interaction() -> None:

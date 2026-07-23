@@ -30,9 +30,10 @@ _FIXTURES = (
     / "fixtures"
 )
 
-# One collision-free trace and one inferred-co-anchored trace, to exercise both
-# the plain path and the synthetic-span-id path against the real PK.
-FIXTURES = ["travel_agent_I", "patent_agent_I"]
+# One collision-free trace, one inferred-co-anchored trace, and one A2A
+# multi-agent delegation trace — exercising the plain path, the synthetic-span-id
+# path, and split-anchor request/response legs against the real PK.
+FIXTURES = ["travel_agent_I", "patent_agent_I", "travel_agent_II"]
 
 
 def _load_into_db(name: str) -> str:
@@ -63,8 +64,11 @@ def _sentinel(spans: list[retrieval.Span]) -> retrieval.Span:
 
 
 def _flush(rows: graph_adapter.ProductionRows, sentinel: retrieval.Span) -> None:
+    # Mirror graph_driver.process_span: pass the graph's per-edge legs explicitly
+    # so flush takes the graph leg-projection path (own occurred_at/payload/error/
+    # order per leg), not the streaming derived-leg default.
     with db.transaction() as tx:
-        state.flush(tx, rows, sentinel)
+        state.flush(tx, rows, sentinel, legs_by_ix=rows.legs_by_ix)
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)
@@ -127,3 +131,40 @@ def test_enum_accepts_every_emitted_kind(configured_db: str) -> None:
         kinds = {r[0] for r in tx.fetch_all("SELECT DISTINCT kind FROM entities")}
     assert kinds <= {"user", "client", "agent", "tool", "llm", "service"}
     assert {"agent", "llm", "tool"} <= kinds
+
+
+def test_graph_legs_persist_request_response_from_own_edges(configured_db: str) -> None:
+    """ADR-0025: the graph adapter's request/response legs land in
+    ``interaction_legs`` with each leg's OWN edge data — the request leg's ``seq``
+    (the request edge's ``order``) strictly precedes the response leg's, and step
+    4b never widens a graph-supplied leg. For the A2A-delegation trace the two
+    legs anchor on different spans, so the response leg's ``occurred_at`` is the
+    responding agent's own completion time, distinct from the request edge's."""
+    trace_id = _load_into_db("travel_agent_II")
+    spans = _read_trace(trace_id)
+    rows = graph_adapter.adapt(extract(spans), spans)
+    _flush(rows, _sentinel(spans))
+
+    with db.transaction() as tx:
+        # Every interaction has exactly one request + one response leg.
+        leg_rows = tx.fetch_all(
+            "SELECT l.interaction_id::text, l.leg_type::text, l.occurred_at, l.seq "
+            "FROM interaction_legs l JOIN interactions i ON i.id = l.interaction_id "
+            "WHERE i.trace_id = %s",
+            (trace_id,),
+        )
+
+    by_ix: dict[str, dict] = {}
+    for iid, leg_type, occurred_at, seq in leg_rows:
+        by_ix.setdefault(iid, {})[leg_type] = (occurred_at, seq)
+
+    assert by_ix, "expected persisted legs"
+    assert len(by_ix) == len(rows.interactions_by_anchor)
+    for iid, legs in by_ix.items():
+        assert set(legs) == {"request", "response"}, iid
+        (req_occ, req_seq), (resp_occ, resp_seq) = legs["request"], legs["response"]
+        # order-derived seq: request edge precedes its response edge.
+        assert req_seq < resp_seq, f"{iid}: req seq {req_seq} !< resp seq {resp_seq}"
+        # step 4b left the graph-supplied occurred_at intact (response is the
+        # responding span's completion, so never before the request's start).
+        assert resp_occ >= req_occ, iid

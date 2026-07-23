@@ -70,7 +70,9 @@ def process_span(tx: db.Transaction, span: Span) -> None:
     # span carries the trace's current max seq (it is the newest span past the
     # cursor for this trace), so it is the correct horizon sentinel.
     sentinel = max(trace_spans, key=lambda s: s.seq)
-    state.flush(tx, rows, sentinel)
+    # Graph algorithm: pass the per-edge legs explicitly so flush takes the
+    # graph leg-projection path (own occurred_at/payload/error/order per leg).
+    state.flush(tx, rows, sentinel, legs_by_ix=rows.legs_by_ix)
 
 
 def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[Span]:

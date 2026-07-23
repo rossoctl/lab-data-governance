@@ -41,6 +41,16 @@ HOW TO RUN
     # shift all times so the trace ends "now" — reads as just-arrived in the UI
     python tools/load_trace.py travel_agent_II --now
 
+    # fresh trace_id + span_ids, shows in last-hour view
+    python tools/load_trace.py travel_agent_II --reid --now
+
+Use ``--reid`` when re-loading a fixture you have already ingested: the fixture's
+deterministic ``trace_id`` makes a plain re-replay a no-op (``write_span`` upserts
+are finalization-only, never rewriting the identity/times, and the interactions
+cursor has already passed those seqs). ``--reid`` rewrites the trace to fresh
+random ids so it reads as genuinely new, cursor-visible data — compose it with
+``--now`` to also land it in the last-hour view.
+
 The trace argument accepts a full path, a path ending in ``.json``, or a bare
 stem (e.g. ``travel_agent_II``) resolved under the graph fixtures directory.
 """
@@ -50,6 +60,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import secrets
 import sys
 from pathlib import Path
 from typing import Any
@@ -160,6 +171,41 @@ def shift_rows_to_now(
             new_row["events"] = new_events
         shifted.append(new_row)
     return shifted, offset
+
+
+def _reid_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str]:
+    """Return copies of ``rows`` rewritten onto a fresh random trace + span ids.
+
+    WHY: fixtures carry a deterministic ``trace_id``, so a plain re-replay of one
+    you have already ingested is a no-op — ``write_span`` upserts are finalization-
+    only (they never rewrite the identity or ``started_at``) and the interactions
+    cursor has already passed those seqs. Rewriting to a brand-new ``trace_id`` and
+    new ``span_id``s yields genuinely fresh, cursor-visible data that ``--now`` can
+    shift into the last-hour view.
+
+    One new 32-hex ``trace_id`` is minted; every distinct ``span_id`` is mapped to a
+    new 16-hex id. ``parent_id`` is remapped through the *same* map when present so
+    the parent/child tree (and thus the derived interactions) is preserved; a
+    missing/empty/root parent is left as-is. All other fields are untouched. The ids
+    only need to be unique, not reproducible, so ``secrets`` supplies the randomness.
+    """
+    new_trace_id = secrets.token_hex(16)  # 32 lowercase hex chars
+    id_map = {
+        span_id: secrets.token_hex(8)  # 16 lowercase hex chars
+        for span_id in {r["span_id"] for r in rows}
+    }
+    reidd: list[dict[str, Any]] = []
+    for row in rows:
+        new_row = dict(row)
+        new_row["trace_id"] = new_trace_id
+        new_row["span_id"] = id_map[row["span_id"]]
+        parent = row.get("parent_id")
+        if parent:  # non-empty / non-None: remap; root stays as-is
+            new_row["parent_id"] = id_map.get(parent, parent)
+        reidd.append(new_row)
+    return reidd, new_trace_id
 
 
 def _py_to_any_value(value: Any) -> common_pb2.AnyValue:
@@ -472,6 +518,14 @@ def main(argv: list[str] | None = None) -> int:
         "http://localhost:4318 http)",
     )
     parser.add_argument(
+        "--reid",
+        action="store_true",
+        help="rewrite the trace onto a fresh random trace_id + span_ids before "
+        "sending, so re-loading a fixture you have already ingested reads as "
+        "genuinely new data (a plain re-replay is a no-op); compose with --now "
+        "to land it in the last-hour view",
+    )
+    parser.add_argument(
         "--now",
         action="store_true",
         help="shift all span times by a single offset so the latest lands on "
@@ -494,6 +548,10 @@ def main(argv: list[str] | None = None) -> int:
     if not rows:
         print(f"ERROR: fixture {fixture} has no span rows", file=sys.stderr)
         return 1
+
+    if args.reid:
+        rows, new_trace_id = _reid_rows(rows)
+        print(f"  reid: new trace_id {new_trace_id}")
 
     if args.now:
         rows, offset = shift_rows_to_now(rows, dt.datetime.now(dt.timezone.utc))

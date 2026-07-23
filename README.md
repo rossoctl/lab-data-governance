@@ -123,10 +123,16 @@ python tools/load_trace.py travel_agent_II                 # gRPC :4317 (default
 python tools/load_trace.py travel_agent_II --transport http  # HTTP :4318
 python tools/load_trace.py travel_agent_II --dry-run         # build + count only
 python tools/load_trace.py travel_agent_II --now             # shift times to now
+python tools/load_trace.py travel_agent_II --reid --now      # fresh trace_id, shows in last-hour view
 ```
 
 `--now` shifts all timestamps by one offset so the trace ends now (durations
 preserved), making it read as just-arrived in the UI.
+
+`--reid` rewrites the trace onto a fresh random `trace_id` + `span_id`s before
+sending (printing the new id), so re-loading a fixture you have already ingested
+reads as genuinely new data — a plain re-replay is a no-op because span upserts
+are finalization-only and the interactions cursor has already passed those seqs.
 
 Takes a full path, `*.json` path, or bare stem. Override the target with
 `--endpoint` (gRPC wants a bare `host:port`, HTTP wants a full URL):

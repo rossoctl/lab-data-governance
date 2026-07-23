@@ -31,12 +31,18 @@ exercised (slice #73 adds the tripwire).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from data_governance import db
 from data_governance.retrieval import Span, _COLUMNS, _row_to_span
 
 from . import procedure
+
+if TYPE_CHECKING:
+    # Type-only import; graph_adapter imports state at runtime, so importing it
+    # back here would be circular. The `LegRow` annotation on `flush` is a
+    # forward-ref (from __future__ annotations), never evaluated at runtime.
+    from .graph_adapter import LegRow
 
 PROCESSOR_NAME = "interactions"
 
@@ -428,7 +434,12 @@ def _rehydrate_derived(
             proc._tool_anchor_entity_by_span[asid] = callee.id
 
 
-def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
+def flush(
+    tx: db.Transaction,
+    proc: procedure.Processor,
+    span: Span,
+    legs_by_ix: dict[str, list[LegRow]] | None = None,
+) -> None:
     """Write the re-derived region back to the DB, within *tx*.
 
     The interaction_spans delete-scope is ``proc._repaired_span_ids`` (the spans
@@ -438,6 +449,18 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
     The durable cursor advance is NOT written here (issue #75): the shared drain
     loop advances ``processor_state`` in this same *tx* after ``flush`` returns,
     so the advance still commits atomically with these derived writes (ADR-0007).
+
+    ``legs_by_ix`` selects the interaction-leg projection EXPLICITLY, per calling
+    algorithm (no attribute sniffing):
+
+      - ``None`` — the STREAMING algorithm (``driver.py``). Legs are projected
+        from the single in-memory ProtoInteraction via ``_legs_of`` (a Case-X
+        DERIVED leg: request/response timings bracket one synchronous call, both
+        legs share the interaction's seq/error), and step 4b re-aggregates them.
+      - a ``{interaction_id: [LegRow, ...]}`` map — the GRAPH algorithm
+        (``graph_driver.py``, built by ``graph_adapter.adapt``). Each leg carries
+        its OWN edge's occurred_at / payload / error / ``order``→seq; step 4b
+        leaves these authoritative legs untouched.
     """
     # 1. entities — id is deterministic (uuid5 of natural_key), so re-derives
     #    collapse on natural_key.
@@ -473,6 +496,11 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
     #
     #    Parent = identity shared across both legs (id, trace_id,
     #    parent_interaction_id, caller/callee, summary). No seq on the parent.
+    #
+    #    Leg source is chosen by the `legs_by_ix` PARAMETER (see the flush
+    #    docstring): None → streaming (`_legs_of` derived projection); a map →
+    #    graph (explicit per-edge legs). The two callers pass their own choice, so
+    #    there is no attribute sniffing here.
     for ix in proc.interactions_by_anchor.values():
         tx.execute(
             "INSERT INTO interactions (id, trace_id, parent_interaction_id, "
@@ -486,14 +514,25 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
             (ix.id, ix.trace_id, ix.parent_interaction_id, ix.caller_entity_id,
              ix.callee_entity_id, ix.summary),
         )
-        # Legs via the shared `_legs_of` projection (request first). For the
-        # current (Case-X) source both legs derive from the one span, so they
-        # share the interaction's seq and its error (a "derived" leg — the
-        # request/response timings bracket the one synchronous call; see the
-        # Leg-provenance term in CONTEXT.md). occurred_at may be NULL if the span
-        # had no start/end yet; the authoritative recompute (step 4b) folds the
-        # leg's territory in.
-        for leg_type, occurred_at, payload_hash in _legs_of(ix):
+        # Explicit per-leg rows when the graph algorithm supplied them, else the
+        # streaming derived-leg projection (byte-identical to before). Each supplied
+        # leg carries its own occurred_at / payload_hash / error / seq /
+        # original_seq; step 4b leaves supplied legs untouched (authoritative).
+        supplied = legs_by_ix.get(ix.id) if legs_by_ix is not None else None
+        if supplied is not None:
+            leg_values = [
+                (leg.leg_type, leg.occurred_at, leg.payload_hash,
+                 leg.error, leg.seq, leg.original_seq)
+                for leg in supplied
+            ]
+        else:
+            # occurred_at may be NULL if the span had no start/end yet; the
+            # authoritative recompute (step 4b) folds the leg's territory in.
+            leg_values = [
+                (leg_type, occurred_at, payload_hash, ix.error, ix.seq, ix.original_seq)
+                for leg_type, occurred_at, payload_hash in _legs_of(ix)
+            ]
+        for leg_type, occurred_at, payload_hash, error, seq, original_seq in leg_values:
             tx.execute(
                 "INSERT INTO interaction_legs (interaction_id, leg_type, "
                 "occurred_at, payload_hash, error, seq, original_seq) "
@@ -502,8 +541,8 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
                 "occurred_at = EXCLUDED.occurred_at, "
                 "payload_hash = EXCLUDED.payload_hash, "
                 "error = EXCLUDED.error, seq = EXCLUDED.seq",
-                (ix.id, leg_type, occurred_at, payload_hash, ix.error,
-                 ix.seq, ix.original_seq),
+                (ix.id, leg_type, occurred_at, payload_hash, error,
+                 seq, original_seq),
             )
 
     # 4. interaction_spans — scoped to the span_ids _repair_after_arrival
@@ -566,6 +605,15 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
     # fully-populated DB sees exactly its arrived set, not the whole trace.
     # LEAST/GREATEST skip NULLs and are monotonic, so this can only agree with or
     # widen the persisted window — never narrow it.
+    #
+    # Graph-supplied legs (`legs_by_ix`) are EXCLUDED from the recompute: each such
+    # leg's occurred_at is the responding endpoint's OWN anchor span time, which
+    # this territory join cannot recover (that span is not in interaction_spans),
+    # so GREATEST(l.occurred_at, max_ended) over the request-side territory would
+    # wrongly widen it. ADR-0025: timing follows the anchor, not an aggregate. The
+    # streaming path supplies no legs, so `excluded` is empty (`<> ALL('{}')` is
+    # TRUE for every row) and both legs are recomputed exactly as before.
+    excluded_leg_types = ["request", "response"] if legs_by_ix else []
     for ix in proc.interactions_by_anchor.values():
         tx.execute(
             "UPDATE interaction_legs AS l SET "
@@ -582,8 +630,9 @@ def flush(tx: db.Transaction, proc: procedure.Processor, span: Span) -> None:
             "      JOIN spans s ON s.trace_id = isp.trace_id "
             "                  AND s.span_id = isp.span_id "
             "      WHERE isp.interaction_id = %s AND s.seq <= %s) AS agg "
-            "WHERE l.interaction_id = %s",
-            (ix.id, span.seq, ix.id),
+            "WHERE l.interaction_id = %s "
+            "  AND l.leg_type <> ALL(%s::leg_type[])",
+            (ix.id, span.seq, ix.id, excluded_leg_types),
         )
 
     # 5. entity_spans — append-only.

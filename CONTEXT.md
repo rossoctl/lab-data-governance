@@ -218,30 +218,47 @@ request/response are temporally asymmetric, have independent lifecycles
 (streaming responses), draw as two arrows on an execution-flow diagram, and
 carry independent governance policy (classification, retention, redaction,
 `error`) per leg.
-_Avoid_: treating `response` as a callee→caller edge — the edge orientation is
-identical on both legs (caller/callee live on the shared parent); only
-`leg_type` distinguishes them.
+_Avoid_: treating a persisted `response` leg as a callee→caller edge — in the
+schema the orientation is identical on both legs (caller/callee live on the
+shared parent); only `leg_type` distinguishes them. (The graph algorithm does
+form a callee→caller edge *internally* per call, but `graph_adapter` folds it
+into the parent's response leg — see "Leg provenance".)
 
 **Leg provenance** (derived vs. observed):
 Whether an **Interaction leg**'s timing is independently observed or projected
-from a single span. The `P-interactions` current source is Case-X (one span
-carries both request and response payloads, known at once): `state.flush`
-projects its one internal interaction into a request leg (`occurred_at =
-started_at`) and a **derived** response leg (`occurred_at = ended_at`) — two
-legs of a synchronous call bracketed `started_at → ended_at`, sharing the one
-span as evidence and the same `seq`. This is honest (those timestamps genuinely
-bound the call) but is *not* an independent lifecycle. A future Case-Y source
-(two spans, distinct `span_id`s, shared exchange id, arriving at different
-times) produces **observed** legs: each leg's `occurred_at`/`error`/`seq` comes
-from its own span and finalizes independently. Consumers reading a `response`
-leg's `occurred_at` as "when the response actually happened" are correct for
-observed legs and approximately correct (= call return time) for derived ones.
-The split into legs is a **boundary projection** for the current source — the
-verified `--scramble`-gated algorithm still holds one interaction internally and
-is unchanged (ADR-0025); only the future source needs a new algorithm, deferred
-until a trace fixture exists.
-_Avoid_: assuming every `response` leg was observed from its own span — derived
-legs share the request span.
+from a single span. This varies by which P-interactions algorithm wrote the legs:
+
+- **Streaming algorithm — derived legs (Case-X).** One span carries both request
+  and response payloads, known at once. `state.flush` projects its one internal
+  interaction into a request leg (`occurred_at = started_at`) and a **derived**
+  response leg (`occurred_at = ended_at`) — two legs of a synchronous call
+  bracketed `started_at → ended_at`, sharing the one span as evidence and the
+  same `seq`. Honest (those timestamps genuinely bound the call) but *not* an
+  independent lifecycle.
+- **Graph algorithm — observed-style response legs.** The graph forms a
+  bidirectional interaction per call (a request edge and a structurally-
+  reconstructed response edge), each with its OWN anchor span and its own global
+  `order`. Its adapter (`graph_adapter`) supplies explicit per-leg rows
+  (`ProductionRows.legs_by_ix`), so the response leg's `occurred_at`/`error`/
+  `payload_hash` come from the **responding endpoint's own span** — for an A2A
+  delegation the responding agent's wrapper span, distinct from the request's
+  call-site span. Each leg's `seq` is its edge's `order`, so request-before-
+  response and nested-call LIFO ordering survive into the schema even when the
+  two edges happen to share one anchor span. The parent stays oriented
+  caller→callee (see "Interaction leg" — orientation is on the parent, not the
+  leg); only the leg's timing/payload/error/`seq` are per-leg.
+
+A future Case-Y source (two spans, distinct `span_id`s, shared exchange id,
+arriving at different times) produces fully **observed** legs finalizing
+independently. Consumers reading a `response` leg's `occurred_at` as "when the
+response actually happened" are correct for the graph's observed-style and the
+future observed legs, and approximately correct (= call return time) for the
+streaming algorithm's derived ones. The split into legs is a **boundary
+projection**: the verified `--scramble`-gated streaming algorithm holds one
+interaction internally and is unchanged (ADR-0025); the graph algorithm owns its
+per-leg projection in `graph_adapter`.
+_Avoid_: assuming every `response` leg was observed from its own span — the
+streaming algorithm's derived legs share the request span.
 
 **Anchor span**:
 A **Span** whose presence triggered the creation of an **Interaction**
