@@ -15,9 +15,15 @@
 #
 # This layers onto the chart's default `otel.collector.phoenixConfig`
 # (kagenti-deps values.yaml) — which already runs the traces/phoenix pipeline
-# with the genai->openinference transform. We add ONE exporter and re-list the
-# pipeline's exporters to include it (Helm replaces lists, so the phoenix
-# exporter must be repeated, not just appended).
+# with the genai->openinference transform. We add ONE exporter and ONE
+# processor, and re-list the pipeline's exporters/processors to include them
+# (Helm replaces lists, so existing entries must be repeated, not appended).
+#
+# transform/lineage_display stamps Phoenix display kinds (AGENT/TOOL/LLM/CHAIN)
+# onto sidecar spans from their `lineage.protocol` fact. Per the sidecar wire
+# contract, the producer emits facts only — display meaning belongs in infra,
+# and this transform is exactly that seam. Went live 2026-07-22 as a
+# ConfigMap patch; persisted here.
 #
 # CAVEATS (why this is the stretch/D4 path, not a drop-in for every cluster):
 #   1. Requires owning the kagenti-deps Helm release. The DG deploy today does
@@ -42,6 +48,15 @@ otel:
           endpoint: data-governance-receiver.data-governance.svc.cluster.local:4317
           tls:
             insecure: true
+      processors:
+        transform/lineage_display:
+          trace_statements:
+            - context: span
+              statements:
+                - set(attributes["openinference.span.kind"], "AGENT") where attributes["lineage.protocol"] == "a2a"
+                - set(attributes["openinference.span.kind"], "TOOL") where attributes["lineage.protocol"] == "mcp"
+                - set(attributes["openinference.span.kind"], "LLM") where attributes["lineage.protocol"] == "inference"
+                - set(attributes["openinference.span.kind"], "CHAIN") where attributes["lineage.protocol"] == "http"
       service:
         pipelines:
           traces/phoenix:
@@ -49,3 +64,10 @@ otel:
             exporters:
               - otlp/phoenix
               - otlp/data_governance
+            # Full list (Helm replaces lists): chart's processors plus
+            # lineage_display, before batch (batch is terminal by convention).
+            processors:
+              - memory_limiter
+              - transform/genai_to_openinference
+              - transform/lineage_display
+              - batch

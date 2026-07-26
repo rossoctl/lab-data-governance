@@ -4,11 +4,13 @@
 #
 # The kagenti collector ConfigMap is owned by the kagenti repo. This script
 # additively patches the live in-cluster object: it adds an
-# `otlp/data_governance` exporter and wires it into the `traces/phoenix`
-# pipeline (which already runs the OpenInference transform that
-# data-governance is designed to consume). Both edits are idempotent — the
-# script is safe to re-run, and an upstream re-apply of the kagenti
-# ConfigMap simply requires re-running this script to re-add the patch.
+# `otlp/data_governance` exporter and a `transform/lineage_display` processor
+# (Phoenix display kinds AGENT/TOOL/LLM/CHAIN stamped from the sidecar's
+# `lineage.protocol` fact — the wire contract puts display meaning in infra,
+# not the producer) and wires both into the `traces/phoenix` pipeline. All
+# edits are idempotent — the script is safe to re-run, and an upstream
+# re-apply of the kagenti ConfigMap simply requires re-running this script to
+# re-add the patch.
 #
 # Declarative alternative (survives helm upgrade instead of needing a re-run):
 # deploy/kagenti-collector-dg-values.yaml wires the SAME otlp/data_governance
@@ -119,8 +121,23 @@ with open(orig_path) as f:
 
 EXPORTER_NAME = "otlp/data_governance"
 PIPELINE_NAME = "traces/phoenix"
+PROCESSOR_NAME = "transform/lineage_display"
+PROCESSOR_DEF = {
+    "trace_statements": [
+        {
+            "context": "span",
+            "statements": [
+                'set(attributes["openinference.span.kind"], "AGENT") where attributes["lineage.protocol"] == "a2a"',
+                'set(attributes["openinference.span.kind"], "TOOL") where attributes["lineage.protocol"] == "mcp"',
+                'set(attributes["openinference.span.kind"], "LLM") where attributes["lineage.protocol"] == "inference"',
+                'set(attributes["openinference.span.kind"], "CHAIN") where attributes["lineage.protocol"] == "http"',
+            ],
+        }
+    ],
+}
 
 exporters = cfg.setdefault("exporters", {})
+processors = cfg.setdefault("processors", {})
 pipelines = cfg.get("service", {}).get("pipelines", {})
 if PIPELINE_NAME not in pipelines:
     sys.stderr.write(
@@ -128,6 +145,7 @@ if PIPELINE_NAME not in pipelines:
     )
     sys.exit(2)
 pipeline_exporters = pipelines[PIPELINE_NAME].setdefault("exporters", [])
+pipeline_processors = pipelines[PIPELINE_NAME].setdefault("processors", [])
 
 changed = False
 
@@ -141,12 +159,30 @@ if mode == "apply":
     if EXPORTER_NAME not in pipeline_exporters:
         pipeline_exporters.append(EXPORTER_NAME)
         changed = True
+    if PROCESSOR_NAME not in processors:
+        processors[PROCESSOR_NAME] = PROCESSOR_DEF
+        changed = True
+    if PROCESSOR_NAME not in pipeline_processors:
+        # Before 'batch' (batch is terminal by collector convention).
+        pos = (
+            pipeline_processors.index("batch")
+            if "batch" in pipeline_processors
+            else len(pipeline_processors)
+        )
+        pipeline_processors.insert(pos, PROCESSOR_NAME)
+        changed = True
 elif mode == "revert":
     if EXPORTER_NAME in exporters:
         del exporters[EXPORTER_NAME]
         changed = True
     if EXPORTER_NAME in pipeline_exporters:
         pipeline_exporters.remove(EXPORTER_NAME)
+        changed = True
+    if PROCESSOR_NAME in processors:
+        del processors[PROCESSOR_NAME]
+        changed = True
+    if PROCESSOR_NAME in pipeline_processors:
+        pipeline_processors.remove(PROCESSOR_NAME)
         changed = True
 else:
     sys.stderr.write(f"unknown MODE: {mode}\n")
@@ -166,9 +202,9 @@ fi
 
 if [[ "${CHANGE_STATE}" == "UNCHANGED" ]]; then
     if [[ "${MODE}" == "apply" ]]; then
-        echo ">> ConfigMap already patched (otlp/data_governance present in traces/phoenix); nothing to do."
+        echo ">> ConfigMap already patched (otlp/data_governance + transform/lineage_display present in traces/phoenix); nothing to do."
     else
-        echo ">> ConfigMap already reverted (otlp/data_governance absent); nothing to do."
+        echo ">> ConfigMap already reverted (otlp/data_governance + transform/lineage_display absent); nothing to do."
     fi
     exit 0
 fi
@@ -190,7 +226,9 @@ if [[ "${MODE}" == "apply" ]]; then
     cat <<EOF
 
 Done. The kagenti otel-collector now exports traces/phoenix-pipeline spans
-to ${RECEIVER_ENDPOINT}, in addition to its existing phoenix target.
+to ${RECEIVER_ENDPOINT}, in addition to its existing phoenix target, and
+stamps Phoenix display kinds (AGENT/TOOL/LLM/CHAIN) onto sidecar spans from
+their lineage.protocol fact (transform/lineage_display).
 
 This patch is NOT persisted in the kagenti repo. If the kagenti collector
 ConfigMap is re-applied from upstream, re-run this script to re-add the
@@ -202,9 +240,10 @@ EOF
 else
     cat <<EOF
 
-Done. The otlp/data_governance exporter has been removed from the kagenti
-otel-collector ConfigMap and the collector restarted. Existing phoenix
-and mlflow exporters are unchanged.
+Done. The otlp/data_governance exporter and the transform/lineage_display
+processor have been removed from the kagenti otel-collector ConfigMap and
+the collector restarted. Existing phoenix and mlflow exporters are
+unchanged.
 
 EOF
 fi
