@@ -75,10 +75,40 @@ correlation, or payload extraction.
 
 **Retrieval API**:
 The read-only Python library that consumers (UI backend, future processors)
-call to read **Spans**. Exposes typed methods only — there is no SQL
-escape hatch. Built on the **db module** (Layer 1) per ADR-0005. Future
-processors that need bespoke SQL use the db module directly alongside the
-retrieval API.
+call to read the stored and derived governance data. Exposes typed methods
+only — there is no SQL escape hatch. Built on the **db module** (Layer 1) per
+ADR-0005. The `data_governance.retrieval` package is the sanctioned read path,
+split by seam into typed submodules re-exported from its root: `spans`
+(**Span** reads — `get_spans`), **Interaction retrieval** (the derived
+**Interaction**/**Entity** forest — `get_interactions`, `get_entities`, and
+their span-evidence sub-reads), and `payloads` (a content-addressed **Payload**
+read that inlines the **Classification** verdict — `get_payload`). Each returns
+frozen dataclasses; the REST layer maps them mechanically to the wire, so all
+derivation (leg **Duration**, aggregated `error`, chronological ordering, the
+nullable-classification eventual-consistency shape, the not-yet-migrated empty
+shape) lives behind the interface, not in the HTTP handlers. Future processors
+that need bespoke SQL still use the db module directly alongside the retrieval
+API.
+
+**Interaction retrieval**:
+The typed read path over the derived **Interaction**/**Entity** forest,
+sibling to the span-only `get_spans` and part of the same **Retrieval API**
+package (`data_governance.retrieval.interactions`). Exposes
+`get_interactions(trace_id)` (parent identity rows with their nested
+**Interaction leg**s, computed leg **Duration** and aggregated `error`, span
+and anchor counts, ordered by the request leg's `occurred_at`),
+`get_entities(trace_id)` (the **Entities** the processor recorded provenance
+for in the trace, reached via the trace-scoped `entity_spans`), and the
+per-row span-evidence sub-reads `get_interaction_spans` /
+`get_entity_spans`. Reads are trace-scoped and eventually consistent (they
+reflect whatever `P-interactions` has materialised so far); before the
+interactions migration has run they return an **empty typed result**, never an
+error — so a fresh DB serves an empty flow, not a 500. Distinct from `payloads`
+retrieval, whose key is a `content_hash` and whose lifecycle is write-once and
+cross-trace.
+_Avoid_: reading the `interactions` / `entities` tables with inline SQL from
+the REST layer — that split (query in the handler, data in the db module) is
+what **Interaction retrieval** exists to close.
 
 **db module** (Layer 1):
 The thin generic Postgres connection/transaction wrapper above
@@ -519,6 +549,19 @@ mirrors, this is a closed set enforced in code that churns as content kinds
 mature. `unknown` (and any kind without a branch) falls back to serializing
 the whole `content` JSONB to a canonical string — best-effort classification
 that also marks the projection-coverage gap.
+
+**Flow view**:
+The UI surface that renders one **Trace**'s derived **Interaction**/**Entity**
+forest — the request/response **Interaction leg**s as an execution-flow list,
+each with its **Duration** and aggregated `error`, plus the per-**Interaction**
+and per-**Entity** span-evidence drill-in and the Req/Resp **Payload** cells
+carrying the inline **Classification** verdict. Backed entirely by **Interaction
+retrieval** and `payloads` retrieval; it is the primary consumer that motivated
+pulling those reads behind a typed interface. Trace-scoped and eventually
+consistent, mirroring the derived data it displays.
+_Avoid_: conflating the **Flow view** (the derived interaction forest for one
+trace) with the recent-traces listing (**TraceListingEntry** rows across
+traces) — different surfaces, different read paths.
 
 **TraceListingEntry**:
 One row of the recent-traces UI view — a derived display of a **Trace**,
