@@ -23,10 +23,14 @@ former single ``GET /spans`` pass-through):
 
 The P-interactions execution-flow resources (``.../interactions``,
 ``.../entities``, their ``/spans`` sub-resources) and ``GET /api/payloads/{hash}``
-live under the same ``/api/`` namespace. Every handler calls the retrieval
-library ``get_spans`` (unchanged — its ``root_only`` / ``parent_id`` / ``cursor``
-parameters and compatibility raises are reached only through these routes) or
-the ``db`` module underneath.
+live under the same ``/api/`` namespace. Every handler is a thin adapter over
+the retrieval library: the span reads call ``get_spans``; the flow reads call
+**Interaction retrieval** (``get_interactions`` / ``get_entities`` /
+``get_interaction_spans`` / ``get_entity_spans``) and ``get_payload``. All the
+read logic — nested legs, computed duration, error roll-up, chronological
+ordering, the nullable-classification and not-yet-migrated shapes — lives behind
+those seams; the handler only parses ids, dispatches to a worker thread, and
+encodes the returned dataclasses to the wire (ADR-0005).
 """
 
 from __future__ import annotations
@@ -361,202 +365,52 @@ async def _spa_index(_request: Request) -> Response:
 # the interaction- and entity-scoped handlers: both join their link table to
 # ``spans`` for the same provenance shape (ADR-0013), selecting
 # ``s.span_id, <link>.role, s.parent_id, s.kind, s.service_name`` in order.
-def _span_evidence_row(row: tuple) -> dict:
-    span_id, role, parent_id, kind, service_name = row
-    return {
-        "span_id": span_id,
-        "role": role,
-        "parent_id": parent_id,
-        "kind": kind,
-        "service_name": service_name,
-    }
-
-
-def _request_occurred_at(legs: list[dict]) -> str | None:
-    """The request leg's ``occurred_at`` (ISO string), or None."""
-    for leg in legs:
-        if leg["leg_type"] == "request":
-            return leg["occurred_at"]
-    return None
-
-
-def _leg_duration(legs: list[dict]) -> float | None:
-    """Seconds between the request and response legs' ``occurred_at``, or None
-    when either leg is absent (ADR-0025: null duration = "response in flight").
-    Computed on read, never stored, so a later-finalizing response leg can never
-    leave a stale value behind."""
-    by_type = {leg["leg_type"]: leg["occurred_at"] for leg in legs}
-    req, resp = by_type.get("request"), by_type.get("response")
-    if req is None or resp is None:
-        return None
-    return (
-        dt.datetime.fromisoformat(resp) - dt.datetime.fromisoformat(req)
-    ).total_seconds()
-
-
-def _legs_any_error(legs: list[dict]) -> bool | None:
-    """Aggregate error across the legs: True if any leg errored, False if any
-    leg is a definite success and none errored, else None (unknown)."""
-    errs = [leg["error"] for leg in legs]
-    if any(e is True for e in errs):
-        return True
-    if any(e is False for e in errs):
-        return False
-    return None
-
-
-def _derived_tables_exist(tx) -> bool:
-    """Whether the interactions migration has run on this DB.
-
-    The derived tables (``interactions``, ``entities``, and their link
-    tables) all land in the same migration, so probing ``interactions`` is
-    sufficient. Handlers short-circuit to their empty shape when absent so a
-    fresh DB serves 200s rather than 500s.
-    """
-    return (
-        tx.fetch_one(
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_name = 'interactions'"
-        )
-        is not None
-    )
-
-
 async def _interactions_handler(request: Request) -> Response:
     """``GET /api/traces/{tid}/interactions`` — derived interactions.
 
-    Returns the interactions the in-cluster processor materialised for a
-    trace (parent identity row + nested request/response legs, ADR-0025). Each
-    row carries ``span_count`` / ``anchor_count`` so the flow table can show
-    evidence sizing without pulling every span; the spans themselves are fetched
-    per-row from ``/api/traces/{tid}/interactions/{iid}/spans``. ``legs`` (one
-    or two, request first) carry the per-leg ``occurred_at`` / ``payload_hash``
-    / ``error``; ``duration_seconds`` = response − request occurrence (null when
-    the response leg is absent — the "response in flight" signal); ``any_error``
-    aggregates the legs.
+    Thin adapter over :func:`retrieval.get_interactions`: the derived
+    interactions the processor materialised for a trace (parent identity row +
+    nested request/response legs, computed ``duration_seconds`` / ``any_error``,
+    span/anchor counts — ADR-0025), ordered by request-leg occurrence. All that
+    logic lives behind the **Interaction retrieval** seam; the handler only
+    parses the id and encodes the result.
     """
     trace_id = request.path_params.get("tid")
     if not trace_id:
         return JSONResponse({"error": "trace_id required"}, status_code=400)
-
-    def _query() -> dict:
-        with db.transaction() as tx:
-            if not _derived_tables_exist(tx):
-                return {"interactions": []}
-            interactions = tx.fetch_all(
-                "SELECT id::text, caller_entity_id::text, callee_entity_id::text, "
-                "summary, parent_interaction_id::text "
-                "FROM interactions WHERE trace_id = %s",
-                (trace_id,),
-            )
-            # Legs for this trace's interactions — one scan, request leg first
-            # so the sequence diagram draws request-then-response.
-            leg_rows = tx.fetch_all(
-                "SELECT l.interaction_id::text, l.leg_type::text, l.occurred_at, "
-                "l.payload_hash, l.error, l.seq "
-                "FROM interaction_legs l "
-                "JOIN interactions i ON i.id = l.interaction_id "
-                "WHERE i.trace_id = %s "
-                "ORDER BY l.interaction_id, l.leg_type",
-                (trace_id,),
-            )
-            legs_by_ix: dict[str, list[dict]] = {}
-            for iid, leg_type, occurred_at, payload_hash, error, seq in leg_rows:
-                legs_by_ix.setdefault(iid, []).append(
-                    {
-                        "leg_type": leg_type,
-                        "occurred_at": occurred_at.isoformat() if occurred_at else None,
-                        "payload_hash": payload_hash,
-                        "error": error,
-                        "seq": seq,
-                    }
-                )
-            # Per-interaction span aggregate — one grouped scan of the link
-            # table, so the row count stays O(1) fetches regardless of trace
-            # size.
-            count_rows = tx.fetch_all(
-                "SELECT interaction_id::text, COUNT(*) AS span_count, "
-                "COUNT(*) FILTER (WHERE role = 'anchor') AS anchor_count "
-                "FROM interaction_spans WHERE trace_id = %s "
-                "GROUP BY interaction_id",
-                (trace_id,),
-            )
-            counts = {r[0]: (r[1], r[2]) for r in count_rows}
-
-            rows = [
-                {
-                    "id": r[0], "caller_entity_id": r[1], "callee_entity_id": r[2],
-                    "summary": r[3], "parent_interaction_id": r[4],
-                    "legs": legs_by_ix.get(r[0], []),
-                    "duration_seconds": _leg_duration(legs_by_ix.get(r[0], [])),
-                    "any_error": _legs_any_error(legs_by_ix.get(r[0], [])),
-                    "span_count": counts.get(r[0], (0, 0))[0],
-                    "anchor_count": counts.get(r[0], (0, 0))[1],
-                }
-                for r in interactions
-            ]
-            # Order by the request leg's occurrence so the flow list stays
-            # chronological (the parent no longer carries started_at).
-            rows.sort(key=lambda ix: _request_occurred_at(ix["legs"]) or "")
-            return {"interactions": rows}
-
     try:
-        data = await asyncio.to_thread(_query)
+        result = await asyncio.to_thread(retrieval.get_interactions, trace_id)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse(data)
+    return _json_ok(
+        {"interactions": [dataclasses.asdict(ix) for ix in result.interactions]}
+    )
 
 
 async def _entities_handler(request: Request) -> Response:
     """``GET /api/traces/{tid}/entities`` — derived entities.
 
-    Productized entities are cross-trace-stable (ADR-0013): no trace_id
-    column. Scope them to this trace indirectly via ``entity_spans`` (which
-    is trace-scoped) — the entities the processor recorded provenance for in
-    this trace. No ``retracted_at`` either (ADR-0012 emit-once-final, no
-    tombstone). Span provenance is fetched per-row from
-    ``/api/traces/{tid}/entities/{eid}/spans``.
+    Thin adapter over :func:`retrieval.get_entities` (entities scoped to the
+    trace via ``entity_spans``, ADR-0013).
     """
     trace_id = request.path_params.get("tid")
     if not trace_id:
         return JSONResponse({"error": "trace_id required"}, status_code=400)
-
-    def _query() -> dict:
-        with db.transaction() as tx:
-            if not _derived_tables_exist(tx):
-                return {"entities": []}
-            entities = tx.fetch_all(
-                "SELECT id::text, kind, natural_key, display_name, detected_from "
-                "FROM entities "
-                "WHERE id IN (SELECT DISTINCT entity_id FROM entity_spans "
-                "WHERE trace_id = %s) "
-                "ORDER BY kind, display_name",
-                (trace_id,),
-            )
-            return {
-                "entities": [
-                    {
-                        "id": r[0], "kind": r[1], "natural_key": r[2],
-                        "display_name": r[3], "detected_from": r[4],
-                    }
-                    for r in entities
-                ],
-            }
-
     try:
-        data = await asyncio.to_thread(_query)
+        result = await asyncio.to_thread(retrieval.get_entities, trace_id)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse(data)
+    return _json_ok(
+        {"entities": [dataclasses.asdict(e) for e in result.entities]}
+    )
 
 
 async def _interaction_spans_handler(request: Request) -> Response:
     """``GET /api/traces/{tid}/interactions/{iid}/spans``.
 
-    The span-evidence for one interaction (backs the detail panel's Spans
-    table). Returns ``{"spans": []}`` for an unknown id or before the
-    interactions migration has run — an empty table is the right UI state,
-    not a 404.
+    Thin adapter over :func:`retrieval.get_interaction_spans` — the span
+    evidence for one interaction, each row carrying the leg it evidences
+    (ADR-0025). Empty for an unknown id or before the migration.
     """
     trace_id = request.path_params.get("tid")
     interaction_id = request.path_params.get("iid")
@@ -564,40 +418,21 @@ async def _interaction_spans_handler(request: Request) -> Response:
         return JSONResponse(
             {"error": "trace_id and interaction_id required"}, status_code=400
         )
-
-    def _query() -> dict:
-        with db.transaction() as tx:
-            if not _derived_tables_exist(tx):
-                return {"spans": []}
-            rows = tx.fetch_all(
-                "SELECT s.span_id, pis.role, s.parent_id, s.kind, s.service_name, "
-                "pis.leg_type::text "
-                "FROM interaction_spans pis "
-                "LEFT JOIN spans s "
-                "  ON s.trace_id = pis.trace_id AND s.span_id = pis.span_id "
-                "WHERE pis.trace_id = %s AND pis.interaction_id = %s",
-                (trace_id, interaction_id),
-            )
-            # ADR-0025: a span attributes to a specific leg. Extend the shared
-            # evidence-row shape with leg_type (entity_spans have no leg).
-            return {
-                "spans": [
-                    {**_span_evidence_row(r[:5]), "leg_type": r[5]} for r in rows
-                ]
-            }
-
     try:
-        data = await asyncio.to_thread(_query)
+        result = await asyncio.to_thread(
+            retrieval.get_interaction_spans, trace_id, interaction_id
+        )
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse(data)
+    return _json_ok({"spans": [dataclasses.asdict(s) for s in result.spans]})
 
 
 async def _entity_spans_handler(request: Request) -> Response:
     """``GET /api/traces/{tid}/entities/{eid}/spans``.
 
-    The span-evidence for one entity. Same shape and empty-on-unknown
-    convention as :func:`_interaction_spans_handler`.
+    Thin adapter over :func:`retrieval.get_entity_spans`. Same shape and
+    empty-on-unknown convention as :func:`_interaction_spans_handler`;
+    ``leg_type`` is ``None`` for entity evidence.
     """
     trace_id = request.path_params.get("tid")
     entity_id = request.path_params.get("eid")
@@ -605,93 +440,33 @@ async def _entity_spans_handler(request: Request) -> Response:
         return JSONResponse(
             {"error": "trace_id and entity_id required"}, status_code=400
         )
-
-    def _query() -> dict:
-        with db.transaction() as tx:
-            if not _derived_tables_exist(tx):
-                return {"spans": []}
-            rows = tx.fetch_all(
-                "SELECT s.span_id, pes.role, s.parent_id, s.kind, s.service_name "
-                "FROM entity_spans pes "
-                "LEFT JOIN spans s "
-                "  ON s.trace_id = pes.trace_id AND s.span_id = pes.span_id "
-                "WHERE pes.trace_id = %s AND pes.entity_id = %s",
-                (trace_id, entity_id),
-            )
-            return {"spans": [_span_evidence_row(r) for r in rows]}
-
     try:
-        data = await asyncio.to_thread(_query)
+        result = await asyncio.to_thread(
+            retrieval.get_entity_spans, trace_id, entity_id
+        )
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
-    return JSONResponse(data)
-
-
-def _classification_json(row: tuple) -> dict | None:
-    """Shape a ``payload_classifications`` LEFT JOIN slice into the nullable
-    ``classification`` field (ADR-0024).
-
-    The join columns are all-NULL when P-classification has not yet written a
-    verdict for the payload (its PK ``content_hash`` is NOT NULL, so a present
-    row always has one) — that is the eventual-consistency window, surfaced as
-    ``null``. Once the row exists, the document-level verdict + **Findings** +
-    ``model_version`` are returned verbatim (a clean payload is a real
-    ``PUBLIC`` / zero-**Findings** verdict, never a null).
-    """
-    if row[0] is None:  # no payload_classifications row (LEFT JOIN miss)
-        return None
-    return {
-        "sensitivity_level": row[0],
-        "regulatory_tags": list(row[1]) if row[1] is not None else [],
-        "contains_identity_bundle": row[2],
-        "is_personalized": row[3],
-        "primary_domain": row[4],
-        "findings": row[5],
-        "model_version": row[6],
-    }
+    return _json_ok({"spans": [dataclasses.asdict(s) for s in result.spans]})
 
 
 async def _payload_handler(request: Request) -> Response:
     """``GET /api/payloads/{hash}`` — a payload by content hash.
 
-    Backs the flow view's Req/Resp cells. Carries the P-classification
-    **Classification** verdict inline as a nullable ``classification`` field
-    (ADR-0024): ``null`` until P-classification has processed the payload,
-    populated with the verdict object once its ``payload_classifications`` row
-    exists.
+    Thin adapter over :func:`retrieval.get_payload`. Backs the flow view's
+    Req/Resp cells; carries the P-classification **Classification** verdict
+    inline as a nullable ``classification`` field (ADR-0024). A missing payload
+    is a 404.
     """
     h = request.path_params.get("hash")
     if not h:
         return JSONResponse({"error": "content_hash required"}, status_code=400)
-
-    def _query() -> dict | None:
-        with db.transaction() as tx:
-            row = tx.fetch_one(
-                "SELECT p.content_hash, p.content_kind, p.content, p.byte_size, "
-                "       c.sensitivity_level, c.regulatory_tags, "
-                "       c.contains_identity_bundle, c.is_personalized, "
-                "       c.primary_domain, c.findings, c.model_version "
-                "FROM interaction_payloads p "
-                "LEFT JOIN payload_classifications c "
-                "  ON c.content_hash = p.content_hash "
-                "WHERE p.content_hash = %s",
-                (h,),
-            )
-            if row is None:
-                return None
-            return {
-                "content_hash": row[0], "content_kind": row[1],
-                "content": row[2], "byte_size": row[3],
-                "classification": _classification_json(row[4:]),
-            }
-
     try:
-        data = await asyncio.to_thread(_query)
+        view = await asyncio.to_thread(retrieval.get_payload, h)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
-    if data is None:
+    if view is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    return JSONResponse(data)
+    return _json_ok(dataclasses.asdict(view))
 
 
 # ---------------------------------------------------------------------------

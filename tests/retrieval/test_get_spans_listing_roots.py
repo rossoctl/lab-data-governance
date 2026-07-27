@@ -433,7 +433,11 @@ def test_counts_snapshot_isolated_from_concurrent_writes(
     """
     import psycopg
 
-    from data_governance import retrieval as retrieval_mod
+    # _compute_counts_for_traces is a private helper of the spans submodule, and
+    # get_spans (which lives there too) calls it by that name — so the patch must
+    # target retrieval.spans, not the package root (which re-exports only the
+    # public surface).
+    from data_governance.retrieval import spans as retrieval_mod
 
     insert_span(trace_id="T", span_id="s1", name="a", error=False)
     insert_span(trace_id="T", span_id="s2", name="b", error=False)
