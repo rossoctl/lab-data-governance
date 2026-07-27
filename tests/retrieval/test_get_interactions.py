@@ -17,6 +17,8 @@ distinguishable from span_count (2).
 
 from __future__ import annotations
 
+import dataclasses
+
 import psycopg
 import pytest
 
@@ -169,12 +171,20 @@ def test_interaction_spans_carry_leg_type(seeded: str) -> None:
 
 
 def test_entity_spans_have_no_leg(seeded: str) -> None:
-    """Per-entity span evidence; entity_spans have no leg_type."""
+    """Per-entity span evidence; entity_spans have no leg, so the view carries
+    no ``leg_type`` field at all (it is a distinct type from the interaction
+    ``SpanEvidenceView``, not that view with a null leg)."""
     result = retrieval.get_entity_spans(seeded, _ENT_ID)
     (s,) = result.spans
+    assert isinstance(s, retrieval.EntitySpanEvidenceView)
     assert s.span_id == "s-ent"
     assert s.role == "identified_via"
-    assert s.leg_type is None
+    assert not hasattr(s, "leg_type")
+    # The field set is exactly the five joined span-evidence fields — the
+    # source of the wire shape the /entities/{eid}/spans endpoint serves.
+    assert {f.name for f in dataclasses.fields(s)} == {
+        "span_id", "role", "parent_id", "kind", "service_name"
+    }
 
 
 def test_unknown_ids_return_empty(seeded: str) -> None:

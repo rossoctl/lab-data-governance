@@ -113,10 +113,8 @@ class EntityView:
 
 @dataclass(frozen=True)
 class SpanEvidenceView:
-    """One span-evidence row for an **Interaction** or **Entity** — the joined
-    span fields plus its role and (for interaction evidence) the leg it
-    evidences. ``leg_type`` is ``None`` for entity evidence (``entity_spans``
-    have no leg).
+    """One span-evidence row for an **Interaction** — the joined span fields
+    plus its role and the leg it evidences (ADR-0025).
     """
 
     span_id: str
@@ -124,7 +122,21 @@ class SpanEvidenceView:
     parent_id: str | None
     kind: str | None
     service_name: str | None
-    leg_type: str | None = None
+    leg_type: str | None
+
+
+@dataclass(frozen=True)
+class EntitySpanEvidenceView:
+    """One span-evidence row for an **Entity**. Same joined span fields as
+    :class:`SpanEvidenceView` but with no ``leg_type`` — ``entity_spans`` have
+    no leg, so the entity-evidence wire row carries no leg key at all.
+    """
+
+    span_id: str
+    role: str
+    parent_id: str | None
+    kind: str | None
+    service_name: str | None
 
 
 @dataclass(frozen=True)
@@ -144,7 +156,7 @@ class GetInteractionSpansResult:
 
 @dataclass(frozen=True)
 class GetEntitySpansResult:
-    spans: list[SpanEvidenceView] = field(default_factory=list)
+    spans: list[EntitySpanEvidenceView] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -334,9 +346,9 @@ def get_interaction_spans(trace_id: str, interaction_id: str) -> GetInteractionS
 
 
 def get_entity_spans(trace_id: str, entity_id: str) -> GetEntitySpansResult:
-    """Read the span evidence for one **Entity**. Same shape and
-    empty-on-unknown convention as :func:`get_interaction_spans`, but
-    ``entity_spans`` have no leg, so ``leg_type`` is ``None``.
+    """Read the span evidence for one **Entity**. Same empty-on-unknown
+    convention as :func:`get_interaction_spans`, but ``entity_spans`` have no
+    leg, so entity-evidence rows carry no ``leg_type`` field at all.
     """
     with db.transaction() as tx:
         if not _derived_tables_exist(tx):
@@ -351,9 +363,9 @@ def get_entity_spans(trace_id: str, entity_id: str) -> GetEntitySpansResult:
         )
         return GetEntitySpansResult(
             spans=[
-                SpanEvidenceView(
+                EntitySpanEvidenceView(
                     span_id=r[0], role=r[1], parent_id=r[2],
-                    kind=r[3], service_name=r[4], leg_type=None,
+                    kind=r[3], service_name=r[4],
                 )
                 for r in rows
             ]

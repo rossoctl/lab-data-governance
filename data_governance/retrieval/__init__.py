@@ -24,6 +24,7 @@ that reach-in rather than laundering it through the package root.
 from __future__ import annotations
 
 from data_governance.retrieval.interactions import (
+    EntitySpanEvidenceView,
     EntityView,
     GetEntitiesResult,
     GetEntitySpansResult,
@@ -56,6 +57,7 @@ __all__ = [
     "TraceCounts",
     "get_spans",
     # interactions / entities forest
+    "EntitySpanEvidenceView",
     "EntityView",
     "GetEntitiesResult",
     "GetEntitySpansResult",

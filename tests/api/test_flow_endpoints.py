@@ -201,6 +201,14 @@ def test_entity_spans_sub_resource(seeded, api_server):
     assert len(spans) == 1
     assert spans[0]["span_id"] == "s-ent"
     assert spans[0]["role"] == "identified_via"
+    # Provenance shape: the joined-through span fields only. Unlike
+    # interaction evidence, ``entity_spans`` have no leg, so the row carries
+    # NO ``leg_type`` key at all (not a null one) — the wire shape is exactly
+    # the five keys, matching the UI ``SpanEvidence`` type.
+    assert set(spans[0]) == {
+        "span_id", "role", "parent_id", "kind", "service_name"
+    }
+    assert "leg_type" not in spans[0]
 
 
 def test_unknown_ids_return_empty_spans_not_404(seeded, api_server):
