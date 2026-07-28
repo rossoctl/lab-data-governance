@@ -14,6 +14,10 @@ derivation stays behind the interface (ADR-0005):
   migration has run (never an error).
 - :mod:`.payloads` — a content-addressed **Payload** read that inlines the
   **Classification** verdict (``get_payload``). Write-once, cross-trace.
+- :mod:`.lineage` — the trace-scoped **Data lineage** read
+  (``get_data_lineage``): the persisted per-**Interaction leg** metadata triple,
+  a pure lookup (ADR-0027 D7). Nullable per leg in the eventual-consistency
+  window and empty before the lineage migration has run — never an error.
 
 Only the public surface is re-exported here. Consumers of the private
 row-mapping helpers (``spans._COLUMNS`` / ``spans._row_to_span`` — the
@@ -37,6 +41,12 @@ from data_governance.retrieval.interactions import (
     get_entity_spans,
     get_interaction_spans,
     get_interactions,
+)
+from data_governance.retrieval.lineage import (
+    DataLineageLegView,
+    DataLineageView,
+    GetDataLineageResult,
+    get_data_lineage,
 )
 from data_governance.retrieval.payloads import (
     ClassificationView,
@@ -74,4 +84,9 @@ __all__ = [
     "ClassificationView",
     "PayloadView",
     "get_payload",
+    # data lineage
+    "DataLineageLegView",
+    "DataLineageView",
+    "GetDataLineageResult",
+    "get_data_lineage",
 ]

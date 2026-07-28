@@ -22,15 +22,17 @@ former single ``GET /spans`` pass-through):
 - ``GET /api/traces/{tid}/spans/{sid}/children`` — direct children, keyset-paginated
 
 The P-interactions execution-flow resources (``.../interactions``,
-``.../entities``, their ``/spans`` sub-resources) and ``GET /api/payloads/{hash}``
-live under the same ``/api/`` namespace. Every handler is a thin adapter over
+``.../entities``, their ``/spans`` sub-resources), the per-trace
+``GET /api/traces/{tid}/data-lineage`` and ``GET /api/payloads/{hash}`` live
+under the same ``/api/`` namespace. Every handler is a thin adapter over
 the retrieval library: the span reads call ``get_spans``; the flow reads call
 **Interaction retrieval** (``get_interactions`` / ``get_entities`` /
-``get_interaction_spans`` / ``get_entity_spans``) and ``get_payload``. All the
-read logic — nested legs, computed duration, error roll-up, chronological
-ordering, the nullable-classification and not-yet-migrated shapes — lives behind
-those seams; the handler only parses ids, dispatches to a worker thread, and
-encodes the returned dataclasses to the wire (ADR-0005).
+``get_interaction_spans`` / ``get_entity_spans``), and the governance reads call
+``get_payload`` / ``get_data_lineage``. All the read logic — nested legs,
+computed duration, error roll-up, chronological ordering, the
+nullable-classification / nullable-lineage and not-yet-migrated shapes — lives
+behind those seams; the handler only parses ids, dispatches to a worker thread,
+and encodes the returned dataclasses to the wire (ADR-0005).
 """
 
 from __future__ import annotations
@@ -449,6 +451,26 @@ async def _entity_spans_handler(request: Request) -> Response:
     return _json_ok({"spans": [dataclasses.asdict(s) for s in result.spans]})
 
 
+async def _data_lineage_handler(request: Request) -> Response:
+    """``GET /api/traces/{tid}/data-lineage`` — persisted per-leg data lineage.
+
+    Thin adapter over :func:`retrieval.get_data_lineage`: the **Data lineage
+    metadata** triple for every **Interaction leg** of the trace, keyed per leg
+    (ADR-0027 D5) with a nullable ``lineage`` for the eventual-consistency
+    window. A pure lookup (ADR-0027 D7) — no matcher runs on this path. The
+    empty-shape conventions (unknown trace, not-yet-migrated DB) live behind the
+    seam; the handler only parses the id and encodes the result.
+    """
+    trace_id = request.path_params.get("tid")
+    if not trace_id:
+        return JSONResponse({"error": "trace_id required"}, status_code=400)
+    try:
+        result = await asyncio.to_thread(retrieval.get_data_lineage, trace_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return _json_ok({"legs": [dataclasses.asdict(leg) for leg in result.legs]})
+
+
 async def _payload_handler(request: Request) -> Response:
     """``GET /api/payloads/{hash}`` — a payload by content hash.
 
@@ -529,6 +551,16 @@ def build_app() -> Starlette:
         Route(
             "/api/traces/{tid:str}/entities/{eid:str}/spans",
             endpoint=_entity_spans_handler,
+            methods=["GET"],
+        ),
+        # Persisted data lineage for a trace (issue #118, ADR-0027). A sibling
+        # trace-scoped resource rather than a field on /interactions: it is keyed
+        # per LEG (D5), it is a separately-derived stream with its own
+        # eventual-consistency window, and #120's trace-level status needs this
+        # envelope to land in.
+        Route(
+            "/api/traces/{tid:str}/data-lineage",
+            endpoint=_data_lineage_handler,
             methods=["GET"],
         ),
         Route(
