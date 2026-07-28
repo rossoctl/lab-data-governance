@@ -1,4 +1,4 @@
-"""End-to-end coverage for the four ADR-0025 clauses implemented together:
+"""End-to-end coverage for the four ADR-0026 clauses implemented together:
 
   * **Step 2.b case 3, input side (ordering rule 3):** a tool replayed on the
     LLM span's *input* messages that was never an output is inferred and

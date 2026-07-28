@@ -1,4 +1,4 @@
-"""P-interactions graph algorithm — see README.md and ADR-0025.
+"""P-interactions graph algorithm — see README.md and ADR-0026.
 
 The batch graph algorithm that derives entities + interactions from a trace's
 spans. Its pure core is :func:`extractor.extract`; production derivation into the

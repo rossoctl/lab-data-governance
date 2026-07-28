@@ -617,7 +617,7 @@ def flush(
     # wrongly widen it. ADR-0025: timing follows the anchor, not an aggregate. The
     # streaming path supplies no legs, so `excluded` is empty (`<> ALL('{}')` is
     # TRUE for every row) and both legs are recomputed exactly as before.
-    excluded_leg_types = ["request", "response"] if legs_by_ix else []
+    excluded_leg_types = ["request", "response"] if legs_by_ix is not None else []
     for ix in proc.interactions_by_anchor.values():
         tx.execute(
             "UPDATE interaction_legs AS l SET "

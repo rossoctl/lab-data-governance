@@ -1,6 +1,6 @@
 """Entities/interactions for a claude_agent_sdk tool/sub-agent dispatch trace.
 
-Pins ADR-0025 Step 2.b case 2 (the `ClaudeAgentSDK.{tool_name}` dispatch) and
+Pins ADR-0026 Step 2.b case 2 (the `ClaudeAgentSDK.{tool_name}` dispatch) and
 the Step 2.d kind+role-matched edge-coloring rule end-to-end.
 
 The fixture is a `ClaudeAgentSDK.query` combined agent→LLM span with three
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from data_governance.processors.interactions.graph.extractor import extract
 
-# natural_key -> inferred?  (the ADR-0025 sanctioned boolean signal).
+# natural_key -> inferred?  (the ADR-0026 sanctioned boolean signal).
 EXPECTED_ENTITIES = {
     "dl-demo-claude-agent": False,        # the observed agent (query + dispatches)
     "llm:claude-3-7-sonnet": False,       # combined-span target (observed-via-same-span)

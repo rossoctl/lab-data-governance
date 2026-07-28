@@ -89,7 +89,7 @@ CREATE TABLE proto_colored_nodes (
   is_boundary         boolean NOT NULL DEFAULT false,
   is_target_duplicate boolean NOT NULL DEFAULT false,
   -- Set by Step 2.c / Step 2.d on the materialised inferred (e.g. unobserved-peer)
-  -- node. Per ADR-0025: this column is the sole sanctioned signal for
+  -- node. Per ADR-0026: this column is the sole sanctioned signal for
   -- "inferred node"; do not parse the `label` column for that purpose.
   is_inferred         boolean NOT NULL DEFAULT false,
   flagged             boolean NOT NULL DEFAULT false,
@@ -115,7 +115,7 @@ CREATE TABLE proto_entity_nodes (
   contains_boundary  boolean NOT NULL DEFAULT false,
   contains_blue      boolean NOT NULL DEFAULT false,
   contains_teal      boolean NOT NULL DEFAULT false,
-  -- Per ADR-0025 Step 3.a: true iff every absorbed node was inferred.
+  -- Per ADR-0026 Step 3.a: true iff every absorbed node was inferred.
   -- This column is the sole sanctioned signal for "inferred entity"; do not
   -- parse the `label` column for that purpose.
   inferred           boolean NOT NULL DEFAULT false,

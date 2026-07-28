@@ -7,7 +7,7 @@ Postgres: the snapshot lives in `fixtures/*.json` and is reconstructed into
 `Span` objects here.
 
 `travel_agent_III.json` is the canonical live trace referenced throughout
-ADR-0025 and the openai_agents v1.4.1 span reference — a single travel-advisor
+ADR-0026 and the openai_agents v1.4.1 span reference — a single travel-advisor
 agent (OpenAI Agents SDK, fronted by an A2A server) calling one LLM and three
 tools. It was captured verbatim from the `spans` table of the data-governance
 deployment with:
@@ -17,7 +17,7 @@ deployment with:
 so the rows match the `Span` columns 1:1 (ADR-0006: the row *is* the Span). Its
 tests live in the `travel_agent_III/` subpackage, which defines its own
 `canonical_trace_spans` fixture; the `CANONICAL_TRACE_ID` constant stays here as
-the shared ADR-0025 reference.
+the shared ADR-0026 reference.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from data_governance.retrieval import Span
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
-# The trace every ADR-0025 example is drawn from.
+# The trace every ADR-0026 example is drawn from.
 CANONICAL_TRACE_ID = "8ae1f64d4bb51b750168c6ef1e11a2d8"
 
 
@@ -78,7 +78,7 @@ def load_trace_spans(name: str) -> list[Span]:
 # The canonical trace's own `canonical_trace_spans` fixture lives in the
 # `travel_agent_III/` subpackage's conftest (self-contained, like the other
 # per-trace subpackages). `CANONICAL_TRACE_ID` above stays here as the shared
-# ADR-0025 reference constant.
+# ADR-0026 reference constant.
 
 
 # A second travel-advisor trace, captured the same way (verbatim from the
@@ -96,7 +96,7 @@ def clarifying_turn_trace_spans() -> list[Span]:
     return load_trace_spans("travel_agent_I")
 
 
-# A hand-built `claude_agent_sdk` trace exercising ADR-0025 Step 2.b case 2:
+# A hand-built `claude_agent_sdk` trace exercising ADR-0026 Step 2.b case 2:
 # a `ClaudeAgentSDK.query` combined agent→LLM span whose children are
 # `ClaudeAgentSDK.{tool_name}` tool/sub-agent dispatches. The dispatched
 # targets emit no spans of their own, so they are materialised as inferred
@@ -115,7 +115,7 @@ def claude_subagent_trace_spans() -> list[Span]:
 
 
 # A hand-built "split graph" trace exercising the features implemented for
-# ADR-0025's deferred clauses. A `weather-agent` makes one
+# ADR-0026's deferred clauses. A `weather-agent` makes one
 # `openinference.instrumentation.anthropic` LLM call whose:
 #   * INPUT messages replay a prior `calendar` tool call (a genuinely-new
 #     input-side tool, never seen as an output) → inferred + ordered BEFORE
@@ -181,7 +181,7 @@ def anthropic_multitool_trace_spans() -> list[Span]:
     return load_trace_spans("patent_agent_II")
 
 
-# A hand-built cross-service trace exercising ADR-0025 Step 3.b for an *observed*
+# A hand-built cross-service trace exercising ADR-0026 Step 3.b for an *observed*
 # transport chain (as opposed to an inferred Teal server). A `caller-agent`
 # (service `svc-caller`) calls a `callee-agent` (service `svc-callee`) over HTTP:
 # the two agentic openinference spans are bridged only by an observed

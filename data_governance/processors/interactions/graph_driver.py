@@ -1,4 +1,4 @@
-"""Graph-algorithm driver over the shared cursor loop (ADR-0025).
+"""Graph-algorithm driver over the shared cursor loop (ADR-0026).
 
 The alternative to the streaming driver (:mod:`.driver`), selected by
 ``INTERACTIONS_ALGORITHM=graph``. It writes the SAME production tables through the
@@ -33,7 +33,8 @@ import threading
 
 from data_governance import db
 from data_governance.processors import _driver
-from data_governance.retrieval import Span, _COLUMNS, _row_to_span
+from data_governance.retrieval import Span
+from data_governance.retrieval.spans import _COLUMNS, _row_to_span
 
 from . import graph_adapter, state
 from .driver import NOTIFY_CHANNEL, POLL_SECONDS, _DRAIN_BATCH

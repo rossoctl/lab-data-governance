@@ -124,12 +124,13 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: DATABASE_URL
               value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
-            # Select the graph derivation (ADR-0025) instead of the default
-            # streaming algorithm. Both write the same production interactions
-            # tables via state.flush; the flag chooses which derivation drives
-            # the drain loop (data_governance/processors/interactions/__main__.py).
+            # Which interaction-derivation algorithm drives the drain loop
+            # (data_governance/processors/interactions/__main__.py). Both write
+            # the same production interactions tables via state.flush. Defaults
+            # to "streaming"; set to "graph" to select the graph derivation
+            # (ADR-0026).
             - name: INTERACTIONS_ALGORITHM
-              value: "graph"
+              value: "streaming"
           # No ports / no Service: the processor has no inbound API. It serves a
           # Prometheus /metrics surface on 9091 in-pod
           # (data_governance/processors/interactions/__main__.py), but — like

@@ -1,6 +1,6 @@
 """Entities and interactions extracted from a single-LLM-call trace.
 
-This pins the P-interactions graph algorithm (ADR-0025) end-to-end against the
+This pins the P-interactions graph algorithm (ADR-0026) end-to-end against the
 real trace `186b5703acde0532adc6940e9eda3cb1`: spans in → entity set + the
 interactions between them.
 
@@ -66,7 +66,7 @@ def test_one_observed_agent_one_inferred_llm(clarifying_turn_trace_spans):
     }
 
     # Inferred identity is a boolean field with detected_from="inferred"
-    # (ADR-0025), not a label convention.
+    # (ADR-0026), not a label convention.
     for e in inferred:
         assert e.detected_from == "inferred"
 

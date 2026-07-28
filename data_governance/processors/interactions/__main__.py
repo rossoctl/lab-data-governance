@@ -13,7 +13,7 @@ differs, and only ONE runs at a time so they share the ``interactions`` cursor):
 - ``streaming`` (default) — the per-span, eventually-consistent streaming
   algorithm (:func:`driver.run`, ADR-0007).
 - ``graph`` — the batch graph algorithm, re-derived per span (:func:`graph_driver.run`,
-  ADR-0025).
+  ADR-0026).
 
 Before processing any spans the entry point runs the schema-version check
 (issue #10, ADR-0002): it reads ``alembic_version.version_num`` and refuses to

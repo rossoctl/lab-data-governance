@@ -1,4 +1,4 @@
-"""Coverage for the two ADR-0025 Step 2.d / Step 3.a merge behaviours that
+"""Coverage for the two ADR-0026 Step 2.d / Step 3.a merge behaviours that
 broaden the same-interaction merge / same-entity combine beyond inferred peers:
 
   * **Step 2.d observed↔observed same-interaction node merge** — two *observed*

@@ -1,6 +1,6 @@
 # P-interactions graph algorithm
 
-The graph-based P-interactions algorithm (ADR-0025): a batch derivation of
+The graph-based P-interactions algorithm (ADR-0026): a batch derivation of
 **entities** and **interactions** from a trace's spans, answering **does this
 produce a sensible execution flow on real Kagenti agent traces?** — validated
 against the captured fixtures in `tests/processors/interactions/graph/`.
@@ -41,7 +41,7 @@ tables (the production driver does).
 - **Identity (prototype only):** UUIDs for the graph's own `entities.id` and
   `interactions.id`. In production these are re-derived deterministically by
   `interactions/graph_adapter.py` (uuid5 of the natural key / anchor) — see
-  ADR-0025 and the adapter.
+  ADR-0026 and the adapter.
 - **Payload extraction:**
   - `llm.input_messages.*` → `llm_chat_prompt`
   - `llm.output_messages.*` → `llm_completion`

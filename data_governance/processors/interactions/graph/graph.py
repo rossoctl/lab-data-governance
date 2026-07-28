@@ -17,7 +17,7 @@ are combined (`combine_identical_entities`). Step 3.b creates the EntityGraph
 edges: each Teal transport chain between two Blue components becomes one
 directed interaction (EntityEdge). Entities are named from their subgraph
 (service.name, else the natural-key suffix, else 'unknown'; hostname-based
-naming is deferred — see ADR-0025).
+naming is deferred — see ADR-0026).
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ class Edge:
     fuse and reconstructed into entity edges there.
 
     `order` is the intra-turn ordering band carried by the FORWARD (request)
-    edges of a Teal server, per ADR-0025 Step 2.c "Inferred call-chain ordering".
+    edges of a Teal server, per ADR-0026 Step 2.c "Inferred call-chain ordering".
     Several forward call chains derived from a *single* span share that span's
     `started_at`, so `order` breaks the tie. The band encodes the spec's 2.c
     rules: input-derived tool calls sit in a negative band (before the LLM), the
@@ -219,7 +219,7 @@ class EntityNode:
         # A Step 2.c case-4 inferred agent node forces its whole entity inferred
         # even though it absorbs observed LLM spans: the *agent* is what was
         # inferred (the framework emitted no agent span), which is the entity's
-        # identity. See ADR-0025 Step 2.c case 4 ("produces an entity marked
+        # identity. See ADR-0026 Step 2.c case 4 ("produces an entity marked
         # inferred").
         if node.attributes.get("_inferred_agent"):
             self._forced_inferred = True
@@ -238,14 +238,14 @@ class EntityEdge:
 
     `req_payload` is an optional `(content_kind, content)` override for the
     interaction this edge produces. It is set for tool calls inferred from an
-    LLM span's `tool_calls` attribute (ADR-0025 Step 2.c case 3): the tool's
+    LLM span's `tool_calls` attribute (ADR-0026 Step 2.c case 3): the tool's
     request payload is the call's arguments, carried on the inferred tool-call
     node rather than re-derivable from the LLM span's own facts. When None the
     extractor derives the payload from the anchor span's `SpanFacts` as usual.
 
     `order` is seeded from the originating interaction base-graph edge (see
     `Edge.order`, the Step 2.c intra-turn band) and then OVERWRITTEN by
-    `_order_execution_walk` with a TRUE GLOBAL ORDINAL (ADR-0025 Step 3.b point 2):
+    `_order_execution_walk` with a TRUE GLOBAL ORDINAL (ADR-0026 Step 3.b point 2):
     a single monotonic sequence across the whole trace — chronological across
     turns, LIFO within a nested delegation. Consumers sort by `order` ALONE.
     """

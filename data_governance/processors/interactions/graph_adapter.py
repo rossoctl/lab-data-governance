@@ -125,7 +125,7 @@ def _is_mcp_server(span: Span) -> bool:
 def _coarse_kind(node: EntityNode) -> str | None:
     """The node's coarse kind from the proto's ``label`` prefix.
 
-    Per ADR-0025 the label prefix (``agent:`` / ``llm:`` / ``tool:``) is the
+    Per ADR-0026 the label prefix (``agent:`` / ``llm:`` / ``tool:``) is the
     sanctioned coarse-kind signal — it is set from classification, not guessed
     from a pooled span. Only the natural-key *format* after the prefix is a
     prototype construct we must re-derive; the prefix itself is trustworthy and
@@ -435,7 +435,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
     # node id -> re-derived natural_key (for the composite interaction key + summary).
     nk_by_node = {nid: ident.natural_key for nid, ident in node_identity.items()}
 
-    # The graph algorithm forms a BIDIRECTIONAL interaction per call (ADR-0025
+    # The graph algorithm forms a BIDIRECTIONAL interaction per call (ADR-0026
     # Step 3.b): a request edge (forward, caller→callee) and a structurally-
     # reconstructed response edge (callee→caller), EACH with its own global
     # `order` and its own anchor span. The production schema (ADR-0025) is a parent
@@ -638,7 +638,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         span_for_row = (
             anchor_span_id
             if anchor_span_id not in claimed_spans
-            else f"{anchor_span_id}#{callee_nk}#{req_leg.pi.order}"
+            else f"{anchor_span_id}#{callee_nk}#{primary.pi.order}"
         )
         claimed_spans.add(anchor_span_id)
         interaction_spans.append(

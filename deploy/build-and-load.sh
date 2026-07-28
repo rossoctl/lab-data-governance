@@ -94,22 +94,20 @@ elif [[ ! -f "${REPO_ROOT}/uv.lock" ]]; then
     exit 1
 fi
 
-# NOTE: classification image build disabled — the git-LFS weight materialization
-# below is only needed for that image, so it is commented out too.
-# # Materialize the git-LFS model weights BEFORE building the classification image
-# # (ADR-0023). classification/model/<generation>/model.safetensors is a ~500 MB
-# # git-LFS artifact; a fresh checkout holds only a ~134-byte pointer. Without this
-# # step the classification build would bake the pointer, not the weights, and the
-# # model load would fail at startup. `git lfs pull` is idempotent — a no-op once
-# # the object is present.
-# if ! command -v git-lfs >/dev/null 2>&1 && ! git lfs version >/dev/null 2>&1; then
-#     echo "error: git-lfs is required to materialize the ~500 MB model weights " \
-#          "for the classification image; install it from https://git-lfs.com" >&2
-#     exit 1
-# fi
-# echo ">> Materializing git-LFS model weights (classification/model/)"
-# git -C "${REPO_ROOT}" lfs install --local
-# git -C "${REPO_ROOT}" lfs pull --include="classification/model/**"
+# Materialize the git-LFS model weights BEFORE building the classification image
+# (ADR-0023). classification/model/<generation>/model.safetensors is a ~500 MB
+# git-LFS artifact; a fresh checkout holds only a ~134-byte pointer. Without this
+# step the classification build would bake the pointer, not the weights, and the
+# model load would fail at startup. `git lfs pull` is idempotent — a no-op once
+# the object is present.
+if ! command -v git-lfs >/dev/null 2>&1 && ! git lfs version >/dev/null 2>&1; then
+    echo "error: git-lfs is required to materialize the ~500 MB model weights " \
+         "for the classification image; install it from https://git-lfs.com" >&2
+    exit 1
+fi
+echo ">> Materializing git-LFS model weights (classification/model/)"
+git -C "${REPO_ROOT}" lfs install --local
+git -C "${REPO_ROOT}" lfs pull --include="classification/model/**"
 
 # Compute the UI version stamp HERE on the host (short SHA + commit date): the
 # .git tree is not in the image build context, so vite.config.ts cannot derive
@@ -147,28 +145,24 @@ kind load docker-image "${UI_DOCKERIO}" --name "${KIND_CLUSTER}"
 # Containerfile.classification with the classification extra (torch/transformers)
 # and the baked-in model weights. Built and loaded as its own image because its
 # dependency closure diverges too heavily to share the receiver/UI image.
-#
-# DISABLED: the torch + ~500 MB model-weight build is slow and not needed for a
-# UI/receiver-only deploy. Re-enable this block (and the git-LFS step above) when
-# the classification image itself needs rebuilding.
-# echo ">> Building ${CLASSIFICATION_IMAGE} from ${REPO_ROOT}/Containerfile.classification"
-# "${CONTAINER_TOOL}" build \
-#     -f "${REPO_ROOT}/Containerfile.classification" \
-#     -t "${CLASSIFICATION_IMAGE}" \
-#     "${REPO_ROOT}"
-#
-# echo ">> Tagging ${CLASSIFICATION_IMAGE} as its docker.io/* alias"
-# "${CONTAINER_TOOL}" tag "${CLASSIFICATION_IMAGE}" "${CLASSIFICATION_DOCKERIO}"
-#
-# echo ">> Loading ${CLASSIFICATION_DOCKERIO} into Kind cluster '${KIND_CLUSTER}'"
-# kind load docker-image "${CLASSIFICATION_DOCKERIO}" --name "${KIND_CLUSTER}"
+echo ">> Building ${CLASSIFICATION_IMAGE} from ${REPO_ROOT}/Containerfile.classification"
+"${CONTAINER_TOOL}" build \
+    -f "${REPO_ROOT}/Containerfile.classification" \
+    -t "${CLASSIFICATION_IMAGE}" \
+    "${REPO_ROOT}"
+
+echo ">> Tagging ${CLASSIFICATION_IMAGE} as its docker.io/* alias"
+"${CONTAINER_TOOL}" tag "${CLASSIFICATION_IMAGE}" "${CLASSIFICATION_DOCKERIO}"
+
+echo ">> Loading ${CLASSIFICATION_DOCKERIO} into Kind cluster '${KIND_CLUSTER}'"
+kind load docker-image "${CLASSIFICATION_DOCKERIO}" --name "${KIND_CLUSTER}"
 
 cat <<EOF
 
 Done. These tags are present in the '${KIND_CLUSTER}' Kind cluster:
   - ${RECEIVER_IMAGE}
   - ${UI_IMAGE}
-  (classification image build is currently disabled in this script)
+  - ${CLASSIFICATION_IMAGE}
 
 Next:
   kubectl apply -f ${REPO_ROOT#${PWD}/}/deploy/k8s/

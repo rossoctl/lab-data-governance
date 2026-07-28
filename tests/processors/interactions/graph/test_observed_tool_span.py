@@ -1,5 +1,5 @@
 """Regression: an observed tool-execution span owned by the calling agent must
-not be absorbed into that agent (ADR-0025 Step 2.d fold guard).
+not be absorbed into that agent (ADR-0026 Step 2.d fold guard).
 
 google_adk emits a tool call as an `execute_tool <name>` TOOL span under the
 agent, carrying the *agent's own* `service.name`. The Step 2.d "inferred peer →

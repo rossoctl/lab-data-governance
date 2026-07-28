@@ -1,6 +1,6 @@
 """Entities extracted from the real single-turn travel-advisor trace.
 
-This pins the P-interactions graph algorithm (ADR-0025) against the real trace
+This pins the P-interactions graph algorithm (ADR-0026) against the real trace
 `186b5703acde0532adc6940e9eda3cb1` — a single clarifying turn: the
 `travel-advisor` agent (OpenAI Agents SDK, fronted by an A2A server) makes one
 LLM call and asks the user for more detail, so no tool is invoked.
@@ -19,8 +19,8 @@ bridged by observed a2a/httpx/starlette transport):
 Two entities total: one observed agent + one inferred LLM.
 
 Entity identity is the `natural_key` (`agent:` / `llm:` prefixes). We assert on
-the stable, ADR-0025-sanctioned signals — `natural_key`, `inferred`,
-`detected_from` — never the display string (ADR-0025: "Inferred identity is a
+the stable, ADR-0026-sanctioned signals — `natural_key`, `inferred`,
+`detected_from` — never the display string (ADR-0026: "Inferred identity is a
 boolean field, not a label convention").
 
 STAGE 1 — this file validates the *entity set* only. Interaction pairs/counts,
@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from data_governance.processors.interactions.graph.extractor import extract
 
-# Expected entity set: natural_key -> inferred?  (the stable, ADR-0025
+# Expected entity set: natural_key -> inferred?  (the stable, ADR-0026
 # sanctioned signals — never the display string).
 #
 # GROUND TRUTH — HUMAN-VALIDATED. DO NOT EDIT WITHOUT CONFIRMATION BY A HUMAN.
@@ -78,7 +78,7 @@ def test_observed_agent_inferred_llm(clarifying_turn_trace_spans):
     # No tool entities were created from the framework-internal discovery spans.
     assert not any(e.natural_key.startswith("tool:") for e in result.entities)
 
-    # detected_from and the inferred boolean agree on every entity — ADR-0025
+    # detected_from and the inferred boolean agree on every entity — ADR-0026
     # "Inferred identity is a boolean field, not a label convention".
     for e in result.entities:
         expected = "inferred" if e.inferred else "observed"

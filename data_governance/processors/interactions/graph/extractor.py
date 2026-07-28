@@ -1,7 +1,7 @@
 """Graph-based extractor: spans -> (entities, interactions, interaction_spans, payloads)
 plus the intermediate base / colored / entity graphs for evaluation. THROWAWAY.
 
-Algorithm (see docs/adr/0025-p-interactions-graph-algorithm.md):
+Algorithm (see docs/adr/0026-p-interactions-graph-algorithm.md):
 
   Step 1     — build the white base graph from spans + traceparent edges
   Step 2.b   — agentic coloring (Blue nodes/edges, boundary marking, additive)
@@ -15,7 +15,7 @@ Algorithm (see docs/adr/0025-p-interactions-graph-algorithm.md):
                via non-interaction edges → groups (structural), then combine
                same-entity groups (semantic). Each node is keyed/named from its
                subgraph: service.name, else the natural-key suffix, else
-               'unknown' (hostname-based naming is deferred — see ADR-0025)
+               'unknown' (hostname-based naming is deferred — see ADR-0026)
   Step 3.b   — create the entity-graph *edges*: one interaction per Teal
                transport chain between two Blue components (per-chain — distinct
                calls stay distinct)
@@ -64,7 +64,7 @@ class ProtoEntity:
     # natural_key is the classifier-derived label with a typed prefix:
     # `llm:<model>` | `tool:<name>` | `agent:<name>`. The prefix doubles
     # as the coarse kind (consumers split on `:` when they need it). Per
-    # ADR-0025 "Natural-key prefixes (an implementation construct, not a spec
+    # ADR-0026 "Natural-key prefixes (an implementation construct, not a spec
     # vocabulary)", this format is an implementation decision, not spec-derived.
     # There is no separate `kind` column.
     natural_key: str
@@ -73,7 +73,7 @@ class ProtoEntity:
     scope_name: str
     anchor_span_id: str | None
     # True iff every base-graph node absorbed into this entity was an inferred
-    # peer (e.g. a Step 2.c unobserved-peer stub). Per ADR-0025 this is the
+    # peer (e.g. a Step 2.c unobserved-peer stub). Per ADR-0026 this is the
     # sole sanctioned signal for "inferred entity" — the UI must filter on this
     # boolean, never on the label/natural_key string.
     inferred: bool = False
@@ -90,7 +90,7 @@ class ProtoInteraction:
     request_payload_hash: str | None
     response_payload_hash: str | None
     summary: str
-    # Global ordinal (ADR-0025 Step 3.b point 2): a single monotonic sequence
+    # Global ordinal (ADR-0026 Step 3.b point 2): a single monotonic sequence
     # across the whole trace — chronological across turns, LIFO within a nested
     # delegation — so consumers sort by `order` ALONE. Copied from
     # `EntityEdge.order`.
@@ -177,7 +177,7 @@ def _entity_display_name(
 ) -> str:
     """Step 3.a entity key/naming — derive a display key for an entity from its subgraph.
 
-    Precedence (ADR-0025 Step 3.a entity key, as scoped today):
+    Precedence (ADR-0026 Step 3.a entity key, as scoped today):
       1. **service.name** of any contributing span — the OTel resource service
          that emitted the agentic spans (`dl-demo-travel-advisor`,
          `patent-assistant`). This is the typed `Span.service_name` field, not
@@ -190,7 +190,7 @@ def _entity_display_name(
     The spec's preferred identifier — a hostname — lives on non-agentic
     (httpx/botocore) spans that are not part of the entity-forming subgraph at
     this stage, so it is unreachable until the cross-scope enrichment stage
-    runs; service.name is the best identifier available now. See ADR-0025
+    runs; service.name is the best identifier available now. See ADR-0026
     "Deferred to later stages → Hostname-based entity naming".
     """
     for sid in entity_node.span_ids:
@@ -209,7 +209,7 @@ def _derive_entities(
 ) -> list[ProtoEntity]:
     """Build ProtoEntity rows from the entity graph.
 
-    Step 3.a entity key per ADR-0025: each entity is named from its subgraph —
+    Step 3.a entity key per ADR-0026: each entity is named from its subgraph —
     service.name, else the natural-key suffix, else 'unknown' (see
     `_entity_display_name`). Hostname-based naming is deferred to the
     cross-scope enrichment stage (the host-bearing spans are not yet in the
