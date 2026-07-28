@@ -34,7 +34,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from data_governance import db
-from data_governance.retrieval import Span, _COLUMNS, _row_to_span
+from data_governance.retrieval import Span
+
+# _COLUMNS / _row_to_span are private helpers of the spans submodule; imported
+# from there directly (not via the package root) to name the reach-in.
+from data_governance.retrieval.spans import _COLUMNS, _row_to_span
 
 from . import procedure
 
