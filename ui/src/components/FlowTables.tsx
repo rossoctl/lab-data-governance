@@ -12,10 +12,11 @@ import {
 } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 
-import { useInteractions, useEntities, usePayload } from '../api/hooks';
+import { useInteractions, useEntities, usePayload, useDataLineage } from '../api/hooks';
 import { fetchJson } from '../api/client';
 import {
   computeInteractionDepths,
+  legLineageKey,
   legOfType,
   requestOccurredAt,
 } from '../lib/flow';
@@ -24,8 +25,15 @@ import type { PinStore } from '../lib/pins';
 import { EntityPill } from './EntityPill';
 import { DetailList } from './DetailList';
 import { ClassificationView } from './ClassificationView';
+import { DataLineageView } from './DataLineageView';
 import { RoleIcon } from './RoleIcon';
-import type { Entity, Interaction, SpanEvidence } from '../types';
+import type {
+  DataLineage,
+  DataLineageByLeg,
+  Entity,
+  Interaction,
+  SpanEvidence,
+} from '../types';
 
 interface Selection {
   kind: 'interaction' | 'entity';
@@ -181,8 +189,23 @@ function SpanLink({
  * expanding it lazily fetches `GET /api/payloads/{hash}` and renders the
  * decoded content plus kind/hash/bytes. Fetch is gated on `open` (usePayload
  * enabled only once expanded), so an unopened payload costs nothing.
+ *
+ * The two derived governance facts hang off the expanded body: the payload's
+ * **Classification** verdict (keyed by content hash, inlined on the payload) and
+ * its **Data lineage** (keyed by the **Interaction leg** this payload sits on,
+ * ADR-0027 D5 — so it is passed *in* by the panel from the one trace-scoped read
+ * rather than re-fetched here per expansion).
  */
-function PayloadView({ label, hash }: { label: string; hash: string }) {
+function PayloadView({
+  label,
+  hash,
+  lineage,
+}: {
+  label: string;
+  hash: string;
+  /** This leg's lineage: the triple, or `null` for "not yet computed". */
+  lineage: DataLineage | null;
+}) {
   const [open, setOpen] = useState(false);
   const { data, isLoading, isError } = usePayload(open ? hash : null);
   return (
@@ -226,12 +249,44 @@ function PayloadView({ label, hash }: { label: string; hash: string }) {
                 <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Classification</div>
                 <ClassificationView classification={data.classification} />
               </div>
+              {/* The P-data-lineage metadata for THIS LEG (issue #119): the
+                  payload's data sources, the transformations applied per source,
+                  and the ordered entity path. `null` renders as "lineage not yet
+                  computed" (the eventual-consistency window, ADR-0027), exactly
+                  as the Classification block above handles its own null. */}
+              <div style={{ marginTop: '0.5rem' }}>
+                <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Data lineage</div>
+                <DataLineageView lineage={lineage} />
+              </div>
             </>
           )}
         </div>
       )}
     </div>
   );
+}
+
+/**
+ * This payload's lineage out of the trace-scoped map, keyed by the leg it sits
+ * on (ADR-0027 D5). Collapses the three not-yet-computed cases to one `null`:
+ * the read is still in flight, the leg has no lineage row (including the whole
+ * empty-`legs` not-yet-migrated response), or the row exists with `lineage:
+ * null`. They are the same statement to the reader — "we have not derived this
+ * yet" — and lumping them here is what keeps the view from ever mistaking any of
+ * them for a real derived-empty triple.
+ */
+function lineageOfLeg(
+  byLeg: DataLineageByLeg | undefined,
+  selection: Selection,
+  legType: 'request' | 'response',
+): DataLineage | null {
+  // Guard the key's meaning rather than assume it: `Selection.id` is an
+  // interaction id only for an interaction selection, and a lineage key built
+  // from an entity id would silently miss (or worse, collide) — an entity
+  // selection carries no payload hashes, so this branch is unreachable today and
+  // stays that way by construction.
+  if (selection.kind !== 'interaction') return null;
+  return byLeg?.get(legLineageKey(selection.id, legType)) ?? null;
 }
 
 /** Which flow row is selected, mirrored to/from the URL (?iid | ?eid). */
@@ -280,6 +335,12 @@ export function FlowTables({
   const interactionsQ = useInteractions(traceId);
   const entitiesQ = useEntities(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // Persisted **Data lineage** for the whole trace (ADR-0027), read ONCE per
+  // trace and keyed per leg — not per payload expansion. Gated on there being a
+  // selection at all, because the only place lineage renders is inside an
+  // expanded payload in the detail panel; TanStack caches on `traceId`, so the
+  // panel switching between rows/legs never re-fetches.
+  const lineageQ = useDataLineage(traceId, selection !== null);
   // Flat view: ignore the parent/child tree and list each request/response leg
   // as its own row, ordered by the leg `seq` (the trace-wide sequence number).
   const [flatView, setFlatView] = useState(false);
@@ -811,10 +872,18 @@ export function FlowTables({
                   Payloads
                 </Title>
                 {selection.requestPayloadHash && (
-                  <PayloadView label="Request" hash={selection.requestPayloadHash} />
+                  <PayloadView
+                    label="Request"
+                    hash={selection.requestPayloadHash}
+                    lineage={lineageOfLeg(lineageQ.data, selection, 'request')}
+                  />
                 )}
                 {selection.responsePayloadHash && (
-                  <PayloadView label="Response" hash={selection.responsePayloadHash} />
+                  <PayloadView
+                    label="Response"
+                    hash={selection.responsePayloadHash}
+                    lineage={lineageOfLeg(lineageQ.data, selection, 'response')}
+                  />
                 )}
               </>
             )}

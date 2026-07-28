@@ -498,6 +498,143 @@ describe('FlowTables', () => {
     expect(screen.queryByRole('heading', { name: 'Payloads' })).toBeNull();
   });
 
+  // --- Data lineage (issue #119, ADR-0027) ------------------------------------
+  // Lineage is read once per trace and keyed per LEG (interaction_id, leg_type),
+  // so a payload's block is found by its leg identity, never by content hash.
+
+  const LINEAGE_LEGS = [
+    {
+      interaction_id: 'i1',
+      leg_type: 'request',
+      payload_hash: 'reqhash0deadbeef',
+      lineage: {
+        data_sources: ['agent-a', 'user'],
+        source_transformations: { 'agent-a': ['summarization'], user: ['anonymization'] },
+        entity_path: ['user', 'agent-a', 'search'],
+        seq: 1,
+      },
+    },
+  ];
+
+  /** Mock with payload hashes on both legs plus a data-lineage response. */
+  function mockFetchWithLineage(legs: unknown[]) {
+    const withPayload = [withLegHashes('reqhash0deadbeef', 'resphash0feedface')];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/data-lineage')) return { ok: true, status: 200, json: async () => ({ legs }) };
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.includes('/payloads/'))
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            content_hash: url.split('/').pop(), content_kind: 'json',
+            content: { q: 'flights' }, byte_size: 42, classification: null,
+          }),
+        };
+      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+  }
+
+  it('shows the payload lineage (data sources, per-source transformations, entity path) on expand', async () => {
+    mockFetchWithLineage(LINEAGE_LEGS);
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Request: reqhash0/i }));
+
+    // The Data lineage block renders in the expanded payload, beside the
+    // Classification block it mirrors.
+    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
+    const sources = screen.getByLabelText('Data sources');
+    expect(within(sources).getByText('agent-a')).toBeInTheDocument();
+    expect(within(sources).getByText('user')).toBeInTheDocument();
+    // Per-source transformations sit with their source.
+    const agentRow = within(sources).getByText('agent-a').closest('tr')!;
+    expect(within(agentRow).getByText('summarization')).toBeInTheDocument();
+    // And the ordered entity path.
+    expect(screen.getByLabelText('Entity path').textContent).toMatch(
+      /user.*agent-a.*search/,
+    );
+  });
+
+  it('keys lineage per leg: the response leg does not inherit the request leg’s lineage', async () => {
+    // Only the request leg has lineage in the fixture, so expanding the
+    // response payload must report "not yet computed" — the leg key is
+    // (interaction_id, leg_type), never the payload/content hash (ADR-0027 D5).
+    mockFetchWithLineage(LINEAGE_LEGS);
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Response: resphash/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByLabelText('Data sources')).toBeNull();
+  });
+
+  it('shows "not yet computed" when the leg is present but its lineage is null', async () => {
+    mockFetchWithLineage([{ ...LINEAGE_LEGS[0], lineage: null }]);
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Request: reqhash0/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument(),
+    );
+  });
+
+  it('handles the empty-legs lineage response (unmigrated DB) without breaking the payload view', async () => {
+    mockFetchWithLineage([]);
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Request: reqhash0/i }));
+    // The payload body still renders; lineage states its absence.
+    await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
+    expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument();
+  });
+
+  it('reads the trace-scoped lineage resource exactly once for many payload expansions', async () => {
+    mockFetchWithLineage(LINEAGE_LEGS);
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Request: reqhash0/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /Response: resphash/i }));
+    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
+    // One trace-level fetch serves every leg — NOT one per payload expansion.
+    const lineageCalls = (fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => String(c[0]).endsWith('/data-lineage'),
+    );
+    expect(lineageCalls).toHaveLength(1);
+  });
+
+  it('does not fetch lineage before a row is selected', async () => {
+    mockFetchWithLineage(LINEAGE_LEGS);
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    // Nothing is selected, so no payload/lineage can be on screen: the
+    // trace-level lineage read stays unfired (same laziness as usePayload).
+    expect(
+      (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+        String(c[0]).endsWith('/data-lineage'),
+      ),
+    ).toHaveLength(0);
+  });
+
   it('scopes the active-row highlight selector to out-specify PF clickable rows', () => {
     // jsdom does not apply CSS-file rules to computed style, so the highlight's
     // *visibility* cannot be asserted here (see project_dg_react_ui memory). The

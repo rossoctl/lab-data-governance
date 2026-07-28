@@ -68,6 +68,21 @@ export function responseOccurredAt(ix: Pick<Interaction, 'legs'>): string | null
   return legOfType(ix, 'response')?.occurred_at ?? null;
 }
 
+/**
+ * The canonical **Interaction leg** key, `(interaction_id, leg_type)` — the
+ * grain at which a **Data lineage** fact is unique (ADR-0027 D5). Single-sourced
+ * here so the hook that builds the lookup map and the view that reads it can't
+ * drift on the separator. Deliberately NOT keyed on `payload_hash`: payloads are
+ * content-addressed and deduped, so identical bytes at two positions would
+ * collide two completely different lineages into one entry.
+ */
+export function legLineageKey(
+  interactionId: string,
+  legType: 'request' | 'response',
+): string {
+  return `${interactionId}:${legType}`;
+}
+
 export type ToolSubtype = 'in-framework' | 'deployed';
 
 /**

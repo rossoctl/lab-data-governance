@@ -14,6 +14,7 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import { fetchJson, type QueryParams } from './client';
+import { legLineageKey } from '../lib/flow';
 import type {
   Span,
   TraceListingEntry,
@@ -21,6 +22,8 @@ import type {
   Payload,
   Entity,
   Interaction,
+  DataLineageByLeg,
+  DataLineageLeg,
 } from '../types';
 
 /** Recent-traces feed. `GET /api/traces` → the `traces` array. */
@@ -156,6 +159,45 @@ export function useEntitySpans(
       fetchJson<{ spans: SpanEvidence[] }>(
         `/traces/${traceId}/entities/${entityId}/spans`,
       ).then((r) => r.spans),
+  });
+}
+
+/**
+ * Persisted **Data lineage** for a whole trace, reduced to a per-leg lookup.
+ * `GET /api/traces/{tid}/data-lineage` (ADR-0027, issue #118).
+ *
+ * **One fetch per trace, not per payload.** The resource is trace-scoped while
+ * the flow view's payload blocks are per-leg, so the hook unwraps `{legs:[…]}`
+ * into a `(interaction_id, leg_type)` → lineage Map (ADR-0027 D5 — never keyed on
+ * `payload_hash`). Every expanded payload then reads the one cached query,
+ * keyed on `traceId` alone.
+ *
+ * `enabled` gates the read the same way {@link usePayload} gates on its hash: the
+ * flow view only needs lineage once a row's detail panel is open, so an
+ * untouched table costs nothing.
+ *
+ * Both absences are normal shapes, not errors: an empty `legs` array (trace has
+ * no interactions, or the lineage migration hasn't run) yields an empty map, and
+ * a leg whose lineage hasn't been derived yet is a present key with a `null`
+ * value (the eventual-consistency window).
+ */
+export function useDataLineage(
+  traceId: string,
+  enabled = true,
+): UseQueryResult<DataLineageByLeg> {
+  return useQuery({
+    enabled,
+    queryKey: ['data-lineage', traceId],
+    queryFn: () =>
+      fetchJson<{ legs: DataLineageLeg[] }>(`/traces/${traceId}/data-lineage`).then(
+        (r) =>
+          new Map(
+            (r.legs ?? []).map((leg) => [
+              legLineageKey(leg.interaction_id, leg.leg_type),
+              leg.lineage,
+            ]),
+          ),
+      ),
   });
 }
 

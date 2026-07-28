@@ -71,6 +71,25 @@ body {
   background: rgba(56, 139, 253, 0.28);
 }
 
+/* Data-lineage keys (DataLineageView): an **Entity** natural key is a long
+   unbreakable token (`tool:agent:(proj,svc):name`,
+   `llm:host.example.com/model`), and the lineage block lives inside the flow
+   view's ~30%-wide floating detail panel. Left alone, those keys push their
+   container past the panel edge and the content is clipped off-screen — PF
+   labels additionally force `nowrap` + ellipsis on the inner
+   `.pf-v5-c-label__text`, which an inline style on the outer element cannot
+   reach. So the break is granted explicitly, on the label's inner text node as
+   well as on the plain table cell. */
+.dg-lineage-key,
+.dg-lineage-key .pf-v5-c-label__text {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: normal;
+  /* PF caps the label text at 100% of the label; the wrap above needs the cap
+     lifted or a single long token still overflows before it can break. */
+  max-width: none;
+}
+
 /* Span-evidence role glyphs (see RoleIcon / roleMeta). Visual weight tracks
    semantic weight: the key (anchor / discovered_via) is full-strength, info
    and the identified_via dot are normal, and the connector dash is faint —

@@ -111,6 +111,56 @@ export interface Payload {
   classification: Classification | null;
 }
 
+/**
+ * The **Data lineage metadata** triple for one **Interaction leg** (ADR-0027):
+ * where the payload's data came from and what happened to it on the way.
+ *
+ * 1. `data_sources` — the origins, each an **Entity**'s natural key.
+ * 2. `source_transformations` — `data_source → transformations`. A *list* on the
+ *    wire because JSON has no set; its order is insignificant. A source in
+ *    `data_sources` need not appear here (no transformations recorded for it).
+ * 3. `entity_path` — the **ordered** entities the data passed through. Order is
+ *    the whole point; an origin's path is legitimately empty.
+ *
+ * `seq` is the row's own derivation cursor. An *empty* triple is a real derived
+ * value (the payload originates here) — distinct from the absent row, which the
+ * wire spells as a `null` `lineage` (see {@link DataLineageLeg}).
+ */
+export interface DataLineage {
+  data_sources: string[];
+  source_transformations: Record<string, string[]>;
+  entity_path: string[];
+  seq: number;
+}
+
+/**
+ * One **Interaction leg** of a trace with its nullable lineage, the element of
+ * `GET /api/traces/{tid}/data-lineage`.
+ *
+ * The leg key is `(interaction_id, leg_type)` (ADR-0027 D5) — content-addressed
+ * `payload_hash` is a fact about the row, NOT the key: identical bytes at
+ * different positions carry completely different lineage. `lineage` is `null` in
+ * the eventual-consistency window before P-data-lineage has derived this leg,
+ * mirroring the nullable `classification` of `GET /api/payloads/{hash}`
+ * (ADR-0024).
+ */
+export interface DataLineageLeg {
+  interaction_id: string;
+  leg_type: 'request' | 'response';
+  payload_hash: string | null;
+  lineage: DataLineage | null;
+}
+
+/**
+ * `(interaction_id, leg_type)` → that leg's nullable lineage, the shape
+ * `useDataLineage` reduces the trace-scoped response to. Keys are
+ * `` `${interaction_id}:${leg_type}` `` (see `legLineageKey`). A *present* key
+ * with a `null` value is "derived-nothing-yet"; an *absent* key means the leg
+ * carries no lineage row at all (e.g. the not-yet-migrated empty response) —
+ * both render as "not yet computed", but the distinction is preserved.
+ */
+export type DataLineageByLeg = Map<string, DataLineage | null>;
+
 // Entity and Interaction wire shapes live in ./lib/flow (the pure helpers key
 // on them); re-export so consumers import all wire types from one module.
 export type { Entity, Interaction } from './lib/flow';
