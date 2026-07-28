@@ -597,6 +597,24 @@ reverse lookup ("where did this content come from / go"). An origin's metadata
 is a real *empty* triple (one source, an empty transformation set, an empty
 path), never NULL — absence of the row is what means "not yet derived".
 
+**Lineage coverage**:
+Whether a **Trace**'s derived **Data lineage** covers the whole trace, recorded
+per trace in `lineage_trace_status` as `complete` or `partial` plus the
+`stopped_at_seq` a partial one stopped at (ADR-0027 D6/D8). When an **Interaction
+leg**'s payload is absent, lineage is derived only up to that leg in leg-`seq`
+order — a positional prefix — and the trace is `partial`. The flag exists to
+prevent one specific failure: a governance consumer reading a truncated prefix as
+the **complete** set of **Data source**s. So it travels with the lineage
+everywhere the lineage is served (the `data-lineage` API envelope, a warning at
+the top of the **Flow view**). *Absence* of the status row means **unknown**, not
+`complete` — the eventual-consistency window before **P-data-lineage** has
+reached the trace.
+_Avoid_: reading `partial` as an error, or as a statement about *why* the payload
+is missing. It is a correct prefix plus a warning; distinguishing *not captured*
+from *redacted* from *genuinely empty* from *in-flight* is deferred (ADR-0027 D6),
+so one flag currently covers all four. Also avoid expecting only the paths
+*through* the gap to be affected — the interim rule stops the whole trace.
+
 **Data source**:
 An origin of data in **Data lineage** — recorded as an **Entity**'s **Natural
 key** ("the data source is assigned the entity name", spec rule 1). An
@@ -649,20 +667,26 @@ keying per session/user/thread later is a value change, not a migration.
 The processor that derives **Data lineage**. A Layer-2 processor, sibling of
 `P-interactions` and **P-classification**; drains the `interaction_legs` stream
 on its own `data_lineage` cursor (woken by the `dg_legs_inserted` NOTIFY, poll as
-the backstop) and writes `lineage_metadata`. Because lineage is trace-scoped
-while the shared loop's grain is one leg, each arriving leg triggers re-derivation
-of that leg's **whole trace** — the `graph_driver` precedent — made safe by a
-deterministic key plus an upsert, so re-deriving converges rather than
-duplicating. `interaction_legs` carries no `trace_id`, so the trace is reached by
-joining through `interactions`. Recovery is the established one: truncate
-`lineage_metadata`, reset the cursor to 0, re-drain.
+the backstop) and writes `lineage_metadata` plus the trace's **Lineage coverage**
+into `lineage_trace_status`. Because lineage is trace-scoped while the shared
+loop's grain is one leg, each arriving leg triggers re-derivation of that leg's
+**whole trace** — the `graph_driver` precedent — made safe by a deterministic key
+plus an upsert, so re-deriving converges rather than duplicating. Because a
+re-derivation can also get *shorter* (a payload goes absent), the derived rows a
+re-derivation no longer covers are **deleted** as well, so the persisted lineage
+of a trace is exactly the derivation's output. `interaction_legs` carries no
+`trace_id`, so the trace is reached by joining through `interactions`. Recovery is
+the established one: truncate `lineage_metadata` and `lineage_trace_status`, reset
+the cursor to 0, re-drain.
 
 **Flow view**:
 The UI surface that renders one **Trace**'s derived **Interaction**/**Entity**
 forest — the request/response **Interaction leg**s as an execution-flow list,
 each with its **Duration** and aggregated `error`, plus the per-**Interaction**
 and per-**Entity** span-evidence drill-in and the Req/Resp **Payload** cells
-carrying the inline **Classification** verdict. Backed entirely by **Interaction
+carrying the inline **Classification** verdict and per-leg **Data lineage**, with
+the trace's **Lineage coverage** warning above the tables when it is `partial`.
+Backed entirely by **Interaction
 retrieval** and `payloads` retrieval; it is the primary consumer that motivated
 pulling those reads behind a typed interface. Trace-scoped and eventually
 consistent, mirroring the derived data it displays.

@@ -37,9 +37,22 @@ Two absences are **graceful shapes, not errors**:
   scoping joins through) may not exist yet; the read returns an empty typed
   result rather than raising, mirroring :func:`.interactions._derived_tables_exist`.
 
-Trace-level ``complete``/``partial`` status (ADR-0027 D6) is deliberately absent
-here — its storage location is an open ADR item and it ships with the
-absent-payload ticket (#120).
+**Trace-level ``complete``/``partial`` status** (ADR-0027 D6, issue #120) rides on
+the result beside the legs, read from ``lineage_trace_status`` (migration 0012).
+ADR-0027's open item on where that status lives is resolved in favour of the
+dedicated trace-keyed table, and this read is why it matters here: the status is a
+**lookup, not a recomputation**. Re-deriving the cutoff at read time from
+``interaction_legs.payload_hash IS NULL`` would put a second copy of D6's rule in
+this module's SQL, free to drift from the traversal that actually produced the
+rows — and inferring it from *missing metadata rows* is not even possible, since
+the processor upserts without deleting on the happy path and rows from a longer
+earlier derivation can linger.
+
+A **third** absence therefore joins the two below: no status row at all, served as
+``status=None`` meaning *unknown*. It must never be collapsed into ``complete`` —
+"not derived yet" and "derived, covers everything" are opposite claims, and a
+consumer acting on the wrong one is precisely the silent-truncation failure D6's
+flag exists to prevent.
 """
 
 from __future__ import annotations
@@ -103,7 +116,29 @@ class DataLineageLegView:
 
 @dataclass(frozen=True)
 class GetDataLineageResult:
+    """A trace's lineage: the per-leg metadata plus the trace's own coverage.
+
+    ``status`` is ``"complete"`` | ``"partial"`` | ``None`` (ADR-0027 D6). The
+    trace-level fields sit here rather than on a leg because coverage is a fact
+    about the whole trace — and because the legs that a truncation *removes* have
+    no element left to carry it, which is the case that matters.
+
+    - ``"complete"`` — every leg of the trace had a payload; the lineage below is
+      the whole set of sources.
+    - ``"partial"`` — derivation stopped at the first leg with an absent payload,
+      whose leg ``seq`` is ``stopped_at_seq``. **The legs listed are a prefix**:
+      reading them as the full source set is the failure D6's flag prevents.
+    - ``None`` — not derived yet (or the status migration has not run). Unknown,
+      *not* complete.
+
+    ``stopped_at_seq`` is non-``None`` exactly when ``status == "partial"`` — the
+    table's CHECK constraint guarantees the pairing, so a consumer never has to
+    handle a "partial but from where?" row.
+    """
+
     legs: list[DataLineageLegView] = field(default_factory=list)
+    status: str | None = None
+    stopped_at_seq: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +168,41 @@ def _lineage_tables_exist(tx: db.Transaction) -> bool:
     return row is not None and row[0] == 3
 
 
+def _status_table_exists(tx: db.Transaction) -> bool:
+    """Whether ``lineage_trace_status`` (migration 0012) exists on this DB.
+
+    Probed **separately** from :func:`_lineage_tables_exist`, not folded into its
+    count: 0012 is a later revision than 0011, so a deployment mid-upgrade can
+    legitimately have the metadata and not the status. Folding them would make that
+    window serve an empty leg list — throwing away lineage that is right there —
+    when the honest answer is "here are the legs, coverage unknown".
+    """
+    row = tx.fetch_one(
+        "SELECT COUNT(DISTINCT table_name) FROM information_schema.tables "
+        "WHERE table_name = 'lineage_trace_status'"
+    )
+    return row is not None and row[0] == 1
+
+
+def _trace_status(tx: db.Transaction, trace_id: str) -> tuple[str | None, int | None]:
+    """*trace_id*'s recorded coverage, or ``(None, None)`` when unrecorded.
+
+    A pure lookup of what P-data-lineage concluded (ADR-0027 D7) — this must not
+    look at ``interaction_legs.payload_hash`` and decide for itself, which would be
+    a second implementation of D6's cutoff rule sitting in read-path SQL.
+    """
+    if not _status_table_exists(tx):
+        return None, None
+    row = tx.fetch_one(
+        "SELECT status::text, stopped_at_seq FROM lineage_trace_status "
+        "WHERE trace_id = %s",
+        (trace_id,),
+    )
+    if row is None:
+        return None, None
+    return row[0], None if row[1] is None else int(row[1])
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -148,11 +218,16 @@ def get_data_lineage(trace_id: str) -> GetDataLineageResult:
     rather than dropped or raised on. Empty when the trace has no interactions,
     and empty — never an error — when the lineage or interactions migration has
     not run.
+
+    The trace's ``status`` / ``stopped_at_seq`` (ADR-0027 D6) come back alongside:
+    when ``status`` is ``"partial"`` the legs listed are a **prefix** ending before
+    ``stopped_at_seq``, and a caller must present them as such.
     """
     with db.transaction() as tx:
         if not _lineage_tables_exist(tx):
             return GetDataLineageResult()
 
+        status, stopped_at_seq = _trace_status(tx, trace_id)
         rows = tx.fetch_all(
             "SELECT l.interaction_id::text, l.leg_type::text, l.payload_hash, "
             "       m.data_sources, m.source_transformations, m.entity_path, "
@@ -178,7 +253,9 @@ def get_data_lineage(trace_id: str) -> GetDataLineageResult:
                     lineage=_lineage_view(r[3:]),
                 )
                 for r in rows
-            ]
+            ],
+            status=status,
+            stopped_at_seq=stopped_at_seq,
         )
 
 

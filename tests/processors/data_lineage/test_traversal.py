@@ -19,6 +19,7 @@ from data_governance.processors.data_lineage import operations
 from data_governance.processors.data_lineage.traversal import (
     Entity,
     Leg,
+    LineageStatus,
     Operation,
     derive_trace_lineage,
 )
@@ -106,7 +107,7 @@ def test_spec_worked_example_op_sequence(worked_example) -> None:
     legs, ents = worked_example
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert [result[(leg.interaction_id, leg.leg_type)].operation for leg in legs] == [
+    assert [result.legs[(leg.interaction_id, leg.leg_type)].operation for leg in legs] == [
         Operation.INIT,
         Operation.LINEAR,
         Operation.LINEAR,
@@ -123,7 +124,7 @@ def test_spec_worked_example_inbound_sets(worked_example) -> None:
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
     inbound = {
-        leg.seq: tuple(result[(leg.interaction_id, leg.leg_type)].inbound_payloads)
+        leg.seq: tuple(result.legs[(leg.interaction_id, leg.leg_type)].inbound_payloads)
         for leg in legs
     }
     assert inbound == {
@@ -145,8 +146,8 @@ def test_spec_worked_example_agents_first_outbound_is_linear_not_merge(
     legs, ents = worked_example
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    first_outbound = result[("ix_al1", "request")]  # #2
-    later_outbound = result[("ix_al2", "request")]  # #4
+    first_outbound = result.legs[("ix_al1", "request")]  # #2
+    later_outbound = result.legs[("ix_al2", "request")]  # #4
     assert first_outbound.operation is Operation.LINEAR
     assert later_outbound.operation is Operation.MERGE
 
@@ -159,7 +160,7 @@ def test_spec_worked_example_metadata_accumulates_the_user_as_the_source(
     legs, ents = worked_example
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert result[("ix_ua", "request")].lineage.data_sources == frozenset({"user"})
+    assert result.legs[("ix_ua", "request")].lineage.data_sources == frozenset({"user"})
     for key in [
         ("ix_al1", "request"),
         ("ix_al1", "response"),
@@ -167,10 +168,10 @@ def test_spec_worked_example_metadata_accumulates_the_user_as_the_source(
         ("ix_al2", "response"),
         ("ix_ua", "response"),
     ]:
-        assert result[key].lineage.data_sources == frozenset({"user"}), key
+        assert result.legs[key].lineage.data_sources == frozenset({"user"}), key
 
     # The final response has passed through the agent and the LLM.
-    assert set(result[("ix_ua", "response")].lineage.entity_path) == {"agent", "llm"}
+    assert set(result.legs[("ix_ua", "response")].lineage.entity_path) == {"agent", "llm"}
 
 
 # --- D3(1): structural init -------------------------------------------------
@@ -183,7 +184,7 @@ def test_trace_root_request_leg_is_structural_init() -> None:
     legs = [_leg("ix", "request", 1, "user", "agent")]
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    entry = result[("ix", "request")]
+    entry = result.legs[("ix", "request")]
     assert entry.operation is Operation.INIT
     assert entry.lineage == operations.init_lineage("user")
 
@@ -195,7 +196,7 @@ def test_init_roots_at_the_producing_entity_not_the_receiving_one() -> None:
     result = derive_trace_lineage(
         [_leg("ix", "request", 1, "client", "agent")], ents, matcher=_always
     )
-    assert result[("ix", "request")].lineage.data_sources == frozenset({"client"})
+    assert result.legs[("ix", "request")].lineage.data_sources == frozenset({"client"})
 
 
 # --- D1: structural inbound routing -----------------------------------------
@@ -211,7 +212,7 @@ def test_request_legs_are_inbound_to_the_callee() -> None:
     ]
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert result[("ix", "response")].inbound_payloads == ("req",)
+    assert result.legs[("ix", "response")].inbound_payloads == ("req",)
 
 
 def test_response_legs_are_inbound_to_the_caller() -> None:
@@ -227,8 +228,8 @@ def test_response_legs_are_inbound_to_the_caller() -> None:
 
     # The agent produced `to_tool` (seq 1) with nothing inbound → init; its next
     # outbound has exactly one inbound, the tool's response.
-    assert result[("ix_at", "request")].operation is Operation.INIT
-    assert result[("ix_al", "request")].inbound_payloads == ("from_tool",)
+    assert result.legs[("ix_at", "request")].operation is Operation.INIT
+    assert result.legs[("ix_al", "request")].inbound_payloads == ("from_tool",)
 
 
 def test_a_leg_never_takes_itself_or_a_later_leg_as_inbound() -> None:
@@ -245,7 +246,7 @@ def test_a_leg_never_takes_itself_or_a_later_leg_as_inbound() -> None:
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
     for leg in legs:
-        entry = result[(leg.interaction_id, leg.leg_type)]
+        entry = result.legs[(leg.interaction_id, leg.leg_type)]
         assert leg.payload_hash not in entry.inbound_payloads, leg
 
 
@@ -261,8 +262,8 @@ def test_routing_ignores_entities_not_party_to_the_interaction() -> None:
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
     # agent_a has seen nothing → structural init, despite two earlier legs.
-    assert result[("ix_a", "request")].operation is Operation.INIT
-    assert result[("ix_a", "request")].inbound_payloads == ()
+    assert result.legs[("ix_a", "request")].operation is Operation.INIT
+    assert result.legs[("ix_a", "request")].inbound_payloads == ()
 
 
 # --- D2: memory / the accumulating-entity predicate -------------------------
@@ -281,8 +282,8 @@ def test_a_memoryless_entity_keeps_only_its_latest_inbound() -> None:
     ]
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert result[("ix2", "response")].inbound_payloads == ("q2",)
-    assert result[("ix2", "response")].operation is Operation.LINEAR
+    assert result.legs[("ix2", "response")].inbound_payloads == ("q2",)
+    assert result.legs[("ix2", "response")].operation is Operation.LINEAR
 
 
 def test_an_accumulating_entity_retains_every_prior() -> None:
@@ -299,8 +300,8 @@ def test_an_accumulating_entity_retains_every_prior() -> None:
     ]
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert result[("ix_at", "request")].inbound_payloads == ("prompt", "from_llm")
-    assert result[("ix_ua", "response")].inbound_payloads == (
+    assert result.legs[("ix_at", "request")].inbound_payloads == ("prompt", "from_llm")
+    assert result.legs[("ix_ua", "response")].inbound_payloads == (
         "prompt",
         "from_llm",
         "from_tool",
@@ -328,7 +329,7 @@ def test_two_priors_with_identical_payloads_are_two_priors() -> None:
     ]
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    entry = result[("ix_al2", "request")]
+    entry = result.legs[("ix_al2", "request")]
     assert len(entry.inbound_payloads) == 2, entry.inbound_payloads
     assert entry.inbound_payloads == ("echo", "echo")
     assert entry.operation is Operation.MERGE
@@ -365,8 +366,8 @@ def test_traversal_honours_a_redeclared_accumulating_predicate(monkeypatch) -> N
     ]
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert result[("ix_al2", "response")].operation is Operation.MERGE
-    assert result[("ix_al2", "response")].inbound_payloads == ("h2", "h4")
+    assert result.legs[("ix_al2", "response")].operation is Operation.MERGE
+    assert result.legs[("ix_al2", "response")].inbound_payloads == ("h2", "h4")
 
 
 def test_memory_node_is_keyed_by_entity_and_a_nullable_memory_key() -> None:
@@ -407,8 +408,8 @@ def test_distinct_memory_keys_do_not_share_inbound(monkeypatch) -> None:
 
     # Under the keyed partition the agent's `ix_at` outbound no longer sees the
     # `ix_ua`/`ix_al` priors — they live in different memory nodes.
-    assert result[("ix_at", "request")].inbound_payloads == ()
-    assert result[("ix_at", "request")].operation is Operation.INIT
+    assert result.legs[("ix_at", "request")].inbound_payloads == ()
+    assert result.legs[("ix_at", "request")].operation is Operation.INIT
 
 
 # --- D3(2): degrade to init at runtime --------------------------------------
@@ -430,14 +431,14 @@ def test_a_refusing_matcher_makes_every_leg_its_own_origin() -> None:
     result = derive_trace_lineage(legs, ents, matcher=_never)
 
     # Selection is structural, so the merge is still SELECTED at #4...
-    assert result[("ix_al2", "request")].operation is Operation.MERGE
+    assert result.legs[("ix_al2", "request")].operation is Operation.MERGE
     # ...but every payload is now its own origin, rooted at its producer.
-    assert result[("ix_ua", "request")].lineage == operations.init_lineage("user")
-    assert result[("ix_al1", "request")].lineage == operations.init_lineage("agent")
-    assert result[("ix_al1", "response")].lineage == operations.init_lineage("llm")
-    assert result[("ix_al2", "request")].lineage == operations.init_lineage("agent")
-    assert result[("ix_ua", "response")].lineage == operations.init_lineage("agent")
-    for entry in result.values():
+    assert result.legs[("ix_ua", "request")].lineage == operations.init_lineage("user")
+    assert result.legs[("ix_al1", "request")].lineage == operations.init_lineage("agent")
+    assert result.legs[("ix_al1", "response")].lineage == operations.init_lineage("llm")
+    assert result.legs[("ix_al2", "request")].lineage == operations.init_lineage("agent")
+    assert result.legs[("ix_ua", "response")].lineage == operations.init_lineage("agent")
+    for entry in result.legs.values():
         assert entry.lineage.entity_path == (), "an origin has passed through nothing"
 
 
@@ -461,7 +462,7 @@ def test_a_partially_refusing_matcher_prunes_only_the_unmatched_source() -> None
         return MatchResult(matched=True)
 
     result = derive_trace_lineage(legs, ents, matcher=_matcher)
-    entry = result[("ix_al2", "request")]
+    entry = result.legs[("ix_al2", "request")]
 
     assert entry.operation is Operation.MERGE
     assert entry.inbound_payloads == ("prompt", "a1")
@@ -533,8 +534,8 @@ def test_every_leg_gets_exactly_one_entry() -> None:
     ]
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert len(result) == len(legs)
-    assert set(result) == {(leg.interaction_id, leg.leg_type) for leg in legs}
+    assert len(result.legs) == len(legs)
+    assert set(result.legs) == {(leg.interaction_id, leg.leg_type) for leg in legs}
 
 
 def test_traversal_is_order_independent_on_input() -> None:
@@ -564,17 +565,18 @@ def test_a_leg_whose_entity_is_unknown_is_skipped_not_crashed() -> None:
     ]
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert ("ix", "request") not in result
+    assert ("ix", "request") not in result.legs
     # The response leg's producer (the agent) IS known; it just has no inbound
     # lineage from the skipped request, so it is an origin.
-    assert result[("ix", "response")].operation is Operation.INIT
+    assert result.legs[("ix", "response")].operation is Operation.INIT
 
 
-def test_a_leg_with_no_payload_is_skipped() -> None:
-    """Absent-payload handling and the trace-level partial flag are ticket #120;
-    this ticket assumes a payload on every leg. A NULL hash is therefore simply
-    not lineage-bearing here — it must not crash, and must not be routed as
-    inbound (which would make ``|inbound|`` lie)."""
+def test_a_leg_with_no_payload_truncates_the_trace() -> None:
+    """An absent payload is a D6 gap: traversal stops there and the trace reads
+    ``partial``. The full rule (and the mid-trace-response fixture it really
+    targets) is exercised in ``test_absent_payload_cutoff.py`` — pinned here too
+    because this file owns "what the traversal does per leg", and the answer for
+    a payload-less leg changed with #120: it used to be silently skipped."""
     ents = _entities(user="user", agent="agent", llm="llm")
     legs = [
         _leg("ix_ua", "request", 1, "user", "agent", payload_hash="prompt"),
@@ -583,7 +585,6 @@ def test_a_leg_with_no_payload_is_skipped() -> None:
     ]
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert ("ix_al", "request") not in result
-    # The LLM's response has no matchable inbound (the request carried none), so
-    # it becomes an origin rather than silently inheriting the user's lineage.
-    assert result[("ix_al", "response")].operation is Operation.INIT
+    assert set(result.legs) == {("ix_ua", "request")}
+    assert result.status is LineageStatus.PARTIAL
+    assert result.stopped_at_seq == 2

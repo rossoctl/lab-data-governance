@@ -22,8 +22,9 @@ import type {
   Payload,
   Entity,
   Interaction,
-  DataLineageByLeg,
   DataLineageLeg,
+  LineageStatus,
+  TraceDataLineage,
 } from '../types';
 
 /** Recent-traces feed. `GET /api/traces` → the `traces` array. */
@@ -163,41 +164,54 @@ export function useEntitySpans(
 }
 
 /**
- * Persisted **Data lineage** for a whole trace, reduced to a per-leg lookup.
- * `GET /api/traces/{tid}/data-lineage` (ADR-0027, issue #118).
+ * Persisted **Data lineage** for a whole trace: the per-leg lookup plus the
+ * trace's coverage status. `GET /api/traces/{tid}/data-lineage` (ADR-0027, issues
+ * #118 / #120).
  *
  * **One fetch per trace, not per payload.** The resource is trace-scoped while
  * the flow view's payload blocks are per-leg, so the hook unwraps `{legs:[…]}`
  * into a `(interaction_id, leg_type)` → lineage Map (ADR-0027 D5 — never keyed on
  * `payload_hash`). Every expanded payload then reads the one cached query,
- * keyed on `traceId` alone.
+ * keyed on `traceId` alone. The trace-level `status` / `stopped_at_seq` ride on
+ * the same response and therefore the same query — the coverage warning and the
+ * per-leg blocks are two views of one read, not two reads.
  *
- * `enabled` gates the read the same way {@link usePayload} gates on its hash: the
- * flow view only needs lineage once a row's detail panel is open, so an
- * untouched table costs nothing.
+ * `enabled` gates the read for callers that have nothing to show yet. Note the
+ * flow view no longer gates on having a selection the way {@link usePayload}
+ * gates on a hash: since #120 the coverage warning is part of the view's first
+ * paint, and a truncation a reader has to click to discover is not a warning.
  *
- * Both absences are normal shapes, not errors: an empty `legs` array (trace has
- * no interactions, or the lineage migration hasn't run) yields an empty map, and
- * a leg whose lineage hasn't been derived yet is a present key with a `null`
- * value (the eventual-consistency window).
+ * Every absence is a normal shape, not an error: an empty `legs` array (trace has
+ * no interactions, or the lineage migration hasn't run) yields an empty map, a
+ * leg whose lineage hasn't been derived yet is a present key with a `null` value
+ * (the eventual-consistency window), and a missing/absent `status` normalises to
+ * `null` — *unknown*, never `'complete'`.
  */
 export function useDataLineage(
   traceId: string,
   enabled = true,
-): UseQueryResult<DataLineageByLeg> {
+): UseQueryResult<TraceDataLineage> {
   return useQuery({
     enabled,
     queryKey: ['data-lineage', traceId],
     queryFn: () =>
-      fetchJson<{ legs: DataLineageLeg[] }>(`/traces/${traceId}/data-lineage`).then(
-        (r) =>
-          new Map(
-            (r.legs ?? []).map((leg) => [
-              legLineageKey(leg.interaction_id, leg.leg_type),
-              leg.lineage,
-            ]),
-          ),
-      ),
+      fetchJson<{
+        legs: DataLineageLeg[];
+        status?: LineageStatus;
+        stopped_at_seq?: number | null;
+      }>(`/traces/${traceId}/data-lineage`).then((r) => ({
+        byLeg: new Map(
+          (r.legs ?? []).map((leg) => [
+            legLineageKey(leg.interaction_id, leg.leg_type),
+            leg.lineage,
+          ]),
+        ),
+        // `?? null` rather than a default of `'complete'`: an older server, or a
+        // DB without migration 0012, omits the field, and treating that silence
+        // as full coverage is precisely the claim D6's flag exists to withhold.
+        status: r.status ?? null,
+        stoppedAtSeq: r.stopped_at_seq ?? null,
+      })),
   });
 }
 

@@ -99,7 +99,7 @@ def _ops(trace_id: str) -> list[tuple[int, str, str]]:
             ].natural_key,
             entry.operation.value,
         )
-        for key, entry in result.items()
+        for key, entry in result.legs.items()
     )
 
 

@@ -72,8 +72,10 @@ What this revision deliberately does NOT add:
 
 - **No trace-level ``partial``/``complete`` status table.** ADR-0027 D6 requires
   one to exist eventually, but *where* it lives (a ``lineage_trace_status`` table vs
-  derived on read) is recorded as open, and absent-payload handling is its own
-  ticket (#120). Shipping a column for it now would fix the open choice by accident.
+  derived on read) was open when this revision landed, and absent-payload handling
+  was its own ticket (#120). Shipping a column for it here would have fixed the open
+  choice by accident. (Since resolved: ADR-0027 **D8** chose the dedicated table,
+  added by ``0012_lineage_trace_status``.)
 - **No reverse ``payload -> persisting entity`` map.** Deferred (ADR-0027's
   "Outputs"); the ``payload_hash`` index is the seam it will use.
 - **No matcher-version column.** Matcher versioning and backfill after a matcher

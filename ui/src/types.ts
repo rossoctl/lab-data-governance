@@ -161,6 +161,36 @@ export interface DataLineageLeg {
  */
 export type DataLineageByLeg = Map<string, DataLineage | null>;
 
+/**
+ * Whether a trace's derived lineage covers the whole trace (ADR-0027 D6, issue
+ * #120), as served on the `GET /api/traces/{tid}/data-lineage` envelope.
+ *
+ * - `'complete'` — every leg had a payload; the sources listed are the full set.
+ * - `'partial'` — derivation stopped at the first leg with an absent payload, so
+ *   the legs carrying lineage are a **prefix**.
+ * - `null` — not derived yet (or the status migration has not run). *Unknown*,
+ *   which must never be rendered as `complete`: a governance reader taking a
+ *   truncated prefix for the full source set is the failure this flag prevents.
+ */
+export type LineageStatus = 'complete' | 'partial' | null;
+
+/**
+ * The whole `GET /api/traces/{tid}/data-lineage` response, reduced to what the
+ * flow view reads: the per-leg lookup plus the trace's own coverage.
+ *
+ * One hook, one fetch, both facts — the status is trace-level and the per-leg map
+ * is derived from the same response, so splitting them across two hooks would
+ * mean two reads of one resource.
+ *
+ * `stoppedAtSeq` is the leg `seq` where derivation stopped; non-null exactly when
+ * `status` is `'partial'` (the server's CHECK constraint guarantees the pairing).
+ */
+export interface TraceDataLineage {
+  byLeg: DataLineageByLeg;
+  status: LineageStatus;
+  stoppedAtSeq: number | null;
+}
+
 // Entity and Interaction wire shapes live in ./lib/flow (the pure helpers key
 // on them); re-export so consumers import all wire types from one module.
 export type { Entity, Interaction } from './lib/flow';

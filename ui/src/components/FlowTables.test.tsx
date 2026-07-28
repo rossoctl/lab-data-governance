@@ -516,11 +516,22 @@ describe('FlowTables', () => {
     },
   ];
 
-  /** Mock with payload hashes on both legs plus a data-lineage response. */
-  function mockFetchWithLineage(legs: unknown[]) {
+  /**
+   * Mock with payload hashes on both legs plus a data-lineage response. The
+   * trace-level coverage (issue #120) defaults to `complete` so the existing
+   * per-leg cases stay unaffected by the banner; the banner cases pass their own.
+   */
+  function mockFetchWithLineage(
+    legs: unknown[],
+    coverage: { status?: string | null; stopped_at_seq?: number | null } = {
+      status: 'complete',
+      stopped_at_seq: null,
+    },
+  ) {
     const withPayload = [withLegHashes('reqhash0deadbeef', 'resphash0feedface')];
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (url.endsWith('/data-lineage')) return { ok: true, status: 200, json: async () => ({ legs }) };
+      if (url.endsWith('/data-lineage'))
+        return { ok: true, status: 200, json: async () => ({ legs, ...coverage }) };
       if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
       if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
       if (url.includes('/payloads/'))
@@ -620,19 +631,102 @@ describe('FlowTables', () => {
     expect(lineageCalls).toHaveLength(1);
   });
 
-  it('does not fetch lineage before a row is selected', async () => {
+  // --- trace-level coverage (issue #120, ADR-0027 D6) ------------------------
+  // A partial trace must be UNMISTAKABLE: the flow view shows its tables before
+  // anything is selected, so a warning that only appeared inside an expanded
+  // payload would let a reader take the visible rows for the whole picture.
+
+  it('reads lineage up front, not only once a row is selected', async () => {
+    // #119 gated this read on there being a selection, because lineage only
+    // rendered inside an expanded payload. #120 moved the trace-level status to
+    // the top of the view, where it has to be on screen from the first render —
+    // so the laziness is deliberately gone. One fetch per trace either way.
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
+    await waitFor(() =>
+      expect(
+        (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+          String(c[0]).endsWith('/data-lineage'),
+        ),
+      ).toHaveLength(1),
+    );
+  });
+
+  it('warns that lineage is incomplete, and from where, on a partial trace', async () => {
+    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/incomplete/i);
+    // The stop position is named, so the reader knows where the picture ends
+    // rather than only that it does.
+    expect(alert.textContent).toMatch(/2/);
+  });
+
+  it('says the sources shown are not the full set on a partial trace', async () => {
+    // The acceptance criterion is about MEANING, not just a coloured box: the
+    // warning has to state that what is listed is a prefix. "Fewer rows" read as
+    // "fewer sources" is the exact failure this flag exists to prevent.
+    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/not the complete set of data sources/i);
+  });
+
+  it('shows no coverage warning on a complete trace', async () => {
+    mockFetchWithLineage(LINEAGE_LEGS, { status: 'complete', stopped_at_seq: null });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
-    // Nothing is selected, so no payload/lineage can be on screen: the
-    // trace-level lineage read stays unfired (same laziness as usePayload).
-    expect(
-      (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
-        String(c[0]).endsWith('/data-lineage'),
-      ),
-    ).toHaveLength(0);
+    await waitFor(() =>
+      expect(
+        (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+          String(c[0]).endsWith('/data-lineage'),
+        ),
+      ).toHaveLength(1),
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows no coverage warning while the status is unknown', async () => {
+    // `status: null` is "not derived yet". Warning about a truncation nobody has
+    // established would train the reader to ignore the banner — and the per-leg
+    // blocks already say "lineage not yet computed" for this state.
+    mockFetchWithLineage(LINEAGE_LEGS, { status: null, stopped_at_seq: null });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(
+        (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+          String(c[0]).endsWith('/data-lineage'),
+        ),
+      ).toHaveLength(1),
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('keeps the partial warning visible while a row is selected', async () => {
+    // The detail panel floats over the tables; the warning must not be what it
+    // covers, or the truncation becomes invisible exactly when a reader is
+    // drilling into a payload's sources.
+    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await screen.findByRole('alert');
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument(),
+    );
+    expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 
   it('scopes the active-row highlight selector to out-specify PF clickable rows', () => {

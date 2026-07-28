@@ -1,9 +1,13 @@
 """Contract tests for the **Data lineage** REST resource (issue #118).
 
-``GET /api/traces/{tid}/data-lineage`` → ``{"legs": [DataLineageLeg]}`` — the
+``GET /api/traces/{tid}/data-lineage`` → ``{"legs": [DataLineageLeg], ...}`` — the
 persisted per-leg **Data lineage metadata** for one trace, served as a pure
 lookup against ``lineage_metadata`` (ADR-0027 D7: matching runs at ingest, so no
 matcher call and no traversal happen here).
+
+This file owns the per-leg half of the contract. The envelope's trace-level
+``status`` / ``stopped_at_seq`` (ADR-0027 D6, issue #120) are covered in
+``test_data_lineage_status_endpoint.py``.
 
 Each element keys the leg (``interaction_id`` + ``leg_type``, ADR-0027 D5),
 carries the leg's ``payload_hash``, and nests the metadata triple under a
@@ -89,12 +93,13 @@ def seeded(configured_db: str) -> str:
 
 
 def test_data_lineage_wire_shape(seeded, api_server):
-    """The envelope is ``{"legs": [...]}`` and each element carries exactly the
-    leg key + payload hash + nullable nested triple."""
+    """The envelope carries ``legs`` (each element exactly the leg key + payload
+    hash + nullable nested triple) plus the trace-level coverage fields #120 added
+    beside it — see ``test_data_lineage_status_endpoint.py`` for those."""
     resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/data-lineage")
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"legs"}
+    assert set(body) == {"legs", "status", "stopped_at_seq"}
     by_key = {(r["interaction_id"], r["leg_type"]): r for r in body["legs"]}
     assert set(by_key) == {(_IX_ID, "request"), (_IX_ID, "response")}
     req = by_key[(_IX_ID, "request")]
@@ -137,10 +142,10 @@ def test_leg_without_lineage_is_null_not_404(seeded, api_server):
 
 def test_unknown_trace_is_empty_not_404(seeded, api_server):
     """An unknown trace → 200 with an empty list, matching the flow resources'
-    empty-shape convention."""
+    empty-shape convention. Coverage is ``null`` — unknown, not ``complete`` (#120)."""
     resp = httpx.get(f"{_base_url(api_server)}/api/traces/no-such-trace/data-lineage")
     assert resp.status_code == 200
-    assert resp.json() == {"legs": []}
+    assert resp.json() == {"legs": [], "status": None, "stopped_at_seq": None}
 
 
 def test_empty_when_lineage_table_absent(seeded, api_server, configured_db):
@@ -150,4 +155,4 @@ def test_empty_when_lineage_table_absent(seeded, api_server, configured_db):
         conn.commit()
     resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/data-lineage")
     assert resp.status_code == 200
-    assert resp.json() == {"legs": []}
+    assert resp.json() == {"legs": [], "status": None, "stopped_at_seq": None}

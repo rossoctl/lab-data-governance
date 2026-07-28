@@ -23,6 +23,14 @@ themselves rewritten in place when P-interactions re-derives a trace — which i
 migration 0010's NOTIFY trigger covers UPDATE as well as INSERT. Insert-if-absent
 would freeze the first, most partial answer.
 
+**Upserting alone is not enough once a derivation can get SHORTER** (ADR-0027 D6's
+absent-payload cutoff, issue #120). A trace derived complete and later truncated at
+a gap would keep the rows past the new cutoff, contradicting its own ``partial``
+status — so ``process_leg`` also deletes the trace's rows at and after the stop
+position, and writes the trace-level status into ``lineage_trace_status`` (migration
+0012). All three writes share the loop's one transaction, so a trace's metadata and
+its coverage claim can never disagree.
+
 **Trace scoping needs a join.** ``interaction_legs`` has no ``trace_id`` (ADR-0025
 puts identity on the parent), so both the arriving leg's trace and the trace's legs
 are reached through ``interactions``. Getting that wrong would pull unrelated traces
@@ -163,9 +171,19 @@ def process_leg(tx: db.Transaction, leg: ArrivingLeg, matcher: Matcher) -> None:
     same *tx*, so the derived writes and the cursor advance commit atomically
     (ADR-0007 recovery). Idempotent: the ``(interaction_id, leg_type)`` key is
     deterministic and the write upserts, so re-deriving converges.
+
+    Three writes, all in *tx* so a trace's metadata and its coverage status can
+    never disagree: upsert the derived rows, **delete** any of this trace's rows the
+    derivation no longer covers, and upsert the trace's ``complete``/``partial``
+    status (ADR-0027 D6, issue #120). Together they make the persisted lineage of a
+    trace exactly the derivation's output — no more, so a shrinking derivation
+    genuinely shrinks the answer.
     """
     legs, entities = load_trace(tx, leg.trace_id)
     if not legs:
+        # Nothing to derive, and therefore nothing to claim: no status row either.
+        # Absence of the row is "not yet derived"; writing `complete` here would
+        # assert full coverage of a trace whose legs have not landed.
         return
     result = traversal.derive_trace_lineage(
         legs,
@@ -177,7 +195,7 @@ def process_leg(tx: db.Transaction, leg: ArrivingLeg, matcher: Matcher) -> None:
     hash_by_key = {
         (item.interaction_id, item.leg_type): item.payload_hash for item in legs
     }
-    for (interaction_id, leg_type), derived in result.items():
+    for (interaction_id, leg_type), derived in result.legs.items():
         _upsert(
             tx,
             interaction_id=interaction_id,
@@ -186,6 +204,78 @@ def process_leg(tx: db.Transaction, leg: ArrivingLeg, matcher: Matcher) -> None:
             payload_hash=hash_by_key[(interaction_id, leg_type)],
             seq=seq_by_key[(interaction_id, leg_type)],
         )
+    _delete_uncovered(tx, leg.trace_id, set(result.legs))
+    _upsert_status(tx, leg.trace_id, result)
+
+
+def _delete_uncovered(
+    tx: db.Transaction, trace_id: str, derived_keys: set[traversal.LegKey]
+) -> None:
+    """Drop every lineage row of *trace_id* that this derivation did NOT produce.
+
+    **Why upserting is not enough.** This driver re-derives a whole trace per
+    arriving leg and upserts without deleting, so rows survive from earlier
+    derivations. Once a derivation can get *shorter* — ADR-0027 D6's absent-payload
+    cutoff (#120), triggered when a leg's payload is rewritten to NULL or a gap
+    appears as P-interactions re-derives legs in place (migration 0010's trigger
+    covers UPDATE for exactly this reason) — the rows past the new cutoff are stale.
+    Left behind, the read would serve lineage for legs *after* the gap while the
+    status says ``partial``: not merely stale but self-contradictory, and a positive
+    claim about data whose provenance is no longer visible.
+
+    **The condition is "not in the derived set", not "seq >= stop".** ``seq`` is a
+    re-allocated cursor value, not a stable position: rewriting a leg draws a fresh
+    ``seq`` from the sequence, so the gap leg's new ``seq`` sits *above* the stale
+    rows written under its old one and a ``seq``-threshold delete would spare
+    exactly the rows it must remove. The derivation is the sole authority on which
+    of a trace's legs have lineage, so anything else under this trace goes — which
+    also cleans up rows whose leg has disappeared entirely.
+
+    Scoped through ``interactions`` because ``lineage_metadata`` has no ``trace_id``
+    (ADR-0025 keeps identity on the parent). Getting that wrong would delete another
+    trace's evidence.
+    """
+    # The covered set is passed as two parallel TEXT[] arrays rather than an
+    # expanded `NOT IN ((%s, %s), ...)`: one placeholder pair regardless of trace
+    # size (a long trace would otherwise generate hundreds of parameters), and it
+    # degenerates correctly to "delete everything" for an empty prefix — which is a
+    # real case, the gap landing on the trace's first leg.
+    kept_interaction_ids = [key[0] for key in derived_keys]
+    kept_leg_types = [key[1] for key in derived_keys]
+    tx.execute(
+        "DELETE FROM lineage_metadata m USING interactions i "
+        "WHERE i.id = m.interaction_id AND i.trace_id = %s "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM unnest(%s::text[], %s::text[]) AS kept(interaction_id, leg_type)"
+        "  WHERE kept.interaction_id = m.interaction_id"
+        "    AND kept.leg_type = m.leg_type::text"
+        ")",
+        (trace_id, kept_interaction_ids, kept_leg_types),
+    )
+
+
+def _upsert_status(
+    tx: db.Transaction, trace_id: str, result: traversal.TraceLineage
+) -> None:
+    """Record whether *trace_id*'s lineage covers the whole trace (ADR-0027 D6).
+
+    One row per trace (PK ``trace_id``), so this upsert is the entire idempotency
+    story — and the reason the status lives in its own table rather than being
+    derived on read (see migration 0012). The partial→complete transition, when a
+    late payload arrives, is a plain overwrite of that single row: there is no
+    earlier, longer answer left behind to shadow it.
+
+    ``stopped_at_seq`` is written as NULL for a complete trace, which the table's
+    CHECK constraint pairs with the status so a half-written claim ("partial, but I
+    won't say from where") cannot be stored.
+    """
+    tx.execute(
+        "INSERT INTO lineage_trace_status (trace_id, status, stopped_at_seq) "
+        "VALUES (%s, %s, %s) "
+        "ON CONFLICT (trace_id) DO UPDATE SET "
+        "status = EXCLUDED.status, stopped_at_seq = EXCLUDED.stopped_at_seq",
+        (trace_id, str(result.status), result.stopped_at_seq),
+    )
 
 
 def _upsert(

@@ -169,6 +169,12 @@ pass-through (`transformation: unknown`), and defer — is **deferred**. In
 particular it does **not** yet do taint/reachability cutoff (poison only the
 paths through the gap); it stops the whole trace at the gap.
 
+**Shipped** with issue #120: the cutoff in `traversal.derive_trace_lineage`
+(which now returns a trace-level `TraceLineage`), the status in
+`lineage_trace_status` (migration `0012`), on
+`GET /api/traces/{tid}/data-lineage` beside `legs`, and as a warning at the top
+of the flow view.
+
 ### D7 — Matching runs at ingest; metadata is persisted
 
 Lineage is computed at **ingest** with the configured matcher and persisted, so
@@ -179,6 +185,50 @@ repo's derived-stream pattern.
 **Deferred:** what happens when the matcher *implementation* changes —
 re-derivation, matcher-versioning, and historical backfill are explicitly not
 solved here.
+
+### D8 — Trace-level status lives in a dedicated `lineage_trace_status` table
+
+Closes the open item D6/Schema left: a dedicated `(trace_id → status,
+stopped_at_seq)` table, **not** derived on read.
+
+Derived-on-read was the tempting option — no migration, and the gap looks like
+something a `SELECT` could spot. It cannot, in either form:
+
+- **From the metadata rows** ("no lineage row past leg N") it is not detectable.
+  The driver re-derives a whole trace per arriving leg and upserts *without*
+  deleting (D7's derived-stream pattern), so rows from an earlier, longer
+  derivation outlive a later, shorter one. The very case the flag exists for — a
+  trace that *was* complete and is now truncated — is the case where the stale
+  rows hide the gap.
+- **From `interaction_legs.payload_hash IS NULL`** it is detectable, but that
+  puts a second implementation of D6's cutoff rule in read-path SQL, free to
+  drift from the traversal that actually produced the rows. Two answers to "is
+  this trace complete?" is worse than one, and for a governance claim the
+  authoritative answer must be the one the derivation reached.
+
+The dedicated table's idempotency story is the smallest available: PK `trace_id`
+means exactly one row per trace, ever, so the driver's upsert *is* the whole
+story — and the **partial → complete** transition (a late payload arrives) is a
+plain overwrite of that one row, with no longer, earlier answer left behind to
+shadow it. Recovery is the established derived-table one, shared with
+`lineage_metadata`: truncate, reset the `data_lineage` cursor to 0, re-drain.
+Both tables are written in the transaction that advances the cursor, so a trace's
+metadata and its coverage claim cannot disagree.
+
+Two consequences worth stating, because both are load-bearing:
+
+- **Absence of the status row means *unknown*, never `complete`.** "Not derived
+  yet" and "derived, covers everything" are opposite claims; collapsing them
+  would reintroduce silent truncation through the eventual-consistency window.
+  The read serves `status: null` and the UI warns about nothing.
+- **The upsert alone is not enough for `lineage_metadata` any more.** Once a
+  derivation can get *shorter*, the driver must also **delete** the trace's rows
+  the derivation no longer covers — otherwise the read serves lineage for legs
+  after the gap while the status says `partial`, which is self-contradictory
+  rather than merely stale. The delete is scoped to "not in this derivation's
+  output" rather than `seq >= stopped_at_seq`, because `seq` is re-allocated when
+  a leg is rewritten in place and a threshold would spare exactly the rows it
+  must remove.
 
 ## Outputs
 
@@ -201,12 +251,16 @@ FKs, idempotent re-derive):
   `TEXT[]` respectively (JSONB for the map-to-set, arrays where order matters or
   does not), all `NOT NULL` — an origin's metadata is a real *empty* triple, and
   absence of the row is what means "not yet derived".
-- **Trace-level `partial` flag (D6)** — where the `complete`/`partial` status +
-  stop-`seq` live is **open**: either a small `lineage_trace_status`
-  `(trace_id → status, stopped_at_seq)` table, or derived on read from the
-  presence of a gap. Recorded as an open item, not settled here, and deliberately
-  **not** shipped with #117 — absent-payload handling is its own ticket, and
-  adding a column for it early would fix this open choice by accident.
+- **`lineage_trace_status`** — PK `trace_id` (D8). Columns: `status`
+  (`lineage_status` ENUM: `complete` | `partial`, `NOT NULL`) and
+  `stopped_at_seq` (`BIGINT`, nullable). **Shipped** as migration
+  `0012_lineage_trace_status` (issue #120). A CHECK constraint pairs the two —
+  `partial` requires a stop position, `complete` forbids one — so a
+  "partial, but I won't say from where" row cannot be stored. Absence of the row
+  means *not yet derived*, matching `lineage_metadata`'s convention; `status` is
+  therefore `NOT NULL` (a present row always makes a definite claim). No `seq`
+  cursor column: nothing drains this table, and a trace's coverage is not a stream
+  of events.
 
 This section fixes the keys and the fact that a trace-level status must exist,
 matching how ADR-0024/0025 name their PKs.
@@ -235,6 +289,18 @@ matching how ADR-0024/0025 name their PKs.
   legitimately unkeyed; cross-user flow through it is real).
 - Absent-payload finer handling (D6): classify *not-captured* / *redacted* /
   *empty* / *in-flight* and choose break-chain vs conservative pass-through vs
-  defer per case; taint/reachability cutoff instead of whole-trace stop.
-- Trace-level status location (D6 / Schema): dedicated `lineage_trace_status`
-  table vs derived-on-read.
+  defer per case. #120 shipped the interim positional-prefix rule and
+  deliberately did **not** narrow this — one `partial` flag covers every reason a
+  payload is missing, so a redacted-but-flowing payload and a never-captured one
+  are currently indistinguishable to a consumer. `lineage_trace_status` has no
+  reason column for exactly that reason: adding one now would fix this open
+  choice by accident.
+- Taint/reachability cutoff instead of whole-trace stop (D6): poison only the
+  paths *through* the gap rather than truncating the trace at it. Still open —
+  #120 stops the whole trace, so a branch that never touched the missing payload
+  loses its lineage too. This would be per-leg state, not the trace-level row
+  D8 added.
+
+**Resolved** (kept for the record): the trace-level status *location* (D6 /
+Schema) — settled by **D8** in favour of the dedicated `lineage_trace_status`
+table over derived-on-read.

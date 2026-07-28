@@ -1,9 +1,10 @@
 """Trace traversal: which op applies to which leg, and with what inputs (#117).
 
-This is ADR-0027 D1/D2/D4 — inbound routing, memory, and op selection — over one
-trace's interaction legs. :func:`derive_trace_lineage` is **pure**: legs and
-entities in as plain values, per-leg **data lineage** out. The database is
-:mod:`.driver`'s job; the metadata construction is :mod:`.operations`'.
+This is ADR-0027 D1/D2/D4 — inbound routing, memory, and op selection — plus D6's
+absent-payload cutoff, over one trace's interaction legs.
+:func:`derive_trace_lineage` is **pure**: legs and entities in as plain values, a
+:class:`TraceLineage` (per-leg **data lineage** + the trace's coverage) out. The
+database is :mod:`.driver`'s job; the metadata construction is :mod:`.operations`'.
 
 **The traversal unit is the interaction LEG, in leg ``seq`` order.** The spec's
 worked example (``docs/data_lineage_alg.md:140-153``) numbers arrows::
@@ -37,6 +38,13 @@ memoryless one keeps only the latest. That is why selection is on ``|inbound|``
 alone and needs no memory predicate of its own — and why the spec's #5 is
 ``linear`` (the LLM forgot its first turn) while #4 is ``merge`` (the agent did
 not).
+
+**An absent payload truncates the trace (D6, interim).** Traversal stops at the
+first leg in ``seq`` order with no ``payload_hash``; the result is a *prefix* plus
+a ``PARTIAL`` status naming the ``seq`` it stopped at. A payload we do not have
+gives the matcher nothing to compare and hides the provenance of everything
+downstream, so the honest answer is less lineage and a loud flag — never a quietly
+shorter list a consumer could read as the complete set of sources.
 
 NOTE on naming: ``processors/interactions`` uses "lineage" for **span** lineage (a
 span's ancestors ∪ subtree under a seq horizon — ADR-0007/0016). This module is
@@ -105,6 +113,22 @@ class Leg:
     payload_hash: str | None
 
 
+class LineageStatus(enum.StrEnum):
+    """Whether a trace's derived lineage covers the whole trace (ADR-0027 D6).
+
+    ``PARTIAL`` is the *warning*, not an error state: the prefix that was derived
+    is correct, but it is a prefix. A governance consumer reading a truncated
+    prefix as the full set of sources is the exact failure mode D6's flag exists
+    to prevent, so the status travels with the lineage everywhere it is served.
+
+    The values are the ADR's words verbatim and reach the wire unchanged (a
+    ``StrEnum``), so the API contract and the ADR cannot drift apart.
+    """
+
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class LegLineage:
     """The derived lineage of one leg, plus the derivation itself.
@@ -117,6 +141,26 @@ class LegLineage:
     lineage: DataLineage
     operation: Operation
     inbound_payloads: tuple[Payload, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class TraceLineage:
+    """One trace's derived lineage: the per-leg metadata **and** its coverage.
+
+    The status is a fact about the TRACE, not about any one leg, which is why it
+    rides on this value rather than on :class:`LegLineage`. A per-leg
+    "truncated?" flag would be unanswerable for the legs that matter most — the
+    ones after the gap have no row at all, so there is nowhere to hang it.
+
+    ``stopped_at_seq`` is the leg ``seq`` of the first absent-payload leg, and is
+    ``None`` exactly when ``status`` is ``COMPLETE``. Two fields rather than one
+    nullable seq because "complete" is the statement a consumer acts on, and
+    inferring it from a null would make every reader re-derive the meaning.
+    """
+
+    legs: dict[LegKey, LegLineage]
+    status: LineageStatus = LineageStatus.COMPLETE
+    stopped_at_seq: int | None = None
 
 
 def _producer_id(leg: Leg) -> str:
@@ -141,7 +185,7 @@ def derive_trace_lineage(
     *,
     matcher: Matcher,
     payloads: dict[str, Payload] | None = None,
-) -> dict[LegKey, LegLineage]:
+) -> TraceLineage:
     """Derive the data lineage of every leg of one trace.
 
     *legs* need not be sorted — this sorts by ``seq`` itself, so a caller's row
@@ -159,7 +203,9 @@ def derive_trace_lineage(
     is opaque to it, "whatever the caller holds" — and it keeps the traversal
     testable without a payload store.
 
-    Returns ``{(interaction_id, leg_type): LegLineage}`` — the ADR-0027 D5 key.
+    Returns a :class:`TraceLineage`: ``legs`` keyed ``(interaction_id, leg_type)``
+    (the ADR-0027 D5 key) plus the trace-level coverage ``status`` /
+    ``stopped_at_seq``.
 
     Op selection, per leg in ``seq`` order (D4)::
 
@@ -167,13 +213,27 @@ def derive_trace_lineage(
         |inbound| == 1  -> linear_lineage(p, out, entity)        # may degrade, D3(2)
         |inbound| >= 2  -> merge_lineage(*inbound, out, entity)  # per-source match
 
-    A leg is skipped (no row) when its producing entity is unknown or its payload
-    is absent. Both are eventual-consistency realities of a derived table, and
-    neither may fabricate lineage: an unknown producer has no name to root at, and
-    an absent payload has nothing for the matcher to compare — routing it as
-    inbound anyway would make ``|inbound|`` lie about how many payloads reached the
-    entity. Absent-payload handling proper (the trace-level ``partial`` flag,
-    ADR-0027 D6) is a separate ticket; this ticket assumes a payload per leg.
+    **An absent payload TRUNCATES the trace (ADR-0027 D6, interim).** Traversal
+    stops at the first leg in ``seq`` order whose ``payload_hash`` is ``None``:
+    legs before it keep their lineage, that leg and every later one get none, and
+    the result is ``PARTIAL`` with ``stopped_at_seq`` set to the gap's ``seq``. A
+    payload we do not have gives the matcher nothing to compare, and everything
+    downstream of it flowed through content whose provenance is invisible — so a
+    prefix plus a loud flag is the honest answer, where continuing past the gap
+    would let a consumer read a truncated source set as the complete one. Per
+    ADR-0025 the request leg always exists, so the realistic trigger is a missing
+    mid-trace *response* payload.
+
+    This is deliberately the whole-trace stop, not a taint/reachability cutoff
+    that would poison only the paths through the gap; likewise nothing here tries
+    to tell *not captured* from *redacted* from *genuinely empty* from *in
+    flight*. Both remain open in ADR-0027 D6.
+
+    A leg is also skipped — **without** truncating the trace — when its producing
+    entity is unknown. That is a different absence: the payload exists, so the
+    flow through it is still observable, and an unknown producer merely has no
+    name to root ``init`` at. Conflating the two would mark a trace partial over
+    an entity row that is milliseconds behind.
     """
     ordered = sorted(legs, key=lambda leg: (leg.seq, leg.interaction_id, leg.leg_type))
 
@@ -206,8 +266,18 @@ def derive_trace_lineage(
     result: dict[LegKey, LegLineage] = {}
 
     for leg in ordered:
+        if leg.payload_hash is None:
+            # D6's cutoff. Stop the WHOLE traversal here: this leg gets no lineage
+            # and neither does anything after it, so the loop simply ends rather
+            # than continuing with a `continue`. Reporting the seq is what keeps
+            # the truncation from being silent.
+            return TraceLineage(
+                legs=result,
+                status=LineageStatus.PARTIAL,
+                stopped_at_seq=leg.seq,
+            )
         producer = entities.get(_producer_id(leg))
-        if producer is not None and leg.payload_hash is not None:
+        if producer is not None:
             result[(leg.interaction_id, leg.leg_type)] = _derive_leg(
                 leg, producer, retained, lineage_of_leg, payload_of_leg, matcher
             )
@@ -215,7 +285,7 @@ def derive_trace_lineage(
         # never sees itself (D1 is "an interaction with LOWER sequence").
         _route_inbound(leg, entities, retained)
 
-    return result
+    return TraceLineage(legs=result)
 
 
 def _derive_leg(
@@ -283,9 +353,12 @@ def _route_inbound(
     count — see ``derive_trace_lineage``'s note on why keying by ``payload_hash``
     here is wrong. A leg cannot arrive twice (its key is unique), so no dedup guard
     is needed.
+
+    Only ever called with a payload-bearing leg: an absent payload ends the
+    traversal outright (D6), so a payload we do not have can never be routed as
+    inbound and can never make ``|inbound|`` lie about how many payloads reached
+    an entity.
     """
-    if leg.payload_hash is None:
-        return  # not lineage-bearing; must not count toward |inbound| (see D6/#120)
     consumer = entities.get(_consumer_id(leg))
     if consumer is None:
         return

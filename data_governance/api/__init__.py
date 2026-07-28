@@ -460,6 +460,13 @@ async def _data_lineage_handler(request: Request) -> Response:
     window. A pure lookup (ADR-0027 D7) — no matcher runs on this path. The
     empty-shape conventions (unknown trace, not-yet-migrated DB) live behind the
     seam; the handler only parses the id and encodes the result.
+
+    ``status`` / ``stopped_at_seq`` are the trace's lineage **coverage** (ADR-0027
+    D6, issue #120), served on the envelope beside ``legs`` because coverage is a
+    whole-trace fact — and because the legs a truncation removes have no element
+    left to carry it. ``"partial"`` means ``legs`` is a **prefix** ending before
+    ``stopped_at_seq``; ``null`` means not-yet-derived, which a client must not
+    read as ``"complete"``.
     """
     trace_id = request.path_params.get("tid")
     if not trace_id:
@@ -468,7 +475,13 @@ async def _data_lineage_handler(request: Request) -> Response:
         result = await asyncio.to_thread(retrieval.get_data_lineage, trace_id)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
-    return _json_ok({"legs": [dataclasses.asdict(leg) for leg in result.legs]})
+    return _json_ok(
+        {
+            "legs": [dataclasses.asdict(leg) for leg in result.legs],
+            "status": result.status,
+            "stopped_at_seq": result.stopped_at_seq,
+        }
+    )
 
 
 async def _payload_handler(request: Request) -> Response:
@@ -556,8 +569,8 @@ def build_app() -> Starlette:
         # Persisted data lineage for a trace (issue #118, ADR-0027). A sibling
         # trace-scoped resource rather than a field on /interactions: it is keyed
         # per LEG (D5), it is a separately-derived stream with its own
-        # eventual-consistency window, and #120's trace-level status needs this
-        # envelope to land in.
+        # eventual-consistency window, and the trace-level complete/partial status
+        # (D6) landed in this envelope beside `legs` with #120.
         Route(
             "/api/traces/{tid:str}/data-lineage",
             endpoint=_data_lineage_handler,

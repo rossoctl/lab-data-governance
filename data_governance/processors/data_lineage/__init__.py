@@ -13,10 +13,13 @@ The layering, innermost first — each layer is testable without the one outside
 - :mod:`.memory` — **the** accumulating-entity predicate (ADR-0027 D2) and the
   ``(entity_id, memory_key)`` memory node. The single named place; nothing else
   tests ``kind == "agent"``.
-- :mod:`.traversal` — op selection (D4) and structural inbound routing (D1) over one
-  trace's legs in leg-``seq`` order. Pure.
+- :mod:`.traversal` — op selection (D4), structural inbound routing (D1), and D6's
+  absent-payload prefix cutoff with the trace's ``complete``/``partial`` coverage,
+  over one trace's legs in leg-``seq`` order. Pure.
 - :mod:`.driver` — the DB adapter over the shared cursor loop: drains the
-  ``interaction_legs`` stream, re-derives the arriving leg's whole trace, upserts.
+  ``interaction_legs`` stream, re-derives the arriving leg's whole trace, upserts
+  the rows and the trace status, and deletes the rows the derivation no longer
+  covers (a re-derivation can get shorter — D6).
 
 Matching is a black box reached only through
 :func:`data_governance.matching.get_matcher` (ADR-0027: lineage does not know how

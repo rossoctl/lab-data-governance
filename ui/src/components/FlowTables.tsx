@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Title,
   Spinner,
   EmptyState,
@@ -32,6 +33,7 @@ import type {
   DataLineageByLeg,
   Entity,
   Interaction,
+  LineageStatus,
   SpanEvidence,
 } from '../types';
 
@@ -289,6 +291,64 @@ function lineageOfLeg(
   return byLeg?.get(legLineageKey(selection.id, legType)) ?? null;
 }
 
+/**
+ * The trace-level **Data lineage** coverage warning (issue #120, ADR-0027 D6).
+ *
+ * When a leg's payload is absent, lineage is derived only up to that point and the
+ * trace is marked `partial`. Rendered here, at the top of the flow view and
+ * outside the tables' right-hand gutter, because the failure mode is a reader
+ * taking the rows that DO carry lineage for the full set of data sources — so the
+ * warning has to be on screen before anything is clicked, and stay there while
+ * the detail panel is open. A message hidden behind a payload expansion would not
+ * prevent the mistake; it would only be available to someone who already
+ * suspected it.
+ *
+ * Only `partial` warns. `complete` needs no banner (the absence of a warning is
+ * the "no truncation" statement, and a permanent green box trains the reader to
+ * stop reading the strip). `null` — not yet derived — deliberately says nothing
+ * either: there is no established truncation to report, and the per-payload
+ * blocks already state "lineage not yet computed" for that window. Claiming a
+ * truncation nobody has established would make the banner noise, which is how a
+ * real one gets ignored.
+ */
+function LineageCoverageAlert({
+  status,
+  stoppedAtSeq,
+}: {
+  status: LineageStatus;
+  stoppedAtSeq: number | null;
+}) {
+  if (status !== 'partial') return null;
+  return (
+    <Alert
+      variant="warning"
+      isInline
+      title="Data lineage for this trace is incomplete"
+      // PF's Alert announces itself `aria-live="polite"` and carries no role.
+      // An explicit `role="alert"` upgrades that to assertive: this is not
+      // status chatter, it is "what you are about to read is not the whole
+      // picture", and a screen-reader user must get it before they act on the
+      // source list — the same reason it is rendered before the tables.
+      role="alert"
+      style={{ marginBottom: '0.75rem' }}
+    >
+      {/* Naming the stop position matters as much as the warning: it tells the
+          reader WHERE the picture ends, so they can see which rows are covered
+          rather than distrusting all of them equally. The seq is the leg
+          sequence shown in the flat view's Seq column, so it is a position the
+          reader can actually locate. The null fallback is unreachable against a
+          current server (the status table CHECK-pairs `partial` with a stop seq),
+          but the warning must survive an older one rather than render "leg
+          null". */}
+      {stoppedAtSeq === null
+        ? 'Lineage was derived only up to the first leg missing a payload.'
+        : `Lineage was derived only up to leg seq ${stoppedAtSeq}, where a payload is missing.`}{' '}
+      Legs from that point on have no lineage, so what is shown is{' '}
+      <strong>not the complete set of data sources</strong> for this trace.
+    </Alert>
+  );
+}
+
 /** Which flow row is selected, mirrored to/from the URL (?iid | ?eid). */
 export interface FlowSelection {
   iid?: string;
@@ -336,11 +396,15 @@ export function FlowTables({
   const entitiesQ = useEntities(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
   // Persisted **Data lineage** for the whole trace (ADR-0027), read ONCE per
-  // trace and keyed per leg — not per payload expansion. Gated on there being a
-  // selection at all, because the only place lineage renders is inside an
-  // expanded payload in the detail panel; TanStack caches on `traceId`, so the
-  // panel switching between rows/legs never re-fetches.
-  const lineageQ = useDataLineage(traceId, selection !== null);
+  // trace and keyed per leg — not per payload expansion. TanStack caches on
+  // `traceId`, so the panel switching between rows/legs never re-fetches.
+  //
+  // NOT gated on a selection (as #119 had it): since #120 this read also carries
+  // the trace's complete/partial coverage, and that warning belongs on the first
+  // paint. A truncation a reader must select a row to discover cannot stop them
+  // reading the visible rows as the whole picture — which is the entire point of
+  // the flag (ADR-0027 D6).
+  const lineageQ = useDataLineage(traceId);
   // Flat view: ignore the parent/child tree and list each request/response leg
   // as its own row, ordered by the leg `seq` (the trace-wide sequence number).
   const [flatView, setFlatView] = useState(false);
@@ -569,6 +633,14 @@ export function FlowTables({
 
   return (
     <div>
+      {/* The trace-level lineage-coverage warning (issue #120), OUTSIDE the
+          tables' gutter div: the detail panel floats over that gutter, and the
+          truncation must stay readable precisely when someone is drilling into a
+          payload's data sources. */}
+      <LineageCoverageAlert
+        status={lineageQ.data?.status ?? null}
+        stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
+      />
       {/* Tables container. When the detail panel is open it floats fixed on the
           right (see below), so reserve a right gutter here equal to the panel's
           width + a gap — the tables shrink out from under the float instead of
@@ -875,14 +947,14 @@ export function FlowTables({
                   <PayloadView
                     label="Request"
                     hash={selection.requestPayloadHash}
-                    lineage={lineageOfLeg(lineageQ.data, selection, 'request')}
+                    lineage={lineageOfLeg(lineageQ.data?.byLeg, selection, 'request')}
                   />
                 )}
                 {selection.responsePayloadHash && (
                   <PayloadView
                     label="Response"
                     hash={selection.responsePayloadHash}
-                    lineage={lineageOfLeg(lineageQ.data, selection, 'response')}
+                    lineage={lineageOfLeg(lineageQ.data?.byLeg, selection, 'response')}
                   />
                 )}
               </>
