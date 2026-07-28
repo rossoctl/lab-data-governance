@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Data lineage: intra-trace algorithm
@@ -188,7 +188,7 @@ solved here.
   "what are the data sources" is a read, not a recompute; `payload_hash` is a
   secondary index for the deferred reverse lookup.
 
-## Schema (proposed)
+## Schema
 
 Concrete shape, following the repo's derived-table pattern (own `seq` cursor, no
 FKs, idempotent re-derive):
@@ -196,15 +196,20 @@ FKs, idempotent re-derive):
 - **`lineage_metadata`** — PK `(interaction_id, leg_type)` (D5). Columns: the
   metadata triple (`data_sources`, `source_transformations` map,
   `entity_path`), `payload_hash` (secondary index, D5), `seq`. One row per
-  interaction leg that received lineage.
+  interaction leg that received lineage. **Shipped** as migration
+  `0011_lineage_metadata` (issue #117): the triple is `TEXT[]` /`JSONB` /
+  `TEXT[]` respectively (JSONB for the map-to-set, arrays where order matters or
+  does not), all `NOT NULL` — an origin's metadata is a real *empty* triple, and
+  absence of the row is what means "not yet derived".
 - **Trace-level `partial` flag (D6)** — where the `complete`/`partial` status +
   stop-`seq` live is **open**: either a small `lineage_trace_status`
   `(trace_id → status, stopped_at_seq)` table, or derived on read from the
-  presence of a gap. Recorded as an open item, not settled here.
+  presence of a gap. Recorded as an open item, not settled here, and deliberately
+  **not** shipped with #117 — absent-payload handling is its own ticket, and
+  adding a column for it early would fix this open choice by accident.
 
-Exact column types and the migration are left to implementation; this section
-fixes the keys and the fact that a trace-level status must exist, matching how
-ADR-0024/0025 name their PKs.
+This section fixes the keys and the fact that a trace-level status must exist,
+matching how ADR-0024/0025 name their PKs.
 
 ## Deliberately out of scope
 

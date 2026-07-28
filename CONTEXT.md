@@ -567,6 +567,96 @@ mature. `unknown` (and any kind without a branch) falls back to serializing
 the whole `content` JSONB to a canonical string — best-effort classification
 that also marks the projection-coverage gap.
 
+**Data lineage**:
+Where one **Payload**'s content originated and what it passed through. Carried
+per **Interaction leg** (not per payload — see the key below) as the **Lineage
+metadata** triple, derived by **P-data-lineage** and stored in
+`lineage_metadata`. Answers the two governance questions the spec
+(`docs/data_lineage_alg.md`) poses: "where did the data originate" (its **Data
+source**s) and "what did it pass through" (which **Entities**, with which
+**Transformation**s applied). v1 is **intra-trace** only — lineage within one
+**Trace**; inter-trace lineage (flow through shared persistent storage, one
+trace writing and another reading) is Step II and deferred. See ADR-0027.
+_Avoid_: confusing this with **Span lineage** — the two are unrelated. Span
+lineage is a graph-structure concept (a **Span**'s ancestors ∪ subtree under a
+`seq` horizon, used by `P-interactions` to bound what one span's re-derivation
+may rewrite — ADR-0007/0016). Data lineage is about content provenance. Qualify
+the word every time: "span lineage" or "data lineage", never bare "lineage".
+
+**Lineage metadata**:
+The triple recorded per **Interaction leg** by **P-data-lineage**: (1)
+`data_sources`, the set of **Data source**s the payload's content came from; (2)
+`source_transformations`, a map **Data source** → set of **Transformation**s
+(order within a set is insignificant); (3) `entity_path`, the *ordered*,
+deduplicated list of **Entities** the data passed through. Keyed
+`(interaction_id, leg_type)` — the **leg**, not the `payload_hash` (ADR-0027
+D5): payloads are content-addressed and deduped, so identical bytes at different
+positions carry completely different lineage, and a hash key would collide those
+distinct facts. `payload_hash` is kept as a *secondary index* for the deferred
+reverse lookup ("where did this content come from / go"). An origin's metadata
+is a real *empty* triple (one source, an empty transformation set, an empty
+path), never NULL — absence of the row is what means "not yet derived".
+
+**Data source**:
+An origin of data in **Data lineage** — recorded as an **Entity**'s **Natural
+key** ("the data source is assigned the entity name", spec rule 1). An
+**Entity** becomes a data source of a payload either structurally (it produced
+the payload with nothing inbound to it — a **Trace** root such as a user's
+prompt, ADR-0027 D3(1)) or semantically (the matcher found no relationship
+between its input and its output, so the output is new data, D3(2)).
+_Avoid_: reading a data source as "the entity that stored the data" — that
+reverse map (`payload → persisting entity`) is a separate, deferred output.
+
+**Transformation**:
+What a **Semantic matcher** reports connects two related payloads —
+`anonymization`, `summarization`, … A finite but deliberately **open**
+enumeration (`matching.Transformation`, a `StrEnum` so adding a member is
+additive at the persistence and API boundaries); the full list is still being
+finalized with a human. "No transform performed, or none identified" is
+represented as *absent* (`None` / an empty set), never as a member — so an
+unknown transformation cannot masquerade as a kind of transformation.
+
+**Semantic matcher**:
+The black box **Data lineage** is built on: `match(payload_a, payload_b) →
+{matched, transformation, …evidence}`, deciding whether two payloads are related
+and what **Transformation** connects them. Selected by configuration
+(`SEMANTIC_MATCHER`, resolved through `matching.get_matcher`); lineage calls it
+and never learns which matcher ran or how it decided. The default
+`simple_match` is trivial — always matched, no transformation — which makes
+lineage *complete but full of maybes* (every structural edge is treated as real
+flow); better matchers prune the maybes without any change to the lineage
+algorithm. Matching runs at **ingest**, not at query time (ADR-0027 D7): a read
+would otherwise cost a matcher call per payload pair over a trace's whole
+history. Matcher versioning and backfill after a matcher change are deferred.
+
+**Accumulating entity**:
+An **Entity** that retains its prior inbound payloads within a **Trace**, making
+it a partial mixing bowl for **Data lineage**: its output is derived from *all*
+its priors (`merge`), not just its latest input (`linear`). ADR-0027 D2 assumes
+transient/session memory is **always present**, so an accumulating entity's
+inbound set grows past one — which is why lineage op selection is on the size of
+that set and needs no separate memory predicate. Working assumption today: an
+`agent` accumulates; an `llm` or `tool` does not. `Entity.kind` is the only
+signal available, so the predicate is driven from it but lives in exactly one
+named place (`processors/data_lineage/memory.py`), since declared per-entity
+config is where it eventually belongs. An accumulating entity's **first**
+outbound legitimately has one inbound and still uses `linear`.
+Memory granularity is **open**: the memory node is modelled `(entity_id,
+memory_key)` with `memory_key = NULL` meaning unkeyed/blob (the v1 default), so
+keying per session/user/thread later is a value change, not a migration.
+
+**P-data-lineage**:
+The processor that derives **Data lineage**. A Layer-2 processor, sibling of
+`P-interactions` and **P-classification**; drains the `interaction_legs` stream
+on its own `data_lineage` cursor (woken by the `dg_legs_inserted` NOTIFY, poll as
+the backstop) and writes `lineage_metadata`. Because lineage is trace-scoped
+while the shared loop's grain is one leg, each arriving leg triggers re-derivation
+of that leg's **whole trace** — the `graph_driver` precedent — made safe by a
+deterministic key plus an upsert, so re-deriving converges rather than
+duplicating. `interaction_legs` carries no `trace_id`, so the trace is reached by
+joining through `interactions`. Recovery is the established one: truncate
+`lineage_metadata`, reset the cursor to 0, re-drain.
+
 **Flow view**:
 The UI surface that renders one **Trace**'s derived **Interaction**/**Entity**
 forest — the request/response **Interaction leg**s as an execution-flow list,
@@ -615,6 +705,15 @@ present on both the `GET /api/traces` collection rows and the
   moment, chosen by the **Listing root fallback** rule.
 - A **TraceListingEntry** is a derived view of one **Trace**, anchored on its
   current **Listing root**.
+- An **Interaction leg** has at most one **Lineage metadata** row, keyed
+  `(interaction_id, leg_type)`. Its `data_sources` and `entity_path` name
+  **Entities** by **Natural key**; its `source_transformations` maps each **Data
+  source** to a set of **Transformation**s. A leg with no payload gets no row.
+- A payload's **Data lineage** is derived from the payloads inbound to the
+  producing **Entity** — requests inbound to the callee, responses inbound to the
+  caller, from **Interaction legs** of lower `seq` in the same **Trace**. How many
+  of those an entity retains is decided by whether it is an **Accumulating
+  entity**, which is what selects `init` / `linear` / `merge`.
 - The **Retrieval API** is the only sanctioned read path over **Spans**; the UI
   backend composes its REST endpoints from it. The REST layer is
   resource-oriented and namespaced: JSON resources under `/api/`
@@ -653,3 +752,14 @@ present on both the `GET /api/traces` collection rows and the
 - **"Entity"** in classification — the NER taxonomy calls its tags "entity
   types" (`PN`, `SSN`), but **Entity** is the interaction participant. Resolved:
   a **Finding** has a *detected type* (an NER tag); it is not an **Entity**.
+- **"Lineage"** meant two unrelated things. `P-interactions` and ADR-0007/0016
+  use it for a **Span**'s ancestors ∪ subtree under a `seq` horizon — a
+  graph-structure region bounding what one span's re-derivation may rewrite.
+  ADR-0027 uses it for content provenance. Resolved: **Span lineage** vs **Data
+  lineage** — distinct terms, never the bare word. They share no code, no table,
+  and no key; a grep for "lineage" hits both.
+- **"Source"** — a **Data source** is where a payload's content *originated*
+  (an **Entity** natural key in **Lineage metadata**). Unrelated to a `spans`
+  row's `service_name` or to `Entity.kind = service`. Also distinct from the
+  deferred reverse map (`payload → persisting entity`), which is about where
+  content was *stored*, not where it came from.

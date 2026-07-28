@@ -315,16 +315,12 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
     assert "0010_legs_notify_trigger" in walked
 
 
-def test_head_is_0010(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on this revision — it is the current
-    head (chained after 0009). This assertion travels with whichever revision is
-    head; it moved here from ``test_classifications_migration.py`` when 0010
-    landed, the same way that file inherited it from 0007's test."""
-    with psycopg.connect(migrated_dsn) as conn:
-        (version,) = conn.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
-    assert version == "0010_legs_notify_trigger"
+# NOTE: the "applying the chain lands on head" assertion moved on to
+# ``test_data_lineage_migration.py`` when 0011 (``lineage_metadata``) landed —
+# that pin travels with whichever revision is head, exactly as this file
+# inherited it from ``test_classifications_migration.py``. What stays here is
+# this revision's own place in the chain (above) and the downgrade round-trip
+# below, both of which are about 0010 specifically rather than about head.
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
