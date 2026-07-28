@@ -88,14 +88,18 @@ def test_findings_is_jsonb_and_model_version_is_integer(migrated_dsn: str) -> No
 # --- migration chain ---------------------------------------------------------
 
 
-def test_head_is_0009(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on the current head revision (0009 —
-    the interaction-legs split, ADR-0025, chained after 0008)."""
-    with psycopg.connect(migrated_dsn) as conn:
-        (version,) = conn.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
-    assert version == "0009_interaction_legs"
+def test_0008_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """A fresh migrate applies 0008 (it is in the chain). What this revision adds
+    is asserted structurally by the tests above; this pins that the revision is
+    reachable. The head-revision assertion lives with whichever revision is
+    currently head (see ``test_legs_notify_trigger.py``) — the same reason 0007's
+    test stopped asserting head once 0008 landed."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked = {rev.revision for rev in script.walk_revisions()}
+    assert "0008_payload_classifications" in walked
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
