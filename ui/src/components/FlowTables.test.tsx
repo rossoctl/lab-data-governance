@@ -615,6 +615,67 @@ describe('FlowTables', () => {
     expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument();
   });
 
+  /**
+   * Same fixture, but the data-lineage read itself fails. Everything else in the
+   * trace still resolves, so the flow view renders and only the lineage block is
+   * affected — which is exactly the case that used to masquerade as "not yet
+   * computed".
+   */
+  function mockFetchWithLineageError() {
+    const withPayload = [withLegHashes('reqhash0deadbeef', 'resphash0feedface')];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/data-lineage'))
+        return { ok: false, status: 500, json: async () => ({ detail: 'boom' }) };
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.includes('/payloads/'))
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            content_hash: url.split('/').pop(), content_kind: 'json',
+            content: { q: 'flights' }, byte_size: 42, classification: null,
+          }),
+        };
+      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+  }
+
+  it('reports a failed lineage read as an error, not as "not yet computed"', async () => {
+    // A failed request and the eventual-consistency window are different facts
+    // and prompt different actions (retry vs wait). Collapsing them — as the
+    // `DataLineage | null` prop did — leaves a reader waiting on a dead request.
+    mockFetchWithLineageError();
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await userEvent.click(await screen.findByRole('button', { name: /Request: reqhash0/i }));
+    // The payload body itself loaded fine — only lineage failed.
+    await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
+    expect(screen.getByText(/failed to load lineage/i)).toBeInTheDocument();
+    expect(screen.queryByText(/lineage not yet computed/i)).toBeNull();
+    expect(screen.queryByLabelText('Data sources')).toBeNull();
+  });
+
+  it('says coverage is unknown — not fine — when the lineage read fails', async () => {
+    // The absence of a banner is this view's "no truncation" statement (see the
+    // `complete` case below). A failed read established NOTHING, so staying
+    // silent would assert full coverage the view never obtained. It must still
+    // not claim a truncation it cannot establish either — hence "unknown",
+    // worded distinctly from the `partial` prefix warning.
+    mockFetchWithLineageError();
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/could not be loaded|unknown/i);
+    // No fabricated truncation: the prefix claim belongs to `partial` alone.
+    expect(alert.textContent).not.toMatch(/not the complete set of data sources/i);
+    expect(alert.textContent).not.toMatch(/derived only up to/i);
+  });
+
   it('reads the trace-scoped lineage resource exactly once for many payload expansions', async () => {
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(

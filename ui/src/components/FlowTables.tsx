@@ -12,6 +12,7 @@ import {
   CodeBlockCode,
 } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
+import type { UseQueryResult } from '@tanstack/react-query';
 
 import { useInteractions, useEntities, usePayload, useDataLineage } from '../api/hooks';
 import { fetchJson } from '../api/client';
@@ -29,12 +30,12 @@ import { ClassificationView } from './ClassificationView';
 import { DataLineageView } from './DataLineageView';
 import { RoleIcon } from './RoleIcon';
 import type {
-  DataLineage,
-  DataLineageByLeg,
   Entity,
   Interaction,
+  LineageState,
   LineageStatus,
   SpanEvidence,
+  TraceDataLineage,
 } from '../types';
 
 interface Selection {
@@ -205,8 +206,12 @@ function PayloadView({
 }: {
   label: string;
   hash: string;
-  /** This leg's lineage: the triple, or `null` for "not yet computed". */
-  lineage: DataLineage | null;
+  /**
+   * What is currently known about this leg's lineage: a derived triple, "not
+   * derived yet", or "the read failed" — three states, never one overloaded
+   * `null` (see {@link LineageState}).
+   */
+  lineage: LineageState;
 }) {
   const [open, setOpen] = useState(false);
   const { data, isLoading, isError } = usePayload(open ? hash : null);
@@ -253,13 +258,14 @@ function PayloadView({
               </div>
               {/* The P-data-lineage metadata for THIS LEG (issue #119): the
                   payload's data sources, the transformations applied per source,
-                  and the unordered set of entities it passed through. `null`
-                  renders as "lineage not yet
-                  computed" (the eventual-consistency window, ADR-0027), exactly
-                  as the Classification block above handles its own null. */}
+                  and the unordered set of entities it passed through. An
+                  undelivered derivation renders as "lineage not yet computed"
+                  (the eventual-consistency window, ADR-0027) and a failed read
+                  as an explicit error — never as each other, and never as a
+                  derived answer. */}
               <div style={{ marginTop: '0.5rem' }}>
                 <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Data lineage</div>
-                <DataLineageView lineage={lineage} />
+                <DataLineageView state={lineage} />
               </div>
             </>
           )}
@@ -270,26 +276,34 @@ function PayloadView({
 }
 
 /**
- * This payload's lineage out of the trace-scoped map, keyed by the leg it sits
- * on (ADR-0027 D5). Collapses the three not-yet-computed cases to one `null`:
- * the read is still in flight, the leg has no lineage row (including the whole
- * empty-`legs` not-yet-migrated response), or the row exists with `lineage:
- * null`. They are the same statement to the reader — "we have not derived this
- * yet" — and lumping them here is what keeps the view from ever mistaking any of
- * them for a real derived-empty triple.
+ * This payload's {@link LineageState} out of the trace-scoped query, keyed by the
+ * leg it sits on (ADR-0027 D5).
+ *
+ * A failed read is its own arm, taken FIRST: the map is empty on error, so
+ * falling through would report every leg as "not yet computed" — telling the
+ * reader to wait for a derivation the view never actually asked about. That is
+ * the one conflation this function exists to prevent.
+ *
+ * The genuine not-yet-computed cases still collapse to one `'pending'`: the read
+ * is in flight, the leg has no lineage row (including the whole empty-`legs`
+ * not-yet-migrated response), or the row exists with `lineage: null`. Those are
+ * the same statement to the reader — "we have not derived this yet" — and lumping
+ * them keeps the view from mistaking any of them for a real derived-empty triple.
  */
 function lineageOfLeg(
-  byLeg: DataLineageByLeg | undefined,
+  lineageQ: Pick<UseQueryResult<TraceDataLineage>, 'data' | 'isError'>,
   selection: Selection,
   legType: 'request' | 'response',
-): DataLineage | null {
+): LineageState {
+  if (lineageQ.isError) return { kind: 'error' };
   // Guard the key's meaning rather than assume it: `Selection.id` is an
   // interaction id only for an interaction selection, and a lineage key built
   // from an entity id would silently miss (or worse, collide) — an entity
   // selection carries no payload hashes, so this branch is unreachable today and
   // stays that way by construction.
-  if (selection.kind !== 'interaction') return null;
-  return byLeg?.get(legLineageKey(selection.id, legType)) ?? null;
+  if (selection.kind !== 'interaction') return { kind: 'pending' };
+  const lineage = lineageQ.data?.byLeg.get(legLineageKey(selection.id, legType));
+  return lineage == null ? { kind: 'pending' } : { kind: 'derived', lineage };
 }
 
 /**
@@ -304,21 +318,53 @@ function lineageOfLeg(
  * prevent the mistake; it would only be available to someone who already
  * suspected it.
  *
- * Only `partial` warns. `complete` needs no banner (the absence of a warning is
- * the "no truncation" statement, and a permanent green box trains the reader to
- * stop reading the strip). `null` — not yet derived — deliberately says nothing
- * either: there is no established truncation to report, and the per-payload
- * blocks already state "lineage not yet computed" for that window. Claiming a
- * truncation nobody has established would make the banner noise, which is how a
- * real one gets ignored.
+ * Only `partial` warns about a truncation. `complete` needs no banner (the
+ * absence of a warning is the "no truncation" statement, and a permanent green
+ * box trains the reader to stop reading the strip). `null` — not yet derived —
+ * deliberately says nothing either: there is no established truncation to report,
+ * and the per-payload blocks already state "lineage not yet computed" for that
+ * window. Claiming a truncation nobody has established would make the banner
+ * noise, which is how a real one gets ignored.
+ *
+ * `isError` is the exception to that silence, and it is not a `status` value: a
+ * failed read establishes *nothing*, including that coverage is complete — and in
+ * this view silence IS the complete-coverage statement. So an error gets its own
+ * banner, deliberately worded as *unknown* rather than as a truncation: it must
+ * not let a broken read look like clean coverage, and equally must not invent a
+ * prefix claim it never obtained. Distinct from the `null` case, where the read
+ * did succeed and simply has nothing yet.
  */
 function LineageCoverageAlert({
   status,
   stoppedAtSeq,
+  isError,
 }: {
   status: LineageStatus;
   stoppedAtSeq: number | null;
+  /** The trace-scoped lineage read failed — coverage is unknown, not fine. */
+  isError: boolean;
 }) {
+  if (isError) {
+    return (
+      <Alert
+        variant="warning"
+        isInline
+        title="Data lineage coverage for this trace is unknown"
+        // Same assertive upgrade as the truncation warning below: a reader must
+        // learn that the coverage claim is missing before they act on whatever
+        // lineage the per-leg blocks do or do not show.
+        role="alert"
+        style={{ marginBottom: '0.75rem' }}
+      >
+        {/* No stop position and no prefix claim — deliberately. Nothing about
+            this trace's coverage was established, so the banner reports the
+            failure and stops there rather than borrowing `partial`'s wording. */}
+        The lineage coverage for this trace could not be loaded, so whether the
+        data sources shown are complete is <strong>unknown</strong>. Reload to
+        retry.
+      </Alert>
+    );
+  }
   if (status !== 'partial') return null;
   return (
     <Alert
@@ -641,6 +687,7 @@ export function FlowTables({
       <LineageCoverageAlert
         status={lineageQ.data?.status ?? null}
         stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
+        isError={lineageQ.isError}
       />
       {/* Tables container. When the detail panel is open it floats fixed on the
           right (see below), so reserve a right gutter here equal to the panel's
@@ -948,14 +995,14 @@ export function FlowTables({
                   <PayloadView
                     label="Request"
                     hash={selection.requestPayloadHash}
-                    lineage={lineageOfLeg(lineageQ.data?.byLeg, selection, 'request')}
+                    lineage={lineageOfLeg(lineageQ, selection, 'request')}
                   />
                 )}
                 {selection.responsePayloadHash && (
                   <PayloadView
                     label="Response"
                     hash={selection.responsePayloadHash}
-                    lineage={lineageOfLeg(lineageQ.data?.byLeg, selection, 'response')}
+                    lineage={lineageOfLeg(lineageQ, selection, 'response')}
                   />
                 )}
               </>

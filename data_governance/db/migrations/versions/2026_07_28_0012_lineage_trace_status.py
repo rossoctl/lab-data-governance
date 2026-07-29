@@ -12,13 +12,20 @@ dedicated trace-keyed table, not derived on read. The reasoning, recorded in the
 ADR alongside:
 
   - Derived-on-read would have to infer the gap from the persisted rows, and it
-    cannot. The driver re-derives a whole trace per arriving leg and **upserts
-    without deleting** (see 0011), so rows from an earlier, longer derivation
-    outlive a later, shorter one; "no lineage row past seq N" is therefore not a
-    reliable signal. Inferring the gap from ``interaction_legs.payload_hash IS
-    NULL`` instead would work, but it re-implements the cutoff rule in SQL at
-    read time — a second copy of the algorithm, drifting from the traversal that
-    actually produced the rows.
+    cannot. Before this revision the driver re-derived a whole trace per arriving
+    leg and **upserted without deleting** (the write path 0011 shipped), so rows
+    from an earlier, longer derivation outlived a later, shorter one; "no lineage
+    row past seq N" is therefore not a reliable signal. Inferring the gap from
+    ``interaction_legs.payload_hash IS NULL`` instead would work, but it
+    re-implements the cutoff rule in SQL at read time — a second copy of the
+    algorithm, drifting from the traversal that actually produced the rows.
+
+    Note this revision *also* fixes the underlying staleness it describes: the
+    cutoff means a derivation can now shrink, so the driver gained a stale-row
+    delete alongside the upsert (ADR-0027 D9). That makes the rows consistent
+    with the status, but it does not resurrect derived-on-read as an option —
+    the authoritative answer must be the one the traversal reached, not a second
+    inference over its output.
   - A dedicated table's idempotency story is the smallest possible one: PK
     ``trace_id`` means exactly one row per trace, ever, so the driver's upsert
     *is* the whole story. The partial→complete transition (a late payload

@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { DataLineageView } from './DataLineageView';
-import type { DataLineage } from '../types';
+import type { DataLineage, LineageState } from '../types';
 
 /** A fully-populated lineage triple; individual tests override slices of it. */
 function lineage(over: Partial<DataLineage> = {}): DataLineage {
@@ -19,16 +19,21 @@ function lineage(over: Partial<DataLineage> = {}): DataLineage {
   };
 }
 
+/** The `derived` arm — a real triple the backend actually produced. */
+function derived(over: Partial<DataLineage> = {}): LineageState {
+  return { kind: 'derived', lineage: lineage(over) };
+}
+
 describe('DataLineageView', () => {
   it('lists the data sources the payload originated from', () => {
-    render(<DataLineageView lineage={lineage()} />);
+    render(<DataLineageView state={derived()} />);
     const sources = screen.getByLabelText('Data sources');
     expect(within(sources).getByText('agent-one')).toBeInTheDocument();
     expect(within(sources).getByText('user')).toBeInTheDocument();
   });
 
   it('lists the transformations applied per data source', () => {
-    render(<DataLineageView lineage={lineage()} />);
+    render(<DataLineageView state={derived()} />);
     const sources = screen.getByLabelText('Data sources');
     // Each source's own transformation set sits with that source, so the
     // "what happened to MY data" question is answered per origin.
@@ -41,7 +46,7 @@ describe('DataLineageView', () => {
 
   it('shows the entities traversed as an unordered set, with no arrow chain', () => {
     render(
-      <DataLineageView lineage={lineage({ entities: ['agent-one', 'llm-x', 'user'] })} />,
+      <DataLineageView state={derived({ entities: ['agent-one', 'llm-x', 'user'] })} />,
     );
     const group = screen.getByLabelText('Entities traversed');
     // Membership is the whole claim: the spec defines this element as unordered
@@ -60,7 +65,7 @@ describe('DataLineageView', () => {
     // array is the SAME set, so it must render the same members — nothing in the
     // UI may turn array position into meaning.
     const members = (arr: string[]) => {
-      const { unmount } = render(<DataLineageView lineage={lineage({ entities: arr })} />);
+      const { unmount } = render(<DataLineageView state={derived({ entities: arr })} />);
       const labels = Array.from(
         screen.getByLabelText('Entities traversed').querySelectorAll('.pf-v5-c-label'),
       ).map((el) => el.textContent);
@@ -73,13 +78,33 @@ describe('DataLineageView', () => {
     );
   });
 
-  it('renders a null lineage distinctly as "not yet computed", with no sources block', () => {
-    render(<DataLineageView lineage={null} />);
+  it('renders a pending lineage distinctly as "not yet computed", with no sources block', () => {
+    render(<DataLineageView state={{ kind: 'pending' }} />);
     // The eventual-consistency window (P-data-lineage has not derived this leg
     // yet) — an explicit state, never an empty block.
     expect(screen.getByText(/not yet computed/i)).toBeInTheDocument();
     expect(screen.queryByLabelText('Data sources')).toBeNull();
     expect(screen.queryByLabelText('Entities traversed')).toBeNull();
+  });
+
+  it('renders a failed read as an error, NOT as "not yet computed"', () => {
+    // "We could not ask" and "the answer is not ready" prompt opposite actions:
+    // retry vs wait. Collapsing the former into the latter leaves a reader
+    // waiting forever on a request that already failed.
+    render(<DataLineageView state={{ kind: 'error' }} />);
+    expect(screen.getByText(/failed to load lineage/i)).toBeInTheDocument();
+    expect(screen.queryByText(/not yet computed/i)).toBeNull();
+    // And it makes no claim about the data itself.
+    expect(screen.queryByLabelText('Data sources')).toBeNull();
+    expect(screen.queryByLabelText('Entities traversed')).toBeNull();
+    expect(screen.queryByText(/originates here/i)).toBeNull();
+  });
+
+  it('announces the lineage read failure to assistive tech', () => {
+    // The failure is what stops a governance reader trusting the (absent)
+    // lineage, so it must not be a colour-only signal.
+    render(<DataLineageView state={{ kind: 'error' }} />);
+    expect(screen.getByRole('alert').textContent).toMatch(/failed to load lineage/i);
   });
 
   it('states an origin’s genuinely empty triple as a real derived result', () => {
@@ -88,7 +113,7 @@ describe('DataLineageView', () => {
     // null state.
     render(
       <DataLineageView
-        lineage={lineage({ data_sources: [], source_transformations: {}, entities: [] })}
+        state={derived({ data_sources: [], source_transformations: {}, entities: [] })}
       />,
     );
     expect(screen.queryByText(/not yet computed/i)).toBeNull();
@@ -98,7 +123,7 @@ describe('DataLineageView', () => {
   it('shows a no-transformations note for a source that had none applied', () => {
     render(
       <DataLineageView
-        lineage={lineage({
+        state={derived({
           data_sources: ['agent-one'],
           source_transformations: { 'agent-one': [] },
           entities: ['agent-one'],
@@ -121,7 +146,7 @@ describe('DataLineageView', () => {
     // the running app; this guards the regression.
     render(
       <DataLineageView
-        lineage={lineage({
+        state={derived({
           data_sources: ['tool:agent:(travel_advisor,travel-advisor):search_destinations'],
           entities: ['llm:ete-litellm.ai-models.example.com/claude-haiku-4-5'],
         })}
@@ -147,7 +172,7 @@ describe('DataLineageView', () => {
     // source list is the authority on which origins exist.
     render(
       <DataLineageView
-        lineage={lineage({ data_sources: ['orphan-src'], source_transformations: {} })}
+        state={derived({ data_sources: ['orphan-src'], source_transformations: {} })}
       />,
     );
     expect(

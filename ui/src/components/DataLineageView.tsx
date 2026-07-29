@@ -1,27 +1,45 @@
 import { Label, LabelGroup, Title } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import type { DataLineage } from '../types';
+import type { LineageState } from '../types';
 
 /**
  * The **Data lineage metadata** for one **Interaction leg**'s payload
  * (ADR-0027), rendered inside the flow view's expanded payload beside the
- * **Classification** verdict (issue #119). Read-only surface over the nullable
- * `lineage` field of `GET /api/traces/{tid}/data-lineage`.
+ * **Classification** verdict (issue #119). Read-only surface over
+ * `GET /api/traces/{tid}/data-lineage`.
  *
  * Answers the two lineage questions in the order a governance reader asks them:
  * *where did this data come from* (the origins, each with the transformations
  * applied to its contribution) and *which entities did it pass through* (the
  * unordered entity set). Shape deliberately mirrors `ClassificationView` — same
- * null handling, same "an empty result is a real result, say so" rule — so the two
- * blocks in the same payload read as one surface.
+ * absence handling, same "an empty result is a real result, say so" rule — so the
+ * two blocks in the same payload read as one surface.
+ *
+ * Takes a {@link LineageState}, not a nullable triple: *derived*, *not yet
+ * derived*, and *the read failed* are three separate facts a reader acts on
+ * differently, and a nullable triple can only spell two of them.
  */
-export function DataLineageView({ lineage }: { lineage: DataLineage | null | undefined }) {
+export function DataLineageView({ state }: { state: LineageState }) {
+  // The read itself failed, so nothing at all is known about this leg — not the
+  // triple, and not whether one exists. Kept visually and semantically apart
+  // from the "not yet computed" window below, because the two prompt opposite
+  // actions: an error is retried, a pending derivation is waited out. Same red
+  // terse treatment (and wording shape) as the sibling payload-fetch failure in
+  // `PayloadView`, so one convention covers both failures in this panel.
+  if (state.kind === 'error') {
+    return (
+      <div role="alert" style={{ color: '#f85149', fontSize: '0.85rem' }}>
+        Failed to load lineage.
+      </div>
+    );
+  }
+
   // The eventual-consistency window (ADR-0027): the leg exists but
   // P-data-lineage has not derived its metadata yet. Rendered as a distinct,
   // claim-less state — deliberately NOT an empty sources list, which would read
   // as the real "originates here, no upstream sources" verdict below. A
   // governance tool must never let "we don't know yet" look like "we checked".
-  if (lineage == null) {
+  if (state.kind === 'pending') {
     return (
       <div style={{ color: '#888', fontStyle: 'italic', fontSize: '0.85rem' }}>
         Lineage not yet computed
@@ -29,7 +47,7 @@ export function DataLineageView({ lineage }: { lineage: DataLineage | null | und
     );
   }
 
-  const { data_sources, source_transformations, entities } = lineage;
+  const { data_sources, source_transformations, entities } = state.lineage;
 
   return (
     <div>

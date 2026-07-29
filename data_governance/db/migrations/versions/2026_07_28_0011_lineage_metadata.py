@@ -30,9 +30,15 @@ Shape, per the spec's "Lineage metadata" triple (``docs/data_lineage_alg.md``):
                                     expresses a map-to-set; the sets serialize as
                                     JSON arrays whose order is insignificant ("order
                                     doesn't matter").
-  - ``entity_path``                TEXT[] — the ORDERED list of entities the data
-                                    passed through (spec rule 3). Array, not JSONB,
-                                    because order is the whole point.
+  - ``entity_path``                TEXT[] — the entities the data passed through
+                                    (spec rule 3). **Renamed to ``entities`` and
+                                    redefined as an unordered set by migration
+                                    0013** (ADR-0027 D10), after the human-owned
+                                    spec changed rule 3 from a list to a set; the
+                                    array's order carries no meaning and the
+                                    persisted sort is serialization-only. The name
+                                    and the ordering claim here are this revision's
+                                    history, not current behaviour.
   - ``payload_hash``               the hash of the payload this row describes, kept
                                     as a **secondary index only** (D5) for the
                                     deferred reverse lookup ("where did this content
@@ -59,6 +65,14 @@ migration 0008), a conflicting write here must take the DO UPDATE path or stale
 lineage would outlive the legs it was derived from. Operational recovery is the
 established one: truncate this table, reset the ``data_lineage``
 ``processor_state`` cursor to 0, re-drain.
+
+**Superseded in part by 0012 — the write path is no longer upsert-only.** As of
+ADR-0027 D6/D9 (migration 0012) a derivation can get *shorter*: an absent payload
+truncates the trace, so the rows past the new cutoff are stale and an upsert is
+silent about them. The driver therefore also **deletes** the trace's rows the
+current derivation did not produce. Anything below or elsewhere describing this
+table as written by upsert alone is this revision's history, not current
+behaviour — see 0012 and ADR-0027 D9 for what actually runs.
 
 ``leg_type`` reuses the ``leg_type`` ENUM from 0009 (ADR-0014's structural enums),
 so this key cannot hold a leg type ``interaction_legs`` could not.

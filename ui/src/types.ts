@@ -165,6 +165,32 @@ export interface DataLineageLeg {
 export type DataLineageByLeg = Map<string, DataLineage | null>;
 
 /**
+ * What the flow view can currently say about ONE leg's lineage — the prop
+ * `DataLineageView` renders, and the reason it is a union rather than
+ * `DataLineage | null`.
+ *
+ * Three facts a governance reader must be able to tell apart, because each
+ * demands a different action:
+ *
+ * - `'derived'` — P-data-lineage produced this triple. It is the answer, *including*
+ *   when the triple is empty (the payload originates here, ADR-0027 D3).
+ * - `'pending'` — the read succeeded but this leg has no lineage yet (the
+ *   eventual-consistency window, or a not-yet-migrated DB). *Wait.*
+ * - `'error'` — the read itself failed, so nothing is known. *Retry.*
+ *
+ * A nullable triple could only express two of those, which is how a failed fetch
+ * came to render as "not yet computed" — telling a reader to wait for an answer
+ * that was never going to arrive. Making the third state a distinct arm makes
+ * that conflation unrepresentable rather than merely discouraged: ADR-0027's rule
+ * that "not yet computed" must never look like a derived answer applies with
+ * equal force to "we failed to ask".
+ */
+export type LineageState =
+  | { kind: 'derived'; lineage: DataLineage }
+  | { kind: 'pending' }
+  | { kind: 'error' };
+
+/**
  * Whether a trace's derived lineage covers the whole trace (ADR-0027 D6, issue
  * #120), as served on the `GET /api/traces/{tid}/data-lineage` envelope.
  *

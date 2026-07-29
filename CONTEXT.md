@@ -669,7 +669,12 @@ config is where it eventually belongs. An accumulating entity's **first**
 outbound legitimately has one inbound and still uses `linear`.
 Memory granularity is **open**: the memory node is modelled `(entity_id,
 memory_key)` with `memory_key = NULL` meaning unkeyed/blob (the v1 default), so
-keying per session/user/thread later is a value change, not a migration.
+keying per session/user/thread later is a change of what the derivation computes
+rather than a redesign of it — every inbound payload already pools per *node*, so
+a keyed policy only has to return a distinct node. The node is a derivation-time
+value and is never persisted, so this says nothing either way about schema
+churn: `lineage_metadata` records the resulting sources, transformations and
+entities, not the memory nodes they were pooled through.
 
 **P-data-lineage**:
 The processor that derives **Data lineage**. A Layer-2 processor, sibling of
