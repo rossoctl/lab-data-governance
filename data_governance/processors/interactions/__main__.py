@@ -6,14 +6,16 @@ defence-in-depth schema-version check, then drives the wake-driven drain loop
 SIGINT/SIGTERM. Pool sizing comes from ``DB_POOL_*`` consumed by
 :func:`data_governance.db.configure`.
 
-``INTERACTIONS_ALGORITHM`` selects which derivation drives the loop (both write the
-SAME production tables via the SAME :func:`state.flush`; only the derivation
-differs, and only ONE runs at a time so they share the ``interactions`` cursor):
+``INTERACTIONS_ALGORITHM`` selects which derivation drives the loop (all write
+the SAME production tables; only the derivation differs, and only ONE runs at a
+time so they share the ``interactions`` cursor):
 
 - ``streaming`` (default) — the per-span, eventually-consistent streaming
   algorithm (:func:`driver.run`, ADR-0007).
 - ``graph`` — the batch graph algorithm, re-derived per span (:func:`graph_driver.run`,
   ADR-0026).
+- ``sidecar`` — the two-span AuthBridge sidecar derivation, whole-trace
+  reconcile per span (:func:`sidecar_driver.run`, ADR-0028).
 
 Before processing any spans the entry point runs the schema-version check
 (issue #10, ADR-0002): it reads ``alembic_version.version_num`` and refuses to
@@ -39,14 +41,18 @@ from data_governance.db.schema_version import (
 )
 from data_governance.processors.otlp_receiver.server import MetricsServer
 
-from . import driver, graph_driver, metrics
+from . import driver, graph_driver, metrics, sidecar_driver
 
 # Distinct from the receiver's 9090 so a co-located receiver + processor don't
 # collide on the metrics port. Overridable via INTERACTIONS_METRICS_PORT.
 DEFAULT_METRICS_PORT = 9091
 
-# Which derivation drives the loop. Both write the same tables via state.flush.
-_ALGORITHMS = {"streaming": driver.run, "graph": graph_driver.run}
+# Which derivation drives the loop. All write the same production tables.
+_ALGORITHMS = {
+    "streaming": driver.run,
+    "graph": graph_driver.run,
+    "sidecar": sidecar_driver.run,
+}
 _DEFAULT_ALGORITHM = "streaming"
 
 
