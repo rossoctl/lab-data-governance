@@ -7,7 +7,7 @@ import {
   forwardRef,
   useImperativeHandle,
 } from 'react';
-import { Label, Button } from '@patternfly/react-core';
+import { Label, Button, Checkbox } from '@patternfly/react-core';
 import { fetchJson } from '../api/client';
 import {
   buildParentIndex,
@@ -46,6 +46,14 @@ export interface SpanTreeProps {
   onSelect: (span: Span) => void;
   /** Re-render trigger when pins change elsewhere (legend/flow). */
   onPinsChange: () => void;
+  /**
+   * Client-side service filter: the selected `service_name`s, or null for all.
+   * The page owns the URL mirror (ADR-0021 `?svc=`, comma-separated; absent =
+   * all) and passes the parsed list down.
+   */
+  serviceFilter?: string[] | null;
+  /** Fired when a service checkbox toggles; null = all services selected. */
+  onServiceFilterChange?: (services: string[] | null) => void;
 }
 
 /**
@@ -56,7 +64,7 @@ export interface SpanTreeProps {
  * mark spans belonging to pinned highlight sets.
  */
 export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanTree(
-  { traceId, root, pins, onSelect },
+  { traceId, root, pins, onSelect, serviceFilter = null, onServiceFilterChange },
   ref,
 ) {
   // All spans loaded so far, keyed by (trace_id|span_id).
@@ -81,6 +89,29 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
     () => descendantErrorAncestors(spans as TreeSpan[], buildParentIndex(spans as TreeSpan[])),
     [spans],
   );
+
+  // Distinct service names among the spans loaded so far — the checkbox options
+  // (the option list grows as more of the tree pages in).
+  const services = useMemo(
+    () =>
+      Array.from(
+        new Set(spans.map((s) => s.service_name).filter((s): s is string => s != null)),
+      ).sort(),
+    [spans],
+  );
+  // null = all selected (no ?svc param).
+  const selectedServices = useMemo(
+    () => (serviceFilter === null ? null : new Set(serviceFilter)),
+    [serviceFilter],
+  );
+  const toggleService = (svc: string, checked: boolean) => {
+    const next = new Set(selectedServices ?? services);
+    if (checked) next.add(svc);
+    else next.delete(svc);
+    // All present services selected collapses back to null (the param-less
+    // default), so re-checking the last box yields a clean URL.
+    onServiceFilterChange?.(services.every((s) => next.has(s)) ? null : Array.from(next).sort());
+  };
 
   // Fetch one page of a parent's children (keyset-paginated by seq, ADR-0001)
   // and append it. `cursor` is the max seq of the children already loaded, so
@@ -301,6 +332,12 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
     depth: number,
     ancestors: ReadonlySet<string>,
   ): React.ReactNode => {
+    // Service filter: a deselected service's span renders neither its row nor
+    // its subtree (the branch is pruned, not just the row). Spans with no
+    // service_name are never filtered — they have no checkbox to re-enable them.
+    if (selectedServices && span.service_name != null && !selectedServices.has(span.service_name)) {
+      return null;
+    }
     const k = spanKey(span.trace_id, span.span_id);
     // Cycle guard: if this span is already on the path from the root (a
     // self-loop or A→B→A parent_id, which orphan/malformed lineage can
@@ -407,5 +444,35 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
     );
   };
 
-  return <ul style={{ margin: 0, padding: 0 }}>{renderNode(root, 0, new Set())}</ul>;
+  return (
+    <>
+      {/* Service filter row — only worth screen space once ≥2 services have
+          loaded (the app-framework-span firehose case); a lone service has
+          nothing to narrow. Sits above the tree so it stays reachable even
+          when the current selection filters out every row. */}
+      {services.length > 1 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '0 1rem',
+            marginBottom: '0.5rem',
+          }}
+        >
+          <span style={{ color: '#888', fontSize: '0.85em' }}>Services:</span>
+          {services.map((svc) => (
+            <Checkbox
+              key={svc}
+              id={`svc-${svc}`}
+              label={svc}
+              isChecked={selectedServices === null || selectedServices.has(svc)}
+              onChange={(_e, checked) => toggleService(svc, checked)}
+            />
+          ))}
+        </div>
+      )}
+      <ul style={{ margin: 0, padding: 0 }}>{renderNode(root, 0, new Set())}</ul>
+    </>
+  );
 });

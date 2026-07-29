@@ -27,6 +27,19 @@ export interface InteractionLeg {
 }
 
 /**
+ * Per-interaction classification kinds, re-derived server-side from the anchor
+ * (request) span's attributes by the sanctioned classifier; `null` when the
+ * anchor span carries no sidecar lineage facts. Content kinds are null for
+ * plain-http interactions (no semantic body kind).
+ */
+export interface InteractionKinds {
+  protocol: string;
+  mcp_method: string | null;
+  request_content_kind: string | null;
+  response_content_kind: string | null;
+}
+
+/**
  * A derived interaction (ADR-0025) for one trace: a parent identity row plus
  * one or two request/response `legs`. The leg-dependent fields (timing,
  * payload, error) live on the legs; the accessors below project them back for
@@ -44,6 +57,15 @@ export interface Interaction {
   any_error: boolean | null;
   span_count: number;
   anchor_count: number;
+  kinds: InteractionKinds | null;
+}
+
+/** MCP protocol plumbing (lifecycle / tool discovery) — the rows the flow view
+ *  hides by default. The vocabulary comes from the server's sanctioned
+ *  classifier (which stamps `kinds` on each interaction row). */
+export function isInfrastructure(ix: Pick<Interaction, 'kinds'>): boolean {
+  const k = ix.kinds?.request_content_kind;
+  return k === 'mcp_lifecycle_request' || k === 'tool_discovery_request';
 }
 
 /** The request (or response) leg of an interaction, if present. */

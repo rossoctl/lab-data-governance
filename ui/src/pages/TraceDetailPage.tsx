@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from 'react';
+import { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useSearchParams, useNavigate, Navigate, Link } from 'react-router-dom';
 import {
   PageSection,
@@ -227,6 +227,66 @@ export function TraceDetailPage() {
     [setSearchParams],
   );
 
+  // Flow's infrastructure filter ↔ URL: ?showInfra=1 encodes the non-default
+  // "shown" state; the default (hidden) is the absence of the param, mirroring
+  // ?hideOrphans on the list (ADR-0021: defaults are omitted, not written).
+  const showInfra = searchParams.get('showInfra') === '1';
+  const setShowInfra = useCallback(
+    (show: boolean) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (show) next.set('showInfra', '1');
+          else next.delete('showInfra');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // Flow's flat-view toggle ↔ URL: ?flat=1 encodes the non-default flat
+  // presentation, same convention as ?showInfra (ADR-0021: every view state is
+  // URL-addressable; defaults are omitted, not written).
+  const flatView = searchParams.get('flat') === '1';
+  const setFlatView = useCallback(
+    (flat: boolean) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (flat) next.set('flat', '1');
+          else next.delete('flat');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // Tree's service filter ↔ URL: ?svc=<comma-separated selected services>;
+  // absent = all services (ADR-0021: defaults are omitted, not written).
+  const svcParam = searchParams.get('svc');
+  const serviceFilter = useMemo(
+    () => (svcParam === null ? null : svcParam.split(',').filter((s) => s !== '')),
+    [svcParam],
+  );
+  const setServiceFilter = useCallback(
+    (services: string[] | null) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (services === null) next.delete('svc');
+          else next.set('svc', services.join(','));
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
   // Esc clears every highlight set while the tree view is active (the vanilla
   // clearAllPins keyboard shortcut).
   useEffect(() => {
@@ -334,6 +394,8 @@ export function TraceDetailPage() {
                   pins={pins}
                   onSelect={handleSpanSelect}
                   onPinsChange={bumpPins}
+                  serviceFilter={serviceFilter}
+                  onServiceFilterChange={setServiceFilter}
                 />
               </SplitItem>
               {/* Fixed 30% width, non-resizable; the panel always renders
@@ -353,6 +415,10 @@ export function TraceDetailPage() {
               onRevealSpans={revealInTree}
               initialSelection={flowSelection}
               onSelectionChange={handleFlowSelectionChange}
+              showInfra={showInfra}
+              onShowInfraChange={setShowInfra}
+              flatView={flatView}
+              onFlatViewChange={setFlatView}
             />
           )}
         </div>

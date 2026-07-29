@@ -1,4 +1,4 @@
-import { createRef } from 'react';
+import { createRef, useState } from 'react';
 import { act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
@@ -256,6 +256,67 @@ describe('SpanTree', () => {
       expect(framesRun).toBeGreaterThan(framesBefore);
     });
     rafSpy.mockRestore();
+  });
+
+  // --- Service filter: a client-side multi-select over the service_name
+  // values present in loaded spans (?svc= on the page, `serviceFilter` here).
+
+  // Root + one child per service — the two-service shape the filter narrows.
+  const AB_ROOT = span({ span_id: 'root', name: 'root-span', kind: 'SERVER', service_name: 'authbridge' });
+  const MIXED_KIDS = [
+    span({ seq: 2, span_id: 'c-side', name: 'sidecar-child', parent_id: 'root', service_name: 'authbridge' }),
+    span({ seq: 3, span_id: 'c-app', name: 'app-child', parent_id: 'root', service_name: 'weather-service' }),
+  ];
+
+  it('prunes deselected services\' rows (and their branches) from the tree', async () => {
+    mockChildren(MIXED_KIDS);
+    renderWithProviders(
+      <SpanTree
+        traceId="T" root={AB_ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}}
+        serviceFilter={['authbridge']}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('sidecar-child')).toBeInTheDocument());
+    // The deselected service's span row is gone; the selected one remains.
+    expect(screen.queryByText('app-child')).toBeNull();
+    expect(screen.getByText('root-span')).toBeInTheDocument();
+  });
+
+  it('offers a checkbox per loaded service and reports toggles (sorted list, null = all)', async () => {
+    mockChildren(MIXED_KIDS);
+    const onServiceFilterChange = vi.fn();
+    // A host owning the filter, as TraceDetailPage does (mirroring ?svc=).
+    function Host() {
+      const [filter, setFilter] = useState<string[] | null>(null);
+      onServiceFilterChange.mockImplementation(setFilter);
+      return (
+        <SpanTree
+          traceId="T" root={AB_ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}}
+          serviceFilter={filter} onServiceFilterChange={onServiceFilterChange}
+        />
+      );
+    }
+    renderWithProviders(<Host />);
+    await waitFor(() => expect(screen.getByText('app-child')).toBeInTheDocument());
+    // Unchecking a service narrows the tree and reports the remaining selection.
+    await userEvent.click(screen.getByRole('checkbox', { name: 'weather-service' }));
+    expect(onServiceFilterChange).toHaveBeenCalledWith(['authbridge']);
+    await waitFor(() => expect(screen.queryByText('app-child')).toBeNull());
+    expect(screen.getByText('sidecar-child')).toBeInTheDocument();
+    // Re-checking the last box collapses back to null (all → param-less URL).
+    await userEvent.click(screen.getByRole('checkbox', { name: 'weather-service' }));
+    expect(onServiceFilterChange).toHaveBeenLastCalledWith(null);
+    await waitFor(() => expect(screen.getByText('app-child')).toBeInTheDocument());
+  });
+
+  it('renders no Services control while only one service is loaded', async () => {
+    mockChildren(CHILDREN); // root + children all carry service 'svc'
+    renderWithProviders(
+      <SpanTree traceId="T" root={ROOT} pins={new PinStore()} onSelect={() => {}} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText('ok-child')).toBeInTheDocument());
+    expect(screen.queryByText('Services:')).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
   });
 
   it('calls onSelect with the span when a row is clicked', async () => {

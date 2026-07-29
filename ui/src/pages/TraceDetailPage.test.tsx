@@ -487,6 +487,173 @@ describe('TraceDetailPage', () => {
     expect(inTreeRow('leaf-span')).toBe(true);
   });
 
+  // --- Infra filter round-trip: the flow view's hide-infrastructure filter is
+  // mirrored into ?showInfra=1 (the non-default "shown" state; default hidden
+  // is the absence of the param), so a deep link / reload restores it.
+
+  // One real interaction + one MCP lifecycle (infrastructure) interaction.
+  function mockFetchWithInfraFlow() {
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url === '/api/traces/T1') {
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            trace_id: 'T1',
+            listing_root: {
+              seq: 1, trace_id: 'T1', span_id: 'root', parent_id: null,
+              name: 'root-span', started_at: '2026-05-01T12:00:00Z',
+              service_name: 'svc', kind: 'SERVER', error: null, attributes: {},
+            },
+            counts: { total: 2, in_window: 2, error_count: 0 }, in_time_window: true,
+          }),
+        };
+      }
+      if (url.endsWith('/interactions')) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ interactions: [
+            {
+              id: 'i1', caller_entity_id: null, callee_entity_id: null,
+              summary: 'the interaction', parent_interaction_id: null,
+              legs: [
+                { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: null, error: null, seq: 1 },
+                { leg_type: 'response', occurred_at: '2026-05-01T12:00:01Z', payload_hash: null, error: false, seq: 2 },
+              ],
+              duration_seconds: 1, any_error: false,
+              span_count: 1, anchor_count: 1,
+              kinds: { protocol: 'mcp', mcp_method: 'tools/call', request_content_kind: 'tool_call_request', response_content_kind: 'tool_call_result' },
+            },
+            {
+              id: 'i2', caller_entity_id: null, callee_entity_id: null,
+              summary: 'mcp initialize', parent_interaction_id: null,
+              legs: [
+                { leg_type: 'request', occurred_at: '2026-05-01T12:00:02Z', payload_hash: null, error: null, seq: 3 },
+                { leg_type: 'response', occurred_at: '2026-05-01T12:00:03Z', payload_hash: null, error: false, seq: 4 },
+              ],
+              duration_seconds: 1, any_error: false,
+              span_count: 9, anchor_count: 1,
+              kinds: { protocol: 'mcp', mcp_method: 'initialize', request_content_kind: 'mcp_lifecycle_request', response_content_kind: 'mcp_lifecycle_result' },
+            },
+          ] }),
+        };
+      }
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: [] }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+  }
+
+  it('writes ?showInfra=1 when infra rows are shown, and drops it when re-hidden', async () => {
+    mockFetchWithInfraFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+
+    // Default: the lifecycle row is hidden and the URL carries no param.
+    await screen.findByRole('button', { name: /1 infrastructure interaction hidden — show/i });
+    expect(screen.queryByText(/9 \(1 anchor\)/)).toBeNull();
+    // Show → the row appears and the URL gains the non-default ?showInfra=1.
+    await userEvent.click(screen.getByRole('button', { name: /hidden — show/i }));
+    await waitFor(() => expect(screen.getByText(/9 \(1 anchor\)/)).toBeInTheDocument());
+    expect(screen.getByTestId('location')).toHaveTextContent('showInfra=1');
+    // Hide again → the default is the absence of the param, not showInfra=0.
+    await userEvent.click(
+      screen.getByRole('button', { name: /Hide 1 infrastructure interaction/i }),
+    );
+    await waitFor(() => expect(screen.queryByText(/9 \(1 anchor\)/)).toBeNull());
+    expect(screen.getByTestId('location')).not.toHaveTextContent('showInfra');
+  });
+
+  it('restores shown infra rows from a ?showInfra=1 deep link', async () => {
+    mockFetchWithInfraFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?showInfra=1' });
+
+    // The infra row renders immediately; the affordance is in its hide form.
+    await waitFor(() => expect(screen.getByText(/9 \(1 anchor\)/)).toBeInTheDocument());
+    expect(
+      screen.getByRole('button', { name: /Hide 1 infrastructure interaction/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('mirrors the Flat view checkbox to ?flat=1 and restores it from a deep link', async () => {
+    mockFetchWithInfraFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+
+    // Default: nested view, no param.
+    await screen.findByLabelText('Flat view');
+    expect(screen.queryByLabelText('Interactions (flat)')).toBeNull();
+    // Toggle on → flat table renders and the URL gains the non-default ?flat=1.
+    await userEvent.click(screen.getByLabelText('Flat view'));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Interactions (flat)')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('location')).toHaveTextContent('flat=1');
+    // Toggle off → the default is the absence of the param.
+    await userEvent.click(screen.getByLabelText('Flat view'));
+    await waitFor(() => expect(screen.queryByLabelText('Interactions (flat)')).toBeNull());
+    expect(screen.getByTestId('location')).not.toHaveTextContent('flat=1');
+  });
+
+  it('restores the flat view from a ?flat=1 deep link', async () => {
+    mockFetchWithInfraFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?flat=1' });
+    await waitFor(() =>
+      expect(screen.getByLabelText('Interactions (flat)')).toBeInTheDocument(),
+    );
+  });
+
+  // --- Service filter round-trip: the span tree's service multi-select is
+  // mirrored into ?svc= (comma-separated selected services; absent = all).
+
+  // Root ('svc') with one child per service, so the tree loads two services.
+  function mockFetchTwoServices() {
+    const other = { ...CHILD, seq: 3, span_id: 'child-2', name: 'other-child', service_name: 'other-svc' };
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url === '/api/traces/T1') {
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            trace_id: 'T1',
+            listing_root: {
+              seq: 1, trace_id: 'T1', span_id: 'root', parent_id: null,
+              name: 'root-span', started_at: '2026-05-01T12:00:00Z',
+              service_name: 'svc', kind: 'SERVER', error: null, attributes: {},
+            },
+            counts: { total: 3, in_window: 3, error_count: 0 }, in_time_window: true,
+          }),
+        };
+      }
+      if (url.includes('/spans/root/children')) {
+        return { ok: true, status: 200, json: async () => ({ spans: [CHILD, other] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ spans: [], interactions: [], entities: [] }) };
+    });
+  }
+
+  it('writes ?svc= when a service is deselected, and drops it when all are re-selected', async () => {
+    mockFetchTwoServices();
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
+
+    await waitFor(() => expect(screen.getByText('other-child')).toBeInTheDocument());
+    // Uncheck 'other-svc' → its row is pruned and the URL records the selection.
+    await userEvent.click(screen.getByRole('checkbox', { name: 'other-svc' }));
+    await waitFor(() => expect(screen.queryByText('other-child')).toBeNull());
+    expect(screen.getByTestId('location')).toHaveTextContent('svc=svc');
+    // Re-check → all services selected collapses back to the param-less URL.
+    await userEvent.click(screen.getByRole('checkbox', { name: 'other-svc' }));
+    await waitFor(() => expect(screen.getByText('other-child')).toBeInTheDocument());
+    expect(screen.getByTestId('location')).not.toHaveTextContent('svc=');
+  });
+
+  it('restores the service filter from a ?svc= deep link', async () => {
+    mockFetchTwoServices();
+    renderWithProviders(harness(), { route: '/traces/T1/spans?svc=svc' });
+
+    // Only the selected service's rows render; the other service's checkbox is
+    // present (its spans loaded) but unchecked.
+    await waitFor(() => expect(screen.getByText('child-span')).toBeInTheDocument());
+    expect(screen.queryByText('other-child')).toBeNull();
+    expect(screen.getByRole('checkbox', { name: 'other-svc' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'svc' })).toBeChecked();
+  });
+
   it('does NOT show the highlighting spinner for a ?sel deep-link restore', async () => {
     // A ?sel deep link fires reveal() too, but that is a page-load restore, not
     // a user highlight action — so the "highlighting…" spinner must stay hidden

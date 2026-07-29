@@ -37,6 +37,49 @@ function withLegHashes(reqHash: string | null, respHash: string | null) {
   };
 }
 
+// A trace whose exchanges carry server-classified `kinds`: one real root, two
+// MCP infrastructure children (lifecycle + discovery — hidden by default), one
+// real child, and a real grandchild under it. span_count is distinct per row so
+// tests can target rows by their unique "N (1 anchor)" Spans cell. Rows are in
+// the ADR-0025 legs shape (the leg seqs give the flat view a stable order).
+const kindsOf = (protocol: string, mcp_method: string | null, req: string, resp: string) => ({
+  protocol, mcp_method, request_content_kind: req, response_content_kind: resp,
+});
+let ixSeq = 0;
+const ixRow = (over: Record<string, unknown>) => {
+  const reqSeq = (ixSeq += 2) - 1;
+  return {
+    caller_entity_id: 'e1', callee_entity_id: 'e2',
+    summary: null, parent_interaction_id: null, anchor_count: 1,
+    legs: [
+      { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: null, error: null, seq: reqSeq },
+      { leg_type: 'response', occurred_at: '2026-05-01T12:00:01Z', payload_hash: null, error: false, seq: reqSeq + 1 },
+    ],
+    duration_seconds: 1, any_error: false,
+    ...over,
+  };
+};
+const INFRA_INTERACTIONS = [
+  ixRow({ id: 'i-root', span_count: 2,
+    kinds: kindsOf('a2a', null, 'agent_request', 'agent_response') }),
+  ixRow({ id: 'i-life', span_count: 3, parent_interaction_id: 'i-root',
+    kinds: kindsOf('mcp', 'initialize', 'mcp_lifecycle_request', 'mcp_lifecycle_result') }),
+  ixRow({ id: 'i-disc', span_count: 4, parent_interaction_id: 'i-root',
+    kinds: kindsOf('mcp', 'tools/list', 'tool_discovery_request', 'tool_discovery_result') }),
+  ixRow({ id: 'i-call', span_count: 5, parent_interaction_id: 'i-root',
+    kinds: kindsOf('mcp', 'tools/call', 'tool_call_request', 'tool_call_result') }),
+  ixRow({ id: 'i-deep', span_count: 6, parent_interaction_id: 'i-call',
+    kinds: kindsOf('http', null, 'http_request', 'http_response') }),
+];
+
+function mockFetchInfra(interactions: unknown[] = INFRA_INTERACTIONS) {
+  (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+    if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions }) };
+    if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+    return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+  });
+}
+
 // Evidence rows returned for the entity/interaction /spans sub-resources.
 const ENTITY_EVIDENCE = [
   { span_id: 'span-abc', role: 'discovered_via', parent_id: 'span-parent', kind: 'SERVER', service_name: 'svc' },
@@ -496,6 +539,139 @@ describe('FlowTables', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
     // No Payloads header when both hashes are null.
     expect(screen.queryByRole('heading', { name: 'Payloads' })).toBeNull();
+  });
+
+  // --- Infrastructure filter: MCP plumbing rows (lifecycle / tool discovery,
+  // per the server classifier's `kinds`) are hidden by default; an inline
+  // affordance names the hidden count and toggles them (?showInfra=1 on the
+  // page, `showInfra` prop here).
+
+  it('hides infrastructure interactions by default and offers a count affordance', async () => {
+    mockFetchInfra();
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    // The lifecycle + discovery rows are hidden…
+    expect(screen.queryByText(/3 \(1 anchor\)/)).toBeNull();
+    expect(screen.queryByText(/4 \(1 anchor\)/)).toBeNull();
+    // …the real rows stay…
+    expect(screen.getByText(/5 \(1 anchor\)/)).toBeInTheDocument();
+    expect(screen.getByText(/6 \(1 anchor\)/)).toBeInTheDocument();
+    // …and the affordance names the hidden count.
+    expect(
+      screen.getByRole('button', { name: /2 infrastructure interactions hidden — show/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('reveals the infra rows via the affordance, which flips to "Hide N …"', async () => {
+    mockFetchInfra();
+    const pins = new PinStore();
+    // A host owning showInfra, as TraceDetailPage does (mirroring ?showInfra=1).
+    function Host() {
+      const [showInfra, setShowInfra] = React.useState(false);
+      return (
+        <FlowTables
+          traceId="T1" pins={pins} onPinsChange={() => {}}
+          showInfra={showInfra} onShowInfraChange={setShowInfra}
+        />
+      );
+    }
+    renderWithProviders(<Host />);
+    await userEvent.click(await screen.findByRole('button', { name: /hidden — show/i }));
+    // Both infra rows appear, and the affordance flips to the hide form.
+    await waitFor(() => expect(screen.getByText(/3 \(1 anchor\)/)).toBeInTheDocument());
+    expect(screen.getByText(/4 \(1 anchor\)/)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole('button', { name: /Hide 2 infrastructure interactions/i }),
+    );
+    await waitFor(() => expect(screen.queryByText(/3 \(1 anchor\)/)).toBeNull());
+  });
+
+  it('flat view filters whole infra interactions, keeping the surviving bracket intact', async () => {
+    // An infra interaction whose legs interleave BETWEEN the real interaction's
+    // request and response (seqs 1,4 vs 2,3). Filtering must drop both infra
+    // legs together, leaving the real pair adjacent with an intact top/bottom
+    // connector — the filter runs on interactions BEFORE the per-leg flatMap.
+    const real = ixRow({ id: 'i-real', span_count: 2,
+      kinds: kindsOf('a2a', null, 'agent_request', 'agent_response') });
+    real.legs = [
+      { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: null, error: null, seq: 1 },
+      { leg_type: 'response', occurred_at: '2026-05-01T12:00:03Z', payload_hash: null, error: false, seq: 4 },
+    ];
+    const infra = ixRow({ id: 'i-infra', span_count: 3,
+      kinds: kindsOf('mcp', 'initialize', 'mcp_lifecycle_request', 'mcp_lifecycle_result') });
+    infra.legs = [
+      { leg_type: 'request', occurred_at: '2026-05-01T12:00:01Z', payload_hash: null, error: null, seq: 2 },
+      { leg_type: 'response', occurred_at: '2026-05-01T12:00:02Z', payload_hash: null, error: false, seq: 3 },
+    ];
+    mockFetchInfra([real, infra]);
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await userEvent.click(await screen.findByLabelText('Flat view'));
+    const flat = await screen.findByLabelText('Interactions (flat)');
+    const body = within(flat).getAllByRole('row').slice(1); // drop header
+    // Only the real interaction's two legs remain, adjacent.
+    expect(body).toHaveLength(2);
+    expect(body[0]).toHaveTextContent('request');
+    expect(body[1]).toHaveTextContent('response');
+    // Its connector bracket survives whole: a top edge and a bottom edge.
+    const markers = within(flat).getAllByTestId('flat-connector');
+    expect(markers).toHaveLength(2);
+  });
+
+  it('keeps visible-row indentation stable while infra siblings are hidden (depths from the full list)', async () => {
+    mockFetchInfra();
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    // i-deep is depth 2 (root → i-call → i-deep). With its depth-1 infra
+    // siblings hidden, its indent prefix must still read depth 2 ('│ └─'),
+    // not reflow as if the tree had shrunk.
+    await waitFor(() => expect(screen.getByText(/6 \(1 anchor\)/)).toBeInTheDocument());
+    const deepRow = screen.getByText(/6 \(1 anchor\)/).closest('tr')!;
+    expect(deepRow.textContent).toContain('│ └─');
+    const callRow = screen.getByText(/5 \(1 anchor\)/).closest('tr')!;
+    expect(callRow.textContent).toContain('└─');
+    expect(callRow.textContent).not.toContain('│');
+  });
+
+  it('keeps an infra row visible when a visible row parents through it (no dangling child)', async () => {
+    // Lifecycle hops are leaves so this shouldn't occur, but the guard must
+    // hold: a hidden parent of a visible child stays visible (and is then not
+    // counted in the hidden-row affordance).
+    mockFetchInfra([
+      ixRow({ id: 'g-parent', span_count: 7,
+        kinds: kindsOf('mcp', 'initialize', 'mcp_lifecycle_request', 'mcp_lifecycle_result') }),
+      ixRow({ id: 'g-child', span_count: 8, parent_interaction_id: 'g-parent',
+        kinds: kindsOf('mcp', 'tools/call', 'tool_call_request', 'tool_call_result') }),
+      ixRow({ id: 'g-leaf', span_count: 9, parent_interaction_id: 'g-child',
+        kinds: kindsOf('mcp', 'ping', 'mcp_lifecycle_request', 'mcp_lifecycle_result') }),
+    ]);
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    // The infra parent survives (its child is visible); the infra leaf hides.
+    await waitFor(() => expect(screen.getByText(/8 \(1 anchor\)/)).toBeInTheDocument());
+    expect(screen.getByText(/7 \(1 anchor\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/9 \(1 anchor\)/)).toBeNull();
+    // The child still renders indented under its (kept) parent.
+    const childRow = screen.getByText(/8 \(1 anchor\)/).closest('tr')!;
+    expect(childRow.textContent).toContain('└─');
+    // Only the leaf counts as hidden (singular form).
+    expect(
+      screen.getByRole('button', { name: /1 infrastructure interaction hidden — show/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no infra affordance when the trace has no infrastructure rows', async () => {
+    mockFetch(); // INTERACTIONS carry no `kinds` at all (pre-kinds rows)
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /infrastructure/i })).toBeNull();
   });
 
   it('scopes the active-row highlight selector to out-specify PF clickable rows', () => {

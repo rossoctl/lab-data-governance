@@ -16,6 +16,7 @@ import { useInteractions, useEntities, usePayload } from '../api/hooks';
 import { fetchJson } from '../api/client';
 import {
   computeInteractionDepths,
+  isInfrastructure,
   legOfType,
   requestOccurredAt,
 } from '../lib/flow';
@@ -259,6 +260,23 @@ export interface FlowTablesProps {
    * URL. `null` on deselect.
    */
   onSelectionChange?: (sel: FlowSelection | null) => void;
+  /**
+   * Show MCP infrastructure interactions (lifecycle / tool discovery)? Default
+   * false = hidden. The page owns the URL mirror (ADR-0021 `?showInfra=1`, the
+   * non-default state) and passes the resolved flag down.
+   */
+  showInfra?: boolean;
+  /** Fired when the inline show/hide-infrastructure affordance is clicked. */
+  onShowInfraChange?: (show: boolean) => void;
+  /**
+   * Flat view (one row per leg) on? When the parent supplies the pair it owns
+   * the state — the page mirrors it to the URL (ADR-0021 `?flat=1`, the
+   * non-default state); without a handler the checkbox falls back to local
+   * state (uncontrolled), which is what direct component tests use.
+   */
+  flatView?: boolean;
+  /** Fired when the Flat view checkbox is toggled. */
+  onFlatViewChange?: (flat: boolean) => void;
 }
 
 /**
@@ -276,13 +294,21 @@ export function FlowTables({
   onRevealSpans,
   initialSelection,
   onSelectionChange,
+  showInfra = false,
+  onShowInfraChange,
+  flatView: flatViewProp,
+  onFlatViewChange,
 }: FlowTablesProps) {
   const interactionsQ = useInteractions(traceId);
   const entitiesQ = useEntities(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
   // Flat view: ignore the parent/child tree and list each request/response leg
   // as its own row, ordered by the leg `seq` (the trace-wide sequence number).
-  const [flatView, setFlatView] = useState(false);
+  // Controlled by the page (URL-mirrored) when the prop pair is supplied, else
+  // local state.
+  const [flatViewLocal, setFlatViewLocal] = useState(false);
+  const flatView = onFlatViewChange ? (flatViewProp ?? false) : flatViewLocal;
+  const setFlatView = onFlatViewChange ?? setFlatViewLocal;
   // Monotonic click token: each row click bumps it, and a click's async
   // evidence fetch only commits its setState if it is still the latest click.
   // Guards the out-of-order race where a slow fetch resolves after a later
@@ -302,16 +328,43 @@ export function FlowTables({
     entities.forEach((e) => m.set(e.id, e));
     return m;
   }, [entities]);
+  // Depths come from the FULL interaction list — filtering is display-only, so
+  // the indentation of the rows that stay visible never shifts.
   const depthById = useMemo(() => computeInteractionDepths(interactions), [interactions]);
-  // Flat rows: one entry per leg across all interactions, ordered by `seq`.
-  // Each carries its parent interaction so a click still opens that
-  // interaction's detail panel (legs have no selection of their own).
+  // The rows the default filter hides: MCP infrastructure exchanges (lifecycle /
+  // tool discovery), minus any that a visible row parents through — lifecycle
+  // hops are leaves so that shouldn't happen, but a visible row must never
+  // dangle from a hidden parent, so the walk unhides full ancestor chains.
+  const infraHidden = useMemo(() => {
+    const hidden = new Set(interactions.filter((ix) => isInfrastructure(ix)).map((ix) => ix.id));
+    const ixById = new Map(interactions.map((ix) => [ix.id, ix]));
+    for (const ix of interactions) {
+      if (hidden.has(ix.id)) continue;
+      const seen = new Set<string>();
+      for (let pid = ix.parent_interaction_id; pid && hidden.has(pid) && !seen.has(pid); ) {
+        hidden.delete(pid);
+        seen.add(pid);
+        pid = ixById.get(pid)?.parent_interaction_id ?? null;
+      }
+    }
+    return hidden;
+  }, [interactions]);
+  const displayedInteractions = useMemo(
+    () => (showInfra ? interactions : interactions.filter((ix) => !infraHidden.has(ix.id))),
+    [interactions, infraHidden, showInfra],
+  );
+  // Flat rows: one entry per leg across the DISPLAYED interactions, ordered by
+  // `seq`. Filtering whole interactions before the flatMap keeps the connector
+  // pairing consistent — both legs of a hidden interaction vanish together, so
+  // `flatConnectors` row indices always cover intact brackets. Each row carries
+  // its parent interaction so a click still opens that interaction's detail
+  // panel (legs have no selection of their own).
   const flatRows = useMemo(
     () =>
-      interactions
+      displayedInteractions
         .flatMap((ix) => ix.legs.map((leg) => ({ ix, leg })))
         .sort((a, b) => a.leg.seq - b.leg.seq),
-    [interactions],
+    [displayedInteractions],
   );
   // Request↔response pairing for the flat view's connector column. A request
   // leg and its response leg share the same `ix.id` (that is the pairing key),
@@ -567,6 +620,20 @@ export function FlowTables({
             onChange={(_e, checked) => setFlatView(checked)}
           />
         </div>
+        {/* Infrastructure filter affordance: default-hidden MCP plumbing rows,
+            with the count and a one-click toggle (mirrored to ?showInfra=1 by
+            the parent). Absent entirely when the trace has no infra rows.
+            Applies to both views — the flat rows are built from the same
+            displayedInteractions. */}
+        {infraHidden.size > 0 && (
+          <div style={{ margin: '0.25rem 0' }}>
+            <Button variant="link" isInline onClick={() => onShowInfraChange?.(!showInfra)}>
+              {showInfra
+                ? `Hide ${infraHidden.size} infrastructure ${infraHidden.size === 1 ? 'interaction' : 'interactions'}`
+                : `${infraHidden.size} infrastructure ${infraHidden.size === 1 ? 'interaction' : 'interactions'} hidden — show`}
+            </Button>
+          </div>
+        )}
         {flatView ? (
           // Flat view: one row per request/response leg, ordered by `seq`,
           // ignoring the parent/child tree (no depth indentation).
@@ -660,7 +727,7 @@ export function FlowTables({
             </Tr>
           </Thead>
           <Tbody>
-            {interactions.map((ix) => {
+            {displayedInteractions.map((ix) => {
               const depth = depthById.get(ix.id) ?? 0;
               const caller = ix.caller_entity_id ? entById.get(ix.caller_entity_id) : undefined;
               const callee = ix.callee_entity_id ? entById.get(ix.callee_entity_id) : undefined;

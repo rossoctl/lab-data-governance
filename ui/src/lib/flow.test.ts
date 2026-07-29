@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { toolSubtype, computeInteractionDepths, durationMs, roleMeta } from './flow';
+import {
+  toolSubtype,
+  computeInteractionDepths,
+  durationMs,
+  roleMeta,
+  isInfrastructure,
+} from './flow';
 import type { Entity, Interaction } from './flow';
 
 // Ported from execution_flow_logic.js: tool subtype-by-natural-key-shape, the
@@ -48,6 +54,28 @@ describe('computeInteractionDepths', () => {
     // is depth 0.
     expect(depth.get('orphan')).toBe(0);
     expect(depth.get('a')).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('isInfrastructure', () => {
+  const withKind = (request_content_kind: string): Pick<Interaction, 'kinds'> => ({
+    kinds: {
+      protocol: 'mcp',
+      mcp_method: null,
+      request_content_kind,
+      response_content_kind: 'x',
+    },
+  });
+
+  it('flags the server classifier\'s MCP plumbing kinds (lifecycle + discovery)', () => {
+    expect(isInfrastructure(withKind('mcp_lifecycle_request'))).toBe(true);
+    expect(isInfrastructure(withKind('tool_discovery_request'))).toBe(true);
+  });
+
+  it('never flags real work or rows without kinds (missing anchor)', () => {
+    expect(isInfrastructure(withKind('tool_call_request'))).toBe(false);
+    expect(isInfrastructure(withKind('agent_request'))).toBe(false);
+    expect(isInfrastructure({ kinds: null })).toBe(false);
   });
 });
 
