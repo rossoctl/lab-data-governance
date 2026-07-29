@@ -72,7 +72,7 @@ describe('useDataLineage', () => {
     lineage: {
       data_sources: ['agent-one'],
       source_transformations: { 'agent-one': ['summarization'] },
-      entity_path: ['agent-one', 'llm-x'],
+      entities: ['agent-one', 'llm-x'],
       seq: 2,
     },
   };

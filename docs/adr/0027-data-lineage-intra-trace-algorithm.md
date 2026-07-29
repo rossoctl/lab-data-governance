@@ -9,7 +9,7 @@ Data lineage answers two questions about a payload: **where did it originate**
 input is the interaction data (ADR-0025 `interactions` + `interaction_legs`,
 each leg carrying a `payload_hash`); the output is per-payload **lineage
 metadata**. This ADR records the intra-trace algorithm and the decisions that
-shaped it. The human-owned spec lives at `docs/data _lineage_alg.md`; this ADR
+shaped it. The human-owned spec lives at `docs/data_lineage_alg.md`; this ADR
 captures the *why* and the settled boundaries.
 
 ## Lineage belongs to payloads; entities are nodes
@@ -23,9 +23,9 @@ rather than a property of the entity.
 ## Lineage metadata
 
 Per payload: (1) the set of **data sources** (origins), (2) a map
-`data_source → set<transformation>` (order does not matter), (3) the ordered
-**list of entities** the data passed through. Transformations are a finite
-enumeration (anonymization, summarization, …) still being finalized with a
+`data_source → set<transformation>` (order does not matter), (3) the **set of
+entities** the data passed through — unordered (see D10). Transformations are a
+finite enumeration (anonymization, summarization, …) still being finalized with a
 human.
 
 ## Semantic matching is a pluggable, deferred capability
@@ -58,7 +58,7 @@ trace's interactions in `seq` order:
   inputs, attaching per-source transformations.
 
 Signatures follow the spec's generic (payload-carrying) forms
-(`data _lineage_alg.md:70-101`); exact metadata-construction rules live there.
+(`data_lineage_alg.md:70-101`); exact metadata-construction rules live there.
 
 ## Decisions
 
@@ -93,7 +93,7 @@ An interaction produces `init`-shaped (origin) metadata when either:
    brand-new data). This is **not** a D4 branch — it is a runtime *result* of
    `linear`/`merge`: when `match` returns false for a source, that source
    contributes no lineage, and if no source matches the op degrades to `init`
-   (per the spec's `linear_lineage`, `data _lineage_alg.md:77-79`).
+   (per the spec's `linear_lineage`, `data_lineage_alg.md:77-79`).
 
 The two live at different times: (1) is checkable structurally before the op
 runs; (2) can only be known after calling `match`. D4 encodes only (1); (2) is
@@ -128,10 +128,10 @@ The memory predicate is folded into `inbound(i)`: because transient memory is
 always present (D2), an accumulating entity's `inbound(i)` grows to ≥2 and hits
 branch (c); an LLM/tool never accumulates, so it stays at one and hits (b). An
 accumulating entity's **first** outbound legitimately has one inbound and uses
-(b) — matching the spec's worked example (`data _lineage_alg.md:147` uses
+(b) — matching the spec's worked example (`data_lineage_alg.md:147` uses
 `linear` for the agent's first outbound, `:149,:151` use `merge` once ≥2
 priors exist). Exact metadata construction (transformation-set union, key-
-collision merge) is in the spec (`data _lineage_alg.md:70-123`); this ADR does
+collision merge) is in the spec (`data_lineage_alg.md:70-123`); this ADR does
 not restate it.
 
 ### D5 — Metadata is keyed per leg, not per payload
@@ -228,7 +228,103 @@ Two consequences worth stating, because both are load-bearing:
   rather than merely stale. The delete is scoped to "not in this derivation's
   output" rather than `seq >= stopped_at_seq`, because `seq` is re-allocated when
   a leg is rewritten in place and a threshold would spare exactly the rows it
-  must remove.
+  must remove. This is D9.
+
+### D9 — Re-derivation is upsert **plus** a stale-row delete, not upsert alone
+
+The derived-stream pattern this repo uses elsewhere (`payload_classifications`,
+the P-interactions `flush`) re-derives by upsert and never deletes, because those
+derivations only ever grow: a payload gets classified, a trace gains
+interactions. `lineage_metadata` broke that assumption the moment D6's cutoff
+landed, so it needs one operation more than its siblings. Recorded as its own
+decision because it is a deliberate departure from the pattern — and from the
+"idempotent re-derive by upsert" the lineage table was originally specified with
+— rather than an incidental implementation detail.
+
+**Why a derivation shrinks.** Lineage is re-derived per arriving leg, and legs
+are themselves rewritten in place when P-interactions re-derives a trace
+(migration 0010's NOTIFY trigger covers UPDATE for exactly this reason). If a
+re-derivation leaves a leg without a payload, D6 truncates: the trace that
+previously produced a row per leg now produces only the prefix before the gap.
+An upsert rewrites the prefix and is silent about the rest, so the rows past the
+gap survive from the earlier, longer derivation.
+
+**Why that is not merely untidy.** Those surviving rows are *positive provenance
+claims* — "this payload came from these sources" — about legs whose payloads are
+no longer available to support them. A consumer reading them gets a confident
+answer built on evidence that has gone, while the trace's own status says
+`partial`. Without the delete, D6's flag would be decorative: the truncation it
+announces would not actually be reflected in what the read serves.
+
+**Scope of the delete.** Everything under the trace that this derivation did not
+produce — which also collects rows whose leg has disappeared from the trace
+entirely, something an upsert can never do. The derivation is the sole authority
+on which of a trace's legs have lineage. It is scoped through `interactions`
+because `lineage_metadata` carries no `trace_id` (ADR-0025 keeps identity on the
+parent); mis-scoping it would delete another trace's evidence.
+
+`lineage_metadata` deliberately does **not** gain a `trace_id` column to avoid
+that join. Its source table `interaction_legs` has none either, the join is
+already the established shape in the read path, and denormalising would make a
+wrong-trace row *expressible* where today the join cannot lie — the wrong
+trade for a governance claim. If the deferred reverse lookup (D5's
+`payload_hash` index, "where did this content go") lands and wants cross-trace
+queries, that is the point to revisit.
+
+### D10 — The third metadata element is an unordered **set**, named `entities`
+
+The spec changed. `docs/data_lineage_alg.md` (human-owned, authoritative) now
+defines the third element of the triple as a set and says so explicitly:
+
+> 3. the set of entities - through which entities the data passed through
+>    Note: this is unordered. In case an order is needed - it will need to be
+>    derived from the trace using an API.
+
+and the operation rules read in kind: "A new **set** of entities which is empty"
+(rule 1(3)), "create a copy of the entity **set** and extend it with the entity
+name" (rule 2(3)), "the **set** of entities is merged and extended with the
+entity" (rule 3(3)). It previously said "list", and the implementation carried an
+ordered, deduplicated tuple named `entity_path`.
+
+**The field is renamed to `entities`** — Python `DataLineage.entities:
+frozenset[str]`, column `lineage_metadata.entities` (migration
+`0013_lineage_entities_rename`), JSON key `entities`, TS `DataLineage.entities`.
+The name had to move with the meaning: *path* promises a sequence a consumer may
+legitimately read hop-by-hop, and a field that no longer carries one must not keep
+advertising it. A stale name on a governance claim is worse than a rename.
+
+**Ordering is deliberately deferred, not lost.** The spec routes it to a future
+trace-derived API, and that is the honest home for it: the trace has the leg `seq`
+order that could answer "in what order", whereas the metadata triple does not. A
+`merge` unions two branches that reached the entity through different routes, and
+there is no single truthful interleaving of them to store — the old implementation
+could only offer whichever first-arrival order its traversal happened to produce.
+Deriving order from the trace on demand can be correct; baking one into a merged
+set cannot.
+
+**`_extend_path` is deleted.** Its dedup existed to reconstruct set behaviour
+inside a tuple; set union does it natively, and rules 2(3)/3(3) are now literally
+`| {entity_name}`. Fewer moving parts, and the type (`frozenset`) now *refuses* to
+hold an order the algebra cannot justify.
+
+**The persisted sort is serialization only.** `entities` is written to `TEXT[]`
+sorted, exactly as `source_transformations` already sorts its sets (`driver._upsert`):
+a re-derivation of identical lineage then produces byte-identical rows, which is
+what makes idempotency observable. Order is insignificant, so pinning it is free —
+but it is *not* meaning, and nothing (SQL consumer, API client, UI) may read flow
+order out of array position. The same applies on the wire: `entities` is a JSON
+array only because JSON has no set type.
+
+**Consequence for the UI.** `DataLineageView` previously rendered the field as an
+`a → b → c` arrow chain, which asserted precisely the order the spec disclaims. It
+now renders a `LabelGroup` of labels — the same unordered presentation the
+transformation sets beside it use. The null / empty-set / populated three-state
+handling is unchanged and unrelated: "not yet derived", "derived, passed through
+nothing" and "derived, passed through these" remain three distinct readings.
+
+Migration 0011 is left as it shipped. It recorded the shape that was correct at the
+time; rewriting applied history to look like it always knew better would hide that
+the spec moved.
 
 ## Outputs
 
@@ -244,13 +340,15 @@ Concrete shape, following the repo's derived-table pattern (own `seq` cursor, no
 FKs, idempotent re-derive):
 
 - **`lineage_metadata`** — PK `(interaction_id, leg_type)` (D5). Columns: the
-  metadata triple (`data_sources`, `source_transformations` map,
-  `entity_path`), `payload_hash` (secondary index, D5), `seq`. One row per
-  interaction leg that received lineage. **Shipped** as migration
-  `0011_lineage_metadata` (issue #117): the triple is `TEXT[]` /`JSONB` /
-  `TEXT[]` respectively (JSONB for the map-to-set, arrays where order matters or
-  does not), all `NOT NULL` — an origin's metadata is a real *empty* triple, and
-  absence of the row is what means "not yet derived".
+  metadata triple (`data_sources`, `source_transformations` map, `entities`),
+  `payload_hash` (secondary index, D5), `seq`. One row per interaction leg that
+  received lineage. **Shipped** as migration `0011_lineage_metadata` (issue #117):
+  the triple is `TEXT[]` /`JSONB` / `TEXT[]` respectively (JSONB for the
+  map-to-set, arrays for the two sets — Postgres has no set type), all `NOT NULL`
+  — an origin's metadata is a real *empty* triple, and absence of the row is what
+  means "not yet derived". The third column shipped as `entity_path` and was
+  renamed to `entities` by migration `0013_lineage_entities_rename` when the spec
+  redefined it as unordered (D10).
 - **`lineage_trace_status`** — PK `trace_id` (D8). Columns: `status`
   (`lineage_status` ENUM: `complete` | `partial`, `NOT NULL`) and
   `stopped_at_seq` (`BIGINT`, nullable). **Shipped** as migration

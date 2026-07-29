@@ -31,7 +31,7 @@ Two absences are **graceful shapes, not errors**:
   meaning *exactly* "not yet derived". This is the ``get_payload`` nullable
   **Classification** precedent (ADR-0024) applied to the same window: because
   every metadata column is ``NOT NULL``, an origin's *empty* triple (empty
-  ``entity_path``, one-key map with an empty set) is a real value that stays
+  ``entities``, one-key map with an empty set) is a real value that stays
   distinguishable from the absent row.
 - **Not-yet-migrated DB** — ``lineage_metadata`` (or the interactions schema the
   scoping joins through) may not exist yet; the read returns an empty typed
@@ -84,8 +84,14 @@ class DataLineageView:
        Stored as JSONB because no array type expresses a map-to-set; a *list* on
        the wire since JSON has no set, and its order is insignificant (the
        processor writes it sorted, so a re-derivation is byte-identical).
-    3. ``entity_path`` — the **ordered** entities the data passed through.
-       Order is the whole point; an origin's path is legitimately empty.
+    3. ``entities`` — the **set** of entities the data passed through. A *list* on
+       the wire only because JSON has no set type: it is **unordered**, and a
+       consumer must not read flow order out of the array's position. The spec is
+       explicit — "this is unordered. In case an order is needed - it will need to
+       be derived from the trace using an API" — so ordering is a future
+       trace-derived read, not something this field quietly supplies. The processor
+       writes it sorted so a re-derivation is byte-identical; that is
+       serialization, not meaning. An origin's set is legitimately empty.
 
     ``seq`` is the row's own cursor value (sourced from the leg it describes), so
     a consumer can tell a re-derivation apart from the original.
@@ -93,7 +99,7 @@ class DataLineageView:
 
     data_sources: list[str]
     source_transformations: dict[str, list[str]]
-    entity_path: list[str]
+    entities: list[str]
     seq: int
 
 
@@ -230,7 +236,7 @@ def get_data_lineage(trace_id: str) -> GetDataLineageResult:
         status, stopped_at_seq = _trace_status(tx, trace_id)
         rows = tx.fetch_all(
             "SELECT l.interaction_id::text, l.leg_type::text, l.payload_hash, "
-            "       m.data_sources, m.source_transformations, m.entity_path, "
+            "       m.data_sources, m.source_transformations, m.entities, "
             "       m.seq "
             "FROM interaction_legs l "
             "JOIN interactions i ON i.id = l.interaction_id "
@@ -267,7 +273,7 @@ def _lineage_view(row: tuple) -> DataLineageView | None:
     ``seq`` (also NOT NULL, and never defaulted) unambiguously separates "not yet
     derived" from a derived origin whose triple is genuinely empty.
     """
-    data_sources, source_transformations, entity_path, seq = row
+    data_sources, source_transformations, entities, seq = row
     if seq is None:  # no lineage_metadata row (LEFT JOIN miss)
         return None
     return DataLineageView(
@@ -276,6 +282,6 @@ def _lineage_view(row: tuple) -> DataLineageView | None:
             source: list(transformations)
             for source, transformations in (source_transformations or {}).items()
         },
-        entity_path=list(entity_path),
+        entities=list(entities),
         seq=int(seq),
     )

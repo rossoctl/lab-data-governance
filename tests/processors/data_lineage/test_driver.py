@@ -96,14 +96,14 @@ def _rows(dsn: str) -> dict[tuple[str, str], dict]:
     with psycopg.connect(dsn) as conn:
         rows = conn.execute(
             "SELECT interaction_id, leg_type::text, data_sources, "
-            "source_transformations, entity_path, payload_hash, seq "
+            "source_transformations, entities, payload_hash, seq "
             "FROM lineage_metadata"
         ).fetchall()
     return {
         (r[0], r[1]): {
             "data_sources": r[2],
             "source_transformations": r[3],
-            "entity_path": r[4],
+            "entities": r[4],
             "payload_hash": r[5],
             "seq": r[6],
         }
@@ -166,14 +166,38 @@ def test_persisted_metadata_matches_the_spec_worked_example(configured_db: str) 
     rows = _rows(configured_db)
 
     assert rows[("ix_ua", "request")]["data_sources"] == ["user:alice"]
-    assert rows[("ix_ua", "request")]["entity_path"] == []
+    assert rows[("ix_ua", "request")]["entities"] == []
     for key in rows:
         assert rows[key]["data_sources"] == ["user:alice"], key
 
     final = rows[("ix_ua", "response")]
-    assert set(final["entity_path"]) == {"agent:(demo,advisor)", "llm:host/gpt"}
+    assert set(final["entities"]) == {"agent:(demo,advisor)", "llm:host/gpt"}
     # No transformation from the trivial matcher, so every source maps to [].
     assert final["source_transformations"] == {"user:alice": []}
+
+
+def test_entities_are_persisted_sorted_as_a_serialization_detail(
+    configured_db: str,
+) -> None:
+    """``entities`` is written SORTED — for byte-stable re-derivation only, the same
+    reason ``source_transformations`` sorts its sets.
+
+    The spec calls this element unordered and defers ordering to a future
+    trace-derived API, so the sort must not be read as flow order. What it buys is
+    that a re-derivation of identical lineage produces an identical row, which is
+    what makes idempotency observable. Pinned here because the *absence* of a
+    deliberate order is exactly the thing a later change could quietly break by
+    persisting whatever order a set iteration happened to hand over."""
+    _seed_agent_trace(configured_db)
+    driver.drain(0)
+    first = _rows(configured_db)
+
+    values = first[("ix_ua", "response")]["entities"]
+    assert values == sorted(values), "written sorted, so the bytes are stable"
+
+    # Re-derive from scratch: same rows, byte-identical, no set-iteration wobble.
+    driver.drain(0)
+    assert _rows(configured_db) == first
 
 
 def test_payload_hash_is_stored_per_leg(configured_db: str) -> None:
@@ -209,8 +233,8 @@ def test_identical_payloads_at_different_positions_get_distinct_rows(
     assert rows[("ix", "response")]["payload_hash"] == "same"
     # Same bytes, different lineage: the request originates at the user, the
     # response has passed through the agent.
-    assert rows[("ix", "request")]["entity_path"] == []
-    assert rows[("ix", "response")]["entity_path"] == ["agent:(demo,echo)"]
+    assert rows[("ix", "request")]["entities"] == []
+    assert rows[("ix", "response")]["entities"] == ["agent:(demo,echo)"]
 
 
 def test_redrive_of_a_trace_is_idempotent(configured_db: str) -> None:
@@ -260,10 +284,10 @@ def test_partial_trace_converges_as_later_legs_arrive(configured_db: str) -> Non
     driver.drain(cursor)
     rows = _rows(configured_db)
     assert len(rows) == 4, "no duplicates from the re-derivation"
-    assert rows[("ix_ua", "response")]["entity_path"] == [
+    assert set(rows[("ix_ua", "response")]["entities"]) == {
         "agent:(demo,advisor)",
         "llm:host/gpt",
-    ]
+    }
 
 
 def test_rederivation_overwrites_stale_metadata(configured_db: str) -> None:
@@ -276,7 +300,7 @@ def test_rederivation_overwrites_stale_metadata(configured_db: str) -> None:
     with psycopg.connect(configured_db) as conn:
         conn.execute(
             "UPDATE lineage_metadata SET data_sources = ARRAY['stale'], "
-            "entity_path = ARRAY['stale']"
+            "entities = ARRAY['stale']"
         )
         # Re-announce the leg the way a P-interactions re-derivation would.
         _leg(conn, ix_id="ix_ua", leg_type="response", payload_hash="p6", original_seq=6)
@@ -386,4 +410,4 @@ def test_driver_resolves_its_matcher_through_get_matcher(
     # With no matches, every leg is its own origin (D3(2)).
     assert rows[("ix_ua", "response")]["data_sources"] == ["agent:(demo,advisor)"]
     assert rows[("ix_al1", "response")]["data_sources"] == ["llm:host/gpt"]
-    assert all(r["entity_path"] == [] for r in rows.values())
+    assert all(r["entities"] == [] for r in rows.values())

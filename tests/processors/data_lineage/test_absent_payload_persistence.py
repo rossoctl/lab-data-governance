@@ -340,12 +340,12 @@ def test_partial_to_complete_derives_the_full_lineage_not_just_the_rows(
     driver.drain(cursor)
 
     with psycopg.connect(configured_db) as conn:
-        sources, path = conn.execute(
-            "SELECT data_sources, entity_path FROM lineage_metadata "
+        sources, entities = conn.execute(
+            "SELECT data_sources, entities FROM lineage_metadata "
             "WHERE interaction_id = 'ix_ua' AND leg_type = 'response'"
         ).fetchone()
     assert sources == ["user:alice"]
-    assert set(path) == {"agent:(demo,advisor)", "llm:host/gpt"}
+    assert set(entities) == {"agent:(demo,advisor)", "llm:host/gpt"}
 
 
 def test_a_trace_with_no_legs_writes_no_status(configured_db: str) -> None:

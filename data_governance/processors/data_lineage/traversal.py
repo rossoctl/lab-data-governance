@@ -25,7 +25,7 @@ parent ``interactions`` row deliberately has no ``seq`` (ADR-0025).
 **A leg's producing entity** is the caller for a request leg and the callee for a
 response leg — D1's routing rule read backwards. That entity is the one that
 performed the transformation, so it is the one ``init`` roots at and the one the
-entity path is extended with.
+entity set is extended with.
 
 **Inbound routing is purely structural (D1).** A payload is inbound to entity E
 iff, in a leg with lower ``seq``, E is the callee and the payload is the request,

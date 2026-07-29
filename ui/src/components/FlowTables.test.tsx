@@ -510,7 +510,7 @@ describe('FlowTables', () => {
       lineage: {
         data_sources: ['agent-a', 'user'],
         source_transformations: { 'agent-a': ['summarization'], user: ['anonymization'] },
-        entity_path: ['user', 'agent-a', 'search'],
+        entities: ['agent-a', 'search', 'user'],
         seq: 1,
       },
     },
@@ -547,7 +547,7 @@ describe('FlowTables', () => {
     });
   }
 
-  it('shows the payload lineage (data sources, per-source transformations, entity path) on expand', async () => {
+  it('shows the payload lineage (data sources, per-source transformations, entities) on expand', async () => {
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
@@ -565,10 +565,11 @@ describe('FlowTables', () => {
     // Per-source transformations sit with their source.
     const agentRow = within(sources).getByText('agent-a').closest('tr')!;
     expect(within(agentRow).getByText('summarization')).toBeInTheDocument();
-    // And the ordered entity path.
-    expect(screen.getByLabelText('Entity path').textContent).toMatch(
-      /user.*agent-a.*search/,
-    );
+    // And the entities traversed — membership only; the set is unordered.
+    const entities = screen.getByLabelText('Entities traversed');
+    expect(within(entities).getByText('user')).toBeInTheDocument();
+    expect(within(entities).getByText('agent-a')).toBeInTheDocument();
+    expect(within(entities).getByText('search')).toBeInTheDocument();
   });
 
   it('keys lineage per leg: the response leg does not inherit the request leg’s lineage', async () => {

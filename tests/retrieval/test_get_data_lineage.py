@@ -62,7 +62,7 @@ def _seed_lineage(
     leg_type: str,
     data_sources: list[str],
     source_transformations: dict[str, list[str]],
-    entity_path: list[str],
+    entities: list[str],
     payload_hash: str | None,
     seq: int,
 ) -> None:
@@ -70,14 +70,14 @@ def _seed_lineage(
     P-data-lineage driver's upsert produces (``driver._upsert``)."""
     conn.execute(
         "INSERT INTO lineage_metadata (interaction_id, leg_type, data_sources, "
-        "source_transformations, entity_path, payload_hash, seq) "
+        "source_transformations, entities, payload_hash, seq) "
         "VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)",
         (
             interaction_id,
             leg_type,
             data_sources,
             json.dumps(source_transformations),
-            entity_path,
+            entities,
             payload_hash,
             seq,
         ),
@@ -106,7 +106,7 @@ def seeded(configured_db: str) -> str:
                 "kb": [],
                 "user": ["anonymization", "summarization"],
             },
-            entity_path=["user", "agent-one"],
+            entities=["agent-one", "user"],
             payload_hash="reqhash",
             seq=1,
         )
@@ -117,7 +117,7 @@ def seeded(configured_db: str) -> str:
 
 def test_lineage_triple_round_trips(seeded: str) -> None:
     """The full metadata triple comes back: data sources, the per-source
-    transformation map, and the ORDERED entity path (ADR-0027 "Lineage
+    transformation map, and the entity SET (ADR-0027 / spec "Lineage
     metadata")."""
     result = retrieval.get_data_lineage(seeded)
     by_key = {(row.interaction_id, row.leg_type): row for row in result.legs}
@@ -128,8 +128,10 @@ def test_lineage_triple_round_trips(seeded: str) -> None:
         "kb": [],
         "user": ["anonymization", "summarization"],
     }
-    # Order is the whole point of entity_path — preserved verbatim.
-    assert req.lineage.entity_path == ["user", "agent-one"]
+    # Membership is the claim: the spec defines this element as unordered and
+    # defers ordering to a future trace-derived API, so the read asserts WHICH
+    # entities rather than a sequence.
+    assert set(req.lineage.entities) == {"agent-one", "user"}
     assert req.payload_hash == "reqhash"
     assert req.lineage.seq == 1
 
@@ -166,7 +168,7 @@ def test_scoped_to_one_trace(seeded: str, configured_db: str) -> None:
             leg_type="request",
             data_sources=["other"],
             source_transformations={"other": []},
-            entity_path=[],
+            entities=[],
             payload_hash="otherhash",
             seq=3,
         )
@@ -178,8 +180,8 @@ def test_scoped_to_one_trace(seeded: str, configured_db: str) -> None:
 
 
 def test_empty_triple_is_an_origin_not_an_absence(seeded: str, configured_db: str) -> None:
-    """An origin's lineage is a REAL empty triple (empty path, one-key map with
-    an empty set) — distinguishable from the absent row that means "not yet
+    """An origin's lineage is a REAL empty triple (empty entity set, one-key map
+    with an empty transformation set) — distinguishable from the absent row that means "not yet
     computed"."""
     with psycopg.connect(configured_db) as conn:
         _seed_lineage(
@@ -188,7 +190,7 @@ def test_empty_triple_is_an_origin_not_an_absence(seeded: str, configured_db: st
             leg_type="response",
             data_sources=["agent-one"],
             source_transformations={"agent-one": []},
-            entity_path=[],
+            entities=[],
             payload_hash="resphash",
             seq=2,
         )
@@ -199,7 +201,7 @@ def test_empty_triple_is_an_origin_not_an_absence(seeded: str, configured_db: st
     assert resp.lineage is not None
     assert resp.lineage.data_sources == ["agent-one"]
     assert resp.lineage.source_transformations == {"agent-one": []}
-    assert resp.lineage.entity_path == []
+    assert resp.lineage.entities == []
 
 
 def test_trace_with_no_interactions_is_empty(seeded: str) -> None:

@@ -54,7 +54,7 @@ def _lineage(trace_id: str) -> dict[tuple[str, str], dict]:
     with db.transaction() as tx:
         rows = tx.fetch_all(
             "SELECT lm.interaction_id, lm.leg_type::text, lm.data_sources, "
-            "       lm.source_transformations, lm.entity_path, lm.seq, "
+            "       lm.source_transformations, lm.entities, lm.seq, "
             "       caller.natural_key, callee.natural_key, caller.kind, callee.kind "
             "FROM lineage_metadata lm "
             "JOIN interactions i ON i.id = lm.interaction_id "
@@ -67,7 +67,7 @@ def _lineage(trace_id: str) -> dict[tuple[str, str], dict]:
         (r[0], r[1]): {
             "data_sources": r[2],
             "source_transformations": r[3],
-            "entity_path": r[4],
+            "entities": r[4],
             "seq": r[5],
             "caller": r[6],
             "callee": r[7],
@@ -210,8 +210,8 @@ def test_canonical_trace_tool_results_flow_into_the_agents_answer(
 
     assert final["data_sources"], "the answer must trace to at least one source"
     # It passed through the LLM and at least one tool.
-    assert any(e.startswith("llm:") for e in final["entity_path"]), final["entity_path"]
-    assert any(e.startswith("tool:") for e in final["entity_path"]), final["entity_path"]
+    assert any(e.startswith("llm:") for e in final["entities"]), final["entities"]
+    assert any(e.startswith("tool:") for e in final["entities"]), final["entities"]
 
 
 def test_canonical_trace_lineage_is_idempotent(configured_db: str) -> None:
@@ -305,6 +305,6 @@ def test_every_data_source_is_a_real_entity_of_the_trace(configured_db: str) -> 
         }
     for key, r in rows.items():
         assert set(r["data_sources"]) <= known, (key, r["data_sources"])
-        assert set(r["entity_path"]) <= known, (key, r["entity_path"])
+        assert set(r["entities"]) <= known, (key, r["entities"])
         # The map's keys are exactly the source set.
         assert set(r["source_transformations"]) == set(r["data_sources"]), key

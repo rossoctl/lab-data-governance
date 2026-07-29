@@ -20,7 +20,7 @@ through :func:`data_governance.matching.get_matcher`.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from data_governance.matching import Matcher, Transformation
@@ -45,32 +45,25 @@ class DataLineage:
     1. ``data_sources`` — the set of origins the payload's content came from.
     2. ``source_transformations`` — ``data_source -> set<transformation>``. "order
        doesn't matter", hence a set per source rather than a list.
-    3. ``entity_path`` — the ordered list of entities the data passed through.
+    3. ``entities`` — the **set** of entities the data passed through.
 
-    Frozen, with immutable members (``frozenset`` / ``tuple``), because a payload's
-    lineage is a value that later ops *derive from* and must never edit in place:
-    the spec says "create a copy" at every construction step, and one leg's
-    persisted metadata is the input to many downstream legs.
+    Frozen, with immutable members (``frozenset``), because a payload's lineage is
+    a value that later ops *derive from* and must never edit in place: the spec
+    says "create a copy" at every construction step, and one leg's persisted
+    metadata is the input to many downstream legs.
 
-    ``entity_path`` is a *deduplicated* order — "which entities did the data pass
-    through", not a visit log. A merge of two branches sharing a prefix must not
-    repeat the shared entities.
+    ``entities`` is an **unordered set** — the spec says so outright: "the set of
+    entities - through which entities the data passed through / Note: this is
+    unordered. In case an order is needed - it will need to be derived from the
+    trace using an API." It answers "*which* entities did the data pass through",
+    never "in what order". A ``frozenset`` rather than an ordered container so the
+    type itself refuses to carry an order that the algebra does not guarantee —
+    a merge of two branches has no single truthful interleaving to offer.
     """
 
     data_sources: frozenset[DataSource]
     source_transformations: Mapping[DataSource, frozenset[Transformation]]
-    entity_path: tuple[str, ...]
-
-
-def _extend_path(path: Iterable[str], entity_name: str) -> tuple[str, ...]:
-    """Append *entity_name* to *path*, preserving first-arrival order and
-    dropping duplicates (an entity the data already passed through does not
-    reappear)."""
-    out: list[str] = []
-    for name in (*path, entity_name):
-        if name not in out:
-            out.append(name)
-    return tuple(out)
+    entities: frozenset[str]
 
 
 def init_lineage(entity_name: str) -> DataLineage:
@@ -79,11 +72,11 @@ def init_lineage(entity_name: str) -> DataLineage:
     "In this case the metadata is trivial:
       1. the data source is assigned the entity name
       2. A new map, setting a key - data source to an empty set of transformations
-      3. A new list of entities which is empty"
+      3. A new set of entities which is empty"
 
-    Note (3): the entity path is EMPTY, not ``(entity_name,)``. The originating
+    Note (3): the entity set is EMPTY, not ``{entity_name}``. The originating
     entity is the *source*; it is not something the data passed *through*. It
-    reappears in the path only once a downstream op extends the path with it.
+    joins the set only once a downstream op extends the set with it.
 
     This is also the shape both other ops degrade to when the matcher reports no
     relationship (ADR-0027 D3(2)).
@@ -91,7 +84,7 @@ def init_lineage(entity_name: str) -> DataLineage:
     return DataLineage(
         data_sources=frozenset({entity_name}),
         source_transformations={entity_name: frozenset()},
-        entity_path=(),
+        entities=frozenset(),
     )
 
 
@@ -116,18 +109,21 @@ def linear_lineage(
     - ``matched=True`` → "1. the data source is assigned the metadata data source;
       2. create a copy of the transformations and add the returned transformation
       (if exists) to **all** the transformation sets; 3. create a copy of the
-      entity list and extend it with the entity name".
+      entity set and extend it with the entity name".
 
     "(if exists)": a ``None`` transformation adds nothing — it must not become a
     set member, since ``None`` is "no transform performed or none identified", not
     a kind of transformation.
+
+    (3) is a set union, so an entity the data already passed through does not
+    appear twice and needs no dedup pass of its own.
     """
     result = matcher(payload, output_payload)
     if not result.matched:
         return init_lineage(entity_name)
     inherited = _inherit(metadata, result.transformation)
     return dataclasses.replace(
-        inherited, entity_path=_extend_path(inherited.entity_path, entity_name)
+        inherited, entities=inherited.entities | {entity_name}
     )
 
 
@@ -139,11 +135,10 @@ def _inherit(
     copy its metadata and stamp *transformation* onto every source's set.
 
     The shared body of rule 2's matched branch (2(1)+2(2)) and rule 3's per-input
-    step. The path extension (2(3) / 3(3)) is deliberately NOT here: it happens once
-    per *operation*, after any merging, because the data passes through the
-    processing entity once no matter how many inputs it consumed — appending
-    per-contribution would put the entity mid-path in a merge whose later branch
-    carries entities of its own.
+    step. The entity extension (2(3) / 3(3)) is deliberately NOT here: it belongs to
+    the *operation*, which adds the processing entity once no matter how many inputs
+    it consumed. (With set semantics the result would be the same either way — union
+    is idempotent — but the rule stays where the spec puts it.)
     """
     added = frozenset({transformation}) if transformation is not None else frozenset()
     return DataLineage(
@@ -152,7 +147,7 @@ def _inherit(
             source: transformations | added
             for source, transformations in metadata.source_transformations.items()
         },
-        entity_path=tuple(metadata.entity_path),
+        entities=frozenset(metadata.entities),
     )
 
 
@@ -174,7 +169,9 @@ def merge_lineage(
     2. the maps are merged, "merge the transformation sets in case a key appears
        twice" — a source reached through two different inputs collects the
        transformations of both paths (spec Example 2(2));
-    3. the entity lists are merged and extended with the entity.
+    3. "the set of entities is merged and extended with the entity" — a plain
+       union across the contributions, which is also why merging two branches that
+       share entities needs no special case.
 
     With no matching input at all the op degrades to :func:`init_lineage`
     (ADR-0027 D3(2)) — a runtime *result* of matching, not a selection branch: the
@@ -197,20 +194,19 @@ def merge_lineage(
 
     sources: set[DataSource] = set()
     transformations: dict[DataSource, frozenset[Transformation]] = {}
-    path: tuple[str, ...] = ()
+    entities: set[str] = set()
     for contribution in contributions:
         sources |= contribution.data_sources
         for source, values in contribution.source_transformations.items():
             # Key collision: union the sets rather than let the last writer win.
             transformations[source] = transformations.get(source, frozenset()) | values
-        for name in contribution.entity_path:
-            path = _extend_path(path, name)
-    # The processing entity is appended ONCE, at the end, so the merged path ends
-    # where the data now is. `_extend_path` dedupes, so branches sharing a prefix
-    # keep each entity once in first-arrival order, and an entity the data already
-    # passed through does not reappear because it is also the processing entity.
+        entities |= contribution.entities
+    # Rule 3(3) — "the set of entities is merged and extended with the entity".
+    # Union, so the result does not depend on the order the contributions were
+    # visited in: branches sharing entities contribute them once, and the
+    # processing entity is a member whether or not the data had reached it before.
     return DataLineage(
         data_sources=frozenset(sources),
         source_transformations=transformations,
-        entity_path=_extend_path(path, entity_name),
+        entities=frozenset(entities | {entity_name}),
     )

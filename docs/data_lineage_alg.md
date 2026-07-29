@@ -32,8 +32,8 @@ to do with a human: work on this list
 Lineage metadata includes:
 1. the list of Data sources
 2. a map between data source and a set of transformations (order doesn't matter)
-3. the list of entities - through which entities the data passed through
-
+3. the set of entities - through which entities the data passed through
+		Note: this is unordered. In case an order is needed - it will need to be derived from the trace using an API.
 
 ## Semantic matching
 
@@ -65,7 +65,7 @@ following add a few basic operations which we will connect later
 	  in this case The metadata is trivial:
 		1. the data source is assigned the entity name
 		2. A new map, setting a key - data source to an empty set of transformations 
-		3. A new list of entities which is empty 
+		3. A new set of entities which is empty 
 
 2. on process, simple processing of a *single* payload:
 	- linear_lineage( 	payload: string, metadata: object
@@ -80,7 +80,7 @@ following add a few basic operations which we will connect later
 		If match returned true (and transformation)
 				1. the data source is assigned the metadata data source 
 				2. create a copy of the transformations and add the returned transformation (if exists) to all the transformation sets
-				3. create a copy of the entity list and extend it it with the entity name 
+				3. create a copy of the entity set and extend it with the entity name 
 
 3. On process, *multiple* payloads: 
 	The general idea: given two sources of input and single output we will need to merge the lineage. if we only have the metadata available:
@@ -90,7 +90,7 @@ following add a few basic operations which we will connect later
 		  the resulting metadata Is trivial, essentially it has the semantics of a union
 				1. the data sources are the union Of metadata A and metadata B 
 				2. merge the keys from the metadata maps into a new map, merge the      transformation sets in case a key appears twice
-				3. the list of entities is merged and extended with the entity 
+				3. the set of entities is merged and extended with the entity 
 
 	A more generic approach, would consider multiple sources as well as the payloads:
 		- merge_lineage( payload_a: string, metadata_a: object
@@ -110,7 +110,7 @@ following add a few basic operations which we will connect later
 			  in such a case the output metadata Will include:
 				1. the data sources Of metadata B only
 				2. copy Each entry (key, value) from metadata_b, add summarization to each set and to the output metadata map
-				3. the list of entities copied from metadata_b extended with the entity_name
+				3. the set of entities copied from metadata_b extended with the entity_name
 
 
 			Example 2 - assume there are three payloads as input and match returns

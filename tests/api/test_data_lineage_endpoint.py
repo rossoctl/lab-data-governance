@@ -16,7 +16,7 @@ nullable ``lineage``:
 - ``null`` while the leg exists but P-data-lineage has not written its row (the
   eventual-consistency window — exactly the nullable-``classification``
   precedent on ``GET /api/payloads/{hash}``, ADR-0024);
-- ``{data_sources, source_transformations, entity_path, seq}`` once the row
+- ``{data_sources, source_transformations, entities, seq}`` once the row
   lands.
 
 These exercise the public HTTP surface end to end (a real server + httpx),
@@ -79,13 +79,13 @@ def seeded(configured_db: str) -> str:
         )
         conn.execute(
             "INSERT INTO lineage_metadata (interaction_id, leg_type, data_sources, "
-            "source_transformations, entity_path, payload_hash, seq) "
+            "source_transformations, entities, payload_hash, seq) "
             "VALUES (%s, 'request', %s, %s::jsonb, %s, 'reqhash', 1)",
             (
                 _IX_ID,
                 ["kb", "user"],
                 json.dumps({"kb": [], "user": ["anonymization", "summarization"]}),
-                ["user", "agent-one"],
+                ["agent-one", "user"],
             ),
         )
         conn.commit()
@@ -106,13 +106,18 @@ def test_data_lineage_wire_shape(seeded, api_server):
     assert set(req) == {"interaction_id", "leg_type", "payload_hash", "lineage"}
     assert req["payload_hash"] == "reqhash"
     assert set(req["lineage"]) == {
-        "data_sources", "source_transformations", "entity_path", "seq"
+        "data_sources", "source_transformations", "entities", "seq"
     }
 
 
 def test_populated_triple_serializes(seeded, api_server):
     """The triple crosses the wire intact: sources, the per-source
-    transformation map (JSONB → object of arrays), and the ordered path."""
+    transformation map (JSONB → object of arrays), and the entity set.
+
+    ``entities`` is a JSON array only because JSON has no set type, so this asserts
+    MEMBERSHIP — the spec calls the element unordered and defers ordering to a
+    future trace-derived API, so a positional assertion here would encode a
+    guarantee the endpoint does not make."""
     resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/data-lineage")
     by_key = {
         (r["interaction_id"], r["leg_type"]): r for r in resp.json()["legs"]
@@ -123,7 +128,7 @@ def test_populated_triple_serializes(seeded, api_server):
         "kb": [],
         "user": ["anonymization", "summarization"],
     }
-    assert lineage["entity_path"] == ["user", "agent-one"]
+    assert sorted(lineage["entities"]) == ["agent-one", "user"]
     assert lineage["seq"] == 1
 
 

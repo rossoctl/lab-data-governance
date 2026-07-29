@@ -170,8 +170,9 @@ def test_spec_worked_example_metadata_accumulates_the_user_as_the_source(
     ]:
         assert result.legs[key].lineage.data_sources == frozenset({"user"}), key
 
-    # The final response has passed through the agent and the LLM.
-    assert set(result.legs[("ix_ua", "response")].lineage.entity_path) == {"agent", "llm"}
+    # The final response has passed through the agent and the LLM (a set — the
+    # spec defers any ordering of it to a future trace-derived API).
+    assert result.legs[("ix_ua", "response")].lineage.entities == {"agent", "llm"}
 
 
 # --- D3(1): structural init -------------------------------------------------
@@ -439,7 +440,9 @@ def test_a_refusing_matcher_makes_every_leg_its_own_origin() -> None:
     assert result.legs[("ix_al2", "request")].lineage == operations.init_lineage("agent")
     assert result.legs[("ix_ua", "response")].lineage == operations.init_lineage("agent")
     for entry in result.legs.values():
-        assert entry.lineage.entity_path == (), "an origin has passed through nothing"
+        assert entry.lineage.entities == frozenset(), (
+            "an origin has passed through nothing"
+        )
 
 
 def test_a_partially_refusing_matcher_prunes_only_the_unmatched_source() -> None:

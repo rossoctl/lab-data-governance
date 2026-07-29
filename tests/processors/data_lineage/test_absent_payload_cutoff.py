@@ -109,7 +109,7 @@ def test_legs_before_the_gap_keep_their_full_lineage(
     assert first_outbound.operation is Operation.LINEAR
     assert first_outbound.inbound_payloads == ("h1",)
     assert first_outbound.lineage.data_sources == frozenset({"user"})
-    assert first_outbound.lineage.entity_path == ("agent",)
+    assert first_outbound.lineage.entities == frozenset({"agent"})
 
 
 def test_the_gap_leg_itself_gets_no_lineage(missing_mid_trace_response) -> None:

@@ -1,6 +1,5 @@
 import { Label, LabelGroup, Title } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import { LongArrowAltRightIcon } from '@patternfly/react-icons';
 import type { DataLineage } from '../types';
 
 /**
@@ -11,9 +10,9 @@ import type { DataLineage } from '../types';
  *
  * Answers the two lineage questions in the order a governance reader asks them:
  * *where did this data come from* (the origins, each with the transformations
- * applied to its contribution) and *what did it pass through* (the ordered
- * entity path). Shape deliberately mirrors `ClassificationView` — same null
- * handling, same "an empty result is a real result, say so" rule — so the two
+ * applied to its contribution) and *which entities did it pass through* (the
+ * unordered entity set). Shape deliberately mirrors `ClassificationView` — same
+ * null handling, same "an empty result is a real result, say so" rule — so the two
  * blocks in the same payload read as one surface.
  */
 export function DataLineageView({ lineage }: { lineage: DataLineage | null | undefined }) {
@@ -30,7 +29,7 @@ export function DataLineageView({ lineage }: { lineage: DataLineage | null | und
     );
   }
 
-  const { data_sources, source_transformations, entity_path } = lineage;
+  const { data_sources, source_transformations, entities } = lineage;
 
   return (
     <div>
@@ -54,9 +53,9 @@ export function DataLineageView({ lineage }: { lineage: DataLineage | null | und
       )}
 
       <Title headingLevel="h5" size="md" style={{ marginTop: '0.5rem' }}>
-        Entity path
+        Entities traversed
       </Title>
-      <EntityPath entityPath={entity_path} />
+      <Entities entities={entities} />
     </div>
   );
 }
@@ -119,16 +118,24 @@ function SourcesTable({
 }
 
 /**
- * The ordered entities the data passed through, as an arrow-separated chain.
- * Order is the whole point (ADR-0027), so the chain is rendered in sequence
- * rather than as an unordered label group. An empty path is legitimate for an
- * origin, and is stated rather than rendered as a blank line.
+ * The **set** of entities the data passed through — rendered as an unordered
+ * `LabelGroup`, the same presentation the transformations sets above use.
+ *
+ * This deliberately does NOT render an `a → b → c` chain. The spec
+ * (`docs/data_lineage_alg.md` "Lineage metadata") defines this element as
+ * unordered and defers ordering to a future trace-derived API, so an arrow chain
+ * would assert a sequence the data does not carry — and a merge of two branches
+ * has no truthful interleaving to draw anyway. The array arrives sorted only so a
+ * re-derivation is byte-identical; that is not an order to visualise.
+ *
+ * An empty set is legitimate for an origin, and is stated rather than rendered as
+ * a blank line.
  */
-function EntityPath({ entityPath }: { entityPath: string[] }) {
-  if (entityPath.length === 0) {
+function Entities({ entities }: { entities: string[] }) {
+  if (entities.length === 0) {
     return (
       <div
-        aria-label="Entity path"
+        aria-label="Entities traversed"
         style={{ color: '#888', fontSize: '0.85rem', marginTop: '0.25rem' }}
       >
         No entities traversed — this payload has not moved yet.
@@ -136,46 +143,25 @@ function EntityPath({ entityPath }: { entityPath: string[] }) {
     );
   }
   return (
-    <div
-      aria-label="Entity path"
-      style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        gap: '0.25rem',
-        marginTop: '0.25rem',
-      }}
-    >
-      {entityPath.map((entity, i) => (
-        // The natural key can repeat in a path (an agent re-entered), so the
-        // index is part of the key — the position is what identifies a hop.
-        <span
-          key={`${entity}-${i}`}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '0.25rem',
-            // A flex item defaults to `min-width: auto` (its content's intrinsic
-            // width), which would keep this hop from ever shrinking below its
-            // long unbreakable key — defeating the wrap granted by
-            // `dg-lineage-key` and pushing the chain past the panel edge.
-            minWidth: 0,
-          }}
-        >
-          {i > 0 && (
-            <LongArrowAltRightIcon
-              aria-hidden="true"
-              style={{ color: '#888', fontSize: '0.75rem' }}
-            />
-          )}
-          {/* Same long-key problem as the sources table, and worse here: PF
-              clips `.pf-v5-c-label__text` with nowrap+ellipsis, so the wrap has
-              to be granted through the class (global.css), not inline. */}
-          <Label isCompact color="blue" className="dg-mono dg-lineage-key">
+    <div aria-label="Entities traversed" style={{ marginTop: '0.25rem' }}>
+      {/* `numLabels={99}` so the panel never hides members behind an overflow
+          toggle — a governance reader needs the whole set, same as the
+          transformations group above. */}
+      <LabelGroup numLabels={99}>
+        {entities.map((entity) => (
+          // The natural key is the identity here: a set has no positions, so no
+          // index rides in the React key.
+          //
+          // `dg-lineage-key` (global.css) still earns its keep: entity natural
+          // keys are long unbreakable tokens and PF clips `.pf-v5-c-label__text`
+          // with nowrap+ellipsis, so the wrap has to be granted through the class
+          // rather than an inline style — otherwise the group clips inside the
+          // narrow floating detail panel exactly as the arrow chain used to.
+          <Label key={entity} isCompact color="blue" className="dg-mono dg-lineage-key">
             {entity}
           </Label>
-        </span>
-      ))}
+        ))}
+      </LabelGroup>
     </div>
   );
 }

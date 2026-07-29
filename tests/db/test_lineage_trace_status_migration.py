@@ -197,16 +197,6 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
     assert "0012_lineage_trace_status" in walked
 
 
-def test_head_is_0012(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on this revision — it is the current head
-    (chained after 0011). This assertion travels with whichever revision is head;
-    it moved here from ``test_data_lineage_migration.py`` when 0012 landed, the
-    same way that file inherited it from 0010's test."""
-    with psycopg.connect(migrated_dsn) as conn:
-        (version,) = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert version == "0012_lineage_trace_status"
-
-
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
     """upgrade -> downgrade(0011) -> upgrade drops and re-adds the table, leaving
     ``lineage_metadata`` (0011's, not this revision's to remove) intact."""

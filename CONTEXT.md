@@ -587,15 +587,23 @@ the word every time: "span lineage" or "data lineage", never bare "lineage".
 The triple recorded per **Interaction leg** by **P-data-lineage**: (1)
 `data_sources`, the set of **Data source**s the payload's content came from; (2)
 `source_transformations`, a map **Data source** → set of **Transformation**s
-(order within a set is insignificant); (3) `entity_path`, the *ordered*,
-deduplicated list of **Entities** the data passed through. Keyed
+(order within a set is insignificant); (3) `entities`, the **unordered set** of
+**Entities** the data passed through — the spec is explicit that "this is
+unordered. In case an order is needed - it will need to be derived from the trace
+using an API", so ordering is a deferred trace-derived read and not something this
+field supplies (ADR-0027 D10; the field was named `entity_path` until migration
+`0013_lineage_entities_rename`). Keyed
 `(interaction_id, leg_type)` — the **leg**, not the `payload_hash` (ADR-0027
 D5): payloads are content-addressed and deduped, so identical bytes at different
 positions carry completely different lineage, and a hash key would collide those
 distinct facts. `payload_hash` is kept as a *secondary index* for the deferred
 reverse lookup ("where did this content come from / go"). An origin's metadata
 is a real *empty* triple (one source, an empty transformation set, an empty
-path), never NULL — absence of the row is what means "not yet derived".
+entity set), never NULL — absence of the row is what means "not yet derived".
+_Avoid_: reading order out of the persisted/served arrays. `data_sources` and
+`entities` are `TEXT[]` (and JSON arrays) only because neither Postgres nor JSON
+has a set type; **P-data-lineage** writes them sorted purely so a re-derivation is
+byte-identical, which is serialization, not sequence.
 
 **Lineage coverage**:
 Whether a **Trace**'s derived **Data lineage** covers the whole trace, recorded
@@ -730,9 +738,10 @@ present on both the `GET /api/traces` collection rows and the
 - A **TraceListingEntry** is a derived view of one **Trace**, anchored on its
   current **Listing root**.
 - An **Interaction leg** has at most one **Lineage metadata** row, keyed
-  `(interaction_id, leg_type)`. Its `data_sources` and `entity_path` name
-  **Entities** by **Natural key**; its `source_transformations` maps each **Data
-  source** to a set of **Transformation**s. A leg with no payload gets no row.
+  `(interaction_id, leg_type)`. Its `data_sources` and `entities` name
+  **Entities** by **Natural key** — both are *sets*, neither carries an order; its
+  `source_transformations` maps each **Data source** to a set of
+  **Transformation**s. A leg with no payload gets no row.
 - A payload's **Data lineage** is derived from the payloads inbound to the
   producing **Entity** — requests inbound to the callee, responses inbound to the
   caller, from **Interaction legs** of lower `seq` in the same **Trace**. How many

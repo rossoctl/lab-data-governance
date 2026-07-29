@@ -139,37 +139,41 @@ def test_leg_type_is_the_leg_type_enum(migrated_dsn: str) -> None:
 
 def test_has_the_metadata_triple_and_seq(migrated_dsn: str) -> None:
     """The lineage metadata is the spec's triple: the set of data sources, the
-    ``data_source -> set<transformation>`` map, and the ordered entity list —
-    plus the row's own ``seq`` and the secondary-index ``payload_hash``."""
+    ``data_source -> set<transformation>`` map, and the set of entities — plus the
+    row's own ``seq`` and the secondary-index ``payload_hash``.
+
+    The third column is ``entities``, renamed from ``entity_path`` by migration
+    0013 when the spec redefined it as an unordered set (ADR-0027)."""
     cols = _columns(migrated_dsn, TABLE)
     assert set(cols) == {
         "interaction_id",
         "leg_type",
         "data_sources",
         "source_transformations",
-        "entity_path",
+        "entities",
         "payload_hash",
         "seq",
     }
 
 
 def test_metadata_column_types(migrated_dsn: str) -> None:
-    """``data_sources`` / ``entity_path`` are TEXT[] (a set and an ordered list of
-    natural keys); ``source_transformations`` is JSONB (a map to a set, which no
-    array type expresses)."""
+    """``data_sources`` / ``entities`` are TEXT[] — both **sets** of natural keys;
+    Postgres has no set type, so the array is only the representation and its order
+    carries no meaning. ``source_transformations`` is JSONB (a map to a set, which
+    no array type expresses)."""
     cols = _columns(migrated_dsn, TABLE)
     assert cols["data_sources"]["data_type"] == "ARRAY"
-    assert cols["entity_path"]["data_type"] == "ARRAY"
+    assert cols["entities"]["data_type"] == "ARRAY"
     assert cols["source_transformations"]["data_type"] == "jsonb"
     assert cols["seq"]["data_type"] == "bigint"
 
 
 def test_metadata_columns_are_not_null(migrated_dsn: str) -> None:
-    """An origin has an empty entity path and a single-key map — a real empty
+    """An origin has an empty entity set and a single-key map — a real empty
     value, never NULL. NULL would be indistinguishable from "not yet derived",
     and absence of a row already carries that meaning."""
     cols = _columns(migrated_dsn, TABLE)
-    for name in ("data_sources", "source_transformations", "entity_path", "seq"):
+    for name in ("data_sources", "source_transformations", "entities", "seq"):
         assert cols[name]["is_nullable"] == "NO", name
 
 
@@ -207,7 +211,7 @@ def test_is_fk_free(migrated_dsn: str) -> None:
 def _insert(conn: psycopg.Connection, ix: str, leg: str, payload_hash: str) -> None:
     conn.execute(
         f"INSERT INTO {TABLE} (interaction_id, leg_type, data_sources, "
-        "source_transformations, entity_path, payload_hash, seq) "
+        "source_transformations, entities, payload_hash, seq) "
         "VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)",
         (ix, leg, ["user:alice"], '{"user:alice": []}', [], payload_hash, 1),
     )

@@ -13,7 +13,7 @@ function lineage(over: Partial<DataLineage> = {}): DataLineage {
       'agent-one': ['summarization'],
       user: ['anonymization', 'summarization'],
     },
-    entity_path: ['user', 'agent-one', 'llm-x'],
+    entities: ['agent-one', 'llm-x', 'user'],
     seq: 2,
     ...over,
   };
@@ -39,14 +39,38 @@ describe('DataLineageView', () => {
     expect(within(userRow).getByText('summarization')).toBeInTheDocument();
   });
 
-  it('shows the entity path in order', () => {
+  it('shows the entities traversed as an unordered set, with no arrow chain', () => {
     render(
-      <DataLineageView lineage={lineage({ entity_path: ['user', 'agent-one', 'llm-x'] })} />,
+      <DataLineageView lineage={lineage({ entities: ['agent-one', 'llm-x', 'user'] })} />,
     );
-    const path = screen.getByLabelText('Entity path');
-    // Order is the whole point of entity_path (ADR-0027), so assert the
-    // rendered sequence, not just membership.
-    expect(path.textContent).toMatch(/user.*agent-one.*llm-x/);
+    const group = screen.getByLabelText('Entities traversed');
+    // Membership is the whole claim: the spec defines this element as unordered
+    // and defers ordering to a future trace-derived API, so the UI asserts WHICH
+    // entities, never in what sequence.
+    for (const entity of ['user', 'agent-one', 'llm-x']) {
+      expect(within(group).getByText(entity)).toBeInTheDocument();
+    }
+    // No arrow chain: rendering `a -> b -> c` would assert a sequence the data
+    // does not carry. The old LongArrowAltRightIcon left an `svg` between hops.
+    expect(group.querySelector('svg')).toBeNull();
+  });
+
+  it('renders the same entity set regardless of the order the array arrives in', () => {
+    // The wire array is sorted for byte-stable re-derivation only. A permuted
+    // array is the SAME set, so it must render the same members — nothing in the
+    // UI may turn array position into meaning.
+    const members = (arr: string[]) => {
+      const { unmount } = render(<DataLineageView lineage={lineage({ entities: arr })} />);
+      const labels = Array.from(
+        screen.getByLabelText('Entities traversed').querySelectorAll('.pf-v5-c-label'),
+      ).map((el) => el.textContent);
+      unmount();
+      return new Set(labels);
+    };
+
+    expect(members(['user', 'agent-one', 'llm-x'])).toEqual(
+      members(['llm-x', 'user', 'agent-one']),
+    );
   });
 
   it('renders a null lineage distinctly as "not yet computed", with no sources block', () => {
@@ -55,15 +79,16 @@ describe('DataLineageView', () => {
     // yet) — an explicit state, never an empty block.
     expect(screen.getByText(/not yet computed/i)).toBeInTheDocument();
     expect(screen.queryByLabelText('Data sources')).toBeNull();
-    expect(screen.queryByLabelText('Entity path')).toBeNull();
+    expect(screen.queryByLabelText('Entities traversed')).toBeNull();
   });
 
   it('states an origin’s genuinely empty triple as a real derived result', () => {
-    // A derived origin legitimately has no sources and an empty path (ADR-0027):
-    // that is a REAL value and must stay distinguishable from the null state.
+    // A derived origin legitimately has no sources and an empty entity set
+    // (ADR-0027): that is a REAL value and must stay distinguishable from the
+    // null state.
     render(
       <DataLineageView
-        lineage={lineage({ data_sources: [], source_transformations: {}, entity_path: [] })}
+        lineage={lineage({ data_sources: [], source_transformations: {}, entities: [] })}
       />,
     );
     expect(screen.queryByText(/not yet computed/i)).toBeNull();
@@ -76,7 +101,7 @@ describe('DataLineageView', () => {
         lineage={lineage({
           data_sources: ['agent-one'],
           source_transformations: { 'agent-one': [] },
-          entity_path: ['agent-one'],
+          entities: ['agent-one'],
         })}
       />,
     );
@@ -87,7 +112,7 @@ describe('DataLineageView', () => {
   });
 
   it('marks the long Entity-natural-key cells for the wrap that stops panel clipping', () => {
-    // Real sources/hops are long unbreakable tokens
+    // Real sources/entities are long unbreakable tokens
     // (`tool:agent:(proj,svc):name`) rendered in a ~30%-wide floating panel.
     // jsdom applies no CSS file, so assert the CONTRACT: the cells opt into
     // `dg-lineage-key`, and that class grants the wrap through PF's inner
@@ -98,7 +123,7 @@ describe('DataLineageView', () => {
       <DataLineageView
         lineage={lineage({
           data_sources: ['tool:agent:(travel_advisor,travel-advisor):search_destinations'],
-          entity_path: ['llm:ete-litellm.ai-models.example.com/claude-haiku-4-5'],
+          entities: ['llm:ete-litellm.ai-models.example.com/claude-haiku-4-5'],
         })}
       />,
     );
@@ -106,10 +131,10 @@ describe('DataLineageView', () => {
       .getByLabelText('Data sources')
       .querySelector('tbody td')!;
     expect(sourceCell).toHaveClass('dg-lineage-key');
-    const hop = screen
-      .getByLabelText('Entity path')
+    const entityLabel = screen
+      .getByLabelText('Entities traversed')
       .querySelector('.pf-v5-c-label')!;
-    expect(hop).toHaveClass('dg-lineage-key');
+    expect(entityLabel).toHaveClass('dg-lineage-key');
 
     // Vitest runs from the ui/ package root, so resolve from cwd.
     const css = readFileSync(resolve('src/styles/global.css'), 'utf8');

@@ -204,14 +204,19 @@ def process_leg(tx: db.Transaction, leg: ArrivingLeg, matcher: Matcher) -> None:
             payload_hash=hash_by_key[(interaction_id, leg_type)],
             seq=seq_by_key[(interaction_id, leg_type)],
         )
-    _delete_uncovered(tx, leg.trace_id, set(result.legs))
+    _delete_stale(tx, leg.trace_id, set(result.legs))
     _upsert_status(tx, leg.trace_id, result)
 
 
-def _delete_uncovered(
+def _delete_stale(
     tx: db.Transaction, trace_id: str, derived_keys: set[traversal.LegKey]
 ) -> None:
-    """Drop every lineage row of *trace_id* that this derivation did NOT produce.
+    """Drop *trace_id*'s **stale** lineage rows — those this derivation did not
+    produce, left behind by an earlier and longer one (ADR-0027 D9).
+
+    Named for what it deletes, not for the condition it tests: every row it removes
+    is a lineage fact that some previous derivation of this same trace asserted and
+    this one no longer does. Nothing it deletes is current.
 
     **Why upserting is not enough.** This driver re-derives a whole trace per
     arriving leg and upserts without deleting, so rows survive from earlier
@@ -295,20 +300,27 @@ def _upsert(
     forever.
 
     The triple is serialized in the metadata's own terms: the source set and the
-    entity path as TEXT[] (the path's order is significant, the source set's is
-    not), and the ``data_source -> set<transformation>`` map as JSONB with each set
-    as a *sorted* array — sorted so a re-derivation of identical lineage produces
-    byte-identical JSONB (order is insignificant per the spec, so pinning it costs
-    nothing and makes idempotency observable).
+    entity set as TEXT[], and the ``data_source -> set<transformation>`` map as
+    JSONB.
+
+    **Every set is written SORTED, and the sort is serialization only — never
+    meaning.** All three of ``data_sources``, ``entities`` and each
+    transformation set are unordered per the spec ("the set of entities ... Note:
+    this is unordered. In case an order is needed - it will need to be derived from
+    the trace using an API"). They are sorted on the way out purely so a
+    re-derivation of identical lineage produces byte-identical rows, which is what
+    makes idempotency observable; order is insignificant, so pinning it costs
+    nothing. A reader must not infer flow order from the array position — the
+    derivation cannot supply one, and the array would be lying if it implied one.
     """
     tx.execute(
         "INSERT INTO lineage_metadata (interaction_id, leg_type, data_sources, "
-        "source_transformations, entity_path, payload_hash, seq) "
+        "source_transformations, entities, payload_hash, seq) "
         "VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s) "
         "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
         "data_sources = EXCLUDED.data_sources, "
         "source_transformations = EXCLUDED.source_transformations, "
-        "entity_path = EXCLUDED.entity_path, "
+        "entities = EXCLUDED.entities, "
         "payload_hash = EXCLUDED.payload_hash, "
         "seq = EXCLUDED.seq",
         (
@@ -323,7 +335,7 @@ def _upsert(
                     )
                 }
             ),
-            list(lineage.entity_path),
+            sorted(lineage.entities),
             payload_hash,
             seq,
         ),

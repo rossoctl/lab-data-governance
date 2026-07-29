@@ -119,8 +119,11 @@ export interface Payload {
  * 2. `source_transformations` — `data_source → transformations`. A *list* on the
  *    wire because JSON has no set; its order is insignificant. A source in
  *    `data_sources` need not appear here (no transformations recorded for it).
- * 3. `entity_path` — the **ordered** entities the data passed through. Order is
- *    the whole point; an origin's path is legitimately empty.
+ * 3. `entities` — the **set** of entities the data passed through. An array on the
+ *    wire only because JSON has no set type: it is **unordered**, and nothing may
+ *    read flow order out of element position. The spec defers ordering to a future
+ *    trace-derived API; the backend sorts it purely so a re-derivation is
+ *    byte-identical. An origin's set is legitimately empty.
  *
  * `seq` is the row's own derivation cursor. An *empty* triple is a real derived
  * value (the payload originates here) — distinct from the absent row, which the
@@ -129,7 +132,7 @@ export interface Payload {
 export interface DataLineage {
   data_sources: string[];
   source_transformations: Record<string, string[]>;
-  entity_path: string[];
+  entities: string[];
   seq: number;
 }
 

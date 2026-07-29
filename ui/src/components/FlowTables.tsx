@@ -253,7 +253,8 @@ function PayloadView({
               </div>
               {/* The P-data-lineage metadata for THIS LEG (issue #119): the
                   payload's data sources, the transformations applied per source,
-                  and the ordered entity path. `null` renders as "lineage not yet
+                  and the unordered set of entities it passed through. `null`
+                  renders as "lineage not yet
                   computed" (the eventual-consistency window, ADR-0027), exactly
                   as the Classification block above handles its own null. */}
               <div style={{ marginTop: '0.5rem' }}>

@@ -461,6 +461,12 @@ async def _data_lineage_handler(request: Request) -> Response:
     empty-shape conventions (unknown trace, not-yet-migrated DB) live behind the
     seam; the handler only parses the id and encodes the result.
 
+    A lineage object's ``entities`` is a JSON **array only because JSON has no set
+    type** — it is *unordered* and clients must not read flow order from element
+    position (the spec defers ordering to a future trace-derived API). It arrives
+    sorted so a re-derivation is byte-identical; that is a serialization property,
+    not a sequence.
+
     ``status`` / ``stopped_at_seq`` are the trace's lineage **coverage** (ADR-0027
     D6, issue #120), served on the envelope beside ``legs`` because coverage is a
     whole-trace fact — and because the legs a truncation removes have no element

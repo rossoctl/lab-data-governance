@@ -52,28 +52,28 @@ def _per_payload(table: dict[object, MatchResult]):
 
 def test_init_metadata_is_trivial_and_rooted_at_the_entity() -> None:
     """Spec rule 1: the data source is the entity name, the map has that one key
-    against an EMPTY transformation set, and the entity list is empty."""
+    against an EMPTY transformation set, and the entity set is empty."""
     md = init_lineage("agent:(demo,travel-advisor)")
 
     assert md.data_sources == frozenset({"agent:(demo,travel-advisor)"})
     assert md.source_transformations == {"agent:(demo,travel-advisor)": frozenset()}
-    assert md.entity_path == ()
+    assert md.entities == frozenset()
 
 
-def test_init_entity_path_is_empty_not_the_entity() -> None:
-    """The spec is explicit: "A new list of entities which is empty" — the
+def test_init_entities_is_empty_not_the_entity() -> None:
+    """The spec is explicit: "A new set of entities which is empty" — the
     originating entity is the *source*, it is not yet something the data passed
     *through*. Guarding this because "root it at the entity" invites putting the
     entity in both places."""
-    assert init_lineage("user:alice").entity_path == ()
+    assert init_lineage("user:alice").entities == frozenset()
 
 
 # --- linear_lineage ----------------------------------------------------------
 
 
-def test_linear_on_match_inherits_sources_and_extends_the_entity_path() -> None:
+def test_linear_on_match_inherits_sources_and_extends_the_entity_set() -> None:
     """Spec rule 2, matched branch: sources are the input's (1), transformation
-    sets copied (2), entity list copied and extended with the entity (3)."""
+    sets copied (2), entity set copied and extended with the entity (3)."""
     origin = init_lineage("user:alice")
     md = linear_lineage(
         "in", origin, "out", "llm:api.openai.com/gpt-4", matcher=_always()
@@ -81,7 +81,7 @@ def test_linear_on_match_inherits_sources_and_extends_the_entity_path() -> None:
 
     assert md.data_sources == frozenset({"user:alice"})
     assert md.source_transformations == {"user:alice": frozenset()}
-    assert md.entity_path == ("llm:api.openai.com/gpt-4",)
+    assert md.entities == frozenset({"llm:api.openai.com/gpt-4"})
 
 
 def test_linear_adds_the_returned_transformation_to_all_sets() -> None:
@@ -93,7 +93,7 @@ def test_linear_adds_the_returned_transformation_to_all_sets() -> None:
             "user:alice": frozenset(),
             "tool:db": frozenset({Transformation.ANONYMIZATION}),
         },
-        entity_path=("agent:a",),
+        entities=frozenset({"agent:a"}),
     )
     md = linear_lineage(
         "in", upstream, "out", "llm:x", matcher=_always(Transformation.SUMMARIZATION)
@@ -113,7 +113,7 @@ def test_linear_with_no_transformation_leaves_the_sets_untouched() -> None:
     upstream = DataLineage(
         data_sources=frozenset({"user:alice"}),
         source_transformations={"user:alice": frozenset({Transformation.ANONYMIZATION})},
-        entity_path=("agent:a",),
+        entities=frozenset({"agent:a"}),
     )
     md = linear_lineage("in", upstream, "out", "llm:x", matcher=_always(None))
 
@@ -129,20 +129,24 @@ def test_linear_degrades_to_init_when_the_matcher_refuses() -> None:
     upstream = DataLineage(
         data_sources=frozenset({"user:alice"}),
         source_transformations={"user:alice": frozenset({Transformation.SUMMARIZATION})},
-        entity_path=("agent:a", "llm:x"),
+        entities=frozenset({"agent:a", "llm:x"}),
     )
     md = linear_lineage("in", upstream, "out", "tool:anonymizer", matcher=_never)
 
     assert md == init_lineage("tool:anonymizer")
     assert md.data_sources == frozenset({"tool:anonymizer"})
-    assert md.entity_path == ()
+    assert md.entities == frozenset()
 
 
 def test_linear_does_not_mutate_its_input() -> None:
     """Spec rule 2 says "create a **copy**" twice. The upstream metadata belongs
     to another leg's persisted row; mutating it would corrupt that leg."""
     upstream = init_lineage("user:alice")
-    before = (upstream.data_sources, dict(upstream.source_transformations), upstream.entity_path)
+    before = (
+        upstream.data_sources,
+        dict(upstream.source_transformations),
+        upstream.entities,
+    )
 
     linear_lineage(
         "in", upstream, "out", "llm:x", matcher=_always(Transformation.SUMMARIZATION)
@@ -151,25 +155,25 @@ def test_linear_does_not_mutate_its_input() -> None:
     assert (
         upstream.data_sources,
         dict(upstream.source_transformations),
-        upstream.entity_path,
+        upstream.entities,
     ) == before
 
 
 # --- merge_lineage -----------------------------------------------------------
 
 
-def test_merge_unions_sources_maps_and_paths() -> None:
+def test_merge_unions_sources_maps_and_entities() -> None:
     """Spec rule 3, trivial form: sources are the union (1), maps merged (2),
-    entity lists merged and extended with the entity (3)."""
+    the entity SET merged and extended with the entity (3)."""
     a = DataLineage(
         data_sources=frozenset({"user:alice"}),
         source_transformations={"user:alice": frozenset()},
-        entity_path=("agent:a",),
+        entities=frozenset({"agent:a"}),
     )
     b = DataLineage(
         data_sources=frozenset({"tool:db"}),
         source_transformations={"tool:db": frozenset()},
-        entity_path=("llm:x",),
+        entities=frozenset({"llm:x"}),
     )
     md = merge_lineage([("pa", a), ("pb", b)], "out", "agent:a", matcher=_always())
 
@@ -178,11 +182,10 @@ def test_merge_unions_sources_maps_and_paths() -> None:
         "user:alice": frozenset(),
         "tool:db": frozenset(),
     }
-    # Both branches' entities, plus the processing entity. `agent:a` is already on
-    # branch a's path (the data passed through it earlier), so it keeps its
-    # first-arrival position rather than being re-appended at the end — see
-    # ``test_merge_entity_path_dedupes_while_keeping_first_arrival_order``.
-    assert md.entity_path == ("agent:a", "llm:x")
+    # Both branches' entities, plus the processing entity. `agent:a` is already in
+    # branch a's set (the data passed through it earlier), and union is idempotent,
+    # so it appears exactly once with no dedup step of its own.
+    assert md.entities == frozenset({"agent:a", "llm:x"})
 
 
 def test_merge_merges_transformation_sets_on_a_key_collision() -> None:
@@ -194,12 +197,12 @@ def test_merge_merges_transformation_sets_on_a_key_collision() -> None:
     a = DataLineage(
         data_sources=frozenset({"user:alice"}),
         source_transformations={"user:alice": frozenset({Transformation.ANONYMIZATION})},
-        entity_path=(),
+        entities=frozenset(),
     )
     b = DataLineage(
         data_sources=frozenset({"user:alice"}),
         source_transformations={"user:alice": frozenset({Transformation.SUMMARIZATION})},
-        entity_path=(),
+        entities=frozenset(),
     )
     md = merge_lineage([("pa", a), ("pb", b)], "out", "agent:a", matcher=_always())
 
@@ -214,16 +217,16 @@ def test_merge_merges_transformation_sets_on_a_key_collision() -> None:
 def test_merge_spec_example_1_drops_the_unmatched_source() -> None:
     """Spec Example 1 verbatim: match false for payload_a, true+summarization for
     payload_b. Output = metadata_b's sources only (1), each of b's entries with
-    summarization added (2), b's entity list extended with the entity (3)."""
+    summarization added (2), b's entity set extended with the entity (3)."""
     a = DataLineage(
         data_sources=frozenset({"user:alice"}),
         source_transformations={"user:alice": frozenset()},
-        entity_path=("agent:a",),
+        entities=frozenset({"agent:a"}),
     )
     b = DataLineage(
         data_sources=frozenset({"tool:db"}),
         source_transformations={"tool:db": frozenset({Transformation.ANONYMIZATION})},
-        entity_path=("tool:db_reader",),
+        entities=frozenset({"tool:db_reader"}),
     )
     matcher = _per_payload(
         {
@@ -241,29 +244,29 @@ def test_merge_spec_example_1_drops_the_unmatched_source() -> None:
             {Transformation.ANONYMIZATION, Transformation.SUMMARIZATION}
         )
     }
-    assert md.entity_path == ("tool:db_reader", "llm:x")
+    assert md.entities == frozenset({"tool:db_reader", "llm:x"})
     assert "user:alice" not in md.data_sources, "an unmatched source contributes nothing"
-    assert "agent:a" not in md.entity_path, "nor does its entity path"
+    assert "agent:a" not in md.entities, "nor do its entities"
 
 
 def test_merge_spec_example_2_three_inputs_two_matching() -> None:
     """Spec Example 2 verbatim: false for A, true+anonymize for B, true+summarize
     for C. Sources = B ∪ C; B's sets get anonymization, C's get summarization,
-    colliding keys merge; entity paths of B and C merged and extended."""
+    colliding keys merge; entity sets of B and C merged and extended."""
     a = DataLineage(
         data_sources=frozenset({"src_a"}),
         source_transformations={"src_a": frozenset()},
-        entity_path=("e_a",),
+        entities=frozenset({"e_a"}),
     )
     b = DataLineage(
         data_sources=frozenset({"src_b", "shared"}),
         source_transformations={"src_b": frozenset(), "shared": frozenset()},
-        entity_path=("e_b",),
+        entities=frozenset({"e_b"}),
     )
     c = DataLineage(
         data_sources=frozenset({"src_c", "shared"}),
         source_transformations={"src_c": frozenset(), "shared": frozenset()},
-        entity_path=("e_c",),
+        entities=frozenset({"e_c"}),
     )
     matcher = _per_payload(
         {
@@ -289,10 +292,9 @@ def test_merge_spec_example_2_three_inputs_two_matching() -> None:
             {Transformation.ANONYMIZATION, Transformation.SUMMARIZATION}
         ),
     }
-    assert set(md.entity_path) == {"e_b", "e_c", "agent:a"}
-    assert md.entity_path[-1] == "agent:a"
+    assert md.entities == frozenset({"e_b", "e_c", "agent:a"})
     assert "src_a" not in md.data_sources
-    assert "e_a" not in md.entity_path
+    assert "e_a" not in md.entities
 
 
 def test_merge_with_no_matching_source_degrades_to_init() -> None:
@@ -306,23 +308,71 @@ def test_merge_with_no_matching_source_degrades_to_init() -> None:
     assert md == init_lineage("tool:anonymizer")
 
 
-def test_merge_entity_path_dedupes_while_keeping_first_arrival_order() -> None:
-    """Merging two paths that share a prefix must not repeat entities. The path
-    is "which entities did the data pass through" — a set-with-order, not a
-    visit log, so an entity appearing on both branches appears once."""
+def test_merge_unions_overlapping_entity_sets_without_repetition() -> None:
+    """Merging two branches that share entities must not repeat them. The field is
+    "which entities did the data pass through" (spec rule 3(3), a *set*), not a
+    visit log — so an entity on both branches is one member, for free from union."""
     a = DataLineage(
         data_sources=frozenset({"s1"}),
         source_transformations={"s1": frozenset()},
-        entity_path=("user:alice", "agent:a"),
+        entities=frozenset({"user:alice", "agent:a"}),
     )
     b = DataLineage(
         data_sources=frozenset({"s2"}),
         source_transformations={"s2": frozenset()},
-        entity_path=("user:alice", "llm:x"),
+        entities=frozenset({"user:alice", "llm:x"}),
     )
     md = merge_lineage([("pa", a), ("pb", b)], "out", "agent:a", matcher=_always())
 
-    assert md.entity_path == ("user:alice", "agent:a", "llm:x")
+    assert md.entities == frozenset({"user:alice", "agent:a", "llm:x"})
+
+
+def test_merge_entity_set_does_not_depend_on_input_order() -> None:
+    """Order carries **no meaning** — the spec's "Note: this is unordered".
+
+    The same two contributions merged in either order produce the *same* entity
+    set. This is the assertion that stops an order from creeping back in as a
+    semantic: any implementation that appended per-contribution (as the old
+    ``entity_path`` did) would give two different answers here, and a reader would
+    then be able to draw a flow sequence out of the result."""
+    a = DataLineage(
+        data_sources=frozenset({"s1"}),
+        source_transformations={"s1": frozenset()},
+        entities=frozenset({"user:alice", "agent:a"}),
+    )
+    b = DataLineage(
+        data_sources=frozenset({"s2"}),
+        source_transformations={"s2": frozenset()},
+        entities=frozenset({"tool:db_reader", "llm:x"}),
+    )
+
+    forward = merge_lineage([("pa", a), ("pb", b)], "out", "agent:z", matcher=_always())
+    reversed_ = merge_lineage([("pb", b), ("pa", a)], "out", "agent:z", matcher=_always())
+
+    assert forward.entities == reversed_.entities
+    # Not just the set — the whole metadata is permutation-invariant, since every
+    # element of the triple is a union.
+    assert forward == reversed_
+
+
+def test_linear_entity_set_is_order_free_for_equivalent_upstreams() -> None:
+    """The same union, reached through two differently-"ordered" upstream sets, is
+    one value. A ``frozenset`` field makes this structurally true, which is the
+    point: the type refuses to hold an order the algebra cannot justify."""
+    made_one_way = DataLineage(
+        data_sources=frozenset({"s"}),
+        source_transformations={"s": frozenset()},
+        entities=frozenset(["agent:a", "llm:x"]),
+    )
+    made_the_other = DataLineage(
+        data_sources=frozenset({"s"}),
+        source_transformations={"s": frozenset()},
+        entities=frozenset(["llm:x", "agent:a"]),
+    )
+
+    assert linear_lineage(
+        "in", made_one_way, "out", "tool:t", matcher=_always()
+    ) == linear_lineage("in", made_the_other, "out", "tool:t", matcher=_always())
 
 
 def test_merge_of_a_single_input_matches_linear() -> None:
@@ -339,7 +389,9 @@ def test_merge_of_a_single_input_matches_linear() -> None:
 def test_merge_does_not_mutate_its_inputs() -> None:
     a = init_lineage("user:alice")
     b = init_lineage("tool:db")
-    before = [(m.data_sources, dict(m.source_transformations), m.entity_path) for m in (a, b)]
+    before = [
+        (m.data_sources, dict(m.source_transformations), m.entities) for m in (a, b)
+    ]
 
     merge_lineage(
         [("pa", a), ("pb", b)],
@@ -349,7 +401,7 @@ def test_merge_does_not_mutate_its_inputs() -> None:
     )
 
     assert [
-        (m.data_sources, dict(m.source_transformations), m.entity_path) for m in (a, b)
+        (m.data_sources, dict(m.source_transformations), m.entities) for m in (a, b)
     ] == before
 
 

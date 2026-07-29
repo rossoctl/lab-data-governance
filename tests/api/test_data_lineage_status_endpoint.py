@@ -57,7 +57,7 @@ def _seed(conn: psycopg.Connection, trace_id: str, ix_id: str) -> None:
     )
     conn.execute(
         "INSERT INTO lineage_metadata (interaction_id, leg_type, data_sources, "
-        "source_transformations, entity_path, payload_hash, seq) "
+        "source_transformations, entities, payload_hash, seq) "
         "VALUES (%s, 'request', ARRAY['user'], '{\"user\": []}'::jsonb, "
         "ARRAY[]::text[], 'reqhash', 1)",
         (ix_id,),
