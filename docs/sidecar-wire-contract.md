@@ -41,6 +41,13 @@ whatever status exists, so the row completes as failed instead of dangling. A lo
 therefore means exactly one thing: the sidecar itself died mid-exchange — rendered as in-flight,
 never a wrong pairing.
 
+**Scope limit on `denied`:** the lineage plugin runs after the gate plugins, and the pipeline
+short-circuits on a request-phase denial — an exchange a gate rejects **before** the request span
+was recorded emits **no spans at all** and is invisible to lineage. `denied` therefore appears
+only for denials after the request span exists (response-phase denials, or gates ordered after
+lineage). Emitting spans for gate-denied traffic (lineage ahead of the gates) is a named
+follow-up, not current behavior.
+
 ## Identifiers and parenting
 
 - **`lineage.exchange.id` = the request span's span_id**, echoed on both spans. No new identifier
@@ -61,7 +68,7 @@ Resource (unchanged): `service.name=authbridge`, `authbridge.component=lineage-t
 | `lineage.role` | both | `request` \| `response` | which half this span is |
 | `lineage.direction` | both | `inbound` \| `outbound` | |
 | `lineage.self.id` | both | `weather-service` | from `self_id` / `self_id_file` |
-| `lineage.peer.addr` | both spans, **inbound only** | `10.244.2.5:47312` | the direct TCP caller's address. Not emitted on outbound — there the proxy only observes the app's own socket (and nothing at all under ext_proc), which would mislabel the fact; outbound callee identity comes from `peer.host` |
+| `lineage.peer.addr` | both spans, **inbound only** | `10.244.2.5:47312` | the direct TCP caller's address. Not emitted on outbound — there the proxy only observes the app's own socket, which would mislabel the fact; outbound callee identity comes from `peer.host`. **Currently never produced in the deployed envoy-sidecar (ext_proc) mode**, where the remote address is unavailable to the plugin — anonymous inbound callers derive as `client:(unknown)`; a producer-side follow-up (ADR-0028) |
 | `lineage.peer.host` | both | `weather-tool-mcp.team1.svc:8000` | Host/authority header when present |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched; `http` = none |
 | `http.method` | request | `POST` | standard OTel key |
