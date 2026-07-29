@@ -30,7 +30,10 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 
+from typing import Any
+
 from data_governance import db
+from data_governance.sidecar_facts import classify_attrs
 
 __all__ = [
     "EntityView",
@@ -38,6 +41,7 @@ __all__ = [
     "GetEntitySpansResult",
     "GetInteractionSpansResult",
     "GetInteractionsResult",
+    "InteractionKindsView",
     "InteractionLegView",
     "InteractionView",
     "SpanEvidenceView",
@@ -73,6 +77,25 @@ class InteractionLegView:
 
 
 @dataclass(frozen=True)
+class InteractionKindsView:
+    """The sidecar classification of an interaction, re-derived at read time
+    from its anchor (request) span's stored attributes through the shared
+    vocabulary (:mod:`data_governance.sidecar_facts`) — so content kinds follow
+    the table's *current* vocabulary rather than a write-once snapshot, and
+    bodyless interactions (no payload rows at all) still classify.
+
+    ``None`` on the parent view when the anchor span carries no sidecar lineage
+    facts (streaming/graph-derived interactions): kinds are never fabricated,
+    and a ``null`` renders as not-infrastructure.
+    """
+
+    protocol: str
+    mcp_method: str | None
+    request_content_kind: str | None
+    response_content_kind: str | None
+
+
+@dataclass(frozen=True)
 class InteractionView:
     """One derived **Interaction** — the parent identity row plus its nested
     legs and read-time derivations.
@@ -93,6 +116,7 @@ class InteractionView:
     any_error: bool | None
     span_count: int
     anchor_count: int
+    kinds: InteractionKindsView | None
 
 
 @dataclass(frozen=True)
@@ -195,6 +219,25 @@ def _request_occurred_at(legs: list[InteractionLegView]) -> str | None:
     return None
 
 
+def _kinds_from_anchor_attrs(attrs: dict[str, Any] | None) -> InteractionKindsView | None:
+    """Classify one anchor span's stored attributes, or None when they carry no
+    sidecar lineage facts. The guard matters: ``classify_attrs`` has defaults
+    for every fact, so running it on a streaming/graph anchor would fabricate
+    ``user``/``agent`` kinds out of thin air — absent facts must yield an
+    absent classification, not a guessed one."""
+    a = attrs or {}
+    if "lineage.exchange.id" not in a or "lineage.direction" not in a:
+        return None
+    kinds = classify_attrs(a)
+    proto = str(a.get("lineage.protocol") or "http").lower()
+    return InteractionKindsView(
+        protocol=proto if proto in ("a2a", "mcp", "inference") else "http",
+        mcp_method=str(a["mcp.method"]) if a.get("mcp.method") else None,
+        request_content_kind=kinds.req_content_kind,
+        response_content_kind=kinds.resp_content_kind,
+    )
+
+
 def _derived_tables_exist(tx: db.Transaction) -> bool:
     """Whether the interactions migration has run on this DB.
 
@@ -268,6 +311,25 @@ def get_interactions(trace_id: str) -> GetInteractionsResult:
         )
         counts = {r[0]: (r[1], r[2]) for r in count_rows}
 
+        # Sidecar kinds, re-derived from the anchor spans' stored attributes
+        # (one grouped scan). A streaming cross-service interaction can carry
+        # two anchor rows; the first anchor bearing lineage facts wins — the
+        # guard makes any pick safe (non-sidecar anchors contribute nothing).
+        anchor_rows = tx.fetch_all(
+            "SELECT isp.interaction_id::text, s.attributes "
+            "FROM interaction_spans isp "
+            "JOIN spans s "
+            "  ON s.trace_id = isp.trace_id AND s.span_id = isp.span_id "
+            "WHERE isp.trace_id = %s AND isp.role = 'anchor'",
+            (trace_id,),
+        )
+        kinds_of: dict[str, InteractionKindsView] = {}
+        for iid, attrs in anchor_rows:
+            if iid not in kinds_of:
+                kv = _kinds_from_anchor_attrs(attrs)
+                if kv is not None:
+                    kinds_of[iid] = kv
+
         views = [
             InteractionView(
                 id=r[0],
@@ -280,6 +342,7 @@ def get_interactions(trace_id: str) -> GetInteractionsResult:
                 any_error=_legs_any_error(legs_by_ix.get(r[0], [])),
                 span_count=counts.get(r[0], (0, 0))[0],
                 anchor_count=counts.get(r[0], (0, 0))[1],
+                kinds=kinds_of.get(r[0]),
             )
             for r in interactions
         ]

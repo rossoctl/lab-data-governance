@@ -144,6 +144,43 @@ def test_interactions_carry_nested_legs(seeded, api_server):
     assert ix["any_error"] is True
 
 
+def test_interactions_kinds_null_for_non_sidecar_anchor(seeded, api_server):
+    """The seeded anchor span has no lineage.* facts (a streaming/graph-shaped
+    anchor): kinds must be null — never fabricated from classify defaults."""
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert "kinds" in ix
+    assert ix["kinds"] is None
+
+
+def test_interactions_kinds_rederived_from_sidecar_anchor(
+    seeded, api_server, configured_db
+):
+    """A sidecar-shaped anchor (lineage facts + mcp.method on its stored
+    attributes) yields the read-time kinds object — including the mcp.method
+    noise override — without any payload rows existing at all."""
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE spans SET attributes = %s::jsonb "
+            "WHERE trace_id = %s AND span_id = 's-anchor'",
+            (
+                '{"lineage.role": "request", "lineage.direction": "outbound", '
+                '"lineage.protocol": "mcp", "lineage.exchange.id": "s-anchor", '
+                '"lineage.self.id": "svc-a", "mcp.method": "tools/list"}',
+                _TID,
+            ),
+        )
+        conn.commit()
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert ix["kinds"] == {
+        "protocol": "mcp",
+        "mcp_method": "tools/list",
+        "request_content_kind": "tool_discovery_request",
+        "response_content_kind": "tool_discovery_result",
+    }
+
+
 def test_interaction_duration_null_when_response_leg_absent(
     seeded, api_server, configured_db
 ):
