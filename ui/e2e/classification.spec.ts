@@ -5,9 +5,10 @@ import { test, expect, type Page } from '@playwright/test';
  * view's Req/Resp payload cells (issue #80). Unlike the shell smoke specs, this
  * drives the real production bundle end-to-end with the `/api/` responses
  * stubbed via `page.route`: recent-traces → trace detail → Interaction flow →
- * select the interaction → expand the request payload → assert the inlined
- * Classification (sensitivity badge + regulatory tags + identity bundle +
- * Findings) renders, and that a null verdict reads as "not yet classified".
+ * select the interaction → expand the request leg's Classification section →
+ * assert the inlined Classification (sensitivity badge + regulatory tags +
+ * identity bundle + Findings) renders, and that a null verdict reads as "not yet
+ * classified".
  */
 
 const TID = 'trace-classify-demo';
@@ -53,15 +54,14 @@ const ENTITIES = [
  * `request_payload_hash` / `response_payload_hash` on the wire any more. The UI
  * reads them exclusively through `legOfType(ix, 'request'|'response')`
  * (ui/src/lib/flow.ts), so re-adding a top-level hash here would stub a field
- * nothing reads: the detail panel would render `request_at —` with no Payloads
- * section, and the Request button these tests click would never exist. The
- * read-time derivations `duration_seconds` (response − request, null while the
- * response is in flight) and `any_error` (leg roll-up) are computed by the API,
- * not by the client, so they are part of the stub too.
+ * nothing reads: the detail panel would render `request_at —` with no leg block
+ * at all, and the `Request: Classification` button these tests click would never
+ * exist. The read-time derivations `duration_seconds` (response − request, null
+ * while the response is in flight) and `any_error` (leg roll-up) are computed by
+ * the API, not by the client, so they are part of the stub too.
  *
  * Only the request leg carries a `payload_hash`: the response leg's is null, so
- * the panel renders exactly one payload block and `Request: reqhash0…` is
- * unambiguous.
+ * the panel renders exactly one leg block and `Request: …` names it unambiguously.
  */
 const INTERACTIONS = [
   {
@@ -144,12 +144,21 @@ async function stubFlowApi(page: Page, classification: unknown) {
   });
 }
 
-/** Deep-link to the flow tab, select the interaction, and expand its request
- *  payload — the shared drive-through both tests need. */
-async function openRequestPayload(page: Page) {
+/**
+ * Deep-link to the flow tab, select the interaction, and expand the request
+ * leg's **Classification** section — the shared drive-through both tests need.
+ *
+ * The `Request` heading now sits over three independent disclosures (Payload /
+ * Classification / Data lineage), all collapsed, so the verdict has its own
+ * toggle rather than riding on the payload body's. Clicking Classification is
+ * also the end-to-end proof of the fetch coupling: the verdict is an inlined
+ * field of `GET /api/payloads/{hash}` (ADR-0024), so this one click must be
+ * enough to make the stubbed payload response arrive and render.
+ */
+async function openRequestClassification(page: Page) {
   await page.goto(`/ui/traces/${TID}/flow`);
   await page.getByText(/2 \(1 anchor\)/).click();
-  await page.getByRole('button', { name: /Request: reqhash0/i }).click();
+  await page.getByRole('button', { name: /Request: Classification/i }).click();
 }
 
 test('the flow view renders the payload Classification verdict on expand', async ({ page }) => {
@@ -162,7 +171,7 @@ test('the flow view renders the payload Classification verdict on expand', async
     findings: [{ entity_type: 'EMAIL', start: 8, end: 22, text: 'jo@example.com' }],
     model_version: 1,
   });
-  await openRequestPayload(page);
+  await openRequestClassification(page);
 
   // Sensitivity level badge + regulatory tags + identity-bundle indicator.
   await expect(page.getByText('CONFIDENTIAL')).toBeVisible();
@@ -176,7 +185,7 @@ test('the flow view renders the payload Classification verdict on expand', async
 
 test('a null classification renders as "not yet classified", not a PUBLIC verdict', async ({ page }) => {
   await stubFlowApi(page, null);
-  await openRequestPayload(page);
+  await openRequestClassification(page);
 
   await expect(page.getByText(/not yet classified/i)).toBeVisible();
   await expect(page.getByText('PUBLIC')).toHaveCount(0);
