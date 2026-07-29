@@ -326,6 +326,26 @@ Migration 0011 is left as it shipped. It recorded the shape that was correct at 
 time; rewriting applied history to look like it always knew better would hide that
 the spec moved.
 
+**The rename is NOT a backward-compatible migration — accepted, with an
+operational consequence.** 0013 renames the column in one step, so a reader still
+running pre-rename code fails hard: `column m.entity_path does not exist`. Not a
+degraded read — a broken one. Observed in practice on the Kind cluster: applying
+`90-data-lineage.yaml` ran its migrate init container to 0013 while the API pod
+still queried `entity_path`, and every lineage read stayed broken until the other
+deployments were restarted onto the new image.
+
+This bites because *every* pod migrates to head (ADR-0002), so whichever pod
+starts first drags the schema forward under all the others. The deploy order is
+therefore **build images → roll every reader → let the migration land**, or accept
+a window of failing lineage reads. `deploy/k8s/README.md` records the same.
+
+Accepted rather than solved: this is a pre-release lab deployment where the window
+is free, and expand–contract (add `entities`, dual-write, migrate readers, drop
+`entity_path`) costs three migrations and a dual-read path to protect a table with
+one reader. Against real traffic, expand–contract is the correct shape and this
+decision should be revisited — a one-step rename of a column any live reader
+selects is an outage by construction, not by accident.
+
 ## Outputs
 
 - **API** — given a trace's interaction flow, compute/serve trace lineage;
@@ -382,7 +402,12 @@ matching how ADR-0024/0025 name their PKs.
   a false cross-user data-flow claim for a governance tool). To keep the choice
   genuinely open, the recommended seam is to model the memory node as
   `(entity_id, memory_key)` with `memory_key = NULL` meaning unkeyed/blob (the
-  v1 default), so keying later is a value change, not a migration. Also
+  v1 default), so keying later changes what the derivation computes rather than
+  requiring it to be redesigned — inbound payloads already pool per *node*, so a
+  keyed policy only has to return a distinct node. The node is a
+  derivation-time value and is never persisted, so this says nothing either way
+  about schema churn: `lineage_metadata` records the sources, transformations and
+  entities that resulted, not the memory nodes they were pooled through. Also
   unresolved: **shared vs partitioned** stores (a shared knowledge base is
   legitimately unkeyed; cross-user flow through it is real).
 - Absent-payload finer handling (D6): classify *not-captured* / *redacted* /

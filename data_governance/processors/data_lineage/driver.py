@@ -26,10 +26,13 @@ would freeze the first, most partial answer.
 **Upserting alone is not enough once a derivation can get SHORTER** (ADR-0027 D6's
 absent-payload cutoff, issue #120). A trace derived complete and later truncated at
 a gap would keep the rows past the new cutoff, contradicting its own ``partial``
-status — so ``process_leg`` also deletes the trace's rows at and after the stop
-position, and writes the trace-level status into ``lineage_trace_status`` (migration
-0012). All three writes share the loop's one transaction, so a trace's metadata and
-its coverage claim can never disagree.
+status — so ``process_leg`` also deletes the trace's rows **that this derivation did
+not produce**, and writes the trace-level status into ``lineage_trace_status``
+(migration 0012). Scoped by set membership, NOT by ``seq >= stop``: ``seq`` is
+re-allocated when a leg is rewritten, so a threshold would spare exactly the stale
+rows it must remove (ADR-0027 D9; see :func:`_delete_stale`). All three writes share
+the loop's one transaction, so a trace's metadata and its coverage claim can never
+disagree.
 
 **Trace scoping needs a join.** ``interaction_legs`` has no ``trace_id`` (ADR-0025
 puts identity on the parent), so both the arriving leg's trace and the trace's legs
@@ -219,8 +222,10 @@ def _delete_stale(
     this one no longer does. Nothing it deletes is current.
 
     **Why upserting is not enough.** This driver re-derives a whole trace per
-    arriving leg and upserts without deleting, so rows survive from earlier
-    derivations. Once a derivation can get *shorter* — ADR-0027 D6's absent-payload
+    arriving leg, and an upsert only ever writes the rows it is currently producing
+    — it is silent about rows already present that this derivation is not producing,
+    so those survive from earlier derivations. Once a derivation can get *shorter* —
+    ADR-0027 D6's absent-payload
     cutoff (#120), triggered when a leg's payload is rewritten to NULL or a gap
     appears as P-interactions re-derives legs in place (migration 0010's trigger
     covers UPDATE for exactly this reason) — the rows past the new cutoff are stale.

@@ -171,6 +171,29 @@ image from the node's image store.
 Postgres (the StatefulSet) does not need restarting — it only holds
 data, not code from this repo.
 
+### When the change includes a migration, restart EVERY reader
+
+Not just the component you changed. Every pod runs the migrate init
+container to head (ADR-0002), so whichever pod starts first drags the
+schema forward under all the others — including pods still running the
+previous image.
+
+That is harmless for an additive migration (a new table or column an old
+reader never selects). It is **not** harmless for a rename or a drop: the
+old code keeps selecting a column that no longer exists and its reads fail
+outright. This happened with migration 0013, which renamed
+`lineage_metadata.entity_path` to `entities` — applying only
+`90-data-lineage.yaml` moved the schema to head while the API pod still
+queried `entity_path`, and every lineage read returned
+`column m.entity_path does not exist` until the other Deployments were
+restarted.
+
+So for a schema change the order above matters: build and load the image
+first, then restart every Deployment in the list, and do not apply a
+single manifest in isolation expecting only that component to be affected.
+If you applied one and reads started failing, restarting the rest is the
+fix (see ADR-0027 D10 for why the rename was accepted in this shape).
+
 ## Wire the kagenti collector to our receiver
 
 The data-governance receiver is reachable at
