@@ -28,6 +28,19 @@ skills-lock.json
 # often worth promoting.
 .grill/
 
+# Agent-workflow notes installed locally by the engineering skills (issue-tracker
+# conventions, triage labels, how to consume the domain docs). Local tooling
+# configuration rather than project documentation — the same reasoning as
+# `.agents/` and `.claude/skills/` above.
+#
+# NOTE: tracked `CLAUDE.md` cites `docs/agents/issue-tracker.md`,
+# `triage-labels.md` and `domain.md`, so those three pointers dangle in a fresh
+# clone. Deliberate: they tell an agent which conventions apply, and the files
+# are reinstalled by the skill setup. If that trade stops being worth it, either
+# inline the conventions into `CLAUDE.md` or track this directory — don't just
+# drop the references.
+docs/agents/
+
 # Node/Playwright artifacts. The UI's own deps live under `ui/` (see the Vite
 # section below); these are the root-level equivalents left behind when a
 # browser install or an e2e run is driven from the repo root rather than `ui/`.
