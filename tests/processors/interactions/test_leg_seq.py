@@ -31,6 +31,7 @@ from __future__ import annotations
 import psycopg
 
 from .conftest import drain_all as _drain_all
+from .conftest import _load_fixture_spans, _insert_spans  # noqa: PLC2701
 
 
 def _legs(dsn: str) -> list[tuple]:
@@ -116,3 +117,29 @@ def test_rederive_does_not_churn_leg_seq(loaded_trace: str) -> None:
     assert after == before, (
         "a re-derive must preserve every leg's seq (dropped from DO UPDATE SET)"
     )
+
+
+def test_interactions_flush_taps_dg_interaction_leg_ready(
+    configured_db: str,
+) -> None:
+    """P-interactions taps ``dg_interaction_leg_ready`` when its streaming flush
+    writes legs (issue #123, ADR-0027): a no-payload leg (or a leg whose payload
+    was already classified) is ready the moment it is written, so the leg-readiness
+    consumer is woken. The tap is blind and SIMPLE — it fires whenever legs are
+    written, not only when one demonstrably became ready — because over-firing is
+    harmless (the consumer re-drains its cursor and finds nothing new) and
+    correctness rests on the cursor drain + poll backstop, never this tap.
+
+    Fired via ``tx.execute`` inside the per-span flush transaction, so it does not
+    fire if that transaction rolls back.
+    """
+    _insert_spans(configured_db, _load_fixture_spans())
+
+    with psycopg.connect(configured_db, autocommit=True) as listener:
+        listener.execute("LISTEN dg_interaction_leg_ready")
+        _drain_all(configured_db)
+        notifies = list(listener.notifies(timeout=5.0, stop_after=1))
+
+    assert notifies, "a streaming flush that writes legs must tap the channel"
+    assert notifies[0].channel == "dg_interaction_leg_ready"
+    assert notifies[0].payload == "", "the tap is payload-less (a 'go look' signal)"

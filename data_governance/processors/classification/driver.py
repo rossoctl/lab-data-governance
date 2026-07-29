@@ -47,6 +47,16 @@ PROCESSOR_NAME = "classification"
 # the ``pg_notify('dg_payloads_inserted', ...)`` in dg_notify_payloads().
 NOTIFY_CHANNEL = "dg_payloads_inserted"
 
+# Consumer-facing leg-readiness channel this processor TAPS (issue #123, ADR-0027).
+# A classification write can be the event that makes a payload-bearing leg ready
+# (its verdict now exists), and no single table write coincides with "leg became
+# ready", so P-classification fires a blind, payload-less notification after each
+# classify. The tap is latency-only — the leg-readiness consumer's cursor drain +
+# poll backstop are authoritative — so over-firing (a classified payload no leg
+# references) is harmless. Must match the ``LEG_READY_CHANNEL`` the leg_ready
+# consumer LISTENs on.
+LEG_READY_CHANNEL = "dg_interaction_leg_ready"
+
 # How long the loop sleeps between drains when idle (poll backstop). Also the
 # max time a LISTEN wait blocks before re-draining. Exposed at module level (not
 # just on the spec) because tests monkeypatch it to shrink the backstop; the
@@ -138,6 +148,14 @@ def process_payload(
             v.model_version,
         ),
     )
+    # Blind leg-readiness tap (issue #123, ADR-0027): this classification write may
+    # be what makes a payload-bearing leg ready (its verdict now exists). Fire a
+    # payload-less pg_notify in the SAME transaction, so it does NOT fire if the
+    # write rolls back (never a false "leg ready"). Over-firing (a classified
+    # payload no leg references) is harmless — the leg-readiness consumer re-drains
+    # its cursor and finds nothing new; correctness rests on that drain + the poll
+    # backstop, not this tap (latency-only, ADR-0015).
+    tx.execute("SELECT pg_notify(%s, '')", (LEG_READY_CHANNEL,))
     # One increment per payload the drain processed. Reference the module global
     # (not a bound import) so a test's metrics.make_registry() rebind is picked
     # up. Follows the interactions driver's in-procedure increment convention:

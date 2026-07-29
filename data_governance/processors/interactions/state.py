@@ -50,6 +50,19 @@ if TYPE_CHECKING:
 
 PROCESSOR_NAME = "interactions"
 
+# Consumer-facing leg-readiness channel this processor TAPS (issue #123, ADR-0027).
+# A leg written with no payload (``payload_hash IS NULL``), or one whose payload
+# was already classified, is ready the instant it is written — but no downstream
+# table write coincides with "leg ready", so P-interactions fires a blind,
+# payload-less notification after a flush that wrote legs. The tap is SIMPLE and
+# over-eager on purpose (it fires whenever legs were written, not only when one
+# demonstrably became ready): over-firing is harmless (the leg-readiness consumer
+# re-drains its cursor and finds nothing new), a missed tap is harmless (the poll
+# backstop still delivers), and correctness rests on the consumer's cursor drain,
+# never this tap (latency-only, ADR-0015). Must match the ``LEG_READY_CHANNEL``
+# the leg_ready consumer LISTENs on.
+LEG_READY_CHANNEL = "dg_interaction_leg_ready"
+
 # --- leg projection (ADR-0025) ----------------------------------------------
 # The one place the request/response <-> (timestamp, payload) mapping lives, so
 # the flush projection and the rehydrate fold-back cannot drift apart. The
@@ -695,6 +708,17 @@ def flush(
             "ON CONFLICT (trace_id, span_id, entity_id, role) DO NOTHING",
             (es.entity_id, es.trace_id, es.span_id, es.role),
         )
+
+    # 6. Blind leg-readiness tap (issue #123, ADR-0027). If this flush wrote any
+    #    legs, a leg may now be ready at write time (no payload, or payload already
+    #    classified), so wake the leg-readiness consumer with a payload-less
+    #    pg_notify in THIS transaction — it does not fire if the flush rolls back.
+    #    Kept deliberately simple: fired once per flush that touched an interaction,
+    #    not conditioned on a leg demonstrably becoming ready. Over-firing is
+    #    harmless (the consumer re-drains and finds nothing new); correctness rests
+    #    on that cursor drain + the poll backstop, never on this tap.
+    if proc.interactions_by_anchor:
+        tx.execute("SELECT pg_notify(%s, '')", (LEG_READY_CHANNEL,))
 
     # NOTE: the durable cursor advance is intentionally NOT written here — the
     # shared drain loop (:func:`data_governance.processors._driver.drain`)

@@ -127,6 +127,35 @@ def _cursor(dsn: str) -> int:
     return int(row[0]) if row else 0
 
 
+# --- dg_interaction_leg_ready tap (issue #123, ADR-0027) ---------------------
+
+
+def test_classification_taps_dg_interaction_leg_ready(configured_db: str) -> None:
+    """P-classification fires a blind, payload-less ``dg_interaction_leg_ready``
+    notification in the SAME transaction as each classification write (issue #123,
+    ADR-0027): classifying a payload may have made a payload-bearing leg ready, so
+    the leg-readiness consumer is woken to re-drain. The tap carries no correctness
+    weight (the consumer's poll backstop and cursor drain are authoritative) — it
+    is latency-only — but it must fire on a real classification write.
+
+    Firing it via ``tx.execute`` inside the per-payload transaction means it does
+    NOT fire if the classification rolls back (a payload never falsely announced
+    as ready).
+    """
+    _insert_payload(configured_db, content_hash="tap0")
+
+    with psycopg.connect(configured_db, autocommit=True) as listener:
+        listener.execute("LISTEN dg_interaction_leg_ready")
+        with db.transaction() as tx:
+            cursor = driver.read_cursor(tx)
+        driver.drain(cursor)
+        notifies = list(listener.notifies(timeout=5.0, stop_after=1))
+
+    assert notifies, "a classification write must tap dg_interaction_leg_ready"
+    assert notifies[0].channel == "dg_interaction_leg_ready"
+    assert notifies[0].payload == "", "the tap is payload-less (a 'go look' signal)"
+
+
 def test_drain_advances_cursor_and_is_incremental(configured_db: str) -> None:
     """A drain advances the durable ``classification`` cursor to the last
     payload's seq; a second drain only classifies payloads that arrived since."""
