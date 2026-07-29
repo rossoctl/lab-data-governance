@@ -1,0 +1,238 @@
+[
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "a1a1a1a1a1a1a1a1",
+    "parent_id": "00f067aa0ba902b7",
+    "kind": "SERVER",
+    "name": "weather-service",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "request",
+      "lineage.direction": "inbound",
+      "lineage.protocol": "a2a",
+      "lineage.exchange.id": "a1a1a1a1a1a1a1a1",
+      "lineage.self.id": "weather-service",
+      "lineage.peer.addr": "10.244.2.5:47312",
+      "lineage.principal.sub": "alice",
+      "a2a.method": "message/send",
+      "input.value": "what is the weather in Tokyo?"
+    }
+  },
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "a2a2a2a2a2a2a2a2",
+    "parent_id": "a1a1a1a1a1a1a1a1",
+    "kind": "SERVER",
+    "name": "weather-service",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "response",
+      "lineage.direction": "inbound",
+      "lineage.protocol": "a2a",
+      "lineage.exchange.id": "a1a1a1a1a1a1a1a1",
+      "lineage.self.id": "weather-service",
+      "lineage.outcome": "ok",
+      "output.value": "The weather in Tokyo is sunny, 22C."
+    }
+  },
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "b1b1b1b1b1b1b1b1",
+    "parent_id": "a1a1a1a1a1a1a1a1",
+    "kind": "CLIENT",
+    "name": "weather-service",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "request",
+      "lineage.direction": "outbound",
+      "lineage.protocol": "inference",
+      "lineage.exchange.id": "b1b1b1b1b1b1b1b1",
+      "lineage.self.id": "weather-service",
+      "lineage.peer.host": "host.containers.internal:11434",
+      "inference.model": "qwen2.5:7b",
+      "input.value": {
+        "messages": [
+          {
+            "message.content": "user asks weather in Tokyo"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "b2b2b2b2b2b2b2b2",
+    "parent_id": "b1b1b1b1b1b1b1b1",
+    "kind": "CLIENT",
+    "name": "weather-service",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "response",
+      "lineage.direction": "outbound",
+      "lineage.protocol": "inference",
+      "lineage.exchange.id": "b1b1b1b1b1b1b1b1",
+      "lineage.self.id": "weather-service",
+      "lineage.outcome": "ok",
+      "output.value": {
+        "messages": [
+          {
+            "message.content": "call get_weather(Tokyo)"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "b3b3b3b3b3b3b3b3",
+    "parent_id": "a1a1a1a1a1a1a1a1",
+    "kind": "CLIENT",
+    "name": "weather-service",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "request",
+      "lineage.direction": "outbound",
+      "lineage.protocol": "mcp",
+      "lineage.exchange.id": "b3b3b3b3b3b3b3b3",
+      "lineage.self.id": "weather-service",
+      "lineage.peer.host": "weather-tool-mcp.team1.svc:8000",
+      "mcp.method": "tools/call",
+      "mcp.tool": "get_weather",
+      "input.value": {
+        "city": "Tokyo"
+      }
+    }
+  },
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "b4b4b4b4b4b4b4b4",
+    "parent_id": "b3b3b3b3b3b3b3b3",
+    "kind": "CLIENT",
+    "name": "weather-service",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "response",
+      "lineage.direction": "outbound",
+      "lineage.protocol": "mcp",
+      "lineage.exchange.id": "b3b3b3b3b3b3b3b3",
+      "lineage.self.id": "weather-service",
+      "lineage.outcome": "ok",
+      "output.value": {
+        "tempC": 22,
+        "sky": "sunny"
+      }
+    }
+  },
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "d1d1d1d1d1d1d1d1",
+    "parent_id": "b3b3b3b3b3b3b3b3",
+    "kind": "SERVER",
+    "name": "weather-tool",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "request",
+      "lineage.direction": "inbound",
+      "lineage.protocol": "mcp",
+      "lineage.exchange.id": "d1d1d1d1d1d1d1d1",
+      "lineage.self.id": "weather-tool",
+      "lineage.peer.addr": "10.244.2.5:51900",
+      "mcp.method": "tools/call",
+      "mcp.tool": "get_weather",
+      "input.value": {
+        "city": "Tokyo"
+      }
+    }
+  },
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "d2d2d2d2d2d2d2d2",
+    "parent_id": "d1d1d1d1d1d1d1d1",
+    "kind": "SERVER",
+    "name": "weather-tool",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "response",
+      "lineage.direction": "inbound",
+      "lineage.protocol": "mcp",
+      "lineage.exchange.id": "d1d1d1d1d1d1d1d1",
+      "lineage.self.id": "weather-tool",
+      "lineage.outcome": "ok",
+      "output.value": {
+        "tempC": 22,
+        "sky": "sunny"
+      }
+    }
+  },
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "b5b5b5b5b5b5b5b5",
+    "parent_id": "a1a1a1a1a1a1a1a1",
+    "kind": "CLIENT",
+    "name": "weather-service",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "request",
+      "lineage.direction": "outbound",
+      "lineage.protocol": "inference",
+      "lineage.exchange.id": "b5b5b5b5b5b5b5b5",
+      "lineage.self.id": "weather-service",
+      "lineage.peer.host": "host.containers.internal:11434",
+      "inference.model": "qwen2.5:7b",
+      "input.value": {
+        "messages": [
+          {
+            "message.content": "weather is 22C sunny; summarize"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+    "span_id": "b6b6b6b6b6b6b6b6",
+    "parent_id": "b5b5b5b5b5b5b5b5",
+    "kind": "CLIENT",
+    "name": "weather-service",
+    "service_name": "authbridge",
+    "started_at": "2026-07-21T12:00:00+00:00",
+    "ended_at": "2026-07-21T12:00:00+00:00",
+    "error": false,
+    "attributes": {
+      "lineage.role": "response",
+      "lineage.direction": "outbound",
+      "lineage.protocol": "inference",
+      "lineage.exchange.id": "b5b5b5b5b5b5b5b5",
+      "lineage.self.id": "weather-service",
+      "lineage.outcome": "ok",
+      "output.value": "The weather in Tokyo is sunny, 22C."
+    }
+  }
+]
