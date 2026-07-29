@@ -80,6 +80,18 @@ def _project_tool_value(content: Any) -> str:
     return _serialize_whole(content)
 
 
+def _project_agent_message(content: Any) -> str:
+    """``agent_request`` / ``agent_response``: an a2a message reduced by the
+    AuthBridge lineage parser (``input.value`` / ``output.value``). Like a tool
+    value it has no fixed sub-shape, so a bare string is used verbatim and a JSON
+    structure is canonically serialized — its textual content stays classifiable.
+    Added for the two-span sidecar derivation (ADR-0014: a new content kind is a
+    code change to this closed branch set, not a migration)."""
+    if isinstance(content, str):
+        return content
+    return _serialize_whole(content)
+
+
 def _serialize_whole(content: Any) -> str:
     """The fallback: serialize the whole ``content`` to a canonical string
     (sorted keys, non-ASCII preserved) — deterministic so re-runs and dedup match.
@@ -91,12 +103,23 @@ def _serialize_whole(content: Any) -> str:
 
 
 # The closed branch set, one per handled **Content kind**. Kinds absent here
-# (``unknown``, ``http_request_body``, ``http_response_body``, ``agent_message``,
-# …) take the whole-JSONB fallback until a branch is added — a code change,
-# mirroring the Payload extraction rule.
+# (``unknown``, ``http_request_body``, ``http_response_body``, …) take the
+# whole-JSONB fallback until a branch is added — a code change, mirroring the
+# Payload extraction rule. The ``agent_*`` pair is emitted by the two-span
+# sidecar derivation; its content-kind parity test asserts every kind it can
+# emit is present here.
 _BRANCHES = {
     "llm_chat_prompt": _project_llm_messages,
     "llm_completion": _project_llm_messages,
     "tool_call_arguments": _project_tool_value,
     "tool_call_result": _project_tool_value,
+    "agent_request": _project_agent_message,
+    "agent_response": _project_agent_message,
+    # MCP protocol plumbing (the classifier's (direction, protocol[, mcp.method])
+    # term): same value shape as tool payloads — bare string verbatim, JSON
+    # canonically serialized (ADR-0014 code-change branch additions).
+    "mcp_lifecycle_request": _project_tool_value,
+    "mcp_lifecycle_result": _project_tool_value,
+    "tool_discovery_request": _project_tool_value,
+    "tool_discovery_result": _project_tool_value,
 }
