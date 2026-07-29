@@ -36,10 +36,20 @@ in full.
    refuses to run against a non-migrated DB (exit 3), which is the safety net
    if the init container was skipped.
 
-2. **Scale the processor down** so no writer is active during the reset:
+2. **Scale the processor down and WAIT FOR THE POD TO BE GONE.** `kubectl
+   scale` returns as soon as the replica count is recorded, *not* when the pod
+   has terminated — and a still-running processor re-writes its
+   `processor_state` row at whatever seq it has reached. Delete the cursor in
+   that window and the row is silently recreated mid-reset, so the restarted
+   processor resumes from that seq instead of 0 and **every span below it is
+   never derived**. Observed live on 2026-07-29: the first cutover attempt left
+   7 complete weather traces (133 interactions) underived, with a sharp
+   derivation floor at the seq the old pod had reached. Always wait:
 
    ```sh
    kubectl -n data-governance scale deploy/data-governance-interactions --replicas=0
+   kubectl -n data-governance wait --for=delete \
+     pod -l app.kubernetes.io/name=data-governance-interactions --timeout=90s
    ```
 
 3. **Truncate the derived tables** not already truncated by migration 0009
@@ -72,6 +82,25 @@ in full.
    log line `interactions processor using 'sidecar' algorithm`, then row
    counts > 0 in `interactions` / `interaction_legs`, and a known trace's
    numbers in the DG UI.
+
+7. **Assert nothing was skipped.** Row counts and a spot-checked trace do not
+   catch a cursor that started above 0 — the traces it skipped are simply
+   absent, and every trace you happen to look at is one that survived. This
+   query must return **0**; anything else means the drain did not start from
+   the beginning (see step 2), and the fix is to repeat steps 2, 4 and 5 —
+   truncation is *not* required, since the derivation is an idempotent
+   per-trace reconcile:
+
+   ```sql
+   WITH anchors AS (
+     SELECT DISTINCT trace_id FROM spans WHERE attributes->>'lineage.role' = 'request'
+   )
+   SELECT count(*) FROM anchors a
+    WHERE NOT EXISTS (SELECT 1 FROM interactions i WHERE i.trace_id = a.trace_id);
+   ```
+
+   A useful corollary check: `min(seq)` over spans belonging to derived traces
+   should sit at the bottom of the table, not part-way up it.
 
 ## What stays
 
