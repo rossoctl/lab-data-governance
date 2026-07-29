@@ -25,6 +25,8 @@ items and readiness; the primitive stays table- and SQL-agnostic.
 
 from __future__ import annotations
 
+import pytest
+
 from data_governance.processors import readiness_cursor as rc
 
 
@@ -61,8 +63,6 @@ def test_all_ready_run_is_delivered_whole_and_advances_to_the_last() -> None:
         (2, "response"),
     ]
     assert result.cursor == rc.Cursor.of(items[3])  # (seq=2, response)
-    # Both seqs fully delivered → the conservative single-BIGINT watermark is 2.
-    assert result.last_fully_delivered_seq == 2
 
 
 def test_stops_at_the_first_unready_item() -> None:
@@ -81,7 +81,6 @@ def test_stops_at_the_first_unready_item() -> None:
         (1, "response"),
     ]
     assert result.cursor == rc.Cursor.of(items[1])  # (seq=1, response)
-    assert result.last_fully_delivered_seq == 1
 
 
 def test_request_delivered_before_response_via_explicit_tiebreaker() -> None:
@@ -121,7 +120,6 @@ def test_head_of_line_blocking_holds_watermark_despite_a_later_ready_item() -> N
 
     assert result.delivered == []  # nothing delivered — first item is unready
     assert result.cursor == rc.Cursor.start()  # watermark held at the resume point
-    assert result.last_fully_delivered_seq == 0
 
 
 def test_stranding_then_later_ready_advances_across_both_over_two_drains() -> None:
@@ -148,8 +146,9 @@ def test_stranding_then_later_ready_advances_across_both_over_two_drains() -> No
         (4, "request"),
         (4, "response"),
     ]
+    # The cursor stops at (seq=4, response) — NOT jumped to the ready seq=6, so
+    # the unready seq=5 leg is not stranded past.
     assert r1.cursor == rc.Cursor(seq=4, leg_ordinal=rc.leg_ordinal("response"))
-    assert r1.last_fully_delivered_seq == 4  # seq=6 NOT jumped to — no stranding
 
     # Between drains the seq=5 payload classifies → the leg becomes ready. The
     # consumer re-fetches strictly after r1.cursor: seq=5 and seq=6 reappear.
@@ -166,7 +165,29 @@ def test_stranding_then_later_ready_advances_across_both_over_two_drains() -> No
     assert r2.cursor == rc.Cursor(seq=6, leg_ordinal=rc.leg_ordinal("request"))
     # The seq=4 legs from drain 1 are never re-delivered: drain 2 only saw items
     # strictly after r1.cursor, which is the consumer's re-fetch contract.
-    assert r2.last_fully_delivered_seq == 6
+
+
+def test_multi_seq_stop_advances_only_to_the_last_fully_ready_leg() -> None:
+    """When the ready run spans multiple seqs and stops partway through a later
+    seq (its sibling leg held), the cursor advances only to the last delivered
+    leg — the delivered request of the half-delivered seq — never jumping past the
+    held response. This is the multi-seq form of head-of-line blocking."""
+    items = [
+        _item(4, "request", ready=True),
+        _item(4, "response", ready=True),
+        _item(5, "request", ready=True),  # delivered
+        _item(5, "response", ready=False),  # HELD — stop here
+    ]
+    result = rc.contiguous_prefix(items, cursor=rc.Cursor.start())
+
+    assert [(it.seq, it.leg_type) for it in result.delivered] == [
+        (4, "request"),
+        (4, "response"),
+        (5, "request"),
+    ]
+    # Cursor stops at (5, request); a strict-after re-fetch re-fetches the held
+    # (5, response), which advances once it becomes ready.
+    assert result.cursor == rc.Cursor(seq=5, leg_ordinal=rc.leg_ordinal("request"))
 
 
 def test_cross_interaction_no_order_beyond_seq_between_distinct_interactions() -> None:
@@ -203,7 +224,6 @@ def test_all_unready_delivers_nothing_and_holds_cursor() -> None:
 
     assert result.delivered == []
     assert result.cursor == rc.Cursor.start()
-    assert result.last_fully_delivered_seq == 0
 
 
 def test_first_item_unready_holds_even_from_a_nonzero_resume_cursor() -> None:
@@ -215,24 +235,42 @@ def test_first_item_unready_holds_even_from_a_nonzero_resume_cursor() -> None:
 
     assert result.delivered == []
     assert result.cursor == resume
-    assert result.last_fully_delivered_seq == 20
 
 
-def test_half_delivered_seq_is_conservative_in_single_bigint_watermark() -> None:
+def test_half_delivered_seq_holds_the_composite_cursor_at_the_delivered_leg() -> None:
     """A ``seq`` whose request leg is delivered but whose response leg is HELD
-    (unready, same ``seq``) is NOT counted as fully delivered: the conservative
-    single-BIGINT ``last_fully_delivered_seq`` stays below it, so a plain
-    ``seq > cursor`` re-fetch re-fetches the held same-``seq`` leg rather than
-    skipping it. This is the documented single-BIGINT caveat for the future
-    Case-Y source (the composite ``cursor`` is the faithful watermark)."""
+    (unready, same ``seq``) advances the composite cursor only to the delivered
+    ``(30, request)`` position — NOT past the held response leg. On the next drain
+    the consumer re-fetches strictly after ``(30, request)``, so the still-unready
+    ``(30, response)`` leg reappears and is re-evaluated rather than skipped."""
     items = [
         _item(30, "request", ready=True),  # delivered
         _item(30, "response", ready=False),  # HELD — same seq, unready
     ]
     result = rc.contiguous_prefix(items, cursor=rc.Cursor.start())
 
-    # The composite cursor faithfully records (30, request) as last delivered.
+    assert [(it.seq, it.leg_type) for it in result.delivered] == [(30, "request")]
+    # The composite cursor faithfully records (30, request) as last delivered —
+    # strictly before the held (30, response), so a strict-after re-fetch on the
+    # composite key re-fetches the held leg rather than skipping it.
     assert result.cursor == rc.Cursor(seq=30, leg_ordinal=rc.leg_ordinal("request"))
-    # But the single-BIGINT watermark must NOT reach 30 (that would let a
-    # `seq > 30` re-fetch skip the held (30, response) leg). It stays conservative.
-    assert result.last_fully_delivered_seq == 0
+    assert result.cursor.resume_key() == (30, rc.leg_ordinal("request"))
+
+
+def test_resume_key_is_the_seq_leg_ordinal_pair() -> None:
+    """``Cursor.resume_key`` exposes the ``(seq, leg_ordinal)`` pair the consumer
+    uses to re-fetch strictly-after; ``leg_ordinal`` is the explicit ordinal, not
+    the ENUM order."""
+    cursor = rc.Cursor(seq=42, leg_ordinal=rc.leg_ordinal("response"))
+    assert cursor.resume_key() == (42, 1)
+    assert rc.Cursor.start().resume_key() == (0, 0)
+
+
+def test_leg_ordinal_raises_on_an_unknown_leg_kind() -> None:
+    """An unrecognised ``leg_type`` is a programming error, not runtime input, so
+    :func:`leg_ordinal` raises rather than silently ordering it (documented
+    contract). This also means ``sort_key`` / ``Cursor.of`` reject unknown legs."""
+    with pytest.raises(KeyError):
+        rc.leg_ordinal("bogus")
+    with pytest.raises(KeyError):
+        _item(1, "bogus", ready=True).sort_key

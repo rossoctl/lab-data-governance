@@ -49,42 +49,26 @@ items — it touches no table and issues no SQL. #123 supplies the real
 for the content hash). This keeps the primitive unit-testable DB-free and reusable
 by the future readiness-drain consumer without a circular import.
 
-Cursor representation — what #123 must persist
-----------------------------------------------
-:func:`contiguous_prefix` returns both the deliverable prefix and a composite
+Cursor representation
+---------------------
+:func:`contiguous_prefix` returns the deliverable prefix and a single composite
 :class:`Cursor` ``(seq, leg_ordinal)`` — the position of the **last delivered
 item**, or the caller-supplied resume cursor if nothing was delivered. The next
-drain should re-fetch items **strictly after** that composite cursor
-(:meth:`Cursor.after_sql_tuple` gives the ``(seq, leg_ordinal)`` pair for a
-``WHERE (seq, leg_ordinal) > (%s, %s)`` predicate) and re-apply this function; a
-still-unready item at the stop point is simply re-fetched and re-evaluated next
-time, and advances once it becomes ready — no re-delivery, no skip.
+drain re-fetches items **strictly after** that composite cursor and re-applies
+this function; a still-unready item at the stop point is simply re-fetched and
+re-evaluated next time, and advances once it becomes ready — no re-delivery, no
+skip. :meth:`Cursor.resume_key` exposes the ``(seq, leg_ordinal)`` pair for the
+re-fetch predicate.
 
-**Single-BIGINT ``processor_state`` caveat (a real finding for #123).** The
-shared durable cursor ``processor_state.last_processed_seq`` is a *single*
-``BIGINT`` and cannot faithfully hold a composite ``(seq, leg_type)`` watermark
-whenever a single ``seq`` is only **half-delivered** — i.e. the request leg at
-``seq=N`` is ready and delivered but the response leg at the same ``seq=N`` is
-unready and held. The last-delivered position is then ``(N, request)``, which no
-single BIGINT can distinguish from "``seq=N`` fully done":
-
-* Persist ``N`` and re-fetch ``seq > N`` → the held ``(N, response)`` leg is
-  **skipped forever** (the stranding bug this primitive exists to prevent).
-* Persist ``N - 1`` and re-fetch ``seq > N-1`` → the already-delivered
-  ``(N, request)`` leg is **re-delivered**.
-
-For the current (Case-X streaming) source this half-delivered case does not
-arise — both legs share one ``seq`` and are written in one transaction with the
-same readiness at write time, so a ``seq`` is delivered all-or-nothing and the
-conservative :attr:`PrefixResult.last_fully_delivered_seq` (highest ``seq`` all
-of whose fetched legs were delivered) round-trips correctly through the single
-BIGINT with plain ``seq > cursor`` re-fetch. The composite :class:`Cursor` is the
-forward-compatibility hook for the future Case-Y source, where the response leg
-becomes ready later and the half-delivered case is real; there, #123 must either
-persist the composite ``(seq, leg_ordinal)`` (widen ``processor_state`` or resume
-with a two-column predicate) or accept idempotent re-delivery. This module surfaces
-both values and leaves that choice to #123; it does not, and cannot, paper over
-the single-BIGINT limitation.
+How that composite position is persisted — the shared durable cursor
+``processor_state.last_processed_seq`` is a single ``BIGINT`` — is a
+consumer-side decision, not this primitive's. ADR-0027 discusses it: for the
+current (Case-X streaming) source both legs share one ``seq`` written
+all-or-nothing, so a ``seq`` is delivered atomically and ``cursor.seq`` round-trips
+through the single BIGINT; the composite ``Cursor`` is the forward-compatibility
+hook for the future Case-Y source, where the response leg becomes ready later and
+the half-delivered case is real. This module surfaces the composite position and
+leaves the persistence mapping to the consumer.
 """
 
 from __future__ import annotations
@@ -165,12 +149,15 @@ class Cursor:
         """The cursor position *at* an item — its ``(seq, leg_ordinal)``."""
         return cls(seq=item.seq, leg_ordinal=leg_ordinal(item.leg_type))
 
-    def after_sql_tuple(self) -> tuple[int, int]:
-        """The ``(seq, leg_ordinal)`` pair for a strict-after re-fetch predicate.
+    def resume_key(self) -> tuple[int, int]:
+        """The ``(seq, leg_ordinal)`` pair identifying this composite position.
 
-        #123 uses this in ``WHERE (seq, leg_ordinal) > (%s, %s)`` (row-value
-        comparison) so the next drain re-fetches everything after the last
-        delivered item and re-applies :func:`contiguous_prefix`.
+        The consumer re-fetches everything **strictly after** this position and
+        re-applies :func:`contiguous_prefix`. The SQL that expresses "strictly
+        after" belongs to the consumer (#123): the schema stores ``leg_type`` as
+        an ENUM, not an integer ordinal, so a row-value ``WHERE (seq, ...) > ...``
+        needs the consumer to derive the ordinal (e.g. a ``CASE`` expression) — an
+        SQL concern this table-agnostic primitive deliberately does not own.
         """
         return (self.seq, self.leg_ordinal)
 
@@ -185,18 +172,10 @@ class PrefixResult:
         cursor: the composite watermark to resume strictly-after — the last
             delivered item's :class:`Cursor`, or the caller-supplied resume cursor
             if nothing was delivered (head-of-line blocking holds it in place).
-        last_fully_delivered_seq: the highest ``seq`` all of whose fetched items
-            were delivered, or the resume ``cursor.seq`` if none. This is the
-            **conservative single-BIGINT** value safe to persist in
-            ``processor_state.last_processed_seq`` with a plain ``seq > cursor``
-            re-fetch for the current all-or-nothing-per-``seq`` source. It never
-            advances past a ``seq`` that is only half-delivered, so it cannot skip
-            a held same-``seq`` leg (it re-delivers instead — see module docstring).
     """
 
     delivered: list[ReadinessItem]
     cursor: Cursor
-    last_fully_delivered_seq: int
 
 
 def contiguous_prefix(
@@ -226,35 +205,6 @@ def contiguous_prefix(
         delivered.append(item)
 
     if not delivered:
-        return PrefixResult(
-            delivered=[],
-            cursor=cursor,
-            last_fully_delivered_seq=cursor.seq,
-        )
+        return PrefixResult(delivered=[], cursor=cursor)
 
-    new_cursor = Cursor.of(delivered[-1])
-
-    # The conservative single-BIGINT watermark: the highest seq whose EVERY
-    # fetched item was delivered. If the drain stopped partway through a seq (a
-    # same-seq item was held), that seq is not "fully delivered", so we fall back
-    # to the previous fully-delivered seq (or the resume cursor's seq). This never
-    # advances past a half-delivered seq — see the module docstring's caveat.
-    stopped_at_seq: int | None = None
-    if len(delivered) < len(ordered):
-        stopped_at_seq = ordered[len(delivered)].seq
-    last_delivered_seq = delivered[-1].seq
-    if stopped_at_seq == last_delivered_seq:
-        # The stop happened mid-seq: the last delivered seq still has a held
-        # sibling, so it is not fully delivered. Fall back to the seq before it.
-        fully = max(
-            (it.seq for it in delivered if it.seq < last_delivered_seq),
-            default=cursor.seq,
-        )
-    else:
-        fully = last_delivered_seq
-
-    return PrefixResult(
-        delivered=delivered,
-        cursor=new_cursor,
-        last_fully_delivered_seq=fully,
-    )
+    return PrefixResult(delivered=delivered, cursor=Cursor.of(delivered[-1]))
