@@ -5,7 +5,7 @@ import { test, expect, type Page } from '@playwright/test';
  * view's Req/Resp payload cells (issue #80). Unlike the shell smoke specs, this
  * drives the real production bundle end-to-end with the `/api/` responses
  * stubbed via `page.route`: recent-traces → trace detail → Interaction flow →
- * select the interaction → expand the request leg's Classification section →
+ * select the interaction → activate the request leg's Classification tab →
  * assert the inlined Classification (sensitivity badge + regulatory tags +
  * identity bundle + Findings) renders, and that a null verdict reads as "not yet
  * classified".
@@ -61,7 +61,8 @@ const ENTITIES = [
  * the API, not by the client, so they are part of the stub too.
  *
  * Only the request leg carries a `payload_hash`: the response leg's is null, so
- * the panel renders exactly one leg block and `Request: …` names it unambiguously.
+ * the panel renders exactly one outer leg tab and `Request: …` names its inner
+ * section tabs unambiguously.
  */
 const INTERACTIONS = [
   {
@@ -145,23 +146,29 @@ async function stubFlowApi(page: Page, classification: unknown) {
 }
 
 /**
- * Deep-link to the flow tab, select the interaction, and expand the request
- * leg's **Classification** section — the shared drive-through both tests need.
+ * Deep-link to the flow tab, select the interaction, and activate the request
+ * leg's **Classification** tab — the shared drive-through both tests need.
  *
- * The `Request` heading now sits over three independent disclosures (Payload /
- * Classification / Data lineage), all collapsed, so the verdict has its own
- * toggle rather than riding on the payload body's. Clicking Classification is
- * also the end-to-end proof of the fetch coupling: the verdict is an inlined
- * field of `GET /api/payloads/{hash}` (ADR-0024), so this one click must be
- * enough to make the stubbed payload response arrive and render.
+ * The `Request` outer tab now carries three inner section tabs (Payload /
+ * Classification / Data lineage), so the verdict has its own tab rather than
+ * riding on the payload body's. Clicking Classification is also the end-to-end
+ * proof of the fetch coupling in the real bundle: the verdict is an inlined field
+ * of `GET /api/payloads/{hash}` (ADR-0024), so activating that tab must be enough
+ * to make the stubbed payload response arrive and render.
  */
 async function openRequestClassification(page: Page) {
   await page.goto(`/ui/traces/${TID}/flow`);
   await page.getByText(/2 \(1 anchor\)/).click();
-  await page.getByRole('button', { name: /Request: Classification/i }).click();
+  // The leg tab is active by default (it is the only leg with a payload); pick
+  // its Classification section.
+  await expect(page.getByRole('tab', { name: 'Request', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await page.getByRole('tab', { name: /Request: Classification/i }).click();
 }
 
-test('the flow view renders the payload Classification verdict on expand', async ({ page }) => {
+test('the flow view renders the payload Classification verdict on its tab', async ({ page }) => {
   await stubFlowApi(page, {
     sensitivity_level: 'CONFIDENTIAL',
     regulatory_tags: ['PII'],

@@ -395,7 +395,7 @@ describe('FlowTables', () => {
     expect(interactionRow.getAttribute('data-dg-selected')).toBeNull();
   });
 
-  it('lazily fetches and renders an interaction request payload on expand', async () => {
+  it('lazily fetches and renders an interaction request payload when its tab is active', async () => {
     // An interaction that carries payload hashes (the common HTTP/MCP case) —
     // now on the request/response legs (ADR-0025).
     const withPayload = [withLegHashes('reqhash0deadbeef', 'resphash0feedface')];
@@ -412,16 +412,31 @@ describe('FlowTables', () => {
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    // Each leg is headed by its own name with a Payload disclosure under it,
-    // still showing the hash's first 8 chars: 'reqhash0' / 'resphash'.
-    const reqToggle = await screen.findByRole('button', { name: /Request: Payload reqhash0/i });
-    expect(screen.getByRole('button', { name: /Response: Payload resphash/i })).toBeInTheDocument();
-    // The body is NOT fetched until the link is expanded (lazy).
-    expect(screen.queryByText(/"flights"/)).toBeNull();
-    await userEvent.click(reqToggle);
-    // On expand, the decoded content + kind/hash/bytes render.
+    // Each leg gets an outer tab, `Request` active by default, and its inner
+    // Payload tab still names the hash's first 8 chars ('reqhash0').
+    expect(await screen.findByRole('tab', { name: 'Request' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByRole('tab', { name: 'Response' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+    const reqPayloadTab = screen.getByRole('tab', { name: /Request: Payload reqhash0/i });
+    expect(reqPayloadTab).toHaveAttribute('aria-selected', 'true');
+    // Payload is the active leg's default section, so the decoded content +
+    // kind/hash/bytes render for the ACTIVE leg...
     await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
     expect(screen.getByText('json')).toBeInTheDocument();
+    // ...and the inactive leg's inner tabs are not even on screen, so nothing
+    // there could have been read (the fetch assertion is in the gating block).
+    expect(screen.queryByRole('tab', { name: /Response: Payload resphash/i })).toBeNull();
+    // Switching legs brings the Response leg's inner tabs up, again on Payload.
+    await userEvent.click(screen.getByRole('tab', { name: 'Response' }));
+    expect(
+      await screen.findByRole('tab', { name: /Response: Payload resphash/i }),
+    ).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab', { name: /Request: Payload reqhash0/i })).toBeNull();
   });
 
   it('shows the payload Classification verdict (sensitivity + tags + identity bundle + findings) on expand', async () => {
@@ -456,10 +471,10 @@ describe('FlowTables', () => {
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    // Classification is its own disclosure now — expanding it (and nothing else)
+    // Classification is its own inner tab now — activating it (and nothing else)
     // both triggers the payload read it rides on and renders the verdict.
-    await userEvent.click(await screen.findByRole('button', { name: /Request: Classification/i }));
-    // The Classification verdict renders inside the expanded section.
+    await userEvent.click(await screen.findByRole('tab', { name: /Request: Classification/i }));
+    // The Classification verdict renders inside the active tab's pane.
     await waitFor(() => expect(screen.getByText('CONFIDENTIAL')).toBeInTheDocument());
     expect(screen.getByText('PII')).toBeInTheDocument();
     expect(screen.getByText(/identity bundle/i)).toBeInTheDocument();
@@ -492,14 +507,14 @@ describe('FlowTables', () => {
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('button', { name: /Request: Classification/i }));
+    await userEvent.click(await screen.findByRole('tab', { name: /Request: Classification/i }));
     // Null classification renders as the distinct eventual-consistency note,
     // not as a PUBLIC verdict.
     await waitFor(() => expect(screen.getByText(/not yet classified/i)).toBeInTheDocument());
     expect(screen.queryByText('PUBLIC')).toBeNull();
   });
 
-  it('omits both leg blocks for an interaction that carried no payloads', async () => {
+  it('omits both leg tabs for an interaction that carried no payloads', async () => {
     mockFetch(); // INTERACTIONS[0] has null request/response hashes
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
@@ -507,17 +522,20 @@ describe('FlowTables', () => {
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
-    // Neither leg heading, and none of the three sections — a payload-less leg
-    // has no payload, no verdict, and no derivable lineage to offer.
-    expect(screen.queryByRole('heading', { name: 'Request' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Response' })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Data lineage/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Classification/i })).toBeNull();
+    // Neither leg tab, and none of the three section tabs — a payload-less leg
+    // has no payload, no verdict, and no derivable lineage to offer. (The flow
+    // view's own Tree/Flat tabs are the only tabs left on screen.)
+    expect(screen.queryByRole('tab', { name: 'Request' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Response' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /Data lineage/i })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /Classification/i })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /Payload/i })).toBeNull();
   });
 
-  it('shows only the Request block when only the request leg carried a payload', async () => {
-    // The per-leg guard survives the restructure: one hash → one heading, and
-    // the absent leg contributes no heading and no sections.
+  it('shows only the Request tab when only the request leg carried a payload', async () => {
+    // The per-leg guard survives the restructure: one hash → one outer tab, and
+    // the absent leg contributes no tab and no inner sections. The one leg
+    // present is also the ACTIVE one, so the pane is never blank.
     const reqOnly = [withLegHashes('reqhash0deadbeef', null)];
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
       if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: reqOnly }) };
@@ -531,11 +549,15 @@ describe('FlowTables', () => {
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
     await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'Request' })).toBeInTheDocument(),
+      expect(screen.getByRole('tab', { name: 'Request' })).toBeInTheDocument(),
     );
-    expect(screen.queryByRole('heading', { name: 'Response' })).toBeNull();
-    expect(screen.getByRole('button', { name: /Request: Data lineage/i })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Response: Data lineage/i })).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Request' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.queryByRole('tab', { name: 'Response' })).toBeNull();
+    expect(screen.getByRole('tab', { name: /Request: Data lineage/i })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /Response: Data lineage/i })).toBeNull();
   });
 
   // --- Data lineage (issue #119, ADR-0027) ------------------------------------
@@ -587,17 +609,17 @@ describe('FlowTables', () => {
     });
   }
 
-  it('shows the payload lineage (data sources, per-source transformations, entities) on expand', async () => {
+  it('shows the payload lineage (data sources, per-source transformations, entities) on its tab', async () => {
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('button', { name: /Request: Data lineage/i }));
+    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
 
-    // The Data lineage block renders in its own section, beside the
-    // Classification section it mirrors.
+    // The Data lineage block renders in its own tab pane, beside the
+    // Classification tab it mirrors.
     await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
     const sources = screen.getByLabelText('Data sources');
     expect(within(sources).getByText('agent-a')).toBeInTheDocument();
@@ -613,8 +635,8 @@ describe('FlowTables', () => {
   });
 
   it('keys lineage per leg: the response leg does not inherit the request leg’s lineage', async () => {
-    // Only the request leg has lineage in the fixture, so expanding the
-    // response leg's lineage must report "not yet computed" — the leg key is
+    // Only the request leg has lineage in the fixture, so the response leg's
+    // lineage tab must report "not yet computed" — the leg key is
     // (interaction_id, leg_type), never the payload/content hash (ADR-0027 D5).
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
@@ -622,7 +644,10 @@ describe('FlowTables', () => {
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('button', { name: /Response: Data lineage/i }));
+    // Reaching it means switching legs first — the outer tab — then picking the
+    // inner section.
+    await userEvent.click(await screen.findByRole('tab', { name: 'Response' }));
+    await userEvent.click(await screen.findByRole('tab', { name: /Response: Data lineage/i }));
     await waitFor(() =>
       expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument(),
     );
@@ -636,7 +661,7 @@ describe('FlowTables', () => {
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('button', { name: /Request: Data lineage/i }));
+    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
     await waitFor(() =>
       expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument(),
     );
@@ -649,11 +674,14 @@ describe('FlowTables', () => {
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('button', { name: /Request: Payload reqhash0/i }));
-    await userEvent.click(await screen.findByRole('button', { name: /Request: Data lineage/i }));
-    // The payload body still renders; lineage states its absence.
+    // Payload is the default tab, so the body lands first; then the lineage tab
+    // states the absence. Switching back proves the shared read still satisfies
+    // the body without a refetch.
     await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
+    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
     expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Payload reqhash0/i }));
+    expect(screen.getByText(/"flights"/)).toBeInTheDocument();
   });
 
   /**
@@ -692,10 +720,10 @@ describe('FlowTables', () => {
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('button', { name: /Request: Payload reqhash0/i }));
-    await userEvent.click(await screen.findByRole('button', { name: /Request: Data lineage/i }));
-    // The payload body itself loaded fine — only lineage failed.
+    // The payload body itself loaded fine (the default tab) — only lineage
+    // failed, which its own tab reports.
     await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
+    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
     expect(screen.getByText(/failed to load lineage/i)).toBeInTheDocument();
     expect(screen.queryByText(/lineage not yet computed/i)).toBeNull();
     expect(screen.queryByLabelText('Data sources')).toBeNull();
@@ -718,11 +746,11 @@ describe('FlowTables', () => {
     expect(alert.textContent).not.toMatch(/derived only up to/i);
   });
 
-  // --- the three per-leg sections (independent disclosure, shared fetch) -----
+  // --- the two-level tabs (leg → section) and the shared payload read --------
   // Classification is INLINED on the payload read (ADR-0024); Data lineage comes
-  // from the trace-scoped read (ADR-0027 D5). The sections' fetch behaviour has
-  // to follow that split, or a reader either waits on a request nobody made or
-  // pays for one they did not need.
+  // from the trace-scoped read (ADR-0027 D5). The tabs' fetch behaviour has to
+  // follow that split, or a reader either waits on a request nobody made or pays
+  // for one they did not need.
 
   /** Payload-read calls the mock has seen, for the gating assertions below. */
   const payloadCalls = () =>
@@ -730,59 +758,119 @@ describe('FlowTables', () => {
       String(c[0]).includes('/payloads/'),
     );
 
-  /** Select the interaction and wait for its leg blocks to appear. */
+  /** Select the interaction and wait for its leg tabs to appear. */
   async function selectInteraction() {
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await screen.findByRole('button', { name: /Request: Payload reqhash0/i });
+    await screen.findByRole('tab', { name: /Request: Payload reqhash0/i });
   }
 
-  it('issues no payload read while every section is collapsed', async () => {
-    // The whole point of three collapsed disclosures: an opened detail panel is
-    // free. A section that fetched on mount would undo that for every selection.
-    mockFetchWithLineage(LINEAGE_LEGS);
+  it('issues no payload read while nothing that needs one is on screen', async () => {
+    // A payload-less interaction contributes no leg tabs at all, so an opened
+    // detail panel is free. The tab set fetching on mount regardless would undo
+    // that for every selection.
+    // Same lineage fixture as the rest of this block, but the selected
+    // interaction carries no payload hashes — so there is no leg tab at all and
+    // nothing to read.
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/data-lineage'))
+        return { ok: true, status: 200, json: async () => ({ legs: LINEAGE_LEGS, status: 'complete', stopped_at_seq: null }) };
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: INTERACTIONS }) };
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
-    await selectInteraction();
-    expect(screen.getByRole('button', { name: /Request: Payload reqhash0/i })).toHaveAttribute(
-      'aria-expanded',
-      'false',
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument(),
     );
+    expect(screen.queryByRole('tab', { name: /Payload/i })).toBeNull();
     expect(payloadCalls()).toHaveLength(0);
   });
 
-  it('triggers the payload read when Classification alone is expanded', async () => {
+  it('triggers the payload read when Classification alone is the active tab', async () => {
     // The verdict is an inlined field of GET /api/payloads/{hash} (ADR-0024), so
-    // this section cannot render without that read even though it shows no body.
+    // this tab cannot render without that read even though it shows no body.
+    //
+    // Payload is a leg's default tab, so to attribute a read to Classification
+    // *alone* the reader has to be parked somewhere that fetches nothing first:
+    // Data lineage. From there the next click is Classification, and the request
+    // that appears is unambiguously the one it rides on.
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await selectInteraction();
+    // Reselect the row so the leg pane remounts with a fresh (unfetched) state,
+    // then go straight to Data lineage — proving the read below is not a
+    // leftover of the default Payload tab.
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Data lineage/i }));
+    (fetch as ReturnType<typeof vi.fn>).mockClear();
     expect(payloadCalls()).toHaveLength(0);
-    await userEvent.click(screen.getByRole('button', { name: /Request: Classification/i }));
-    await waitFor(() => expect(payloadCalls().length).toBeGreaterThan(0));
-    expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
-    // And the fetched verdict (null in this fixture) is what renders — the
-    // eventual-consistency note, reached only once the read landed.
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Classification/i }));
     await waitFor(() => expect(screen.getByText(/not yet classified/i)).toBeInTheDocument());
+    // And the fetched verdict (null in this fixture) is what renders — the
+    // eventual-consistency note, reached only once the read landed. The read
+    // itself is either the newly-issued request or the one this leg already had
+    // in cache; either way every payload URL seen is this leg's.
+    expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
   });
 
-  it('does NOT trigger the payload read when Data lineage alone is expanded', async () => {
+  it('adds no payload read when Data lineage is the active tab', async () => {
     // Lineage is keyed on the leg, not the content hash, and is already in hand
     // from the one trace-scoped read — fetching the payload to show it would be
     // pure waste (and would drag a multi-KB body over the wire for provenance).
+    //
+    // Stated here as "the lineage tab adds nothing": the reader lands on the
+    // leg's default Payload tab (one read), then sits on Data lineage while the
+    // whole provenance triple renders, and the read count does not move. The
+    // *stronger* form — a leg whose payload-backed tabs are never activated and
+    // whose hash is therefore never requested at all — is asserted in
+    // LegTabs.test.tsx, on the leg that is not the default one.
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await selectInteraction();
-    await userEvent.click(screen.getByRole('button', { name: /Request: Data lineage/i }));
+    await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
+    const before = payloadCalls().length;
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Data lineage/i }));
     // It renders straight away from the prop...
     await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
-    // ...and no payload was fetched to do it.
-    expect(payloadCalls()).toHaveLength(0);
+    // ...and cost no request to do it, on this leg or the other.
+    expect(payloadCalls()).toHaveLength(before);
+    expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
+  });
+
+  it('does not fetch the inactive leg’s payload while the other leg’s tab is active', async () => {
+    // The regression tabs introduce over collapsibles: PF keeps inactive tab
+    // content mounted-but-hidden by default, and a mounted leg pane runs its
+    // `usePayload`. LegTabs therefore renders ONLY the active leg's pane, so the
+    // Response body is never dragged over the wire for a reader looking at the
+    // Request. Both legs carry hashes here, so both COULD be read.
+    mockFetchWithLineage(LINEAGE_LEGS);
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await selectInteraction();
+    // The Request leg is active, so its payload is read (Payload is its default
+    // section) — and the Response leg's is NOT, on any tab of the active leg.
+    await waitFor(() => expect(payloadCalls().length).toBeGreaterThan(0));
+    expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Classification/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Data lineage/i }));
+    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
+    expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
+    expect(payloadCalls().some((c) => String(c[0]).includes('resphash0feedface'))).toBe(false);
+    // Only once the Response leg is actually selected is its payload read.
+    await userEvent.click(screen.getByRole('tab', { name: 'Response' }));
+    await waitFor(() =>
+      expect(payloadCalls().some((c) => String(c[0]).includes('resphash0feedface'))).toBe(true),
+    );
   });
 
   it('does not render "not yet classified" while the payload read is still in flight', async () => {
@@ -816,7 +904,7 @@ describe('FlowTables', () => {
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await selectInteraction();
-    await userEvent.click(screen.getByRole('button', { name: /Request: Classification/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Classification/i }));
     // In flight: a loading state, and emphatically NOT the eventual-consistency
     // note, which would assert the server has no verdict.
     await waitFor(() =>
@@ -845,65 +933,73 @@ describe('FlowTables', () => {
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await selectInteraction();
-    await userEvent.click(screen.getByRole('button', { name: /Request: Classification/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Classification/i }));
     await waitFor(() =>
       expect(screen.getByText(/failed to load payload/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText(/not yet classified/i)).toBeNull();
   });
 
-  it('toggles the three sections independently, sharing one payload read', async () => {
+  it('switches the three section tabs independently of each other, sharing one payload read', async () => {
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await selectInteraction();
-    const payloadBtn = screen.getByRole('button', { name: /Request: Payload reqhash0/i });
-    const classBtn = screen.getByRole('button', { name: /Request: Classification/i });
-    const lineageBtn = screen.getByRole('button', { name: /Request: Data lineage/i });
+    const payloadTab = () => screen.getByRole('tab', { name: /Request: Payload reqhash0/i });
+    const classTab = () => screen.getByRole('tab', { name: /Request: Classification/i });
+    const lineageTab = () => screen.getByRole('tab', { name: /Request: Data lineage/i });
 
-    // Open Payload only: its body shows, the other two stay shut.
-    await userEvent.click(payloadBtn);
+    // Payload is the default active section: its body shows, the other two panes
+    // do not — exactly one section at a time is the whole point of tabs.
     await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
-    expect(payloadBtn).toHaveAttribute('aria-expanded', 'true');
-    expect(classBtn).toHaveAttribute('aria-expanded', 'false');
-    expect(lineageBtn).toHaveAttribute('aria-expanded', 'false');
+    expect(payloadTab()).toHaveAttribute('aria-selected', 'true');
+    expect(classTab()).toHaveAttribute('aria-selected', 'false');
+    expect(lineageTab()).toHaveAttribute('aria-selected', 'false');
     expect(screen.queryByText(/not yet classified/i)).toBeNull();
     expect(screen.queryByLabelText('Data sources')).toBeNull();
 
-    // Open Classification too — no SECOND payload request: one hoisted
-    // usePayload per leg, and TanStack keys the cache on the hash.
+    // Switch to Classification — no SECOND payload request: one hoisted
+    // usePayload per leg, and TanStack keys the cache on the hash. The verdict
+    // renders straight from the satisfied read, never flickering to loading.
     const callsAfterPayload = payloadCalls().length;
-    await userEvent.click(classBtn);
+    await userEvent.click(classTab());
     await waitFor(() => expect(screen.getByText(/not yet classified/i)).toBeInTheDocument());
     expect(payloadCalls()).toHaveLength(callsAfterPayload);
-
-    // Collapsing Payload leaves Classification open (independent state) — and
-    // the shared read is still satisfied, so the verdict does not flicker back
-    // to a loading state.
-    await userEvent.click(payloadBtn);
-    expect(payloadBtn).toHaveAttribute('aria-expanded', 'false');
+    expect(classTab()).toHaveAttribute('aria-selected', 'true');
+    expect(payloadTab()).toHaveAttribute('aria-selected', 'false');
     expect(screen.queryByText(/"flights"/)).toBeNull();
-    expect(screen.getByText(/not yet classified/i)).toBeInTheDocument();
 
-    // Data lineage opens on top of that, still independently.
-    await userEvent.click(lineageBtn);
+    // Data lineage next — it needs no payload read at all, and swaps the pane
+    // out from under Classification.
+    await userEvent.click(lineageTab());
     await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
-    expect(screen.getByText(/not yet classified/i)).toBeInTheDocument();
+    expect(lineageTab()).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByText(/not yet classified/i)).toBeNull();
     expect(screen.queryByText(/"flights"/)).toBeNull();
+    expect(payloadCalls()).toHaveLength(callsAfterPayload);
+
+    // And back to Payload: still the same one read, still no refetch.
+    await userEvent.click(payloadTab());
+    await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
+    expect(payloadCalls()).toHaveLength(callsAfterPayload);
   });
 
-  it('reads the trace-scoped lineage resource exactly once for many section expansions', async () => {
+  it('reads the trace-scoped lineage resource exactly once for many tab activations', async () => {
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('button', { name: /Request: Data lineage/i }));
-    await userEvent.click(await screen.findByRole('button', { name: /Response: Data lineage/i }));
+    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
     await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
-    // One trace-level fetch serves every leg — NOT one per payload expansion.
+    await userEvent.click(screen.getByRole('tab', { name: 'Response' }));
+    await userEvent.click(await screen.findByRole('tab', { name: /Response: Data lineage/i }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Request' }));
+    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
+    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
+    // One trace-level fetch serves every leg — NOT one per tab activation.
     const lineageCalls = (fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
       (c) => String(c[0]).endsWith('/data-lineage'),
     );

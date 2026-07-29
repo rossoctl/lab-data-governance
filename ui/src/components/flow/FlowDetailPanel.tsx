@@ -6,14 +6,15 @@ import type { PinStore } from '../../lib/pins';
 import type { TraceDataLineage } from '../../types';
 import { DetailList } from '../DetailList';
 import { RoleIcon } from '../RoleIcon';
-import { LegSections } from './LegSections';
+import { LegTabs, type Leg } from './LegTabs';
 import { SpanLink } from './SpanLink';
 import { lineageOfLeg, type Selection } from './selection';
 
 /**
  * The flow view's detail panel for the one selected row: caption + pin toggle +
- * close, the selection's fields, a per-leg block of lazily-expandable payload /
- * Classification / Data lineage sections, and the span evidence that produced it.
+ * close, the selection's fields, a two-level tab set (leg → payload /
+ * Classification / Data lineage) over the legs that carried a payload, and the
+ * span evidence that produced it.
  *
  * Floats as a fixed overlay on the right of the viewport instead of occupying a
  * layout column, so the tables use the full width — geometry lives in
@@ -102,26 +103,27 @@ export function FlowDetailPanel({
       </div>
       <DetailList pairs={selection.fields} />
 
-      {/* One block per leg that actually carried a payload, each headed by its
-          own leg name ('Request' / 'Response') — there is no longer an umbrella
-          'Payloads' heading, because the leg name is what a reader navigates by
-          and the payload is only one of the three facts under it. A leg with no
-          payload hash contributes nothing at all (see LegSections' note on why
-          a lineage-only block would misrepresent such a leg). */}
-      {selection.requestPayloadHash && (
-        <LegSections
-          label="Request"
-          hash={selection.requestPayloadHash}
-          lineage={lineageOfLeg(lineageQ, selection, 'request')}
-        />
-      )}
-      {selection.responsePayloadHash && (
-        <LegSections
-          label="Response"
-          hash={selection.responsePayloadHash}
-          lineage={lineageOfLeg(lineageQ, selection, 'response')}
-        />
-      )}
+      {/* One outer tab per leg that actually carried a payload, named by the leg
+          ('Request' / 'Response') — there is no umbrella 'Payloads' heading,
+          because the leg is what a reader navigates by and the payload is only
+          one of the three facts under it. A leg with no payload hash contributes
+          no tab at all, so a request-only interaction shows a single `Request`
+          tab (see LegTabs' note on why a lineage-only tab would misrepresent
+          such a leg). */}
+      <LegTabs
+        legs={[
+          selection.requestPayloadHash && {
+            label: 'Request',
+            hash: selection.requestPayloadHash,
+            lineage: lineageOfLeg(lineageQ, selection, 'request'),
+          },
+          selection.responsePayloadHash && {
+            label: 'Response',
+            hash: selection.responsePayloadHash,
+            lineage: lineageOfLeg(lineageQ, selection, 'response'),
+          },
+        ].filter((l): l is Leg => Boolean(l))}
+      />
 
       <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
         Spans

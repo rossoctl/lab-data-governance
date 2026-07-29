@@ -25,7 +25,7 @@ export function DataLineageView({ state }: { state: LineageState }) {
   // from the "not yet computed" window below, because the two prompt opposite
   // actions: an error is retried, a pending derivation is waited out. Same red
   // terse treatment (and wording shape) as the sibling payload-fetch failure in
-  // `LegSections`, so one convention covers both failures in this panel.
+  // `LegTabs`, so one convention covers both failures in this panel.
   if (state.kind === 'error') {
     return (
       <div role="alert" style={{ color: 'var(--dg-color-error)', fontSize: '0.85rem' }}>
