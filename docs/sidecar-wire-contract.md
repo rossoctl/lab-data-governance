@@ -1,9 +1,10 @@
 # Sidecar wire contract — two-span lineage (v1, for review)
 
 The single source of truth for what the AuthBridge lineage plugin emits and what the
-`sidecar_interactions` processor consumes. Fixes the attribute names that guide-ys.md left
+P-interactions `sidecar` algorithm (ADR-0028) consumes. Fixes the attribute names that were left
 "pending confirmation". Producer: `kagenti-extensions-snp/authbridge/authlib/plugins/lineage/`.
-Consumer: `data_governance/processors/sidecar_interactions/`.
+Consumer: `data_governance/processors/interactions/sidecar.py` (vocabulary:
+`data_governance/sidecar_facts.py`).
 
 Principles (agreed 2026-07-21):
 - **Facts, not meaning.** The sidecar emits what it observed on the wire plus parsed protocol facts.
@@ -90,7 +91,7 @@ inference.model / url.path; response = same + ` response`.
 | anonymous-inbound "emit but omit hop.kind" suppression | gone; every inbound emitted uniformly; consumer folds anonymous callers |
 | `is_principal` config reclassification | consumer-side config if ever needed |
 
-## Consumer commitments (sidecar_interactions)
+## Consumer commitments (the sidecar interactions algorithm)
 
 - Interaction id = `uuid5(NS_INTERACTION, f"{trace_id}/{exchange.id}")`. Request half fills
   caller/callee/request_payload_hash/started_at; response half fills response_payload_hash/
