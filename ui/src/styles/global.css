@@ -3,9 +3,60 @@
    src/App applies it on mount. These few rules cover the app-shell background
    and the monospace treatment the trace/span views rely on. */
 
+/* ---------------------------------------------------------------------------
+   The dg palette + layout metrics: the single source for the hex values and
+   sizes that used to be restated inline across the flow/tree/detail components.
+   Declared on :root so both CSS rules here and inline `var(--dg-…)` styles in
+   the TSX resolve to the same value — change a color once, everywhere follows.
+
+   The values are the vanilla shell's, kept EXACTLY as they were (same pixels);
+   PatternFly's own tokens are close but not identical, so adopting them would
+   have shifted the rendered colors, which this palette deliberately does not do.
+
+   Palette:
+   - --dg-color-muted    #888     secondary/deemphasised text (service names,
+                                  counts, "not yet …" notes, the panel's ×)
+   - --dg-color-error    #f85149  error text (ERROR status, failed-read notes)
+   - --dg-color-ok       #6acf6a  ok status text
+   - --dg-color-label    #c9c9c9  highlight-legend set labels
+   - --dg-surface-app    #151515  app-shell background
+   - --dg-surface-panel  #1b1b1b  floating-panel / legend background
+   - --dg-border         #444     floating-panel border
+   - --dg-border-subtle  #2c2c2c  legend border (dimmer than --dg-border)
+   - --dg-tree-guide     #555     the interactions tree's │/└─ guide glyphs
+   - --dg-row-selected   #3a4a66  span-tree selected-row background
+   - --dg-row-highlight            flow-table selected-row tint
+
+   Layout: the floating detail panel's width is used TWICE — by the panel itself
+   and by the right gutter the tables reserve so they shrink out from under the
+   float. Both read these two vars, so the panel and its gutter cannot drift.
+   --------------------------------------------------------------------------- */
+:root {
+  --dg-color-muted: #888;
+  --dg-color-error: #f85149;
+  --dg-color-ok: #6acf6a;
+  --dg-color-label: #c9c9c9;
+  --dg-surface-app: #151515;
+  --dg-surface-panel: #1b1b1b;
+  --dg-border: #444;
+  --dg-border-subtle: #2c2c2c;
+  --dg-tree-guide: #555;
+  --dg-row-selected: #3a4a66;
+  --dg-row-highlight: rgba(56, 139, 253, 0.28);
+
+  /* Floating detail-panel geometry (flow view). The panel is
+     `width: var(--dg-detail-panel-width)` with a
+     `min-width: var(--dg-detail-panel-min)` floor at
+     `right: var(--dg-detail-panel-gap)`; the tables' gutter is derived from the
+     same three below, so the two agree by construction. */
+  --dg-detail-panel-width: 30%;
+  --dg-detail-panel-min: 320px;
+  --dg-detail-panel-gap: 1rem;
+}
+
 html.pf-v5-theme-dark,
 body {
-  background: #151515;
+  background: var(--dg-surface-app);
 }
 
 body {
@@ -68,7 +119,46 @@ body {
    (`.pf-v5-c-table tr:where(.pf-v5-c-table__tr).pf-m-clickable`, specificity
    0-2-1), which otherwise paints its own dark background over ours. */
 .pf-v5-c-table tr.pf-v5-c-table__tr[data-dg-selected='active'] {
-  background: rgba(56, 139, 253, 0.28);
+  background: var(--dg-row-highlight);
+}
+
+/* The flow view's floating detail panel and the right gutter its tables
+   reserve. These two rules are the single source of the panel geometry: the
+   gutter's `padding-right` is DERIVED from the panel's own width/min/gap vars
+   (same `max()`, plus a gap on each side) instead of restating `30%`/`320px` a
+   second time, so widening the panel widens its gutter automatically.
+
+   The panel floats fixed over the page rather than occupying a layout column,
+   so the tables use the full width when nothing is selected; the gutter class is
+   applied only while the panel is open, and the tables then shrink out from
+   under the float instead of being covered. */
+.dg-detail-panel {
+  position: fixed;
+  /* Sit just below the app masthead rather than the viewport top so the panel
+     doesn't tuck under the header. Tracks the real header height via
+     PatternFly's CSS var, with a sensible fallback. */
+  top: calc(var(--pf-v5-c-page__header--MinHeight, 4.75rem) + var(--dg-detail-panel-gap));
+  right: var(--dg-detail-panel-gap);
+  width: var(--dg-detail-panel-width);
+  min-width: var(--dg-detail-panel-min);
+  /* Leave the same gap above and below (hence 2x) so the panel never runs off
+     the bottom of the viewport. */
+  max-height: calc(
+    100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) -
+      (var(--dg-detail-panel-gap) * 2)
+  );
+  overflow-y: auto;
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  padding: 1rem;
+  z-index: 100;
+}
+
+.dg-detail-gutter {
+  padding-right: max(var(--dg-detail-panel-width), var(--dg-detail-panel-min));
+  margin-right: calc(var(--dg-detail-panel-gap) * 2);
 }
 
 /* Data-lineage keys (DataLineageView): an **Entity** natural key is a long

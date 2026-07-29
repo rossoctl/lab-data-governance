@@ -1,406 +1,45 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert,
   Title,
   Spinner,
   EmptyState,
   EmptyStateBody,
   EmptyStateHeader,
-  Button,
-  Checkbox,
-  CodeBlock,
-  CodeBlockCode,
+  Tabs,
+  Tab,
+  TabTitleText,
 } from '@patternfly/react-core';
-import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import type { UseQueryResult } from '@tanstack/react-query';
 
-import { useInteractions, useEntities, usePayload, useDataLineage } from '../api/hooks';
+import { useInteractions, useEntities, useDataLineage } from '../api/hooks';
 import { fetchJson } from '../api/client';
 import {
   computeInteractionDepths,
-  legLineageKey,
+  flatConnectorRoles,
+  flatLegRows,
   legOfType,
-  requestOccurredAt,
 } from '../lib/flow';
-import { formatTime24Utc } from '../lib/recentTraces';
 import type { PinStore } from '../lib/pins';
-import { EntityPill } from './EntityPill';
-import { DetailList } from './DetailList';
-import { ClassificationView } from './ClassificationView';
-import { DataLineageView } from './DataLineageView';
-import { RoleIcon } from './RoleIcon';
-import type {
-  Entity,
-  Interaction,
-  LineageState,
-  LineageStatus,
-  SpanEvidence,
-  TraceDataLineage,
-} from '../types';
-
-interface Selection {
-  kind: 'interaction' | 'entity';
-  id: string;
-  /** The panel's promoted caption for this selection ('Entity' | 'Interaction'). */
-  sectionTitle: 'Entity' | 'Interaction';
-  fields: Array<[string, string]>;
-  evidence: SpanEvidence[];
-  pinKey: string;
-  pinLabel: string;
-  /** Payload content hashes (interactions only) so the panel can lazily fetch
-   *  and show the request/response bodies — ported from the vanilla flow view's
-   *  Req/Resp cells + showPayload(). Null when the interaction carried none. */
-  requestPayloadHash: string | null;
-  responsePayloadHash: string | null;
-}
-
-/**
- * A deterministic muted color for an interaction's request↔response connector
- * line in the flat view. Hashing `ix.id` to a hue (NOT Math.random) keeps a
- * given interaction's bracket a stable color across renders and lets several
- * overlapping brackets be told apart. Kept dim (low saturation / mid lightness)
- * to sit alongside the file's #555/#888 grays without shouting.
- */
-function connectorColor(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
-  const hue = Math.abs(hash) % 360;
-  return `hsl(${hue}, 45%, 60%)`;
-}
-
-/**
- * The flat view's request↔response connector cell. Given the drawing roles for
- * this row (one per interaction bracket covering it — see `flatConnectors`),
- * paints a small SVG: a vertical line down from center for a request `top`
- * edge (capped with a ▾ marker), up to center for a response `bottom` edge
- * (capped with ▴), and a full pass-through line for an in-between `through`
- * row. Overlapping brackets are laid out in adjacent lanes so their lines never
- * coincide. `pointer-events: none` on the SVG keeps the row click intact.
- *
- * The SVG is absolutely positioned to fill the cell's TRUE height (`inset: 0`
- * in a `position: relative` cell) and drawn with a fixed-height viewBox scaled
- * via `preserveAspectRatio="none"`. So each row's segment always spans the full
- * row — whatever a compact row actually measures, including cell padding — and
- * butts seamlessly against the adjacent rows' segments. That is what makes a
- * request→response bracket read as ONE unbroken line rather than the chopped
- * per-row pieces the old fixed 28px SVG produced. The end caps (▾/▴) and the
- * through pass-through keep their meaning; lanes keep overlapping brackets apart.
- */
-function ConnectorCell({
-  roles,
-}: {
-  roles: Array<{ id: string; role: 'top' | 'bottom' | 'through' }>;
-}) {
-  const laneW = 8; // horizontal spacing between overlapping brackets
-  const width = Math.max(laneW, roles.length * laneW);
-  // A nominal viewBox height the lines are drawn in; `preserveAspectRatio="none"`
-  // stretches it to the cell's real pixel height, so the value is arbitrary —
-  // only the ratios (mid = center) matter. Vertical lines don't distort under
-  // that stretch, but glyphs would, so the ▾/▴ caps are drawn as separately-
-  // positioned HTML markers (see below) rather than SVG <text>.
-  const vbH = 100;
-  const mid = vbH / 2;
-  return (
-    <>
-      <svg
-        width={width}
-        height="100%"
-        viewBox={`0 0 ${width} ${vbH}`}
-        preserveAspectRatio="none"
-        style={{
-          position: 'absolute',
-          inset: 0,
-          display: 'block',
-          pointerEvents: 'none',
-          overflow: 'visible',
-        }}
-        aria-hidden="true"
-        data-testid="flat-connector"
-      >
-        {roles.map(({ id, role }, lane) => {
-          const x = lane * laneW + laneW / 2;
-          const color = connectorColor(id);
-          // top: line from center downward; bottom: from top edge to center;
-          // through: full height. A non-scaling stroke keeps the line 2px wide
-          // regardless of how tall the row (and thus the stretched viewBox) is.
-          const y1 = role === 'bottom' ? 0 : mid;
-          const y2 = role === 'top' ? vbH : mid;
-          return (
-            <g key={id} data-connector-id={id} data-connector-role={role} stroke={color} fill={color}>
-              <line
-                x1={x}
-                y1={role === 'through' ? 0 : y1}
-                x2={x}
-                y2={role === 'through' ? vbH : y2}
-                strokeWidth={2}
-                vectorEffect="non-scaling-stroke"
-              />
-            </g>
-          );
-        })}
-      </svg>
-      {/* The ▾/▴ end caps as HTML markers centered on the cell, so they keep a
-          fixed size and shape while the SVG lines stretch to the row height. */}
-      {roles.map(({ id, role }, lane) =>
-        role === 'through' ? null : (
-          <span
-            key={`${id}-cap`}
-            aria-hidden="true"
-            style={{
-              position: 'absolute',
-              top: '50%',
-              left: lane * laneW + laneW / 2,
-              transform: 'translate(-50%, -50%)',
-              fontSize: 9,
-              lineHeight: 1,
-              color: connectorColor(id),
-              pointerEvents: 'none',
-            }}
-          >
-            {role === 'top' ? '▾' : '▴'}
-          </span>
-        ),
-      )}
-    </>
-  );
-}
-
-/** Truncated, clickable span-id cell (Span + Parent columns share this). */
-function SpanLink({
-  spanId,
-  onNavigate,
-}: {
-  spanId: string | null;
-  onNavigate?: (spanId: string) => void;
-}) {
-  if (!spanId) return <>—</>;
-  return (
-    <Button
-      variant="link"
-      isInline
-      onClick={() => onNavigate?.(spanId)}
-      className="dg-mono"
-    >
-      {spanId.length > 16 ? `${spanId.slice(0, 16)}…` : spanId}
-    </Button>
-  );
-}
-
-/**
- * A collapsible request/response payload. Ported from the vanilla flow view's
- * Req/Resp cells + showPayload(): a link shows the hash's first 8 chars, and
- * expanding it lazily fetches `GET /api/payloads/{hash}` and renders the
- * decoded content plus kind/hash/bytes. Fetch is gated on `open` (usePayload
- * enabled only once expanded), so an unopened payload costs nothing.
- *
- * The two derived governance facts hang off the expanded body: the payload's
- * **Classification** verdict (keyed by content hash, inlined on the payload) and
- * its **Data lineage** (keyed by the **Interaction leg** this payload sits on,
- * ADR-0027 D5 — so it is passed *in* by the panel from the one trace-scoped read
- * rather than re-fetched here per expansion).
- */
-function PayloadView({
-  label,
-  hash,
-  lineage,
-}: {
-  label: string;
-  hash: string;
-  /**
-   * What is currently known about this leg's lineage: a derived triple, "not
-   * derived yet", or "the read failed" — three states, never one overloaded
-   * `null` (see {@link LineageState}).
-   */
-  lineage: LineageState;
-}) {
-  const [open, setOpen] = useState(false);
-  const { data, isLoading, isError } = usePayload(open ? hash : null);
-  return (
-    <div style={{ marginTop: '0.25rem' }}>
-      <Button
-        variant="link"
-        isInline
-        onClick={() => setOpen((o) => !o)}
-        className="dg-mono"
-      >
-        {open ? '▼' : '▶'} {label}: {hash.slice(0, 8)}
-      </Button>
-      {open && (
-        <div style={{ marginTop: '0.25rem' }}>
-          {isLoading ? (
-            <Spinner size="md" aria-label={`Loading ${label} payload`} />
-          ) : isError || !data ? (
-            <div style={{ color: '#f85149', fontSize: '0.85rem' }}>
-              Failed to load payload.
-            </div>
-          ) : (
-            <>
-              <DetailList
-                pairs={[
-                  ['kind', data.content_kind],
-                  ['hash', data.content_hash],
-                  ['bytes', String(data.byte_size)],
-                ]}
-              />
-              <CodeBlock>
-                <CodeBlockCode>
-                  {data.content == null ? '(none)' : JSON.stringify(data.content, null, 2)}
-                </CodeBlockCode>
-              </CodeBlock>
-              {/* The P-classification Classification verdict for this payload
-                  (issue #80): sensitivity level, regulatory tags, identity
-                  bundle, and the Findings. `null` renders as "not yet
-                  classified" (the eventual-consistency window, ADR-0024),
-                  distinct from a real PUBLIC / zero-Findings verdict. */}
-              <div style={{ marginTop: '0.5rem' }}>
-                <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Classification</div>
-                <ClassificationView classification={data.classification} />
-              </div>
-              {/* The P-data-lineage metadata for THIS LEG (issue #119): the
-                  payload's data sources, the transformations applied per source,
-                  and the unordered set of entities it passed through. An
-                  undelivered derivation renders as "lineage not yet computed"
-                  (the eventual-consistency window, ADR-0027) and a failed read
-                  as an explicit error — never as each other, and never as a
-                  derived answer. */}
-              <div style={{ marginTop: '0.5rem' }}>
-                <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Data lineage</div>
-                <DataLineageView state={lineage} />
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * This payload's {@link LineageState} out of the trace-scoped query, keyed by the
- * leg it sits on (ADR-0027 D5).
- *
- * A failed read is its own arm, taken FIRST: the map is empty on error, so
- * falling through would report every leg as "not yet computed" — telling the
- * reader to wait for a derivation the view never actually asked about. That is
- * the one conflation this function exists to prevent.
- *
- * The genuine not-yet-computed cases still collapse to one `'pending'`: the read
- * is in flight, the leg has no lineage row (including the whole empty-`legs`
- * not-yet-migrated response), or the row exists with `lineage: null`. Those are
- * the same statement to the reader — "we have not derived this yet" — and lumping
- * them keeps the view from mistaking any of them for a real derived-empty triple.
- */
-function lineageOfLeg(
-  lineageQ: Pick<UseQueryResult<TraceDataLineage>, 'data' | 'isError'>,
-  selection: Selection,
-  legType: 'request' | 'response',
-): LineageState {
-  if (lineageQ.isError) return { kind: 'error' };
-  // Guard the key's meaning rather than assume it: `Selection.id` is an
-  // interaction id only for an interaction selection, and a lineage key built
-  // from an entity id would silently miss (or worse, collide) — an entity
-  // selection carries no payload hashes, so this branch is unreachable today and
-  // stays that way by construction.
-  if (selection.kind !== 'interaction') return { kind: 'pending' };
-  const lineage = lineageQ.data?.byLeg.get(legLineageKey(selection.id, legType));
-  return lineage == null ? { kind: 'pending' } : { kind: 'derived', lineage };
-}
-
-/**
- * The trace-level **Data lineage** coverage warning (issue #120, ADR-0027 D6).
- *
- * When a leg's payload is absent, lineage is derived only up to that point and the
- * trace is marked `partial`. Rendered here, at the top of the flow view and
- * outside the tables' right-hand gutter, because the failure mode is a reader
- * taking the rows that DO carry lineage for the full set of data sources — so the
- * warning has to be on screen before anything is clicked, and stay there while
- * the detail panel is open. A message hidden behind a payload expansion would not
- * prevent the mistake; it would only be available to someone who already
- * suspected it.
- *
- * Only `partial` warns about a truncation. `complete` needs no banner (the
- * absence of a warning is the "no truncation" statement, and a permanent green
- * box trains the reader to stop reading the strip). `null` — not yet derived —
- * deliberately says nothing either: there is no established truncation to report,
- * and the per-payload blocks already state "lineage not yet computed" for that
- * window. Claiming a truncation nobody has established would make the banner
- * noise, which is how a real one gets ignored.
- *
- * `isError` is the exception to that silence, and it is not a `status` value: a
- * failed read establishes *nothing*, including that coverage is complete — and in
- * this view silence IS the complete-coverage statement. So an error gets its own
- * banner, deliberately worded as *unknown* rather than as a truncation: it must
- * not let a broken read look like clean coverage, and equally must not invent a
- * prefix claim it never obtained. Distinct from the `null` case, where the read
- * did succeed and simply has nothing yet.
- */
-function LineageCoverageAlert({
-  status,
-  stoppedAtSeq,
-  isError,
-}: {
-  status: LineageStatus;
-  stoppedAtSeq: number | null;
-  /** The trace-scoped lineage read failed — coverage is unknown, not fine. */
-  isError: boolean;
-}) {
-  if (isError) {
-    return (
-      <Alert
-        variant="warning"
-        isInline
-        title="Data lineage coverage for this trace is unknown"
-        // Same assertive upgrade as the truncation warning below: a reader must
-        // learn that the coverage claim is missing before they act on whatever
-        // lineage the per-leg blocks do or do not show.
-        role="alert"
-        style={{ marginBottom: '0.75rem' }}
-      >
-        {/* No stop position and no prefix claim — deliberately. Nothing about
-            this trace's coverage was established, so the banner reports the
-            failure and stops there rather than borrowing `partial`'s wording. */}
-        The lineage coverage for this trace could not be loaded, so whether the
-        data sources shown are complete is <strong>unknown</strong>. Reload to
-        retry.
-      </Alert>
-    );
-  }
-  if (status !== 'partial') return null;
-  return (
-    <Alert
-      variant="warning"
-      isInline
-      title="Data lineage for this trace is incomplete"
-      // PF's Alert announces itself `aria-live="polite"` and carries no role.
-      // An explicit `role="alert"` upgrades that to assertive: this is not
-      // status chatter, it is "what you are about to read is not the whole
-      // picture", and a screen-reader user must get it before they act on the
-      // source list — the same reason it is rendered before the tables.
-      role="alert"
-      style={{ marginBottom: '0.75rem' }}
-    >
-      {/* Naming the stop position matters as much as the warning: it tells the
-          reader WHERE the picture ends, so they can see which rows are covered
-          rather than distrusting all of them equally. The seq is the leg
-          sequence shown in the flat view's Seq column, so it is a position the
-          reader can actually locate. The null fallback is unreachable against a
-          current server (the status table CHECK-pairs `partial` with a stop seq),
-          but the warning must survive an older one rather than render "leg
-          null". */}
-      {stoppedAtSeq === null
-        ? 'Lineage was derived only up to the first leg missing a payload.'
-        : `Lineage was derived only up to leg seq ${stoppedAtSeq}, where a payload is missing.`}{' '}
-      Legs from that point on have no lineage, so what is shown is{' '}
-      <strong>not the complete set of data sources</strong> for this trace.
-    </Alert>
-  );
-}
+import { EntitiesTable } from './flow/EntitiesTable';
+import { FlatLegsTable } from './flow/FlatLegsTable';
+import { FlowDetailPanel } from './flow/FlowDetailPanel';
+import { InteractionsTable } from './flow/InteractionsTable';
+import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
+import type { Selection } from './flow/selection';
+import type { Entity, Interaction, SpanEvidence } from '../types';
 
 /** Which flow row is selected, mirrored to/from the URL (?iid | ?eid). */
 export interface FlowSelection {
   iid?: string;
   eid?: string;
 }
+
+/**
+ * How the Interactions section lists its rows: the default parent/child `tree`
+ * (depth-indented interactions) or `flat` (one row per request/response leg,
+ * ordered by the trace-wide leg `seq`). Mirrored to/from the URL as `?legs=flat`
+ * — `tree` is the default and writes no param, so canonical URLs stay clean.
+ */
+export type LegViewKey = 'tree' | 'flat';
 
 export interface FlowTablesProps {
   traceId: string;
@@ -421,6 +60,15 @@ export interface FlowTablesProps {
    * URL. `null` on deselect.
    */
   onSelectionChange?: (sel: FlowSelection | null) => void;
+  /**
+   * Which Interactions tab is active, from the URL (`?legs`). The parent owns
+   * every URL param in this view (same as `initialSelection`), so this is a
+   * controlled prop rather than internal state — reload / bookmark / back
+   * restore the tab. Defaults to `tree` when omitted.
+   */
+  legView?: LegViewKey;
+  /** Fired when the Interactions tab changes so the parent can mirror `?legs`. */
+  onLegViewChange?: (key: LegViewKey) => void;
 }
 
 /**
@@ -429,6 +77,9 @@ export interface FlowTablesProps {
  * execution_flow_logic.js — depth indentation via the parent walk, pin dots
  * mirroring the tree's highlight store, and lazy span-evidence fetch + a detail
  * panel on row click.
+ *
+ * This module owns only the composition and the selection/URL state; the tables,
+ * the floating detail panel and the coverage banner live in ./flow.
  */
 export function FlowTables({
   traceId,
@@ -438,6 +89,8 @@ export function FlowTables({
   onRevealSpans,
   initialSelection,
   onSelectionChange,
+  legView = 'tree',
+  onLegViewChange,
 }: FlowTablesProps) {
   const interactionsQ = useInteractions(traceId);
   const entitiesQ = useEntities(traceId);
@@ -452,20 +105,17 @@ export function FlowTables({
   // reading the visible rows as the whole picture — which is the entire point of
   // the flag (ADR-0027 D6).
   const lineageQ = useDataLineage(traceId);
-  // Flat view: ignore the parent/child tree and list each request/response leg
-  // as its own row, ordered by the leg `seq` (the trace-wide sequence number).
-  const [flatView, setFlatView] = useState(false);
   // Monotonic click token: each row click bumps it, and a click's async
   // evidence fetch only commits its setState if it is still the latest click.
   // Guards the out-of-order race where a slow fetch resolves after a later
   // click and would otherwise overwrite the selection/highlight.
   const clickSeq = useRef(0);
 
-  // Highlight state for a row: 'active' if it is the current selection, else
-  // null. Only the latest-selected row (entity or interaction) is highlighted;
-  // `selection` already tracks that single row across both kinds.
-  const rowState = (kind: 'entity' | 'interaction', id: string): 'active' | null =>
-    selection?.kind === kind && selection.id === id ? 'active' : null;
+  // The selected id per table kind. Only the latest-selected row (entity or
+  // interaction) is highlighted; `selection` already tracks that single row
+  // across both kinds, so the other table's id is null.
+  const selectedEntityId = selection?.kind === 'entity' ? selection.id : null;
+  const selectedInteractionId = selection?.kind === 'interaction' ? selection.id : null;
 
   const interactions = useMemo(() => interactionsQ.data ?? [], [interactionsQ.data]);
   const entities = useMemo(() => entitiesQ.data ?? [], [entitiesQ.data]);
@@ -475,45 +125,8 @@ export function FlowTables({
     return m;
   }, [entities]);
   const depthById = useMemo(() => computeInteractionDepths(interactions), [interactions]);
-  // Flat rows: one entry per leg across all interactions, ordered by `seq`.
-  // Each carries its parent interaction so a click still opens that
-  // interaction's detail panel (legs have no selection of their own).
-  const flatRows = useMemo(
-    () =>
-      interactions
-        .flatMap((ix) => ix.legs.map((leg) => ({ ix, leg })))
-        .sort((a, b) => a.leg.seq - b.leg.seq),
-    [interactions],
-  );
-  // Request↔response pairing for the flat view's connector column. A request
-  // leg and its response leg share the same `ix.id` (that is the pairing key),
-  // but they sort by `seq` so they are frequently NOT adjacent — other
-  // interactions' legs interleave between them. We map `ix.id` → the row
-  // indices of its request and response within `flatRows`, then derive each
-  // interaction's [top, bottom] index span. A row then knows, for every
-  // interaction whose span covers it, whether it is that span's top edge
-  // (request → half-line down + ↓), its bottom edge (response → half-line up +
-  // ↑), or an in-between pass-through (full vertical line). Single-leg
-  // interactions (response in flight) have only one index, so their span is a
-  // single row with no partner and thus no line is drawn. `undefined` values
-  // guard the (theoretical) all-response case where a request row is absent.
-  const flatConnectors = useMemo(() => {
-    const spans = new Map<string, { top: number; bottom: number }>();
-    flatRows.forEach(({ ix }, i) => {
-      const s = spans.get(ix.id);
-      if (!s) spans.set(ix.id, { top: i, bottom: i });
-      else s.bottom = i; // later index (legs already sorted by seq)
-    });
-    // Per row, the drawing role for each interaction whose span covers it.
-    return flatRows.map((_row, i) =>
-      [...spans.entries()]
-        .filter(([, s]) => s.top !== s.bottom && i >= s.top && i <= s.bottom)
-        .map(([id, s]) => ({
-          id,
-          role: i === s.top ? ('top' as const) : i === s.bottom ? ('bottom' as const) : ('through' as const),
-        })),
-    );
-  }, [flatRows]);
+  const flatRows = useMemo(() => flatLegRows(interactions), [interactions]);
+  const flatConnectors = useMemo(() => flatConnectorRoles(flatRows), [flatRows]);
   // Read the pin colors directly on render (NOT via useMemo keyed on `pins`):
   // `pins` is a stable mutable store reference, so a memo keyed on it would
   // never recompute after a pin toggle. The parent re-renders FlowTables on
@@ -648,24 +261,6 @@ export function FlowTables({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSelection?.iid, initialSelection?.eid, interactions, entities, selection]);
 
-  // Row highlight: `data-dg-selected="active"` drives the background tint via
-  // global.css for the single selected row. The attribute is omitted when the
-  // row isn't selected, so unselected rows keep the default table styling.
-  function rowProps(kind: 'entity' | 'interaction', id: string) {
-    return { 'data-dg-selected': rowState(kind, id) ?? undefined };
-  }
-
-  function pinDot(key: string) {
-    const color = pinColor.get(key);
-    if (!color) return null;
-    return (
-      <span
-        aria-label="pinned"
-        style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: color }}
-      />
-    );
-  }
-
   if (isLoading) return <Spinner aria-label="Loading interaction flow" />;
   if (isEmpty) {
     return (
@@ -689,355 +284,73 @@ export function FlowTables({
         stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
         isError={lineageQ.isError}
       />
-      {/* Tables container. When the detail panel is open it floats fixed on the
-          right (see below), so reserve a right gutter here equal to the panel's
-          width + a gap — the tables shrink out from under the float instead of
-          being covered. Closed → no padding, tables reclaim full width. The
-          panel is `width:30%, minWidth:320` at `right:1rem`, so the gutter uses
-          the same max() and adds ~1rem gap on each side. */}
-      <div
-        style={
-          selection
-            ? { paddingRight: 'max(30%, 320px)', marginRight: '2rem' }
-            : undefined
-        }
-      >
+      {/* Tables container. While the detail panel is open it floats fixed on the
+          right, so `dg-detail-gutter` reserves a right gutter derived from the
+          panel's own width vars (global.css) — the tables shrink out from under
+          the float instead of being covered. Closed → no class, tables reclaim
+          full width. */}
+      <div className={selection ? 'dg-detail-gutter' : undefined}>
         <Title headingLevel="h3" size="md">
           Entities
         </Title>
-        <Table aria-label="Entities" variant="compact">
-          <Thead>
-            <Tr>
-              <Th>Kind</Th>
-              <Th screenReaderText="Pinned" />
-              <Th>Display name</Th>
-              <Th>Detected from</Th>
-            </Tr>
-          </Thead>
-          <Tbody>
-            {entities.map((e) => (
-              <Tr key={e.id} isClickable onRowClick={() => selectEntity(e)} {...rowProps('entity', e.id)}>
-                <Td dataLabel="Kind">
-                  <EntityPill entity={e} />
-                </Td>
-                <Td>{pinDot(`entity:${e.id}`)}</Td>
-                <Td dataLabel="Display name">{e.display_name}</Td>
-                <Td dataLabel="Detected from" style={{ color: '#888' }}>
-                  {e.detected_from}
-                </Td>
-              </Tr>
-            ))}
-          </Tbody>
-        </Table>
+        <EntitiesTable
+          entities={entities}
+          selectedId={selectedEntityId}
+          pinColor={pinColor}
+          onSelect={selectEntity}
+        />
 
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginTop: '1rem',
-          }}
+        <Title headingLevel="h3" size="md" style={{ marginTop: '1rem' }}>
+          Interactions
+        </Title>
+        {/* Two ways to list the same interactions — the default depth-indented
+            parent/child tree, or one row per request/response leg ordered by the
+            trace-wide `seq`. Tabs (not the old checkbox) because these are two
+            peer presentations of one dataset, which is what a tab bar says; the
+            active one is a URL param so it survives reload. Kept inside the
+            gutter div so the tab bar shrinks out from under the floating detail
+            panel along with the tables. */}
+        <Tabs
+          activeKey={legView}
+          onSelect={(_e, key) => onLegViewChange?.(key === 'flat' ? 'flat' : 'tree')}
+          aria-label="Interaction list views"
         >
-          <Title headingLevel="h3" size="md">
-            Interactions
-          </Title>
-          <Checkbox
-            id="flow-flat-view"
-            label="Flat view"
-            isChecked={flatView}
-            onChange={(_e, checked) => setFlatView(checked)}
+          <Tab eventKey="tree" title={<TabTitleText>Tree</TabTitleText>} />
+          <Tab eventKey="flat" title={<TabTitleText>Flat</TabTitleText>} />
+        </Tabs>
+        {legView === 'flat' ? (
+          <FlatLegsTable
+            rows={flatRows}
+            connectors={flatConnectors}
+            entById={entById}
+            selectedId={selectedInteractionId}
+            pinColor={pinColor}
+            onSelect={selectInteraction}
           />
-        </div>
-        {flatView ? (
-          // Flat view: one row per request/response leg, ordered by `seq`,
-          // ignoring the parent/child tree (no depth indentation).
-          <Table aria-label="Interactions (flat)" variant="compact">
-            <Thead>
-              <Tr>
-                <Th>Seq</Th>
-                <Th>Time</Th>
-                <Th screenReaderText="Pinned" />
-                <Th screenReaderText="Request/response link" />
-                <Th>Leg</Th>
-                <Th>Caller</Th>
-                <Th>Callee</Th>
-                <Th>Status</Th>
-              </Tr>
-            </Thead>
-            <Tbody>
-              {flatRows.map(({ ix, leg }, i) => {
-                const from = ix.caller_entity_id ? entById.get(ix.caller_entity_id) : undefined;
-                const to = ix.callee_entity_id ? entById.get(ix.callee_entity_id) : undefined;
-                // A response flows callee → caller, so swap for the response leg (ADR-0025).
-                const caller = leg.leg_type === 'response' ? to : from;
-                const callee = leg.leg_type === 'response' ? from : to;
-                return (
-                  <Tr
-                    key={`${ix.id}-${leg.leg_type}`}
-                    isClickable
-                    onRowClick={() => selectInteraction(ix)}
-                    {...rowProps('interaction', ix.id)}
-                  >
-                    <Td dataLabel="Seq" className="dg-mono">
-                      {leg.seq}
-                    </Td>
-                    <Td dataLabel="Time" className="dg-mono">
-                      {leg.occurred_at ? formatTime24Utc(leg.occurred_at) : ''}
-                    </Td>
-                    <Td>{pinDot(`interaction:${ix.id}`)}</Td>
-                    <Td
-                      // The request↔response connector for this row, sitting just
-                      // left of the Leg column (empty when its interaction has no
-                      // partner leg present). `position: relative` lets the
-                      // connector's full-height SVG fill the row's TRUE height via
-                      // `inset: 0`, so the line is continuous across rows.
-                      style={{ padding: 0, width: 1, position: 'relative' }}
-                    >
-                      <ConnectorCell roles={flatConnectors[i]} />
-                    </Td>
-                    <Td dataLabel="Leg">{leg.leg_type}</Td>
-                    <Td dataLabel="Caller">
-                      {caller ? (
-                        <>
-                          <EntityPill entity={caller} /> {caller.display_name}
-                        </>
-                      ) : (
-                        '?'
-                      )}
-                    </Td>
-                    <Td dataLabel="Callee">
-                      {callee ? (
-                        <>
-                          <EntityPill entity={callee} /> {callee.display_name}
-                        </>
-                      ) : (
-                        '?'
-                      )}
-                    </Td>
-                    <Td dataLabel="Status">
-                      {leg.error === true ? (
-                        <span style={{ color: '#f85149' }}>ERROR</span>
-                      ) : leg.error === false ? (
-                        <span style={{ color: '#6acf6a' }}>ok</span>
-                      ) : (
-                        '—'
-                      )}
-                    </Td>
-                  </Tr>
-                );
-              })}
-            </Tbody>
-          </Table>
         ) : (
-        <Table aria-label="Interactions" variant="compact">
-          <Thead>
-            <Tr>
-              <Th>Started</Th>
-              <Th screenReaderText="Pinned" />
-              <Th>Caller</Th>
-              <Th>Callee</Th>
-              <Th>Status</Th>
-              <Th>Spans</Th>
-            </Tr>
-          </Thead>
-          <Tbody>
-            {interactions.map((ix) => {
-              const depth = depthById.get(ix.id) ?? 0;
-              const caller = ix.caller_entity_id ? entById.get(ix.caller_entity_id) : undefined;
-              const callee = ix.callee_entity_id ? entById.get(ix.callee_entity_id) : undefined;
-              return (
-                <Tr key={ix.id} isClickable onRowClick={() => selectInteraction(ix)} {...rowProps('interaction', ix.id)}>
-                  <Td dataLabel="Started" className="dg-mono">
-                    {requestOccurredAt(ix) ? formatTime24Utc(requestOccurredAt(ix)!) : ''}
-                  </Td>
-                  <Td>{pinDot(`interaction:${ix.id}`)}</Td>
-                  <Td dataLabel="Caller">
-                    {depth > 0 && (
-                      <span className="dg-mono" style={{ color: '#555' }}>
-                        {'│ '.repeat(depth - 1)}
-                        └─{' '}
-                      </span>
-                    )}
-                    {caller ? (
-                      <>
-                        <EntityPill entity={caller} /> {caller.display_name}
-                      </>
-                    ) : (
-                      '?'
-                    )}
-                  </Td>
-                  <Td dataLabel="Callee">
-                    {callee ? (
-                      <>
-                        <EntityPill entity={callee} /> {callee.display_name}
-                      </>
-                    ) : (
-                      '?'
-                    )}
-                  </Td>
-                  <Td dataLabel="Status">
-                    {ix.any_error === true ? (
-                      <span style={{ color: '#f85149' }}>ERROR</span>
-                    ) : ix.any_error === false ? (
-                      <span style={{ color: '#6acf6a' }}>ok</span>
-                    ) : (
-                      '—'
-                    )}
-                  </Td>
-                  <Td dataLabel="Spans" style={{ color: '#888' }}>
-                    {ix.span_count} ({ix.anchor_count} anchor)
-                  </Td>
-                </Tr>
-              );
-            })}
-          </Tbody>
-        </Table>
+          <InteractionsTable
+            interactions={interactions}
+            entById={entById}
+            depthById={depthById}
+            selectedId={selectedInteractionId}
+            pinColor={pinColor}
+            onSelect={selectInteraction}
+          />
         )}
       </div>
 
-      {/* The detail panel floats as a fixed overlay on the right of the
-          viewport instead of occupying a layout column, so the tables use the
-          full width. Only rendered when something is selected — an empty float
-          is just clutter — and dismissable via the caption's × close button. */}
       {selection && (
-        <div
-          style={{
-            position: 'fixed',
-            // Sit just below the app masthead rather than the viewport top so
-            // the panel doesn't tuck under the header. Tracks the real header
-            // height via PatternFly's CSS var, with a sensible fallback.
-            top: 'calc(var(--pf-v5-c-page__header--MinHeight, 4.75rem) + 1rem)',
-            right: '1rem',
-            width: '30%',
-            minWidth: 320,
-            maxHeight: 'calc(100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) - 2rem)',
-            overflowY: 'auto',
-            background: '#1b1b1b',
-            border: '1px solid #444',
-            borderRadius: 4,
-            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.5)',
-            padding: '1rem',
-            zIndex: 100,
+        <FlowDetailPanel
+          selection={selection}
+          pins={pins}
+          lineageQ={lineageQ}
+          onTogglePin={togglePin}
+          onClose={() => {
+            setSelection(null);
+            onSelectionChange?.(null);
           }}
-        >
-            {/* Caption row: the selection's own name ('Entity'/'Interaction')
-                on the left — folding in what used to be a separate leading
-                section header — with the pin toggle glued to the right, matching
-                SpanDetailPanel's Refresh layout. */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                // Keep a gap between caption and button so they never butt
-                // together when the narrow (30%) detail column squeezes the row.
-                gap: '0.5rem',
-                // A little breathing room between the caption and the first
-                // field below (e.g. 'Interaction' → 'summary').
-                marginBottom: '0.5rem',
-              }}
-            >
-              <Title headingLevel="h3" size="md">
-                {selection.sectionTitle}
-              </Title>
-              {/* Pin toggle + a × to dismiss the floating panel, kept together
-                  on the right; both refuse to shrink below their labels. */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-                <Button
-                  variant="secondary"
-                  isInline
-                  onClick={togglePin}
-                  // A swatch of the highlight color: the current color once
-                  // pinned, else a preview of the next-free color the pin would
-                  // take.
-                  icon={
-                    <span
-                      data-testid="highlight-swatch"
-                      aria-hidden="true"
-                      style={{
-                        display: 'inline-block',
-                        width: 10,
-                        height: 10,
-                        borderRadius: 2,
-                        border: '1px solid rgba(0, 0, 0, 0.35)',
-                        // Extra gap beyond PF's default icon spacing so the color
-                        // chip doesn't crowd the label text.
-                        marginRight: '0.375rem',
-                        background:
-                          pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
-                      }}
-                    />
-                  }
-                >
-                  {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
-                </Button>
-                <Button
-                  variant="plain"
-                  aria-label="Close details"
-                  onClick={() => {
-                    setSelection(null);
-                    onSelectionChange?.(null);
-                  }}
-                  style={{ color: '#888', fontSize: '1.1rem', lineHeight: 1, padding: 0 }}
-                >
-                  ×
-                </Button>
-              </div>
-            </div>
-            <DetailList pairs={selection.fields} />
-
-            {(selection.requestPayloadHash || selection.responsePayloadHash) && (
-              <>
-                <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
-                  Payloads
-                </Title>
-                {selection.requestPayloadHash && (
-                  <PayloadView
-                    label="Request"
-                    hash={selection.requestPayloadHash}
-                    lineage={lineageOfLeg(lineageQ, selection, 'request')}
-                  />
-                )}
-                {selection.responsePayloadHash && (
-                  <PayloadView
-                    label="Response"
-                    hash={selection.responsePayloadHash}
-                    lineage={lineageOfLeg(lineageQ, selection, 'response')}
-                  />
-                )}
-              </>
-            )}
-
-            <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
-              Spans
-            </Title>
-            <Table aria-label="Span evidence" variant="compact">
-              <Thead>
-                <Tr>
-                  <Th>Role</Th>
-                  <Th>Span</Th>
-                  <Th>Parent</Th>
-                  <Th>Kind</Th>
-                  <Th>Service</Th>
-                </Tr>
-              </Thead>
-              <Tbody>
-                {selection.evidence.map((ev, i) => (
-                  <Tr key={`${ev.span_id}-${i}`}>
-                    <Td dataLabel="Role"><RoleIcon role={ev.role} /></Td>
-                    <Td dataLabel="Span">
-                      <SpanLink spanId={ev.span_id} onNavigate={onNavigateToSpan} />
-                    </Td>
-                    <Td dataLabel="Parent">
-                      <SpanLink spanId={ev.parent_id} onNavigate={onNavigateToSpan} />
-                    </Td>
-                    <Td dataLabel="Kind">{ev.kind ?? '—'}</Td>
-                    <Td dataLabel="Service">{ev.service_name ?? '—'}</Td>
-                  </Tr>
-                ))}
-              </Tbody>
-            </Table>
-        </div>
+          onNavigateToSpan={onNavigateToSpan}
+        />
       )}
     </div>
   );

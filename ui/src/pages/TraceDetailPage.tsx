@@ -19,7 +19,7 @@ import { PinStore, colorForSlot } from '../lib/pins';
 import { fetchJson } from '../api/client';
 import { SpanTree, type SpanTreeHandle } from '../components/SpanTree';
 import { SpanDetailPanel } from '../components/SpanDetailPanel';
-import { FlowTables, type FlowSelection } from '../components/FlowTables';
+import { FlowTables, type FlowSelection, type LegViewKey } from '../components/FlowTables';
 import { HighlightLegend } from '../components/HighlightLegend';
 import type { Span } from '../types';
 
@@ -210,6 +210,28 @@ export function TraceDetailPage() {
     iid: searchParams.get('iid') ?? undefined,
     eid: searchParams.get('eid') ?? undefined,
   };
+  // The flow view's Interactions tab (?legs). `tree` is the default and writes
+  // no param — same drop-the-default rule the list view's ?window uses, so a
+  // canonical URL never carries `?legs=tree`. Anything unrecognised reads as
+  // `tree` rather than throwing, matching parseWindowKey's coercion.
+  const legView: LegViewKey = searchParams.get('legs') === 'flat' ? 'flat' : 'tree';
+  const handleLegViewChange = useCallback(
+    (key: LegViewKey) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (key === 'tree') next.delete('legs');
+          else next.set('legs', key);
+          return next;
+        },
+        // `replace` so flipping between the two presentations of one dataset
+        // doesn't stack history entries the Back button has to walk through.
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
   const handleFlowSelectionChange = useCallback(
     (sel: FlowSelection | null) => {
       setSearchParams(
@@ -353,6 +375,8 @@ export function TraceDetailPage() {
               onRevealSpans={revealInTree}
               initialSelection={flowSelection}
               onSelectionChange={handleFlowSelectionChange}
+              legView={legView}
+              onLegViewChange={handleLegViewChange}
             />
           )}
         </div>

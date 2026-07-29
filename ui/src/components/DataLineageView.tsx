@@ -28,7 +28,7 @@ export function DataLineageView({ state }: { state: LineageState }) {
   // `PayloadView`, so one convention covers both failures in this panel.
   if (state.kind === 'error') {
     return (
-      <div role="alert" style={{ color: '#f85149', fontSize: '0.85rem' }}>
+      <div role="alert" style={{ color: 'var(--dg-color-error)', fontSize: '0.85rem' }}>
         Failed to load lineage.
       </div>
     );
@@ -41,7 +41,7 @@ export function DataLineageView({ state }: { state: LineageState }) {
   // governance tool must never let "we don't know yet" look like "we checked".
   if (state.kind === 'pending') {
     return (
-      <div style={{ color: '#888', fontStyle: 'italic', fontSize: '0.85rem' }}>
+      <div style={{ color: 'var(--dg-color-muted)', fontStyle: 'italic', fontSize: '0.85rem' }}>
         Lineage not yet computed
       </div>
     );
@@ -55,7 +55,7 @@ export function DataLineageView({ state }: { state: LineageState }) {
         // A genuinely empty triple is a REAL derived value (ADR-0027 D3: the
         // payload originates at this entity), not the null state — so it is
         // stated in words rather than rendered as nothing.
-        <div style={{ color: '#888', fontSize: '0.85rem' }}>
+        <div style={{ color: 'var(--dg-color-muted)', fontSize: '0.85rem' }}>
           No upstream data sources — this payload originates here.
         </div>
       ) : (
@@ -116,7 +116,7 @@ function SourcesTable({
               </Td>
               <Td dataLabel="Applied">
                 {transformations.length === 0 ? (
-                  <span style={{ color: '#888', fontSize: '0.85rem' }}>None</span>
+                  <span style={{ color: 'var(--dg-color-muted)', fontSize: '0.85rem' }}>None</span>
                 ) : (
                   <LabelGroup numLabels={99}>
                     {transformations.map((t) => (
@@ -154,7 +154,7 @@ function Entities({ entities }: { entities: string[] }) {
     return (
       <div
         aria-label="Entities traversed"
-        style={{ color: '#888', fontSize: '0.85rem', marginTop: '0.25rem' }}
+        style={{ color: 'var(--dg-color-muted)', fontSize: '0.85rem', marginTop: '0.25rem' }}
       >
         No entities traversed — this payload has not moved yet.
       </div>

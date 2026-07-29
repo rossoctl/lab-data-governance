@@ -83,6 +83,58 @@ export function legLineageKey(
   return `${interactionId}:${legType}`;
 }
 
+/** One flat-view row: a single leg, plus the interaction it belongs to. */
+export interface FlatRow {
+  ix: Interaction;
+  leg: InteractionLeg;
+}
+
+/**
+ * The flat view's rows: one entry per leg across all interactions, ordered by
+ * the trace-wide leg `seq`, ignoring the parent/child tree. Each carries its
+ * parent interaction so a click still opens that interaction's detail panel
+ * (legs have no selection of their own).
+ */
+export function flatLegRows(interactions: readonly Interaction[]): FlatRow[] {
+  return interactions
+    .flatMap((ix) => (ix.legs ?? []).map((leg) => ({ ix, leg })))
+    .sort((a, b) => a.leg.seq - b.leg.seq);
+}
+
+/**
+ * Request↔response pairing for the flat view's connector column, as one entry
+ * per row of `flatLegRows`.
+ *
+ * A request leg and its response leg share the same `ix.id` (that is the pairing
+ * key), but they sort by `seq` so they are frequently NOT adjacent — other
+ * interactions' legs interleave between them. We map `ix.id` → the row indices of
+ * its request and response, then derive each interaction's [top, bottom] index
+ * span. A row then knows, for every interaction whose span covers it, whether it
+ * is that span's top edge (request → half-line down + ▾), its bottom edge
+ * (response → half-line up + ▴), or an in-between pass-through (full vertical
+ * line). Single-leg interactions (response in flight) have only one index, so
+ * their span is a single row with no partner and thus no line is drawn.
+ */
+export function flatConnectorRoles(
+  rows: readonly FlatRow[],
+): Array<Array<{ id: string; role: 'top' | 'bottom' | 'through' }>> {
+  const spans = new Map<string, { top: number; bottom: number }>();
+  rows.forEach(({ ix }, i) => {
+    const s = spans.get(ix.id);
+    if (!s) spans.set(ix.id, { top: i, bottom: i });
+    else s.bottom = i; // later index (legs already sorted by seq)
+  });
+  // Per row, the drawing role for each interaction whose span covers it.
+  return rows.map((_row, i) =>
+    [...spans.entries()]
+      .filter(([, s]) => s.top !== s.bottom && i >= s.top && i <= s.bottom)
+      .map(([id, s]) => ({
+        id,
+        role: i === s.top ? ('top' as const) : i === s.bottom ? ('bottom' as const) : ('through' as const),
+      })),
+  );
+}
+
 export type ToolSubtype = 'in-framework' | 'deployed';
 
 /**

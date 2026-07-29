@@ -310,7 +310,7 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
         <li key={k} style={{ listStyle: 'none', margin: 0 }}>
           <div
             data-testid="span-row"
-            style={{ paddingLeft: depth * 20 + 4, color: '#888', fontStyle: 'italic' }}
+            style={{ paddingLeft: depth * 20 + 4, color: 'var(--dg-color-muted)', fontStyle: 'italic' }}
           >
             ↻ {span.name || '(unnamed)'} (cycle)
           </div>
@@ -349,7 +349,7 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
             paddingLeft: depth * 20 + 4,
             cursor: 'pointer',
             borderLeft: stripe ? `3px solid ${stripe}` : '3px solid transparent',
-            background: selectedKey === k ? '#3a4a66' : undefined,
+            background: selectedKey === k ? 'var(--dg-row-selected)' : undefined,
           }}
         >
           <Button
@@ -368,7 +368,7 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
           </span>
           <span style={{ fontWeight: 600 }}>{span.name || '(unnamed)'}</span>
           {span.service_name && (
-            <span style={{ color: '#888', fontSize: '0.85em' }}>{span.service_name}</span>
+            <span style={{ color: 'var(--dg-color-muted)', fontSize: '0.85em' }}>{span.service_name}</span>
           )}
           {span.error === true && (
             <Label color="red" isCompact>

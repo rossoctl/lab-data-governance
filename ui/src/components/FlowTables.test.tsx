@@ -5,8 +5,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../test/renderWithProviders';
-import { FlowTables } from './FlowTables';
+import { FlowTables, type LegViewKey } from './FlowTables';
 import { PinStore } from '../lib/pins';
+
+/**
+ * The Interactions tab (`legView`) is a controlled prop — TraceDetailPage owns
+ * it as the `?legs` URL param. This harness stands in for that owner so a test
+ * can click the tab and see the table swap, exactly as the page does.
+ */
+function FlowTablesWithLegTabs(
+  props: Omit<React.ComponentProps<typeof FlowTables>, 'legView' | 'onLegViewChange'>,
+) {
+  const [legView, setLegView] = React.useState<LegViewKey>('tree');
+  return <FlowTables {...props} legView={legView} onLegViewChange={setLegView} />;
+}
 
 const ENTITIES = [
   { id: 'e1', kind: 'agent', natural_key: 'agent:(p,a)', display_name: 'agent-a', detected_from: 'span' },
@@ -210,12 +222,12 @@ describe('FlowTables', () => {
   it('flat view lists each leg as its own row, ordered by seq, ignoring the tree', async () => {
     mockFetch();
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
     // Tree view first: one interaction row, no per-leg breakdown.
     expect(screen.queryByLabelText('Interactions (flat)')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByLabelText('Flat view'));
+    await userEvent.click(screen.getByRole('tab', { name: 'Flat' }));
     // The single interaction's two legs become two rows in seq order.
     const flat = await screen.findByLabelText('Interactions (flat)');
     const body = within(flat).getAllByRole('row').slice(1); // drop the header row
@@ -267,10 +279,10 @@ describe('FlowTables', () => {
       return { ok: true, status: 200, json: async () => ({ spans: [] }) };
     });
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByLabelText('Flat view'));
+    await userEvent.click(screen.getByRole('tab', { name: 'Flat' }));
     const flat = await screen.findByLabelText('Interactions (flat)');
     const body = within(flat).getAllByRole('row').slice(1); // drop header
     expect(body).toHaveLength(4); // i1.req, i2.req, i1.resp, i2.resp
@@ -320,10 +332,10 @@ describe('FlowTables', () => {
       return { ok: true, status: 200, json: async () => ({ spans: [] }) };
     });
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByLabelText('Flat view'));
+    await userEvent.click(screen.getByRole('tab', { name: 'Flat' }));
     const flat = await screen.findByLabelText('Interactions (flat)');
     const body = within(flat).getAllByRole('row').slice(1);
     expect(body).toHaveLength(1);

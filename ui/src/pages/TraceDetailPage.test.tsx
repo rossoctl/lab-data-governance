@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, waitFor, waitForElementToBeRemoved } from '@testing-library/react';
+import { screen, waitFor, waitForElementToBeRemoved, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Routes, Route } from 'react-router-dom';
 import { renderWithProviders } from '../test/renderWithProviders';
@@ -353,6 +353,67 @@ describe('TraceDetailPage', () => {
 
   // --- Selection round-trip: the flow view's selected row is mirrored into the
   // URL (?iid / ?eid), so a deep link / reload restores it.
+
+  // The flow view's Interactions tab (Tree | Flat) is the `?legs` param, so the
+  // presentation survives reload/bookmark/back like every other view state.
+
+  it('defaults the Interactions tab to Tree and writes no ?legs param', async () => {
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+
+    const tree = await screen.findByRole('tab', { name: 'Tree' });
+    expect(tree).toHaveAttribute('aria-selected', 'true');
+    // The tree table is showing, not the per-leg one.
+    expect(screen.getByLabelText('Interactions')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Interactions (flat)')).not.toBeInTheDocument();
+    // Canonical URL: the default tab writes nothing.
+    expect(screen.getByTestId('location')).not.toHaveTextContent('legs');
+  });
+
+  it('writes ?legs=flat when the Flat tab is selected, and swaps the table', async () => {
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+
+    await userEvent.click(await screen.findByRole('tab', { name: 'Flat' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('legs=flat'),
+    );
+    expect(await screen.findByLabelText('Interactions (flat)')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
+  });
+
+  it('restores the Flat tab from ?legs=flat on load', async () => {
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=flat' });
+
+    expect(await screen.findByLabelText('Interactions (flat)')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Flat' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('drops ?legs when switching back to Tree, keeping the URL canonical', async () => {
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=flat' });
+
+    await userEvent.click(await screen.findByRole('tab', { name: 'Tree' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).not.toHaveTextContent('legs'),
+    );
+    expect(screen.getByLabelText('Interactions')).toBeInTheDocument();
+  });
+
+  it('keeps ?legs=flat across a row selection (the two params coexist)', async () => {
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=flat' });
+
+    // Clicking a leg row selects its parent interaction and writes ?iid; the
+    // tab param must survive that rewrite rather than being dropped.
+    const flat = await screen.findByLabelText('Interactions (flat)');
+    await userEvent.click(within(flat).getAllByText('request')[0]);
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('iid=i1'),
+    );
+    expect(screen.getByTestId('location')).toHaveTextContent('legs=flat');
+  });
 
   it('restores the flow interaction selection from ?iid on load', async () => {
     mockFetchWithFlow();
