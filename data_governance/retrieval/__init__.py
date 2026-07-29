@@ -18,8 +18,9 @@ derivation stays behind the interface (ADR-0005):
   (``get_data_lineage``): the persisted per-**Interaction leg** metadata triple
   plus the trace's ``complete``/``partial`` coverage (ADR-0027 D6/D8), a pure
   lookup (ADR-0027 D7). Nullable per leg in the eventual-consistency window,
-  ``status=None`` (*unknown*, never ``complete``) before the trace has been
-  derived, and empty before the lineage migration has run — never an error.
+  ``status=None`` (*unknown*, never ``complete`` — ADR-0027 D6) before the trace
+  has been derived, and empty before the lineage migration has run — never an
+  error.
 
 Only the public surface is re-exported here. Consumers of the private
 row-mapping helpers (``spans._COLUMNS`` / ``spans._row_to_span`` — the

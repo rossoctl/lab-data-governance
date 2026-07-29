@@ -350,9 +350,13 @@ def test_partial_to_complete_derives_the_full_lineage_not_just_the_rows(
 
 
 def test_a_trace_with_no_legs_writes_no_status(configured_db: str) -> None:
-    """The driver returns early for a trace with no legs (nothing to derive), so
-    it must not claim a status either — absence of the row is "not yet derived",
-    and inventing ``complete`` for an unseen trace would be a claim about nothing.
+    """Pins the *absence* of a row as a deliberate output, not an oversight: the
+    driver returns early for a trace with no legs, so it must not claim a status
+    either (ADR-0027 D6 — absence is how *unknown* is said).
+
+    Do not "strengthen" this into asserting ``complete``. The pure traversal does
+    call an empty leg list complete, but the driver never gets there, and a
+    ``complete`` row here would assert full coverage of a trace we have not seen.
     """
     _seed_trace_with_gap(configured_db, gap=False)
     driver.drain(0)

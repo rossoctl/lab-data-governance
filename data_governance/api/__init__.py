@@ -469,10 +469,11 @@ async def _data_lineage_handler(request: Request) -> Response:
 
     ``status`` / ``stopped_at_seq`` are the trace's lineage **coverage** (ADR-0027
     D6, issue #120), served on the envelope beside ``legs`` because coverage is a
-    whole-trace fact — and because the legs a truncation removes have no element
-    left to carry it. ``"partial"`` means ``legs`` is a **prefix** ending before
-    ``stopped_at_seq``; ``null`` means not-yet-derived, which a client must not
-    read as ``"complete"``.
+    whole-trace fact — and because a truncated leg has no lineage object left to
+    carry it. ``"partial"`` truncates the *lineage*, not ``legs``: every leg is
+    still listed, with ``lineage: null`` from ``stopped_at_seq`` on. ``null``
+    status is **unknown** and is encoded as ``null`` rather than defaulted to
+    ``"complete"`` (ADR-0027 D6 "Reading the status").
     """
     trace_id = request.path_params.get("tid")
     if not trace_id:

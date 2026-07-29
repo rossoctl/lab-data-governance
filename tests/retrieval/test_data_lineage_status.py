@@ -9,10 +9,9 @@ Still a **pure lookup** (ADR-0027 D7): the status is read from
 of a payload gap. Two copies of the cutoff rule — one in the traversal, one in the
 read's SQL — is the drift this table's existence avoids.
 
-The absence cases matter as much as the present ones. A trace whose status row has
-not landed yet must read as *unknown*, not as ``complete``: "we have not derived
-this" and "we derived it and it covers everything" are opposite claims, and a
-governance consumer acting on the wrong one is the whole point of the flag.
+The absence cases matter as much as the present ones and get equal coverage below:
+a trace whose status row has not landed reads as *unknown*, never ``complete``
+(ADR-0027 D6 "Reading the status").
 """
 
 from __future__ import annotations
@@ -118,10 +117,10 @@ def test_complete_status_has_no_stop_position(configured_db: str) -> None:
 
 
 def test_status_is_null_when_not_yet_derived(configured_db: str) -> None:
-    """No status row → ``status=None``, meaning *unknown*. This must NOT read as
-    ``complete``: the trace has simply not been through the processor yet (the
-    eventual-consistency window), and claiming full coverage for it is the
-    silent-truncation failure with extra steps."""
+    """No status row → ``status=None``, meaning *unknown*, never ``complete``
+    (ADR-0027 D6). This is the eventual-consistency window, so it is the common
+    case rather than an edge one — the legs assertion below keeps it honest that
+    the read still serves them."""
     with psycopg.connect(configured_db) as conn:
         conn.execute(
             "INSERT INTO entities (id, kind, natural_key, display_name, "

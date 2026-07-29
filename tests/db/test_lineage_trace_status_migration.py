@@ -13,9 +13,10 @@ The assertions that carry design weight:
 - **``stopped_at_seq`` is the only nullable column** — ``NULL`` means "nothing
   was truncated", which is only ever true alongside ``status = 'complete'``, and
   a CHECK constraint enforces exactly that pairing so a half-written status
-  cannot exist. ``status`` itself is NOT NULL: the absence of the *row* is the
-  "not yet derived" signal (the same convention ``lineage_metadata`` uses), so a
-  present row always makes a definite claim.
+  cannot exist. ``status`` itself is NOT NULL, which is what makes absence of the
+  *row* the only expressible way to say *unknown* (ADR-0027 D6 "Reading the
+  status"; the same convention ``lineage_metadata`` uses) — a present row always
+  makes a definite claim.
 - **FK-free**, like every other derived table (ADR-0002/0005): rebuildable by
   truncate + cursor reset + re-drain.
 """
@@ -116,9 +117,10 @@ def test_columns_are_exactly_trace_status_and_stop_position(migrated_dsn: str) -
 
 
 def test_status_is_not_null_and_stop_seq_is_nullable(migrated_dsn: str) -> None:
-    """A present row always makes a definite claim, so ``status`` is NOT NULL —
-    absence of the ROW is what means "not yet derived" (the ``lineage_metadata``
-    convention). ``stopped_at_seq`` is nullable because a complete trace has no
+    """Pins the structural half of "absent row = unknown" (ADR-0027 D6). ``status``
+    NOT NULL is what leaves absence of the ROW as the only way to say *unknown*:
+    relax it and a NULL status becomes an in-band value someone can reinterpret as
+    ``complete``. ``stopped_at_seq`` is nullable because a complete trace has no
     stop position at all."""
     cols = _columns(migrated_dsn, TABLE)
     assert cols["status"]["is_nullable"] == "NO"

@@ -9,9 +9,10 @@ The ``{"legs": [...]}`` envelope #118 introduced was shaped for exactly this. Th
 status is a whole-trace fact, so it sits on the envelope rather than repeated on
 every leg — and the legs a truncation removes have no element to carry it anyway.
 
-``status: null`` is **unknown**, never "complete". A UI that treated the two alike
-would show a truncated prefix as the full source set on any trace the processor has
-not reached yet, which is the failure mode this flag exists to prevent.
+Three status values on the wire, not two: ``null`` is **unknown**, never
+``"complete"`` (ADR-0027 D6 "Reading the status"). The tests below pin all three, so
+a handler that defaulted the absent status would fail here rather than in
+production.
 """
 
 from __future__ import annotations
@@ -114,9 +115,11 @@ def test_partial_status_and_stop_seq_serialize(partial_trace, api_server, config
 def test_partial_trace_serves_only_the_prefix_legs_with_lineage(
     partial_trace, api_server
 ):
-    """Both legs are listed (they exist), but only the pre-gap one carries lineage
-    — the truncation is visible in the payload *and* announced by the status,
-    which is what stops a consumer reading the prefix as the whole set."""
+    """``partial`` truncates the *lineage*, not the leg list (ADR-0027 D6). Both legs
+    are listed — they exist — but only the pre-gap one carries a lineage object, so
+    the truncation is visible in the payload *and* announced by the status. Do not
+    "fix" this to expect the post-gap leg to be absent: the read has no ``seq``
+    filter."""
     resp = httpx.get(f"{_base_url(api_server)}/api/traces/{partial_trace}/data-lineage")
     by_key = {(r["interaction_id"], r["leg_type"]): r for r in resp.json()["legs"]}
     assert by_key[(_IX_ID, "request")]["lineage"] is not None

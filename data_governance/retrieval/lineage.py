@@ -38,22 +38,17 @@ Two absences are **graceful shapes, not errors**:
   result rather than raising, mirroring :func:`.interactions._derived_tables_exist`.
 
 **Trace-level ``complete``/``partial`` status** (ADR-0027 D6, issue #120) rides on
-the result beside the legs, read from ``lineage_trace_status`` (migration 0012).
-ADR-0027's open item on where that status lives is resolved in favour of the
-dedicated trace-keyed table, and this read is why it matters here: the status is a
-**lookup, not a recomputation**. Re-deriving the cutoff at read time from
-``interaction_legs.payload_hash IS NULL`` would put a second copy of D6's rule in
-this module's SQL, free to drift from the traversal that actually produced the
-rows — and inferring it from *missing metadata rows* was never possible anyway:
-before the processor gained its stale-row delete (ADR-0027 D9) rows from a longer
-earlier derivation could linger, and the authoritative answer must in any case be
-the one the traversal reached rather than a second inference over its output.
+the result beside the legs, read straight from ``lineage_trace_status`` (migration
+0012) — a **lookup, not a recomputation**. Nothing on this path may re-derive the
+cutoff from ``interaction_legs.payload_hash IS NULL``: that would put a second copy
+of D6's rule in this module's SQL, free to drift from the traversal that actually
+produced the rows (ADR-0027 D8 for why the dedicated table beat derived-on-read).
 
-A **third** absence therefore joins the two below: no status row at all, served as
-``status=None`` meaning *unknown*. It must never be collapsed into ``complete`` —
-"not derived yet" and "derived, covers everything" are opposite claims, and a
-consumer acting on the wrong one is precisely the silent-truncation failure D6's
-flag exists to prevent.
+A **third** absence therefore joins the two above: no ``lineage_trace_status`` row
+at all, served as ``status=None`` meaning *unknown*. Do **not** default it —
+``status or "complete"`` or a ``COALESCE(status, 'complete')`` in the SQL below
+would turn every trace the processor has not reached yet into a false claim of full
+coverage (ADR-0027 D6 "Reading the status").
 """
 
 from __future__ import annotations
@@ -127,16 +122,18 @@ class GetDataLineageResult:
 
     ``status`` is ``"complete"`` | ``"partial"`` | ``None`` (ADR-0027 D6). The
     trace-level fields sit here rather than on a leg because coverage is a fact
-    about the whole trace — and because the legs that a truncation *removes* have
-    no element left to carry it, which is the case that matters.
+    about the whole trace — and because the legs a truncation leaves *without*
+    lineage have no triple to carry it, which is the case that matters.
 
     - ``"complete"`` — every leg of the trace had a payload; the lineage below is
       the whole set of sources.
     - ``"partial"`` — derivation stopped at the first leg with an absent payload,
-      whose leg ``seq`` is ``stopped_at_seq``. **The legs listed are a prefix**:
-      reading them as the full source set is the failure D6's flag prevents.
-    - ``None`` — not derived yet (or the status migration has not run). Unknown,
-      *not* complete.
+      whose leg ``seq`` is ``stopped_at_seq``. **The lineage is a prefix, not the
+      leg list**: every leg is still in ``legs``, but those from the gap on carry
+      ``lineage=None``. Reading the prefix as the full source set is the failure
+      D6's flag prevents.
+    - ``None`` — not derived yet (or the status migration has not run) — *unknown*,
+      which is a third value and never ``complete`` (ADR-0027 D6).
 
     ``stopped_at_seq`` is non-``None`` exactly when ``status == "partial"`` — the
     table's CHECK constraint guarantees the pairing, so a consumer never has to
@@ -226,9 +223,10 @@ def get_data_lineage(trace_id: str) -> GetDataLineageResult:
     and empty — never an error — when the lineage or interactions migration has
     not run.
 
-    The trace's ``status`` / ``stopped_at_seq`` (ADR-0027 D6) come back alongside:
-    when ``status`` is ``"partial"`` the legs listed are a **prefix** ending before
-    ``stopped_at_seq``, and a caller must present them as such.
+    The trace's ``status`` / ``stopped_at_seq`` (ADR-0027 D6) come back alongside.
+    Note the query below has **no ``seq`` filter**: a ``"partial"`` trace still
+    returns every leg, and it is the *lineage* that is a prefix (``None`` from
+    ``stopped_at_seq`` on). ``status=None`` is *unknown*, never ``complete``.
     """
     with db.transaction() as tx:
         if not _lineage_tables_exist(tx):

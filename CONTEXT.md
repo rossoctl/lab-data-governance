@@ -614,14 +614,18 @@ order — a positional prefix — and the trace is `partial`. The flag exists to
 prevent one specific failure: a governance consumer reading a truncated prefix as
 the **complete** set of **Data source**s. So it travels with the lineage
 everywhere the lineage is served (the `data-lineage` API envelope, a warning at
-the top of the **Flow view**). *Absence* of the status row means **unknown**, not
-`complete` — the eventual-consistency window before **P-data-lineage** has
+the top of the **Flow view**). Three values, not two: *absence* of the status row
+means **unknown** — the eventual-consistency window before **P-data-lineage** has
 reached the trace.
-_Avoid_: reading `partial` as an error, or as a statement about *why* the payload
-is missing. It is a correct prefix plus a warning; distinguishing *not captured*
-from *redacted* from *genuinely empty* from *in-flight* is deferred (ADR-0027 D6),
-so one flag currently covers all four. Also avoid expecting only the paths
-*through* the gap to be affected — the interim rule stops the whole trace.
+_Avoid_: collapsing **unknown** into `complete` (ADR-0027 D6 "Reading the status" —
+they are opposite claims, and defaulting the absent value is the live trap). Also
+avoid reading `partial` as an error, or as a statement about *why* the payload is
+missing: it is a correct prefix plus a warning, and distinguishing *not captured*
+from *redacted* from *genuinely empty* from *in-flight* is deferred (D6), so one
+flag currently covers all four. Note `partial` truncates the **lineage**, not the
+leg list — every leg is still served, those from the gap on with `lineage: null`.
+Finally, avoid expecting only the paths *through* the gap to be affected — the
+interim rule stops the whole trace.
 
 **Data source**:
 An origin of data in **Data lineage** — recorded as an **Entity**'s **Natural

@@ -116,10 +116,13 @@ class Leg:
 class LineageStatus(enum.StrEnum):
     """Whether a trace's derived lineage covers the whole trace (ADR-0027 D6).
 
-    ``PARTIAL`` is the *warning*, not an error state: the prefix that was derived
-    is correct, but it is a prefix. A governance consumer reading a truncated
-    prefix as the full set of sources is the exact failure mode D6's flag exists
-    to prevent, so the status travels with the lineage everywhere it is served.
+    ``PARTIAL`` is the *warning*, not an error state: the derived prefix is correct,
+    it is simply a prefix (ADR-0027 D6 "Reading the status").
+
+    Two values only — there is deliberately no ``UNKNOWN`` member. "Not yet derived"
+    is not something the traversal can conclude; it is said by the **absence** of a
+    ``lineage_trace_status`` row, and surfaces as ``status=None`` at the read. Do not
+    add a third member to represent it.
 
     The values are the ADR's words verbatim and reach the wire unchanged (a
     ``StrEnum``), so the API contract and the ADR cannot drift apart.

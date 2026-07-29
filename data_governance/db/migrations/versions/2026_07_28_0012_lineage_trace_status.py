@@ -2,10 +2,10 @@
 
 Adds ``lineage_trace_status``: for each trace, whether its derived **data
 lineage** covers the whole trace (``complete``) or stops at an absent payload
-(``partial``, with the leg ``seq`` it stopped at). D6's positional prefix cutoff
-computes lineage only up to the first leg whose ``payload_hash`` is absent; this
-table is what keeps that truncation from being *silent* — a governance consumer
-must never read a truncated prefix as the full set of data sources.
+(``partial``, with the leg ``seq`` it stopped at). This table is what keeps D6's
+prefix cutoff from being *silent*; the two rules a consumer needs for reading the
+result — absence of a row is *unknown* and never ``complete``, and ``partial`` is a
+warning rather than an error — are ADR-0027 D6 "Reading the status".
 
 **This revision resolves ADR-0027's open item on where the status lives**: a
 dedicated trace-keyed table, not derived on read. The reasoning, recorded in the
@@ -42,10 +42,13 @@ Shape:
   - ``status``          ``lineage_status`` ENUM (``complete`` | ``partial``), the
                         two values D6 defines. A structural enum, per ADR-0014's
                         convention for closed value sets, so the column cannot
-                        hold a third reading of the same fact. NOT NULL: absence
-                        of the ROW is what means "not yet derived" (the
-                        ``lineage_metadata`` convention from 0011), so a present
-                        row always makes a definite claim.
+                        hold a third reading of the same fact. **NOT NULL**, which
+                        is what makes absence of the ROW the only way to express
+                        "unknown" (the ``lineage_metadata`` convention from 0011):
+                        a present row always makes a definite claim, and there is
+                        no in-band NULL for a reader to reinterpret as
+                        ``complete``. Why unknown must never collapse into
+                        ``complete``: ADR-0027 D6 "Reading the status".
   - ``stopped_at_seq``  the ``interaction_legs.seq`` of the first absent-payload
                         leg; NULL for a complete trace. Nullable *and* CHECK-
                         paired with ``status``, because "partial" without a stop

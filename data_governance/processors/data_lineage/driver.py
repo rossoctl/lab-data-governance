@@ -24,13 +24,15 @@ migration 0010's NOTIFY trigger covers UPDATE as well as INSERT. Insert-if-absen
 would freeze the first, most partial answer.
 
 **Upserting alone is not enough once a derivation can get SHORTER** (ADR-0027 D6's
-absent-payload cutoff, issue #120). So ``process_leg`` writes three things per leg:
-the upsert above, a delete of the trace's rows **that this derivation did not
-produce** (:func:`_delete_stale` — scoped by set membership, never by
-``seq >= stop``), and the trace-level status in ``lineage_trace_status`` (migration
-0012). Why the delete exists and why its scoping must be set membership: ADR-0027
-D9. All three writes share the loop's one transaction, so a trace's metadata and its
-coverage claim can never disagree.
+absent-payload cutoff, issue #120). So for a leg whose trace has legs to derive,
+``process_leg`` writes three things: the upsert above, a delete of the trace's rows
+**that this derivation did not produce** (:func:`_delete_stale` — scoped by set
+membership, never by ``seq >= stop``), and the trace-level status in
+``lineage_trace_status`` (migration 0012). Why the delete exists and why its scoping
+must be set membership: ADR-0027 D9. All three writes share the loop's one
+transaction, so a trace's metadata and its coverage claim can never disagree. A
+trace we cannot see yet gets none of the three — no status row, which is how
+*unknown* is expressed (ADR-0027 D6).
 
 **Trace scoping needs a join.** ``interaction_legs`` has no ``trace_id`` (ADR-0025
 puts identity on the parent), so both the arriving leg's trace and the trace's legs
@@ -179,12 +181,17 @@ def process_leg(tx: db.Transaction, leg: ArrivingLeg, matcher: Matcher) -> None:
     status (ADR-0027 D6, issue #120). Together they make the persisted lineage of a
     trace exactly the derivation's output — no more, so a shrinking derivation
     genuinely shrinks the answer.
+
+    A trace with no legs yet takes none of the three (see the early return below).
     """
     legs, entities = load_trace(tx, leg.trace_id)
     if not legs:
-        # Nothing to derive, and therefore nothing to claim: no status row either.
-        # Absence of the row is "not yet derived"; writing `complete` here would
-        # assert full coverage of a trace whose legs have not landed.
+        # Deliberately writes NO status row: nothing was derived, so there is
+        # nothing to claim. Do NOT "complete" this branch — absence of the row is
+        # how the schema says *unknown*, and a `complete` here would assert full
+        # coverage of a trace whose legs have not landed (ADR-0027 D6 "Reading the
+        # status"). Note this is not the empty-TRACE case the traversal calls
+        # complete; it is the trace we cannot see yet.
         return
     result = traversal.derive_trace_lineage(
         legs,
@@ -255,14 +262,18 @@ def _upsert_status(
     """Record whether *trace_id*'s lineage covers the whole trace (ADR-0027 D6).
 
     One row per trace (PK ``trace_id``), so this upsert is the entire idempotency
-    story — and the reason the status lives in its own table rather than being
-    derived on read (see migration 0012). The partial→complete transition, when a
-    late payload arrives, is a plain overwrite of that single row: there is no
-    earlier, longer answer left behind to shadow it.
+    story: the partial→complete transition, when a late payload arrives, is a plain
+    overwrite of that single row with no earlier, longer answer left behind to
+    shadow it. Why the status is persisted here rather than derived on read:
+    ADR-0027 D8 (migration 0012).
 
     ``stopped_at_seq`` is written as NULL for a complete trace, which the table's
     CHECK constraint pairs with the status so a half-written claim ("partial, but I
     won't say from where") cannot be stored.
+
+    Only ever called for a trace that actually derived something — see
+    :func:`process_leg`'s early return, which leaves the row absent on purpose so
+    the read reports *unknown*.
     """
     tx.execute(
         "INSERT INTO lineage_trace_status (trace_id, status, stopped_at_seq) "

@@ -162,6 +162,51 @@ prevent.
 Per ADR-0025 the request leg always exists; the realistic trigger is a
 **missing response payload** mid-trace.
 
+#### Reading the status — the two rules every consumer needs
+
+These two are load-bearing everywhere the status travels (the traversal's
+`LineageStatus`, the `lineage_trace_status` row, the API envelope, the flow
+view's banner, and every test that pins them). This is their single source; other
+sites state what holds locally and cite **D6** rather than re-deriving them.
+
+**1. Absence of the status row means *unknown*, never `complete`.** "Not yet
+derived" and "derived, covers everything" are opposite claims. Collapsing them
+would reintroduce silent truncation through the eventual-consistency window: every
+trace P-data-lineage has not reached yet would present its (possibly truncated,
+possibly empty) prefix as the full set of data sources — exactly the failure this
+flag exists to prevent, reappearing on the traces most likely to be read, the
+newest ones. So the read serves `status: null`, the API serves `null`, and the UI
+says *unknown* rather than warning about nothing or reassuring about everything.
+
+The trap is a future editor **defaulting** the missing value: `status or
+"complete"`, a `COALESCE(status, 'complete')`, a `?? 'complete'`. Those look like
+tidying and are silent in every test that only exercises derived traces. There is
+no default. Unknown is a third value and it must stay expressible end to end.
+
+Two things make this hard to get wrong at the storage layer, and they are why the
+schema-level statements of it are worth keeping (migration 0012): `status` is
+`NOT NULL`, and a CHECK constraint pairs it with `stopped_at_seq`. So a *present*
+row always makes a definite claim, absence of the **row** is the only way to say
+"unknown", and there is no in-band NULL for an editor to reinterpret. The
+invariant is structural in the database; it is only defaultable in the code above
+it, which is where the warnings belong.
+
+One deliberate consequence: the driver writes **no status row at all** for a trace
+whose legs have not landed (`process_leg` returns early when the trace has no
+legs). Nothing was derived, so there is nothing to claim — and writing `complete`
+there would assert full coverage of a trace we have not seen.
+
+**2. `partial` is a *warning*, not an error state.** The derived prefix is
+correct; it is simply a prefix. Nothing failed, no read should 500, and no
+consumer should treat it as a broken trace. It is also **not** a statement about
+*why* the payload is missing — one flag currently covers *not captured*,
+*redacted*, *genuinely empty* and *in-flight* alike (see the deferrals below).
+
+Note what `partial` truncates and what it does not: it truncates the **lineage**,
+not the leg list. The read returns every leg of the trace, with `lineage: null` on
+the legs at and after the gap (a LEFT JOIN, no `seq` filter). A consumer must not
+expect post-gap legs to be *absent* from the response.
+
 This is an **interim** rule. The finer handling — distinguishing *not captured*
 / *redacted* (data flowed, opaque) from *genuinely empty* from *response
 in-flight*, and choosing per case between break-chain, conservative
@@ -218,10 +263,10 @@ metadata and its coverage claim cannot disagree.
 
 Two consequences worth stating, because both are load-bearing:
 
-- **Absence of the status row means *unknown*, never `complete`.** "Not derived
-  yet" and "derived, covers everything" are opposite claims; collapsing them
-  would reintroduce silent truncation through the eventual-consistency window.
-  The read serves `status: null` and the UI warns about nothing.
+- **A trace can now have no status row**, which this table makes the *only* way to
+  say "unknown" — `status` is `NOT NULL`, so a present row always makes a definite
+  claim. Absence therefore means unknown and never `complete`; see D6 "Reading the
+  status" for why the two must not be collapsed, and for the defaulting trap.
 - **The upsert alone is not enough for `lineage_metadata` any more.** Once a
   derivation can get *shorter*, the driver must also **delete** the trace's rows
   the derivation no longer covers — otherwise the read serves lineage for legs

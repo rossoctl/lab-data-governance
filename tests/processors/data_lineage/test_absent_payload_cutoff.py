@@ -6,11 +6,11 @@ Processing stops at the FIRST such leg; legs with lower ``seq`` keep their
 lineage, legs at and after it get none, and the trace's lineage is marked
 ``partial`` recording the leg ``seq`` it stopped at.
 
-The point of the flag is stated negatively in the ADR and worth restating: a
-governance consumer must never read a truncated prefix as the full set of
-sources. **Silent truncation is the failure mode this exists to prevent**, so
-every test below that asserts "legs after the gap have no lineage" has a partner
-asserting the status says so out loud.
+Silent truncation is the failure mode the flag prevents (ADR-0027 D6 "Reading the
+status"), which is why every test below that asserts "legs after the gap have no
+lineage" has a partner asserting the status says so out loud. Neither half is
+sufficient alone: dropping the status assertion would let a truncation ship
+unannounced.
 
 Pure-traversal level here; the persistence half (including the stale-row problem
 that a re-derivation with a *shorter* prefix creates) is in ``test_driver.py``.
@@ -170,7 +170,12 @@ def test_a_fully_payloaded_trace_is_complete_with_no_stop_position() -> None:
 
 def test_an_empty_trace_is_complete() -> None:
     """No legs is not a gap. Nothing was truncated, so there is nothing to warn
-    about — the flag must not cry partial over an absence of input."""
+    about — the flag must not cry partial over an absence of input.
+
+    This is the *pure* traversal only. It is NOT the same as "a trace whose legs
+    have not landed", which the driver never asks about: it returns early and
+    writes no status row, leaving the trace *unknown* (ADR-0027 D6). So this
+    ``COMPLETE`` never reaches the database as a claim about an unseen trace."""
     result = derive_trace_lineage([], {}, matcher=_always)
 
     assert result.status is LineageStatus.COMPLETE
