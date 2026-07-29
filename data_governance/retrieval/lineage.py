@@ -44,9 +44,10 @@ dedicated trace-keyed table, and this read is why it matters here: the status is
 **lookup, not a recomputation**. Re-deriving the cutoff at read time from
 ``interaction_legs.payload_hash IS NULL`` would put a second copy of D6's rule in
 this module's SQL, free to drift from the traversal that actually produced the
-rows — and inferring it from *missing metadata rows* is not even possible, since
-the processor upserts without deleting on the happy path and rows from a longer
-earlier derivation can linger.
+rows — and inferring it from *missing metadata rows* was never possible anyway:
+before the processor gained its stale-row delete (ADR-0027 D9) rows from a longer
+earlier derivation could linger, and the authoritative answer must in any case be
+the one the traversal reached rather than a second inference over its output.
 
 A **third** absence therefore joins the two below: no status row at all, served as
 ``status=None`` meaning *unknown*. It must never be collapsed into ``complete`` —

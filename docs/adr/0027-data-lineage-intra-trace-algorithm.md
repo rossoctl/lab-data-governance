@@ -195,11 +195,12 @@ Derived-on-read was the tempting option — no migration, and the gap looks like
 something a `SELECT` could spot. It cannot, in either form:
 
 - **From the metadata rows** ("no lineage row past leg N") it is not detectable.
-  The driver re-derives a whole trace per arriving leg and upserts *without*
-  deleting (D7's derived-stream pattern), so rows from an earlier, longer
-  derivation outlive a later, shorter one. The very case the flag exists for — a
-  trace that *was* complete and is now truncated — is the case where the stale
-  rows hide the gap.
+  At the time this decision was taken the driver re-derived a whole trace per
+  arriving leg and upserted *without* deleting (D7's derived-stream pattern), so
+  rows from an earlier, longer derivation outlived a later, shorter one. The very
+  case the flag exists for — a trace that *was* complete and is now truncated —
+  was the case where the stale rows hid the gap. (D9 below fixes that staleness;
+  it does not revive derived-on-read, for the reason in the next bullet.)
 - **From `interaction_legs.payload_hash IS NULL`** it is detectable, but that
   puts a second implementation of D6's cutoff rule in read-path SQL, free to
   drift from the traversal that actually produced the rows. Two answers to "is
@@ -225,10 +226,7 @@ Two consequences worth stating, because both are load-bearing:
   derivation can get *shorter*, the driver must also **delete** the trace's rows
   the derivation no longer covers — otherwise the read serves lineage for legs
   after the gap while the status says `partial`, which is self-contradictory
-  rather than merely stale. The delete is scoped to "not in this derivation's
-  output" rather than `seq >= stopped_at_seq`, because `seq` is re-allocated when
-  a leg is rewritten in place and a threshold would spare exactly the rows it
-  must remove. This is D9.
+  rather than merely stale. That delete, and how it must be scoped, is D9 below.
 
 ### D9 — Re-derivation is upsert **plus** a stale-row delete, not upsert alone
 
@@ -256,12 +254,30 @@ answer built on evidence that has gone, while the trace's own status says
 `partial`. Without the delete, D6's flag would be decorative: the truncation it
 announces would not actually be reflected in what the read serves.
 
-**Scope of the delete.** Everything under the trace that this derivation did not
-produce — which also collects rows whose leg has disappeared from the trace
-entirely, something an upsert can never do. The derivation is the sole authority
-on which of a trace's legs have lineage. It is scoped through `interactions`
-because `lineage_metadata` carries no `trace_id` (ADR-0025 keeps identity on the
-parent); mis-scoping it would delete another trace's evidence.
+**Scope of the delete: set membership, never a `seq` threshold.** The condition is
+"everything under the trace that this derivation did not produce" — not
+`seq >= stopped_at_seq`. This is the one part of D9 that is easy to get backwards,
+and getting it backwards is silent: **a `seq`-threshold delete would spare exactly
+the rows it must remove.** `seq` is a re-allocated cursor value, not a stable
+position. When P-interactions rewrites a leg in place it draws a *fresh* `seq` from
+the sequence, so the gap leg's new `seq` sits *above* the stale rows that were
+written under its old one — a `>= stop` predicate then matches the gap leg's own
+(already correct, or absent) row and misses the stale tail entirely. Set membership
+has no such failure mode: the derivation is the sole authority on which of a trace's
+legs have lineage, so anything else under the trace goes.
+
+Scoping by set membership also collects rows whose leg has disappeared from the
+trace entirely — something neither an upsert nor a threshold can do — and
+degenerates correctly to "delete every row of this trace" when the derived set is
+empty, which is a real case: the gap landing on the trace's first leg.
+
+The delete is named for what it removes, not for the condition it tests. Every row
+it deletes is a lineage fact some previous derivation of this same trace asserted
+and this one no longer does; nothing it deletes is current.
+
+It is scoped through `interactions` because `lineage_metadata` carries no
+`trace_id` (ADR-0025 keeps identity on the parent); mis-scoping it would delete
+another trace's evidence.
 
 `lineage_metadata` deliberately does **not** gain a `trace_id` column to avoid
 that join. Its source table `interaction_legs` has none either, the join is

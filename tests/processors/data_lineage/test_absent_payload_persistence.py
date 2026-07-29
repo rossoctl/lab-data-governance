@@ -4,14 +4,15 @@ The pure cutoff rule is tested in ``test_absent_payload_cutoff.py``; this file i
 about what reaches the database, where two things get hard:
 
 1. **Stale rows.** ``driver.process_leg`` re-derives a whole trace per arriving
-   leg and upserts **without deleting** (#117). So when a re-derivation produces a
-   SHORTER prefix than an earlier one did — a leg's payload is rewritten to NULL,
-   or a gap appears mid-trace as legs are re-derived in place by P-interactions —
-   the rows past the new cutoff are still sitting there from the longer answer. If
-   the driver only upserts, the API serves lineage for legs *after* the gap while
-   the status says partial: worse than silent truncation, because it is
-   self-contradictory. The driver therefore deletes the trace's rows at and after
-   the stop position.
+   leg, so when a re-derivation produces a SHORTER prefix than an earlier one did —
+   a leg's payload is rewritten to NULL, or a gap appears mid-trace as legs are
+   re-derived in place by P-interactions — the rows past the new cutoff linger from
+   the longer answer, and an upsert is silent about them. The API would then serve
+   lineage for legs *after* the gap while the status says partial: worse than silent
+   truncation, because it is self-contradictory. The driver therefore also deletes
+   the trace's rows **that the current derivation did not produce** — set
+   membership, NOT ``seq >= stop`` (ADR-0027 D9: ``seq`` is re-allocated on rewrite,
+   so a threshold would spare exactly the stale rows).
 2. **partial → complete.** The reverse transition, an explicit acceptance
    criterion: a late response payload arrives and the trace becomes whole. The
    status row must flip and the stop position must clear, with no stale

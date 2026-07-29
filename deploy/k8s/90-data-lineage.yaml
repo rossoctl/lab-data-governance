@@ -42,9 +42,10 @@
 # NOTHING`), so for it "a brief overlap only duplicates work, never a row". Data
 # lineage writes three things per leg — an `ON CONFLICT ... DO UPDATE` upsert of
 # the derived rows, a `_delete_stale` pass removing this trace's rows the
-# derivation no longer covers (ADR-0027 D9), and a `lineage_trace_status` upsert
-# — so "write-once" is simply false, and two pods interleaving one's delete
-# against the other's upsert would be a real hazard if the writes were loose.
+# derivation no longer covers (why that delete exists, and why it is scoped by
+# set membership: ADR-0027 D9), and a `lineage_trace_status` upsert — so
+# "write-once" is simply false, and two pods interleaving one's delete against
+# the other's upsert would be a real hazard if the writes were loose.
 # They are not loose: a derivation is a DETERMINISTIC function of committed
 # state (the trace's legs, their entities, their payloads, and the configured
 # matcher), and all three writes plus the cursor advance happen inside the ONE

@@ -24,15 +24,13 @@ migration 0010's NOTIFY trigger covers UPDATE as well as INSERT. Insert-if-absen
 would freeze the first, most partial answer.
 
 **Upserting alone is not enough once a derivation can get SHORTER** (ADR-0027 D6's
-absent-payload cutoff, issue #120). A trace derived complete and later truncated at
-a gap would keep the rows past the new cutoff, contradicting its own ``partial``
-status — so ``process_leg`` also deletes the trace's rows **that this derivation did
-not produce**, and writes the trace-level status into ``lineage_trace_status``
-(migration 0012). Scoped by set membership, NOT by ``seq >= stop``: ``seq`` is
-re-allocated when a leg is rewritten, so a threshold would spare exactly the stale
-rows it must remove (ADR-0027 D9; see :func:`_delete_stale`). All three writes share
-the loop's one transaction, so a trace's metadata and its coverage claim can never
-disagree.
+absent-payload cutoff, issue #120). So ``process_leg`` writes three things per leg:
+the upsert above, a delete of the trace's rows **that this derivation did not
+produce** (:func:`_delete_stale` — scoped by set membership, never by
+``seq >= stop``), and the trace-level status in ``lineage_trace_status`` (migration
+0012). Why the delete exists and why its scoping must be set membership: ADR-0027
+D9. All three writes share the loop's one transaction, so a trace's metadata and its
+coverage claim can never disagree.
 
 **Trace scoping needs a join.** ``interaction_legs`` has no ``trace_id`` (ADR-0025
 puts identity on the parent), so both the arriving leg's trace and the trace's legs
@@ -215,35 +213,22 @@ def _delete_stale(
     tx: db.Transaction, trace_id: str, derived_keys: set[traversal.LegKey]
 ) -> None:
     """Drop *trace_id*'s **stale** lineage rows — those this derivation did not
-    produce, left behind by an earlier and longer one (ADR-0027 D9).
+    produce, left behind by an earlier and longer one.
 
-    Named for what it deletes, not for the condition it tests: every row it removes
-    is a lineage fact that some previous derivation of this same trace asserted and
-    this one no longer does. Nothing it deletes is current.
+    Why the delete exists at all (a derivation can shrink, and an upsert is silent
+    about rows it is not producing) is ADR-0027 D9. Two things a reader editing this
+    function needs on the spot:
 
-    **Why upserting is not enough.** This driver re-derives a whole trace per
-    arriving leg, and an upsert only ever writes the rows it is currently producing
-    — it is silent about rows already present that this derivation is not producing,
-    so those survive from earlier derivations. Once a derivation can get *shorter* —
-    ADR-0027 D6's absent-payload
-    cutoff (#120), triggered when a leg's payload is rewritten to NULL or a gap
-    appears as P-interactions re-derives legs in place (migration 0010's trigger
-    covers UPDATE for exactly this reason) — the rows past the new cutoff are stale.
-    Left behind, the read would serve lineage for legs *after* the gap while the
-    status says ``partial``: not merely stale but self-contradictory, and a positive
-    claim about data whose provenance is no longer visible.
+    **Do NOT rewrite this as ``seq >= stop``.** A ``seq``-threshold delete would
+    spare exactly the rows it must remove. ``seq`` is a re-allocated cursor value,
+    not a stable position: rewriting a leg draws a fresh ``seq``, so the gap leg's
+    new ``seq`` sits *above* the stale rows written under its old one. Set
+    membership — "not in ``derived_keys``" — is the only correct condition, and it
+    additionally removes rows whose leg has vanished from the trace entirely.
 
-    **The condition is "not in the derived set", not "seq >= stop".** ``seq`` is a
-    re-allocated cursor value, not a stable position: rewriting a leg draws a fresh
-    ``seq`` from the sequence, so the gap leg's new ``seq`` sits *above* the stale
-    rows written under its old one and a ``seq``-threshold delete would spare
-    exactly the rows it must remove. The derivation is the sole authority on which
-    of a trace's legs have lineage, so anything else under this trace goes — which
-    also cleans up rows whose leg has disappeared entirely.
-
-    Scoped through ``interactions`` because ``lineage_metadata`` has no ``trace_id``
-    (ADR-0025 keeps identity on the parent). Getting that wrong would delete another
-    trace's evidence.
+    **Scope through ``interactions``.** ``lineage_metadata`` has no ``trace_id``
+    (ADR-0025 keeps identity on the parent), so the join is load-bearing: getting it
+    wrong would delete another trace's evidence.
     """
     # The covered set is passed as two parallel TEXT[] arrays rather than an
     # expanded `NOT IN ((%s, %s), ...)`: one placeholder pair regardless of trace

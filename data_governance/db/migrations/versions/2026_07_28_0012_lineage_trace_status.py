@@ -21,11 +21,10 @@ ADR alongside:
     algorithm, drifting from the traversal that actually produced the rows.
 
     Note this revision *also* fixes the underlying staleness it describes: the
-    cutoff means a derivation can now shrink, so the driver gained a stale-row
-    delete alongside the upsert (ADR-0027 D9). That makes the rows consistent
-    with the status, but it does not resurrect derived-on-read as an option —
-    the authoritative answer must be the one the traversal reached, not a second
-    inference over its output.
+    driver gained a stale-row delete alongside the upsert (ADR-0027 D9). That
+    makes the rows consistent with the status, but it does not resurrect
+    derived-on-read as an option — the authoritative answer must be the one the
+    traversal reached, not a second inference over its output.
   - A dedicated table's idempotency story is the smallest possible one: PK
     ``trace_id`` means exactly one row per trace, ever, so the driver's upsert
     *is* the whole story. The partial→complete transition (a late payload
