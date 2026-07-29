@@ -1,4 +1,4 @@
-# Sidecar wire contract — two-span lineage (v1, for review)
+# Sidecar wire contract — two-span lineage (v1.1)
 
 The single source of truth for what the AuthBridge lineage plugin emits and what the
 P-interactions `sidecar` algorithm (ADR-0028) consumes. Fixes the attribute names that were left

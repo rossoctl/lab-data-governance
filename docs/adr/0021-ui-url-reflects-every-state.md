@@ -26,9 +26,12 @@ resolve client-side).
 | `/ui/traces/{id}` | → redirect to `/ui/traces/{id}/spans` (canonical) |
 | `/ui/traces/{id}/spans` | span tree (the default tab) |
 | `/ui/traces/{id}/spans?sel={spanId}` | span tree, that span selected + revealed |
-| `/ui/traces/{id}/flow` | interaction flow |
+| `/ui/traces/{id}/spans?svc=<a,b>` | span tree limited to those services (comma-separated; absent = all) |
+| `/ui/traces/{id}/flow` | interaction flow, infrastructure hidden, one row per interaction |
 | `/ui/traces/{id}/flow?iid={interactionId}` | flow, that interaction row selected |
 | `/ui/traces/{id}/flow?eid={entityId}` | flow, that entity row selected |
+| `/ui/traces/{id}/flow?showInfra=1` | flow including infrastructure interactions (`mcp_lifecycle_*` / `tool_discovery_*`) |
+| `/ui/traces/{id}/flow?flat=1` | flow as one row per interaction **leg** (request / response), the legs model of ADR-0025 |
 | anything else | → redirect to `/ui/traces` |
 
 - **Tab = path segment, filter/selection = query param.** The tab is a
