@@ -1,0 +1,604 @@
+[
+  {
+    "seq": 6011965,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "ff2644d5b9830a42",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "POST / http receive",
+    "started_at": "2026-06-28T07:25:20.642523+00:00",
+    "attributes": {
+      "asgi.event.type": "http.request"
+    },
+    "observed_at": "2026-06-28T07:25:20.743484+00:00",
+    "arrival_seq": 6011965,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:20.642579+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6011966,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "12072ce1d1b3137b",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "POST / http send",
+    "started_at": "2026-06-28T07:25:20.645103+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.start",
+      "http.status_code": 200
+    },
+    "observed_at": "2026-06-28T07:25:20.745437+00:00",
+    "arrival_seq": 6011966,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:20.645134+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6011967,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "1c4e7aa20a386008",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "POST / http send",
+    "started_at": "2026-06-28T07:25:20.647625+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    },
+    "observed_at": "2026-06-28T07:25:20.746838+00:00",
+    "arrival_seq": 6011967,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:20.647638+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6011968,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "0d1932847e9baa1b",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "POST / http send",
+    "started_at": "2026-06-28T07:25:20.652679+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    },
+    "observed_at": "2026-06-28T07:25:20.747960+00:00",
+    "arrival_seq": 6011968,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:20.652698+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6011980,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "2c791e2398e953e9",
+    "parent_id": "4e1044d00d8d8d07",
+    "name": "POST",
+    "started_at": "2026-06-28T07:25:20.651206+00:00",
+    "attributes": {
+      "http.url": "https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/messages",
+      "http.method": "POST",
+      "http.status_code": 200
+    },
+    "observed_at": "2026-06-28T07:25:27.765177+00:00",
+    "arrival_seq": 6011980,
+    "service_name": "patent_search",
+    "kind": "CLIENT",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:27.730654+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.httpx",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6011981,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "4e1044d00d8d8d07",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "messages.create",
+    "started_at": "2026-06-28T07:25:20.648912+00:00",
+    "attributes": {
+      "llm.system": "anthropic",
+      "input.value": "{\"model\": \"claude-haiku-4-5-20251001\", \"max_tokens\": 4096, \"system\": \"You are an enterprise patent research assistant. You help a researcher retrieve confidential patents from the internal database, summarize them and extract keywords (you do this yourself in your reply — there is no tool for it), store those results to user-named files, and search the web for similar/prior-art patents.\\n\\nTools:\\n- database: read internal confidential patents. Omit patent_id to list patents (id+title); pass patent_id to fetch one patent's full text.\\n- file: persist or read a summary+keywords as a user-named file. Pass a summary (and optional keywords) to store; omit summary to read. If a name is invalid or already exists, ask the user for another name or whether to overwrite (set overwrite=true).\\n- web_search: search the public web for similar patents using a summary or keywords.\\n\\nWhen the user asks you to summarize or extract keywords, do it directly from the patent text you fetched.\", \"tools\": [{\"name\": \"web_search\", \"description\": \"Search the public web for similar or prior-art patents using a summary or keyword query. Returns fabricated but deterministic hits (stub).\", \"input_schema\": {\"properties\": {\"query\": {\"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"web_searchArguments\", \"type\": \"object\"}}, {\"name\": \"file\", \"description\": \"Persistent storage for a patent summary + keywords, keyed by a user-chosen file name. Pass `summary` (and optional `keywords`) to STORE; set overwrite=true to replace an existing file (without it, an existing name errors so you can ask the user to choose another name or confirm overwrite). Omit `summary` to READ the stored file back.\", \"input_schema\": {\"properties\": {\"name\": {\"title\": \"Name\", \"type\": \"string\"}, \"summary\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Summary\"}, \"keywords\": {\"anyOf\": [{\"items\": {\"type\": \"string\"}, \"type\": \"array\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Keywords\"}, \"overwrite\": {\"default\": false, \"title\": \"Overwrite\", \"type\": \"boolean\"}}, \"required\": [\"name\"], \"title\": \"fileArguments\", \"type\": \"object\"}}, {\"name\": \"database\", \"description\": \"Access the internal confidential patent database. Omit patent_id to list every patent (id + title); pass patent_id to fetch one patent's full text.\", \"input_schema\": {\"properties\": {\"patent_id\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Patent Id\"}}, \"title\": \"databaseArguments\", \"type\": \"object\"}}], \"messages\": [{\"role\": \"user\", \"content\": \"Please retrieve the content of keywords.2.text and search it on the web\"}]}",
+      "llm.provider": "anthropic",
+      "output.value": "{\"id\":\"msg_bdrk_01Wwt7BpCteEnQbMsjhiaCEr\",\"container\":null,\"content\":[{\"citations\":null,\"text\":\"I'll retrieve the content of the keywords.2.text file and then search it on the web.\",\"type\":\"text\"},{\"id\":\"toolu_bdrk_013n5zZbUC3SzogKcjafrtEs\",\"caller\":null,\"input\":{\"name\":\"keywords.2.text\"},\"name\":\"file\",\"type\":\"tool_use\"}],\"model\":\"claude-haiku-4-5-20251001\",\"role\":\"assistant\",\"stop_details\":null,\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":0},\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"inference_geo\":null,\"input_tokens\":1171,\"output_tokens\":77,\"output_tokens_details\":null,\"server_tool_use\":null,\"service_tier\":null,\"total_tokens\":1248}}",
+      "llm.model_name": "claude-haiku-4-5-20251001",
+      "input.mime_type": "application/json",
+      "output.mime_type": "application/json",
+      "llm.token_count.prompt": 1171,
+      "openinference.span.kind": "LLM",
+      "llm.invocation_parameters": "{\"max_tokens\": 4096}",
+      "llm.token_count.completion": 77,
+      "llm.tools.0.tool.json_schema": "{\"name\": \"web_search\", \"description\": \"Search the public web for similar or prior-art patents using a summary or keyword query. Returns fabricated but deterministic hits (stub).\", \"input_schema\": {\"properties\": {\"query\": {\"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"web_searchArguments\", \"type\": \"object\"}}",
+      "llm.tools.1.tool.json_schema": "{\"name\": \"file\", \"description\": \"Persistent storage for a patent summary + keywords, keyed by a user-chosen file name. Pass `summary` (and optional `keywords`) to STORE; set overwrite=true to replace an existing file (without it, an existing name errors so you can ask the user to choose another name or confirm overwrite). Omit `summary` to READ the stored file back.\", \"input_schema\": {\"properties\": {\"name\": {\"title\": \"Name\", \"type\": \"string\"}, \"summary\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Summary\"}, \"keywords\": {\"anyOf\": [{\"items\": {\"type\": \"string\"}, \"type\": \"array\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Keywords\"}, \"overwrite\": {\"default\": false, \"title\": \"Overwrite\", \"type\": \"boolean\"}}, \"required\": [\"name\"], \"title\": \"fileArguments\", \"type\": \"object\"}}",
+      "llm.tools.2.tool.json_schema": "{\"name\": \"database\", \"description\": \"Access the internal confidential patent database. Omit patent_id to list every patent (id + title); pass patent_id to fetch one patent's full text.\", \"input_schema\": {\"properties\": {\"patent_id\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Patent Id\"}}, \"title\": \"databaseArguments\", \"type\": \"object\"}}",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.1.message.role": "user",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.input_messages.0.message.content": "You are an enterprise patent research assistant. You help a researcher retrieve confidential patents from the internal database, summarize them and extract keywords (you do this yourself in your reply — there is no tool for it), store those results to user-named files, and search the web for similar/prior-art patents.\n\nTools:\n- database: read internal confidential patents. Omit patent_id to list patents (id+title); pass patent_id to fetch one patent's full text.\n- file: persist or read a summary+keywords as a user-named file. Pass a summary (and optional keywords) to store; omit summary to read. If a name is invalid or already exists, ask the user for another name or whether to overwrite (set overwrite=true).\n- web_search: search the public web for similar patents using a summary or keywords.\n\nWhen the user asks you to summarize or extract keywords, do it directly from the patent text you fetched.",
+      "llm.input_messages.1.message.content": "Please retrieve the content of keywords.2.text and search it on the web",
+      "llm.output_messages.0.message.content": "I'll retrieve the content of the keywords.2.text file and then search it on the web.",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "file",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"name\": \"keywords.2.text\"}"
+    },
+    "observed_at": "2026-06-28T07:25:27.767043+00:00",
+    "arrival_seq": 6011981,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": false,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:27.733877+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "openinference.instrumentation.anthropic",
+      "version": "1.0.6"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6011986,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "c2abc6b6d6488bb2",
+    "parent_id": "e6c6ccd898f3291c",
+    "name": "POST",
+    "started_at": "2026-06-28T07:25:27.762751+00:00",
+    "attributes": {
+      "http.url": "https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/messages",
+      "http.method": "POST",
+      "http.status_code": 200
+    },
+    "observed_at": "2026-06-28T07:25:29.169178+00:00",
+    "arrival_seq": 6011986,
+    "service_name": "patent_search",
+    "kind": "CLIENT",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:28.986556+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.httpx",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6011987,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "e6c6ccd898f3291c",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "messages.create",
+    "started_at": "2026-06-28T07:25:27.759512+00:00",
+    "attributes": {
+      "llm.system": "anthropic",
+      "input.value": "{\"model\": \"claude-haiku-4-5-20251001\", \"max_tokens\": 4096, \"system\": \"You are an enterprise patent research assistant. You help a researcher retrieve confidential patents from the internal database, summarize them and extract keywords (you do this yourself in your reply — there is no tool for it), store those results to user-named files, and search the web for similar/prior-art patents.\\n\\nTools:\\n- database: read internal confidential patents. Omit patent_id to list patents (id+title); pass patent_id to fetch one patent's full text.\\n- file: persist or read a summary+keywords as a user-named file. Pass a summary (and optional keywords) to store; omit summary to read. If a name is invalid or already exists, ask the user for another name or whether to overwrite (set overwrite=true).\\n- web_search: search the public web for similar patents using a summary or keywords.\\n\\nWhen the user asks you to summarize or extract keywords, do it directly from the patent text you fetched.\", \"tools\": [{\"name\": \"web_search\", \"description\": \"Search the public web for similar or prior-art patents using a summary or keyword query. Returns fabricated but deterministic hits (stub).\", \"input_schema\": {\"properties\": {\"query\": {\"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"web_searchArguments\", \"type\": \"object\"}}, {\"name\": \"file\", \"description\": \"Persistent storage for a patent summary + keywords, keyed by a user-chosen file name. Pass `summary` (and optional `keywords`) to STORE; set overwrite=true to replace an existing file (without it, an existing name errors so you can ask the user to choose another name or confirm overwrite). Omit `summary` to READ the stored file back.\", \"input_schema\": {\"properties\": {\"name\": {\"title\": \"Name\", \"type\": \"string\"}, \"summary\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Summary\"}, \"keywords\": {\"anyOf\": [{\"items\": {\"type\": \"string\"}, \"type\": \"array\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Keywords\"}, \"overwrite\": {\"default\": false, \"title\": \"Overwrite\", \"type\": \"boolean\"}}, \"required\": [\"name\"], \"title\": \"fileArguments\", \"type\": \"object\"}}, {\"name\": \"database\", \"description\": \"Access the internal confidential patent database. Omit patent_id to list every patent (id + title); pass patent_id to fetch one patent's full text.\", \"input_schema\": {\"properties\": {\"patent_id\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Patent Id\"}}, \"title\": \"databaseArguments\", \"type\": \"object\"}}], \"messages\": [{\"role\": \"user\", \"content\": \"Please retrieve the content of keywords.2.text and search it on the web\"}, {\"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"I'll retrieve the content of the keywords.2.text file and then search it on the web.\"}, {\"type\": \"tool_use\", \"id\": \"toolu_bdrk_013n5zZbUC3SzogKcjafrtEs\", \"name\": \"file\", \"input\": {\"name\": \"keywords.2.text\"}}]}, {\"role\": \"user\", \"content\": [{\"type\": \"tool_result\", \"tool_use_id\": \"toolu_bdrk_013n5zZbUC3SzogKcjafrtEs\", \"content\": \"{\\n  \\\"name\\\": \\\"keywords.2.text\\\",\\n  \\\"summary\\\": \\\"Adaptive Battery Thermal Management - A system that predicts cell temperature using a learned model and pre-emptively routes coolant, extending lithium-ion battery life in high-drain electric vehicle applications.\\\",\\n  \\\"keywords\\\": [\\n    \\\"battery thermal management\\\",\\n    \\\"temperature prediction\\\",\\n    \\\"machine learning model\\\",\\n    \\\"coolant routing\\\",\\n    \\\"lithium-ion battery\\\",\\n    \\\"electric vehicle\\\",\\n    \\\"thermal management system\\\",\\n    \\\"cell temperature\\\",\\n    \\\"battery life extension\\\",\\n    \\\"high-drain applications\\\"\\n  ]\\n}\"}]}]}",
+      "llm.provider": "anthropic",
+      "output.value": "{\"id\":\"msg_bdrk_017oSgXuMt4EqyNPxAEVZRHS\",\"container\":null,\"content\":[{\"citations\":null,\"text\":\"Great! I found the file. Now I'll search the web for similar patents using the keywords from this file.\",\"type\":\"text\"},{\"id\":\"toolu_bdrk_01TGvXt34hVoAWJvifCPAn4j\",\"caller\":null,\"input\":{\"query\":\"adaptive battery thermal management temperature prediction machine learning coolant routing lithium-ion\"},\"name\":\"web_search\",\"type\":\"tool_use\"}],\"model\":\"claude-haiku-4-5-20251001\",\"role\":\"assistant\",\"stop_details\":null,\"stop_reason\":\"tool_use\",\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":0},\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"inference_geo\":null,\"input_tokens\":1400,\"output_tokens\":91,\"output_tokens_details\":null,\"server_tool_use\":null,\"service_tier\":null,\"total_tokens\":1491}}",
+      "llm.model_name": "claude-haiku-4-5-20251001",
+      "input.mime_type": "application/json",
+      "output.mime_type": "application/json",
+      "llm.token_count.prompt": 1400,
+      "openinference.span.kind": "LLM",
+      "llm.invocation_parameters": "{\"max_tokens\": 4096}",
+      "llm.token_count.completion": 91,
+      "llm.tools.0.tool.json_schema": "{\"name\": \"web_search\", \"description\": \"Search the public web for similar or prior-art patents using a summary or keyword query. Returns fabricated but deterministic hits (stub).\", \"input_schema\": {\"properties\": {\"query\": {\"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"web_searchArguments\", \"type\": \"object\"}}",
+      "llm.tools.1.tool.json_schema": "{\"name\": \"file\", \"description\": \"Persistent storage for a patent summary + keywords, keyed by a user-chosen file name. Pass `summary` (and optional `keywords`) to STORE; set overwrite=true to replace an existing file (without it, an existing name errors so you can ask the user to choose another name or confirm overwrite). Omit `summary` to READ the stored file back.\", \"input_schema\": {\"properties\": {\"name\": {\"title\": \"Name\", \"type\": \"string\"}, \"summary\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Summary\"}, \"keywords\": {\"anyOf\": [{\"items\": {\"type\": \"string\"}, \"type\": \"array\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Keywords\"}, \"overwrite\": {\"default\": false, \"title\": \"Overwrite\", \"type\": \"boolean\"}}, \"required\": [\"name\"], \"title\": \"fileArguments\", \"type\": \"object\"}}",
+      "llm.tools.2.tool.json_schema": "{\"name\": \"database\", \"description\": \"Access the internal confidential patent database. Omit patent_id to list every patent (id + title); pass patent_id to fetch one patent's full text.\", \"input_schema\": {\"properties\": {\"patent_id\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Patent Id\"}}, \"title\": \"databaseArguments\", \"type\": \"object\"}}",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.2.message.role": "assistant",
+      "llm.input_messages.3.message.role": "user",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.input_messages.0.message.content": "You are an enterprise patent research assistant. You help a researcher retrieve confidential patents from the internal database, summarize them and extract keywords (you do this yourself in your reply — there is no tool for it), store those results to user-named files, and search the web for similar/prior-art patents.\n\nTools:\n- database: read internal confidential patents. Omit patent_id to list patents (id+title); pass patent_id to fetch one patent's full text.\n- file: persist or read a summary+keywords as a user-named file. Pass a summary (and optional keywords) to store; omit summary to read. If a name is invalid or already exists, ask the user for another name or whether to overwrite (set overwrite=true).\n- web_search: search the public web for similar patents using a summary or keywords.\n\nWhen the user asks you to summarize or extract keywords, do it directly from the patent text you fetched.",
+      "llm.input_messages.1.message.content": "Please retrieve the content of keywords.2.text and search it on the web",
+      "llm.input_messages.3.message.content": "{\n  \"name\": \"keywords.2.text\",\n  \"summary\": \"Adaptive Battery Thermal Management - A system that predicts cell temperature using a learned model and pre-emptively routes coolant, extending lithium-ion battery life in high-drain electric vehicle applications.\",\n  \"keywords\": [\n    \"battery thermal management\",\n    \"temperature prediction\",\n    \"machine learning model\",\n    \"coolant routing\",\n    \"lithium-ion battery\",\n    \"electric vehicle\",\n    \"thermal management system\",\n    \"cell temperature\",\n    \"battery life extension\",\n    \"high-drain applications\"\n  ]\n}",
+      "llm.output_messages.0.message.content": "Great! I found the file. Now I'll search the web for similar patents using the keywords from this file.",
+      "llm.input_messages.3.message.tool_call_id": "toolu_bdrk_013n5zZbUC3SzogKcjafrtEs",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "toolu_bdrk_013n5zZbUC3SzogKcjafrtEs",
+      "llm.input_messages.2.message.contents.0.message_content.text": "I'll retrieve the content of the keywords.2.text file and then search it on the web.",
+      "llm.input_messages.2.message.contents.0.message_content.type": "text",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "file",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.name": "web_search",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"name\": \"keywords.2.text\"}",
+      "llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments": "{\"query\": \"adaptive battery thermal management temperature prediction machine learning coolant routing lithium-ion\"}"
+    },
+    "observed_at": "2026-06-28T07:25:29.171371+00:00",
+    "arrival_seq": 6011987,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": false,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:28.989803+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "openinference.instrumentation.anthropic",
+      "version": "1.0.6"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6012012,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "81e486aad9261cd3",
+    "parent_id": "18f5c4ad29dd9fd9",
+    "name": "POST",
+    "started_at": "2026-06-28T07:25:29.007727+00:00",
+    "attributes": {
+      "http.url": "https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/messages",
+      "http.method": "POST",
+      "http.status_code": 200
+    },
+    "observed_at": "2026-06-28T07:25:31.778212+00:00",
+    "arrival_seq": 6012012,
+    "service_name": "patent_search",
+    "kind": "CLIENT",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:31.588044+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.httpx",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6012013,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "18f5c4ad29dd9fd9",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "messages.create",
+    "started_at": "2026-06-28T07:25:29.003453+00:00",
+    "attributes": {
+      "llm.system": "anthropic",
+      "input.value": "{\"model\": \"claude-haiku-4-5-20251001\", \"max_tokens\": 4096, \"system\": \"You are an enterprise patent research assistant. You help a researcher retrieve confidential patents from the internal database, summarize them and extract keywords (you do this yourself in your reply — there is no tool for it), store those results to user-named files, and search the web for similar/prior-art patents.\\n\\nTools:\\n- database: read internal confidential patents. Omit patent_id to list patents (id+title); pass patent_id to fetch one patent's full text.\\n- file: persist or read a summary+keywords as a user-named file. Pass a summary (and optional keywords) to store; omit summary to read. If a name is invalid or already exists, ask the user for another name or whether to overwrite (set overwrite=true).\\n- web_search: search the public web for similar patents using a summary or keywords.\\n\\nWhen the user asks you to summarize or extract keywords, do it directly from the patent text you fetched.\", \"tools\": [{\"name\": \"web_search\", \"description\": \"Search the public web for similar or prior-art patents using a summary or keyword query. Returns fabricated but deterministic hits (stub).\", \"input_schema\": {\"properties\": {\"query\": {\"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"web_searchArguments\", \"type\": \"object\"}}, {\"name\": \"file\", \"description\": \"Persistent storage for a patent summary + keywords, keyed by a user-chosen file name. Pass `summary` (and optional `keywords`) to STORE; set overwrite=true to replace an existing file (without it, an existing name errors so you can ask the user to choose another name or confirm overwrite). Omit `summary` to READ the stored file back.\", \"input_schema\": {\"properties\": {\"name\": {\"title\": \"Name\", \"type\": \"string\"}, \"summary\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Summary\"}, \"keywords\": {\"anyOf\": [{\"items\": {\"type\": \"string\"}, \"type\": \"array\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Keywords\"}, \"overwrite\": {\"default\": false, \"title\": \"Overwrite\", \"type\": \"boolean\"}}, \"required\": [\"name\"], \"title\": \"fileArguments\", \"type\": \"object\"}}, {\"name\": \"database\", \"description\": \"Access the internal confidential patent database. Omit patent_id to list every patent (id + title); pass patent_id to fetch one patent's full text.\", \"input_schema\": {\"properties\": {\"patent_id\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Patent Id\"}}, \"title\": \"databaseArguments\", \"type\": \"object\"}}], \"messages\": [{\"role\": \"user\", \"content\": \"Please retrieve the content of keywords.2.text and search it on the web\"}, {\"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"I'll retrieve the content of the keywords.2.text file and then search it on the web.\"}, {\"type\": \"tool_use\", \"id\": \"toolu_bdrk_013n5zZbUC3SzogKcjafrtEs\", \"name\": \"file\", \"input\": {\"name\": \"keywords.2.text\"}}]}, {\"role\": \"user\", \"content\": [{\"type\": \"tool_result\", \"tool_use_id\": \"toolu_bdrk_013n5zZbUC3SzogKcjafrtEs\", \"content\": \"{\\n  \\\"name\\\": \\\"keywords.2.text\\\",\\n  \\\"summary\\\": \\\"Adaptive Battery Thermal Management - A system that predicts cell temperature using a learned model and pre-emptively routes coolant, extending lithium-ion battery life in high-drain electric vehicle applications.\\\",\\n  \\\"keywords\\\": [\\n    \\\"battery thermal management\\\",\\n    \\\"temperature prediction\\\",\\n    \\\"machine learning model\\\",\\n    \\\"coolant routing\\\",\\n    \\\"lithium-ion battery\\\",\\n    \\\"electric vehicle\\\",\\n    \\\"thermal management system\\\",\\n    \\\"cell temperature\\\",\\n    \\\"battery life extension\\\",\\n    \\\"high-drain applications\\\"\\n  ]\\n}\"}]}, {\"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"Great! I found the file. Now I'll search the web for similar patents using the keywords from this file.\"}, {\"type\": \"tool_use\", \"id\": \"toolu_bdrk_01TGvXt34hVoAWJvifCPAn4j\", \"name\": \"web_search\", \"input\": {\"query\": \"adaptive battery thermal management temperature prediction machine learning coolant routing lithium-ion\"}}]}, {\"role\": \"user\", \"content\": [{\"type\": \"tool_result\", \"tool_use_id\": \"toolu_bdrk_01TGvXt34hVoAWJvifCPAn4j\", \"content\": \"{\\n  \\\"results\\\": [\\n    {\\n      \\\"patent_id\\\": \\\"US6962740A1\\\",\\n      \\\"title\\\": \\\"Similar approach to adaptive battery thermal management temperature predictio... (assignee: Acme Corp)\\\",\\n      \\\"url\\\": \\\"https://patents.example.com/US6962740A1\\\"\\n    },\\n    {\\n      \\\"patent_id\\\": \\\"EP8898291B1\\\",\\n      \\\"title\\\": \\\"Prior art related to adaptive battery thermal management temperature predictio... (assignee: Globex)\\\",\\n      \\\"url\\\": \\\"https://patents.example.com/EP8898291B1\\\"\\n    },\\n    {\\n      \\\"patent_id\\\": \\\"WO4405852A2\\\",\\n      \\\"title\\\": \\\"Comparable method for adaptive battery thermal management temperature predictio... (assignee: Initech)\\\",\\n      \\\"url\\\": \\\"https://patents.example.com/WO4405852A2\\\"\\n    }\\n  ]\\n}\"}]}]}",
+      "llm.provider": "anthropic",
+      "output.value": "{\"id\":\"msg_bdrk_01Lr7vYhrpTXXycZ6NYjhdfa\",\"container\":null,\"content\":[{\"citations\":null,\"text\":\"Perfect! Here's what I found:\\n\\n**Retrieved Content from keywords.2.text:**\\n\\n**Summary:** Adaptive Battery Thermal Management - A system that predicts cell temperature using a learned model and pre-emptively routes coolant, extending lithium-ion battery life in high-drain electric vehicle applications.\\n\\n**Keywords:**\\n- Battery thermal management\\n- Temperature prediction\\n- Machine learning model\\n- Coolant routing\\n- Lithium-ion battery\\n- Electric vehicle\\n- Thermal management system\\n- Cell temperature\\n- Battery life extension\\n- High-drain applications\\n\\n**Web Search Results:**\\n\\nI found 3 similar patents related to adaptive battery thermal management:\\n\\n1. **US6962740A1** - \\\"Similar approach to adaptive battery thermal management temperature prediction...\\\" \\n   - Assignee: Acme Corp\\n   - URL: https://patents.example.com/US6962740A1\\n\\n2. **EP8898291B1** - \\\"Prior art related to adaptive battery thermal management temperature prediction...\\\"\\n   - Assignee: Globex\\n   - URL: https://patents.example.com/EP8898291B1\\n\\n3. **WO4405852A2** - \\\"Comparable method for adaptive battery thermal management temperature prediction...\\\"\\n   - Assignee: Initech\\n   - URL: https://patents.example.com/WO4405852A2\\n\\nThese results show existing patents in the adaptive battery thermal management space that may be relevant to your research or competitive analysis.\",\"type\":\"text\"}],\"model\":\"claude-haiku-4-5-20251001\",\"role\":\"assistant\",\"stop_details\":null,\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":0},\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"inference_geo\":null,\"input_tokens\":1719,\"output_tokens\":332,\"output_tokens_details\":null,\"server_tool_use\":null,\"service_tier\":null,\"total_tokens\":2051}}",
+      "llm.model_name": "claude-haiku-4-5-20251001",
+      "input.mime_type": "application/json",
+      "output.mime_type": "application/json",
+      "llm.token_count.prompt": 1719,
+      "openinference.span.kind": "LLM",
+      "llm.invocation_parameters": "{\"max_tokens\": 4096}",
+      "llm.token_count.completion": 332,
+      "llm.tools.0.tool.json_schema": "{\"name\": \"web_search\", \"description\": \"Search the public web for similar or prior-art patents using a summary or keyword query. Returns fabricated but deterministic hits (stub).\", \"input_schema\": {\"properties\": {\"query\": {\"title\": \"Query\", \"type\": \"string\"}}, \"required\": [\"query\"], \"title\": \"web_searchArguments\", \"type\": \"object\"}}",
+      "llm.tools.1.tool.json_schema": "{\"name\": \"file\", \"description\": \"Persistent storage for a patent summary + keywords, keyed by a user-chosen file name. Pass `summary` (and optional `keywords`) to STORE; set overwrite=true to replace an existing file (without it, an existing name errors so you can ask the user to choose another name or confirm overwrite). Omit `summary` to READ the stored file back.\", \"input_schema\": {\"properties\": {\"name\": {\"title\": \"Name\", \"type\": \"string\"}, \"summary\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Summary\"}, \"keywords\": {\"anyOf\": [{\"items\": {\"type\": \"string\"}, \"type\": \"array\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Keywords\"}, \"overwrite\": {\"default\": false, \"title\": \"Overwrite\", \"type\": \"boolean\"}}, \"required\": [\"name\"], \"title\": \"fileArguments\", \"type\": \"object\"}}",
+      "llm.tools.2.tool.json_schema": "{\"name\": \"database\", \"description\": \"Access the internal confidential patent database. Omit patent_id to list every patent (id + title); pass patent_id to fetch one patent's full text.\", \"input_schema\": {\"properties\": {\"patent_id\": {\"anyOf\": [{\"type\": \"integer\"}, {\"type\": \"null\"}], \"default\": null, \"title\": \"Patent Id\"}}, \"title\": \"databaseArguments\", \"type\": \"object\"}}",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.1.message.role": "user",
+      "llm.input_messages.2.message.role": "assistant",
+      "llm.input_messages.3.message.role": "user",
+      "llm.input_messages.4.message.role": "assistant",
+      "llm.input_messages.5.message.role": "user",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.input_messages.0.message.content": "You are an enterprise patent research assistant. You help a researcher retrieve confidential patents from the internal database, summarize them and extract keywords (you do this yourself in your reply — there is no tool for it), store those results to user-named files, and search the web for similar/prior-art patents.\n\nTools:\n- database: read internal confidential patents. Omit patent_id to list patents (id+title); pass patent_id to fetch one patent's full text.\n- file: persist or read a summary+keywords as a user-named file. Pass a summary (and optional keywords) to store; omit summary to read. If a name is invalid or already exists, ask the user for another name or whether to overwrite (set overwrite=true).\n- web_search: search the public web for similar patents using a summary or keywords.\n\nWhen the user asks you to summarize or extract keywords, do it directly from the patent text you fetched.",
+      "llm.input_messages.1.message.content": "Please retrieve the content of keywords.2.text and search it on the web",
+      "llm.input_messages.3.message.content": "{\n  \"name\": \"keywords.2.text\",\n  \"summary\": \"Adaptive Battery Thermal Management - A system that predicts cell temperature using a learned model and pre-emptively routes coolant, extending lithium-ion battery life in high-drain electric vehicle applications.\",\n  \"keywords\": [\n    \"battery thermal management\",\n    \"temperature prediction\",\n    \"machine learning model\",\n    \"coolant routing\",\n    \"lithium-ion battery\",\n    \"electric vehicle\",\n    \"thermal management system\",\n    \"cell temperature\",\n    \"battery life extension\",\n    \"high-drain applications\"\n  ]\n}",
+      "llm.input_messages.5.message.content": "{\n  \"results\": [\n    {\n      \"patent_id\": \"US6962740A1\",\n      \"title\": \"Similar approach to adaptive battery thermal management temperature predictio... (assignee: Acme Corp)\",\n      \"url\": \"https://patents.example.com/US6962740A1\"\n    },\n    {\n      \"patent_id\": \"EP8898291B1\",\n      \"title\": \"Prior art related to adaptive battery thermal management temperature predictio... (assignee: Globex)\",\n      \"url\": \"https://patents.example.com/EP8898291B1\"\n    },\n    {\n      \"patent_id\": \"WO4405852A2\",\n      \"title\": \"Comparable method for adaptive battery thermal management temperature predictio... (assignee: Initech)\",\n      \"url\": \"https://patents.example.com/WO4405852A2\"\n    }\n  ]\n}",
+      "llm.output_messages.0.message.content": "Perfect! Here's what I found:\n\n**Retrieved Content from keywords.2.text:**\n\n**Summary:** Adaptive Battery Thermal Management - A system that predicts cell temperature using a learned model and pre-emptively routes coolant, extending lithium-ion battery life in high-drain electric vehicle applications.\n\n**Keywords:**\n- Battery thermal management\n- Temperature prediction\n- Machine learning model\n- Coolant routing\n- Lithium-ion battery\n- Electric vehicle\n- Thermal management system\n- Cell temperature\n- Battery life extension\n- High-drain applications\n\n**Web Search Results:**\n\nI found 3 similar patents related to adaptive battery thermal management:\n\n1. **US6962740A1** - \"Similar approach to adaptive battery thermal management temperature prediction...\" \n   - Assignee: Acme Corp\n   - URL: https://patents.example.com/US6962740A1\n\n2. **EP8898291B1** - \"Prior art related to adaptive battery thermal management temperature prediction...\"\n   - Assignee: Globex\n   - URL: https://patents.example.com/EP8898291B1\n\n3. **WO4405852A2** - \"Comparable method for adaptive battery thermal management temperature prediction...\"\n   - Assignee: Initech\n   - URL: https://patents.example.com/WO4405852A2\n\nThese results show existing patents in the adaptive battery thermal management space that may be relevant to your research or competitive analysis.",
+      "llm.input_messages.3.message.tool_call_id": "toolu_bdrk_013n5zZbUC3SzogKcjafrtEs",
+      "llm.input_messages.5.message.tool_call_id": "toolu_bdrk_01TGvXt34hVoAWJvifCPAn4j",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.id": "toolu_bdrk_013n5zZbUC3SzogKcjafrtEs",
+      "llm.input_messages.4.message.tool_calls.0.tool_call.id": "toolu_bdrk_01TGvXt34hVoAWJvifCPAn4j",
+      "llm.input_messages.2.message.contents.0.message_content.text": "I'll retrieve the content of the keywords.2.text file and then search it on the web.",
+      "llm.input_messages.2.message.contents.0.message_content.type": "text",
+      "llm.input_messages.4.message.contents.0.message_content.text": "Great! I found the file. Now I'll search the web for similar patents using the keywords from this file.",
+      "llm.input_messages.4.message.contents.0.message_content.type": "text",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.name": "file",
+      "llm.input_messages.4.message.tool_calls.0.tool_call.function.name": "web_search",
+      "llm.input_messages.2.message.tool_calls.0.tool_call.function.arguments": "{\"name\": \"keywords.2.text\"}",
+      "llm.input_messages.4.message.tool_calls.0.tool_call.function.arguments": "{\"query\": \"adaptive battery thermal management temperature prediction machine learning coolant routing lithium-ion\"}"
+    },
+    "observed_at": "2026-06-28T07:25:31.780573+00:00",
+    "arrival_seq": 6012013,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": false,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:31.593204+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "openinference.instrumentation.anthropic",
+      "version": "1.0.6"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6012014,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "db16f9330e6c78d6",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "POST / http send",
+    "started_at": "2026-06-28T07:25:31.596850+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    },
+    "observed_at": "2026-06-28T07:25:31.783073+00:00",
+    "arrival_seq": 6012014,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:31.596873+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6012015,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "2335dcbe704c110e",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "POST / http send",
+    "started_at": "2026-06-28T07:25:31.599699+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    },
+    "observed_at": "2026-06-28T07:25:31.784341+00:00",
+    "arrival_seq": 6012015,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:31.599720+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6012016,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "3b73443507993fda",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "POST / http send",
+    "started_at": "2026-06-28T07:25:31.602295+00:00",
+    "attributes": {
+      "asgi.event.type": "http.response.body"
+    },
+    "observed_at": "2026-06-28T07:25:31.786143+00:00",
+    "arrival_seq": 6012016,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:31.602315+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6012017,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "3b2defbba4dc418c",
+    "parent_id": null,
+    "name": "POST /",
+    "started_at": "2026-06-28T07:25:20.642393+00:00",
+    "attributes": {
+      "http.url": "http://patent-assistant.patent-search.svc.cluster.local:8080/",
+      "http.host": "10.244.0.224:8080",
+      "http.route": "/",
+      "http.flavor": "1.1",
+      "http.method": "POST",
+      "http.scheme": "http",
+      "http.target": "/",
+      "net.peer.ip": "10.244.0.50",
+      "net.host.port": 8080,
+      "net.peer.port": 51252,
+      "http.user_agent": "python-httpx/0.28.1",
+      "http.server_name": "patent-assistant.patent-search.svc.cluster.local:8080",
+      "http.status_code": 200
+    },
+    "observed_at": "2026-06-28T07:25:31.787428+00:00",
+    "arrival_seq": 6012017,
+    "service_name": "patent_search",
+    "kind": "SERVER",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:31.604210+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  },
+  {
+    "seq": 6012018,
+    "trace_id": "4ee0239356d61584bb4c3b6965041788",
+    "span_id": "67dfef026be22188",
+    "parent_id": "3b2defbba4dc418c",
+    "name": "POST / http receive",
+    "started_at": "2026-06-28T07:25:20.647024+00:00",
+    "attributes": {
+      "asgi.event.type": "http.disconnect"
+    },
+    "observed_at": "2026-06-28T07:25:31.788650+00:00",
+    "arrival_seq": 6012018,
+    "service_name": "patent_search",
+    "kind": "INTERNAL",
+    "error": null,
+    "status_message": null,
+    "events": null,
+    "links": null,
+    "ended_at": "2026-06-28T07:25:31.606489+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.63b1"
+    },
+    "resource_attributes": {
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.42.1",
+      "telemetry.sdk.language": "python",
+      "openinference.project.name": "patent_search"
+    }
+  }
+]

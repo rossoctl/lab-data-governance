@@ -180,15 +180,155 @@ describe('FlowTables', () => {
     expect(screen.queryByRole('heading', { name: 'Details' })).not.toBeInTheDocument();
   });
 
-  it('shows an always-visible detail panel with a placeholder before any selection', async () => {
+  it('floats the detail panel only after a selection, and dismisses it on close', async () => {
+    mockFetch();
+    const onSelectionChange = vi.fn();
+    renderWithProviders(
+      <FlowTables
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
+    // Nothing floats before a click — no panel caption, no placeholder hint.
+    expect(screen.queryByRole('heading', { name: 'Details' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Select an entity or interaction/i)).not.toBeInTheDocument();
+    // Selecting a row floats the panel; its × close button clears the selection.
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Close details/i }));
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Entity' })).not.toBeInTheDocument(),
+    );
+    expect(onSelectionChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it('flat view lists each leg as its own row, ordered by seq, ignoring the tree', async () => {
     mockFetch();
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
-    // Panel header present, plus a "select something" hint, before any click.
-    expect(screen.getByRole('heading', { name: 'Details' })).toBeInTheDocument();
-    expect(screen.getByText(/Select an entity or interaction/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    // Tree view first: one interaction row, no per-leg breakdown.
+    expect(screen.queryByLabelText('Interactions (flat)')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText('Flat view'));
+    // The single interaction's two legs become two rows in seq order.
+    const flat = await screen.findByLabelText('Interactions (flat)');
+    const body = within(flat).getAllByRole('row').slice(1); // drop the header row
+    expect(body).toHaveLength(2);
+    expect(within(body[0]).getByText('request')).toBeInTheDocument();
+    expect(within(body[1]).getByText('response')).toBeInTheDocument();
+
+    // Direction is per-leg (ADR-0025): the interaction is caller=agent-a (e1),
+    // callee=search (e2). The request leg keeps that direction; the response
+    // leg flows callee → caller, so its Caller/Callee are swapped.
+    const cell = (row: HTMLElement, label: string) =>
+      row.querySelector(`[data-label="${label}"]`) as HTMLElement;
+    expect(within(cell(body[0], 'Caller')).getByText('agent-a')).toBeInTheDocument();
+    expect(within(cell(body[0], 'Callee')).getByText('search')).toBeInTheDocument();
+    // Response leg: swapped.
+    expect(within(cell(body[1], 'Caller')).getByText('search')).toBeInTheDocument();
+    expect(within(cell(body[1], 'Callee')).getByText('agent-a')).toBeInTheDocument();
+  });
+
+  it('flat view links a request row to its response row with a shared connector (id + color)', async () => {
+    // Two interactions whose legs interleave in seq order so a request and its
+    // response are NOT adjacent: i1.req(1), i2.req(2), i1.resp(3), i2.resp(4).
+    // The connector must tie i1's request row to its response row (same id +
+    // color) and pass through the i2.req row that sits between them.
+    const INTERLEAVED = [
+      {
+        id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2',
+        summary: 'i1', parent_interaction_id: null,
+        legs: [
+          { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: null, error: false, seq: 1 },
+          { leg_type: 'response', occurred_at: '2026-05-01T12:00:03Z', payload_hash: null, error: false, seq: 3 },
+        ],
+        duration_seconds: 3, any_error: false, span_count: 2, anchor_count: 1,
+      },
+      {
+        id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e2',
+        summary: 'i2', parent_interaction_id: null,
+        legs: [
+          { leg_type: 'request', occurred_at: '2026-05-01T12:00:01Z', payload_hash: null, error: false, seq: 2 },
+          { leg_type: 'response', occurred_at: '2026-05-01T12:00:04Z', payload_hash: null, error: false, seq: 4 },
+        ],
+        duration_seconds: 3, any_error: false, span_count: 2, anchor_count: 1,
+      },
+    ];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: INTERLEAVED }) };
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByLabelText('Flat view'));
+    const flat = await screen.findByLabelText('Interactions (flat)');
+    const body = within(flat).getAllByRole('row').slice(1); // drop header
+    expect(body).toHaveLength(4); // i1.req, i2.req, i1.resp, i2.resp
+
+    // Each row's connector cell carries a <g> per bracket covering it, tagged
+    // with the interaction id + drawing role (top/through/bottom).
+    const segsOf = (row: HTMLElement) =>
+      Array.from(row.querySelectorAll('[data-connector-id]')).map((g) => ({
+        id: g.getAttribute('data-connector-id'),
+        role: g.getAttribute('data-connector-role'),
+      }));
+
+    // Row 0 (i1.request) opens i1's bracket going down.
+    expect(segsOf(body[0])).toContainEqual({ id: 'i1', role: 'top' });
+    // Row 1 (i2.request) opens i2 AND passes i1's line through it.
+    expect(segsOf(body[1])).toContainEqual({ id: 'i2', role: 'top' });
+    expect(segsOf(body[1])).toContainEqual({ id: 'i1', role: 'through' });
+    // Row 2 (i1.response) closes i1's bracket — same id ties it to row 0.
+    expect(segsOf(body[2])).toContainEqual({ id: 'i1', role: 'bottom' });
+    // Row 3 (i2.response) closes i2's bracket.
+    expect(segsOf(body[3])).toContainEqual({ id: 'i2', role: 'bottom' });
+
+    // The request row and its response row share the SAME connector color
+    // (deterministic per interaction id), visually linking them.
+    const colorOf = (row: HTMLElement, id: string) =>
+      row.querySelector(`[data-connector-id="${id}"]`)?.getAttribute('stroke');
+    expect(colorOf(body[0], 'i1')).toBe(colorOf(body[2], 'i1'));
+    expect(colorOf(body[0], 'i1')).toBeTruthy();
+  });
+
+  it('flat view draws no connector line for a single-leg interaction (response in flight)', async () => {
+    // One interaction with only a request leg — no partner, so no line.
+    const SINGLE = [
+      {
+        id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2',
+        summary: 'i1', parent_interaction_id: null,
+        legs: [
+          { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: null, error: false, seq: 1 },
+        ],
+        duration_seconds: null, any_error: false, span_count: 1, anchor_count: 1,
+      },
+    ];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: SINGLE }) };
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByLabelText('Flat view'));
+    const flat = await screen.findByLabelText('Interactions (flat)');
+    const body = within(flat).getAllByRole('row').slice(1);
+    expect(body).toHaveLength(1);
+    // The connector cell renders (empty svg) but draws no bracket segment.
+    expect(body[0].querySelectorAll('[data-connector-id]')).toHaveLength(0);
   });
 
   it('maps entity-evidence roles to glyph+words and links the Parent span id', async () => {

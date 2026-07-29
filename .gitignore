@@ -9,6 +9,15 @@ build/
 dist/
 uv.lock
 
+# Agent tooling (Claude Code skills, agent definitions) installed locally and
+# not part of this project. The `otel-span-table` skill IS checked in, so it is
+# re-included below; everything else under these paths is ignored.
+.agents/
+.claude/skills/
+!.claude/skills/otel-span-table/
+!.claude/skills/otel-span-table/**
+skills-lock.json
+
 # Pipeline runtime output
 classification/output/
 

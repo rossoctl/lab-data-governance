@@ -2,9 +2,18 @@
 
 Reads ``DATABASE_URL`` (matching the migrate CLI / receiver convention), runs the
 defence-in-depth schema-version check, then drives the wake-driven drain loop
-(:func:`driver.run` — a ``LISTEN`` notification or the poll backstop wakes each
-drain, issue #71) until SIGINT/SIGTERM. Pool sizing comes from ``DB_POOL_*``
-consumed by :func:`data_governance.db.configure`.
+(a ``LISTEN`` notification or the poll backstop wakes each drain, issue #71) until
+SIGINT/SIGTERM. Pool sizing comes from ``DB_POOL_*`` consumed by
+:func:`data_governance.db.configure`.
+
+``INTERACTIONS_ALGORITHM`` selects which derivation drives the loop (both write the
+SAME production tables via the SAME :func:`state.flush`; only the derivation
+differs, and only ONE runs at a time so they share the ``interactions`` cursor):
+
+- ``streaming`` (default) — the per-span, eventually-consistent streaming
+  algorithm (:func:`driver.run`, ADR-0007).
+- ``graph`` — the batch graph algorithm, re-derived per span (:func:`graph_driver.run`,
+  ADR-0026).
 
 Before processing any spans the entry point runs the schema-version check
 (issue #10, ADR-0002): it reads ``alembic_version.version_num`` and refuses to
@@ -30,11 +39,15 @@ from data_governance.db.schema_version import (
 )
 from data_governance.processors.otlp_receiver.server import MetricsServer
 
-from . import driver, metrics
+from . import driver, graph_driver, metrics
 
 # Distinct from the receiver's 9090 so a co-located receiver + processor don't
 # collide on the metrics port. Overridable via INTERACTIONS_METRICS_PORT.
 DEFAULT_METRICS_PORT = 9091
+
+# Which derivation drives the loop. Both write the same tables via state.flush.
+_ALGORITHMS = {"streaming": driver.run, "graph": graph_driver.run}
+_DEFAULT_ALGORITHM = "streaming"
 
 
 def _int_env(name: str, default: int) -> int:
@@ -66,6 +79,15 @@ def main() -> int:
         sys.stderr.write(
             "DATABASE_URL must be set to a libpq URL "
             "(e.g. postgres://user:pass@host:5432/dbname)\n"
+        )
+        return 2
+
+    algo_name = os.environ.get("INTERACTIONS_ALGORITHM", _DEFAULT_ALGORITHM)
+    run_loop = _ALGORITHMS.get(algo_name)
+    if run_loop is None:
+        sys.stderr.write(
+            f"INTERACTIONS_ALGORITHM must be one of {sorted(_ALGORITHMS)}; "
+            f"got {algo_name!r}\n"
         )
         return 2
 
@@ -109,10 +131,12 @@ def main() -> int:
         metrics_server.port,
     )
 
+    log.info("interactions processor using %r algorithm", algo_name)
+
     try:
         # `dsn` drives the dedicated LISTEN connection for low-latency wake
         # (issue #71); the drain itself still uses the pool db.configure() set up.
-        driver.run(stop_event, dsn)
+        run_loop(stop_event, dsn)
     finally:
         # Stop the metrics surface (no in-flight writes) before closing the pool.
         metrics_server.stop(grace=1.0)

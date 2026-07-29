@@ -5,9 +5,8 @@ import {
   EmptyState,
   EmptyStateBody,
   EmptyStateHeader,
-  Split,
-  SplitItem,
   Button,
+  Checkbox,
   CodeBlock,
   CodeBlockCode,
 } from '@patternfly/react-core';
@@ -42,6 +41,117 @@ interface Selection {
    *  Req/Resp cells + showPayload(). Null when the interaction carried none. */
   requestPayloadHash: string | null;
   responsePayloadHash: string | null;
+}
+
+/**
+ * A deterministic muted color for an interaction's request↔response connector
+ * line in the flat view. Hashing `ix.id` to a hue (NOT Math.random) keeps a
+ * given interaction's bracket a stable color across renders and lets several
+ * overlapping brackets be told apart. Kept dim (low saturation / mid lightness)
+ * to sit alongside the file's #555/#888 grays without shouting.
+ */
+function connectorColor(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 45%, 60%)`;
+}
+
+/**
+ * The flat view's request↔response connector cell. Given the drawing roles for
+ * this row (one per interaction bracket covering it — see `flatConnectors`),
+ * paints a small SVG: a vertical line down from center for a request `top`
+ * edge (capped with a ▾ marker), up to center for a response `bottom` edge
+ * (capped with ▴), and a full pass-through line for an in-between `through`
+ * row. Overlapping brackets are laid out in adjacent lanes so their lines never
+ * coincide. `pointer-events: none` on the SVG keeps the row click intact.
+ *
+ * The SVG is absolutely positioned to fill the cell's TRUE height (`inset: 0`
+ * in a `position: relative` cell) and drawn with a fixed-height viewBox scaled
+ * via `preserveAspectRatio="none"`. So each row's segment always spans the full
+ * row — whatever a compact row actually measures, including cell padding — and
+ * butts seamlessly against the adjacent rows' segments. That is what makes a
+ * request→response bracket read as ONE unbroken line rather than the chopped
+ * per-row pieces the old fixed 28px SVG produced. The end caps (▾/▴) and the
+ * through pass-through keep their meaning; lanes keep overlapping brackets apart.
+ */
+function ConnectorCell({
+  roles,
+}: {
+  roles: Array<{ id: string; role: 'top' | 'bottom' | 'through' }>;
+}) {
+  const laneW = 8; // horizontal spacing between overlapping brackets
+  const width = Math.max(laneW, roles.length * laneW);
+  // A nominal viewBox height the lines are drawn in; `preserveAspectRatio="none"`
+  // stretches it to the cell's real pixel height, so the value is arbitrary —
+  // only the ratios (mid = center) matter. Vertical lines don't distort under
+  // that stretch, but glyphs would, so the ▾/▴ caps are drawn as separately-
+  // positioned HTML markers (see below) rather than SVG <text>.
+  const vbH = 100;
+  const mid = vbH / 2;
+  return (
+    <>
+      <svg
+        width={width}
+        height="100%"
+        viewBox={`0 0 ${width} ${vbH}`}
+        preserveAspectRatio="none"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'block',
+          pointerEvents: 'none',
+          overflow: 'visible',
+        }}
+        aria-hidden="true"
+        data-testid="flat-connector"
+      >
+        {roles.map(({ id, role }, lane) => {
+          const x = lane * laneW + laneW / 2;
+          const color = connectorColor(id);
+          // top: line from center downward; bottom: from top edge to center;
+          // through: full height. A non-scaling stroke keeps the line 2px wide
+          // regardless of how tall the row (and thus the stretched viewBox) is.
+          const y1 = role === 'bottom' ? 0 : mid;
+          const y2 = role === 'top' ? vbH : mid;
+          return (
+            <g key={id} data-connector-id={id} data-connector-role={role} stroke={color} fill={color}>
+              <line
+                x1={x}
+                y1={role === 'through' ? 0 : y1}
+                x2={x}
+                y2={role === 'through' ? vbH : y2}
+                strokeWidth={2}
+                vectorEffect="non-scaling-stroke"
+              />
+            </g>
+          );
+        })}
+      </svg>
+      {/* The ▾/▴ end caps as HTML markers centered on the cell, so they keep a
+          fixed size and shape while the SVG lines stretch to the row height. */}
+      {roles.map(({ id, role }, lane) =>
+        role === 'through' ? null : (
+          <span
+            key={`${id}-cap`}
+            aria-hidden="true"
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: lane * laneW + laneW / 2,
+              transform: 'translate(-50%, -50%)',
+              fontSize: 9,
+              lineHeight: 1,
+              color: connectorColor(id),
+              pointerEvents: 'none',
+            }}
+          >
+            {role === 'top' ? '▾' : '▴'}
+          </span>
+        ),
+      )}
+    </>
+  );
 }
 
 /** Truncated, clickable span-id cell (Span + Parent columns share this). */
@@ -170,6 +280,9 @@ export function FlowTables({
   const interactionsQ = useInteractions(traceId);
   const entitiesQ = useEntities(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // Flat view: ignore the parent/child tree and list each request/response leg
+  // as its own row, ordered by the leg `seq` (the trace-wide sequence number).
+  const [flatView, setFlatView] = useState(false);
   // Monotonic click token: each row click bumps it, and a click's async
   // evidence fetch only commits its setState if it is still the latest click.
   // Guards the out-of-order race where a slow fetch resolves after a later
@@ -190,6 +303,45 @@ export function FlowTables({
     return m;
   }, [entities]);
   const depthById = useMemo(() => computeInteractionDepths(interactions), [interactions]);
+  // Flat rows: one entry per leg across all interactions, ordered by `seq`.
+  // Each carries its parent interaction so a click still opens that
+  // interaction's detail panel (legs have no selection of their own).
+  const flatRows = useMemo(
+    () =>
+      interactions
+        .flatMap((ix) => ix.legs.map((leg) => ({ ix, leg })))
+        .sort((a, b) => a.leg.seq - b.leg.seq),
+    [interactions],
+  );
+  // Request↔response pairing for the flat view's connector column. A request
+  // leg and its response leg share the same `ix.id` (that is the pairing key),
+  // but they sort by `seq` so they are frequently NOT adjacent — other
+  // interactions' legs interleave between them. We map `ix.id` → the row
+  // indices of its request and response within `flatRows`, then derive each
+  // interaction's [top, bottom] index span. A row then knows, for every
+  // interaction whose span covers it, whether it is that span's top edge
+  // (request → half-line down + ↓), its bottom edge (response → half-line up +
+  // ↑), or an in-between pass-through (full vertical line). Single-leg
+  // interactions (response in flight) have only one index, so their span is a
+  // single row with no partner and thus no line is drawn. `undefined` values
+  // guard the (theoretical) all-response case where a request row is absent.
+  const flatConnectors = useMemo(() => {
+    const spans = new Map<string, { top: number; bottom: number }>();
+    flatRows.forEach(({ ix }, i) => {
+      const s = spans.get(ix.id);
+      if (!s) spans.set(ix.id, { top: i, bottom: i });
+      else s.bottom = i; // later index (legs already sorted by seq)
+    });
+    // Per row, the drawing role for each interaction whose span covers it.
+    return flatRows.map((_row, i) =>
+      [...spans.entries()]
+        .filter(([, s]) => s.top !== s.bottom && i >= s.top && i <= s.bottom)
+        .map(([id, s]) => ({
+          id,
+          role: i === s.top ? ('top' as const) : i === s.bottom ? ('bottom' as const) : ('through' as const),
+        })),
+    );
+  }, [flatRows]);
   // Read the pin colors directly on render (NOT via useMemo keyed on `pins`):
   // `pins` is a stable mutable store reference, so a memo keyed on it would
   // never recompute after a pin toggle. The parent re-renders FlowTables on
@@ -355,8 +507,20 @@ export function FlowTables({
   }
 
   return (
-    <Split hasGutter>
-      <SplitItem isFilled>
+    <div>
+      {/* Tables container. When the detail panel is open it floats fixed on the
+          right (see below), so reserve a right gutter here equal to the panel's
+          width + a gap — the tables shrink out from under the float instead of
+          being covered. Closed → no padding, tables reclaim full width. The
+          panel is `width:30%, minWidth:320` at `right:1rem`, so the gutter uses
+          the same max() and adds ~1rem gap on each side. */}
+      <div
+        style={
+          selection
+            ? { paddingRight: 'max(30%, 320px)', marginRight: '2rem' }
+            : undefined
+        }
+      >
         <Title headingLevel="h3" size="md">
           Entities
         </Title>
@@ -385,9 +549,105 @@ export function FlowTables({
           </Tbody>
         </Table>
 
-        <Title headingLevel="h3" size="md" style={{ marginTop: '1rem' }}>
-          Interactions
-        </Title>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginTop: '1rem',
+          }}
+        >
+          <Title headingLevel="h3" size="md">
+            Interactions
+          </Title>
+          <Checkbox
+            id="flow-flat-view"
+            label="Flat view"
+            isChecked={flatView}
+            onChange={(_e, checked) => setFlatView(checked)}
+          />
+        </div>
+        {flatView ? (
+          // Flat view: one row per request/response leg, ordered by `seq`,
+          // ignoring the parent/child tree (no depth indentation).
+          <Table aria-label="Interactions (flat)" variant="compact">
+            <Thead>
+              <Tr>
+                <Th>Seq</Th>
+                <Th>Time</Th>
+                <Th screenReaderText="Pinned" />
+                <Th screenReaderText="Request/response link" />
+                <Th>Leg</Th>
+                <Th>Caller</Th>
+                <Th>Callee</Th>
+                <Th>Status</Th>
+              </Tr>
+            </Thead>
+            <Tbody>
+              {flatRows.map(({ ix, leg }, i) => {
+                const from = ix.caller_entity_id ? entById.get(ix.caller_entity_id) : undefined;
+                const to = ix.callee_entity_id ? entById.get(ix.callee_entity_id) : undefined;
+                // A response flows callee → caller, so swap for the response leg (ADR-0025).
+                const caller = leg.leg_type === 'response' ? to : from;
+                const callee = leg.leg_type === 'response' ? from : to;
+                return (
+                  <Tr
+                    key={`${ix.id}-${leg.leg_type}`}
+                    isClickable
+                    onRowClick={() => selectInteraction(ix)}
+                    {...rowProps('interaction', ix.id)}
+                  >
+                    <Td dataLabel="Seq" className="dg-mono">
+                      {leg.seq}
+                    </Td>
+                    <Td dataLabel="Time" className="dg-mono">
+                      {leg.occurred_at ? formatTime24Utc(leg.occurred_at) : ''}
+                    </Td>
+                    <Td>{pinDot(`interaction:${ix.id}`)}</Td>
+                    <Td
+                      // The request↔response connector for this row, sitting just
+                      // left of the Leg column (empty when its interaction has no
+                      // partner leg present). `position: relative` lets the
+                      // connector's full-height SVG fill the row's TRUE height via
+                      // `inset: 0`, so the line is continuous across rows.
+                      style={{ padding: 0, width: 1, position: 'relative' }}
+                    >
+                      <ConnectorCell roles={flatConnectors[i]} />
+                    </Td>
+                    <Td dataLabel="Leg">{leg.leg_type}</Td>
+                    <Td dataLabel="Caller">
+                      {caller ? (
+                        <>
+                          <EntityPill entity={caller} /> {caller.display_name}
+                        </>
+                      ) : (
+                        '?'
+                      )}
+                    </Td>
+                    <Td dataLabel="Callee">
+                      {callee ? (
+                        <>
+                          <EntityPill entity={callee} /> {callee.display_name}
+                        </>
+                      ) : (
+                        '?'
+                      )}
+                    </Td>
+                    <Td dataLabel="Status">
+                      {leg.error === true ? (
+                        <span style={{ color: '#f85149' }}>ERROR</span>
+                      ) : leg.error === false ? (
+                        <span style={{ color: '#6acf6a' }}>ok</span>
+                      ) : (
+                        '—'
+                      )}
+                    </Td>
+                  </Tr>
+                );
+              })}
+            </Tbody>
+          </Table>
+        ) : (
         <Table aria-label="Interactions" variant="compact">
           <Thead>
             <Tr>
@@ -451,26 +711,34 @@ export function FlowTables({
             })}
           </Tbody>
         </Table>
-      </SplitItem>
+        )}
+      </div>
 
-      {/* The detail panel is always present (fixed column); a placeholder
-          stands in before any row is selected. */}
-      <SplitItem style={{ flex: '0 0 30%', minWidth: 0 }}>
-        {!selection ? (
-          // Nothing selected yet: the generic 'Details' caption stands in — no
-          // target to name, and no pin action to offer. Same caption→content gap
-          // as the populated state and the span panel's empty state (0.5rem on
-          // the caption; no extra top margin on the placeholder).
-          <>
-            <Title headingLevel="h3" size="md" style={{ marginBottom: '0.5rem' }}>
-              Details
-            </Title>
-            <div style={{ color: '#888', fontStyle: 'italic' }}>
-              Select an entity or interaction to view its details.
-            </div>
-          </>
-        ) : (
-          <>
+      {/* The detail panel floats as a fixed overlay on the right of the
+          viewport instead of occupying a layout column, so the tables use the
+          full width. Only rendered when something is selected — an empty float
+          is just clutter — and dismissable via the caption's × close button. */}
+      {selection && (
+        <div
+          style={{
+            position: 'fixed',
+            // Sit just below the app masthead rather than the viewport top so
+            // the panel doesn't tuck under the header. Tracks the real header
+            // height via PatternFly's CSS var, with a sensible fallback.
+            top: 'calc(var(--pf-v5-c-page__header--MinHeight, 4.75rem) + 1rem)',
+            right: '1rem',
+            width: '30%',
+            minWidth: 320,
+            maxHeight: 'calc(100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) - 2rem)',
+            overflowY: 'auto',
+            background: '#1b1b1b',
+            border: '1px solid #444',
+            borderRadius: 4,
+            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.5)',
+            padding: '1rem',
+            zIndex: 100,
+          }}
+        >
             {/* Caption row: the selection's own name ('Entity'/'Interaction')
                 on the left — folding in what used to be a separate leading
                 section header — with the pin toggle glued to the right, matching
@@ -491,37 +759,49 @@ export function FlowTables({
               <Title headingLevel="h3" size="md">
                 {selection.sectionTitle}
               </Title>
-              <Button
-                variant="secondary"
-                isInline
-                onClick={togglePin}
-                // Never shrink the button below its label ('Add to highlights');
-                // let the caption absorb any horizontal pressure instead.
-                style={{ flexShrink: 0 }}
-                // A swatch of the highlight color: the current color once
-                // pinned, else a preview of the next-free color the pin would
-                // take.
-                icon={
-                  <span
-                    data-testid="highlight-swatch"
-                    aria-hidden="true"
-                    style={{
-                      display: 'inline-block',
-                      width: 10,
-                      height: 10,
-                      borderRadius: 2,
-                      border: '1px solid rgba(0, 0, 0, 0.35)',
-                      // Extra gap beyond PF's default icon spacing so the color
-                      // chip doesn't crowd the label text.
-                      marginRight: '0.375rem',
-                      background:
-                        pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
-                    }}
-                  />
-                }
-              >
-                {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
-              </Button>
+              {/* Pin toggle + a × to dismiss the floating panel, kept together
+                  on the right; both refuse to shrink below their labels. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                <Button
+                  variant="secondary"
+                  isInline
+                  onClick={togglePin}
+                  // A swatch of the highlight color: the current color once
+                  // pinned, else a preview of the next-free color the pin would
+                  // take.
+                  icon={
+                    <span
+                      data-testid="highlight-swatch"
+                      aria-hidden="true"
+                      style={{
+                        display: 'inline-block',
+                        width: 10,
+                        height: 10,
+                        borderRadius: 2,
+                        border: '1px solid rgba(0, 0, 0, 0.35)',
+                        // Extra gap beyond PF's default icon spacing so the color
+                        // chip doesn't crowd the label text.
+                        marginRight: '0.375rem',
+                        background:
+                          pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
+                      }}
+                    />
+                  }
+                >
+                  {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
+                </Button>
+                <Button
+                  variant="plain"
+                  aria-label="Close details"
+                  onClick={() => {
+                    setSelection(null);
+                    onSelectionChange?.(null);
+                  }}
+                  style={{ color: '#888', fontSize: '1.1rem', lineHeight: 1, padding: 0 }}
+                >
+                  ×
+                </Button>
+              </div>
             </div>
             <DetailList pairs={selection.fields} />
 
@@ -568,9 +848,8 @@ export function FlowTables({
                 ))}
               </Tbody>
             </Table>
-          </>
-        )}
-      </SplitItem>
-    </Split>
+        </div>
+      )}
+    </div>
   );
 }

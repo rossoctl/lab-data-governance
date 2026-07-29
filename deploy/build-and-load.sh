@@ -109,9 +109,21 @@ echo ">> Materializing git-LFS model weights (classification/model/)"
 git -C "${REPO_ROOT}" lfs install --local
 git -C "${REPO_ROOT}" lfs pull --include="classification/model/**"
 
+# Compute the UI version stamp HERE on the host (short SHA + commit date): the
+# .git tree is not in the image build context, so vite.config.ts cannot derive
+# it inside the container. Passed in as --build-arg APP_VERSION; the ui-builder
+# stage exports it to `npm run build`, which bakes it into the masthead. Falls
+# back to 'dev' if git fails. Changes every commit → fresh each deploy.
+APP_VERSION="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo dev)"
+if [[ "${APP_VERSION}" != "dev" ]]; then
+    APP_VERSION="${APP_VERSION} ($(git -C "${REPO_ROOT}" show -s --format=%cd --date=short HEAD 2>/dev/null))"
+fi
+echo ">> UI version stamp: ${APP_VERSION}"
+
 echo ">> Building ${RECEIVER_IMAGE} from ${REPO_ROOT}/Containerfile"
 "${CONTAINER_TOOL}" build \
     -f "${REPO_ROOT}/Containerfile" \
+    --build-arg "APP_VERSION=${APP_VERSION}" \
     -t "${RECEIVER_IMAGE}" \
     "${REPO_ROOT}"
 

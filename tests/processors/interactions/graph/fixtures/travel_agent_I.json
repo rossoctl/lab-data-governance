@@ -1,0 +1,2094 @@
+[
+  {
+    "arrival_seq": 2504422,
+    "attributes": {
+      "asgi.event.type": "http.request",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.532336+00:00",
+    "error": null,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "POST / http receive",
+    "observed_at": "2026-06-10T11:32:16.844279+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.62b0"
+    },
+    "seq": 2504422,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "35cdcf6e37a7aa34",
+    "started_at": "2026-06-10T11:32:15.532251+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504423,
+    "attributes": {
+      "asgi.event.type": "http.response.start",
+      "http.status_code": 200,
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.533049+00:00",
+    "error": null,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "POST / http send",
+    "observed_at": "2026-06-10T11:32:16.846208+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.62b0"
+    },
+    "seq": 2504423,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "f08ebb7071816c61",
+    "started_at": "2026-06-10T11:32:15.533015+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504424,
+    "attributes": {
+      "asgi.event.type": "http.response.body",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.536870+00:00",
+    "error": null,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "POST / http send",
+    "observed_at": "2026-06-10T11:32:16.847590+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.62b0"
+    },
+    "seq": 2504424,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "bd78186d5609e3e4",
+    "started_at": "2026-06-10T11:32:15.536853+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504425,
+    "attributes": {
+      "asgi.event.type": "http.response.body",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.537974+00:00",
+    "error": null,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "POST / http send",
+    "observed_at": "2026-06-10T11:32:16.848792+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.62b0"
+    },
+    "seq": 2504425,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "cc1c19938b643ef2",
+    "started_at": "2026-06-10T11:32:15.537944+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504429,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.532739+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.jsonrpc_handler.JSONRPCHandler.on_message_send_stream",
+    "observed_at": "2026-06-10T11:32:16.854508+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504429,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "cc8cf43b3387bbff",
+    "started_at": "2026-06-10T11:32:15.532700+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504430,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.533292+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler.on_message_send_stream",
+    "observed_at": "2026-06-10T11:32:16.855839+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504430,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "f70d79ca77da4486",
+    "started_at": "2026-06-10T11:32:15.533270+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504431,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.533815+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_consumer.EventConsumer.consume_all",
+    "observed_at": "2026-06-10T11:32:16.856909+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504431,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "7d4363275e0bae46",
+    "started_at": "2026-06-10T11:32:15.533796+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504432,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.536510+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.task_done",
+    "observed_at": "2026-06-10T11:32:16.858019+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504432,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "a7236c866e31f5a2",
+    "started_at": "2026-06-10T11:32:15.536491+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504433,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.536607+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._validate_task_id_match",
+    "observed_at": "2026-06-10T11:32:16.858986+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504433,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "e7321da1895bc039",
+    "started_at": "2026-06-10T11:32:15.536591+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504434,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.537648+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.task_done",
+    "observed_at": "2026-06-10T11:32:16.859917+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504434,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "64bc3bae29aa4702",
+    "started_at": "2026-06-10T11:32:15.537628+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504435,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.533545+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.in_memory_queue_manager.InMemoryQueueManager.create_or_tap",
+    "observed_at": "2026-06-10T11:32:16.861039+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "cc0695bc5b2403c4",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504435,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "b634b41a84a45059",
+    "started_at": "2026-06-10T11:32:15.533504+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504436,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.533678+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._register_producer",
+    "observed_at": "2026-06-10T11:32:16.862022+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "cc0695bc5b2403c4",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504436,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "017b267f8d0ad07c",
+    "started_at": "2026-06-10T11:32:15.533647+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504437,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.533707+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._setup_message_execution",
+    "observed_at": "2026-06-10T11:32:16.863081+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504437,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "cc0695bc5b2403c4",
+    "started_at": "2026-06-10T11:32:15.533365+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504438,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.534178+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.enqueue_event",
+    "observed_at": "2026-06-10T11:32:16.864135+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7d2c228478ed7ddd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504438,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "27908d5d508292cc",
+    "started_at": "2026-06-10T11:32:15.534154+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504439,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.534345+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.enqueue_event",
+    "observed_at": "2026-06-10T11:32:16.865512+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7d2c228478ed7ddd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504439,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "54a3ea221f490e02",
+    "started_at": "2026-06-10T11:32:15.534324+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504440,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.536375+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:16.866797+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504440,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "f4f525ec18a9103a",
+    "started_at": "2026-06-10T11:32:15.536347+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504441,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.536705+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._send_push_notification_if_needed",
+    "observed_at": "2026-06-10T11:32:16.868190+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504441,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "0e070ce71c0c4545",
+    "started_at": "2026-06-10T11:32:15.536679+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504442,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.537480+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:16.869357+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504442,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "e0c3c549d6f2df84",
+    "started_at": "2026-06-10T11:32:15.537452+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504443,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:15.537772+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._send_push_notification_if_needed",
+    "observed_at": "2026-06-10T11:32:16.870513+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504443,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "c2d64913af0af60f",
+    "started_at": "2026-06-10T11:32:15.537753+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504444,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:16.039071+00:00",
+    "error": null,
+    "events": [
+      {
+        "attributes": {
+          "exception.escaped": "False",
+          "exception.message": "",
+          "exception.stacktrace": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/site-packages/a2a/utils/telemetry.py\", line 196, in async_wrapper\n    result = await func(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/site-packages/a2a/server/events/event_queue.py\", line 111, in dequeue_event\n    event = await self.queue.get()\n            ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/asyncio/queues.py\", line 158, in get\n    await getter\nasyncio.exceptions.CancelledError\n",
+          "exception.type": "asyncio.exceptions.CancelledError"
+        },
+        "name": "exception",
+        "time_unix_nano": 1781091136039050827
+      }
+    ],
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:16.871827+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504444,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "75c3b9e177948ac7",
+    "started_at": "2026-06-10T11:32:15.538179+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504445,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:16.540465+00:00",
+    "error": null,
+    "events": [
+      {
+        "attributes": {
+          "exception.escaped": "False",
+          "exception.message": "",
+          "exception.stacktrace": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/site-packages/a2a/utils/telemetry.py\", line 196, in async_wrapper\n    result = await func(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/site-packages/a2a/server/events/event_queue.py\", line 111, in dequeue_event\n    event = await self.queue.get()\n            ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/asyncio/queues.py\", line 158, in get\n    await getter\nasyncio.exceptions.CancelledError\n",
+          "exception.type": "asyncio.exceptions.CancelledError"
+        },
+        "name": "exception",
+        "time_unix_nano": 1781091136540441802
+      }
+    ],
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:16.873189+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504445,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "573d2e82b99e41a3",
+    "started_at": "2026-06-10T11:32:16.039339+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504446,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal",
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN",
+      "output.mime_type": "application/json",
+      "output.value": "[\"search_destinations\"]"
+    },
+    "ended_at": "2026-06-10T11:32:15.535325+00:00",
+    "error": false,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "mcp_tools",
+    "observed_at": "2026-06-10T11:32:16.874492+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "c1005ce02554ee4f",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.4.1"
+    },
+    "seq": 2504446,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "c9e208b44ede5545",
+    "started_at": "2026-06-10T11:32:15.535212+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504447,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal",
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN",
+      "output.mime_type": "application/json",
+      "output.value": "[\"get_weather\"]"
+    },
+    "ended_at": "2026-06-10T11:32:15.535897+00:00",
+    "error": false,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "mcp_tools",
+    "observed_at": "2026-06-10T11:32:16.875789+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "c1005ce02554ee4f",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.4.1"
+    },
+    "seq": 2504447,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "8acce39b00487425",
+    "started_at": "2026-06-10T11:32:15.535491+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504448,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal",
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN",
+      "output.mime_type": "application/json",
+      "output.value": "[\"get_flights\"]"
+    },
+    "ended_at": "2026-06-10T11:32:15.536163+00:00",
+    "error": false,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "mcp_tools",
+    "observed_at": "2026-06-10T11:32:16.877119+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "c1005ce02554ee4f",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.4.1"
+    },
+    "seq": 2504448,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "5f4bb3b8717a2da8",
+    "started_at": "2026-06-10T11:32:15.536062+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504457,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:17.042024+00:00",
+    "error": null,
+    "events": [
+      {
+        "attributes": {
+          "exception.escaped": "False",
+          "exception.message": "",
+          "exception.stacktrace": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/site-packages/a2a/utils/telemetry.py\", line 196, in async_wrapper\n    result = await func(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/site-packages/a2a/server/events/event_queue.py\", line 111, in dequeue_event\n    event = await self.queue.get()\n            ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/asyncio/queues.py\", line 158, in get\n    await getter\nasyncio.exceptions.CancelledError\n",
+          "exception.type": "asyncio.exceptions.CancelledError"
+        },
+        "name": "exception",
+        "time_unix_nano": 1781091137041996198
+      }
+    ],
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:21.858962+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504457,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "5e194fb03f577e33",
+    "started_at": "2026-06-10T11:32:16.540784+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504458,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:17.543621+00:00",
+    "error": null,
+    "events": [
+      {
+        "attributes": {
+          "exception.escaped": "False",
+          "exception.message": "",
+          "exception.stacktrace": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/site-packages/a2a/utils/telemetry.py\", line 196, in async_wrapper\n    result = await func(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/site-packages/a2a/server/events/event_queue.py\", line 111, in dequeue_event\n    event = await self.queue.get()\n            ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/asyncio/queues.py\", line 158, in get\n    await getter\nasyncio.exceptions.CancelledError\n",
+          "exception.type": "asyncio.exceptions.CancelledError"
+        },
+        "name": "exception",
+        "time_unix_nano": 1781091137543601440
+      }
+    ],
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:21.860753+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504458,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "81484c56e6e15994",
+    "started_at": "2026-06-10T11:32:17.042422+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504459,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.044706+00:00",
+    "error": null,
+    "events": [
+      {
+        "attributes": {
+          "exception.escaped": "False",
+          "exception.message": "",
+          "exception.stacktrace": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/site-packages/a2a/utils/telemetry.py\", line 196, in async_wrapper\n    result = await func(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/site-packages/a2a/server/events/event_queue.py\", line 111, in dequeue_event\n    event = await self.queue.get()\n            ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/asyncio/queues.py\", line 158, in get\n    await getter\nasyncio.exceptions.CancelledError\n",
+          "exception.type": "asyncio.exceptions.CancelledError"
+        },
+        "name": "exception",
+        "time_unix_nano": 1781091138044685945
+      }
+    ],
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:21.862109+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504459,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "b3ad1dba97a8123e",
+    "started_at": "2026-06-10T11:32:17.543884+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504460,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.290645+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.enqueue_event",
+    "observed_at": "2026-06-10T11:32:21.863298+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7d2c228478ed7ddd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504460,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "56176a51e9610ce2",
+    "started_at": "2026-06-10T11:32:18.290605+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504461,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.290789+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.enqueue_event",
+    "observed_at": "2026-06-10T11:32:21.864582+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7d2c228478ed7ddd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504461,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "b036d0db60aeb782",
+    "started_at": "2026-06-10T11:32:18.290767+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504462,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.290944+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:21.865644+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504462,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "e4ee743e816013c7",
+    "started_at": "2026-06-10T11:32:18.044989+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504463,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.291257+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._send_push_notification_if_needed",
+    "observed_at": "2026-06-10T11:32:21.866953+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504463,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "5a6967833342d187",
+    "started_at": "2026-06-10T11:32:18.291241+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504464,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.291695+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:21.868327+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504464,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "cae3cba1ec1b0df8",
+    "started_at": "2026-06-10T11:32:18.291666+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504465,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.291918+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._send_push_notification_if_needed",
+    "observed_at": "2026-06-10T11:32:21.869438+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504465,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "0cbaead17fd38dd9",
+    "started_at": "2026-06-10T11:32:18.291894+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504466,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293119+00:00",
+    "error": true,
+    "events": [
+      {
+        "attributes": {
+          "exception.escaped": "False",
+          "exception.message": "Queue is closed.",
+          "exception.stacktrace": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/site-packages/a2a/utils/telemetry.py\", line 196, in async_wrapper\n    result = await func(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/site-packages/a2a/server/events/event_queue.py\", line 100, in dequeue_event\n    raise asyncio.QueueEmpty('Queue is closed.')\nasyncio.queues.QueueEmpty: Queue is closed.\n",
+          "exception.type": "asyncio.queues.QueueEmpty"
+        },
+        "name": "exception",
+        "time_unix_nano": 1781091138292749705
+      },
+      {
+        "attributes": {
+          "exception.escaped": "False",
+          "exception.message": "Queue is closed.",
+          "exception.stacktrace": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.11/site-packages/opentelemetry/trace/__init__.py\", line 619, in use_span\n    yield span\n  File \"/usr/local/lib/python3.11/site-packages/opentelemetry/sdk/trace/__init__.py\", line 1178, in start_as_current_span\n    yield span\n  File \"/usr/local/lib/python3.11/site-packages/a2a/utils/telemetry.py\", line 196, in async_wrapper\n    result = await func(*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.11/site-packages/a2a/server/events/event_queue.py\", line 100, in dequeue_event\n    raise asyncio.QueueEmpty('Queue is closed.')\nasyncio.queues.QueueEmpty: Queue is closed.\n",
+          "exception.type": "asyncio.queues.QueueEmpty"
+        },
+        "name": "exception",
+        "time_unix_nano": 1781091138293108221
+      }
+    ],
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.dequeue_event",
+    "observed_at": "2026-06-10T11:32:21.870730+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504466,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "9bba34ad38e9fe2c",
+    "started_at": "2026-06-10T11:32:18.292350+00:00",
+    "status_message": "QueueEmpty: Queue is closed.",
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504467,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293189+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.close",
+    "observed_at": "2026-06-10T11:32:21.872001+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7d2c228478ed7ddd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504467,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "eb8c9a45c57eed9e",
+    "started_at": "2026-06-10T11:32:18.290858+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504468,
+    "attributes": {
+      "a2a.context.id": "3dc0a709-f94f-450c-b8ae-02723eba0303",
+      "a2a.task.id": "5095e1d5-2626-4104-bffd-1f02502a0722",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293215+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._run_event_stream",
+    "observed_at": "2026-06-10T11:32:21.873265+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "cc0695bc5b2403c4",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504468,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "7d2c228478ed7ddd",
+    "started_at": "2026-06-10T11:32:15.534070+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504469,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293806+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.close",
+    "observed_at": "2026-06-10T11:32:21.874529+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "82a6d28f8ffb4ba0",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504469,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "45bde23f103e87ae",
+    "started_at": "2026-06-10T11:32:18.293787+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504470,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293833+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.in_memory_queue_manager.InMemoryQueueManager.close",
+    "observed_at": "2026-06-10T11:32:21.875829+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "8d15e849df456d9f",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504470,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "82a6d28f8ffb4ba0",
+    "started_at": "2026-06-10T11:32:18.293722+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504471,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293856+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._cleanup_producer",
+    "observed_at": "2026-06-10T11:32:21.877102+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk",
+      "version": "1.0.0"
+    },
+    "seq": 2504471,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "8d15e849df456d9f",
+    "started_at": "2026-06-10T11:32:18.293659+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504472,
+    "attributes": {
+      "http.method": "POST",
+      "http.status_code": 200,
+      "http.url": "https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/chat/completions",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.data.kind": "http_resource",
+      "kagenti.edge.kind": "tool.external_call",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "external",
+      "kagenti.protocol": "http",
+      "kagenti.trust_tier": "external"
+    },
+    "ended_at": "2026-06-10T11:32:18.287600+00:00",
+    "error": null,
+    "events": null,
+    "kind": "CLIENT",
+    "links": null,
+    "name": "POST",
+    "observed_at": "2026-06-10T11:32:21.878349+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "883370069cd653cb",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.httpx",
+      "version": "0.62b0"
+    },
+    "seq": 2504472,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "ef09ff2f4941435b",
+    "started_at": "2026-06-10T11:32:15.540735+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504473,
+    "attributes": {
+      "input.mime_type": "application/json",
+      "input.value": "[{\"content\": \"You are a Travel Advisor. Follow this script EXACTLY\\nand in order. Do not skip steps.\\n\\nStep 1: call search_destinations(query=<country>)\\nStep 2: call get_weather(location=<city>, month=<month>)\\nStep 3: call get_flights(from_city=..., to_city=..., date=..., passengers=...)\\nStep 4: call delegate_to_research_agent with message=\\\"Research <country>:\\n        visa, safety, attractions, customs, transportation.\\\" \u2014 the\\n        research agent replies with a self-contained knowledge report.\\nStep 5: call delegate_to_booking_agent with message=\\\"Book a package for\\n        <N> adults, dates <YYYY-MM-DD> to <YYYY-MM-DD>, guest_name\\n        <name>, payment_account <payment_account>, budget <initial_budget>.\\\"\\nStep 6: READ booking-agent's reply. If it says \\\"Need $X for this\\n        package (your budget $Y); approve?\\\" AND X is within your\\n        maximum approval, call delegate_to_booking_agent AGAIN with\\n        message=\\\"Approved. New budget is <X>. Please book.\\\" (you MUST\\n        call the tool; do not just write a text reply). Otherwise, stop.\\nStep 7: Once booking-agent replies \\\"Booked <id>, total $<total>.\\\" and\\n        a charge-confirmation sentence, write the final trip summary\\n        with that booking id and the auth code.\\n\\nTool-calling rules:\\n- One tool at a time. Wait for the result before the next call.\\n- Never write JSON in your text reply.\\n- Do not delegate back to an agent that delegated to you.\\n\", \"role\": \"system\"}, {\"role\": \"user\", \"content\": \"Yes USA, August 8th 2022 for about 10 days\"}]",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.edge.kind": "agent.llm_call",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "llm",
+      "llm.input_messages.0.message.content": "You are a Travel Advisor. Follow this script EXACTLY\nand in order. Do not skip steps.\n\nStep 1: call search_destinations(query=<country>)\nStep 2: call get_weather(location=<city>, month=<month>)\nStep 3: call get_flights(from_city=..., to_city=..., date=..., passengers=...)\nStep 4: call delegate_to_research_agent with message=\"Research <country>:\n        visa, safety, attractions, customs, transportation.\" \u2014 the\n        research agent replies with a self-contained knowledge report.\nStep 5: call delegate_to_booking_agent with message=\"Book a package for\n        <N> adults, dates <YYYY-MM-DD> to <YYYY-MM-DD>, guest_name\n        <name>, payment_account <payment_account>, budget <initial_budget>.\"\nStep 6: READ booking-agent's reply. If it says \"Need $X for this\n        package (your budget $Y); approve?\" AND X is within your\n        maximum approval, call delegate_to_booking_agent AGAIN with\n        message=\"Approved. New budget is <X>. Please book.\" (you MUST\n        call the tool; do not just write a text reply). Otherwise, stop.\nStep 7: Once booking-agent replies \"Booked <id>, total $<total>.\" and\n        a charge-confirmation sentence, write the final trip summary\n        with that booking id and the auth code.\n\nTool-calling rules:\n- One tool at a time. Wait for the result before the next call.\n- Never write JSON in your text reply.\n- Do not delegate back to an agent that delegated to you.\n",
+      "llm.input_messages.0.message.role": "system",
+      "llm.input_messages.1.message.content": "Yes USA, August 8th 2022 for about 10 days",
+      "llm.input_messages.1.message.role": "user",
+      "llm.invocation_parameters": "{\"temperature\": 0.0, \"extra_body\": {\"seed\": 42}, \"base_url\": \"https://ete-litellm.ai-models.vpc-int.res.ibm.com/v1/\"}",
+      "llm.model_name": "claude-haiku-4-5-20251001",
+      "llm.output_messages.0.message.content": "I'd be happy to help you plan a trip to the USA for August 8th, 2022 for about 10 days! Let me follow the travel planning process.\n\nFirst, I need a couple of clarifications:\n\n1. **Which city are you traveling FROM?** (I need this to search for flights)\n2. **Which city/region in the USA are you interested in visiting?** (e.g., New York, Los Angeles, Miami, etc.)\n3. **How many passengers** will be traveling?\n4. **What's your budget** for the entire trip?\n5. **Your name** for the booking?\n\nOnce you provide these details, I'll proceed with:\n- Searching for destinations\n- Checking weather for August\n- Finding flights\n- Researching visa/safety/attractions\n- Making your booking\n\nPlease share these details and I'll get started!",
+      "llm.output_messages.0.message.role": "assistant",
+      "llm.system": "openai",
+      "llm.token_count.completion": 198,
+      "llm.token_count.prompt": 1426,
+      "openinference.span.kind": "LLM",
+      "output.mime_type": "application/json",
+      "output.value": "[{\"content\": \"I'd be happy to help you plan a trip to the USA for August 8th, 2022 for about 10 days! Let me follow the travel planning process.\\n\\nFirst, I need a couple of clarifications:\\n\\n1. **Which city are you traveling FROM?** (I need this to search for flights)\\n2. **Which city/region in the USA are you interested in visiting?** (e.g., New York, Los Angeles, Miami, etc.)\\n3. **How many passengers** will be traveling?\\n4. **What's your budget** for the entire trip?\\n5. **Your name** for the booking?\\n\\nOnce you provide these details, I'll proceed with:\\n- Searching for destinations\\n- Checking weather for August\\n- Finding flights\\n- Researching visa/safety/attractions\\n- Making your booking\\n\\nPlease share these details and I'll get started!\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": null, \"audio\": null, \"function_call\": null, \"tool_calls\": null}]"
+    },
+    "ended_at": "2026-06-10T11:32:18.288889+00:00",
+    "error": false,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "generation",
+    "observed_at": "2026-06-10T11:32:21.879916+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "d385c1c42fdf8ca5",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.4.1"
+    },
+    "seq": 2504473,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "883370069cd653cb",
+    "started_at": "2026-06-10T11:32:15.538542+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504474,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal",
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    },
+    "ended_at": "2026-06-10T11:32:18.289694+00:00",
+    "error": false,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "turn",
+    "observed_at": "2026-06-10T11:32:21.881708+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "170afeb2026188ad",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.4.1"
+    },
+    "seq": 2504474,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "d385c1c42fdf8ca5",
+    "started_at": "2026-06-10T11:32:15.537231+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504475,
+    "attributes": {
+      "graph.node.id": "travel-advisor",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "agent",
+      "llm.system": "openai",
+      "openinference.span.kind": "AGENT"
+    },
+    "ended_at": "2026-06-10T11:32:18.290153+00:00",
+    "error": false,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "travel-advisor",
+    "observed_at": "2026-06-10T11:32:21.883175+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "c1005ce02554ee4f",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.4.1"
+    },
+    "seq": 2504475,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "170afeb2026188ad",
+    "started_at": "2026-06-10T11:32:15.537064+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504476,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal",
+      "llm.system": "openai",
+      "openinference.span.kind": "CHAIN"
+    },
+    "ended_at": "2026-06-10T11:32:18.290301+00:00",
+    "error": false,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "Agent workflow",
+    "observed_at": "2026-06-10T11:32:21.884472+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7e770dc98b6b63be",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.4.1"
+    },
+    "seq": 2504476,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "c1005ce02554ee4f",
+    "started_at": "2026-06-10T11:32:15.534727+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504477,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "agent",
+      "openinference.span.kind": "AGENT"
+    },
+    "ended_at": "2026-06-10T11:32:18.290373+00:00",
+    "error": false,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "Agent workflow",
+    "observed_at": "2026-06-10T11:32:21.885721+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7d2c228478ed7ddd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "openinference.instrumentation.openai_agents",
+      "version": "1.4.1"
+    },
+    "seq": 2504477,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "7e770dc98b6b63be",
+    "started_at": "2026-06-10T11:32:15.534582+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504478,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.291074+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.task_done",
+    "observed_at": "2026-06-10T11:32:21.886758+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504478,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "979b897b6c636c6a",
+    "started_at": "2026-06-10T11:32:18.291054+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504479,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.291172+00:00",
+    "error": false,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "a2a.utils.helpers.append_artifact_to_task",
+    "observed_at": "2026-06-10T11:32:21.888067+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504479,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "994783a0651d3a63",
+    "started_at": "2026-06-10T11:32:18.291148+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504480,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.291801+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.task_done",
+    "observed_at": "2026-06-10T11:32:21.889107+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504480,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "93a52880c74fc617",
+    "started_at": "2026-06-10T11:32:18.291780+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504481,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293342+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_queue.EventQueue.is_closed",
+    "observed_at": "2026-06-10T11:32:21.890368+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504481,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "47e5c372e29c29df",
+    "started_at": "2026-06-10T11:32:18.293316+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504482,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293472+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.request_handlers.default_request_handler.DefaultRequestHandler._track_background_task",
+    "observed_at": "2026-06-10T11:32:21.891664+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504482,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "ea1130ad31282686",
+    "started_at": "2026-06-10T11:32:18.293449+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504483,
+    "attributes": {
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293596+00:00",
+    "error": false,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "a2a.server.events.event_consumer.EventConsumer.agent_task_callback",
+    "observed_at": "2026-06-10T11:32:21.892793+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "a2a-python-sdk"
+    },
+    "seq": 2504483,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "c510207b335b9f73",
+    "started_at": "2026-06-10T11:32:18.293576+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504484,
+    "attributes": {
+      "asgi.event.type": "http.response.body",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.291425+00:00",
+    "error": null,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "POST / http send",
+    "observed_at": "2026-06-10T11:32:21.894094+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.62b0"
+    },
+    "seq": 2504484,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "cb2885d53c2a481c",
+    "started_at": "2026-06-10T11:32:18.291408+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504485,
+    "attributes": {
+      "asgi.event.type": "http.response.body",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.292161+00:00",
+    "error": null,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "POST / http send",
+    "observed_at": "2026-06-10T11:32:21.895180+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.62b0"
+    },
+    "seq": 2504485,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "5e9b1cbb41951f65",
+    "started_at": "2026-06-10T11:32:18.292134+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504486,
+    "attributes": {
+      "asgi.event.type": "http.response.body",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.293948+00:00",
+    "error": null,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "POST / http send",
+    "observed_at": "2026-06-10T11:32:21.896457+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.62b0"
+    },
+    "seq": 2504486,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "3479314df6257791",
+    "started_at": "2026-06-10T11:32:18.293912+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504487,
+    "attributes": {
+      "http.flavor": "1.1",
+      "http.host": "10.244.0.46:8080",
+      "http.method": "POST",
+      "http.route": "/",
+      "http.scheme": "http",
+      "http.server_name": "travel-advisor.dl-03052026-data-flow-payment.svc.cluster.local:8080",
+      "http.status_code": 200,
+      "http.target": "/",
+      "http.url": "http://travel-advisor.dl-03052026-data-flow-payment.svc.cluster.local:8080/",
+      "http.user_agent": "python-httpx/0.28.1",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "protocol-gateway",
+      "net.host.port": 8080,
+      "net.peer.ip": "10.244.0.50",
+      "net.peer.port": 40286
+    },
+    "ended_at": "2026-06-10T11:32:18.294038+00:00",
+    "error": null,
+    "events": null,
+    "kind": "SERVER",
+    "links": null,
+    "name": "POST /",
+    "observed_at": "2026-06-10T11:32:21.897775+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": null,
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.62b0"
+    },
+    "seq": 2504487,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "7dca84d48363d7cd",
+    "started_at": "2026-06-10T11:32:15.532091+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  },
+  {
+    "arrival_seq": 2504488,
+    "attributes": {
+      "asgi.event.type": "http.disconnect",
+      "kagenti.agent.id": "travel-advisor",
+      "kagenti.framework": "openai_agents",
+      "kagenti.node.type": "framework-internal"
+    },
+    "ended_at": "2026-06-10T11:32:18.294164+00:00",
+    "error": null,
+    "events": null,
+    "kind": "INTERNAL",
+    "links": null,
+    "name": "POST / http receive",
+    "observed_at": "2026-06-10T11:32:21.899118+00:00",
+    "otlp": {
+      "flags": 256
+    },
+    "parent_id": "7dca84d48363d7cd",
+    "resource_attributes": {
+      "openinference.project.name": "dl-03052026-data-flow-payment",
+      "telemetry.sdk.language": "python",
+      "telemetry.sdk.name": "opentelemetry",
+      "telemetry.sdk.version": "1.41.1"
+    },
+    "scope": {
+      "name": "opentelemetry.instrumentation.starlette",
+      "version": "0.62b0"
+    },
+    "seq": 2504488,
+    "service_name": "dl-demo-travel-advisor",
+    "span_id": "00b5a8a36b6c6994",
+    "started_at": "2026-06-10T11:32:15.533991+00:00",
+    "status_message": null,
+    "trace_id": "186b5703acde0532adc6940e9eda3cb1"
+  }
+]

@@ -7,7 +7,9 @@ import {
   MastheadBrand,
   MastheadContent,
   Title,
+  Tooltip,
 } from '@patternfly/react-core';
+import { InfoCircleIcon } from '@patternfly/react-icons';
 
 import { RecentTracesPage } from './pages/RecentTracesPage';
 import { TraceDetailPage } from './pages/TraceDetailPage';
@@ -35,7 +37,26 @@ export default function App() {
           </Link>
         </MastheadBrand>
       </MastheadMain>
-      <MastheadContent />
+      {/* Top-right region: a small, unobtrusive build-version stamp. The SHA
+          text is always shown; the icon carries a hover/focus tooltip with the
+          same version so it's discoverable either way. __APP_VERSION__ is
+          injected at build time (see vite.config.ts). */}
+      {/* MastheadContent is a flex-1 region, so a full-width flex wrapper that
+          pushes its child to the end is what reliably right-aligns the stamp
+          (pf-v5-u-ml-auto alone doesn't, without a full-width flex row). */}
+      <MastheadContent>
+        <div style={{ display: 'flex', width: '100%', justifyContent: 'flex-end' }}>
+          <Tooltip content={`Version: ${__APP_VERSION__}`}>
+            <span
+              className="pf-v5-u-color-200 pf-v5-u-font-size-sm"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+            >
+              <InfoCircleIcon />
+              {__APP_VERSION__}
+            </span>
+          </Tooltip>
+        </div>
+      </MastheadContent>
     </Masthead>
   );
 
