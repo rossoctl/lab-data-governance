@@ -356,6 +356,53 @@ body {
   border-radius: 4px;
   /* The surface owns its own pan/zoom; nothing should escape its rounded box. */
   overflow: hidden;
+  /* The positioning context for `.dg-graph-controls`, which floats over the
+     drawing area rather than taking layout height from it (the surface's height
+     is already viewport-derived above, so a control bar in flow would push the
+     SVG shorter by its own height on every render). */
+  position: relative;
+}
+
+/* The zoom control bar, floated over the bottom-left of the drawing area.
+   Bottom-LEFT specifically: the Dagre layout runs `rankdir: LR` from the
+   vertical centre, and the floating detail panel occupies the right, so this is
+   the corner least likely to sit on top of a node. Inside the surface's
+   `overflow: hidden` box, so it is clipped with the canvas rather than
+   overhanging it.
+
+   `width: max-content` keeps the container exactly as wide as the four buttons:
+   PF's Toolbar is a block element and would otherwise span the full surface
+   width, turning the whole bottom strip into a transparent overlay that
+   swallowed pan/zoom drags aimed at the graph behind it. */
+.dg-graph-controls {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.5rem;
+  width: max-content;
+  /* Above the SVG, which establishes no stacking context of its own. */
+  z-index: 1;
+  /* The buttons are PF tertiary buttons over a dark canvas; the panel fill and
+     the standard border give them a readable plate to sit on instead of letting
+     edges run visibly under the glyphs. All tokens, no raw hex. */
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border);
+  border-radius: 4px;
+  padding: 0.125rem;
+}
+
+/* The per-edge `seq` tag (PF's DefaultConnectorTag). Muted rather than
+   full-contrast: the tag is an ordinal reference a reader looks up when they need
+   it, not the primary content of the arrow, and at two tags per interaction a
+   bright treatment turns a busy trace into noise. */
+.dg-graph-edge-tag text {
+  fill: var(--dg-color-label);
+}
+
+/* An error leg's tag matches its arrow, so the colour reads as one signal about
+   one leg rather than two unrelated marks. Same `--dg-color-error` the edge
+   stroke uses (set in ExecutionFlowGraph's DirectedEdge). */
+.dg-graph-edge-tag--error text {
+  fill: var(--dg-color-error);
 }
 
 /* An isolated entity — derived from the trace, but named by no interaction as

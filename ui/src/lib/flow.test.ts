@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { toolSubtype, computeInteractionDepths, durationMs, roleMeta } from './flow';
+import {
+  toolSubtype,
+  computeInteractionDepths,
+  durationMs,
+  roleMeta,
+  legDirection,
+} from './flow';
 import type { Entity, Interaction } from './flow';
 
 // Ported from execution_flow_logic.js: tool subtype-by-natural-key-shape, the
@@ -8,6 +14,41 @@ import type { Entity, Interaction } from './flow';
 
 const entity = (kind: string, natural_key: string): Entity =>
   ({ id: 'e', kind, natural_key, display_name: natural_key, detected_from: '' });
+
+/**
+ * The per-leg direction rule (ADR-0025), shared by the Flat table's
+ * Caller/Callee columns and the Execution Flow graph's edge direction. Tested here
+ * rather than only through either consumer because it is the single statement of
+ * the rule both depend on: when it was written twice, a response row could read
+ * `A → B` in the table while the graph drew `B → A` for the same leg.
+ */
+describe('legDirection', () => {
+  const ix = { caller_entity_id: 'A', callee_entity_id: 'B' };
+
+  it('leaves a request leg as caller → callee', () => {
+    expect(legDirection(ix, { leg_type: 'request' })).toEqual({ from: 'A', to: 'B' });
+  });
+
+  it('SWAPS a response leg to callee → caller', () => {
+    // The response travels back to whoever asked; this swap is the whole reason
+    // one interaction draws two opposite arrows.
+    expect(legDirection(ix, { leg_type: 'response' })).toEqual({ from: 'B', to: 'A' });
+  });
+
+  it('passes null ids straight through, on either leg', () => {
+    // An unresolved participant stays unresolved whichever end of the leg it is
+    // on; the callers decide what to do (blank cell / dropped edge).
+    const half = { caller_entity_id: 'A', callee_entity_id: null };
+    expect(legDirection(half, { leg_type: 'request' })).toEqual({ from: 'A', to: null });
+    expect(legDirection(half, { leg_type: 'response' })).toEqual({ from: null, to: 'A' });
+  });
+
+  it('is a no-op for a self-call, so both its legs are self-edges', () => {
+    const self = { caller_entity_id: 'A', callee_entity_id: 'A' };
+    expect(legDirection(self, { leg_type: 'request' })).toEqual({ from: 'A', to: 'A' });
+    expect(legDirection(self, { leg_type: 'response' })).toEqual({ from: 'A', to: 'A' });
+  });
+});
 
 describe('toolSubtype', () => {
   it('reads deployed vs in-framework from the natural-key shape', () => {

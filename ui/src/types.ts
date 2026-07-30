@@ -220,6 +220,9 @@ export interface TraceDataLineage {
   stoppedAtSeq: number | null;
 }
 
-// Entity and Interaction wire shapes live in ./lib/flow (the pure helpers key
-// on them); re-export so consumers import all wire types from one module.
-export type { Entity, Interaction } from './lib/flow';
+// Entity, Interaction and its InteractionLeg wire shapes live in ./lib/flow (the
+// pure helpers key on them); re-export so consumers import all wire types from
+// one module. `InteractionLeg` is part of that contract too — since ADR-0025 the
+// leg is the grain timing, payload, error and `seq` live at, so callers building
+// an interaction cannot avoid naming it.
+export type { Entity, Interaction, InteractionLeg } from './lib/flow';

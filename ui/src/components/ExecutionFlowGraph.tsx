@@ -6,16 +6,22 @@ import {
   EmptyStateHeader,
   Spinner,
 } from '@patternfly/react-core';
-// DEEP imports, not the `@patternfly/react-topology` barrel. Two reasons, both
-// load-bearing:
-//  1. The barrel re-exports `TopologyControlBar`, which imports
-//     `@patternfly/react-icons/dist/esm/icons/expand-icon` — and that file uses
-//     an EXTENSIONLESS relative import (`from '../createIcon'`) that Vitest's
-//     externalised-ESM loader refuses, killing the whole test file. Nothing here
-//     needs the control bar, so not pulling it in removes the problem at source
-//     instead of papering over it with a Vitest alias.
-//  2. It keeps the barrel's pipelines/side-bar/context-menu subtrees out of the
-//     production bundle.
+// DEEP imports, not the `@patternfly/react-topology` barrel — it keeps the
+// barrel's pipelines / side-bar / context-menu subtrees out of the production
+// bundle, and out of Vitest's module graph.
+//
+// The barrel is ALSO the specific thing that used to break the test run, and the
+// control bar below is why that is worth spelling out. Every
+// `@patternfly/react-icons` icon module (`search-plus-icon`, `expand-icon`, …)
+// imports its factory with an EXTENSIONLESS relative specifier
+// (`from '../createIcon'`), which Node's ESM loader rejects — so the icons are
+// only loadable under test because `vite.config.ts` inlines
+// `@patternfly/react-topology` into Vite's transform pipeline, which resolves
+// extensionless specifiers the way a bundler does. That inlining covers these
+// deep paths, so importing `TopologyControlBar` deeply is safe and needed no new
+// Vitest config. Importing it through the BARREL is not the same thing: the
+// barrel drags in sibling subtrees whose own dependencies are not covered, which
+// is what killed the file before.
 import {
   DefaultEdge,
   DefaultNode,
@@ -23,6 +29,11 @@ import {
   VisualizationProvider,
   VisualizationSurface,
 } from '@patternfly/react-topology/dist/esm/components';
+import {
+  TopologyControlBar,
+  createTopologyControlButtons,
+  defaultControlButtonsOptions,
+} from '@patternfly/react-topology/dist/esm/components/TopologyControlBar';
 import { withPanZoom } from '@patternfly/react-topology/dist/esm/behavior';
 import { DagreLayout } from '@patternfly/react-topology/dist/esm/layouts';
 import { Visualization } from '@patternfly/react-topology/dist/esm/Visualization';
@@ -64,6 +75,16 @@ import { kindColorVar } from '../lib/entityKind';
 
 /** Node box size. Fixed because Dagre needs a size before it can place anything. */
 const NODE_DIAMETER = 40;
+
+/**
+ * Zoom factor per zoom-in click (and its reciprocal per zoom-out, so the two
+ * buttons are exact inverses and n in / n out returns to the starting scale).
+ * 4/3 is a perceptible step without overshooting a legible range in two clicks.
+ */
+const ZOOM_STEP = 4 / 3;
+
+/** Padding, in px, left around the graph by Fit-to-screen. */
+const FIT_PADDING = 24;
 
 /**
  * The one custom node renderer: PF's `DefaultNode` with the entity's kind colour
@@ -110,9 +131,14 @@ function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof Defa
 }
 
 /**
- * The one custom edge renderer: PF's `DefaultEdge` with a directional end
- * terminal (the arrowhead that makes caller → callee readable) and the error
- * colour when the interaction failed.
+ * The one custom edge renderer: one **Interaction leg**, drawn with a directional
+ * end terminal (the arrowhead that makes the leg's direction readable), the leg's
+ * `seq` as its visible tag, and the error colour when THAT LEG failed.
+ *
+ * The visible text is the seq NUMBER, not the interaction's summary: a completed
+ * interaction now contributes two edges, so the graph carries roughly twice the
+ * labels it used to and prose would collide into unreadable overlap on short
+ * arrows. The summary is still one hover away in the `<title>`.
  *
  * Colours come from the repo's own `--dg-*` tokens, no raw hex.
  */
@@ -134,14 +160,21 @@ function DirectedEdge({ element, ...rest }: React.ComponentProps<typeof DefaultE
         { '--pf-topology__edge--Stroke': colour } as React.CSSProperties
       }
     >
-      <title>{data?.label ?? ''}</title>
+      {/* The interaction's summary, plus which leg of it this arrow is — the
+          hover text, now that the visible label is the compact seq number. */}
+      <title>{`#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}`}</title>
       <DefaultEdge
         element={element}
         {...rest}
         // The arrowhead. Without an end terminal the edge is an undirected line
-        // and `caller → callee` — the whole point of the view — is unreadable.
+        // and this leg's direction — the whole point of the view — is unreadable.
         endTerminalType={EdgeTerminalType.directional}
         endTerminalSize={12}
+        // The leg's `seq`, via PF's own connector tag rather than a hand-placed
+        // <text>: it positions itself along the edge and rescales with the zoom,
+        // which a bespoke label would have to reimplement.
+        tag={data?.label}
+        tagClass={data?.isError ? 'dg-graph-edge-tag dg-graph-edge-tag--error' : 'dg-graph-edge-tag'}
         className={
           data?.isError ? 'dg-graph-edge dg-graph-edge--error' : 'dg-graph-edge'
         }
@@ -160,7 +193,15 @@ const componentFactory: ComponentFactory = (kind: ModelKind, type: string) => {
 
 /**
  * The Execution Flow view: a directed graph of a trace's **Entities** (nodes) and
- * **Interactions** (edges, drawn `caller_entity_id → callee_entity_id`).
+ * **Interaction legs** (edges), each edge labelled with that leg's trace-wide
+ * `seq`.
+ *
+ * One edge per LEG, not per interaction: the request travels caller → callee and
+ * the response travels back callee → caller (ADR-0025), so a completed
+ * interaction draws two arrows pointing opposite ways at two different seqs. The
+ * edge set comes from `flatLegRows` — the Flat table's own row derivation — so the
+ * arrows and that table's rows are the same list in the same order by
+ * construction.
  *
  * A third presentation of the same two reads the Interaction flow tables use
  * (`useEntities` / `useInteractions`) — no new endpoint. The tables answer "what
@@ -262,8 +303,11 @@ export function ExecutionFlowGraph({ traceId }: { traceId: string }) {
     <div data-testid="execution-flow-graph">
       {/* EDGE CASE, disclosed in the UI rather than only in a comment: an
           interaction whose caller or callee could not be resolved to an entity
-          has no second endpoint, so it cannot be an arrow. Saying nothing would
-          leave a reader to infer that N interactions produced N arrows. */}
+          has no second endpoint, so neither of its legs can be an arrow. Counted
+          once per INTERACTION (the unresolved participant is one defect on the
+          identity row, shared by both legs — see lib/graph's DroppedInteraction),
+          with the lost leg count spelled out separately so the arrow arithmetic
+          still adds up for a reader comparing this to the Flat tab. */}
       {spec.dropped.length > 0 && (
         <Alert
           variant="info"
@@ -272,7 +316,10 @@ export function ExecutionFlowGraph({ traceId }: { traceId: string }) {
           style={{ marginBottom: '0.5rem' }}
         >
           {`These interactions have an unresolved participant (no caller and/or callee entity), so they have no second endpoint to draw an arrow to: ${spec.dropped
-            .map((d) => `${d.label} (missing ${d.missing})`)
+            .map(
+              (d) =>
+                `${d.label} (missing ${d.missing}, ${d.legCount} leg${d.legCount === 1 ? '' : 's'})`,
+            )
             .join('; ')}. They are still listed in full on the Interaction flow tab.`}
         </Alert>
       )}
@@ -293,10 +340,16 @@ export function ExecutionFlowGraph({ traceId }: { traceId: string }) {
         </Alert>
       )}
       {/* EDGE CASE: two entities can interact more than once, and each
-          interaction is its own governance fact — so each gets its own edge
-          rather than being collapsed into one arrow with a count, which would
-          lose the per-interaction identity the rest of the UI keys on. Dagre
-          fans same-pair edges apart on its own. */}
+          interaction is its own governance fact — so every leg of each gets its
+          own arrow rather than being collapsed into one with a count, which would
+          lose the per-leg identity the rest of the UI keys on. Dagre fans
+          same-pair edges apart on its own.
+
+          Counted in INTERACTIONS, not edges: under the leg model a single
+          completed interaction always puts two arrows (its request and its
+          response) in the same channel, so counting edges would fire this notice
+          on virtually every trace — noise that is always on carries no
+          information. See lib/graph's parallelGroups. */}
       {spec.parallelGroups.length > 0 && (
         <Alert
           variant="info"
@@ -304,12 +357,47 @@ export function ExecutionFlowGraph({ traceId }: { traceId: string }) {
           title={`${spec.parallelGroups.length} entity pair${spec.parallelGroups.length === 1 ? '' : 's'} with multiple interactions`}
           style={{ marginBottom: '0.5rem' }}
         >
-          {'Each interaction is drawn as its own arrow rather than being merged into one, so the arrow count matches the interaction count.'}
+          {'Each leg of each interaction is drawn as its own arrow rather than being merged into one, so the arrow count matches the leg count on the Flat tab.'}
         </Alert>
       )}
       <div className="dg-graph-surface">
         <VisualizationProvider controller={controller}>
           <VisualizationSurface />
+          {/* Zoom controls. PF's own `TopologyControlBar` rather than four
+              hand-rolled buttons, so they carry the design system's chrome, its
+              tooltips and its accessible names (each button renders its label in
+              a `pf-v5-screen-reader` span, so `getByRole('button', {name})`
+              finds it), and so they drive the visualization's OWN zoom API
+              (`Graph.scaleBy` / `fit` / `reset`) instead of a second, divergent
+              notion of scale.
+
+              Positioned absolutely at the bottom-left of the surface by
+              `.dg-graph-controls` (global.css) — inside the surface's rounded,
+              `overflow: hidden` box so it cannot escape it, and clear of the
+              Dagre `rankdir: LR` layout, which grows left-to-right along the
+              vertical centre and so leaves the bottom corner free of nodes.
+
+              `legend: false`: the control bar offers a legend button by default,
+              but this view has no legend panel to open, and a button that does
+              nothing is worse than an absent one. */}
+          <div className="dg-graph-controls">
+            <TopologyControlBar
+              controlButtons={createTopologyControlButtons({
+                ...defaultControlButtonsOptions,
+                zoomInCallback: () => controller.getGraph().scaleBy(ZOOM_STEP),
+                zoomOutCallback: () => controller.getGraph().scaleBy(1 / ZOOM_STEP),
+                // `fit` frames the whole graph with a small padding; `reset`
+                // returns to 1:1 at the origin. They are genuinely different
+                // answers to "I am lost", so both are kept.
+                fitToScreenCallback: () => controller.getGraph().fit(FIT_PADDING),
+                resetViewCallback: () => {
+                  controller.getGraph().reset();
+                  controller.getGraph().layout();
+                },
+                legend: false,
+              })}
+            />
+          </div>
         </VisualizationProvider>
       </div>
     </div>

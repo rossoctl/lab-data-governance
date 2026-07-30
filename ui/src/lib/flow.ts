@@ -132,6 +132,37 @@ export function flatLegRows(interactions: readonly Interaction[]): FlatRow[] {
 }
 
 /**
+ * Which way a single **leg** flows between its interaction's two participants
+ * (ADR-0025).
+ *
+ * An interaction names a fixed `caller_entity_id` → `callee_entity_id` pair, but
+ * that is the direction of the *call*, not of each leg: the request travels
+ * caller → callee and the response travels back callee → caller. So a completed
+ * interaction is TWO opposite-direction movements, not one.
+ *
+ * Stated once, here, because two views need the identical rule and must never
+ * disagree: the Flat table's Caller/Callee columns and the Execution Flow
+ * graph's edge direction. When this was written twice, a response row could read
+ * `A → B` in the table while the graph drew `B → A` for the same leg — and
+ * neither would be obviously wrong on its own.
+ *
+ * Returns the interaction's ids un-swapped for a request leg and swapped for a
+ * response leg. Null ids pass straight through (an unresolved participant stays
+ * unresolved whichever end of the leg it is on); callers decide what to do with
+ * them — the table renders a blank cell, the graph drops the edge and reports it.
+ */
+export function legDirection(
+  ix: Pick<Interaction, 'caller_entity_id' | 'callee_entity_id'>,
+  leg: Pick<InteractionLeg, 'leg_type'>,
+): { from: string | null; to: string | null } {
+  const isResponse = leg.leg_type === 'response';
+  return {
+    from: isResponse ? ix.callee_entity_id : ix.caller_entity_id,
+    to: isResponse ? ix.caller_entity_id : ix.callee_entity_id,
+  };
+}
+
+/**
  * Request↔response pairing for the flat view's connector column, as one entry
  * per row of `flatLegRows`.
  *

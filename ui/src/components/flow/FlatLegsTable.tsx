@@ -1,6 +1,6 @@
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 
-import type { FlatRow } from '../../lib/flow';
+import { legDirection, type FlatRow } from '../../lib/flow';
 import { formatTime24Utc } from '../../lib/recentTraces';
 import type { Entity, Interaction } from '../../types';
 import { ConnectorCell } from './ConnectorCell';
@@ -49,11 +49,13 @@ export function FlatLegsTable({
       </Thead>
       <Tbody>
         {rows.map(({ ix, leg }, i) => {
-          const from = ix.caller_entity_id ? entById.get(ix.caller_entity_id) : undefined;
-          const to = ix.callee_entity_id ? entById.get(ix.callee_entity_id) : undefined;
-          // A response flows callee → caller, so swap for the response leg (ADR-0025).
-          const caller = leg.leg_type === 'response' ? to : from;
-          const callee = leg.leg_type === 'response' ? from : to;
+          // A response flows callee → caller, so the two columns swap on a
+          // response leg (ADR-0025). The swap itself lives in `legDirection` in
+          // lib/flow, shared with the Execution Flow graph's edge derivation, so
+          // this table and that graph cannot disagree about which way a leg went.
+          const { from, to } = legDirection(ix, leg);
+          const caller = from ? entById.get(from) : undefined;
+          const callee = to ? entById.get(to) : undefined;
           return (
             <Tr
               key={`${ix.id}-${leg.leg_type}`}
