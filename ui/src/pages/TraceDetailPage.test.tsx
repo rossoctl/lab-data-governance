@@ -1,15 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, waitForElementToBeRemoved, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useNavigate } from 'react-router-dom';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { LocationProbe } from '../test/LocationProbe';
 import { TraceDetailPage } from './TraceDetailPage';
 
-// The trace-detail view hosts a two-way switcher: Span tree | Interaction flow.
-// The active view is a URL path segment (/traces/{id}/spans | /flow) — the URL
-// is the source of truth, so reload/bookmark/back restore the tab. The trace id
-// and view both come from the route (:traceId/:view).
+// The trace-detail view hosts a three-way switcher: Span tree | Interaction flow
+// | Execution Flow. The active view is a URL path segment
+// (/traces/{id}/spans | /flow | /graph) — the URL is the source of truth, so
+// reload/bookmark/back restore the tab. The trace id and view both come from the
+// route (:traceId/:view).
 
 // Mount the page under the real nested route so :traceId and :view resolve, and
 // include a LocationProbe so tests can assert the URL after a tab click.
@@ -21,6 +22,18 @@ function harness() {
       </Routes>
       <LocationProbe />
     </>
+  );
+}
+
+// A Back affordance for the Back-button test. These tests mount under a
+// MemoryRouter, whose history lives in memory rather than on window.history, so
+// window.history.back() never reaches it — the router's own navigate(-1) does.
+function BackButton() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate(-1)}>
+      test-back
+    </button>
   );
 }
 
@@ -546,6 +559,125 @@ describe('TraceDetailPage', () => {
 
     // The hand-expanded leaf row is STILL rendered — manual expansion survived.
     expect(inTreeRow('leaf-span')).toBe(true);
+  });
+
+  // --- The third top-level tab: Execution Flow at the `graph` URL segment. Same
+  // contract as its two siblings — the URL path segment is the single source of
+  // truth, so the tab is deep-linkable, survives reload, and works with Back.
+
+  it('offers Execution Flow as a third tab alongside Span tree and Interaction flow', async () => {
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
+
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Execution Flow/i })).toBeInTheDocument(),
+    );
+    // All three, and the spans segment still drives which is active.
+    expect(screen.getAllByRole('tab')).toHaveLength(3);
+    expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+  });
+
+  it('activates the Execution Flow tab and renders the graph for a /graph deep link', async () => {
+    // Deep-linkable: the URL alone is enough to land on the graph.
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/graph' });
+
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    );
+    // mockFetchWithFlow returns no entities, so there is nothing to graph at all
+    // — the view must say so rather than render a blank box.
+    await waitFor(() =>
+      expect(screen.getByText(/No entities or interactions for this trace yet/i)).toBeInTheDocument(),
+    );
+  });
+
+  it('writes /graph to the URL when the Execution Flow tab is clicked', async () => {
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
+
+    const graphTab = await screen.findByRole('tab', { name: /Execution Flow/i });
+    await userEvent.click(graphTab);
+    await waitFor(() => expect(graphTab).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/graph');
+    // With no derived data the graph shows its own empty state.
+    await waitFor(() =>
+      expect(screen.getByText(/No entities or interactions for this trace yet/i)).toBeInTheDocument(),
+    );
+  });
+
+  it('still redirects an unknown view segment to /spans now that a third view exists', async () => {
+    // Regression guard on the canonicalising guard: adding `graph` to
+    // URL_TO_VIEW must not make a typo'd segment resolve to anything.
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/graphh' });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/spans'),
+    );
+    expect(screen.getByRole('tab', { name: /Span tree/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('round-trips Span tree → Execution Flow → Interaction flow through the URL', async () => {
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
+
+    await userEvent.click(await screen.findByRole('tab', { name: /Execution Flow/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/graph'),
+    );
+    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
+    );
+    // Leaving the graph unmounts it (it holds no state worth keeping).
+    expect(screen.queryByTestId('execution-flow-graph')).not.toBeInTheDocument();
+  });
+
+  it('restores the Execution Flow tab on a Back navigation from a sibling tab', async () => {
+    // The URL is the source of truth, so history navigation must restore the tab
+    // with no in-component state involved. `BackButton` calls the router's own
+    // navigate(-1) — the MemoryRouter these tests use keeps its history in memory
+    // rather than on window.history, so a raw window.history.back() would not
+    // reach it.
+    mockFetchWithFlow();
+    renderWithProviders(
+      <>
+        {harness()}
+        <BackButton />
+      </>,
+      { route: '/traces/T1/graph' },
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    );
+    // Forward to the flow tab (a tab click pushes a history entry)…
+    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
+    );
+    // …then Back must land on /graph with the Execution Flow tab active again.
+    await userEvent.click(screen.getByRole('button', { name: 'test-back' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/graph'),
+    );
+    expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
   });
 
   it('does NOT show the highlighting spinner for a ?sel deep-link restore', async () => {

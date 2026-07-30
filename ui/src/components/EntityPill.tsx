@@ -1,16 +1,11 @@
 import { Label } from '@patternfly/react-core';
 import { toolSubtype } from '../lib/flow';
+// The kind → colour map used to live here as a module-private const. It moved to
+// lib/entityKind so the Execution Flow graph can colour its entity NODES by the
+// same rule — a graph node and its table row must not disagree about what colour
+// an `agent` is, and `lib/` is where this repo keeps its render-free logic.
+import { colorForKind } from '../lib/entityKind';
 import type { Entity } from '../types';
-
-// Per-kind pill color, matching the vanilla .ent-pill palette.
-const KIND_COLOR: Record<string, React.ComponentProps<typeof Label>['color']> = {
-  user: 'gold',
-  external_client: 'purple',
-  agent: 'blue',
-  tool: 'green',
-  external_service: 'red',
-  llm: 'blue',
-};
 
 /**
  * A pill labelled with an entity's kind. Every pill carries a visible border
@@ -30,7 +25,7 @@ export function EntityPill({ entity }: { entity: Entity }) {
   return (
     <Label
       isCompact
-      color={KIND_COLOR[entity.kind] ?? 'grey'}
+      color={colorForKind(entity.kind)}
       title={title}
       // `dg-ent-pill` (global.css) draws a 1px border in the label's own
       // kind color (PF puts the kind color on the __content child, so a plain

@@ -148,7 +148,12 @@ export function FlowDetailPanel({
         <Title headingLevel="h4" size="md">
           Spans
         </Title>
-        <Table aria-label="Span evidence" variant="compact">
+        {/* `dg-span-evidence` (global.css) lets the span-id links wrap. Without
+            it the two monospace id columns are unbreakable ~150px words, the
+            table's intrinsic minimum overflows this card, and PF's unconditional
+            `thead` truncate rule clips the last header to `Servi…`. The class
+            attacks that cause; it is not a width tweak. */}
+        <Table aria-label="Span evidence" variant="compact" className="dg-span-evidence">
           <Thead>
             <Tr>
               <Th>Role</Th>

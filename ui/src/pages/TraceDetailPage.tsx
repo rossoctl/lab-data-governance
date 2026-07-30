@@ -20,24 +20,31 @@ import { fetchJson } from '../api/client';
 import { SpanTree, type SpanTreeHandle } from '../components/SpanTree';
 import { SpanDetailPanel } from '../components/SpanDetailPanel';
 import { FlowTables, type FlowSelection, type LegViewKey } from '../components/FlowTables';
+import { ExecutionFlowGraph } from '../components/ExecutionFlowGraph';
 import { HighlightLegend } from '../components/HighlightLegend';
 import type { Span } from '../types';
 
-// The active view is a URL path segment: `spans` (span tree) or `flow`
-// (interaction flow). We keep an internal ViewKey for render branches, mapped
-// from/to the URL word so the URL stays the source of truth.
-type ViewKey = 'tree' | 'flow';
-const VIEW_TO_URL: Record<ViewKey, string> = { tree: 'spans', flow: 'flow' };
-const URL_TO_VIEW: Record<string, ViewKey> = { spans: 'tree', flow: 'flow' };
+// The active view is a URL path segment: `spans` (span tree), `flow`
+// (interaction flow) or `graph` (execution flow — the same entities/interactions
+// as `flow`, drawn as a directed graph). We keep an internal ViewKey for render
+// branches, mapped from/to the URL word so the URL stays the source of truth.
+// The two maps are inverses; an unknown segment resolves to null and is
+// canonicalised to /spans by the guard below.
+type ViewKey = 'tree' | 'flow' | 'graph';
+const VIEW_TO_URL: Record<ViewKey, string> = { tree: 'spans', flow: 'flow', graph: 'graph' };
+const URL_TO_VIEW: Record<string, ViewKey> = { spans: 'tree', flow: 'flow', graph: 'graph' };
 
 /**
- * Trace-detail view: a two-way switcher (Span tree | Interaction flow) over
- * one trace. The active tab, the tree's selected span (`?sel`), and the flow's
- * selected interaction/entity (`?iid` / `?eid`) all live in the URL, so
- * reload / bookmark / back restore exactly what's on screen. Seeds from the
- * cold-open `useTrace` listing root (deep-link / paste path). The Tree and Flow
- * views share a highlight PinStore — pinning an interaction/entity's spans in
- * Flow stripes their rows in the tree, mirroring the vanilla TraceTreeNav.
+ * Trace-detail view: a three-way switcher (Span tree | Interaction flow |
+ * Execution Flow) over one trace. The active tab, the tree's selected span
+ * (`?sel`), and the flow's selected interaction/entity (`?iid` / `?eid`) all live
+ * in the URL, so reload / bookmark / back restore exactly what's on screen. Seeds
+ * from the cold-open `useTrace` listing root (deep-link / paste path). The Tree
+ * and Flow views share a highlight PinStore — pinning an interaction/entity's
+ * spans in Flow stripes their rows in the tree, mirroring the vanilla
+ * TraceTreeNav. Execution Flow is a third presentation of the SAME
+ * entities/interactions reads the Flow tab makes, drawn as a directed graph; it
+ * holds no selection state of its own, so it adds no URL params.
  */
 export function TraceDetailPage() {
   const { traceId = '', view: viewParam } = useParams<{ traceId: string; view: string }>();
@@ -330,6 +337,10 @@ export function TraceDetailPage() {
           }
         />
         <Tab eventKey="flow" title={<TabTitleText>Interaction flow</TabTitleText>} />
+        {/* The same entities/interactions as the Flow tab, drawn as a directed
+            graph (who called whom) rather than listed (what happened, in
+            order). */}
+        <Tab eventKey="graph" title={<TabTitleText>Execution Flow</TabTitleText>} />
       </Tabs>
 
       {isLoading ? (
@@ -379,6 +390,13 @@ export function TraceDetailPage() {
               onLegViewChange={handleLegViewChange}
             />
           )}
+
+          {/* Unmounted when inactive (unlike the tree, which is merely hidden):
+              the graph holds no state worth preserving across a tab round-trip —
+              its whole model is re-derived from the two TanStack-cached queries —
+              and keeping a topology surface mounted would leave its pan/zoom
+              listeners and layout running behind the other tabs. */}
+          {view === 'graph' && <ExecutionFlowGraph traceId={traceId} />}
         </div>
       )}
     </PageSection>

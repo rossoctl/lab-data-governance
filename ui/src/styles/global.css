@@ -58,14 +58,22 @@
      `right: var(--dg-detail-panel-gap)`; the tables' gutter is derived from the
      same three below, so the two agree by construction.
 
-     The 420px floor (was 320px) is set by LegTabs' inner tab row: at 320px the
+     The 420px floor (was 320px) was set by LegTabs' inner tab row: at 320px the
      three section labels `Payload | Classification | Data lineage` do not fit on
      one line, so PF falls back to its horizontal scroll buttons and hides
-     `Data lineage` behind a forward arrow. 420px fits all three. Raise it here
-     only — the gutter's `max()` below derives from this var, so the tables
-     follow automatically. */
+     `Data lineage` behind a forward arrow. 420px fits all three.
+
+     The 520px floor (was 420px) gives the panel's THIRD card — the 5-column
+     span-evidence table (Role / Span / Parent / Kind / Service) — room to
+     breathe. It is NOT on its own what stops `Service` truncating to `Ser…`:
+     see `.dg-span-evidence` below for the actual cause and fix. Measured, the
+     table's intrinsic width overflowed its card by the SAME ~51px at 420px and
+     at 520px, so more pixels alone never cleared the clip.
+
+     Raise it here only — the gutter's `max()` below derives from this var, so
+     the tables follow automatically. */
   --dg-detail-panel-width: 30%;
-  --dg-detail-panel-min: 420px;
+  --dg-detail-panel-min: 520px;
   --dg-detail-panel-gap: 1rem;
 }
 
@@ -255,6 +263,46 @@ body {
   padding-right: var(--dg-detail-card-pad);
 }
 
+/* The span-evidence table's `Service` header truncating to `Ser…` / `Servi`
+   (FlowDetailPanel's third card). ROOT CAUSE, measured rather than guessed:
+
+   1. `SpanLink` renders each span id inside a PF `Button variant="link"`, and
+      `.pf-v5-c-button` sets `white-space: nowrap`. The id is a 16-hex-char
+      monospace token plus an ellipsis — one unbreakable 150px word.
+   2. Two such columns (Span + Parent = ~300px) plus Role and Kind give the table
+      an intrinsic minimum of ~533px, ~51px WIDER than the card's ~482px content
+      box. A table cannot be squeezed below its cells' minimum content width, so
+      it simply overflows.
+   3. PF then clips the overflowing header, because `table.css` applies the
+      truncate treatment to EVERY thead unconditionally:
+        `.pf-v5-c-table > thead { --…cell--Overflow: hidden;
+                                  --…cell--TextOverflow: ellipsis;
+                                  --…cell--WhiteSpace: nowrap; }`
+      `Service` is the last column, so it is the one the card's edge cuts.
+
+   This is why raising `--dg-detail-panel-min` alone could never fix it: the
+   overflow was the same ~51px at 420px and at 520px, because the table's floor
+   is set by its content, not by the container. It is also NOT the
+   `pf-m-grid-md` responsive breakpoint — that is a `max-width: 768px` VIEWPORT
+   media query, and the clip reproduces at 1000/1280/1600px viewports where
+   grid-md is inactive and the header is still `display: table-cell`.
+
+   The fix removes the cause rather than the symptom: let the span-id links wrap
+   so the two widest columns are no longer unbreakable. The table then fits the
+   card (480px), the columns proportion naturally (Span/Parent shrink to ~119px,
+   Service GROWS to ~89px), the header is whole, and the panel loses the
+   horizontal scrollbar the overflow used to give it.
+
+   Preferred over PF's `Table gridBreakPoint=''` (that only disables the stacked
+   mode, which was never what clipped this) and over a `Th` `width`/`modifier`
+   (those fix the header by capping the data cells, i.e. they move the truncation
+   onto the span ids — which `SpanLink` already truncates once at 16 chars and
+   should not truncate twice). */
+.dg-span-evidence .pf-v5-c-button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* Data-lineage keys (DataLineageView): an **Entity** natural key is a long
    unbreakable token (`tool:agent:(proj,svc):name`,
    `llm:host.example.com/model`), and the lineage block lives inside the flow
@@ -285,4 +333,39 @@ body {
 
 .dg-role-icon--minus {
   opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------------------
+   Execution Flow graph (ExecutionFlowGraph / lib/graph).
+
+   PF topology renders into an SVG that fills its container, so the container —
+   not the SVG — is what must have a height; without one the surface collapses to
+   zero and the graph is invisible. The height is viewport-relative so the graph
+   uses the space the tables would have, minus the masthead and the breadcrumb/
+   tab chrome above it, and it tracks the real header height through the same
+   PatternFly var `.dg-detail-panel` reads rather than restating a pixel guess.
+
+   The fill is `--dg-surface-panel` (not the app background) so the drawing area
+   reads as a distinct canvas in the dark theme, with the same `--dg-border` the
+   floating detail panel uses. All tokens, no raw hex. */
+.dg-graph-surface {
+  height: calc(100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) - 12rem);
+  min-height: 320px;
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border);
+  border-radius: 4px;
+  /* The surface owns its own pan/zoom; nothing should escape its rounded box. */
+  overflow: hidden;
+}
+
+/* An isolated entity — derived from the trace, but named by no interaction as
+   caller or callee (see lib/graph's isIsolated). Dashed so it reads as "present
+   but unconnected" rather than as a node whose edges failed to draw. The
+   per-kind colour still comes from lib/entityKind, so only the STYLE differs.
+
+   Note the class is `pf-topology__…`, NOT `pf-v5-topology__…` — PF's topology
+   package does not carry the `v5` infix its react-core siblings do, so a
+   v5-prefixed selector here matches nothing and fails silently. */
+.dg-graph-node--isolated .pf-topology__node__background {
+  stroke-dasharray: 4 3;
 }
