@@ -28,6 +28,13 @@ entities** the data passed through — unordered (see D10). Transformations are 
 finite enumeration (anonymization, summarization, …) still being finalized with a
 human.
 
+The spec now names these three `Sources` / `Transformations` / `Entities`
+(`data_lineage_alg.md:44-49`). The persisted and wire names are still
+`data_sources` / `source_transformations` / `entities`; the spec's names are not
+final, so **this ADR deliberately does not rename anything yet** — the rename
+follows once they settle, and D10 is the precedent for how that is done (name
+moves with meaning, in one migration).
+
 ## Semantic matching is a pluggable, deferred capability
 
 Lineage is built on `match(payload_a, payload_b) → {matched, transformation,
@@ -43,22 +50,30 @@ what transformation connects them. Lineage does **not** know how it decides.
 - Matching is deliberately **out of scope** of lineage itself — it is its own
   component with its own roadmap.
 
-## The three-operation algebra
+## The two-operation algebra
 
 Every interaction maps to exactly one operation, applied while traversing the
 trace's interactions in `seq` order:
 
 - **`init_lineage(entity)`** — the payload **originates here** (a data source);
   trivial metadata rooted at this entity.
-- **`linear_lineage(input, output, entity)`** — a single input payload processed
-  to one output; calls `match(input, output)`, inherits/extends the input's
-  metadata. Degrades to `init` when `match` returns false (D3(2)).
-- **`merge_lineage(*inputs, output, entity)`** — multiple inputs to one output;
-  calls `match(input_k, output)` per input, unions the metadata of the matching
-  inputs, attaching per-source transformations.
+- **`merge_lineage(*(payload, metadata), output, entity, is_entity_source)`** —
+  one *or more* inputs to one output; calls `match(input_k, output)` per input,
+  unions the metadata of the matching inputs, attaching per-source
+  transformations. Degrades to `init` when `match` returns false for **all**
+  inputs (D3(2)).
 
-Signatures follow the spec's generic (payload-carrying) forms
-(`data_lineage_alg.md:70-101`); exact metadata-construction rules live there.
+Signatures follow the spec's generic (payload-carrying) form
+(`data_lineage_alg.md:86-112`); exact metadata-construction rules live there.
+
+**There is no `linear_lineage`.** The spec previously named a separate
+single-payload operation and the algebra had three members; it now defines one
+generic `merge_lineage` covering "a single or multiple payloads", and the worked
+examples call `merge_lineage` for the one-input cases that used to read `linear`
+(`data_lineage_alg.md:162,171-175`). The two were never distinguishable in
+result — a merge over one input *is* a linear — so collapsing them removes a
+selection branch rather than changing an outcome. See D11 for what this does and
+does not change in the traversal.
 
 ## Decisions
 
@@ -74,11 +89,17 @@ requests are inbound to the callee, responses are inbound to the caller.
 
 Within a trace, every accumulating entity (e.g. an agent) retains its prior
 inbound payloads — **transient/session memory is assumed to always exist**.
-This is what makes an agent a partial mixing bowl intra-trace and drives
-`merge`. An LLM/tool does not accumulate, so it always sees one input and uses
-`linear`. **Persistent** memory behaves identically intra-trace; it differs
-*only* across executions and is therefore the bridge for inter-trace lineage
-(Step II, deferred). Persistence does not affect the intra-trace loop.
+This is what makes an agent a partial mixing bowl intra-trace, and it is why an
+agent's `inbound(i)` grows past one. An LLM/tool does not accumulate, so it
+always sees exactly one input. **Persistent** memory behaves identically
+intra-trace; it differs *only* across executions and is therefore the bridge for
+inter-trace lineage (Step II, deferred). Persistence does not affect the
+intra-trace loop.
+
+Memory is still what makes `|inbound(i)|` grow, but that size no longer selects
+an *operation* — one generic `merge_lineage` handles both arities (D11). What
+memory now determines is how many inputs that one operation receives, which is a
+statement about the **inputs**, not about which op runs.
 
 ### D3 — `init` has two triggers, at two different times
 
@@ -87,17 +108,37 @@ An interaction produces `init`-shaped (origin) metadata when either:
    its input leg's payload was produced by **no earlier interaction** in the
    trace (a genuine trace root, e.g. user input). This is the condition D4
    branches on.
-2. **Semantic, *inside* an op** — `match` returns `false` comparing input vs
-   output payload mid-path, signalling the output is a new origin (an
-   anonymization that severs lineage, or a fresh external read whose response is
-   brand-new data). This is **not** a D4 branch — it is a runtime *result* of
-   `linear`/`merge`: when `match` returns false for a source, that source
-   contributes no lineage, and if no source matches the op degrades to `init`
-   (per the spec's `linear_lineage`, `data_lineage_alg.md:77-79`).
+2. **Semantic, *inside* an op** — `match` returns `false` for **every** input,
+   signalling the output is a new origin (an anonymization that severs lineage,
+   or a read whose response is brand-new data). This is **not** a D4 branch — it
+   is a runtime *result* of `merge_lineage`: a source whose `match` returns false
+   contributes no lineage, and if no source matches at all the op degrades to
+   `init` (`data_lineage_alg.md:101-104`, Example 3 at `:140-145`).
 
 The two live at different times: (1) is checkable structurally before the op
 runs; (2) can only be known after calling `match`. D4 encodes only (1); (2) is
-handled inside the operation bodies (see the spec for exact internals).
+handled inside the operation body (see the spec for exact internals).
+
+**`is_entity_source` ignored in the degrade branch.** When every input fails to
+match, the op inits at the entity *regardless* of `is_entity_source`
+(`data_lineage_alg.md:103`). So a **target-only** entity that severs lineage
+still becomes a data source. This is deliberate: the output payload exists and
+came from somewhere, and the entity that produced it is the only origin left to
+name — a lineage-severing anonymizer genuinely is where its output originates.
+The spec keeps the alternative reading as an inline comment (`:104`, "if
+`is_entity_source = false` there should be no meaningful output") but does not
+adopt it; Example 3 states the rule for `false or true` alike.
+
+**Origin is no longer only a degrade outcome.** D3 used to be the *whole* story of
+how an entity becomes a data source mid-trace, which put all the weight on the
+matcher: with `simple_match` always returning true, branch (2) was unreachable and
+no mid-trace entity could ever be an origin. D12's `is_entity_source` adds a second,
+**structural** route — an entity declared a source contributes itself *alongside*
+the inherited sources, on a successful match. The two are independent and compose:
+`matched` decides whether upstream lineage is inherited, `is_entity_source` decides
+whether this entity also contributed content of its own. A tool that both consumes
+its request and returns newly-read data reports both facts, which the old
+`matched`-only model could not express (see D12).
 
 ### D4 — Op selection
 
@@ -108,30 +149,31 @@ Computed per interaction `i` in `seq` order. Two distinct terms, at two grains:
 - **`inbound(i)`** — the *set* of prior payloads available to `i`'s entity when
   it produced `output_leg` (D1 routing across earlier interactions). This is
   where memory lives (D2): a memoryless entity (LLM/tool) has exactly one
-  inbound payload; an accumulating entity carries all its priors, so op
-  selection is really on `|inbound(i)|`.
+  inbound payload; an accumulating entity carries all its priors.
 
 ```
 lineage[i], for each interaction i in seq order:
   # (a) structural init — D3(1): output_leg's payload has no producing interaction
-  if output_leg's payload originates outside the trace:
+  if inbound(i) is empty:
       init_lineage(entity)
-  # (b) |inbound(i)| == 1: memoryless entity, or an accumulating entity's first inbound
-  else if inbound(i) has exactly one payload p:
-      linear_lineage(p, output_leg, entity)          # may degrade to init — D3(2)
-  # (c) |inbound(i)| >= 2: accumulating entity (D2) with retained priors
+  # (b) one or more inbound payloads — memory (D2) decides how many, not which op
   else:
-      merge_lineage(*inbound(i), output_leg, entity)  # per-source match — D3(2)
+      merge_lineage(*inbound(i), output_leg, entity, is_entity_source(entity))
+      # per-input match; degrades to init if none match — D3(2)
 ```
 
-The memory predicate is folded into `inbound(i)`: because transient memory is
-always present (D2), an accumulating entity's `inbound(i)` grows to ≥2 and hits
-branch (c); an LLM/tool never accumulates, so it stays at one and hits (b). An
-accumulating entity's **first** outbound legitimately has one inbound and uses
-(b) — matching the spec's worked example (`data_lineage_alg.md:147` uses
-`linear` for the agent's first outbound, `:149,:151` use `merge` once ≥2
-priors exist). Exact metadata construction (transformation-set union, key-
-collision merge) is in the spec (`data_lineage_alg.md:70-123`); this ADR does
+**Selection is now two-way, not three.** `|inbound(i)|` no longer picks an
+operation — it only sizes the argument list of the single generic op
+(`data_lineage_alg.md:179-186`). The old branch (b)/(c) split on
+`|inbound(i)| == 1` vs `>= 2` is gone, and with it the question of which side an
+accumulating entity's *first* outbound falls on: it takes the same `merge_lineage`
+as every other non-root leg, with one input.
+
+`is_entity_source(entity)` is the entity-taxonomy lookup (D12) — a property of the
+producing entity, not of the payloads, which is why it is a parameter of the op
+rather than something the op could derive. Exact metadata construction
+(transformation-set union, key-collision merge, the entity's own empty
+transformation set) is in the spec (`data_lineage_alg.md:97-112`); this ADR does
 not restate it.
 
 ### D5 — Metadata is keyed per leg, not per payload
@@ -407,6 +449,118 @@ one reader. Against real traffic, expand–contract is the correct shape and thi
 decision should be revisited — a one-step rename of a column any live reader
 selects is an outage by construction, not by accident.
 
+### D11 — The algebra collapses to two operations; `linear_lineage` is deleted
+
+**Not yet shipped.** Decided here; the implementation still carries
+`operations.linear_lineage`, `Operation.LINEAR` and D4's three-way branch. Until
+it lands, the code and the docstrings citing D3/D4 describe the *previous*
+algebra — this decision is the authority, not those comments.
+
+The spec changed. `docs/data_lineage_alg.md` (human-owned, authoritative) replaced
+its separate single-payload operation with **one generic `merge_lineage`** that
+covers "a single or multiple payloads" (`:85-93`), and rewrote the worked examples
+and the summary pseudocode to call it in the positions that previously read
+`linear_lineage` (`:162`, `:171-175`, `:186`).
+
+**Why this is a simplification and not a behaviour change.** A merge over one
+input and a linear over that same input compute the identical triple: the union of
+one source set is that set, the key-collision merge has nothing to collide, and the
+entity extension is the same. The two operations were always the same function at
+different arities. Keeping both forced a selection branch whose only job was to
+pick between indistinguishable results.
+
+What this removes:
+
+- **`operations.linear_lineage`** and its dedicated tests.
+- **`Operation.LINEAR`** from the traversal's recorded selection. `Operation` was
+  introduced so a test could assert *why* a row looks the way it does; with a
+  two-way selection the remaining members are `INIT` and `MERGE`.
+- **The `|inbound(i)| == 1` branch** in `traversal._derive_leg` (D4).
+
+What this deliberately does **not** remove:
+
+- **`memory.accumulates` and `ACCUMULATING_KINDS`.** Memory still decides how many
+  priors are retained and therefore how many inputs `merge_lineage` receives (D2).
+  The predicate's *consumer* changes — it sizes an argument list instead of
+  choosing an op — but the predicate itself is untouched. Deleting it would
+  conflate "we no longer branch on the count" with "the count no longer matters".
+- **The structural-init branch (D3(1)).** An empty `inbound(i)` is a genuinely
+  different case: there is no input to match against, so `merge_lineage` has
+  nothing to be called with. Two-way is the floor, not one-way.
+
+Note the traversal keeps one behaviour the spec's summary does not spell out: a
+leg whose producing entity is unknown is **skipped without truncating the trace**,
+which is distinct from D6's absent-payload cutoff. That is unchanged by this
+decision and is documented in `traversal.derive_trace_lineage`.
+
+### D12 — `is_entity_source`: an entity can contribute itself as a source, independent of `match`
+
+**Not yet shipped.** Decided here; nothing in the implementation reads an entity
+taxonomy or passes `is_entity_source`, so today no mid-trace entity can become a
+data source at all (the trivial matcher makes D3(2)'s degrade unreachable). Landing
+this changes persisted output for every trace with a tool call and requires
+re-derivation.
+
+The spec added an **Entity Taxonomy** (`data_lineage_alg.md:24-35`) and threaded an
+`is_entity_source: bool` parameter through `merge_lineage` (`:92`, `:95-96`,
+`:107-108`).
+
+**What it means.** On a successful match, an entity declared a *source* is added to
+the output metadata **alongside** the inherited sources — it appears in `Sources`,
+gains a key in `Transformations` with an **empty** transformation set, and is
+extended into `Entities` (`:106-112`). The empty set is the point: the entity's own
+contribution did not undergo the transformation that the *inherited* sources
+underwent, so stamping the match's transformation onto it would be a false claim.
+
+**Why a parameter and not a matcher verdict.** These are two orthogonal facts about
+one leg:
+
+- `matched` — *did the request's content survive into the response?*
+- `is_entity_source` — *did this entity also contribute content of its own?*
+
+A single boolean cannot carry both. The live `travel-advisor` trace has the
+counterexample: `charge_card` receives a PAN in its request and returns an
+`auth_code` that existed nowhere upstream. Under a `matched`-only model,
+`matched=True` inherits the PAN but loses the ingress, while `matched=False` records
+the ingress but discards the PAN's provenance — the most governance-critical edge in
+the trace. With `is_entity_source` both are stated. The same applies to
+`get_payment_info`, whose request tokens all reappear in its response (so a
+content-comparing matcher reasonably returns `matched=True`) while it returns
+freshly-read cardholder data.
+
+**Where the value comes from.** A declared per-entity table is the eventual source
+and **reading it is deferred** (`:26-27`). Until then, kind-based defaults
+(`:31-35`): `tool` is source ✓ and target ✓; `LLM` and `agent` are neither. So
+`is_entity_source` is a *second* kind-driven predicate beside `memory.accumulates`,
+with the same trajectory — declared config later, one named place now. Both should
+live together rather than in separate modules, since the deferred table supplies
+both.
+
+**Accepted consequence: tools over-report as sources under the trivial matcher.**
+With `simple_match` always matching, the degrade branch never fires and every tool
+leg adds its tool to `Sources`. Combined with an agent's accumulation (D2), the
+source set grows monotonically down the trace — on the live trace the advisor's
+final leg ends up rooted at the agent *and* every tool that fired. For the read
+tools (`search_destinations`, `get_weather`, `get_payment_info`, `get_flights`) that
+is the correct and previously-missing answer. For agent-delegation-shaped tools
+(`delegate_to_booking_agent`, which is `kind='tool'` in `entities` but is pure
+delegation carrying no new data) it is an over-report. Accepted until the declared
+table lands: over-reporting an origin is the safe direction for a governance tool,
+where the failure this replaces was *under*-reporting an external data ingress.
+
+**`location` is a placeholder.** The taxonomy table carries an
+internal/external column that no operation reads. It is recorded for future
+use (inter-trace / Step II) and has no v1 semantics.
+
+**Entity-set asymmetry, recorded not resolved.** `is_entity_source=true` puts the
+entity in `Entities`, but `init_lineage` leaves `Entities` **empty** for the same
+"this entity originated data" fact (`:78-83`). So whether a source-tool appears in
+its own `Entities` depends on which branch ran: on a successful match it does, on
+the all-false degrade it does not. Unobservable under `simple_match` (only the
+match branch fires), and the readings are defensible in both places — data did flow
+through the tool in the merge case, whereas a genuine trace root has no upstream at
+all. Flagged for whoever implements a real matcher; not a spec change.
+
 ## Outputs
 
 - **API** — given a trace's interaction flow, compute/serve trace lineage;
@@ -450,6 +604,11 @@ matching how ADR-0024/0025 name their PKs.
   one trace writes, another reads). Metadata shape is designed to carry
   cross-trace sources unchanged, but the mechanism is deferred.
 - **Matcher implementation and its versioning/re-derivation** (D7).
+- **Reading the declared entity-taxonomy table** (D12) — source/target/persistent-
+  storage/location per entity. Kind-based defaults stand in; the table's own shape
+  and population are out of scope here.
+- **The `location` (internal/external) dimension** of the taxonomy (D12) — carried
+  in the spec's table, read by nothing, reserved for Step II.
 - **The transformation enumeration** (finalized with a human).
 - **Map `persisting-entity → payload`** (the reverse data-source index).
 - **Dependencies** (config, code/model versions) — non-data inputs to a
@@ -485,6 +644,23 @@ matching how ADR-0024/0025 name their PKs.
   loses its lineage too. This would be per-leg state, not the trace-level row
   D8 added.
 
-**Resolved** (kept for the record): the trace-level status *location* (D6 /
-Schema) — settled by **D8** in favour of the dedicated `lineage_trace_status`
-table over derived-on-read.
+- Distinguishing a **data-contributing** tool from a **pass-through** one (D12).
+  The kind default makes every `tool` a source, which over-reports for
+  delegation-shaped tools. The declared table is the intended fix; inferring it
+  from tool names, descriptions or payload-size heuristics was considered and
+  rejected — a governance claim derived from a free-text naming convention has no
+  provenance, and the signals are unevenly present (in the live corpus only 1 of 8
+  tools carries `tool.description`).
+- **Per-entity vs per-leg source semantics** (D12). `is_entity_source` is a
+  property of the entity, so it applies to every leg that entity produces. Whether
+  a *specific* call was a read or a write (the same tool can do both — `create_booking`
+  accepts data and returns a new booking id) is not expressible today.
+
+**Resolved** (kept for the record):
+
+- The trace-level status *location* (D6 / Schema) — settled by **D8** in favour of
+  the dedicated `lineage_trace_status` table over derived-on-read.
+- Whether a mid-trace entity can be a data source **without** the matcher refusing
+  a match — settled by **D12**'s `is_entity_source`. Previously the only route was
+  D3(2)'s degrade, which the trivial matcher makes unreachable, so no tool could
+  ever appear as an origin.
