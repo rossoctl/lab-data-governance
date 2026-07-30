@@ -2,19 +2,32 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
+import { Routes, Route } from 'react-router-dom';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { DataLineageView } from './DataLineageView';
 import type { DataLineage, Entity, LineageState } from '../types';
 
 // The view resolves a lineage natural key to the entity's friendly display_name
 // off the trace-scoped entities query, and takes the traceId from the route — so
-// every render here needs a Router + QueryClient (renderWithProviders) mounted at
-// the real trace path, and a stubbed `GET /api/traces/T1/entities`.
+// every render here needs a Router + QueryClient (renderWithProviders) and a
+// stubbed `GET /api/traces/T1/entities`.
+//
+// The component must be mounted under an actual MATCHED `<Route>`, not merely at
+// the right URL: `useParams` reads params off the matched route's pattern, so a
+// bare child of MemoryRouter at /traces/T1/flow sees `{}` and would silently
+// exercise the traceId-less path in every test. Mirrors the real nesting in
+// App.tsx (`/traces/:traceId/:view`).
 const ROUTE = '/traces/T1/flow';
+const ROUTE_PATTERN = '/traces/:traceId/:view';
 
-/** Render under the trace route, where `:traceId` resolves to `T1`. */
-function render(ui: Parameters<typeof renderWithProviders>[0]) {
-  return renderWithProviders(ui, { route: ROUTE });
+/** Render under the real trace route, where `:traceId` resolves to `T1`. */
+function render(ui: React.ReactElement) {
+  return renderWithProviders(
+    <Routes>
+      <Route path={ROUTE_PATTERN} element={ui} />
+    </Routes>,
+    { route: ROUTE },
+  );
 }
 
 function entity(over: Partial<Entity> = {}): Entity {
