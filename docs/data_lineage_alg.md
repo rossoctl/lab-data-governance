@@ -21,6 +21,19 @@ We have three types of components:
 	The difference is the assumption that session/transient memory does not survive between two executions - Which will impact inter trace lineage/.
 3. data target
 
+# Entity Taxonomy
+
+we are going to assume a table will exists (after analysis) that identifies all the entities in the system and sets relevant properties including persistent storage, source and target
+Reading from the table is deferred
+
+Until then, and to support cases where entities have not been analyzed and don't appear in the table - we will use the following defaults:
+
+| entity | source | target | location (internal or external) |
+| --- | --- | --- | --- |
+| LLM | ✗ | ✗ | external |
+| tool | ✓ | ✓ | external |
+| agent | ✗ | ✗ | internal |
+
 # Design Elements	
 
 ## transformation 
@@ -30,10 +43,11 @@ to do with a human: work on this list
 
 ## Lineage metadata
 Lineage metadata includes:
-1. the list of Data sources
-2. a map between data source and a set of transformations (order doesn't matter)
-3. the set of entities - through which entities the data passed through
+1. Sources - the list of Data sources
+2. Transformations - a map between data source and a set of transformations (order doesn't matter)
+3. Entities - the set of entities - through which entities the data passed through
 		Note: this is unordered. In case an order is needed - it will need to be derived from the trace using an API.
+		Note: The set may include also sources - As a source may also be an entity where data passed 
 
 ## Semantic matching
 
@@ -59,69 +73,79 @@ inter trace lineage is postponed.
 traversing a trace interactions from the beginning will allow us to compute the lineage 
 following add a few basic operations which we will connect later
 
+in case payload(s) are missing - truncates the trace at the first absent payload and mark it partial
 
 1. The starting point of a payload, and it's lineage (e.g. read)
-	- init_lineage( entity_name: string ) -> metadata
+	- init_lineage( entity: string ) -> metadata
 	  in this case The metadata is trivial:
-		1. the data source is assigned the entity name
-		2. A new map, setting a key - data source to an empty set of transformations 
-		3. A new set of entities which is empty 
+		1. Sources is assigned the entity 
+		2. transformations, set a key - entity, with an empty set of transformations as value
+		3. entities - a new empty set
 
-2. on process, simple processing of a *single* payload:
-	- linear_lineage( 	payload: string, metadata: object
-						 output_payload: string,
-						 entity_name: string ) -> output Metadata
-	  In this case a single payload is processed by for example by an LLM.
-	  the idea here is to call match with payload and output_payload
-	  The result of the call will inform the construction of output metadata:
-		if match returns false
-			There is no lineage. This may be the case if we anonymize a payload. or If based on an ID the we read record:
-				1. 	call init lineage
-		If match returned true (and transformation)
-				1. the data source is assigned the metadata data source 
-				2. create a copy of the transformations and add the returned transformation (if exists) to all the transformation sets
-				3. create a copy of the entity set and extend it with the entity name 
 
-3. On process, *multiple* payloads: 
-	The general idea: given two sources of input and single output we will need to merge the lineage. if we only have the metadata available:
-		- merge_lineage( metadata_a: object
-				 		 metadata_b: object
-				 		entity_name: string ) -> output Metadata
-		  the resulting metadata Is trivial, essentially it has the semantics of a union
-				1. the data sources are the union Of metadata A and metadata B 
-				2. merge the keys from the metadata maps into a new map, merge the      transformation sets in case a key appears twice
-				3. the set of entities is merged and extended with the entity 
-
-	A more generic approach, would consider multiple sources as well as the payloads:
+2. on process, we may address multiple cases - we may have a single or multiple payloads 
+	Following is a generic approach considering multiple sources as well as the payloads:
 		- merge_lineage( payload_a: string, metadata_a: object
 				 		 payload_b: string, metadata_b: object
 						 ...
 				 		 output_payload: string,
-				 		 entity_name: string ) -> output Metadata
-			the idea here is to call the matching function with every source payload and output payload (e.g. payload_a,output_payload; payload_b,output_payload, ..)
-			The result of these calls will inform the construction of output metadata:
-			(if payload(s) are missing, use metadata as descibed above)
+				 		 entity_name: string,
+						 is_entity_source: bool ) -> output Metadata
+			a. The idea here is to call the matching function with every source payload and output payload (e.g. payload_a,output_payload; payload_b,output_payload, ..)
+			The result of these calls will inform the construction of output metadata
+			b. if is_entity_source == true, It should be considered as an additional source
 
-			Examples:
+			Construction of output metadata:
+			- Match returns false for a specific (payload, output_payload) - it indicates there is no lineage. And thereforet the payloads metadata can be ignored.
+
+			1. In case Match returns false for *all* payloads - There is no lineage.
+				This may be the case if we anonymize payloads. or if based on an IDs we read record:
+				1. call init lineage, the entity is the source 
+						<!-- (ignoring is_entity_source, intuition: If is_entity_source = false - There should be no meaningful output	otherwise, It's a new starting point ) -->
+			
+			2. In case Match returns true for *one or more* payloads (and possibly provides transformation). assume payloads are A,B,.. 
+				1. Sources are assigend the union of the sources:  A ∪ B ∪ ...
+				   if is_entity_source == true:  A ∪ B ∪ ... ∪ entity.
+				2. merge the keys from the metadata maps (A,B,.. ) into a new map, merge the      	  
+				   transformation sets in case a key appears twice
+				   Also, add entity, with empty transformation set, to the transformation sets
+				3. the sets of entities are merged, and extended with the entity.
+
+
+		Examples:
 
 			Example 1 - assume there are two payloads and match returns 
-				false for payload_a,output payload --> no lineage from payload_a to output payload. 
-				true for payload_b, output payload and summarize as transformation --> there is lineage, Summarization was performed on payload_b.
+				false for payload_a,output payload (no payload_a --> output payload lineage). 
+				true for payload_b, output payload and summarize as transformation 
+							(there is lineage, Summarization was performed on payload_b).
+				entity is target (is_entity_source = false)
 			  in such a case the output metadata Will include:
-				1. the data sources Of metadata B only
+				1. Sources assigned b sources only
 				2. copy Each entry (key, value) from metadata_b, add summarization to each set and to the output metadata map
-				3. the set of entities copied from metadata_b extended with the entity_name
+				3. the set of entities copied from metadata_b
+				Note: no need to add entity to transformation or entities- its not a source
 
 
 			Example 2 - assume there are three payloads as input and match returns
 				false for payload A,output_payload
 				true for payload B,output_payload and anonymize
 				true for payload C,output_payload and summarize
+				entity is source (is_entity_source = true)
 			  in such a case the output metadata Will include:
 				1. The data sources of the output metadata from both metadata B and C (union)
-				2. For each data source from B create copy the Transformation set, add anonymization, and store in the new map. Next For each data source from C create copy the Transformation set, add Summarization, and store in the the map - either by adding a new data source key or merging the transformation set with the existing one   
+				   as well as the entity.
+				2. For each data source from B create copy the Transformation set, add anonymization, and store in the new map. Next For each data source from C create copy the Transformation set, add Summarization, and store in the the map - either by adding a new data source key or merging the transformation set with the existing one. Also, add entity, with empty transformation set, to the transformation sets.
 				3. Merge the entities from metadata B and C and extend with entity_name
 			
+			Example 3 - assume there are two payloads as input and match returns
+				false for payload A,output_payload
+				false for payload B,output_payload
+				// entity is source (false or true)
+			  in such a case
+			  	call init lineage, the entity is the source
+				
+				
+
 
 ## trace interaction lineage
 Given these basic lineage operations we can map interactions In a trace to those operations 
@@ -134,8 +158,8 @@ consider the following examples (arrows identify interactions and payloads, numb
 	Use init_lineage to compute the lineage of #1
 
 2.	Assume Two interactions: 
-		-1-> LLM -2->
-	use linear_lineage To compute the lineage of #2
+		-1-> Tool -2->
+	use merge_lineage To compute the lineage of #2
 
 3.	Assume The following interactions
 		-1-> Agent
@@ -144,25 +168,23 @@ consider the following examples (arrows identify interactions and payloads, numb
 		     Agent -4-> LLM
 		     Agent <-5- LLM
 		<-6- Agent
-	Use linear_lineage (1, 2) -> #2
-	Use linear_lineage (2, 3) -> #3
-	Use Merge lineage (1, 3, 4) -> #4 (Since the agent has memory)
-	Use linear_lineage (4, 5) -> #5
-	Use Merge lineage (1, 3, 5, 6) -> #6 (Since the agent has memory)
+	Use merge_lineage (1, 2) -> #2
+	Use merge_lineage (2, 3) -> #3
+	Use merge lineage (1, 3, 4) -> #4 (Since the agent has memory)
+	Use merge_lineage (4, 5) -> #5
+	Use merge lineage (1, 3, 5, 6) -> #6 (Since the agent has memory)
 		
 	*Assume agent has transient/session memory, tools and LLM do not.*
 
 in summary:
 lineage[i] = for each interaction i in seq order:
   if input payload has no lineage:    					
-  	 init_lineage(entity)  			// E.g. the caller entity is outside the trace / a source.
-  else an entity has one inbound payload (and no session/transient memory): 
-	linear_lineage(inbound payload, i)  // This can happen on the first inbound , 
-											or if our entity is an LLM 
+  	 init_lineage(entity) 	// E.g. the caller entity is outside the trace / a source.
   else:
 	payloads = payloads i's entity received earlier (requests handed + responses returned)
 										 // since we assume transient memory
-  	merge_lineage(payloads, i)    
+  	merge_lineage(payloads, entity, is_entity_source)    
+
 
 
 ## Lineage result
