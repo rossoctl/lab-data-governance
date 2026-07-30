@@ -161,6 +161,15 @@ conftest), and the composite cursor + `leg_type` tiebreaker are retired in favou
 of a plain single-seq watermark. This is why the status is now **accepted**: the
 design is proven in code.
 
+**Follow-up (issue #133): `interaction_legs.original_seq` removed.** This reversal
+also made the leg's `original_seq` inert. Its ADR-0004 purpose was to freeze a
+first-emission value against a *mutating* `seq`; but a leg's `seq` is now DB-owned
+and, like the frozen value, never mutates on re-derive (it is dropped from the leg
+`DO UPDATE SET`), so `seq == original_seq` forever and the pair distinguishes
+nothing. The field was write-once at INSERT and read by no consumer, so migration
+`0011_drop_leg_original_seq` drops it (legs only — entity `original_seq` is still
+read into `first_seen_seq` and stays). Reversible via `downgrade()`.
+
 ## Deliberately out of scope (evidence-bar posture, per ADR-0013 / ADR-0025)
 
 - **Case-Y observed legs** — a future source emitting request and response as

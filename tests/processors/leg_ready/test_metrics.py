@@ -38,7 +38,7 @@ def _insert_leg(dsn: str, *, ix: str, leg_type: str, payload_hash: str | None) -
         _mk_interaction(conn, ix)
         conn.execute(
             "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-            "payload_hash, error, original_seq) VALUES (%s, %s, now(), %s, false, 0)",
+            "payload_hash, error) VALUES (%s, %s, now(), %s, false)",
             (ix, leg_type, payload_hash),
         )
         conn.commit()

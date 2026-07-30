@@ -340,7 +340,7 @@ def _rehydrate_derived(
         # single-row shape procedure.py expects (unchanged). error folds off
         # whichever leg carries it (both derived legs share it).
         #
-        # ``seq`` / ``original_seq`` are DELIBERATELY NOT read off the legs anymore
+        # ``seq`` is DELIBERATELY NOT read off the legs anymore
         # (ADR-0027 reversal, issue #123). The two legs no longer share one seq —
         # each has its own DB-owned ``nextval`` value — so "the leg's seq" is not a
         # single value to fold back, and ``ProtoInteraction.seq`` never needed it:
@@ -567,25 +567,19 @@ def flush(
         # is a no-op (EXCLUDED.seq already equals the stored value). Preserving seq
         # is what keeps replay determinism / crash recovery from reshuffling seqs a
         # downstream consumer already delivered.
-        #
-        # ``original_seq`` is NOT NULL with no default and is a write-only passenger
-        # field (no live reader). Streaming keeps supplying ``ix.original_seq`` (the
-        # span-derived arrival value) so the NOT NULL is satisfied without inventing
-        # a new source; graph supplies its own per-leg ``original_seq`` (its edge
-        # order). Neither is read back into ordering/cursor logic.
         supplied = legs_by_ix.get(ix.id) if legs_by_ix is not None else None
         if supplied is not None:
             for leg in supplied:
                 tx.execute(
                     "INSERT INTO interaction_legs (interaction_id, leg_type, "
-                    "occurred_at, payload_hash, error, seq, original_seq) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                    "occurred_at, payload_hash, error, seq) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) "
                     "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
                     "occurred_at = EXCLUDED.occurred_at, "
                     "payload_hash = EXCLUDED.payload_hash, "
                     "error = EXCLUDED.error",
                     (ix.id, leg.leg_type, leg.occurred_at, leg.payload_hash,
-                     leg.error, leg.seq, leg.original_seq),
+                     leg.error, leg.seq),
                 )
         else:
             # occurred_at may be NULL if the span had no start/end yet; the
@@ -594,14 +588,13 @@ def flush(
             for leg_type, occurred_at, payload_hash in _legs_of(ix):
                 tx.execute(
                     "INSERT INTO interaction_legs (interaction_id, leg_type, "
-                    "occurred_at, payload_hash, error, original_seq) "
-                    "VALUES (%s, %s, %s, %s, %s, %s) "
+                    "occurred_at, payload_hash, error) "
+                    "VALUES (%s, %s, %s, %s, %s) "
                     "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
                     "occurred_at = EXCLUDED.occurred_at, "
                     "payload_hash = EXCLUDED.payload_hash, "
                     "error = EXCLUDED.error",
-                    (ix.id, leg_type, occurred_at, payload_hash, ix.error,
-                     ix.original_seq),
+                    (ix.id, leg_type, occurred_at, payload_hash, ix.error),
                 )
 
     # 4. interaction_spans — scoped to the span_ids _repair_after_arrival
