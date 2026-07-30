@@ -81,8 +81,8 @@ def _insert_leg(
         _mk_interaction(conn, interaction_id)
         (seq,) = conn.execute(
             "INSERT INTO interaction_legs (interaction_id, leg_type, "
-            "occurred_at, payload_hash, error, original_seq) "
-            "VALUES (%s, %s, now(), %s, false, 0) RETURNING seq",
+            "occurred_at, payload_hash, error) "
+            "VALUES (%s, %s, now(), %s, false) RETURNING seq",
             (interaction_id, leg_type, payload_hash),
         ).fetchone()
         conn.commit()

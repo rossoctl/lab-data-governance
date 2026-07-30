@@ -20,10 +20,11 @@ The invariants pinned here (all against the real streaming write path
      assigned value is preserved (cosmetic ``nextval`` gaps are allowed; the
      stored value is stable), preserving replay determinism / crash recovery.
 
-The ``--scramble`` gate (``test_scramble.py``) already excludes ``seq`` /
-``original_seq`` from its byte comparison of ``interaction_legs`` (they are
-arrival-order-dependent passenger fields), so DB-owned seq introduces no new
-invariant violation there — that gate keeps passing untouched.
+The ``--scramble`` gate (``test_scramble.py``) already excludes ``seq`` from its
+byte comparison of ``interaction_legs`` (it is an arrival-order-dependent
+passenger field), so DB-owned seq introduces no new invariant violation there —
+that gate keeps passing untouched. (Issue #133 dropped the once-parallel leg
+``original_seq`` the gate also used to exclude.)
 """
 
 from __future__ import annotations

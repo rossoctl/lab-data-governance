@@ -200,13 +200,14 @@ in place as more spans arrive (late parents, **Finalization**,
 **Interaction reconciliation**). Identity (`id`) is stable across
 mutations. Per ADR-0025 an interaction is a **parent identity row**
 (`interactions`) plus one or two **Interaction leg**s (`interaction_legs`):
-the payload hash, `occurred_at`, `error`, and `seq` / `original_seq` live on
+the payload hash, `occurred_at`, `error`, and `seq` live on
 the *leg*: each leg carries its **own distinct** `seq` (DB-owned `nextval`,
 request leg inserted first → lower seq; ADR-0027 Reversal), so a leg finalizes
 and cursors on its own `seq`; the parent carries only shared identity and has
-no `seq`. Stream consumers cursor `interaction_legs` on `seq`. (`original_seq`
-is a write-only passenger field today — it has no live reader; it exists so a
-future stream consumer could distinguish first-emission rows from mutations.)
+no `seq`. Stream consumers cursor `interaction_legs` on `seq`. (A leg has no
+`original_seq`: unlike an **Entity**, a leg's `seq` is DB-owned and never
+mutates on re-derive, so a frozen-vs-mutating pair would carry no information —
+issue #133 dropped it.)
 There is no "complete" flag —
 consumers see the current state at query time. Anchor rules set
 identity (`caller_entity_id`, `callee_entity_id`) on creation only;
@@ -234,8 +235,8 @@ merely by convention.
   is a join target for identity.
 - **On the leg** (`interaction_legs`): `leg_type`, `occurred_at` (the request
   leg's is the call-start time, the response leg's the completion time),
-  `payload_hash` (request vs response body), `error`, and its own `seq` /
-  `original_seq`. Each leg finalizes independently and advances its own `seq` —
+  `payload_hash` (request vs response body), `error`, and its own `seq`
+  (no `original_seq` — issue #133). Each leg finalizes independently and advances its own `seq` —
   this per-leg cursor is the mechanism that lets a stream consumer see "response
   landed" as a distinct event from "request sent". `interaction_legs_seq`
   replaces the retired `interactions_seq` as the cursorable stream.

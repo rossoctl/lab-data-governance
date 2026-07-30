@@ -78,7 +78,6 @@ class LegRow:
     payload_hash: str | None
     error: bool | None
     seq: int  # the edge's global execution ordinal (`order`) — request < its response
-    original_seq: int
 
 
 @dataclasses.dataclass
@@ -601,7 +600,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         # response leg reflects the responding endpoint's own anchor span — its
         # `ended_at` (genuinely distinct from the request edge's for an A2A
         # delegation, where the two legs split anchors), its own payload/error,
-        # and its own global `order` as the leg `seq`/`original_seq`. NEVER
+        # and its own global `order` as the leg `seq`. NEVER
         # fabricate a leg: emit a LegRow only for a leg backed by a real edge. A
         # request-less call has only a response leg; a response-less call only a
         # request leg. `state.flush` writes these instead of deriving legs from
@@ -615,7 +614,6 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
                     payload_hash=req_hash,
                     error=req_leg.pi.error,
                     seq=req_leg.pi.order,
-                    original_seq=req_leg.pi.order,
                 )
             )
         if resp_leg is not None:
@@ -626,7 +624,6 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
                     payload_hash=resp_hash,
                     error=resp_leg.pi.error,
                     seq=resp_leg.pi.order,
-                    original_seq=resp_leg.pi.order,
                 )
             )
         legs_by_ix[ix_id] = legs
