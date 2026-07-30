@@ -95,8 +95,8 @@ def _index_exists(dsn: str, name: str) -> bool:
 # spans upsert, a re-derivation always rewrites the leg.
 _UPSERT_LEG_SQL = """
     INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at,
-                                  payload_hash, error, seq, original_seq)
-    VALUES (%s, %s, %s, %s, %s, nextval('interaction_legs_seq'), %s)
+                                  payload_hash, error, seq)
+    VALUES (%s, %s, %s, %s, %s, nextval('interaction_legs_seq'))
     ON CONFLICT (interaction_id, leg_type) DO UPDATE SET
         occurred_at  = EXCLUDED.occurred_at,
         payload_hash = EXCLUDED.payload_hash,
@@ -111,8 +111,11 @@ def _upsert_leg(
     interaction_id: str,
     leg_type: str = "request",
     payload_hash: str | None = None,
-    original_seq: int = 1,
 ) -> None:
+    # `original_seq` was dropped from `interaction_legs` by
+    # 0011_drop_leg_original_seq (issue #133), and `state.py:flush` no longer writes
+    # it — which this SQL mirrors verbatim in the parts the trigger keys on. The
+    # trigger fires on the write itself, so the removed column never mattered here.
     conn.execute(
         _UPSERT_LEG_SQL,
         (
@@ -121,7 +124,6 @@ def _upsert_leg(
             dt.datetime.now(dt.timezone.utc),
             payload_hash,
             False,
-            original_seq,
         ),
     )
 

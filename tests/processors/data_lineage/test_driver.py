@@ -56,15 +56,20 @@ def _leg(
     ix_id: str,
     leg_type: str,
     payload_hash: str,
-    original_seq: int,
 ) -> None:
+    # `interaction_legs.original_seq` was dropped in 0011_drop_leg_original_seq
+    # (issue #133): a leg's `seq` is DB-owned and never mutates on re-derive, so the
+    # frozen-vs-mutating comparison the column existed for is inert for legs. The
+    # sequence allocates `seq` in INSERT order, which is the only ordering these
+    # tests ever relied on — callers pass legs in execution order (see below).
+    # NOTE: `entities.original_seq` is NOT dropped and `_entity` still writes it.
     _payload(conn, payload_hash)
     conn.execute(
         "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-        "payload_hash, error, original_seq) VALUES (%s, %s, now(), %s, false, %s) "
+        "payload_hash, error) VALUES (%s, %s, now(), %s, false) "
         "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
         "payload_hash = EXCLUDED.payload_hash, seq = nextval('interaction_legs_seq')",
-        (ix_id, leg_type, payload_hash, original_seq),
+        (ix_id, leg_type, payload_hash),
     )
 
 
@@ -83,12 +88,12 @@ def _seed_agent_trace(dsn: str) -> None:
         _interaction(conn, ix_id="ix_al2", trace_id=TRACE, caller="e_agent", callee="e_llm")
         # Legs written in execution order, so the sequence-allocated `seq`
         # reproduces the spec's numbering 1..6.
-        _leg(conn, ix_id="ix_ua", leg_type="request", payload_hash="p1", original_seq=1)
-        _leg(conn, ix_id="ix_al1", leg_type="request", payload_hash="p2", original_seq=2)
-        _leg(conn, ix_id="ix_al1", leg_type="response", payload_hash="p3", original_seq=3)
-        _leg(conn, ix_id="ix_al2", leg_type="request", payload_hash="p4", original_seq=4)
-        _leg(conn, ix_id="ix_al2", leg_type="response", payload_hash="p5", original_seq=5)
-        _leg(conn, ix_id="ix_ua", leg_type="response", payload_hash="p6", original_seq=6)
+        _leg(conn, ix_id="ix_ua", leg_type="request", payload_hash="p1")
+        _leg(conn, ix_id="ix_al1", leg_type="request", payload_hash="p2")
+        _leg(conn, ix_id="ix_al1", leg_type="response", payload_hash="p3")
+        _leg(conn, ix_id="ix_al2", leg_type="request", payload_hash="p4")
+        _leg(conn, ix_id="ix_al2", leg_type="response", payload_hash="p5")
+        _leg(conn, ix_id="ix_ua", leg_type="response", payload_hash="p6")
         conn.commit()
 
 
@@ -221,8 +226,8 @@ def test_identical_payloads_at_different_positions_get_distinct_rows(
         _entity(conn, eid="e_user", kind="user", natural_key="user:alice")
         _entity(conn, eid="e_agent", kind="agent", natural_key="agent:(demo,echo)")
         _interaction(conn, ix_id="ix", trace_id=TRACE, caller="e_user", callee="e_agent")
-        _leg(conn, ix_id="ix", leg_type="request", payload_hash="same", original_seq=1)
-        _leg(conn, ix_id="ix", leg_type="response", payload_hash="same", original_seq=2)
+        _leg(conn, ix_id="ix", leg_type="request", payload_hash="same")
+        _leg(conn, ix_id="ix", leg_type="response", payload_hash="same")
         conn.commit()
 
     driver.drain(0)
@@ -269,16 +274,16 @@ def test_partial_trace_converges_as_later_legs_arrive(configured_db: str) -> Non
         _entity(conn, eid="e_llm", kind="llm", natural_key="llm:host/gpt")
         _interaction(conn, ix_id="ix_ua", trace_id=TRACE, caller="e_user", callee="e_agent")
         _interaction(conn, ix_id="ix_al", trace_id=TRACE, caller="e_agent", callee="e_llm")
-        _leg(conn, ix_id="ix_ua", leg_type="request", payload_hash="p1", original_seq=1)
-        _leg(conn, ix_id="ix_al", leg_type="request", payload_hash="p2", original_seq=2)
+        _leg(conn, ix_id="ix_ua", leg_type="request", payload_hash="p1")
+        _leg(conn, ix_id="ix_al", leg_type="request", payload_hash="p2")
         conn.commit()
 
     cursor = driver.drain(0)
     assert len(_rows(configured_db)) == 2
 
     with psycopg.connect(configured_db) as conn:
-        _leg(conn, ix_id="ix_al", leg_type="response", payload_hash="p3", original_seq=3)
-        _leg(conn, ix_id="ix_ua", leg_type="response", payload_hash="p4", original_seq=4)
+        _leg(conn, ix_id="ix_al", leg_type="response", payload_hash="p3")
+        _leg(conn, ix_id="ix_ua", leg_type="response", payload_hash="p4")
         conn.commit()
 
     driver.drain(cursor)
@@ -303,7 +308,7 @@ def test_rederivation_overwrites_stale_metadata(configured_db: str) -> None:
             "entities = ARRAY['stale']"
         )
         # Re-announce the leg the way a P-interactions re-derivation would.
-        _leg(conn, ix_id="ix_ua", leg_type="response", payload_hash="p6", original_seq=6)
+        _leg(conn, ix_id="ix_ua", leg_type="response", payload_hash="p6")
         conn.commit()
 
     driver.drain(0)
@@ -321,7 +326,7 @@ def test_legs_of_other_traces_are_untouched(configured_db: str) -> None:
         _entity(conn, eid="e_c", kind="client", natural_key="client:1.2.3.4")
         _entity(conn, eid="e_a2", kind="agent", natural_key="agent:(demo,other)")
         _interaction(conn, ix_id="ix_o", trace_id=other, caller="e_c", callee="e_a2")
-        _leg(conn, ix_id="ix_o", leg_type="request", payload_hash="q1", original_seq=1)
+        _leg(conn, ix_id="ix_o", leg_type="request", payload_hash="q1")
         conn.commit()
 
     driver.drain(0)
@@ -366,8 +371,8 @@ def test_matcher_receives_payload_content_not_hashes(configured_db: str) -> None
         _entity(conn, eid="e_user", kind="user", natural_key="user:alice")
         _entity(conn, eid="e_agent", kind="agent", natural_key="agent:(demo,a)")
         _interaction(conn, ix_id="ix", trace_id=TRACE, caller="e_user", callee="e_agent")
-        _leg(conn, ix_id="ix", leg_type="request", payload_hash="h_in", original_seq=1)
-        _leg(conn, ix_id="ix", leg_type="response", payload_hash="h_out", original_seq=2)
+        _leg(conn, ix_id="ix", leg_type="request", payload_hash="h_in")
+        _leg(conn, ix_id="ix", leg_type="response", payload_hash="h_out")
         # Real content behind those hashes, distinguishable from the hashes.
         conn.execute(
             "UPDATE interaction_payloads SET content = %s::jsonb "

@@ -196,7 +196,6 @@ def test_legs_are_real_edges_never_fabricated(fixture: str) -> None:
             f"{fixture}: {ix_id[:8]} legs {types}"
         )
         for leg in legs:
-            assert leg.seq == leg.original_seq
             all_seqs.append(leg.seq)
         req = next((leg for leg in legs if leg.leg_type == "request"), None)
         resp = next((leg for leg in legs if leg.leg_type == "response"), None)

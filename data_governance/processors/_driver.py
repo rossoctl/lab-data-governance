@@ -127,11 +127,28 @@ def drain(spec: StreamSpec[T], cursor: int) -> int:
             return cursor
 
 
-def _poll_loop(spec: StreamSpec[T], stop_event: threading.Event, cursor: int) -> int:
+# A drain function the run machinery calls each wake. Defaults to :func:`drain`
+# (the standard monotonic advance-to-max-seq). The leg-readiness consumer passes
+# its OWN bespoke contiguous-prefix drain here (issue #123, ADR-0027): it is the
+# one stream whose advance is non-monotonic in ``seq``, so it cannot reuse
+# :func:`drain`, but it CAN reuse this run/LISTEN/poll wake machinery by supplying
+# its drain through this seam. ``(spec, cursor) -> new_cursor``.
+DrainFn = Callable[["StreamSpec[T]", int], int]
+
+
+def _poll_loop(
+    spec: StreamSpec[T],
+    stop_event: threading.Event,
+    cursor: int,
+    drain_fn: "DrainFn" = drain,
+) -> int:
     """Pure poll-drain loop (the backstop). Sleeps up to ``poll_seconds`` between
-    drains. Used when no LISTEN connection is available. Returns the cursor."""
+    drains. Used when no LISTEN connection is available. Returns the cursor.
+
+    *drain_fn* defaults to :func:`drain`; the leg-readiness consumer passes its
+    bespoke contiguous-prefix drain (issue #123)."""
     while not stop_event.is_set():
-        cursor = drain(spec, cursor)
+        cursor = drain_fn(spec, cursor)
         stop_event.wait(timeout=spec.poll_seconds)
     return cursor
 
@@ -146,13 +163,22 @@ class _ListenUnavailable(Exception):
     """
 
 
-def _wake_loop(spec: StreamSpec[T], stop_event: threading.Event, cursor: int, dsn: str) -> int:
+def _wake_loop(
+    spec: StreamSpec[T],
+    stop_event: threading.Event,
+    cursor: int,
+    dsn: str,
+    drain_fn: "DrainFn" = drain,
+) -> int:
     """LISTEN-driven drain loop. Returns the cursor when *stop_event* is set.
 
     Wraps ONLY the LISTEN-connection operations (open + wait) in connection-error
-    handling, re-raising those as :class:`_ListenUnavailable`. :func:`drain` is
-    called outside that boundary, so a pool/DB fault during drain propagates
-    unchanged and is never misclassified as a LISTEN-wake failure.
+    handling, re-raising those as :class:`_ListenUnavailable`. The drain is called
+    outside that boundary, so a pool/DB fault during drain propagates unchanged and
+    is never misclassified as a LISTEN-wake failure.
+
+    *drain_fn* defaults to :func:`drain`; the leg-readiness consumer passes its
+    bespoke contiguous-prefix drain (issue #123).
     """
     try:
         listen_cm = db.listen(spec.notify_channel, dsn)
@@ -173,14 +199,19 @@ def _wake_loop(spec: StreamSpec[T], stop_event: threading.Event, cursor: int, ds
                 if db.is_connection_error(exc):
                     raise _ListenUnavailable(str(exc)) from exc
                 raise
-            # Outside the listen-error boundary: drain() exceptions propagate.
-            cursor = drain(spec, cursor)
+            # Outside the listen-error boundary: drain exceptions propagate.
+            cursor = drain_fn(spec, cursor)
     finally:
         listen_cm.__exit__(None, None, None)
     return cursor
 
 
-def run(spec: StreamSpec[T], stop_event: threading.Event, dsn: str) -> None:
+def run(
+    spec: StreamSpec[T],
+    stop_event: threading.Event,
+    dsn: str,
+    drain_fn: "DrainFn" = drain,
+) -> None:
     """Wake-driven drain loop for *spec*. Returns when *stop_event* is set.
 
     Drains once, then waits for either a ``LISTEN`` notification (low latency)
@@ -192,6 +223,12 @@ def run(spec: StreamSpec[T], stop_event: threading.Event, dsn: str) -> None:
     pure poll loop (:func:`_poll_loop`) for the rest of the run — the poll
     backstop guarantees progress, so a missing/severed NOTIFY only costs
     latency (issue #71).
+
+    *drain_fn* is the drain the loop invokes on each wake; it defaults to
+    :func:`drain` (monotonic advance-to-max-seq). The leg-readiness consumer
+    passes its bespoke contiguous-prefix drain here (issue #123, ADR-0027) — the
+    one stream whose advance is non-monotonic in ``seq`` — so it reuses this whole
+    LISTEN/poll wake machinery without duplicating it.
     """
     with db.transaction() as tx:
         cursor = read_cursor(tx, spec.processor_name)
@@ -200,15 +237,15 @@ def run(spec: StreamSpec[T], stop_event: threading.Event, dsn: str) -> None:
     # Drain anything already past the cursor before we start waiting, so an item
     # that landed before LISTEN was registered is not stranded until the first
     # poll timeout.
-    cursor = drain(spec, cursor)
+    cursor = drain_fn(spec, cursor)
 
     # Wake loop, falling back to poll-only if the LISTEN connection is
     # unavailable. Only a LISTEN-connection failure triggers the fallback —
-    # drain() errors propagate out of run() unchanged (a drain failure is a
+    # drain errors propagate out of run() unchanged (a drain failure is a
     # pool/DB fault, not a LISTEN-wake fault, and must not be misreported as
     # one or silently downgraded to polling).
     try:
-        cursor = _wake_loop(spec, stop_event, cursor, dsn)
+        cursor = _wake_loop(spec, stop_event, cursor, dsn, drain_fn)
     except _ListenUnavailable as exc:
         log.warning(
             "LISTEN wake unavailable (%s); falling back to poll-only drain "
@@ -216,6 +253,6 @@ def run(spec: StreamSpec[T], stop_event: threading.Event, dsn: str) -> None:
             exc.__cause__,
             spec.poll_seconds,
         )
-        cursor = _poll_loop(spec, stop_event, cursor)
+        cursor = _poll_loop(spec, stop_event, cursor, drain_fn)
 
     log.info("%s processor stopped at cursor seq=%d", spec.processor_name, cursor)

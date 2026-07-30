@@ -79,14 +79,14 @@ def seeded(configured_db: str) -> str:
         # (occurred_at brackets the call; duration = response - request = 2s).
         conn.execute(
             "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-            "payload_hash, error, original_seq) "
-            "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false, 1)",
+            "payload_hash, error) "
+            "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false)",
             (_IX_ID,),
         )
         conn.execute(
             "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-            "payload_hash, error, original_seq) "
-            "VALUES (%s, 'response', '2026-01-01T00:00:02Z', 'resphash', true, 2)",
+            "payload_hash, error) "
+            "VALUES (%s, 'response', '2026-01-01T00:00:02Z', 'resphash', true)",
             (_IX_ID,),
         )
         conn.execute(

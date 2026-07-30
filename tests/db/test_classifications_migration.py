@@ -92,14 +92,39 @@ def test_0008_is_applied_in_the_chain(migrated_dsn: str) -> None:
     """A fresh migrate applies 0008 (it is in the chain). What this revision adds
     is asserted structurally by the tests above; this pins that the revision is
     reachable. The head-revision assertion lives with whichever revision is
-    currently head (see ``test_legs_notify_trigger.py``) — the same reason 0007's
-    test stopped asserting head once 0008 landed."""
+    currently head (see ``test_head_is_the_merge_revision`` below) — the same
+    reason 0007's test stopped asserting head once 0008 landed."""
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     walked = {rev.revision for rev in script.walk_revisions()}
     assert "0008_payload_classifications" in walked
+
+
+def test_head_is_the_merge_revision(migrated_dsn: str) -> None:
+    """Applying the chain to head lands on the current head revision.
+
+    Head is now the **merge revision** `0014_merge_lineage_and_leg_seq`, which
+    joins two independently-numbered branches: the lineage chain
+    (0011_lineage_metadata → 0012 → 0013) and `main`'s
+    0011_drop_leg_original_seq. Both sides had numbered from 0010, so the merge
+    produced two alembic heads; a merge revision is alembic's own answer to that
+    and leaves both histories intact rather than renumbering shipped migrations.
+
+    The head assertion lives here (rather than in each revision's own test) so a
+    new revision moves exactly one line — the convention this file inherited from
+    `main`, kept verbatim. The classification store this file covers is asserted
+    structurally by the tests above regardless of the head.
+
+    Note this replaces `main`'s `test_head_is_0011`: that revision is still in the
+    chain and still applied, it is simply no longer the head once the two branches
+    are joined."""
+    with psycopg.connect(migrated_dsn) as conn:
+        (version,) = conn.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()
+    assert version == "0014_merge_lineage_and_leg_seq"
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:

@@ -79,14 +79,26 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
     assert "0013_lineage_entities_rename" in walked
 
 
-def test_head_is_0013(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on this revision — it is the current head
-    (chained after 0012). This assertion travels with whichever revision is head; it
-    moved here from ``test_lineage_trace_status_migration.py`` when 0013 landed, the
-    same way that file inherited it from 0011's test."""
-    with psycopg.connect(migrated_dsn) as conn:
-        (version,) = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert version == "0013_lineage_entities_rename"
+def test_0013_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """A fresh migrate applies 0013 (it is reachable in the chain).
+
+    This *was* ``test_head_is_0013``. 0013 is no longer the head: merging ``main``
+    brought a second independently-numbered branch (0010_entity_ready_notify →
+    0011_drop_leg_original_seq), and joining the two produced the mergepoint
+    ``0014_merge_lineage_and_leg_seq``, which is now head. 0013 is still applied and
+    what it does is still asserted structurally by the tests above — it simply is not
+    the last revision any more.
+
+    Per the convention this repo already follows, the head assertion travels with
+    whichever revision is head and lives in exactly ONE place, so a new revision
+    moves one line. That place is now
+    ``test_classifications_migration.py::test_head_is_the_merge_revision``."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked = {rev.revision for rev in script.walk_revisions()}
+    assert "0013_lineage_entities_rename" in walked
 
 
 # --- reversibility, with the data intact ------------------------------------

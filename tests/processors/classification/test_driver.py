@@ -127,6 +127,75 @@ def _cursor(dsn: str) -> int:
     return int(row[0]) if row else 0
 
 
+# --- dg_interaction_leg_ready tap (issue #123, ADR-0027) ---------------------
+
+
+def test_classification_taps_dg_interaction_leg_ready(configured_db: str) -> None:
+    """P-classification fires a blind, payload-less ``dg_interaction_leg_ready``
+    notification in the SAME transaction as each classification write (issue #123,
+    ADR-0027): classifying a payload may have made a payload-bearing leg ready, so
+    the leg-readiness consumer is woken to re-drain. The tap carries no correctness
+    weight (the consumer's poll backstop and cursor drain are authoritative) — it
+    is latency-only — but it must fire on a real classification write.
+
+    Firing it via ``tx.execute`` inside the per-payload transaction means it does
+    NOT fire if the classification rolls back (a payload never falsely announced
+    as ready).
+    """
+    _insert_payload(configured_db, content_hash="tap0")
+
+    with psycopg.connect(configured_db, autocommit=True) as listener:
+        listener.execute("LISTEN dg_interaction_leg_ready")
+        with db.transaction() as tx:
+            cursor = driver.read_cursor(tx)
+        driver.drain(cursor)
+        notifies = list(listener.notifies(timeout=5.0, stop_after=1))
+
+    assert notifies, "a classification write must tap dg_interaction_leg_ready"
+    assert notifies[0].channel == "dg_interaction_leg_ready"
+    assert notifies[0].payload == "", "the tap is payload-less (a 'go look' signal)"
+
+
+def test_classification_tap_does_not_fire_on_rollback(configured_db: str) -> None:
+    """The ``dg_interaction_leg_ready`` tap fires ONLY on commit — a rolled-back
+    classification never announces a leg as ready (issue #123, ADR-0027).
+
+    This is the load-bearing property behind firing the tap via ``tx.execute`` in
+    the per-payload transaction rather than a fire-and-forget ``pg_notify``: a
+    payload whose classification rolls back (a crash mid-item, ADR-0007) must not
+    leave a spurious "leg ready" wake that the consumer would drain against a
+    verdict that does not exist. Postgres delivers a transaction's ``pg_notify``
+    only on COMMIT, so we run the real ``process_payload`` (which executes the tap)
+    inside a transaction we force to roll back, and assert the LISTENer receives
+    nothing. A naive out-of-transaction / autocommit tap would fire here and fail
+    this test — which the happy-path test above cannot catch.
+    """
+    payload = driver.Payload(
+        content_hash="rollback0", content_kind="unknown", content="{}", seq=1
+    )
+
+    with psycopg.connect(configured_db, autocommit=True) as listener:
+        listener.execute("LISTEN dg_interaction_leg_ready")
+
+        # Run the real per-payload procedure (it executes the tap), then abort the
+        # transaction. db.transaction() rolls back on any exception, discarding the
+        # buffered NOTIFY along with the classification write.
+        with pytest.raises(RuntimeError, match="force rollback"):
+            with db.transaction() as tx:
+                driver.process_payload(tx, payload)
+                raise RuntimeError("force rollback")
+
+        notifies = list(listener.notifies(timeout=2.0, stop_after=1))
+
+    assert not notifies, (
+        "a rolled-back classification must NOT tap dg_interaction_leg_ready "
+        "(no false 'leg ready' signal)"
+    )
+    # And the write itself rolled back — proving the tap and the classification
+    # share the aborted transaction, not that the tap merely happened to be skipped.
+    assert _classification(configured_db, "rollback0") is None
+
+
 def test_drain_advances_cursor_and_is_incremental(configured_db: str) -> None:
     """A drain advances the durable ``classification`` cursor to the last
     payload's seq; a second drain only classifies payloads that arrived since."""

@@ -70,20 +70,28 @@ def _leg(
     ix_id: str,
     leg_type: str,
     payload_hash: str | None,
-    original_seq: int,
 ) -> None:
     """Write (or rewrite) one leg. A ``None`` hash is an ABSENT payload — the D6
     gap. Rewriting re-allocates ``seq`` from the sequence, exactly as
     P-interactions' in-place re-derivation does (migration 0010's trigger covers
-    UPDATE for this reason)."""
+    UPDATE for this reason).
+
+    ``original_seq`` was dropped from ``interaction_legs`` by
+    0011_drop_leg_original_seq (issue #133) — a leg's ``seq`` is DB-owned and never
+    mutates on re-derive, so the frozen-vs-mutating comparison it existed for is
+    inert for legs. That does not weaken what this module tests: the point here is
+    that a rewrite *re-allocates* ``seq`` upward while preserving relative order,
+    which is precisely why the stale-row cleanup (D9) cannot key on a ``seq``
+    threshold. The sequence, not a caller-supplied number, is what establishes that.
+    """
     if payload_hash is not None:
         _payload(conn, payload_hash)
     conn.execute(
         "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-        "payload_hash, error, original_seq) VALUES (%s, %s, now(), %s, false, %s) "
+        "payload_hash, error) VALUES (%s, %s, now(), %s, false) "
         "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
         "payload_hash = EXCLUDED.payload_hash, seq = nextval('interaction_legs_seq')",
-        (ix_id, leg_type, payload_hash, original_seq),
+        (ix_id, leg_type, payload_hash),
     )
 
 
@@ -118,9 +126,9 @@ def _write_legs(dsn: str, *, unpayloaded: tuple[str, str] | None) -> None:
     ``seq`` thresholds.
     """
     with psycopg.connect(dsn) as conn:
-        for original_seq, (ix_id, leg_type, payload_hash) in enumerate(
-            _WORKED_EXAMPLE, start=1
-        ):
+        for ix_id, leg_type, payload_hash in _WORKED_EXAMPLE:
+            # Written in worked-example order, so the sequence allocates `seq` in
+            # that order — which is the ordering the traversal reads.
             _leg(
                 conn,
                 ix_id=ix_id,
@@ -128,7 +136,6 @@ def _write_legs(dsn: str, *, unpayloaded: tuple[str, str] | None) -> None:
                 payload_hash=None
                 if unpayloaded == (ix_id, leg_type)
                 else payload_hash,
-                original_seq=original_seq,
             )
         conn.commit()
 
@@ -227,8 +234,8 @@ def test_status_is_scoped_to_its_own_trace(configured_db: str) -> None:
         _entity(conn, eid="e_c", kind="client", natural_key="client:1.2.3.4")
         _entity(conn, eid="e_a2", kind="agent", natural_key="agent:(demo,other)")
         _interaction(conn, ix_id="ix_o", trace_id=OTHER_TRACE, caller="e_c", callee="e_a2")
-        _leg(conn, ix_id="ix_o", leg_type="request", payload_hash="q1", original_seq=1)
-        _leg(conn, ix_id="ix_o", leg_type="response", payload_hash="q2", original_seq=2)
+        _leg(conn, ix_id="ix_o", leg_type="request", payload_hash="q1")
+        _leg(conn, ix_id="ix_o", leg_type="response", payload_hash="q2")
         conn.commit()
 
     driver.drain(0)
@@ -293,8 +300,8 @@ def test_deleting_stale_rows_does_not_touch_another_trace(configured_db: str) ->
         _entity(conn, eid="e_c", kind="client", natural_key="client:1.2.3.4")
         _entity(conn, eid="e_a2", kind="agent", natural_key="agent:(demo,other)")
         _interaction(conn, ix_id="ix_o", trace_id=OTHER_TRACE, caller="e_c", callee="e_a2")
-        _leg(conn, ix_id="ix_o", leg_type="request", payload_hash="q1", original_seq=1)
-        _leg(conn, ix_id="ix_o", leg_type="response", payload_hash="q2", original_seq=2)
+        _leg(conn, ix_id="ix_o", leg_type="request", payload_hash="q1")
+        _leg(conn, ix_id="ix_o", leg_type="response", payload_hash="q2")
         conn.commit()
     cursor = driver.drain(0)
     assert len(_lineage_keys(configured_db, OTHER_TRACE)) == 2
