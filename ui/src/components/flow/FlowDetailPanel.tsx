@@ -38,70 +38,95 @@ export function FlowDetailPanel({
   onClose: () => void;
   onNavigateToSpan?: (spanId: string) => void;
 }) {
+  // The legs that actually carried a payload — built here rather than inline so
+  // the middle card can be skipped when there are none (an entity selection, or
+  // an interaction with no payload on either leg). LegTabs itself already renders
+  // nothing in that case; without the guard the card would be an empty bordered
+  // box. Which legs get tabs is unchanged: still exactly the ones with a hash.
+  const legs: Leg[] = [
+    selection.requestPayloadHash && {
+      label: 'Request',
+      hash: selection.requestPayloadHash,
+      lineage: lineageOfLeg(lineageQ, selection, 'request'),
+    },
+    selection.responsePayloadHash && {
+      label: 'Response',
+      hash: selection.responsePayloadHash,
+      lineage: lineageOfLeg(lineageQ, selection, 'response'),
+    },
+  ].filter((l): l is Leg => Boolean(l));
+
   return (
     <div className="dg-detail-panel">
-      {/* Caption row: the selection's own name ('Entity'/'Interaction')
-          on the left — folding in what used to be a separate leading
-          section header — with the pin toggle glued to the right, matching
-          SpanDetailPanel's Refresh layout. */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          // Keep a gap between caption and button so they never butt
-          // together when the narrow (30%) detail column squeezes the row.
-          gap: '0.5rem',
-          // A little breathing room between the caption and the first
-          // field below (e.g. 'Interaction' → 'summary').
-          marginBottom: '0.5rem',
-        }}
-      >
-        <Title headingLevel="h3" size="md">
-          {selection.sectionTitle}
-        </Title>
-        {/* Pin toggle + a × to dismiss the floating panel, kept together
-            on the right; both refuse to shrink below their labels. */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-          <Button
-            variant="secondary"
-            isInline
-            onClick={onTogglePin}
-            // A swatch of the highlight color: the current color once
-            // pinned, else a preview of the next-free color the pin would
-            // take.
-            icon={
-              <span
-                data-testid="highlight-swatch"
-                aria-hidden="true"
-                style={{
-                  display: 'inline-block',
-                  width: 10,
-                  height: 10,
-                  borderRadius: 2,
-                  border: '1px solid rgba(0, 0, 0, 0.35)',
-                  // Extra gap beyond PF's default icon spacing so the color
-                  // chip doesn't crowd the label text.
-                  marginRight: '0.375rem',
-                  background:
-                    pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
-                }}
-              />
-            }
-          >
-            {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
-          </Button>
-          <Button
-            variant="plain"
-            aria-label="Close details"
-            onClick={onClose}
-            style={{ color: 'var(--dg-color-muted)', fontSize: '1.1rem', lineHeight: 1, padding: 0 }}
-          >
-            ×
-          </Button>
+      {/* Each of the panel's three regions — identity (caption + fields), the
+          per-leg governance tabs, and the span evidence — is wrapped in a
+          `.dg-detail-card` (global.css). Margins alone left them reading as one
+          undifferentiated column; the subtle border makes the grouping explicit.
+          The class is shared, so the styling is stated once for all three. */}
+      <div className="dg-detail-card">
+        {/* Caption row: the selection's own name ('Entity'/'Interaction')
+            on the left — folding in what used to be a separate leading
+            section header — with the pin toggle glued to the right, matching
+            SpanDetailPanel's Refresh layout. */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            // Keep a gap between caption and button so they never butt
+            // together when the narrow (30%) detail column squeezes the row.
+            gap: '0.5rem',
+            // A little breathing room between the caption and the first
+            // field below (e.g. 'Interaction' → 'summary').
+            marginBottom: '0.5rem',
+          }}
+        >
+          <Title headingLevel="h3" size="md">
+            {selection.sectionTitle}
+          </Title>
+          {/* Pin toggle + a × to dismiss the floating panel, kept together
+              on the right; both refuse to shrink below their labels. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+            <Button
+              variant="secondary"
+              isInline
+              onClick={onTogglePin}
+              // A swatch of the highlight color: the current color once
+              // pinned, else a preview of the next-free color the pin would
+              // take.
+              icon={
+                <span
+                  data-testid="highlight-swatch"
+                  aria-hidden="true"
+                  style={{
+                    display: 'inline-block',
+                    width: 10,
+                    height: 10,
+                    borderRadius: 2,
+                    border: '1px solid rgba(0, 0, 0, 0.35)',
+                    // Extra gap beyond PF's default icon spacing so the color
+                    // chip doesn't crowd the label text.
+                    marginRight: '0.375rem',
+                    background:
+                      pins.slotColorFor(selection.pinKey) ?? pins.nextFreeColor(),
+                  }}
+                />
+              }
+            >
+              {pins.isPinned(selection.pinKey) ? 'Unpin' : 'Add to highlights'}
+            </Button>
+            <Button
+              variant="plain"
+              aria-label="Close details"
+              onClick={onClose}
+              style={{ color: 'var(--dg-color-muted)', fontSize: '1.1rem', lineHeight: 1, padding: 0 }}
+            >
+              ×
+            </Button>
+          </div>
         </div>
+        <DetailList pairs={selection.fields} />
       </div>
-      <DetailList pairs={selection.fields} />
 
       {/* One outer tab per leg that actually carried a payload, named by the leg
           ('Request' / 'Response') — there is no umbrella 'Payloads' heading,
@@ -110,50 +135,46 @@ export function FlowDetailPanel({
           no tab at all, so a request-only interaction shows a single `Request`
           tab (see LegTabs' note on why a lineage-only tab would misrepresent
           such a leg). */}
-      <LegTabs
-        legs={[
-          selection.requestPayloadHash && {
-            label: 'Request',
-            hash: selection.requestPayloadHash,
-            lineage: lineageOfLeg(lineageQ, selection, 'request'),
-          },
-          selection.responsePayloadHash && {
-            label: 'Response',
-            hash: selection.responsePayloadHash,
-            lineage: lineageOfLeg(lineageQ, selection, 'response'),
-          },
-        ].filter((l): l is Leg => Boolean(l))}
-      />
+      {legs.length > 0 && (
+        <div className="dg-detail-card">
+          <LegTabs legs={legs} />
+        </div>
+      )}
 
-      <Title headingLevel="h4" size="md" style={{ marginTop: '0.75rem' }}>
-        Spans
-      </Title>
-      <Table aria-label="Span evidence" variant="compact">
-        <Thead>
-          <Tr>
-            <Th>Role</Th>
-            <Th>Span</Th>
-            <Th>Parent</Th>
-            <Th>Kind</Th>
-            <Th>Service</Th>
-          </Tr>
-        </Thead>
-        <Tbody>
-          {selection.evidence.map((ev, i) => (
-            <Tr key={`${ev.span_id}-${i}`}>
-              <Td dataLabel="Role"><RoleIcon role={ev.role} /></Td>
-              <Td dataLabel="Span">
-                <SpanLink spanId={ev.span_id} onNavigate={onNavigateToSpan} />
-              </Td>
-              <Td dataLabel="Parent">
-                <SpanLink spanId={ev.parent_id} onNavigate={onNavigateToSpan} />
-              </Td>
-              <Td dataLabel="Kind">{ev.kind ?? '—'}</Td>
-              <Td dataLabel="Service">{ev.service_name ?? '—'}</Td>
+      <div className="dg-detail-card">
+        {/* No `marginTop` any more: the separation from the tabs above is now the
+            card's own border + gap, and an inline top margin inside a bordered
+            card just pushes the heading off its own edge. */}
+        <Title headingLevel="h4" size="md">
+          Spans
+        </Title>
+        <Table aria-label="Span evidence" variant="compact">
+          <Thead>
+            <Tr>
+              <Th>Role</Th>
+              <Th>Span</Th>
+              <Th>Parent</Th>
+              <Th>Kind</Th>
+              <Th>Service</Th>
             </Tr>
-          ))}
-        </Tbody>
-      </Table>
+          </Thead>
+          <Tbody>
+            {selection.evidence.map((ev, i) => (
+              <Tr key={`${ev.span_id}-${i}`}>
+                <Td dataLabel="Role"><RoleIcon role={ev.role} /></Td>
+                <Td dataLabel="Span">
+                  <SpanLink spanId={ev.span_id} onNavigate={onNavigateToSpan} />
+                </Td>
+                <Td dataLabel="Parent">
+                  <SpanLink spanId={ev.parent_id} onNavigate={onNavigateToSpan} />
+                </Td>
+                <Td dataLabel="Kind">{ev.kind ?? '—'}</Td>
+                <Td dataLabel="Service">{ev.service_name ?? '—'}</Td>
+              </Tr>
+            ))}
+          </Tbody>
+        </Table>
+      </div>
     </div>
   );
 }

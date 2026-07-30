@@ -22,7 +22,14 @@
    - --dg-surface-app    #151515  app-shell background
    - --dg-surface-panel  #1b1b1b  floating-panel / legend background
    - --dg-border         #444     floating-panel border
-   - --dg-border-subtle  #2c2c2c  legend border (dimmer than --dg-border)
+   - --dg-border-subtle  #2c2c2c  legend border, detail-panel card border
+                                  (dimmer than --dg-border)
+   - --dg-surface-card   #202020  a hair above --dg-surface-panel: the detail
+                                  panel's section cards, which need to read as
+                                  raised off the panel without a fill strong
+                                  enough to look boxy in the PF dark theme.
+                                  Deliberately between --dg-surface-panel (#1b1b1b)
+                                  and --dg-border-subtle (#2c2c2c).
    - --dg-tree-guide     #555     the interactions tree's │/└─ guide glyphs
    - --dg-row-selected   #3a4a66  span-tree selected-row background
    - --dg-row-highlight            flow-table selected-row tint
@@ -40,6 +47,7 @@
   --dg-surface-panel: #1b1b1b;
   --dg-border: #444;
   --dg-border-subtle: #2c2c2c;
+  --dg-surface-card: #202020;
   --dg-tree-guide: #555;
   --dg-row-selected: #3a4a66;
   --dg-row-highlight: rgba(56, 139, 253, 0.28);
@@ -48,9 +56,16 @@
      `width: var(--dg-detail-panel-width)` with a
      `min-width: var(--dg-detail-panel-min)` floor at
      `right: var(--dg-detail-panel-gap)`; the tables' gutter is derived from the
-     same three below, so the two agree by construction. */
+     same three below, so the two agree by construction.
+
+     The 420px floor (was 320px) is set by LegTabs' inner tab row: at 320px the
+     three section labels `Payload | Classification | Data lineage` do not fit on
+     one line, so PF falls back to its horizontal scroll buttons and hides
+     `Data lineage` behind a forward arrow. 420px fits all three. Raise it here
+     only — the gutter's `max()` below derives from this var, so the tables
+     follow automatically. */
   --dg-detail-panel-width: 30%;
-  --dg-detail-panel-min: 320px;
+  --dg-detail-panel-min: 420px;
   --dg-detail-panel-gap: 1rem;
 }
 
@@ -159,6 +174,85 @@ body {
 .dg-detail-gutter {
   padding-right: max(var(--dg-detail-panel-width), var(--dg-detail-panel-min));
   margin-right: calc(var(--dg-detail-panel-gap) * 2);
+}
+
+/* The detail panel's three sections — the caption + fields, the per-leg tab set,
+   and the span evidence — as separate cards. Stated ONCE here and applied three
+   times in FlowDetailPanel rather than as three copies of an inline style
+   object: the grouping is one design decision, so it gets one definition.
+   Before this, the three regions were separated only by margins and read as a
+   single undifferentiated column.
+
+   Deliberately subtle: the panel is already a dark floating overlay with its own
+   `--dg-border`, so the cards use the dimmer `--dg-border-subtle` and the barely
+   raised `--dg-surface-card` fill. Heavy borders would stack three boxes inside
+   a box and fight the PF dark theme; the goal is legible grouping, not chrome.
+   The slight horizontal inset (`margin: … 0.125rem`) is what makes the cards
+   read as sitting *on* the panel rather than as extra panel edges. */
+.dg-detail-card {
+  /* The card's horizontal padding, named because the PF tabs/table bleed below
+     cancels it out and the two must not drift. */
+  --dg-detail-card-pad: 0.625rem;
+  border: 1px solid var(--dg-border-subtle);
+  border-radius: 3px;
+  background: var(--dg-surface-card);
+  padding: 0.5rem var(--dg-detail-card-pad);
+  margin: 0 0.125rem 0.5rem;
+  /* The Payload pane's JSON CodeBlock and the lineage keys are the widest things
+     in here. `min-width: 0` lets this block shrink below its content's intrinsic
+     width so those children's own wrap/scroll rules apply inside the card
+     instead of pushing its border past the panel edge (which would give the
+     scrolling panel a horizontal scrollbar). */
+  min-width: 0;
+}
+
+/* Last card carries no bottom margin — the panel's own 1rem padding is the
+   spacing there, and doubling them leaves a dead band under the span table. */
+.dg-detail-card:last-child {
+  margin-bottom: 0;
+}
+
+/* The three regions each already lead with their own spacing (the caption row's
+   margin, LegTabs' `marginTop`, the `Spans` heading's `marginTop`), which inside
+   a bordered card reads as a gap between the border and the content. The card
+   supplies the padding now, so collapse the first/last child's own margins. */
+.dg-detail-card > :first-child {
+  margin-top: 0;
+}
+
+.dg-detail-card > :last-child {
+  margin-bottom: 0;
+}
+
+/* PF's `Tabs` paints a full-width bottom border under its tab list, and the PF
+   compact `Table` paints one under its header row and each body row. Against the
+   card border those land ~0.6rem inside a nearly identical line and read as a
+   doubled edge. Bleeding each set of tabs and the table back out to the card's
+   padding edge makes the PF rule *be* the section divider instead of competing
+   with the card border.
+
+   `--dg-detail-card-pad` is the one statement of the card's horizontal padding,
+   so the bleed cannot drift from the padding it is cancelling.
+
+   The bleed must be applied on a DIRECT child of the card (`> `), not on any
+   descendant `.pf-v5-c-tabs`: LegTabs wraps its two tab levels in a plain div, so
+   an unscoped descendant selector widened the inner `Tabs` past that wrapper and
+   overflowed it by exactly the bleed amount. `.dg-legtabs` is that wrapper, and
+   it bleeds as a whole — both its tab levels then line up on the same edge. */
+.dg-detail-card > .pf-v5-c-tabs,
+.dg-detail-card > .pf-v5-c-table,
+.dg-detail-card > .dg-legtabs {
+  margin-left: calc(var(--dg-detail-card-pad) * -1);
+  margin-right: calc(var(--dg-detail-card-pad) * -1);
+  width: calc(100% + (var(--dg-detail-card-pad) * 2));
+}
+
+/* Inside the bled-out LegTabs wrapper the panes must come back IN to the card's
+   text column — only the tab rows themselves are meant to reach the edge. */
+.dg-detail-card > .dg-legtabs > :not(.pf-v5-c-tabs),
+.dg-detail-card > .dg-legtabs > * > :not(.pf-v5-c-tabs) {
+  padding-left: var(--dg-detail-card-pad);
+  padding-right: var(--dg-detail-card-pad);
 }
 
 /* Data-lineage keys (DataLineageView): an **Entity** natural key is a long

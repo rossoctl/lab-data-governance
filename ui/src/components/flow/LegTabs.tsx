@@ -47,7 +47,7 @@ const SECTION_LABEL: Record<Section, string> = {
  * PII verdict does not want to scroll past a 4KB JSON body, and a reader diffing
  * bodies does not want the Findings table in the way. Tabs rather than the
  * stacked disclosures that first replaced it because three collapsibles per leg,
- * twice, is six rows of chrome competing for a 320px-wide panel; exactly one
+ * twice, is six rows of chrome competing for a ~420px-wide panel; exactly one
  * pane is ever wanted at a time, which is the tab contract, not the disclosure
  * one.
  *
@@ -85,7 +85,14 @@ export function LegTabs({ legs }: { legs: Leg[] }) {
   const active = legs.find((l) => l.label === activeLabel) ?? legs[0];
 
   return (
-    <div style={{ marginTop: '0.75rem' }}>
+    // No outer margin: this set now sits inside the detail panel's own
+    // `.dg-detail-card`, which supplies both the separation from the section
+    // above and the internal padding (global.css). A top margin here would push
+    // the leg tabs off the card's own top edge. The class is what lets the card
+    // bleed BOTH tab levels out to its padding edge as a unit — see the
+    // `.dg-legtabs` rule's note on why the bleed cannot be applied to a
+    // descendant `.pf-v5-c-tabs` directly.
+    <div className="dg-legtabs">
       <Tabs
         activeKey={active.label}
         onSelect={(_e, key) => setActiveLabel(String(key))}
@@ -180,11 +187,14 @@ function LegPanel({ leg }: { leg: Leg }) {
         // in its lighter, tighter secondary treatment against the primary leg
         // tabs above, so the two levels do not read as one flat row of five.
         isSecondary
-        // The detail panel is 320px at its floor, which three labels
-        // (`Payload` / `Classification` / `Data lineage`) do not fit on one line.
-        // PF's tab list scrolls horizontally at that width with these buttons
-        // rather than clipping or bursting the panel; the panel width is
-        // deliberately not being widened to avoid it.
+        // At the panel's old 320px floor these three labels (`Payload` /
+        // `Classification` / `Data lineage`) did not fit on one line and PF fell
+        // back to its horizontal scroll buttons, hiding `Data lineage` behind a
+        // forward arrow. The floor is now 420px (`--dg-detail-panel-min`), which
+        // fits all three — so these labels should never be reachable in practice.
+        // Kept because PF renders the buttons off its own width measurement, not
+        // off our var: at an extreme zoom or font-size they can still appear, and
+        // an unlabelled scroll button is an a11y hole.
         backScrollAriaLabel={`Scroll ${label} sections back`}
         forwardScrollAriaLabel={`Scroll ${label} sections forward`}
         // Leg-qualified, because `Payload` would otherwise be an ambiguous
@@ -198,8 +208,8 @@ function LegPanel({ leg }: { leg: Leg }) {
             eventKey={s}
             title={<TabTitleText>{SECTION_LABEL[s]}</TabTitleText>}
             // The a11y name each level's tabs are found by. The visible label
-            // stays short — the panel is 320px and three labels already have to
-            // scroll — while the accessible name stays unambiguous across legs,
+            // stays short — three labels have to share the panel's width — while
+            // the accessible name stays unambiguous across legs,
             // and carries the hash prefix on Payload the way the old disclosure
             // row did (the hash identifies the body, not the verdict or the
             // provenance; it is also spelled in full in the pane's DetailList).
