@@ -70,8 +70,7 @@ LEG_READY_CHANNEL = "dg_interaction_leg_ready"
 # carries its start-side (started_at, request payload), the response leg its
 # end-side (ended_at, response payload). ``error`` is shared across both derived
 # legs; ``seq`` is now DB-owned and DISTINCT per leg (request inserted first ->
-# lower seq; ADR-0027 Reversal), and each leg carries its own ``original_seq`` —
-# they are no longer shared (see the Leg-provenance term in CONTEXT.md).
+# lower seq; ADR-0027 Reversal). See the Leg-provenance term in CONTEXT.md.
 
 
 def _legs_of(ix: procedure.ProtoInteraction) -> list[tuple[str, Any, str | None]]:
