@@ -50,6 +50,19 @@ if TYPE_CHECKING:
 
 PROCESSOR_NAME = "interactions"
 
+# Consumer-facing leg-readiness channel this processor TAPS (issue #123, ADR-0027).
+# A leg written with no payload (``payload_hash IS NULL``), or one whose payload
+# was already classified, is ready the instant it is written — but no downstream
+# table write coincides with "leg ready", so P-interactions fires a blind,
+# payload-less notification after a flush that wrote legs. The tap is SIMPLE and
+# over-eager on purpose (it fires whenever legs were written, not only when one
+# demonstrably became ready): over-firing is harmless (the leg-readiness consumer
+# re-drains its cursor and finds nothing new), a missed tap is harmless (the poll
+# backstop still delivers), and correctness rests on the consumer's cursor drain,
+# never this tap (latency-only, ADR-0015). Must match the ``LEG_READY_CHANNEL``
+# the leg_ready consumer LISTENs on.
+LEG_READY_CHANNEL = "dg_interaction_leg_ready"
+
 # --- leg projection (ADR-0025) ----------------------------------------------
 # The one place the request/response <-> (timestamp, payload) mapping lives, so
 # the flush projection and the rehydrate fold-back cannot drift apart. The
@@ -323,19 +336,30 @@ def _rehydrate_derived(
         # boundary projection: fold the request leg back into started_at /
         # request_payload_hash and the response leg into ended_at /
         # response_payload_hash, so the in-memory ProtoInteraction stays the
-        # single-row shape procedure.py expects (unchanged). error/seq/original_seq
-        # are shared across the derived legs; take them off whichever leg carries
-        # them (prefer the request leg's seq — the one the flush stamped).
+        # single-row shape procedure.py expects (unchanged). error folds off
+        # whichever leg carries it (both derived legs share it).
+        #
+        # ``seq`` / ``original_seq`` are DELIBERATELY NOT read off the legs anymore
+        # (ADR-0027 reversal, issue #123). The two legs no longer share one seq —
+        # each has its own DB-owned ``nextval`` value — so "the leg's seq" is not a
+        # single value to fold back, and ``ProtoInteraction.seq`` never needed it:
+        # its only former reader was the leg-stamping INSERT (now DB-owned) and
+        # ``procedure.py`` orders/cursors/dedups on ``span.seq`` /
+        # ``last_processed_seq``, never on ``ix.seq``. So we reconstruct
+        # ``ProtoInteraction.seq`` from the PRIMARY ANCHOR SPAN's seq — exactly how
+        # ``procedure._materialise`` sets it at creation (``seq=primary_span.seq``)
+        # — keeping the in-memory shape faithful without depending on a shared leg
+        # seq that no longer exists.
         legrows = tx.fetch_all(
             f"SELECT interaction_id, leg_type::text, occurred_at, payload_hash, "
-            f"error, seq, original_seq FROM interaction_legs "
+            f"error FROM interaction_legs "
             f"WHERE interaction_id IN ({iph})",
             list(visible_ix),
         )
         legs_by_ix: dict[str, dict[str, tuple]] = {}
-        for ix_id, leg_type, occurred_at, payload_hash, err, seq, oseq in legrows:
+        for ix_id, leg_type, occurred_at, payload_hash, err in legrows:
             legs_by_ix.setdefault(ix_id, {})[leg_type] = (
-                occurred_at, payload_hash, err, seq, oseq,
+                occurred_at, payload_hash, err,
             )
         for ix_id, tid, parent, caller, callee, summary in irows:
             primary_anchor = anchor_of.get(ix_id)
@@ -344,13 +368,11 @@ def _rehydrate_derived(
             legs = legs_by_ix.get(ix_id, {})
             req = legs.get("request")
             resp = legs.get("response")
-            # seq / original_seq / error are shared across the current source's
-            # derived legs; the request leg is authoritative (both were written
-            # with the same value), fall back to the response leg then defaults.
-            authoritative = req or resp
-            seq = authoritative[3] if authoritative else 0
-            oseq = authoritative[4] if authoritative else 0
-            err = authoritative[2] if authoritative else None
+            err = (req or resp or (None, None, None))[2]
+            # ``ProtoInteraction.seq`` from the anchor span (as _materialise does).
+            # The primary anchor span is in the loaded lineage (_span_by_id_index).
+            anchor_span = proc._span_by_id_index.get(primary_anchor)
+            seq = anchor_span.seq if anchor_span is not None else 0
             proc.interactions_by_anchor[primary_anchor] = procedure.ProtoInteraction(
                 id=ix_id,
                 trace_id=tid,
@@ -364,7 +386,7 @@ def _rehydrate_derived(
                 response_payload_hash=resp[1] if resp else None,
                 summary=summary,
                 seq=seq,
-                original_seq=oseq,
+                original_seq=seq,
                 anchor_rule="",
                 primary_anchor_span_id=primary_anchor,
             )
@@ -519,35 +541,65 @@ def flush(
              ix.callee_entity_id, ix.summary),
         )
         # Explicit per-leg rows when the graph algorithm supplied them, else the
-        # streaming derived-leg projection (byte-identical to before). Each supplied
-        # leg carries its own occurred_at / payload_hash / error / seq /
-        # original_seq; step 4b leaves supplied legs untouched (authoritative).
+        # streaming derived-leg projection. The two algorithms differ in ONE way
+        # the leg INSERT must respect (ADR-0027 reversal, issue #123):
+        #
+        #   - GRAPH (supplied is not None): each leg carries its OWN edge-derived
+        #     ``seq`` (its global ``order``, request < its response, dense 0..N-1),
+        #     so we insert ``seq`` EXPLICITLY and keep those authoritative values.
+        #   - STREAMING (supplied is None): the leg ``seq`` is now DB-owned — we
+        #     OMIT the ``seq`` column so the ``nextval('interaction_legs_seq')``
+        #     DEFAULT (migration 0009) assigns it. ``_legs_of`` emits the request
+        #     leg first, so ``nextval`` gives the request the lower seq — request
+        #     < response falls out of a plain ``ORDER BY seq`` with no ``leg_type``
+        #     tiebreaker. Each leg now has a distinct seq (the two legs no longer
+        #     share ``ix.seq``), which is what lets a leg-readiness consumer order
+        #     and cursor on a single BIGINT.
+        #
+        # In BOTH branches ``seq`` is DROPPED from the ``ON CONFLICT ... DO UPDATE
+        # SET``: a re-derive must PRESERVE a leg's once-assigned seq. For streaming
+        # that keeps the DB-owned nextval value stable across a cursor-reset
+        # re-drain (only cosmetic sequence gaps from the discarded insert attempt);
+        # for graph the supplied seq is deterministic, so leaving it out of the SET
+        # is a no-op (EXCLUDED.seq already equals the stored value). Preserving seq
+        # is what keeps replay determinism / crash recovery from reshuffling seqs a
+        # downstream consumer already delivered.
+        #
+        # ``original_seq`` is NOT NULL with no default and is a write-only passenger
+        # field (no live reader). Streaming keeps supplying ``ix.original_seq`` (the
+        # span-derived arrival value) so the NOT NULL is satisfied without inventing
+        # a new source; graph supplies its own per-leg ``original_seq`` (its edge
+        # order). Neither is read back into ordering/cursor logic.
         supplied = legs_by_ix.get(ix.id) if legs_by_ix is not None else None
         if supplied is not None:
-            leg_values = [
-                (leg.leg_type, leg.occurred_at, leg.payload_hash,
-                 leg.error, leg.seq, leg.original_seq)
-                for leg in supplied
-            ]
+            for leg in supplied:
+                tx.execute(
+                    "INSERT INTO interaction_legs (interaction_id, leg_type, "
+                    "occurred_at, payload_hash, error, seq, original_seq) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
+                    "occurred_at = EXCLUDED.occurred_at, "
+                    "payload_hash = EXCLUDED.payload_hash, "
+                    "error = EXCLUDED.error",
+                    (ix.id, leg.leg_type, leg.occurred_at, leg.payload_hash,
+                     leg.error, leg.seq, leg.original_seq),
+                )
         else:
             # occurred_at may be NULL if the span had no start/end yet; the
             # authoritative recompute (step 4b) folds the leg's territory in.
-            leg_values = [
-                (leg_type, occurred_at, payload_hash, ix.error, ix.seq, ix.original_seq)
-                for leg_type, occurred_at, payload_hash in _legs_of(ix)
-            ]
-        for leg_type, occurred_at, payload_hash, error, seq, original_seq in leg_values:
-            tx.execute(
-                "INSERT INTO interaction_legs (interaction_id, leg_type, "
-                "occurred_at, payload_hash, error, seq, original_seq) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
-                "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
-                "occurred_at = EXCLUDED.occurred_at, "
-                "payload_hash = EXCLUDED.payload_hash, "
-                "error = EXCLUDED.error, seq = EXCLUDED.seq",
-                (ix.id, leg_type, occurred_at, payload_hash, error,
-                 seq, original_seq),
-            )
+            # ``seq`` is intentionally omitted → DB-owned nextval DEFAULT.
+            for leg_type, occurred_at, payload_hash in _legs_of(ix):
+                tx.execute(
+                    "INSERT INTO interaction_legs (interaction_id, leg_type, "
+                    "occurred_at, payload_hash, error, original_seq) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
+                    "occurred_at = EXCLUDED.occurred_at, "
+                    "payload_hash = EXCLUDED.payload_hash, "
+                    "error = EXCLUDED.error",
+                    (ix.id, leg_type, occurred_at, payload_hash, ix.error,
+                     ix.original_seq),
+                )
 
     # 4. interaction_spans — scoped to the span_ids _repair_after_arrival
     #    actually re-derived this dispatch (proc._repaired_span_ids), NOT the
@@ -656,6 +708,17 @@ def flush(
             "ON CONFLICT (trace_id, span_id, entity_id, role) DO NOTHING",
             (es.entity_id, es.trace_id, es.span_id, es.role),
         )
+
+    # 6. Blind leg-readiness tap (issue #123, ADR-0027). If this flush wrote any
+    #    legs, a leg may now be ready at write time (no payload, or payload already
+    #    classified), so wake the leg-readiness consumer with a payload-less
+    #    pg_notify in THIS transaction — it does not fire if the flush rolls back.
+    #    Kept deliberately simple: fired once per flush that touched an interaction,
+    #    not conditioned on a leg demonstrably becoming ready. Over-firing is
+    #    harmless (the consumer re-drains and finds nothing new); correctness rests
+    #    on that cursor drain + the poll backstop, never on this tap.
+    if proc.interactions_by_anchor:
+        tx.execute("SELECT pg_notify(%s, '')", (LEG_READY_CHANNEL,))
 
     # NOTE: the durable cursor advance is intentionally NOT written here — the
     # shared drain loop (:func:`data_governance.processors._driver.drain`)
