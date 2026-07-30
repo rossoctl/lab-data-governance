@@ -630,12 +630,38 @@ interim rule stops the whole trace.
 **Data source**:
 An origin of data in **Data lineage** — recorded as an **Entity**'s **Natural
 key** ("the data source is assigned the entity name", spec rule 1). An
-**Entity** becomes a data source of a payload either structurally (it produced
-the payload with nothing inbound to it — a **Trace** root such as a user's
-prompt, ADR-0027 D3(1)) or semantically (the matcher found no relationship
-between its input and its output, so the output is new data, D3(2)).
+**Entity** becomes a data source of a payload by any of three routes: structurally
+(it produced the payload with nothing inbound to it — a **Trace** root such as a
+user's prompt, ADR-0027 D3(1)); semantically (the matcher found no relationship
+between its input and its output, so the output is new data, D3(2)); or by
+**declaration** — it is a **Source entity**, so it contributes itself *alongside*
+whatever it inherited (D12). The declared route is the only one that fires under the
+trivial `simple_match`, since that matcher never lets D3(2) trigger.
 _Avoid_: reading a data source as "the entity that stored the data" — that
-reverse map (`payload → persisting entity`) is a separate, deferred output.
+reverse map (`payload → persisting entity`) is a separate, deferred output. Also
+avoid treating the declared route as an alternative to inheritance: a source entity
+that matched reports *both* its own contribution and the sources it inherited.
+
+**Source entity**:
+An **Entity** declared to contribute content of its own, and therefore added to a
+payload's **Data source** set on top of what the payload inherited (ADR-0027 D12,
+spec "Entity Taxonomy"). It enters `source_transformations` with an **empty** set —
+its own contribution did not undergo the transformation the *inherited* sources did,
+so stamping one on would be a false claim. The eventual source of the answer is a
+declared per-entity taxonomy table; reading it is **deferred**, so today the answer
+is `Entity.kind` defaults — `tool` ✓, `llm` ✗, `agent` ✗ — in the same one named
+place as the **Accumulating entity** predicate
+(`processors/data_lineage/memory.py`), because the same deferred table supplies
+both. The taxonomy's other two columns have no consumer: `target` is unread, and
+`location` (internal/external) is a placeholder with no v1 semantics.
+_Avoid_: inferring source-hood from a tool's name, description or payload sizes —
+considered and rejected (only one of eight tools in the live corpus even carries
+`tool.description`). The accepted cost is that a pass-through delegation tool
+(`kind='tool'` but carrying no new data) over-reports as a source until the declared
+table lands; over-reporting an origin is the safe direction for a governance tool,
+where the failure it replaces was *under*-reporting an external data ingress. Also
+avoid expecting it to matter in the all-unmatched degrade branch — that branch calls
+`init_lineage` at the entity and **ignores** the flag (spec Example 3).
 
 **Transformation**:
 What a **Semantic matcher** reports connects two related payloads —
@@ -662,15 +688,19 @@ history. Matcher versioning and backfill after a matcher change are deferred.
 **Accumulating entity**:
 An **Entity** that retains its prior inbound payloads within a **Trace**, making
 it a partial mixing bowl for **Data lineage**: its output is derived from *all*
-its priors (`merge`), not just its latest input (`linear`). ADR-0027 D2 assumes
+its priors, not just its latest input. ADR-0027 D2 assumes
 transient/session memory is **always present**, so an accumulating entity's
-inbound set grows past one — which is why lineage op selection is on the size of
-that set and needs no separate memory predicate. Working assumption today: an
+inbound set grows past one. Since D11 collapsed the algebra to two operations that
+size no longer *selects* an operation — every non-root leg runs `merge` — but it
+still decides how many priors pool and therefore that op's arity, which is why
+lineage needs no separate memory predicate. Working assumption today: an
 `agent` accumulates; an `llm` or `tool` does not. `Entity.kind` is the only
 signal available, so the predicate is driven from it but lives in exactly one
-named place (`processors/data_lineage/memory.py`), since declared per-entity
-config is where it eventually belongs. An accumulating entity's **first**
-outbound legitimately has one inbound and still uses `linear`.
+named place (`processors/data_lineage/memory.py`, beside the **Source entity**
+predicate), since declared per-entity config is where it eventually belongs.
+_Avoid_: reading "accumulating" off the op name — a memoryless entity's leg also
+reads `merge`, over one input. The count is in the derivation's inbound set, not in
+the op.
 Memory granularity is **open**: the memory node is modelled `(entity_id,
 memory_key)` with `memory_key = NULL` meaning unkeyed/blob (the v1 default), so
 keying per session/user/thread later is a change of what the derivation computes
@@ -755,7 +785,9 @@ present on both the `GET /api/traces` collection rows and the
   producing **Entity** — requests inbound to the callee, responses inbound to the
   caller, from **Interaction legs** of lower `seq` in the same **Trace**. How many
   of those an entity retains is decided by whether it is an **Accumulating
-  entity**, which is what selects `init` / `linear` / `merge`.
+  entity**; whether that set is *empty* is what selects `init` / `merge`. A
+  **Source entity** adds itself to the result's `data_sources` on top of what it
+  inherited.
 - The **Retrieval API** is the only sanctioned read path over **Spans**; the UI
   backend composes its REST endpoints from it. The REST layer is
   resource-oriented and namespaced: JSON resources under `/api/`

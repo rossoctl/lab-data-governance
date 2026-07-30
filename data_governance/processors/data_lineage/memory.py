@@ -1,24 +1,37 @@
-"""Which entities accumulate, and the memory node their priors pool into (#117).
+"""The kind-driven entity predicates, and the memory node priors pool into (#117).
 
-**This module is the single named place for the accumulating-entity predicate.**
-Nothing else in the data-lineage code may test ``kind == "agent"``: the traversal
-asks :func:`accumulates`, so redeclaring which kinds accumulate is a one-line
-change here and the op selection follows. (The traversal test proves this by
-redeclaring the set and watching a ``linear`` turn into a ``merge``.)
+**This module is the single named place for the data-lineage entity predicates.**
+Nothing else in the data-lineage code may test ``kind == "agent"`` or
+``kind == "tool"``: the traversal asks :func:`accumulates` and
+:func:`is_entity_source`, so redeclaring either is a one-line change here.
+(The traversal test proves it for :func:`accumulates` by redeclaring the set and
+watching an inbound set grow.)
+
+Two predicates, one module, because **one deferred table supplies both**: the spec's
+Entity Taxonomy (``data_lineage_alg.md:24-35``) is meant to declare persistent
+storage, source and target per entity, and reading it is deferred (ADR-0027 D12).
+Until it lands both answers come from ``entities.kind``, and when it lands both
+functions grow the same lookup with no call site changing.
 
 ADR-0027 D2 — **transient/session memory is assumed always present**. Within a
 trace an accumulating entity retains every prior payload routed to it, so its
-inbound set grows past one and op selection lands on ``merge``; a memoryless entity
-keeps only its latest inbound and stays on ``linear``. There is deliberately no
-separate "has memory" predicate in the selection logic — memory is folded into the
-size of ``inbound(i)``, and this module is where that folding is parameterized.
+inbound set grows past one; a memoryless entity keeps only its latest inbound.
+Since D11 collapsed the algebra to two operations, ``|inbound(i)|`` no longer picks
+an *operation* — every non-root leg runs ``merge_lineage`` — but memory still
+decides **how many** priors pool and therefore that op's arity. There is
+deliberately no separate "has memory" predicate: memory is folded into the size of
+``inbound(i)``, and this module is where that folding is parameterized.
 
-**Why entity kind.** The issue is explicit: "Entity kind is the only signal
-available today, so drive it from that, but keep the predicate in one named place
-rather than scattering ``kind == 'agent'`` checks — declared config is where this
-belongs eventually." An agent accumulates; an LLM or tool does not. When declared
-per-entity config arrives, :func:`accumulates` grows a config lookup and every
-call site is already routed through it.
+ADR-0027 D12 — :func:`is_entity_source` is the *structural* route to origin-hood.
+It is orthogonal to the matcher's verdict (``matched`` says whether upstream content
+survived; this says whether the entity also contributed content of its own), which
+is why it is a parameter of ``merge_lineage`` and not something an op could derive.
+
+**Why entity kind.** ``entities.kind`` is the only signal available today, so both
+predicates read it, but each stays in one named place rather than scattering
+``kind == 'agent'`` / ``kind == 'tool'`` checks — declared config is where this
+belongs eventually. An agent accumulates; an LLM or tool does not. A tool is a data
+source; an LLM or agent is not.
 
 **Memory granularity stays open.** ADR-0027 lists blob-vs-keyed (per
 session/user/thread) as an unresolved item, and it matters for Step II (unkeyed
@@ -45,6 +58,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # entities accumulate" — see the module docstring.
 ACCUMULATING_KINDS: frozenset[str] = frozenset({"agent"})
 
+# The **Entity** kinds that are declared **data sources** — an entity that
+# contributes content of its own, not merely content it was handed. The spec's
+# Entity Taxonomy defaults (``data_lineage_alg.md:31-35``): `tool` ✓, `LLM` ✗,
+# `agent` ✗. A kind absent from this set is not a source, which is the right
+# default for the kinds the taxonomy does not name (`user`, `client`, `service`):
+# the routing already makes a genuine trace root an origin structurally (D3(1)),
+# so declaring one a source as well would add nothing.
+#
+# Editing this frozenset is the whole of "redeclare which entities are sources".
+SOURCE_KINDS: frozenset[str] = frozenset({"tool"})
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class MemoryNode:
@@ -69,6 +93,30 @@ def accumulates(entity: Entity) -> bool:
     would consult without any call site changing.
     """
     return entity.kind in ACCUMULATING_KINDS
+
+
+def is_entity_source(entity: Entity) -> bool:
+    """Is *entity* a **data source** — does it contribute content of its own?
+
+    THE entity-source predicate (ADR-0027 D12), and the answer
+    ``merge_lineage``'s ``is_entity_source`` parameter carries. Driven by
+    :data:`SOURCE_KINDS`, i.e. the spec's kind defaults, because reading the
+    declared taxonomy table is deferred (``data_lineage_alg.md:26-27``).
+
+    This is the **structural** route to origin-hood, independent of the matcher: a
+    tool that both consumes its request and returns freshly-read data reports both
+    facts. It is deliberately NOT inferred from a tool's name, description or
+    payload sizes — that was considered and rejected (only one of the eight tools in
+    the live corpus even carries ``tool.description``), so a pass-through
+    delegation tool over-reports as a source until the declared table lands. Over-
+    reporting an origin is the safe direction for a governance tool; the failure it
+    replaces was *under*-reporting an external data ingress.
+
+    Note the taxonomy's other two columns have no consumer yet and so no function
+    here: ``target`` is unread, and ``location`` (internal/external) is a
+    placeholder with no v1 semantics (D12).
+    """
+    return entity.kind in SOURCE_KINDS
 
 
 def memory_node(entity: Entity, memory_key: str | None = None) -> MemoryNode:

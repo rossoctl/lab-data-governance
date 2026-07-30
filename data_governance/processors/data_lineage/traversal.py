@@ -1,7 +1,8 @@
 """Trace traversal: which op applies to which leg, and with what inputs (#117).
 
-This is ADR-0027 D1/D2/D4 — inbound routing, memory, and op selection — plus D6's
-absent-payload cutoff, over one trace's interaction legs.
+This is ADR-0027 D1/D2/D4/D12 — inbound routing, memory, two-way op selection and
+the entity-source predicate — plus D6's absent-payload cutoff, over one trace's
+interaction legs.
 :func:`derive_trace_lineage` is **pure**: legs and entities in as plain values, a
 :class:`TraceLineage` (per-leg **data lineage** + the trace's coverage) out. The
 database is :mod:`.driver`'s job; the metadata construction is :mod:`.operations`'.
@@ -20,7 +21,9 @@ and in the ADR-0025 schema each arrow is one leg: #1/#6 are the request/response
 legs of the user→agent interaction, #2/#3 of the first agent→llm call, #4/#5 of
 the second. So "each interaction ``i`` in ``seq`` order" (D4) resolves to each leg
 in leg-``seq`` order — which is also the only ordering the schema offers, since the
-parent ``interactions`` row deliberately has no ``seq`` (ADR-0025).
+parent ``interactions`` row deliberately has no ``seq`` (ADR-0025). The spec calls
+``merge_lineage`` at every one of #2-#6 (``:171-175``); selection is two-way, so the
+only question per leg is whether anything was inbound at all.
 
 **A leg's producing entity** is the caller for a request leg and the callee for a
 response leg — D1's routing rule read backwards. That entity is the one that
@@ -34,10 +37,17 @@ attribute sniffing — just the leg table.
 
 **Memory folds into the inbound set (D2).** Priors pool per *memory node*
 (:mod:`.memory`): an accumulating entity keeps every prior routed to it; a
-memoryless one keeps only the latest. That is why selection is on ``|inbound|``
-alone and needs no memory predicate of its own — and why the spec's #5 is
-``linear`` (the LLM forgot its first turn) while #4 is ``merge`` (the agent did
-not).
+memoryless one keeps only the latest. Since D11 that no longer picks an operation —
+it sizes the one generic ``merge_lineage``'s argument list, so the spec's #5 merges
+over one input (the LLM forgot its first turn) while #4 merges over two (the agent
+did not). Selection therefore needs no memory predicate of its own; :mod:`.memory`
+is still what decides the arity.
+
+**An entity can contribute itself as a source (D12).** :func:`.memory.is_entity_source`
+answers, per producing entity, whether it also contributed content of its own —
+kind defaults today (``tool`` ✓, ``llm``/``agent`` ✗). Passed into
+``merge_lineage``; the structural-init branch does not consult it, because an
+origin is already rooted at the entity.
 
 **An absent payload truncates the trace (D6, interim).** Traversal stops at the
 first leg in ``seq`` order with no ``payload_hash``; the result is a *prefix* plus
@@ -68,18 +78,21 @@ LegKey = tuple[str, str]
 
 
 class Operation(enum.StrEnum):
-    """Which of the three ops the traversal selected for a leg (ADR-0027 D4).
+    """Which of the two ops the traversal selected for a leg (ADR-0027 D4/D11).
 
     Recorded on the result so the selection is observable — the persisted table
     stores the metadata, not the op, so this is how a test (or a debug read) sees
     *why* a row looks the way it does. Note ``INIT`` here means the STRUCTURAL init
-    of D3(1) (selection); a ``LINEAR``/``MERGE`` whose matcher refused still
+    of D3(1) (selection); a ``MERGE`` whose matcher refused every input still
     produces init-*shaped* metadata (D3(2)), which is a runtime result rather than
     a selection outcome.
+
+    There is no ``LINEAR`` member: D11 collapsed the algebra, so a leg with one
+    inbound payload and a leg with five both read ``MERGE`` — the number of inputs is
+    reported by ``inbound_payloads``, which is where a count belongs.
     """
 
     INIT = "init"
-    LINEAR = "linear"
     MERGE = "merge"
 
 
@@ -210,11 +223,16 @@ def derive_trace_lineage(
     (the ADR-0027 D5 key) plus the trace-level coverage ``status`` /
     ``stopped_at_seq``.
 
-    Op selection, per leg in ``seq`` order (D4)::
+    Op selection, per leg in ``seq`` order (D4/D11) — two-way, on emptiness alone::
 
-        |inbound| == 0  -> init_lineage(entity)                  # D3(1) structural
-        |inbound| == 1  -> linear_lineage(p, out, entity)        # may degrade, D3(2)
-        |inbound| >= 2  -> merge_lineage(*inbound, out, entity)  # per-source match
+        |inbound| == 0  -> init_lineage(entity)   # D3(1) structural
+        otherwise       -> merge_lineage(*inbound, out, entity, is_entity_source)
+                           # per-input match; degrades to init if none match, D3(2)
+
+    ``|inbound|`` no longer picks the op (D11) — memory (D2) only sizes
+    ``merge_lineage``'s argument list. Two-way is the floor, not one-way: an empty
+    inbound set has nothing to match against, so ``merge_lineage`` has nothing to be
+    called with.
 
     **An absent payload TRUNCATES the trace (ADR-0027 D6, interim).** Traversal
     stops at the first leg in ``seq`` order whose ``payload_hash`` is ``None``:
@@ -249,8 +267,8 @@ def derive_trace_lineage(
     # different lineage, and a hash key collides them. This is not hypothetical — in
     # the captured ``patent_agent_II`` trace an LLM's response leg and the tool leg
     # inferred from that response's ``tool_calls`` carry the SAME hash, so keying
-    # here by hash silently merged two distinct priors into one and demoted the
-    # agent's ``merge`` to a ``linear``.
+    # here by hash silently merged two distinct priors into one and dropped a whole
+    # branch of the agent's provenance from the merge.
     lineage_of_leg: dict[LegKey, DataLineage] = {}
     # Retained inbound legs per memory node, in arrival order (D2). An accumulating
     # node's list grows; a memoryless node's is truncated to its last.
@@ -316,25 +334,21 @@ def _derive_leg(
     if not inbound_keys:
         # D3(1) structural init: nothing reached this entity, so its output
         # originates here (a genuine trace root — user input, or an entity whose
-        # inbound payload was not lineage-bearing).
+        # inbound payload was not lineage-bearing). `is_entity_source` is not
+        # consulted: an init is already rooted at this entity, so a source-entity
+        # and a non-source-entity root are the same metadata.
         operation = Operation.INIT
         lineage = operations.init_lineage(producer.natural_key)
-    elif len(inbound_keys) == 1:
-        operation = Operation.LINEAR
-        lineage = operations.linear_lineage(
-            inbound[0],
-            lineage_of_leg[inbound_keys[0]],
-            output_payload,
-            producer.natural_key,
-            matcher=matcher,
-        )
     else:
+        # One or more inbound payloads — the single generic op (D11). How many is
+        # memory's answer (D2), not a selection question.
         operation = Operation.MERGE
         lineage = operations.merge_lineage(
             [(payload_of_leg[k], lineage_of_leg[k]) for k in inbound_keys],
             output_payload,
             producer.natural_key,
             matcher=matcher,
+            is_entity_source=memory.is_entity_source(producer),
         )
 
     lineage_of_leg[key] = lineage
@@ -349,8 +363,8 @@ def _route_inbound(
     """Deliver *leg*'s payload into its consumer's memory node (D1 + D2).
 
     An accumulating consumer appends (every prior is retained — transient memory is
-    always present); a memoryless one replaces (it sees exactly one input, which is
-    what keeps it on ``linear``).
+    always present); a memoryless one replaces (it sees exactly one input, so its
+    ``merge`` runs over a single payload).
 
     Legs are appended by *position*, so two priors carrying identical bytes both
     count — see ``derive_trace_lineage``'s note on why keying by ``payload_hash``

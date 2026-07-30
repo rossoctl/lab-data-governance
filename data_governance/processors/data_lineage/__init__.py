@@ -7,15 +7,17 @@ so a governance read is a lookup rather than a recompute (ADR-0027 D7).
 
 The layering, innermost first — each layer is testable without the one outside it:
 
-- :mod:`.operations` — the three-op algebra (``init_lineage`` / ``linear_lineage`` /
-  ``merge_lineage``) from ``docs/data_lineage_alg.md``. Pure: metadata in, metadata
-  out, matcher injected.
-- :mod:`.memory` — **the** accumulating-entity predicate (ADR-0027 D2) and the
-  ``(entity_id, memory_key)`` memory node. The single named place; nothing else
-  tests ``kind == "agent"``.
-- :mod:`.traversal` — op selection (D4), structural inbound routing (D1), and D6's
-  absent-payload prefix cutoff with the trace's ``complete``/``partial`` coverage,
-  over one trace's legs in leg-``seq`` order. Pure.
+- :mod:`.operations` — the two-op algebra (``init_lineage`` / ``merge_lineage``) from
+  ``docs/data_lineage_alg.md``. Pure: metadata in, metadata out, matcher injected.
+  One generic ``merge_lineage`` covers "a single or multiple payloads" (ADR-0027
+  D11).
+- :mod:`.memory` — **the** kind-driven entity predicates: accumulating (ADR-0027 D2)
+  and data-source (D12), plus the ``(entity_id, memory_key)`` memory node. The
+  single named place; nothing else tests ``kind == "agent"`` or ``kind == "tool"``.
+- :mod:`.traversal` — two-way op selection (D4/D11), structural inbound routing
+  (D1), and D6's absent-payload prefix cutoff with the trace's
+  ``complete``/``partial`` coverage, over one trace's legs in leg-``seq`` order.
+  Pure.
 - :mod:`.driver` — the DB adapter over the shared cursor loop: drains the
   ``interaction_legs`` stream, re-derives the arriving leg's whole trace, upserts
   the rows and the trace status, and deletes the rows the derivation no longer

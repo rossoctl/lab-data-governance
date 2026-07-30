@@ -1,9 +1,17 @@
-"""The three data-lineage operations — the algebra, as pure functions (issue #117).
+"""The two data-lineage operations — the algebra, as pure functions (issue #117).
 
 This is ``docs/data_lineage_alg.md`` "Lineage processing operations" transcribed
-into code: ``init_lineage``, ``linear_lineage``, ``merge_lineage``. That document
-is human-owned and authoritative; the construction rules below (transformation-set
-union, key-collision merge, degrade-to-init) are its rules, cited per function.
+into code: ``init_lineage`` and ``merge_lineage``. That document is human-owned and
+authoritative; the construction rules below (transformation-set union,
+key-collision merge, the entity's own empty transformation set, degrade-to-init)
+are its rules, cited per function.
+
+**Two operations, not three** (ADR-0027 D11). The spec once named a separate
+single-payload ``linear_lineage``; it now defines one generic ``merge_lineage``
+covering "a single or multiple payloads", and a merge over one input computes the
+identical triple a linear did — union of one source set is that set, and there is
+nothing for the key-collision merge to collide. The two were always the same
+function at different arities.
 
 **Pure.** No database, no trace, no I/O. Metadata in, metadata out, with the
 matcher injected as a parameter. The trace traversal (:mod:`.traversal`) decides
@@ -78,52 +86,16 @@ def init_lineage(entity_name: str) -> DataLineage:
     entity is the *source*; it is not something the data passed *through*. It
     joins the set only once a downstream op extends the set with it.
 
-    This is also the shape both other ops degrade to when the matcher reports no
-    relationship (ADR-0027 D3(2)).
+    This is also the shape :func:`merge_lineage` degrades to when the matcher
+    reports no relationship for *every* input (ADR-0027 D3(2)) — and it degrades
+    there **regardless of ``is_entity_source``**: the spec's Example 3 states the
+    rule for "false or true" alike, and the bracketed alternative reading beside it
+    (``data_lineage_alg.md:104``) is an HTML comment the spec did not adopt.
     """
     return DataLineage(
         data_sources=frozenset({entity_name}),
         source_transformations={entity_name: frozenset()},
         entities=frozenset(),
-    )
-
-
-def linear_lineage(
-    payload: Payload,
-    metadata: DataLineage,
-    output_payload: Payload,
-    entity_name: str,
-    *,
-    matcher: Matcher,
-) -> DataLineage:
-    """A **single** input payload processed to one output (spec rule 2).
-
-    Calls ``match(payload, output_payload)`` — input first, output second, the
-    spec's argument order (a matcher reporting a directional transformation such
-    as summarization would report it backwards if these were swapped).
-
-    - ``matched=False`` → "There is no lineage ... call init lineage": the output
-      is a NEW origin rooted at the processing entity, and *all* the upstream
-      metadata is discarded (ADR-0027 D3(2)). This is the anonymization /
-      fresh-external-read case.
-    - ``matched=True`` → "1. the data source is assigned the metadata data source;
-      2. create a copy of the transformations and add the returned transformation
-      (if exists) to **all** the transformation sets; 3. create a copy of the
-      entity set and extend it with the entity name".
-
-    "(if exists)": a ``None`` transformation adds nothing — it must not become a
-    set member, since ``None`` is "no transform performed or none identified", not
-    a kind of transformation.
-
-    (3) is a set union, so an entity the data already passed through does not
-    appear twice and needs no dedup pass of its own.
-    """
-    result = matcher(payload, output_payload)
-    if not result.matched:
-        return init_lineage(entity_name)
-    inherited = _inherit(metadata, result.transformation)
-    return dataclasses.replace(
-        inherited, entities=inherited.entities | {entity_name}
     )
 
 
@@ -134,11 +106,16 @@ def _inherit(
     """One matched input's contribution, WITHOUT the processing entity appended:
     copy its metadata and stamp *transformation* onto every source's set.
 
-    The shared body of rule 2's matched branch (2(1)+2(2)) and rule 3's per-input
-    step. The entity extension (2(3) / 3(3)) is deliberately NOT here: it belongs to
-    the *operation*, which adds the processing entity once no matter how many inputs
-    it consumed. (With set semantics the result would be the same either way — union
-    is idempotent — but the rule stays where the spec puts it.)
+    The per-input step of the spec's matched branch (2(2)1 + 2(2)2). The entity
+    extension (2(2)3) is deliberately NOT here: it belongs to the *operation*, which
+    adds the processing entity once no matter how many inputs it consumed. (With set
+    semantics the result would be the same either way — union is idempotent — but the
+    rule stays where the spec puts it.)
+
+    Nor does the entity's *own source contribution* belong here: an
+    ``is_entity_source`` entity is added with an **empty** transformation set, so
+    routing it through this function would wrongly stamp an inherited input's
+    transformation onto it (ADR-0027 D12).
     """
     added = frozenset({transformation}) if transformation is not None else frozenset()
     return DataLineage(
@@ -157,25 +134,51 @@ def merge_lineage(
     entity_name: str,
     *,
     matcher: Matcher,
+    is_entity_source: bool = False,
 ) -> DataLineage:
-    """**Multiple** input payloads to one output (spec rule 3, generic form).
+    """**One or more** input payloads processed to one output (spec rule 2).
+
+    The whole of the algebra bar the origin case — the spec's generic form covering
+    "a single or multiple payloads", so a one-input call is a legitimate use and not
+    a degenerate one (ADR-0027 D11: there is no separate ``linear_lineage``).
 
     "the idea here is to call the matching function with every source payload and
-    output payload (e.g. payload_a,output_payload; payload_b,output_payload, ..)".
-    Only the inputs that MATCH contribute; each contributes with its own reported
-    transformation attached (per-source, not pooled). Then:
+    output payload (e.g. payload_a,output_payload; payload_b,output_payload, ..)" —
+    input first, output second, the spec's argument order (a matcher reporting a
+    *directional* transformation such as summarization would report it backwards if
+    these were swapped). Only the inputs that MATCH contribute; each contributes with
+    its own reported transformation attached (per-source, not pooled). Then:
 
-    1. the data sources are the **union** of the matching inputs' sources;
+    1. the data sources are the **union** of the matching inputs' sources, "if
+       is_entity_source == true: A ∪ B ∪ ... ∪ entity";
     2. the maps are merged, "merge the transformation sets in case a key appears
        twice" — a source reached through two different inputs collects the
-       transformations of both paths (spec Example 2(2));
-    3. "the set of entities is merged and extended with the entity" — a plain
+       transformations of both paths (spec Example 2(2)) — and "add entity, with
+       empty transformation set" when the entity is a source;
+    3. "the sets of entities are merged, and extended with the entity" — a plain
        union across the contributions, which is also why merging two branches that
        share entities needs no special case.
 
+    "(if exists)" on a transformation: a ``None`` adds nothing — it must not become a
+    set member, since ``None`` is "no transform performed or none was identified",
+    not a kind of transformation.
+
+    **``is_entity_source``** (ADR-0027 D12) is a property of the producing *entity*,
+    not of the payloads, which is why the caller supplies it rather than the op
+    deriving it — the traversal reads :func:`.memory.is_entity_source`. It is
+    orthogonal to ``matched``: ``matched`` decides whether upstream lineage is
+    inherited, this decides whether the entity ALSO contributed content of its own.
+    A tool that consumes its request and returns freshly-read data states both.
+    Its transformation set is **empty** on purpose: the entity's own contribution
+    did not undergo the transformation the *inherited* sources did, so stamping the
+    match's transformation onto it would be a false claim.
+
     With no matching input at all the op degrades to :func:`init_lineage`
     (ADR-0027 D3(2)) — a runtime *result* of matching, not a selection branch: the
-    traversal still chose ``merge``; matching simply found nothing to inherit.
+    traversal still chose ``merge``; matching simply found nothing to inherit. That
+    branch **ignores ``is_entity_source``** (spec Example 3, stated for "false or
+    true" alike): the output payload came from somewhere and its producer is the only
+    origin left to name.
 
     *inputs* is a sequence of ``(payload, metadata)`` pairs rather than the spec's
     varargs so the arity is genuinely open (``inbound(i)`` can be any size) and the
@@ -201,10 +204,21 @@ def merge_lineage(
             # Key collision: union the sets rather than let the last writer win.
             transformations[source] = transformations.get(source, frozenset()) | values
         entities |= contribution.entities
-    # Rule 3(3) — "the set of entities is merged and extended with the entity".
+    if is_entity_source:
+        # The entity's OWN contribution (spec 2(2)1-2, ADR-0027 D12): it joins the
+        # sources alongside what was inherited, with an EMPTY transformation set.
+        # `setdefault`, not an assignment: were the entity already a source reached
+        # through an input (an entity that appears upstream of itself in the trace),
+        # overwriting would erase transformations that genuinely applied on that
+        # path. Union with the empty set is a no-op, so this adds nothing false.
+        sources.add(entity_name)
+        transformations.setdefault(entity_name, frozenset())
+    # Rule 2(2)3 — "the sets of entities are merged, and extended with the entity".
     # Union, so the result does not depend on the order the contributions were
     # visited in: branches sharing entities contribute them once, and the
     # processing entity is a member whether or not the data had reached it before.
+    # Note this happens regardless of `is_entity_source` — the data demonstrably
+    # passed *through* the producing entity either way.
     return DataLineage(
         data_sources=frozenset(sources),
         source_transformations=transformations,

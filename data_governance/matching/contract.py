@@ -5,8 +5,9 @@ The spec (``docs/data_lineage_alg.md``, "Semantic matching") gives one signature
     match(payload_a, payload_b) -> {matched: bool, transformation: enum, ...evidence}
 
 - ``matched`` — ``True``: the payloads are related, so we believe there is lineage.
-  ``False``: no relationship, so we believe there is no lineage (in which case
-  ``linear_lineage`` degrades to ``init_lineage``; ADR-0027 D3(2)).
+  ``False``: no relationship, so we believe there is no lineage — that input
+  contributes nothing, and if *every* input of a ``merge_lineage`` reports ``False``
+  the op degrades to ``init_lineage`` (ADR-0027 D3(2)).
 - ``transformation`` — reported only when matched: ``None`` if no transform was
   performed or none was identified, otherwise which one.
 - ``evidence`` — the spec's open ``...evidence`` tail: whatever the matcher wants to
