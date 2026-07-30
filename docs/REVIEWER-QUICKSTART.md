@@ -30,7 +30,8 @@ kubectl apply -f deploy/k8s/
 kubectl -n data-governance rollout status deploy/data-governance-interactions
 ```
 
-The migrate init container lands schema head `0009_interaction_legs`. The processor
+The migrate init container lands the compiled-in schema head (currently
+`0011_drop_leg_original_seq`; the legs shape itself is `0009_interaction_legs`). The processor
 refuses to start against an unmigrated DB (exit 3) — that is the intended safety net.
 `deploy/k8s/70-interactions.yaml` pins `INTERACTIONS_ALGORITHM: "sidecar"`; switching
 algorithms is a *selection change plus a data reset*, never an addition —

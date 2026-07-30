@@ -32,7 +32,8 @@ in full.
 ## Procedure
 
 1. **Build and roll the image from this branch.** The image's compiled
-   migration head is 0009; the processor's startup schema-version check
+   migration head is 0011 (0009 legs shape + 0010 entity-ready notify +
+   0011 drop of `interaction_legs.original_seq`); the processor's startup schema-version check
    refuses to run against a non-migrated DB (exit 3), which is the safety net
    if the init container was skipped.
 

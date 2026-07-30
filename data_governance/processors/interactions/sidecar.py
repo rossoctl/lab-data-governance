@@ -347,9 +347,9 @@ def _upsert_payload(tx: db.Transaction, pl: _Payload | None) -> str | None:
     return pl.content_hash
 
 
-def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None, int]]:
+def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None]]:
     """Project one row into OBSERVED legs: (leg_type, occurred_at, payload_hash,
-    error, seq). The request leg always exists; the response leg only when the
+    error). The request leg always exists; the response leg only when the
     response span does — its absence IS the in-flight signal (never fabricated,
     matching the graph adapter's rule).
 
@@ -358,17 +358,17 @@ def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None, int]]:
     consumer acting on the request leg must not read a verdict that arrived
     later as if it were request-time).
 
-    The response leg's seq clamps to ``max(req.seq, resp.seq)``: seq is arrival
-    order and under scrambled arrival the response span can land BEFORE its
-    request; the leg only becomes derivable once both spans exist, so the max is
-    the honest arrived-set watermark — and it keeps request-seq <= response-seq,
-    the ordering ADR-0027's (seq, leg_type) readiness cursor relies on."""
-    legs: list[tuple[str, Any, str | None, bool | None, int]] = [(
+    Leg ``seq`` is not projected here: it is DB-owned (``nextval``, the
+    migration-0009 DEFAULT) and assigned once at first INSERT. Request-seq <
+    response-seq holds structurally: a response leg is only derivable once its
+    request span exists, and the request leg is inserted first — either in the
+    same transaction (request emitted first) or in an earlier drain (response
+    still in flight)."""
+    legs: list[tuple[str, Any, str | None, bool | None]] = [(
         "request",
         row.started_at,
         row.request_payload.content_hash if row.request_payload else None,
         None,
-        row.seq,
     )]
     if row.response_span_id is not None:
         legs.append((
@@ -376,7 +376,6 @@ def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None, int]]:
             row.ended_at,
             row.response_payload.content_hash if row.response_payload else None,
             row.error,
-            max(row.seq, row.resp_seq or row.seq),
         ))
     return legs
 
@@ -428,24 +427,23 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
             (parent_ix, row.interaction_id, parent_ix),
         )
 
-    # 3. interaction_legs — observed legs (see _legs_of). seq/original_seq are
-    #    always written explicitly, never left to the column DEFAULT: nextval is
-    #    not replay-deterministic and ADR-0027's readiness cursor depends on
-    #    replayed legs keeping their seqs. original_seq is first-write-wins
-    #    (matching state.flush); for this deterministic derivation the two never
-    #    differ anyway.
+    # 3. interaction_legs — observed legs (see _legs_of). ``seq`` is OMITTED so
+    #    the column DEFAULT (nextval, migration 0009) assigns it once at first
+    #    INSERT, and it is absent from DO UPDATE so a re-derive preserves the
+    #    once-assigned value — the post-#123 DB-owned model shared with the
+    #    streaming branch of state.flush (only cosmetic nextval gaps on replay).
     for row in want.values():
-        for leg_type, occurred_at, payload_hash, error, seq in _legs_of(row):
+        for leg_type, occurred_at, payload_hash, error in _legs_of(row):
             tx.execute(
                 "INSERT INTO interaction_legs (interaction_id, leg_type, "
-                "occurred_at, payload_hash, error, seq, original_seq) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "occurred_at, payload_hash, error) "
+                "VALUES (%s, %s, %s, %s, %s) "
                 "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
                 "occurred_at = EXCLUDED.occurred_at, "
                 "payload_hash = EXCLUDED.payload_hash, "
-                "error = EXCLUDED.error, seq = EXCLUDED.seq",
+                "error = EXCLUDED.error",
                 (row.interaction_id, leg_type, occurred_at, payload_hash,
-                 error, seq, seq),
+                 error),
             )
 
     # 4. Delete this trace's interactions no longer justified by `want` — the

@@ -55,8 +55,8 @@ def test_golden_rows_endpoints_and_parenting():
 
 
 def test_golden_rows_carry_the_response_span_and_seqs():
-    """The leg projection's inputs: each completed row knows its response span
-    id and both spans' seqs (request seq <= the response leg's clamped seq)."""
+    """The plan's arrival facts: each completed row knows its response span id
+    and both spans' seqs (leg seq itself is DB-owned at write time)."""
     plan = plan_trace(golden.TRACE, golden.build_spans())
     rows = _rows_by_anchor(plan)
     i1 = rows[golden.A1]

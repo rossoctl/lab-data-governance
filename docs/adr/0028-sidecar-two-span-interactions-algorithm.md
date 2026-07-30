@@ -38,12 +38,15 @@ Exactly the shape ADR-0025 prescribed:
   `lineage.outcome` is a completion fact and belongs to the response leg); the
   response leg only when its span exists — absence IS the in-flight signal the
   read-time `duration_seconds: null` renders.
-- **Per-leg seq, replay-deterministic**: always written explicitly (never the
-  column DEFAULT); the response leg's seq is `max(request.seq, response.seq)`,
-  because under scrambled arrival the response span can land first and the leg
-  only becomes derivable once both spans exist. This keeps request-seq ≤
-  response-seq — the ordering ADR-0027's `(seq, leg_type)` readiness cursor
-  relies on.
+- **Per-leg seq, DB-owned** (the post-#123 model, shared with the streaming
+  branch of `state.flush`): the write path omits `seq` at INSERT so the
+  column DEFAULT (`nextval`, migration 0009) assigns it once, and omits it
+  from `DO UPDATE` so a re-derive preserves the once-assigned value.
+  Request-seq < response-seq holds structurally: a response leg is only
+  derivable once its request span exists, and the request leg is inserted
+  first — same transaction or an earlier drain. (This ADR originally
+  specified explicit span-derived seqs with a `max()` clamp; that was
+  superseded when #123 landed the DB-owned convention on `main`.)
 - **`interaction_spans.leg_type` per span**: the anchor (request) span →
   `request`; the paired response span's connector row → `response`; echo,
   bridge, and other connector spans → NULL — they evidence the interaction's
@@ -85,8 +88,9 @@ never fabricated defaults. The UI's infrastructure filter consumes
 - The `graph` algorithm stays an untouched peer for app-emitted spans under
   partial instrumentation; the sidecar source states its facts, so structural
   inference is unnecessary here.
-- ADR-0027 leg-readiness notifications are not implemented; the seq clamp
-  above is what keeps them implementable for this source.
+- ADR-0027 leg-readiness consumers (`leg_ready`, `entity_ready`) landed on
+  `main` after this ADR was written; the DB-owned leg seq above is exactly
+  the ordering they cursor on, so this source feeds them unchanged.
 - Upstream `caller_inference.py` is not wired in: its orphan-server ladder
   reads `kagenti.user.id` / `peer.service` / `client.address` / `net.peer.*`,
   none of which the wire contract emits. The sidecar's `client:(unknown)`

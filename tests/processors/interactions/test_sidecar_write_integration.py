@@ -279,7 +279,8 @@ def _trace_rows(dsn: str, trace_id: str) -> dict:
     """All derived rows for one trace, sorted — the cross-trace delete guard
     compares this before/after re-deriving a *different* trace, and the
     re-derive-idempotence assert pins the legs byte-identical (incl. seq —
-    replay determinism, never the column DEFAULT)."""
+    DB-owned at first INSERT and absent from DO UPDATE, so a re-derive
+    preserves it)."""
     with psycopg.connect(dsn) as conn:
         ix = sorted(conn.execute(
             "SELECT id::text, caller_entity_id::text, callee_entity_id::text, "
@@ -287,7 +288,7 @@ def _trace_rows(dsn: str, trace_id: str) -> dict:
             (trace_id,)).fetchall())
         legs = sorted(conn.execute(
             "SELECT l.interaction_id::text, l.leg_type::text, l.payload_hash, "
-            "l.error, l.seq, l.original_seq "
+            "l.error, l.seq "
             "FROM interaction_legs l JOIN interactions i ON i.id = l.interaction_id "
             "WHERE i.trace_id = %s", (trace_id,)).fetchall())
         isp = sorted(conn.execute(
