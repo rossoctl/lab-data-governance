@@ -2,8 +2,13 @@
 
 Acceptance: "Verified end to end against the captured multi-tool traces already
 in the graph fixtures: the reference travel-agent trace reproduces the spec's
-worked example, where an agent's **first** outbound uses ``linear`` and later
-outbounds use ``merge`` once two or more priors exist."
+worked example, where an agent's **first** outbound has one inbound payload and
+later outbounds pool two or more priors."
+
+Since ADR-0027 D11 collapsed the algebra, the op *name* no longer distinguishes
+those two cases — every non-root leg reads ``merge``. So the assertions here are on
+the **inbound sets**, which is where the acceptance criterion's content actually
+lives and which these tests already pinned as the "load-bearing half".
 
 The full pipeline runs here — real spans through the graph P-interactions
 algorithm into ``interactions``/``interaction_legs``, then the data-lineage
@@ -140,11 +145,6 @@ def _derived(trace_id: str) -> list[DerivedLeg]:
     return sorted(out, key=lambda d: d.seq)
 
 
-def _ops(trace_id: str) -> list[tuple[int, str, str]]:
-    """``(leg seq, producing entity, operation)`` in execution order."""
-    return [(d.seq, d.producer, d.operation) for d in _derived(trace_id)]
-
-
 def _payloads_of(legs: list[DerivedLeg]) -> tuple[str, ...]:
     """The payload hashes *legs* carry, in ``seq`` order — how an expected inbound
     set is spelled here.
@@ -216,45 +216,50 @@ def test_canonical_trace_gets_lineage_for_every_leg(configured_db: str) -> None:
     assert len(rows) == n_legs, "one lineage row per payload-bearing leg"
 
 
-def test_canonical_trace_agent_first_outbound_is_linear_later_are_merge(
+def test_canonical_trace_agent_roots_the_trace_then_merges_growing_priors(
     configured_db: str,
 ) -> None:
     """**The acceptance criterion.** In the reference trace a single
     travel-advisor agent calls one LLM and three tools, so it produces several
-    outbound legs. Its first outbound *that has an inbound payload* has exactly
-    one and must use ``linear``; every later one has ≥2 retained priors (D2
-    assumes transient memory always present) and must use ``merge``.
+    outbound legs. Its first outbound has nothing inbound; its next has exactly one
+    prior; every later one has ≥2 retained priors (D2 assumes transient memory always
+    present).
 
-    The reference trace's op sequence for the agent is ``init, linear, merge,
-    merge, …`` — the spec's worked-example pattern shifted by one, because this
-    captured trace has **no user/client entity**: the agent IS the trace root (no
-    caller of the agent emits a span, so no user→agent interaction is derived).
-    Its very first outbound therefore has nothing inbound at all and is a genuine
-    structural ``init`` (ADR-0027 D3(1) — "the payload originates outside the
-    trace"), where the spec's hand-drawn example starts with an explicit
-    ``-1-> Agent``. The linear→merge transition the criterion is about is
-    unchanged, and asserted on the trace's own structure below rather than
-    enumerated by hand."""
+    The reference trace's op sequence for the agent is ``init, merge, merge, …`` —
+    the spec's worked-example pattern shifted by one, because this captured trace has
+    **no user/client entity**: the agent IS the trace root (no caller of the agent
+    emits a span, so no user→agent interaction is derived). Its very first outbound
+    therefore has nothing inbound at all and is a genuine structural ``init``
+    (ADR-0027 D3(1) — "the payload originates outside the trace"), where the spec's
+    hand-drawn example starts with an explicit ``-1-> Agent``.
+
+    The one-prior → many-priors transition the criterion is about is asserted on the
+    **inbound counts**: since D11 both cases read ``merge``, so an op-name assertion
+    would no longer see it. The counts come from the trace's own structure rather than
+    being enumerated by hand."""
     trace_id = _run_pipeline("travel_agent_III")
-    ops = _ops(trace_id)
+    derived = _derived(trace_id)
 
-    agents = {
-        entity
-        for _, entity, _ in ops
-        if entity.startswith("agent:")
-    }
+    agents = {d.producer for d in derived if d.producer.startswith("agent:")}
     assert len(agents) == 1, f"the reference trace has one agent; got {agents}"
     agent = agents.pop()
 
-    agent_ops = [op for _, entity, op in ops if entity == agent]
-    assert len(agent_ops) >= 4, f"expected several agent-produced legs, got {agent_ops}"
+    agent_legs = [d for d in derived if d.producer == agent]
+    assert len(agent_legs) >= 4, f"expected several agent-produced legs, got {agent_legs}"
 
     # The agent is the trace root, so its first payload originates here (D3(1)).
-    assert agent_ops[0] == "init", agent_ops
-    # Its FIRST outbound with an inbound: exactly one prior, so linear.
-    assert agent_ops[1] == "linear", agent_ops
-    # Every later one: priors have accumulated past one, so merge.
-    assert all(op == "merge" for op in agent_ops[2:]), agent_ops
+    assert agent_legs[0].operation == "init", agent_legs[0]
+    assert agent_legs[0].inbound == ()
+    # Every later leg runs the single generic op (D11) — selection is two-way now.
+    assert all(d.operation == "merge" for d in agent_legs[1:]), [
+        d.operation for d in agent_legs
+    ]
+    # Its FIRST outbound with an inbound: exactly one prior.
+    assert len(agent_legs[1].inbound) == 1, agent_legs[1].inbound
+    # Every later one: priors have accumulated past one.
+    assert all(len(d.inbound) >= 2 for d in agent_legs[2:]), [
+        len(d.inbound) for d in agent_legs
+    ]
 
 
 def test_canonical_trace_agent_inbound_accumulates_exactly_its_priors(
@@ -319,24 +324,24 @@ def test_canonical_trace_agent_inbound_accumulates_exactly_its_priors(
         )
 
 
-def test_canonical_trace_memoryless_peers_always_use_linear(
+def test_canonical_trace_memoryless_peers_merge_over_exactly_one_input(
     configured_db: str,
 ) -> None:
     """The other half of D2: the LLM and the three tools do not accumulate, so
-    every payload they produce comes from exactly one input — ``linear``, however
-    many times they are called.
+    every payload they produce comes from exactly one input, however many times they
+    are called.
 
-    In *this* trace that disjunction collapses: every peer leg is a **response**
-    whose interaction's request leg is payload-bearing, so no peer leg is ever a
-    structural ``init``. ``linear`` is asserted outright rather than as
-    ``{"linear", "init"}`` — the loose form would pass an all-``init`` regression,
-    which is precisely the failure that would mean inbound routing had stopped
-    delivering requests to callees.
+    In *this* trace every peer leg is a **response** whose interaction's request leg
+    is payload-bearing, so no peer leg is ever a structural ``init``. That is asserted
+    outright rather than as ``{"merge", "init"}`` — the loose form would pass an
+    all-``init`` regression, which is precisely the failure that would mean inbound
+    routing had stopped delivering requests to callees.
 
-    And the *input* is pinned, not just the op name: a peer's one inbound payload
-    must be the request leg of **its own interaction** (D1, first half — "E is the
-    callee and the payload is the request"). Under the loose op-name-only check a
-    peer could inherit from some unrelated earlier leg and still read ``linear``."""
+    And the *input* is pinned, not just the op name — since D11 that matters more, not
+    less: ``merge`` alone no longer says "one input", so the single-element inbound
+    tuple is the whole memoryless claim. It must be the request leg of the peer's
+    **own interaction** (D1, first half — "E is the callee and the payload is the
+    request")."""
     trace_id = _run_pipeline("travel_agent_III")
     derived = _derived(trace_id)
 
@@ -350,13 +355,13 @@ def test_canonical_trace_memoryless_peers_always_use_linear(
         # Every peer-produced leg in this trace is the response side of a call made
         # TO that peer; it is never a caller, so it never roots the trace.
         assert peer.leg_type == "response", peer
-        assert peer.operation == "linear", peer
+        assert peer.operation == "merge", peer
         assert peer.inbound == (request_of[peer.interaction_id].payload_hash,), (
             peer.seq,
             peer.inbound,
         )
     # No peer is a structural init anywhere in this trace — the point of dropping
-    # the `{"linear", "init"}` disjunction.
+    # the `{"merge", "init"}` disjunction.
     assert not [d for d in peer_legs if d.operation == "init"], peer_legs
 
 
@@ -381,6 +386,75 @@ def test_canonical_trace_tool_results_flow_into_the_agents_answer(
     # It passed through the LLM and at least one tool.
     assert any(e.startswith("llm:") for e in final["entities"]), final["entities"]
     assert any(e.startswith("tool:") for e in final["entities"]), final["entities"]
+
+
+def test_canonical_trace_answer_roots_at_every_tool_that_fired(
+    configured_db: str,
+) -> None:
+    """**The observable D12 was landed for** (ADR-0027 D12, issue #131). Before it,
+    every leg of this trace reported the agent as its sole source: a tool that read an
+    external store had its ingress attributed to the caller, which is the exact
+    failure a governance tool must not make.
+
+    Now a ``kind='tool'`` entity contributes itself, and those contributions
+    accumulate down the trace through the agent's memory (D2), so the agent's final
+    answer roots at **every tool that fired** — not just at the agent.
+
+    Under ``simple_match`` every tool leg adds its tool, so the set grows
+    monotonically. That is the accepted trade (ADR-0027 §Semantic matching): erring
+    toward over-reporting origins, since the failure being replaced was
+    *under*-reporting an external data ingress. It is also why this asserts equality
+    against the trace's own tool set rather than a hand-written list."""
+    trace_id = _run_pipeline("travel_agent_III")
+    rows = _lineage(trace_id)
+
+    tools_that_produced = {
+        r["producer"] for r in rows.values() if r["producer_kind"] == "tool"
+    }
+    assert tools_that_produced, "sanity: the reference trace has tool legs"
+
+    agent_legs = sorted(
+        (r["seq"], key)
+        for key, r in rows.items()
+        if r["producer"].startswith("agent:")
+    )
+    final = rows[agent_legs[-1][1]]
+
+    assert tools_that_produced <= set(final["data_sources"]), (
+        tools_that_produced - set(final["data_sources"])
+    )
+    # ...and the agent itself is still there — the entity's own contribution is added
+    # ALONGSIDE what was inherited, never instead of it.
+    assert any(s.startswith("agent:") for s in final["data_sources"]), final[
+        "data_sources"
+    ]
+
+
+def test_canonical_trace_a_tool_leg_names_its_own_tool_as_a_source(
+    configured_db: str,
+) -> None:
+    """The same fact one leg at a time, and the sharper claim: *every* tool-produced
+    leg lists its own tool among its sources, with an EMPTY transformation set.
+
+    The empty set is D12's construction rule — the tool's own contribution did not
+    undergo the transformation the inherited sources did. An LLM-produced leg must NOT
+    list its LLM, which is the ✗ half of the taxonomy defaults and the guard against
+    "every mid-trace entity is now a source"."""
+    trace_id = _run_pipeline("travel_agent_III")
+    rows = _lineage(trace_id)
+
+    tool_legs = [r for r in rows.values() if r["producer_kind"] == "tool"]
+    llm_legs = [r for r in rows.values() if r["producer_kind"] == "llm"]
+    assert tool_legs and llm_legs, "sanity: the reference trace has tool and llm legs"
+
+    for r in tool_legs:
+        assert r["producer"] in r["data_sources"], (r["seq"], r["data_sources"])
+        assert r["source_transformations"][r["producer"]] == [], (
+            r["seq"],
+            r["source_transformations"],
+        )
+    for r in llm_legs:
+        assert r["producer"] not in r["data_sources"], (r["seq"], r["data_sources"])
 
 
 def test_canonical_trace_lineage_is_idempotent(configured_db: str) -> None:
@@ -409,9 +483,9 @@ def test_patent_agent_multitool_trace_merges_after_the_first_outbound(
 ) -> None:
     """``patent_agent_II`` is the live three-LLM-turn, two-distinct-tool trace.
     Same rule on a different real shape: the agent roots the trace (``init``), its
-    first outbound with an inbound is ``linear``, and the rest ``merge`` — with the
+    first outbound with an inbound pools one prior and the rest pool more — with the
     inbound sets pinned, as above, since the op names alone do not say which priors
-    were consumed.
+    were consumed (and since D11, do not say how many either).
 
     This is also **the** trace the by-position retention rule exists for: the tool
     interactions are inferred from the LLM response's ``tool_calls``, so a tool's
@@ -420,7 +494,7 @@ def test_patent_agent_multitool_trace_merges_after_the_first_outbound(
     ``test_two_priors_with_identical_payloads_are_two_priors``). The agent's inbound
     sets therefore contain repeated hashes on purpose; asserting them as "the prior
     response legs, in seq order" keeps that visible, where a hash-set comparison
-    would silently accept the collapsed form that demotes ``merge`` to ``linear``."""
+    would silently accept a collapsed form that loses one of the agent's priors."""
     trace_id = _run_pipeline("patent_agent_II")
     derived = _derived(trace_id)
 
@@ -428,8 +502,11 @@ def test_patent_agent_multitool_trace_merges_after_the_first_outbound(
     agent_ops = [d.operation for d in agent_legs]
     assert len(agent_ops) >= 4, agent_ops
     assert agent_ops[0] == "init", agent_ops
-    assert agent_ops[1] == "linear", agent_ops
-    assert all(op == "merge" for op in agent_ops[2:]), agent_ops
+    assert all(op == "merge" for op in agent_ops[1:]), agent_ops
+    assert len(agent_legs[1].inbound) == 1, agent_legs[1].inbound
+    assert all(len(d.inbound) >= 2 for d in agent_legs[2:]), [
+        len(d.inbound) for d in agent_legs
+    ]
 
     agent = agent_legs[0].producer
     for produced in agent_legs:
@@ -445,12 +522,12 @@ def test_patent_agent_multitool_trace_merges_after_the_first_outbound(
         d.inbound for d in agent_legs
     ]
 
-    # And the peers stay memoryless and linear here too, each on its own request.
+    # And the peers stay memoryless here too — one input each, its own request.
     request_of = {d.interaction_id: d for d in derived if d.leg_type == "request"}
     peer_legs = [d for d in derived if d.producer.startswith(("llm:", "tool:"))]
     assert peer_legs
     for peer in peer_legs:
-        assert peer.operation == "linear", peer
+        assert peer.operation == "merge", peer
         assert peer.inbound == (request_of[peer.interaction_id].payload_hash,), peer
 
 

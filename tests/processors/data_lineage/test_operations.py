@@ -1,10 +1,16 @@
-"""The three data-lineage operations, as pure functions (issue #117).
+"""The two data-lineage operations, as pure functions (issue #117).
 
 These are the algebra from ``docs/data_lineage_alg.md`` ("Lineage processing
-operations") — ``init_lineage``, ``linear_lineage``, ``merge_lineage``. They are
-tested with no database and no trace: metadata in, metadata out, with the matcher
-injected. Every assertion below traces to a numbered rule in the spec, cited per
-test, because the spec is human-owned and authoritative.
+operations") — ``init_lineage`` and ``merge_lineage``. They are tested with no
+database and no trace: metadata in, metadata out, with the matcher injected. Every
+assertion below traces to a numbered rule in the spec, cited per test, because the
+spec is human-owned and authoritative.
+
+``merge_lineage`` is the generic op over "a single or multiple payloads" (ADR-0027
+D11), so it is exercised at **both** arities. The single-input block below is the
+former ``linear_lineage`` suite, ported: those cases are about the degrade path and
+per-source transformation handling, which one input exercises most sharply, and they
+stayed meaningful when the op they targeted was folded into ``merge_lineage``.
 
 NOTE on naming: "lineage" in ``processors/interactions`` means **span** lineage
 (a span's ancestors ∪ subtree). This is **data lineage** — where a payload came
@@ -17,7 +23,6 @@ from data_governance.matching import MatchResult, Transformation
 from data_governance.processors.data_lineage.operations import (
     DataLineage,
     init_lineage,
-    linear_lineage,
     merge_lineage,
 )
 
@@ -68,15 +73,22 @@ def test_init_entities_is_empty_not_the_entity() -> None:
     assert init_lineage("user:alice").entities == frozenset()
 
 
-# --- linear_lineage ----------------------------------------------------------
+# --- merge_lineage over ONE input --------------------------------------------
+#
+# The spec's generic op explicitly covers "a single or multiple payloads"
+# (``data_lineage_alg.md:85-93``) and its worked examples call it at arity one
+# (``:171-175``), so these are first-class cases, not degenerate ones. This block is
+# the former ``linear_lineage`` suite ported onto ``merge_lineage`` (ADR-0027 D11):
+# every case here is about the D3(2) degrade or per-source transformation handling,
+# both of which one input pins most sharply.
 
 
-def test_linear_on_match_inherits_sources_and_extends_the_entity_set() -> None:
-    """Spec rule 2, matched branch: sources are the input's (1), transformation
+def test_merge_of_one_input_inherits_sources_and_extends_the_entity_set() -> None:
+    """Spec rule 2's matched branch: sources are the input's (1), transformation
     sets copied (2), entity set copied and extended with the entity (3)."""
     origin = init_lineage("user:alice")
-    md = linear_lineage(
-        "in", origin, "out", "llm:api.openai.com/gpt-4", matcher=_always()
+    md = merge_lineage(
+        [("in", origin)], "out", "llm:api.openai.com/gpt-4", matcher=_always()
     )
 
     assert md.data_sources == frozenset({"user:alice"})
@@ -84,9 +96,9 @@ def test_linear_on_match_inherits_sources_and_extends_the_entity_set() -> None:
     assert md.entities == frozenset({"llm:api.openai.com/gpt-4"})
 
 
-def test_linear_adds_the_returned_transformation_to_all_sets() -> None:
-    """Spec rule 2(2): "add the returned transformation (if exists) to **all**
-    the transformation sets"."""
+def test_merge_adds_the_returned_transformation_to_all_of_that_inputs_sets() -> None:
+    """Spec rule 2(2)2: the transformation an input's match reported is added to
+    **all** of that input's transformation sets."""
     upstream = DataLineage(
         data_sources=frozenset({"user:alice", "tool:db"}),
         source_transformations={
@@ -95,8 +107,11 @@ def test_linear_adds_the_returned_transformation_to_all_sets() -> None:
         },
         entities=frozenset({"agent:a"}),
     )
-    md = linear_lineage(
-        "in", upstream, "out", "llm:x", matcher=_always(Transformation.SUMMARIZATION)
+    md = merge_lineage(
+        [("in", upstream)],
+        "out",
+        "llm:x",
+        matcher=_always(Transformation.SUMMARIZATION),
     )
 
     assert md.source_transformations == {
@@ -107,40 +122,41 @@ def test_linear_adds_the_returned_transformation_to_all_sets() -> None:
     }
 
 
-def test_linear_with_no_transformation_leaves_the_sets_untouched() -> None:
-    """Spec rule 2(2) "(if exists)": the trivial matcher reports ``None``, which
-    must not become a member of the set (nor a literal ``None`` entry)."""
+def test_merge_with_no_transformation_leaves_the_sets_untouched() -> None:
+    """Spec "(if exists)": the trivial matcher reports ``None``, which must not
+    become a member of the set (nor a literal ``None`` entry)."""
     upstream = DataLineage(
         data_sources=frozenset({"user:alice"}),
         source_transformations={"user:alice": frozenset({Transformation.ANONYMIZATION})},
         entities=frozenset({"agent:a"}),
     )
-    md = linear_lineage("in", upstream, "out", "llm:x", matcher=_always(None))
+    md = merge_lineage([("in", upstream)], "out", "llm:x", matcher=_always(None))
 
     assert md.source_transformations == {
         "user:alice": frozenset({Transformation.ANONYMIZATION})
     }
 
 
-def test_linear_degrades_to_init_when_the_matcher_refuses() -> None:
-    """Spec rule 2, false branch ("There is no lineage ... call init lineage") =
-    ADR-0027 D3(2). The upstream metadata is discarded entirely; the output is a
-    fresh origin rooted at the processing entity."""
+def test_merge_of_one_input_degrades_to_init_when_the_matcher_refuses() -> None:
+    """Spec rule 2's false branch ("There is no lineage ... call init lineage") =
+    ADR-0027 D3(2). With one input, "false for *all* payloads" is "false for this
+    one". The upstream metadata is discarded entirely; the output is a fresh origin
+    rooted at the processing entity."""
     upstream = DataLineage(
         data_sources=frozenset({"user:alice"}),
         source_transformations={"user:alice": frozenset({Transformation.SUMMARIZATION})},
         entities=frozenset({"agent:a", "llm:x"}),
     )
-    md = linear_lineage("in", upstream, "out", "tool:anonymizer", matcher=_never)
+    md = merge_lineage([("in", upstream)], "out", "tool:anonymizer", matcher=_never)
 
     assert md == init_lineage("tool:anonymizer")
     assert md.data_sources == frozenset({"tool:anonymizer"})
     assert md.entities == frozenset()
 
 
-def test_linear_does_not_mutate_its_input() -> None:
-    """Spec rule 2 says "create a **copy**" twice. The upstream metadata belongs
-    to another leg's persisted row; mutating it would corrupt that leg."""
+def test_merge_of_one_input_does_not_mutate_it() -> None:
+    """The spec says "create a **copy**". The upstream metadata belongs to another
+    leg's persisted row; mutating it would corrupt that leg."""
     upstream = init_lineage("user:alice")
     before = (
         upstream.data_sources,
@@ -148,8 +164,11 @@ def test_linear_does_not_mutate_its_input() -> None:
         upstream.entities,
     )
 
-    linear_lineage(
-        "in", upstream, "out", "llm:x", matcher=_always(Transformation.SUMMARIZATION)
+    merge_lineage(
+        [("in", upstream)],
+        "out",
+        "llm:x",
+        matcher=_always(Transformation.SUMMARIZATION),
     )
 
     assert (
@@ -159,7 +178,7 @@ def test_linear_does_not_mutate_its_input() -> None:
     ) == before
 
 
-# --- merge_lineage -----------------------------------------------------------
+# --- merge_lineage over MANY inputs ------------------------------------------
 
 
 def test_merge_unions_sources_maps_and_entities() -> None:
@@ -355,7 +374,7 @@ def test_merge_entity_set_does_not_depend_on_input_order() -> None:
     assert forward == reversed_
 
 
-def test_linear_entity_set_is_order_free_for_equivalent_upstreams() -> None:
+def test_entity_set_is_order_free_for_equivalent_upstreams() -> None:
     """The same union, reached through two differently-"ordered" upstream sets, is
     one value. A ``frozenset`` field makes this structurally true, which is the
     point: the type refuses to hold an order the algebra cannot justify."""
@@ -370,20 +389,47 @@ def test_linear_entity_set_is_order_free_for_equivalent_upstreams() -> None:
         entities=frozenset(["llm:x", "agent:a"]),
     )
 
-    assert linear_lineage(
-        "in", made_one_way, "out", "tool:t", matcher=_always()
-    ) == linear_lineage("in", made_the_other, "out", "tool:t", matcher=_always())
-
-
-def test_merge_of_a_single_input_matches_linear() -> None:
-    """Consistency check on the algebra: merge over one matching input produces
-    exactly what linear does. The ops differ in arity, not in semantics."""
-    upstream = init_lineage("user:alice")
-    matcher = _always(Transformation.SUMMARIZATION)
-
     assert merge_lineage(
-        [("in", upstream)], "out", "llm:x", matcher=matcher
-    ) == linear_lineage("in", upstream, "out", "llm:x", matcher=matcher)
+        [("in", made_one_way)], "out", "tool:t", matcher=_always()
+    ) == merge_lineage([("in", made_the_other)], "out", "tool:t", matcher=_always())
+
+
+def test_merge_of_one_input_is_the_triple_the_deleted_linear_op_computed() -> None:
+    """ADR-0027 D11's premise, pinned as a value: "a merge over one input and a
+    linear over that same input compute the identical triple".
+
+    Written out literally rather than as an equality against ``linear_lineage``,
+    which no longer exists — the claim that justified deleting it must still be
+    checkable, so the expected triple is the one that op returned: the input's
+    sources with the reported transformation stamped on every set, and the input's
+    entity set extended with the processing entity. Union of one source set is that
+    set; the key-collision merge has nothing to collide."""
+    upstream = DataLineage(
+        data_sources=frozenset({"user:alice", "tool:db"}),
+        source_transformations={
+            "user:alice": frozenset(),
+            "tool:db": frozenset({Transformation.ANONYMIZATION}),
+        },
+        entities=frozenset({"agent:a"}),
+    )
+
+    md = merge_lineage(
+        [("in", upstream)],
+        "out",
+        "llm:x",
+        matcher=_always(Transformation.SUMMARIZATION),
+    )
+
+    assert md == DataLineage(
+        data_sources=frozenset({"user:alice", "tool:db"}),
+        source_transformations={
+            "user:alice": frozenset({Transformation.SUMMARIZATION}),
+            "tool:db": frozenset(
+                {Transformation.ANONYMIZATION, Transformation.SUMMARIZATION}
+            ),
+        },
+        entities=frozenset({"agent:a", "llm:x"}),
+    )
 
 
 def test_merge_does_not_mutate_its_inputs() -> None:
@@ -405,6 +451,179 @@ def test_merge_does_not_mutate_its_inputs() -> None:
     ] == before
 
 
+# --- is_entity_source (ADR-0027 D12, spec :106-112) --------------------------
+
+
+def test_a_source_entity_joins_all_three_fields_with_an_empty_transformation_set() -> None:
+    """Spec ``:106-112`` / ADR-0027 D12, the whole rule in one assertion: on a
+    successful match a source entity is added to ``Sources`` (union with the
+    inherited ones), gains a ``Transformations`` key with an **EMPTY** set, and is
+    extended into ``Entities``.
+
+    The empty set is the point, and the reason this is not routed through the
+    inheriting code path: the entity's own contribution did not undergo the
+    transformation the *inherited* sources did, so stamping ``summarization`` onto it
+    would be a false claim about content the entity produced itself."""
+    upstream = init_lineage("user:alice")
+
+    md = merge_lineage(
+        [("in", upstream)],
+        "out",
+        "tool:get_payment_info",
+        matcher=_always(Transformation.SUMMARIZATION),
+        is_entity_source=True,
+    )
+
+    assert md.data_sources == frozenset({"user:alice", "tool:get_payment_info"})
+    assert md.source_transformations == {
+        # The inherited source carries the match's transformation...
+        "user:alice": frozenset({Transformation.SUMMARIZATION}),
+        # ...the entity's own contribution carries none.
+        "tool:get_payment_info": frozenset(),
+    }
+    assert md.entities == frozenset({"tool:get_payment_info"})
+
+
+def test_a_non_source_entity_joins_none_of_the_three() -> None:
+    """Spec ``:126`` (Example 1's Note): "no need to add entity to transformation or
+    entities - its not a source". It is absent from ``Sources`` and from the
+    transformation map — but it IS in ``Entities``, which is the *pass-through*
+    claim and holds either way: the data demonstrably went through it."""
+    upstream = init_lineage("user:alice")
+
+    md = merge_lineage(
+        [("in", upstream)],
+        "out",
+        "llm:gpt-4",
+        matcher=_always(Transformation.SUMMARIZATION),
+        is_entity_source=False,
+    )
+
+    assert md.data_sources == frozenset({"user:alice"})
+    assert "llm:gpt-4" not in md.source_transformations
+    assert md.entities == frozenset({"llm:gpt-4"})
+
+
+def test_is_entity_source_defaults_to_false() -> None:
+    """An omitted flag must not silently invent an origin. The safe default for a
+    predicate whose declared table is not yet read is "not a source"."""
+    upstream = init_lineage("user:alice")
+
+    assert merge_lineage(
+        [("in", upstream)], "out", "tool:t", matcher=_always()
+    ) == merge_lineage(
+        [("in", upstream)], "out", "tool:t", matcher=_always(), is_entity_source=False
+    )
+
+
+def test_source_entity_is_added_alongside_every_matching_input() -> None:
+    """"if is_entity_source == true:  A ∪ B ∪ ... ∪ entity" (spec ``:107-108``) —
+    a union, not a replacement. The counterexample D12 is built on: a tool that
+    both consumes its request and returns freshly-read data must report BOTH, which
+    a ``matched``-only model could not express."""
+    a = DataLineage(
+        data_sources=frozenset({"user:alice"}),
+        source_transformations={"user:alice": frozenset()},
+        entities=frozenset({"agent:a"}),
+    )
+    b = DataLineage(
+        data_sources=frozenset({"tool:db"}),
+        source_transformations={"tool:db": frozenset()},
+        entities=frozenset({"llm:x"}),
+    )
+
+    md = merge_lineage(
+        [("pa", a), ("pb", b)],
+        "out",
+        "tool:charge_card",
+        matcher=_always(),
+        is_entity_source=True,
+    )
+
+    assert md.data_sources == frozenset(
+        {"user:alice", "tool:db", "tool:charge_card"}
+    )
+    assert set(md.source_transformations) == md.data_sources
+    assert md.entities == frozenset({"agent:a", "llm:x", "tool:charge_card"})
+
+
+def test_an_unmatched_input_does_not_suppress_the_entitys_own_contribution() -> None:
+    """The two facts are orthogonal (D12): pruning an input for failing to match
+    says nothing about whether the entity contributed content of its own. As long as
+    *some* input matched, the entity is still added."""
+    a = init_lineage("user:alice")
+    b = init_lineage("tool:db")
+    matcher = _per_payload(
+        {"pa": MatchResult(matched=False), "pb": MatchResult(matched=True)}
+    )
+
+    md = merge_lineage(
+        [("pa", a), ("pb", b)],
+        "out",
+        "tool:reader",
+        matcher=matcher,
+        is_entity_source=True,
+    )
+
+    assert md.data_sources == frozenset({"tool:db", "tool:reader"})
+    assert "user:alice" not in md.data_sources
+
+
+def test_the_degrade_branch_ignores_is_entity_source() -> None:
+    """Spec Example 3 (``:140-145``), stated for "false or true" alike: when match
+    returns false for EVERY input the op calls ``init_lineage`` at the entity,
+    **ignoring** ``is_entity_source``.
+
+    Both flag values must give the identical init-shaped triple. The bracketed
+    alternative reading at ``data_lineage_alg.md:104`` ("if is_entity_source = false
+    there should be no meaningful output") is an HTML comment the spec did not adopt
+    — implementing it would make a target-only entity that severs lineage produce
+    *nothing*, where the honest answer is that its output exists and it is the only
+    origin left to name (ADR-0027 D3)."""
+    inputs = [("pa", init_lineage("user:alice")), ("pb", init_lineage("tool:db"))]
+
+    as_source = merge_lineage(
+        inputs, "out", "tool:anonymizer", matcher=_never, is_entity_source=True
+    )
+    not_source = merge_lineage(
+        inputs, "out", "tool:anonymizer", matcher=_never, is_entity_source=False
+    )
+
+    assert as_source == init_lineage("tool:anonymizer")
+    assert as_source == not_source
+    # Specifically: `entities` stays EMPTY even for a source entity. This is the
+    # asymmetry ADR-0027 D12 records but does not resolve — the merge branch puts a
+    # source entity in `entities`, the degrade branch does not.
+    assert as_source.entities == frozenset()
+
+
+def test_a_source_entity_already_upstream_of_itself_keeps_its_transformations() -> None:
+    """The one collision the entity's own contribution can cause: the entity is
+    ALSO an inherited source (it appears upstream of itself in the trace, e.g. a
+    tool called twice whose first result flowed back through it).
+
+    Adding the entity must not *overwrite* that key with the empty set — those
+    transformations genuinely applied on the inherited path. Union with an empty set
+    is a no-op, so nothing false is added either. Not reachable in v1 (a tool is
+    memoryless, so it never pools a prior carrying its own output), but the rule is
+    "merge the transformation sets in case a key appears twice" and an overwrite
+    would silently break it the moment a matcher or memory model changed."""
+    upstream = DataLineage(
+        data_sources=frozenset({"tool:t"}),
+        source_transformations={"tool:t": frozenset({Transformation.ANONYMIZATION})},
+        entities=frozenset(),
+    )
+
+    md = merge_lineage(
+        [("in", upstream)], "out", "tool:t", matcher=_always(), is_entity_source=True
+    )
+
+    assert md.data_sources == frozenset({"tool:t"})
+    assert md.source_transformations == {
+        "tool:t": frozenset({Transformation.ANONYMIZATION})
+    }
+
+
 # --- the ops are matcher-agnostic -------------------------------------------
 
 
@@ -418,7 +637,7 @@ def test_ops_pass_input_then_output_to_the_matcher() -> None:
         seen.append((payload_a, payload_b))
         return MatchResult(matched=True)
 
-    linear_lineage("IN", init_lineage("s"), "OUT", "e", matcher=_record)
+    merge_lineage([("IN", init_lineage("s"))], "OUT", "e", matcher=_record)
     merge_lineage(
         [("A", init_lineage("s1")), ("B", init_lineage("s2"))],
         "OUT",
@@ -440,5 +659,5 @@ def test_ops_never_read_matcher_evidence() -> None:
     def _with_evidence(payload_a: object, payload_b: object, /) -> MatchResult:
         return MatchResult(matched=True, evidence=_Boom())
 
-    md = linear_lineage("in", init_lineage("s"), "out", "e", matcher=_with_evidence)
+    md = merge_lineage([("in", init_lineage("s"))], "out", "e", matcher=_with_evidence)
     assert md.data_sources == frozenset({"s"})

@@ -451,10 +451,9 @@ selects is an outage by construction, not by accident.
 
 ### D11 — The algebra collapses to two operations; `linear_lineage` is deleted
 
-**Not yet shipped.** Decided here; the implementation still carries
-`operations.linear_lineage`, `Operation.LINEAR` and D4's three-way branch. Until
-it lands, the code and the docstrings citing D3/D4 describe the *previous*
-algebra — this decision is the authority, not those comments.
+**Shipped** (issue #131). `operations.linear_lineage`, `Operation.LINEAR` and D4's
+three-way branch are gone; the docstrings that described the previous algebra were
+updated with them.
 
 The spec changed. `docs/data_lineage_alg.md` (human-owned, authoritative) replaced
 its separate single-payload operation with **one generic `merge_lineage`** that
@@ -495,11 +494,12 @@ decision and is documented in `traversal.derive_trace_lineage`.
 
 ### D12 — `is_entity_source`: an entity can contribute itself as a source, independent of `match`
 
-**Not yet shipped.** Decided here; nothing in the implementation reads an entity
-taxonomy or passes `is_entity_source`, so today no mid-trace entity can become a
-data source at all (the trivial matcher makes D3(2)'s degrade unreachable). Landing
-this changes persisted output for every trace with a tool call and requires
-re-derivation.
+**Shipped** (issue #131), as `memory.SOURCE_KINDS` / `memory.is_entity_source`
+beside `memory.accumulates`, threaded into `merge_lineage`. Kind defaults only —
+reading the declared taxonomy table remains deferred. This changed persisted output
+for every trace with a tool call, so it requires re-derivation via the D8/D9
+recovery path (truncate `lineage_metadata` + `lineage_trace_status`, reset the
+`data_lineage` cursor to 0, re-drain).
 
 The spec added an **Entity Taxonomy** (`data_lineage_alg.md:24-35`) and threaded an
 `is_entity_source: bool` parameter through `merge_lineage` (`:92`, `:95-96`,

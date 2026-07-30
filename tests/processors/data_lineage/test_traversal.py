@@ -5,9 +5,11 @@ returns per-leg **data lineage**, so the whole algorithm is testable without a
 database. The DB driver (``data_lineage/driver.py``) only supplies these values
 and persists the result.
 
-The centrepiece is ``test_spec_worked_example_*``: the five-op sequence from
-``docs/data_lineage_alg.md`` lines 140-153, asserted op-by-op — an agent's FIRST
-outbound uses ``linear`` and later outbounds use ``merge`` once ≥2 priors exist.
+The centrepiece is ``test_spec_worked_example_*``: the op sequence from
+``docs/data_lineage_alg.md`` lines 165-177, asserted op-by-op. Selection is two-way
+since D11 — the trace root ``init``s and every other leg ``merge``s — so the
+load-bearing assertions are the **inbound sets**, which is where memory (D2) shows
+up now that it no longer picks an op.
 """
 
 from __future__ import annotations
@@ -95,24 +97,30 @@ def worked_example() -> tuple[list[Leg], dict[str, Entity]]:
 
 
 def test_spec_worked_example_op_sequence(worked_example) -> None:
-    """The spec's five ops, verbatim (``data_lineage_alg.md:147-151``)::
+    """The spec's ops, verbatim (``data_lineage_alg.md:171-175``)::
 
-        #1  init            (the user's payload originates outside the trace)
-        #2  linear (1 -> 2)     the agent's FIRST outbound: one inbound only
-        #3  linear (2 -> 3)     the LLM is memoryless
-        #4  merge  (1, 3 -> 4)  the agent now retains two priors
-        #5  linear (4 -> 5)     the LLM is STILL memoryless
-        #6  merge  (1, 3, 5 -> 6)
-    """
+        #1  init                     (the user's payload originates outside the trace)
+        #2  merge_lineage (1, 2)     the agent's FIRST outbound: one inbound only
+        #3  merge_lineage (2, 3)     the LLM is memoryless
+        #4  merge_lineage (1, 3, 4)  the agent now retains two priors
+        #5  merge_lineage (4, 5)     the LLM is STILL memoryless
+        #6  merge_lineage (1, 3, 5, 6)
+
+    Every non-root leg is a ``merge`` since D11 collapsed the algebra — the spec calls
+    ``merge_lineage`` at all five positions, including the one-input ones that used to
+    read ``linear``. Which means this assertion is now nearly free of information: the
+    arity distinction it used to carry lives in
+    ``test_spec_worked_example_inbound_sets`` below, which is the test that would
+    actually fail if memory broke."""
     legs, ents = worked_example
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
     assert [result.legs[(leg.interaction_id, leg.leg_type)].operation for leg in legs] == [
         Operation.INIT,
-        Operation.LINEAR,
-        Operation.LINEAR,
         Operation.MERGE,
-        Operation.LINEAR,
+        Operation.MERGE,
+        Operation.MERGE,
+        Operation.MERGE,
         Operation.MERGE,
     ]
 
@@ -129,27 +137,36 @@ def test_spec_worked_example_inbound_sets(worked_example) -> None:
     }
     assert inbound == {
         1: (),  # init: nothing inbound
-        2: ("h1",),  # linear_lineage(1, 2)
-        3: ("h2",),  # linear_lineage(2, 3)
-        4: ("h1", "h3"),  # Merge lineage (1, 3, 4)
-        5: ("h4",),  # linear_lineage(4, 5)
-        6: ("h1", "h3", "h5"),  # Merge lineage (1, 3, 5, 6)
+        2: ("h1",),  # merge_lineage(1, 2)
+        3: ("h2",),  # merge_lineage(2, 3)
+        4: ("h1", "h3"),  # merge_lineage(1, 3, 4)
+        5: ("h4",),  # merge_lineage(4, 5)
+        6: ("h1", "h3", "h5"),  # merge_lineage(1, 3, 5, 6)
     }
 
 
-def test_spec_worked_example_agents_first_outbound_is_linear_not_merge(
+def test_spec_worked_example_agents_first_outbound_merges_over_one_input(
     worked_example,
 ) -> None:
-    """ADR-0027 D4's explicit call-out: "An accumulating entity's **first**
-    outbound legitimately has one inbound and uses (b)". Pinned on its own
-    because treating "is an agent" as "always merge" is the natural mistake."""
+    """ADR-0027 D4's old call-out was "an accumulating entity's **first** outbound
+    legitimately has one inbound", which had to be said because that case fell on the
+    *other side* of a selection branch. D11 removed the branch, so the claim is now
+    purely about arity: the agent's first outbound merges over ONE input, its later
+    ones over more.
+
+    Kept rather than deleted, because the mistake it guards against survived the
+    collapse: treating "is an accumulating entity" as "has all its priors already"
+    would give the first outbound two inputs and put the agent's own outbound payload
+    among them."""
     legs, ents = worked_example
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
     first_outbound = result.legs[("ix_al1", "request")]  # #2
     later_outbound = result.legs[("ix_al2", "request")]  # #4
-    assert first_outbound.operation is Operation.LINEAR
+    assert first_outbound.operation is Operation.MERGE
     assert later_outbound.operation is Operation.MERGE
+    assert len(first_outbound.inbound_payloads) == 1
+    assert len(later_outbound.inbound_payloads) == 2
 
 
 def test_spec_worked_example_metadata_accumulates_the_user_as_the_source(
@@ -271,9 +288,13 @@ def test_routing_ignores_entities_not_party_to_the_interaction() -> None:
 
 
 def test_a_memoryless_entity_keeps_only_its_latest_inbound() -> None:
-    """D2: "An LLM/tool does not accumulate, so it always sees one input and uses
-    ``linear``". The second LLM response sees only the second request — which is
-    exactly why the spec's #5 is ``linear`` and not ``merge``."""
+    """D2: "An LLM/tool does not accumulate, so it always sees one input". The second
+    LLM response sees only the second request, which is why the spec's #5 merges over
+    ONE payload while #4 merges over two.
+
+    Asserted on the inbound set, not the op name: since D11 both read ``merge``, so
+    an op-name assertion here would pass even if the LLM had wrongly retained ``q1``
+    — the exact regression this test exists to catch."""
     ents = _entities(agent="agent", llm="llm")
     legs = [
         _leg("ix1", "request", 1, "agent", "llm", payload_hash="q1"),
@@ -284,7 +305,7 @@ def test_a_memoryless_entity_keeps_only_its_latest_inbound() -> None:
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
     assert result.legs[("ix2", "response")].inbound_payloads == ("q2",)
-    assert result.legs[("ix2", "response")].operation is Operation.LINEAR
+    assert result.legs[("ix2", "response")].operation is Operation.MERGE
 
 
 def test_an_accumulating_entity_retains_every_prior() -> None:
@@ -313,7 +334,7 @@ def test_two_priors_with_identical_payloads_are_two_priors() -> None:
     """Priors are retained by **position**, not by content hash — the same reason
     ADR-0027 D5 keys the table on the leg. Payloads are content-addressed and
     deduped, so two distinct priors can carry byte-identical content; collapsing
-    them would demote the resulting ``merge`` to a ``linear``.
+    them would drop a whole branch of the merge's provenance.
 
     This is the ``patent_agent_II`` regression: in that captured trace an LLM's
     response leg and the tool leg inferred from that response's ``tool_calls`` carry
@@ -340,7 +361,11 @@ def test_accumulating_kinds_are_declared_in_exactly_one_place() -> None:
     """Acceptance: "The accumulating-entity predicate lives in exactly one named
     place". The traversal must consult that predicate rather than testing
     ``kind == 'agent'`` inline, so this test can move the goalposts by patching
-    the single declaration."""
+    the single declaration.
+
+    Kept even though D11 stopped this predicate selecting an op (ADR-0027 D11
+    "what this deliberately does not remove"): it still decides how many priors pool
+    and therefore ``merge_lineage``'s arity."""
     from data_governance.processors.data_lineage import memory
 
     assert memory.accumulates(Entity(id="a", natural_key="a", kind="agent"))
@@ -350,12 +375,14 @@ def test_accumulating_kinds_are_declared_in_exactly_one_place() -> None:
 
 def test_traversal_honours_a_redeclared_accumulating_predicate(monkeypatch) -> None:
     """Proof the predicate really is the single source of truth: declare an LLM
-    accumulating and #5 turns from ``linear`` into ``merge`` with no other
-    change. If any ``kind == 'agent'`` check had been scattered into the
-    traversal this would still say ``linear``."""
-    from data_governance.processors.data_lineage import memory
+    accumulating and #5's inbound set grows from one payload to two, with no other
+    change. If any ``kind == 'agent'`` check had been scattered into the traversal,
+    #5 would still see only its own request.
 
-    monkeypatch.setattr(memory, "ACCUMULATING_KINDS", frozenset({"agent", "llm"}))
+    The observable moved with D11: this used to watch a ``linear`` turn into a
+    ``merge``. Both now read ``merge``, so the assertion is on the inbound set — which
+    is what the predicate was always really controlling."""
+    from data_governance.processors.data_lineage import memory
 
     ents = _entities(user="user", agent="agent", llm="llm")
     legs = [
@@ -365,9 +392,15 @@ def test_traversal_honours_a_redeclared_accumulating_predicate(monkeypatch) -> N
         _leg("ix_al2", "request", 4, "agent", "llm"),
         _leg("ix_al2", "response", 5, "agent", "llm"),
     ]
+
+    # Baseline: a memoryless LLM keeps only its latest inbound.
+    assert derive_trace_lineage(legs, ents, matcher=_always).legs[
+        ("ix_al2", "response")
+    ].inbound_payloads == ("h4",)
+
+    monkeypatch.setattr(memory, "ACCUMULATING_KINDS", frozenset({"agent", "llm"}))
     result = derive_trace_lineage(legs, ents, matcher=_always)
 
-    assert result.legs[("ix_al2", "response")].operation is Operation.MERGE
     assert result.legs[("ix_al2", "response")].inbound_payloads == ("h2", "h4")
 
 
@@ -411,6 +444,146 @@ def test_distinct_memory_keys_do_not_share_inbound(monkeypatch) -> None:
     # `ix_ua`/`ix_al` priors — they live in different memory nodes.
     assert result.legs[("ix_at", "request")].inbound_payloads == ()
     assert result.legs[("ix_at", "request")].operation is Operation.INIT
+
+
+# --- D12: is_entity_source ---------------------------------------------------
+
+
+def test_source_kinds_are_declared_in_exactly_one_place() -> None:
+    """The taxonomy defaults (``data_lineage_alg.md:31-35``), in the one named place
+    beside ``accumulates``: ``tool`` ✓, ``llm`` ✗, ``agent`` ✗. Reading the declared
+    per-entity table is deferred, so kind is the whole of the answer today."""
+    from data_governance.processors.data_lineage import memory
+
+    assert memory.is_entity_source(Entity(id="t", natural_key="t", kind="tool"))
+    assert not memory.is_entity_source(Entity(id="l", natural_key="l", kind="llm"))
+    assert not memory.is_entity_source(Entity(id="a", natural_key="a", kind="agent"))
+    # Kinds the taxonomy does not name are not sources: a genuine trace root already
+    # becomes an origin structurally (D3(1)), so declaring one adds nothing.
+    assert not memory.is_entity_source(Entity(id="u", natural_key="u", kind="user"))
+
+
+def test_a_tool_leg_names_the_tool_as_a_source_of_its_own_response() -> None:
+    """The bug D12 fixes, at the traversal level. A tool's response leg used to
+    report only the agent, so a tool that reads an external store — the live trace's
+    ``get_payment_info``, returning a PAN, CVV and billing address — had its ingress
+    attributed to the agent that called it.
+
+    With ``is_entity_source`` the tool appears as a source of its own response
+    *alongside* the inherited agent, with an empty transformation set."""
+    ents = _entities(user="user", agent="agent", tool="tool")
+    legs = [
+        _leg("ix_ua", "request", 1, "user", "agent", payload_hash="prompt"),
+        _leg("ix_at", "request", 2, "agent", "tool", payload_hash="to_tool"),
+        _leg("ix_at", "response", 3, "agent", "tool", payload_hash="from_tool"),
+    ]
+    result = derive_trace_lineage(legs, ents, matcher=_always)
+
+    tool_response = result.legs[("ix_at", "response")].lineage
+    assert tool_response.data_sources == frozenset({"user", "tool"})
+    assert tool_response.source_transformations["tool"] == frozenset()
+    assert "tool" in tool_response.entities
+
+
+def test_an_llm_leg_does_not_name_the_llm_as_a_source() -> None:
+    """The other half of the taxonomy: ``llm`` is ✗, so the same structural shape
+    with an LLM instead of a tool reports the upstream source only. Pinned beside the
+    tool case because "every mid-trace entity is now a source" is the natural
+    over-correction."""
+    ents = _entities(user="user", agent="agent", llm="llm")
+    legs = [
+        _leg("ix_ua", "request", 1, "user", "agent", payload_hash="prompt"),
+        _leg("ix_al", "request", 2, "agent", "llm", payload_hash="to_llm"),
+        _leg("ix_al", "response", 3, "agent", "llm", payload_hash="from_llm"),
+    ]
+    result = derive_trace_lineage(legs, ents, matcher=_always)
+
+    llm_response = result.legs[("ix_al", "response")].lineage
+    assert llm_response.data_sources == frozenset({"user"})
+    assert "llm" not in llm_response.source_transformations
+    # But it IS in `entities` — the pass-through claim holds regardless.
+    assert "llm" in llm_response.entities
+
+
+def test_a_tools_source_contribution_reaches_the_agents_later_legs() -> None:
+    """The whole point of the fix, end to end over a trace: sources accumulate down
+    the trace through agent memory (D2), so the agent's final answer roots at the user
+    **and** at every tool that fired. The issue's expected result."""
+    ents = _entities(user="user", agent="agent", tool_a="tool", tool_b="tool")
+    legs = [
+        _leg("ix_ua", "request", 1, "user", "agent", payload_hash="prompt"),
+        _leg("ix_a", "request", 2, "agent", "tool_a", payload_hash="to_a"),
+        _leg("ix_a", "response", 3, "agent", "tool_a", payload_hash="from_a"),
+        _leg("ix_b", "request", 4, "agent", "tool_b", payload_hash="to_b"),
+        _leg("ix_b", "response", 5, "agent", "tool_b", payload_hash="from_b"),
+        _leg("ix_ua", "response", 6, "user", "agent", payload_hash="answer"),
+    ]
+    result = derive_trace_lineage(legs, ents, matcher=_always)
+
+    answer = result.legs[("ix_ua", "response")].lineage
+    assert answer.data_sources == frozenset({"user", "tool_a", "tool_b"})
+    # Every source has a key, including the tools' empty-set ones (the invariant
+    # ``test_captured_traces`` asserts against the persisted rows).
+    assert set(answer.source_transformations) == answer.data_sources
+
+
+def test_a_structural_init_ignores_is_entity_source() -> None:
+    """The empty-inbound branch does not consult the predicate: an ``init`` is
+    already rooted at its entity, so a source tool and a non-source agent that both
+    root a trace produce the identical shape — one source, empty entity set."""
+    ents = _entities(tool="tool", agent="agent")
+    legs = [_leg("ix", "request", 1, "tool", "agent", payload_hash="p")]
+    result = derive_trace_lineage(legs, ents, matcher=_always)
+
+    entry = result.legs[("ix", "request")]
+    assert entry.operation is Operation.INIT
+    assert entry.lineage == operations.init_lineage("tool")
+    assert entry.lineage.entities == frozenset()
+
+
+def test_the_degrade_branch_ignores_is_entity_source_in_the_traversal() -> None:
+    """Spec Example 3 through the traversal: a refusing matcher on a **tool** leg
+    still yields plain ``init_lineage`` metadata, with an EMPTY entity set. The
+    tool being a declared source does not add it a second time, and does not put it
+    in ``entities``.
+
+    This is where ADR-0027 D12's recorded entity-set asymmetry is visible — the merge
+    branch puts a source tool in ``entities``, this branch does not. Unobservable
+    under ``simple_match``; pinned so a real matcher's arrival is a deliberate
+    decision rather than a surprise."""
+    ents = _entities(agent="agent", tool="tool")
+    legs = [
+        _leg("ix", "request", 1, "agent", "tool", payload_hash="to_tool"),
+        _leg("ix", "response", 2, "agent", "tool", payload_hash="from_tool"),
+    ]
+    result = derive_trace_lineage(legs, ents, matcher=_never)
+
+    entry = result.legs[("ix", "response")]
+    assert entry.operation is Operation.MERGE, "selection is structural"
+    assert entry.lineage == operations.init_lineage("tool")
+    assert entry.lineage.entities == frozenset()
+
+
+def test_traversal_honours_a_redeclared_source_predicate(monkeypatch) -> None:
+    """Same single-source-of-truth proof as for ``accumulates``: declare ``llm`` a
+    source and the LLM's response leg gains itself as an origin, with no other
+    change. A scattered ``kind == 'tool'`` check in the traversal or the ops would
+    leave this reporting the user alone."""
+    from data_governance.processors.data_lineage import memory
+
+    monkeypatch.setattr(memory, "SOURCE_KINDS", frozenset({"tool", "llm"}))
+
+    ents = _entities(user="user", agent="agent", llm="llm")
+    legs = [
+        _leg("ix_ua", "request", 1, "user", "agent", payload_hash="prompt"),
+        _leg("ix_al", "request", 2, "agent", "llm", payload_hash="to_llm"),
+        _leg("ix_al", "response", 3, "agent", "llm", payload_hash="from_llm"),
+    ]
+    result = derive_trace_lineage(legs, ents, matcher=_always)
+
+    assert result.legs[("ix_al", "response")].lineage.data_sources == frozenset(
+        {"user", "llm"}
+    )
 
 
 # --- D3(2): degrade to init at runtime --------------------------------------

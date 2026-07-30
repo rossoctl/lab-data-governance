@@ -106,7 +106,7 @@ def test_legs_before_the_gap_keep_their_full_lineage(
 
     assert result.legs[("ix_ua", "request")].operation is Operation.INIT
     first_outbound = result.legs[("ix_al1", "request")]
-    assert first_outbound.operation is Operation.LINEAR
+    assert first_outbound.operation is Operation.MERGE
     assert first_outbound.inbound_payloads == ("h1",)
     assert first_outbound.lineage.data_sources == frozenset({"user"})
     assert first_outbound.lineage.entities == frozenset({"agent"})
