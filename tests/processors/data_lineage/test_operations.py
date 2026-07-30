@@ -591,9 +591,10 @@ def test_the_degrade_branch_ignores_is_entity_source() -> None:
 
     assert as_source == init_lineage("tool:anonymizer")
     assert as_source == not_source
-    # Specifically: `entities` stays EMPTY even for a source entity. This is the
-    # asymmetry ADR-0027 D12 records but does not resolve — the merge branch puts a
-    # source entity in `entities`, the degrade branch does not.
+    # Specifically: `entities` stays EMPTY even for a source entity. Consistent with
+    # ADR-0027 D12: `entities` is a claim that data passed *through*, and on this
+    # branch nothing did — the output originates here with no upstream at all. The
+    # merge branch puts the entity in `entities` because data genuinely transited it.
     assert as_source.entities == frozenset()
 
 

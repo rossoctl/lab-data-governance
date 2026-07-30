@@ -536,6 +536,19 @@ with the same trajectory — declared config later, one named place now. Both sh
 live together rather than in separate modules, since the deferred table supplies
 both.
 
+**Kinds the taxonomy does not name default to "not a source".** The spec's table
+covers `llm` / `tool` / `agent`; the full kind set also has `user`, `client` and
+`service` (CONTEXT.md **Entity**). Absence from `SOURCE_KINDS` means ✗, so those
+three contribute nothing of their own. This costs nothing today for a trace root —
+`user` / `client` legs already become origins **structurally** via D3(1), which
+needs no taxonomy entry — and it keeps the safe direction for `service`, whose
+data-contributing status is genuinely unknown rather than assumed.
+
+Deliberately a *default*, not a decision about those kinds: adding a kind is a
+one-line change to `SOURCE_KINDS`, and the declared table supersedes the whole
+question. Recorded so a later reader does not mistake the omission for a finding
+that `service` was analyzed and ruled out.
+
 **Accepted consequence: tools over-report as sources under the trivial matcher.**
 With `simple_match` always matching, the degrade branch never fires and every tool
 leg adds its tool to `Sources`. Combined with an agent's accumulation (D2), the
@@ -552,14 +565,28 @@ where the failure this replaces was *under*-reporting an external data ingress.
 internal/external column that no operation reads. It is recorded for future
 use (inter-trace / Step II) and has no v1 semantics.
 
-**Entity-set asymmetry, recorded not resolved.** `is_entity_source=true` puts the
-entity in `Entities`, but `init_lineage` leaves `Entities` **empty** for the same
-"this entity originated data" fact (`:78-83`). So whether a source-tool appears in
-its own `Entities` depends on which branch ran: on a successful match it does, on
-the all-false degrade it does not. Unobservable under `simple_match` (only the
-match branch fires), and the readings are defensible in both places — data did flow
-through the tool in the merge case, whereas a genuine trace root has no upstream at
-all. Flagged for whoever implements a real matcher; not a spec change.
+**`Entities` membership follows data flow, not source-hood — resolved.**
+`Entities` answers "did data pass *through* this entity", which is a question about
+flow and is **independent of `is_entity_source`**. So the entity is extended into
+`Entities` unconditionally on the matched branch, whether or not it is also a
+source. `is_entity_source` gates `Sources` and `Transformations` only
+(`data_lineage_alg.md:126`, Example 1's Note, excludes the entity from exactly
+those two).
+
+This resolves what was previously recorded as an asymmetry against
+`init_lineage`, which leaves `Entities` **empty** (`:78-83`). The two are
+consistent once membership is read as a flow claim rather than an origin claim:
+
+- **Matched branch** — data reached the entity from upstream and left transformed,
+  so it genuinely passed *through*. It belongs in `Entities`.
+- **`init_lineage`** — the payload originates here with no upstream at all. Nothing
+  passed *through* anything, so an empty set is the truthful answer, and listing the
+  originating entity would assert a transit that did not happen.
+
+A source entity therefore lands in `Entities` when data passed through it, and only
+then. Not a spec change — this is the reading the spec's own rules produce; it is
+recorded because the earlier draft treated the difference as an unresolved
+inconsistency rather than as two different facts.
 
 ## Outputs
 
@@ -664,3 +691,11 @@ matching how ADR-0024/0025 name their PKs.
   a match — settled by **D12**'s `is_entity_source`. Previously the only route was
   D3(2)'s degrade, which the trivial matcher makes unreachable, so no tool could
   ever appear as an origin.
+- Whether a *source* entity also belongs in `Entities` — settled in **D12**:
+  yes, when data passed through it. `Entities` is a flow claim, independent of
+  source-hood; `is_entity_source` gates `Sources` and `Transformations` only. This
+  was previously recorded as an unresolved asymmetry against `init_lineage`'s empty
+  set; the two are consistent once membership is read as transit rather than origin.
+- Kinds absent from the taxonomy table (`user` / `client` / `service`) — **D12**
+  defaults them to "not a source". A default that a later entry or the declared
+  table overrides, not a finding about those kinds.

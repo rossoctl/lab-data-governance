@@ -547,10 +547,12 @@ def test_the_degrade_branch_ignores_is_entity_source_in_the_traversal() -> None:
     tool being a declared source does not add it a second time, and does not put it
     in ``entities``.
 
-    This is where ADR-0027 D12's recorded entity-set asymmetry is visible — the merge
-    branch puts a source tool in ``entities``, this branch does not. Unobservable
-    under ``simple_match``; pinned so a real matcher's arrival is a deliberate
-    decision rather than a surprise."""
+    Contrast with the merge branch, which DOES put a source tool in ``entities``.
+    Both follow ADR-0027 D12's rule that ``entities`` records transit, not
+    origin: data passed through the tool there, whereas here the output originates
+    at the tool with no upstream to have passed through. Unobservable under
+    ``simple_match``; pinned so a real matcher's arrival is a deliberate decision
+    rather than a surprise."""
     ents = _entities(agent="agent", tool="tool")
     legs = [
         _leg("ix", "request", 1, "agent", "tool", payload_hash="to_tool"),
