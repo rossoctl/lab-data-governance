@@ -288,8 +288,16 @@ class TestInteractionLegs:
 
     def test_has_leg_dependent_columns(self, migrated_dsn: str) -> None:
         cols = _columns(migrated_dsn, "interaction_legs")
-        for c in ("occurred_at", "payload_hash", "error", "seq", "original_seq"):
+        for c in ("occurred_at", "payload_hash", "error", "seq"):
             assert c in cols, c
+
+    def test_has_no_original_seq_column(self, migrated_dsn: str) -> None:
+        """Issue #133: leg ``original_seq`` was dead weight (write-once, read
+        nowhere) and is dropped by migration 0011. ``seq`` (DB-owned per leg) is
+        self-sufficient; the ADR-0004 frozen-vs-mutating distinction is inert for
+        legs post-ADR-0027 (leg ``seq`` never mutates either). Entity/interaction
+        ``original_seq`` are out of scope and stay — see the entities test above."""
+        assert "original_seq" not in _columns(migrated_dsn, "interaction_legs")
 
     def test_occurred_at_is_timestamptz(self, migrated_dsn: str) -> None:
         cols = _columns(migrated_dsn, "interaction_legs")
@@ -412,3 +420,37 @@ def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
     command.upgrade(cfg, "head")
     assert _table_exists(pg_dsn, "interactions")
     assert _enum_labels(pg_dsn, "entity_kind") != []
+
+
+def test_drop_leg_original_seq_round_trips(pg_dsn: str, monkeypatch) -> None:
+    """Issue #133 / migration 0011: leg ``original_seq`` is dropped at head and
+    restored by ``downgrade`` to 0010, then dropped again on re-upgrade.
+
+    Down one revision to 0010 (``dg_entity_ready`` notify) — the leg column is
+    back but the rest of the leg schema (``seq``, its sequence, the PK) is
+    unchanged. Entity ``original_seq`` is out of scope and present throughout.
+    """
+    from alembic import command
+
+    from data_governance.db.migrate import _alembic_config
+
+    monkeypatch.setenv("DATABASE_URL", pg_dsn)
+    cfg = _alembic_config()
+
+    def _has_col(table: str, col: str) -> bool:
+        return col in _columns(pg_dsn, table)
+
+    # At head the leg column is gone; entity original_seq stays.
+    command.upgrade(cfg, "head")
+    assert not _has_col("interaction_legs", "original_seq")
+    assert _has_col("interaction_legs", "seq")
+    assert _has_col("entities", "original_seq")
+
+    # Down one revision to 0010: the leg column is restored, seq untouched.
+    command.downgrade(cfg, "0010_entity_ready_notify")
+    assert _has_col("interaction_legs", "original_seq")
+    assert _has_col("interaction_legs", "seq")
+
+    # Back up to head: the leg column is dropped again.
+    command.upgrade(cfg, "head")
+    assert not _has_col("interaction_legs", "original_seq")

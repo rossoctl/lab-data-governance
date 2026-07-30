@@ -264,10 +264,10 @@ def snapshot(dsn: str) -> dict[str, list]:
             # occurred_at/error ARE compared: they must be arrival-invariant
             # (occurred_at is a min/max fold over the leg's territory spans, and
             # the aggregate recompute folds into the persisted value so a
-            # lineage-scoped re-aggregate cannot narrow the window). seq /
-            # original_seq are omitted for the same reason entity seqs are:
-            # they are frozen to the first-touching span and arrival-order
-            # dependent (write-only passenger fields).
+            # lineage-scoped re-aggregate cannot narrow the window). seq is
+            # omitted for the same reason entity seqs are: it is a DB-owned
+            # per-leg nextval, arrival-order dependent and read by no consumer
+            # decision (issue #133 dropped the once-parallel leg original_seq).
             "interaction_legs": rows(
                 "SELECT interaction_id, leg_type::text, occurred_at, "
                 "payload_hash, error FROM interaction_legs "

@@ -200,11 +200,15 @@ in place as more spans arrive (late parents, **Finalization**,
 **Interaction reconciliation**). Identity (`id`) is stable across
 mutations. Per ADR-0025 an interaction is a **parent identity row**
 (`interactions`) plus one or two **Interaction leg**s (`interaction_legs`):
-the payload hash, `occurred_at`, `error`, and `seq` / `original_seq` live on
-the *leg* (each leg finalizes independently and cursors on its own `seq`);
-the parent carries only shared identity and has no `seq`. Stream consumers
-cursor `interaction_legs` on `seq`; `original_seq` lets them distinguish
-first-emission rows from mutations. There is no "complete" flag —
+the payload hash, `occurred_at`, `error`, and `seq` live on
+the *leg*: each leg carries its **own distinct** `seq` (DB-owned `nextval`,
+request leg inserted first → lower seq; ADR-0027 Reversal), so a leg finalizes
+and cursors on its own `seq`; the parent carries only shared identity and has
+no `seq`. Stream consumers cursor `interaction_legs` on `seq`. (A leg has no
+`original_seq`: unlike an **Entity**, a leg's `seq` is DB-owned and never
+mutates on re-derive, so a frozen-vs-mutating pair would carry no information —
+issue #133 dropped it.)
+There is no "complete" flag —
 consumers see the current state at query time. Anchor rules set
 identity (`caller_entity_id`, `callee_entity_id`) on creation only;
 re-fires of the same anchor rule on **Finalization** do not re-assert
@@ -231,8 +235,8 @@ merely by convention.
   is a join target for identity.
 - **On the leg** (`interaction_legs`): `leg_type`, `occurred_at` (the request
   leg's is the call-start time, the response leg's the completion time),
-  `payload_hash` (request vs response body), `error`, and its own `seq` /
-  `original_seq`. Each leg finalizes independently and advances its own `seq` —
+  `payload_hash` (request vs response body), `error`, and its own `seq`
+  (no `original_seq` — issue #133). Each leg finalizes independently and advances its own `seq` —
   this per-leg cursor is the mechanism that lets a stream consumer see "response
   landed" as a distinct event from "request sent". `interaction_legs_seq`
   replaces the retired `interactions_seq` as the cursorable stream.
@@ -265,9 +269,11 @@ from a single span. This varies by which P-interactions algorithm wrote the legs
   and response payloads, known at once. `state.flush` projects its one internal
   interaction into a request leg (`occurred_at = started_at`) and a **derived**
   response leg (`occurred_at = ended_at`) — two legs of a synchronous call
-  bracketed `started_at → ended_at`, sharing the one span as evidence and the
-  same `seq`. Honest (those timestamps genuinely bound the call) but *not* an
-  independent lifecycle.
+  bracketed `started_at → ended_at`, sharing the one span as evidence. Each leg
+  still gets its **own** DB-owned `seq` (`nextval`, request inserted first → lower
+  seq; ADR-0027 Reversal), so a leg-readiness consumer can order and cursor them
+  on a single seq even though they derive from one span. Honest (those timestamps
+  genuinely bound the call) but *not* an independent lifecycle.
 - **Graph algorithm — observed-style response legs.** The graph forms a
   bidirectional interaction per call (a request edge and a structurally-
   reconstructed response edge), each with its OWN anchor span and its own global
@@ -495,17 +501,21 @@ payload-bearing leg.
 
 **Readiness cursor** (contiguous-prefix):
 The durable drain watermark a **Leg readiness** consumer advances over
-`interaction_legs`. Unlike the ordinary `seq > cursor` stream cursor (spans,
-payloads, entities), it advances only across the **leading unbroken run of
-ready legs** and stops at the first unready one — because the readiness
-predicate is non-monotonic in `seq` (a low-`seq` leg with an unclassified
-payload can sit behind a high-`seq` ready leg, and a max-seq advance would
-strand it forever). It orders on the composite `(seq, leg_type)` so that within
-one **Interaction** the `request` leg is delivered before the `response` leg (a
-documented tiebreaker; both legs of the current source share one deterministic
-`seq`). Across different interactions no order is guaranteed. The cost of the
-contiguous prefix is head-of-line blocking: one slow classification holds the
-watermark until it lands. See ADR-0027.
+`interaction_legs`. Unlike the ordinary `seq > cursor` stream cursor's
+unconditional max-advance (spans, payloads, entities), it advances only across
+the **leading unbroken run of ready legs** and stops at the first unready one —
+because the readiness predicate is non-monotonic in `seq` (a low-`seq` leg with
+an unclassified payload can sit behind a high-`seq` ready leg, and a max-seq
+advance would strand it forever). Each leg carries its **own distinct** `seq`
+(DB-owned `nextval`, request leg inserted first → lower seq), so a plain single
+`seq` totally orders the legs: within one **Interaction** the `request` leg is
+delivered before the `response` leg simply because its seq is lower — no
+`leg_type` tiebreaker, and the watermark is a plain `BIGINT` that persists
+directly in `processor_state.last_processed_seq` (the composite `(seq, leg_type)`
+watermark of earlier shared-seq drafts is retired; ADR-0027 Reversal). Across
+different interactions no order is guaranteed beyond the seq order itself. The
+cost of the contiguous prefix is head-of-line blocking: one slow classification
+holds the watermark until it lands. See ADR-0027.
 
 **Ready channels** (`dg_entity_ready`, `dg_interaction_leg_ready`):
 The two consumer-facing notification channels a governance consumer `LISTEN`s

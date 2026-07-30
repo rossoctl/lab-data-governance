@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Leg-readiness notification for governance consumers
@@ -55,29 +55,30 @@ of the notification itself.
   (no-payload, or a payload whose `content_hash` was already classified). Both
   taps are pure latency optimization and carry no correctness weight.
 
-- **The readiness drain uses a contiguous-prefix cursor over `(seq, leg_type)`,
-  not plain `seq > cursor`.** The readiness predicate breaks the monotonicity
-  the standard cursor assumes: a low-`seq` leg with an unclassified payload can
-  sit behind a high-`seq` ready leg. Advancing the cursor to the max seq seen
-  would strand the low-`seq` leg forever. So the readiness cursor advances only
-  across the leading unbroken run of ready legs and stops at the first unready
-  one (head-of-line blocking: one slow classification holds the watermark).
-  This is the **one place the shared `_driver.drain` is not reused verbatim** —
-  it needs custom stop-at-first-unready advance logic. The `entities` stream, by
-  contrast, has no readiness gate and reuses `_driver` as-is.
+- **The readiness drain uses a contiguous-prefix cursor over a plain `seq`, not
+  an unconditional `seq > cursor` max-advance.** The readiness predicate breaks
+  the monotonicity the standard cursor assumes: a low-`seq` leg with an
+  unclassified payload can sit behind a high-`seq` ready leg. Advancing the
+  cursor to the max seq seen would strand the low-`seq` leg forever. So the
+  readiness cursor advances only across the leading unbroken run of ready legs
+  and stops at the first unready one (head-of-line blocking: one slow
+  classification holds the watermark). This is the **one place the shared
+  `_driver.drain` is not reused verbatim** — it needs custom stop-at-first-unready
+  advance logic. The `entities` stream, by contrast, has no readiness gate and
+  reuses `_driver` as-is.
 
-- **Intra-interaction ordering is delivered by an `ORDER BY seq, leg_type`
-  tiebreaker, keeping the legs' shared `seq`.** The required ordering is:
-  within one interaction the **request** leg is delivered ready before the
-  **response** leg; across different interactions no order is required. Both
-  legs of the current source share one deterministic `seq` (`state.flush`
-  stamps `ix.seq` on both — the span-derived value, *not*
-  `nextval('interaction_legs_seq')`). Ordering is therefore delivered by sorting
-  `(seq, leg_type)` with `request` before `response` (an intentional,
-  **documented** tiebreaker, not an incidental reliance on the ENUM order). The
-  composite `(seq, leg_type)` watermark is also the forward-compatibility hook
-  for the future Case-Y source, where the response leg becomes ready later and
-  must be held at the same seq until its own payload classifies.
+- **Intra-interaction ordering falls out of the legs' distinct `seq`s — no
+  tiebreaker.** The required ordering is: within one interaction the **request**
+  leg is delivered ready before the **response** leg; across different
+  interactions no order is required. Each leg carries its **own** DB-owned `seq`
+  from `nextval('interaction_legs_seq')`, and `state.flush` inserts the request
+  leg first, so the request leg always has the lower `seq`. Delivery therefore
+  follows a plain `ORDER BY seq` and request-before-response is implied by the
+  seq order itself — the `(seq, leg_type)` composite watermark and the explicit
+  `leg_type` tiebreaker earlier drafts needed for shared-seq legs are **retired**
+  (see the Reversal note below). A plain single-`BIGINT` watermark round-trips
+  through `processor_state.last_processed_seq` directly, which the future Case-Y
+  source (response leg readying later, at its own higher `seq`) also satisfies.
 
 ## Why not the alternatives
 
@@ -98,15 +99,20 @@ of the notification itself.
   state.
 
 - **Per-leg `seq` from `nextval('interaction_legs_seq')`** (to sequence the two
-  legs independently). Rejected: `nextval` is assigned in arrival order and is
-  **not replay-deterministic**. The whole P-interactions design guarantees
+  legs independently). *Originally rejected, now the chosen path — see the
+  Reversal note below.* The original objection was replay-determinism: `nextval`
+  is assigned in arrival order, and the P-interactions design guarantees
   cursor-reset re-drains reproduce identical derived rows (the `--scramble`
-  order-independence invariant); leg `seq` is span-derived precisely to preserve
-  this. `nextval` per leg would reassign leg seqs on any upstream replay
-  (ADR-0007 crash recovery, ADR-0024 re-classification recovery), so a
-  downstream consumer would see already-processed legs reappear under new seqs.
-  The `(seq, leg_type)` tiebreaker delivers the ordering without paying this
-  cost.
+  order-independence invariant), so a `nextval` per leg looked like it would
+  reassign leg seqs on any upstream replay (ADR-0007 crash recovery, ADR-0024
+  re-classification recovery) and make already-processed legs reappear under new
+  seqs. That objection does **not** hold: dropping `seq` from the leg's
+  `ON CONFLICT ... DO UPDATE SET` makes a re-derive **preserve** the once-assigned
+  seq (only cosmetic sequence *gaps* from the discarded insert attempt, never a
+  changed stored value), and the `--scramble` byte gate already **excludes** leg
+  `seq`/`original_seq` from comparison as arrival-order-dependent passenger
+  fields. So the composite tiebreaker was solving a problem the shared seq
+  *created*, not an intrinsic one.
 
 ## Consequences
 
@@ -121,16 +127,56 @@ of the notification itself.
   only deviation from the "reuse `_driver`" grain established by
   P-classification.
 
-- **The `state.flush` write path is unchanged.** Legs keep shared `ix.seq`; no
-  migration touches `interaction_legs`. This is a read-side + notify-side
+- **The `state.flush` write path gains DB-owned leg seq (see Reversal).** The
+  streaming branch stops stamping `ix.seq` on the legs and lets the column's
+  `nextval('interaction_legs_seq')` DEFAULT (migration 0009 — already present, so
+  no new migration) assign each leg its own seq; `seq` is dropped from the leg
+  `DO UPDATE SET` so re-derives preserve it. The graph branch keeps supplying its
+  own explicit per-edge seqs. Everything else is a read-side + notify-side
   addition.
+
+## Reversal (implementation finding, issue #123)
+
+The **premise that both legs share one deterministic `seq` is false for the
+current source.** A leg's readiness is *not* all-or-nothing per seq: the request
+and response legs carry **independent payload hashes**
+(`state._legs_of` → `ix.request_payload_hash` / `ix.response_payload_hash`),
+classified in **separate** P-classification transactions. So at one shared seq the
+request leg can be ready (its payload classified) while the response leg is not — a
+genuinely reachable half-ready seq. The #122 contiguous-prefix primitive therefore
+returned a composite `(seq, leg_ordinal)` watermark, which the single-`BIGINT`
+`processor_state.last_processed_seq` cannot losslessly persist (persist the seq and
+strand the held sibling leg; persist one lower and re-deliver the delivered leg —
+you cannot have both "not stranded" and "exactly-once").
+
+**Resolution:** give each leg its **own** DB-owned `seq` (the rejected `nextval`
+alternative above), decoupling leg seq from the in-memory `ProtoInteraction.seq`
+(which is pure plumbing — `procedure.py` orders/cursors/dedups on `span.seq`, never
+`ix.seq`, and is untouched, ADR-0025). The original replay-determinism objection
+does not apply: re-derive preserves seq once it is dropped from the leg
+`DO UPDATE SET` (cosmetic gaps only), and the `--scramble` byte gate already
+excludes leg seq as an arrival-order-dependent passenger field. Consequences: leg
+seq is now **arrival-order-dependent** (already documented as such in the scramble
+conftest), and the composite cursor + `leg_type` tiebreaker are retired in favour
+of a plain single-seq watermark. This is why the status is now **accepted**: the
+design is proven in code.
+
+**Follow-up (issue #133): `interaction_legs.original_seq` removed.** This reversal
+also made the leg's `original_seq` inert. Its ADR-0004 purpose was to freeze a
+first-emission value against a *mutating* `seq`; but a leg's `seq` is now DB-owned
+and, like the frozen value, never mutates on re-derive (it is dropped from the leg
+`DO UPDATE SET`), so `seq == original_seq` forever and the pair distinguishes
+nothing. The field was write-once at INSERT and read by no consumer, so migration
+`0011_drop_leg_original_seq` drops it (legs only — entity `original_seq` is still
+read into `first_seen_seq` and stays). Reversible via `downgrade()`.
 
 ## Deliberately out of scope (evidence-bar posture, per ADR-0013 / ADR-0025)
 
 - **Case-Y observed legs** — a future source emitting request and response as
-  distinct spans with distinct payloads arriving apart. The `(seq, leg_type)`
-  composite watermark and the request-before-response tiebreaker are the
-  forward-compatible shape; the Case-Y *writer* is not built.
+  distinct spans with distinct payloads arriving apart. The distinct per-leg
+  `seq` (each leg readying at its own seq) is the forward-compatible shape — the
+  response leg simply readies later at its own higher seq, held by the
+  contiguous-prefix cursor until then; the Case-Y *writer* is not built.
 
 - **Entity mutation/retarget wakes.** The current source never mutates an
   entity's identity, so `dg_entity_ready` is first-detection only. When a
