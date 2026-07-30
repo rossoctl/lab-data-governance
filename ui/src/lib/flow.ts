@@ -8,6 +8,36 @@
  * - `durationMs`: the (ended - started) ms formula shared with the span panel.
  */
 
+/**
+ * How the flow view's Interactions section presents this trace's interactions:
+ * the default parent/child `tree` (depth-indented interactions), `flat` (one row
+ * per request/response leg, ordered by the trace-wide leg `seq`), or `graph` (the
+ * Execution Flow — the same interactions drawn as a directed who-called-whom
+ * graph). Mirrored to/from the URL as `?legs=flat` / `?legs=graph`; `tree` is the
+ * default and writes no param, so canonical URLs stay clean.
+ *
+ * `graph` joined this set (rather than staying the top-level `/graph` view
+ * segment it was) because all three are presentations of the SAME two reads the
+ * flow view already holds: the tables answer "what happened, in order", the graph
+ * answers "who talked to whom". A top-level tab claimed it was a peer of the span
+ * tree — a different dataset — which it never was.
+ *
+ * Lives here, in the flow view's pure data module, rather than in `FlowTables`:
+ * the page owns the `?legs` URL param and the component owns the tab bar, so both
+ * need the type and the coercion, and neither is a natural owner of it.
+ */
+export type LegViewKey = 'tree' | 'flat' | 'graph';
+
+/**
+ * Coerce an arbitrary `?legs` value to a `LegViewKey`. Anything unrecognised —
+ * and absent — reads as the default `tree` rather than throwing, matching
+ * `parseWindowKey`'s treatment of `?window`. Stated once so the page's URL read
+ * and the tab bar's `onSelect` cannot drift about what a valid value is.
+ */
+export function parseLegViewKey(raw: string | null | undefined): LegViewKey {
+  return raw === 'flat' || raw === 'graph' ? raw : 'tree';
+}
+
 /** A derived entity (ADR-0013): cross-trace-stable, no trace_id column. */
 export interface Entity {
   id: string;

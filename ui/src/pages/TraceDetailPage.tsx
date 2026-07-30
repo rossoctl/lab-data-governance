@@ -19,32 +19,36 @@ import { PinStore, colorForSlot } from '../lib/pins';
 import { fetchJson } from '../api/client';
 import { SpanTree, type SpanTreeHandle } from '../components/SpanTree';
 import { SpanDetailPanel } from '../components/SpanDetailPanel';
-import { FlowTables, type FlowSelection, type LegViewKey } from '../components/FlowTables';
-import { ExecutionFlowGraph } from '../components/ExecutionFlowGraph';
+import { FlowTables, type FlowSelection } from '../components/FlowTables';
+import { parseLegViewKey, type LegViewKey } from '../lib/flow';
 import { HighlightLegend } from '../components/HighlightLegend';
 import type { Span } from '../types';
 
-// The active view is a URL path segment: `spans` (span tree), `flow`
-// (interaction flow) or `graph` (execution flow — the same entities/interactions
-// as `flow`, drawn as a directed graph). We keep an internal ViewKey for render
-// branches, mapped from/to the URL word so the URL stays the source of truth.
-// The two maps are inverses; an unknown segment resolves to null and is
-// canonicalised to /spans by the guard below.
-type ViewKey = 'tree' | 'flow' | 'graph';
-const VIEW_TO_URL: Record<ViewKey, string> = { tree: 'spans', flow: 'flow', graph: 'graph' };
-const URL_TO_VIEW: Record<string, ViewKey> = { spans: 'tree', flow: 'flow', graph: 'graph' };
+// The active view is a URL path segment: `spans` (span tree) or `flow`
+// (interaction flow). We keep an internal ViewKey for render branches, mapped
+// from/to the URL word so the URL stays the source of truth. The two maps are
+// inverses; an unknown segment resolves to null and is canonicalised to /spans by
+// the guard below.
+//
+// The Execution Flow graph is NOT a third segment here. It used to be
+// (`/graph`), but it is a presentation of the flow view's own two reads rather
+// than a peer dataset of the span tree, so it now lives inside the flow view as
+// `?legs=graph` alongside Tree and Flat (see FlowTables' LegViewKey). A
+// consequence worth naming: `/traces/{id}/graph` is now an unknown segment and
+// therefore redirects to `/spans` like any other typo.
+type ViewKey = 'tree' | 'flow';
+const VIEW_TO_URL: Record<ViewKey, string> = { tree: 'spans', flow: 'flow' };
+const URL_TO_VIEW: Record<string, ViewKey> = { spans: 'tree', flow: 'flow' };
 
 /**
- * Trace-detail view: a three-way switcher (Span tree | Interaction flow |
- * Execution Flow) over one trace. The active tab, the tree's selected span
- * (`?sel`), and the flow's selected interaction/entity (`?iid` / `?eid`) all live
- * in the URL, so reload / bookmark / back restore exactly what's on screen. Seeds
- * from the cold-open `useTrace` listing root (deep-link / paste path). The Tree
- * and Flow views share a highlight PinStore — pinning an interaction/entity's
- * spans in Flow stripes their rows in the tree, mirroring the vanilla
- * TraceTreeNav. Execution Flow is a third presentation of the SAME
- * entities/interactions reads the Flow tab makes, drawn as a directed graph; it
- * holds no selection state of its own, so it adds no URL params.
+ * Trace-detail view: a two-way switcher (Span tree | Interaction flow) over one
+ * trace. The active tab, the tree's selected span (`?sel`), the flow's selected
+ * interaction/entity (`?iid` / `?eid`) and the flow's presentation (`?legs`) all
+ * live in the URL, so reload / bookmark / back restore exactly what's on screen.
+ * Seeds from the cold-open `useTrace` listing root (deep-link / paste path). The
+ * Tree and Flow views share a highlight PinStore — pinning an
+ * interaction/entity's spans in Flow stripes their rows in the tree, mirroring
+ * the vanilla TraceTreeNav.
  */
 export function TraceDetailPage() {
   const { traceId = '', view: viewParam } = useParams<{ traceId: string; view: string }>();
@@ -217,11 +221,14 @@ export function TraceDetailPage() {
     iid: searchParams.get('iid') ?? undefined,
     eid: searchParams.get('eid') ?? undefined,
   };
-  // The flow view's Interactions tab (?legs). `tree` is the default and writes
-  // no param — same drop-the-default rule the list view's ?window uses, so a
-  // canonical URL never carries `?legs=tree`. Anything unrecognised reads as
-  // `tree` rather than throwing, matching parseWindowKey's coercion.
-  const legView: LegViewKey = searchParams.get('legs') === 'flat' ? 'flat' : 'tree';
+  // The flow view's Interactions tab (?legs): Tree | Flat | Execution Flow.
+  // `tree` is the default and writes no param — same drop-the-default rule the
+  // list view's ?window uses, so a canonical URL never carries `?legs=tree`.
+  // Anything unrecognised reads as `tree` rather than throwing, matching
+  // parseWindowKey's coercion; the coercion itself lives in lib/flow next to the
+  // type it coerces to, so this read and the tab bar's onSelect share one
+  // definition of what a valid value is.
+  const legView: LegViewKey = parseLegViewKey(searchParams.get('legs'));
   const handleLegViewChange = useCallback(
     (key: LegViewKey) => {
       setSearchParams(
@@ -336,11 +343,11 @@ export function TraceDetailPage() {
             </TabTitleText>
           }
         />
+        {/* The Execution Flow graph is reached from INSIDE this view, as its
+            `?legs=graph` tab — it draws the same entities/interactions these
+            tables list, so it belongs beside Tree and Flat rather than up here
+            claiming to be a peer of the span tree. */}
         <Tab eventKey="flow" title={<TabTitleText>Interaction flow</TabTitleText>} />
-        {/* The same entities/interactions as the Flow tab, drawn as a directed
-            graph (who called whom) rather than listed (what happened, in
-            order). */}
-        <Tab eventKey="graph" title={<TabTitleText>Execution Flow</TabTitleText>} />
       </Tabs>
 
       {isLoading ? (
@@ -390,13 +397,6 @@ export function TraceDetailPage() {
               onLegViewChange={handleLegViewChange}
             />
           )}
-
-          {/* Unmounted when inactive (unlike the tree, which is merely hidden):
-              the graph holds no state worth preserving across a tab round-trip —
-              its whole model is re-derived from the two TanStack-cached queries —
-              and keeping a topology surface mounted would leave its pan/zoom
-              listeners and layout running behind the other tabs. */}
-          {view === 'graph' && <ExecutionFlowGraph traceId={traceId} />}
         </div>
       )}
     </PageSection>

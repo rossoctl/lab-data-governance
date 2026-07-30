@@ -20,6 +20,16 @@ function FlowTablesWithLegTabs(
   return <FlowTables {...props} legView={legView} onLegViewChange={setLegView} />;
 }
 
+/**
+ * Deadline for awaiting the lazily-imported Execution Flow graph past its Suspense
+ * boundary. `findBy*`'s 1000ms default is not enough for the first `?legs=graph`
+ * render in a file: `React.lazy` has to transform and evaluate PF topology (plus
+ * d3 / dagre / mobx) before the component exists — the very ~387kB the production
+ * build now keeps out of the main bundle. The waits below still poll the real
+ * condition; only the deadline is raised.
+ */
+const GRAPH_CHUNK_TIMEOUT = 10_000;
+
 const ENTITIES = [
   { id: 'e1', kind: 'agent', natural_key: 'agent:(p,a)', display_name: 'agent-a', detected_from: 'span' },
   { id: 'e2', kind: 'tool', natural_key: 'tool:(p,svc)', display_name: 'search', detected_from: 'span' },
@@ -245,6 +255,98 @@ describe('FlowTables', () => {
     // Response leg: swapped.
     expect(within(cell(body[1], 'Caller')).getByText('search')).toBeInTheDocument();
     expect(within(cell(body[1], 'Callee')).getByText('agent-a')).toBeInTheDocument();
+  });
+
+  // --- The Execution Flow graph as the third `?legs` tab. It moved here from the
+  // top-level `/graph` view segment because it presents the SAME two reads these
+  // tables do. The URL-level contract is pinned in TraceDetailPage.test.tsx (which
+  // owns `?legs`); these are the cases only this component can state — that the
+  // tab set really is one row of three, that the graph replaces the interactions
+  // table but not the Entities table, and that the swap costs no extra fetch.
+
+  it('offers Execution Flow in the same tab row as Tree and Flat', async () => {
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    // One tab row, three tabs, in this order — not a separate control elsewhere.
+    const row = screen.getByRole('tablist');
+    expect(within(row).getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      'Tree',
+      'Flat',
+      'Execution Flow',
+    ]);
+  });
+
+  it('swaps the interactions table for the graph, keeping the Entities table', async () => {
+    // The graph stands in for the interactions TABLE only. The Entities table is a
+    // fact of the flow view rather than a part of that table — and the graph's
+    // nodes ARE those entities, so the table stays to carry the columns
+    // (kind / natural key / detected from) and the click target the nodes lack.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
+
+    // The graph is lazily imported (React.lazy + Suspense keeps PF topology out of
+    // the main bundle), so the first render of this tab has to be awaited past the
+    // chunk load — polling the real condition, not sleeping.
+    const graph = await screen.findByTestId('execution-flow-graph', undefined, {
+      timeout: GRAPH_CHUNK_TIMEOUT,
+    });
+    expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Interactions (flat)')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Entities')).toBeInTheDocument();
+
+    // The graph is a third presentation of the tables' OWN two reads, not a new
+    // endpoint: it hits the same two query keys, so no third resource is fetched
+    // for it. (It does re-observe those keys, and this test's QueryClient sets no
+    // staleTime, so TanStack may revalidate them on the graph's mount — hence the
+    // assertion is on the set of URLs touched, not on a call count.)
+    const reads = new Set(
+      (fetch as ReturnType<typeof vi.fn>).mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => /\/(entities|interactions)$/.test(u)),
+    );
+    expect([...reads].sort()).toEqual([
+      '/api/traces/T1/entities',
+      '/api/traces/T1/interactions',
+    ]);
+
+    // Back to Tree restores the table and drops the graph.
+    await userEvent.click(screen.getByRole('tab', { name: 'Tree' }));
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    expect(graph).not.toBeInTheDocument();
+  });
+
+  it('renders the graph inside the detail gutter so the floating panel never covers it', async () => {
+    // Why the graph is a CHILD of the `dg-detail-gutter` div rather than a sibling:
+    // the detail panel floats fixed over the right of the content, and that class
+    // is what reserves the gutter the content shrinks into. Outside it, the graph
+    // would be overlapped by the panel on every row selection.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
+    const graph = await screen.findByTestId('execution-flow-graph', undefined, {
+      timeout: GRAPH_CHUNK_TIMEOUT,
+    });
+    // Nothing selected → the gutter class is off and the graph uses full width.
+    expect(graph.closest('.dg-detail-gutter')).toBeNull();
+    // Select an entity (the Entities table is still there while the graph is up),
+    // which floats the panel…
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('agent-a'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
+    // …and the graph is now inside the gutter, so it shrinks instead of hiding
+    // behind the panel. Same container the tables use — one rule, not two.
+    const gutter = screen.getByTestId('execution-flow-graph').closest('.dg-detail-gutter');
+    expect(gutter).not.toBeNull();
+    expect(gutter).toContainElement(screen.getByLabelText('Entities'));
   });
 
   it('flat view links a request row to its response row with a shared connector (id + color)', async () => {
@@ -524,7 +626,7 @@ describe('FlowTables', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
     // Neither leg tab, and none of the three section tabs — a payload-less leg
     // has no payload, no verdict, and no derivable lineage to offer. (The flow
-    // view's own Tree/Flat tabs are the only tabs left on screen.)
+    // view's own Tree/Flat/Execution Flow tabs are the only tabs left on screen.)
     expect(screen.queryByRole('tab', { name: 'Request' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Response' })).toBeNull();
     expect(screen.queryByRole('tab', { name: /Data lineage/i })).toBeNull();

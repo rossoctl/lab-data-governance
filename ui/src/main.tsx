@@ -7,16 +7,13 @@ import App from './App';
 
 // PatternFly base styles + dark theme (data-governance keeps the dark palette
 // the vanilla shell used). See src/styles/global.css for the theme toggle.
+//
+// PF *topology*'s stylesheets are deliberately NOT here: they are imported inside
+// ExecutionFlowGraph.tsx so they ride the lazy topology chunk rather than the
+// main bundle (a static import here would land ~130kB of CSS on every page load
+// for a view most readers never open). See that file's note on why the move is
+// safe for `.dg-*` precedence.
 import '@patternfly/react-core/dist/styles/base.css';
-// PF topology ships its own stylesheet (it is NOT in react-core's base.css), and
-// the Execution Flow graph is unstyled without it. Imported BEFORE global.css so
-// the repo's `.dg-graph-*` rules and `--dg-*` token overrides win on equal
-// specificity. It is the same PF 5.4 line as react-core, so it adds tokens rather
-// than fighting them, and it carries no PF6 CSS — the `pf-v5-theme-dark` class on
-// <html> keeps applying to the graph exactly as to the rest of the app.
-import '@patternfly/react-topology/dist/esm/css/topology-components.css';
-import '@patternfly/react-topology/dist/esm/css/topology-view.css';
-import '@patternfly/react-topology/dist/esm/css/topology-controlbar.css';
 import './styles/global.css';
 
 const queryClient = new QueryClient({

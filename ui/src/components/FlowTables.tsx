@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Title,
   Spinner,
@@ -17,6 +17,8 @@ import {
   flatConnectorRoles,
   flatLegRows,
   legOfType,
+  parseLegViewKey,
+  type LegViewKey,
 } from '../lib/flow';
 import type { PinStore } from '../lib/pins';
 import { EntitiesTable } from './flow/EntitiesTable';
@@ -27,19 +29,30 @@ import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import type { Selection } from './flow/selection';
 import type { Entity, Interaction, SpanEvidence } from '../types';
 
+/**
+ * The Execution Flow graph, behind a dynamic import.
+ *
+ * `@patternfly/react-topology` (plus the d3 / dagre / mobx it drags in) is ~388kB
+ * of JS and ~130kB of CSS serving this ONE tab, so a static import made every
+ * reader of the trace list and the span tree pay for a view most never open.
+ * `React.lazy` puts it in its own async chunk that is fetched the first time
+ * `?legs=graph` is active — see the Suspense boundary at the render site, and
+ * ExecutionFlowGraph.tsx's note on why its stylesheets moved in there too.
+ *
+ * `ExecutionFlowGraph` has a default export purely so this needs no
+ * `.then(m => ({ default: m.X }))` unwrap.
+ */
+const ExecutionFlowGraph = lazy(() => import('./ExecutionFlowGraph'));
+
 /** Which flow row is selected, mirrored to/from the URL (?iid | ?eid). */
 export interface FlowSelection {
   iid?: string;
   eid?: string;
 }
 
-/**
- * How the Interactions section lists its rows: the default parent/child `tree`
- * (depth-indented interactions) or `flat` (one row per request/response leg,
- * ordered by the trace-wide leg `seq`). Mirrored to/from the URL as `?legs=flat`
- * — `tree` is the default and writes no param, so canonical URLs stay clean.
- */
-export type LegViewKey = 'tree' | 'flat';
+/** Re-exported for the callers that already reach for it through this module (the
+ *  tab set it drives lives here); defined in ../lib/flow next to its coercion. */
+export type { LegViewKey };
 
 export interface FlowTablesProps {
   traceId: string;
@@ -61,10 +74,12 @@ export interface FlowTablesProps {
    */
   onSelectionChange?: (sel: FlowSelection | null) => void;
   /**
-   * Which Interactions tab is active, from the URL (`?legs`). The parent owns
-   * every URL param in this view (same as `initialSelection`), so this is a
-   * controlled prop rather than internal state — reload / bookmark / back
-   * restore the tab. Defaults to `tree` when omitted.
+   * Which Interactions tab is active, from the URL (`?legs`) — including
+   * `graph`, the Execution Flow. The parent owns every URL param in this view
+   * (same as `initialSelection`), so this is a controlled prop rather than
+   * internal state: this component never reaches for `useSearchParams` itself,
+   * and reload / bookmark / back restore the tab. Defaults to `tree` when
+   * omitted.
    */
   legView?: LegViewKey;
   /** Fired when the Interactions tab changes so the parent can mirror `?legs`. */
@@ -72,14 +87,19 @@ export interface FlowTablesProps {
 }
 
 /**
- * The interaction-flow view: an Entities table and an Interactions table
- * derived from spans by the in-cluster processor (ADR-0013). Ports the vanilla
- * execution_flow_logic.js — depth indentation via the parent walk, pin dots
- * mirroring the tree's highlight store, and lazy span-evidence fetch + a detail
- * panel on row click.
+ * The interaction-flow view: an Entities table plus a presentation of the trace's
+ * Interactions, both derived from spans by the in-cluster processor (ADR-0013).
+ * Ports the vanilla execution_flow_logic.js — depth indentation via the parent
+ * walk, pin dots mirroring the tree's highlight store, and lazy span-evidence
+ * fetch + a detail panel on row click.
+ *
+ * The Interactions section has three peer presentations behind the `?legs` tabs
+ * (`LegViewKey`): `tree`, `flat`, and the `graph` (Execution Flow) — all reading
+ * the same two queries, so switching between them costs no fetch.
  *
  * This module owns only the composition and the selection/URL state; the tables,
- * the floating detail panel and the coverage banner live in ./flow.
+ * the floating detail panel and the coverage banner live in ./flow, and the graph
+ * in ../ExecutionFlowGraph (lazy — see the import above).
  */
 export function FlowTables({
   traceId,
@@ -303,22 +323,44 @@ export function FlowTables({
         <Title headingLevel="h3" size="md" style={{ marginTop: '1rem' }}>
           Interactions
         </Title>
-        {/* Two ways to list the same interactions — the default depth-indented
-            parent/child tree, or one row per request/response leg ordered by the
-            trace-wide `seq`. Tabs (not the old checkbox) because these are two
-            peer presentations of one dataset, which is what a tab bar says; the
-            active one is a URL param so it survives reload. Kept inside the
-            gutter div so the tab bar shrinks out from under the floating detail
-            panel along with the tables. */}
+        {/* Three ways to present the same interactions — the default
+            depth-indented parent/child tree, one row per request/response leg
+            ordered by the trace-wide `seq`, or the directed Execution Flow graph.
+            Tabs (not the old checkbox) because these are peer presentations of
+            one dataset, which is what a tab bar says; the active one is a URL
+            param so it survives reload. Kept inside the gutter div so the tab bar
+            shrinks out from under the floating detail panel along with the tables
+            and the graph. */}
         <Tabs
           activeKey={legView}
-          onSelect={(_e, key) => onLegViewChange?.(key === 'flat' ? 'flat' : 'tree')}
+          onSelect={(_e, key) => onLegViewChange?.(parseLegViewKey(String(key)))}
           aria-label="Interaction list views"
         >
           <Tab eventKey="tree" title={<TabTitleText>Tree</TabTitleText>} />
           <Tab eventKey="flat" title={<TabTitleText>Flat</TabTitleText>} />
+          <Tab eventKey="graph" title={<TabTitleText>Execution Flow</TabTitleText>} />
         </Tabs>
-        {legView === 'flat' ? (
+        {legView === 'graph' ? (
+          /* The graph stands in for the interactions TABLE, inside the same
+             gutter div — so when a row is selected it shrinks out from under the
+             floating detail panel exactly as the tables do, rather than being
+             overlapped by it.
+
+             The `Entities` table above deliberately stays visible: it is a fact
+             of the flow VIEW, not a part of the interactions table this tab
+             replaces, and the graph's nodes ARE those entities — keeping the
+             table gives the reader the kind/natural-key/detected-from columns the
+             nodes can only hint at, and a click target for the entity detail
+             panel the graph does not offer.
+
+             The Suspense fallback is the same PF `Spinner` + `aria-label` pairing
+             every loading state in this view uses (the `isLoading` return above,
+             `LegTabs`' per-leg payload read), so a chunk fetch is not a new,
+             fourth loading treatment a reader has to learn. */
+          <Suspense fallback={<Spinner aria-label="Loading execution flow graph" />}>
+            <ExecutionFlowGraph traceId={traceId} />
+          </Suspense>
+        ) : legView === 'flat' ? (
           <FlatLegsTable
             rows={flatRows}
             connectors={flatConnectors}

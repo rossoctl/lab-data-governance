@@ -37,6 +37,27 @@ import {
   type Model,
 } from '@patternfly/react-topology/dist/esm/types';
 
+// PF topology's own stylesheets (NOT in react-core's base.css — the graph is
+// unstyled without them). Imported HERE rather than in main.tsx so they are part
+// of this module's dependency graph and therefore ride the lazy chunk: a reader
+// who never opens the Execution Flow tab downloads neither the JS nor the CSS.
+//
+// Moving them out of main.tsx inverts the load ORDER relative to global.css —
+// these now land after it, not before — and that is safe because the two `.dg-*`
+// rules that touch the graph do not depend on order:
+//   - `.dg-graph-surface` names a class PF has no rule for at all, so there is
+//     nothing to lose a tie against.
+//   - `.dg-graph-node--isolated .pf-topology__node__background` is specificity
+//     0,2,0 against PF's 0,1,0 `.pf-topology__node__background`, so it wins on
+//     specificity regardless of which sheet came last.
+//   - The `--dg-*` design tokens on `:root` are a disjoint namespace from PF's
+//     `--pf-topology__*`, so nothing overwrites anything.
+// main.tsx's original "imported BEFORE global.css so ours win on equal
+// specificity" note was therefore guarding a tie that never actually existed.
+import '@patternfly/react-topology/dist/esm/css/topology-components.css';
+import '@patternfly/react-topology/dist/esm/css/topology-view.css';
+import '@patternfly/react-topology/dist/esm/css/topology-controlbar.css';
+
 import { useEntities, useInteractions } from '../api/hooks';
 import { deriveGraph, type GraphEdgeSpec, type GraphNodeSpec } from '../lib/graph';
 import { kindColorVar } from '../lib/entityKind';
@@ -294,3 +315,10 @@ export function ExecutionFlowGraph({ traceId }: { traceId: string }) {
     </div>
   );
 }
+
+// A DEFAULT export alongside the named one, purely so `React.lazy(() =>
+// import('./ExecutionFlowGraph'))` in FlowTables needs no
+// `.then(m => ({ default: m.ExecutionFlowGraph }))` shim. Same component, one
+// definition — the named export stays because it is what this component's own
+// test renders directly (no Suspense boundary needed there).
+export default ExecutionFlowGraph;

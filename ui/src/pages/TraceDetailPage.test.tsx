@@ -6,11 +6,14 @@ import { renderWithProviders } from '../test/renderWithProviders';
 import { LocationProbe } from '../test/LocationProbe';
 import { TraceDetailPage } from './TraceDetailPage';
 
-// The trace-detail view hosts a three-way switcher: Span tree | Interaction flow
-// | Execution Flow. The active view is a URL path segment
-// (/traces/{id}/spans | /flow | /graph) — the URL is the source of truth, so
-// reload/bookmark/back restore the tab. The trace id and view both come from the
-// route (:traceId/:view).
+// The trace-detail view hosts a two-way switcher: Span tree | Interaction flow.
+// The active view is a URL path segment (/traces/{id}/spans | /flow) — the URL is
+// the source of truth, so reload/bookmark/back restore the tab. The trace id and
+// view both come from the route (:traceId/:view).
+//
+// The Execution Flow graph is NOT a third segment: it presents the flow view's own
+// entities/interactions reads, so it lives inside that view as its third `?legs`
+// tab beside Tree and Flat. Its tests are the `?legs=graph` block near the bottom.
 
 // Mount the page under the real nested route so :traceId and :view resolve, and
 // include a LocationProbe so tests can assert the URL after a tab click.
@@ -181,6 +184,80 @@ function mockFetchWithFlow() {
   });
 }
 
+/**
+ * Like `mockFetchWithFlow`, but with two ENTITIES and an interaction whose
+ * caller/callee both resolve to them — so `deriveGraph` yields real nodes and an
+ * edge and the Execution Flow tab renders its surface rather than its empty
+ * state. `mockFetchWithFlow` returns no entities at all, which is exactly why it
+ * is kept for the empty-state case below.
+ */
+function mockFetchWithGraph() {
+  (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+    if (url === '/api/traces/T1') {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          trace_id: 'T1',
+          listing_root: {
+            seq: 1, trace_id: 'T1', span_id: 'root', parent_id: null,
+            name: 'root-span', started_at: '2026-05-01T12:00:00Z',
+            service_name: 'svc', kind: 'SERVER', error: null, attributes: {},
+          },
+          counts: { total: 2, in_window: 2, error_count: 0 }, in_time_window: true,
+        }),
+      };
+    }
+    if (url.endsWith('/interactions')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ interactions: [{
+          id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2',
+          summary: 'agent calls search', parent_interaction_id: null,
+          legs: [
+            { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: null, error: false, seq: 1 },
+            { leg_type: 'response', occurred_at: '2026-05-01T12:00:01Z', payload_hash: null, error: false, seq: 2 },
+          ],
+          duration_seconds: 1, any_error: false,
+          span_count: 1, anchor_count: 1,
+        }] }),
+      };
+    }
+    if (url.endsWith('/entities')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ entities: [
+          { id: 'e1', kind: 'agent', natural_key: 'agent:(p,a)', display_name: 'agent-a', detected_from: 'span' },
+          { id: 'e2', kind: 'tool', natural_key: 'tool:(p,svc)', display_name: 'search', detected_from: 'span' },
+        ] }),
+      };
+    }
+    if (url.includes('/entities/e1/spans') || url.includes('/interactions/i1/spans')) {
+      return { ok: true, status: 200, json: async () => ({ spans: [
+        { span_id: 'ev-span', role: 'anchor', parent_id: 'root', kind: 'CLIENT', service_name: 'svc' },
+      ] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+  });
+}
+
+/**
+ * Await the lazily-loaded Execution Flow graph past its Suspense boundary.
+ *
+ * `findBy*`'s 1000ms default is not enough for the FIRST `?legs=graph` render in a
+ * file: `React.lazy(() => import('./ExecutionFlowGraph'))` has to transform and
+ * evaluate PF topology (plus d3 / dagre / mobx) before the component exists, which
+ * is exactly the ~387kB the production build now keeps out of the main bundle —
+ * measured at ~1.6s under Vitest's transform pipeline. This is still `waitFor`
+ * polling on the real condition, not a fixed sleep; only the deadline is raised,
+ * and it is raised once here so no individual test grows a magic number.
+ */
+const GRAPH_CHUNK_TIMEOUT = 10_000;
+async function findGraph() {
+  return screen.findByTestId('execution-flow-graph', undefined, {
+    timeout: GRAPH_CHUNK_TIMEOUT,
+  });
+}
+
 describe('TraceDetailPage', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
@@ -189,9 +266,13 @@ describe('TraceDetailPage', () => {
     mockFetch();
     renderWithProviders(harness(), { route: '/traces/T1/spans' });
 
-    // Both switcher tabs are present, and no Graph tab remains.
+    // Both switcher tabs are present, and nothing else: the Execution Flow graph
+    // is reached through the flow view's `?legs` tabs, not from up here, so on the
+    // spans tab there is no graph tab in the document at all.
     await waitFor(() => expect(screen.getByRole('tab', { name: /Span tree/i })).toBeInTheDocument());
     expect(screen.getByRole('tab', { name: /Interaction flow/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
+    expect(screen.queryByRole('tab', { name: /Execution Flow/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: /Graph/i })).not.toBeInTheDocument();
 
     // The /spans segment drives the active tab.
@@ -561,60 +642,178 @@ describe('TraceDetailPage', () => {
     expect(inTreeRow('leaf-span')).toBe(true);
   });
 
-  // --- The third top-level tab: Execution Flow at the `graph` URL segment. Same
-  // contract as its two siblings — the URL path segment is the single source of
-  // truth, so the tab is deep-linkable, survives reload, and works with Back.
+  // --- Execution Flow: the flow view's THIRD `?legs` tab, beside Tree and Flat.
+  //
+  // It used to be a top-level view segment (`/traces/{id}/graph`, a peer of
+  // /spans and /flow). It draws the same two reads the flow tables list, so it
+  // moved inside the flow view as `?legs=graph`. The tests below are the ported
+  // form of that segment's contract — deep-linkable, survives reload, works with
+  // Back, unrecognised values coerce — restated against the query param, plus the
+  // param-specific cases the path segment could not have.
+  //
+  // The graph is lazy-loaded (React.lazy + Suspense, so PF topology's ~387kB
+  // stays out of the main bundle), so every assertion about it has to await the
+  // chunk — hence findBy*/waitFor throughout rather than a synchronous getBy.
 
-  it('offers Execution Flow as a third tab alongside Span tree and Interaction flow', async () => {
-    mockFetch();
-    renderWithProviders(harness(), { route: '/traces/T1/spans' });
+  it('offers Execution Flow as a third ?legs tab beside Tree and Flat, and NOT as a top-level tab', async () => {
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
 
-    await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /Execution Flow/i })).toBeInTheDocument(),
+    // Wait for the flow view (and therefore its ?legs tab bar) to be up.
+    const legTree = await screen.findByRole('tab', { name: 'Tree' });
+
+    // Two tab bars on screen. PF puts the `aria-label` on the Tabs wrapper
+    // (unroled) rather than on the inner `role="tablist"`, so they are told apart
+    // by the tabs each one owns rather than by an accessible name.
+    const bars = screen.getAllByRole('tablist').map((list) =>
+      within(list)
+        .getAllByRole('tab')
+        .map((t) => t.textContent),
     );
-    // All three, and the spans segment still drives which is active.
-    expect(screen.getAllByRole('tab')).toHaveLength(3);
+    // The top-level row is back to TWO tabs; Execution Flow is not one of them,
+    // and the ?legs row carries it as its third, beside Tree and Flat.
+    expect(bars).toContainEqual(['Span tree', 'Interaction flow']);
+    expect(bars).toContainEqual(['Tree', 'Flat', 'Execution Flow']);
+    expect(bars).toHaveLength(2);
+
+    // The default Tree is active, so the graph tab is not.
+    expect(legTree).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
       'aria-selected',
       'false',
     );
   });
 
-  it('activates the Execution Flow tab and renders the graph for a /graph deep link', async () => {
-    // Deep-linkable: the URL alone is enough to land on the graph.
-    mockFetchWithFlow();
-    renderWithProviders(harness(), { route: '/traces/T1/graph' });
+  it('renders the graph and NOT the interactions table for a ?legs=graph deep link', async () => {
+    // Deep-linkable / reload-safe: the URL alone is enough to land on the graph,
+    // which is the property the old `/graph` segment carried and this must keep.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=graph' });
 
-    await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
-        'aria-selected',
-        'true',
-      ),
-    );
-    // mockFetchWithFlow returns no entities, so there is nothing to graph at all
-    // — the view must say so rather than render a blank box.
-    await waitFor(() =>
-      expect(screen.getByText(/No entities or interactions for this trace yet/i)).toBeInTheDocument(),
-    );
+    // The lazy chunk resolves and the graph mounts (this trace HAS entities, so
+    // it is the real surface, not the empty state).
+    expect(await findGraph()).toBeInTheDocument();
+    expect(
+      screen.getByRole('tab', { name: /Execution Flow/i }),
+    ).toHaveAttribute('aria-selected', 'true');
+    // The graph stands in for the interactions table — neither presentation of it
+    // is rendered alongside.
+    expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Interactions (flat)')).not.toBeInTheDocument();
+    // …but the Entities table above it stays: it is a fact of the flow VIEW, not
+    // part of the interactions table the graph replaced.
+    expect(screen.getByLabelText('Entities')).toBeInTheDocument();
   });
 
-  it('writes /graph to the URL when the Execution Flow tab is clicked', async () => {
-    mockFetch();
-    renderWithProviders(harness(), { route: '/traces/T1/spans' });
+  it('still shows the graph empty state through ?legs=graph when nothing is derived', async () => {
+    // Ported from the old /graph deep-link test, whose mock returned no entities:
+    // an empty derivation must say so rather than render a blank box, and that
+    // wiring has to survive the move behind Suspense.
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=graph' });
+
+    expect(
+      await screen.findByText(/No entities or interactions for this trace yet/i),
+    ).toBeInTheDocument();
+  });
+
+  it('writes ?legs=graph when the Execution Flow tab is clicked', async () => {
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
 
     const graphTab = await screen.findByRole('tab', { name: /Execution Flow/i });
     await userEvent.click(graphTab);
-    await waitFor(() => expect(graphTab).toHaveAttribute('aria-selected', 'true'));
-    expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/graph');
-    // With no derived data the graph shows its own empty state.
     await waitFor(() =>
-      expect(screen.getByText(/No entities or interactions for this trace yet/i)).toBeInTheDocument(),
+      expect(screen.getByTestId('location')).toHaveTextContent('legs=graph'),
+    );
+    expect(graphTab).toHaveAttribute('aria-selected', 'true');
+    // Still the flow view — the path segment does not change, only the param.
+    expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow');
+    expect(await findGraph()).toBeInTheDocument();
+  });
+
+  it('drops ?legs when switching from the graph back to Tree', async () => {
+    // The drop-the-default rule, restated for the graph: leaving it for Tree must
+    // clear the param rather than write ?legs=tree.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=graph' });
+
+    await findGraph();
+    await userEvent.click(screen.getByRole('tab', { name: 'Tree' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).not.toHaveTextContent('legs'),
+    );
+    // The interactions table is back and the graph is gone.
+    expect(screen.getByLabelText('Interactions')).toBeInTheDocument();
+    expect(screen.queryByTestId('execution-flow-graph')).not.toBeInTheDocument();
+  });
+
+  it('coerces an unrecognised ?legs value to Tree', async () => {
+    // The same coercion `?legs=flat` always had, now that a third value exists:
+    // adding `graph` to LegViewKey must not make a typo resolve to anything.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=grapf' });
+
+    const tree = await screen.findByRole('tab', { name: 'Tree' });
+    expect(tree).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByLabelText('Interactions')).toBeInTheDocument();
+    expect(screen.queryByTestId('execution-flow-graph')).not.toBeInTheDocument();
+  });
+
+  it('keeps ?legs=graph across a row selection (the two params coexist)', async () => {
+    // The `?legs` + `?iid`/`?eid` coexistence the Flat tab already pins, restated
+    // for the graph: the Entities table stays clickable while the graph is up, so
+    // selecting an entity must not drop the tab param.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=graph' });
+
+    await findGraph();
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('agent-a'));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('eid=e1'));
+    expect(screen.getByTestId('location')).toHaveTextContent('legs=graph');
+    // And the graph is still the active presentation, not swapped out by the click.
+    expect(screen.getByTestId('execution-flow-graph')).toBeInTheDocument();
+  });
+
+  it('keeps the graph inside the detail gutter so the panel never overlaps it', async () => {
+    // The reason the graph is rendered INSIDE FlowTables' `dg-detail-gutter` div
+    // rather than beside it: the detail panel floats fixed over the right of the
+    // content, and the gutter is what makes the content shrink out from under it.
+    // A graph outside that div would be covered by the panel on every selection.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=graph' });
+
+    const graph = await findGraph();
+    // No selection yet → no gutter anywhere (the tables reclaim full width).
+    expect(graph.closest('.dg-detail-gutter')).toBeNull();
+    // Select an entity to float the panel…
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('agent-a'));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('eid=e1'));
+    // …and the graph is now a DESCENDANT of the gutter, so it shrinks rather than
+    // being overlapped.
+    expect(screen.getByTestId('execution-flow-graph').closest('.dg-detail-gutter')).not.toBeNull();
+  });
+
+  it('redirects the retired /graph segment to the canonical /spans', async () => {
+    // `graph` is no longer a view segment, so an old bookmark to it is now just an
+    // unknown segment and takes the same canonicalising redirect as any typo.
+    // Called out explicitly because it is a deliberate break of an old deep link,
+    // not an accident.
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/graph' });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/spans'),
+    );
+    expect(screen.getByRole('tab', { name: /Span tree/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
     );
   });
 
-  it('still redirects an unknown view segment to /spans now that a third view exists', async () => {
-    // Regression guard on the canonicalising guard: adding `graph` to
-    // URL_TO_VIEW must not make a typo'd segment resolve to anything.
+  it('still redirects an unknown view segment to /spans', async () => {
+    // Regression guard on the canonicalising guard itself, kept from when `graph`
+    // was a third segment: a typo'd segment must resolve to nothing.
     mockFetch();
     renderWithProviders(harness(), { route: '/traces/T1/graphh' });
 
@@ -627,53 +826,63 @@ describe('TraceDetailPage', () => {
     );
   });
 
-  it('round-trips Span tree → Execution Flow → Interaction flow through the URL', async () => {
-    mockFetchWithFlow();
+  it('round-trips Span tree → Interaction flow → Execution Flow through the URL', async () => {
+    // The cross-view round-trip the old test made across three top-level tabs,
+    // restated across the two that remain plus the ?legs tab the third became.
+    mockFetchWithGraph();
     renderWithProviders(harness(), { route: '/traces/T1/spans' });
 
-    await userEvent.click(await screen.findByRole('tab', { name: /Execution Flow/i }));
-    await waitFor(() =>
-      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/graph'),
-    );
-    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await userEvent.click(await screen.findByRole('tab', { name: /Interaction flow/i }));
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
     );
-    // Leaving the graph unmounts it (it holds no state worth keeping).
+    await userEvent.click(await screen.findByRole('tab', { name: /Execution Flow/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('legs=graph'),
+    );
+    expect(await findGraph()).toBeInTheDocument();
+    // Back out to the span tree: leaving the flow view unmounts the graph (it
+    // holds no state worth keeping — its model re-derives from the cached reads).
+    await userEvent.click(screen.getByRole('tab', { name: /Span tree/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/spans'),
+    );
     expect(screen.queryByTestId('execution-flow-graph')).not.toBeInTheDocument();
   });
 
-  it('restores the Execution Flow tab on a Back navigation from a sibling tab', async () => {
+  it('restores the Execution Flow tab on a Back navigation within the flow view', async () => {
     // The URL is the source of truth, so history navigation must restore the tab
     // with no in-component state involved. `BackButton` calls the router's own
     // navigate(-1) — the MemoryRouter these tests use keeps its history in memory
     // rather than on window.history, so a raw window.history.back() would not
     // reach it.
-    mockFetchWithFlow();
+    //
+    // NOTE the ?legs write uses `replace: true` (flipping between presentations of
+    // one dataset must not stack history entries), so Back out of the graph does
+    // NOT walk the leg tabs. What it walks is the entry the top-level tab click
+    // pushed — landing back on the graph deep link this test opened on, tab
+    // active, exactly as the old /graph segment test asserted.
+    mockFetchWithGraph();
     renderWithProviders(
       <>
         {harness()}
         <BackButton />
       </>,
-      { route: '/traces/T1/graph' },
+      { route: '/traces/T1/flow?legs=graph' },
     );
 
+    expect(await findGraph()).toBeInTheDocument();
+    // Forward to the span tree (a top-level tab click pushes a history entry)…
+    await userEvent.click(screen.getByRole('tab', { name: /Span tree/i }));
     await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
-        'aria-selected',
-        'true',
-      ),
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/spans'),
     );
-    // Forward to the flow tab (a tab click pushes a history entry)…
-    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
-    await waitFor(() =>
-      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
-    );
-    // …then Back must land on /graph with the Execution Flow tab active again.
+    // …then Back must land on ?legs=graph with the Execution Flow tab active.
     await userEvent.click(screen.getByRole('button', { name: 'test-back' }));
     await waitFor(() =>
-      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/graph'),
+      expect(screen.getByTestId('location')).toHaveTextContent('legs=graph'),
     );
+    expect(await findGraph()).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
       'aria-selected',
       'true',
