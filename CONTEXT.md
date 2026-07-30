@@ -201,10 +201,13 @@ in place as more spans arrive (late parents, **Finalization**,
 mutations. Per ADR-0025 an interaction is a **parent identity row**
 (`interactions`) plus one or two **Interaction leg**s (`interaction_legs`):
 the payload hash, `occurred_at`, `error`, and `seq` / `original_seq` live on
-the *leg* (each leg finalizes independently and cursors on its own `seq`);
-the parent carries only shared identity and has no `seq`. Stream consumers
-cursor `interaction_legs` on `seq`; `original_seq` lets them distinguish
-first-emission rows from mutations. There is no "complete" flag —
+the *leg*: each leg carries its **own distinct** `seq` (DB-owned `nextval`,
+request leg inserted first → lower seq; ADR-0027 Reversal), so a leg finalizes
+and cursors on its own `seq`; the parent carries only shared identity and has
+no `seq`. Stream consumers cursor `interaction_legs` on `seq`. (`original_seq`
+is a write-only passenger field today — it has no live reader; it exists so a
+future stream consumer could distinguish first-emission rows from mutations.)
+There is no "complete" flag —
 consumers see the current state at query time. Anchor rules set
 identity (`caller_entity_id`, `callee_entity_id`) on creation only;
 re-fires of the same anchor rule on **Finalization** do not re-assert

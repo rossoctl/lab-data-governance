@@ -68,8 +68,10 @@ LEG_READY_CHANNEL = "dg_interaction_leg_ready"
 # the flush projection and the rehydrate fold-back cannot drift apart. The
 # current (Case-X) source has one in-memory ProtoInteraction; the request leg
 # carries its start-side (started_at, request payload), the response leg its
-# end-side (ended_at, response payload). error / seq / original_seq are shared
-# across both derived legs (see the Leg-provenance term in CONTEXT.md).
+# end-side (ended_at, response payload). ``error`` is shared across both derived
+# legs; ``seq`` is now DB-owned and DISTINCT per leg (request inserted first ->
+# lower seq; ADR-0027 Reversal), and each leg carries its own ``original_seq`` —
+# they are no longer shared (see the Leg-provenance term in CONTEXT.md).
 
 
 def _legs_of(ix: procedure.ProtoInteraction) -> list[tuple[str, Any, str | None]]:
@@ -481,8 +483,10 @@ def flush(
 
       - ``None`` — the STREAMING algorithm (``driver.py``). Legs are projected
         from the single in-memory ProtoInteraction via ``_legs_of`` (a Case-X
-        DERIVED leg: request/response timings bracket one synchronous call, both
-        legs share the interaction's seq/error), and step 4b re-aggregates them.
+        DERIVED leg: request/response timings bracket one synchronous call; both
+        legs share the interaction's ``error`` but each gets its OWN DB-owned
+        ``seq``, request lower — ADR-0027 Reversal), and step 4b re-aggregates
+        them.
       - a ``{interaction_id: [LegRow, ...]}`` map — the GRAPH algorithm
         (``graph_driver.py``, built by ``graph_adapter.adapt``). Each leg carries
         its OWN edge's occurred_at / payload / error / ``order``→seq; step 4b
