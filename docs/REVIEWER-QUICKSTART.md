@@ -66,9 +66,15 @@ Two things that matter and are easy to get wrong:
 - **The parser chain is uniform in both directions** (`a2a`, `mcp`, `inference`).
   A direction-specific chain silently mislabels whatever it was not given — an
   MCP-entry tool with an a2a-only inbound chain records its `tools/call` as
-  anonymous HTTP, which the UI then hides as infrastructure. Safe because the
-  parsers are content-gated and mutually exclusive (a2a claims only `message/*`
-  and `tasks/*`).
+  anonymous HTTP, which the UI then hides as infrastructure.
+
+  The parsers are **not** mutually exclusive: `mcp-parser` attaches to any
+  JSON-RPC body, so an a2a exchange populates both extensions. What keeps this
+  correct is (a) `protocolOf` precedence — `a2a > mcp > inference` — choosing the
+  label, and (b) the lineage plugin reading payloads **only through the protocol
+  fact it stamped**, so a co-populated parser's output can never land on the span.
+  A hop whose own parser yields nothing keeps an absent payload, which the
+  contract blesses.
 
 ## 4 · Drive one turn (~1 min)
 
