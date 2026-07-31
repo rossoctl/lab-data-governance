@@ -296,9 +296,17 @@ def test_partial_trace_converges_as_later_legs_arrive(configured_db: str) -> Non
 
 
 def test_rederivation_overwrites_stale_metadata(configured_db: str) -> None:
-    """Idempotency by UPSERT, not by insert-if-absent: when a leg's payload is
-    rewritten (P-interactions re-derives a trace in place — the reason migration
-    0010's trigger covers UPDATE), the persisted lineage must follow it."""
+    """Idempotency by UPSERT, not by insert-if-absent: a re-derivation of a trace
+    must overwrite whatever an earlier one wrote, rather than leaving the first
+    answer pinned.
+
+    Scoped deliberately to the UPSERT itself: it re-drains from cursor 0, so it says
+    nothing about whether a rewritten leg is *reachable*. That is a separate
+    question, and this test used to be read as covering it — it does not, which is
+    how issue #137 stayed open. See
+    ``test_a_rewritten_leg_is_rederived_from_the_real_cursor`` for the reachability
+    half.
+    """
     _seed_agent_trace(configured_db)
     driver.drain(0)
 
@@ -416,3 +424,271 @@ def test_driver_resolves_its_matcher_through_get_matcher(
     assert rows[("ix_ua", "response")]["data_sources"] == ["agent:(demo,advisor)"]
     assert rows[("ix_al1", "response")]["data_sources"] == ["llm:host/gpt"]
     assert all(r["entities"] == [] for r in rows.values())
+
+
+# --- stale re-derivation (issue #137) ----------------------------------------
+#
+# The bug: P-interactions rewrites a leg in place and PRESERVES its `seq`
+# (`interactions/state.py` omits `seq` from the upsert's DO UPDATE SET, for replay
+# determinism). The lineage consumer drains `WHERE seq > cursor`. So a rewritten
+# leg's seq sits BELOW the cursor, the NOTIFY wake finds nothing past it, and the
+# lineage derived from the OLD payload survives while `lineage_trace_status` still
+# says `complete` — a stale origin claim presented as authoritative.
+#
+# `_rewrite_leg_preserving_seq` reproduces the production write exactly. Note the
+# module's own `_leg` helper does NOT: it bumps `seq = nextval(...)` on conflict,
+# which hands the leg a seq above the cursor and hides the whole failure mode.
+
+
+def _rewrite_leg_preserving_seq(
+    dsn: str, *, ix_id: str, leg_type: str, payload_hash: str
+) -> int:
+    """Rewrite a leg's payload the way P-interactions re-derivation does — new
+    ``payload_hash``, ``seq`` untouched. Returns the (unchanged) seq."""
+    with psycopg.connect(dsn) as conn:
+        _payload(conn, payload_hash)
+        before = conn.execute(
+            "SELECT seq FROM interaction_legs WHERE interaction_id = %s AND leg_type = %s",
+            (ix_id, leg_type),
+        ).fetchone()
+        assert before is not None, "the leg must already exist to be rewritten"
+        conn.execute(
+            "UPDATE interaction_legs SET payload_hash = %s "
+            "WHERE interaction_id = %s AND leg_type = %s",
+            (payload_hash, ix_id, leg_type),
+        )
+        after = conn.execute(
+            "SELECT seq FROM interaction_legs WHERE interaction_id = %s AND leg_type = %s",
+            (ix_id, leg_type),
+        ).fetchone()
+        conn.commit()
+    assert after is not None and after[0] == before[0], "seq must be preserved"
+    return int(before[0])
+
+
+def test_a_rewritten_leg_is_rederived_from_the_real_cursor(configured_db: str) -> None:
+    """The #137 regression. Drain to completion, rewrite a leg in place preserving
+    its seq, then drain again FROM THE CURSOR THE FIRST DRAIN RETURNED (not 0).
+
+    Draining from 0 would mask the bug entirely — that is exactly why the
+    pre-existing ``test_rederivation_overwrites_stale_metadata`` passed while the
+    hole was open."""
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+    assert cursor > 0, "sanity: the first drain must have consumed the trace"
+
+    before = _rows(configured_db)[("ix_al1", "response")]
+    assert before["payload_hash"] == "p3", "sanity"
+
+    _rewrite_leg_preserving_seq(
+        configured_db, ix_id="ix_al1", leg_type="response", payload_hash="p3_rewritten"
+    )
+
+    driver.drain(cursor)
+
+    after = _rows(configured_db)[("ix_al1", "response")]
+    assert after["payload_hash"] == "p3_rewritten", (
+        "the stale row still carries the pre-rewrite payload hash: the rewritten "
+        "leg was never re-derived"
+    )
+
+
+def test_the_stale_pass_does_not_move_the_cursor_backwards(configured_db: str) -> None:
+    """A stale leg's seq is below the cursor by definition. Re-deriving it must not
+    drag the durable cursor down to it — that would re-drain every leg in between
+    on the next wake, unboundedly, and break the monotonic-advance invariant the
+    other processors on the shared loop rely on."""
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+
+    # Rewrite the trace's FIRST leg — the largest possible backwards jump.
+    stale_seq = _rewrite_leg_preserving_seq(
+        configured_db, ix_id="ix_ua", leg_type="request", payload_hash="p1_rewritten"
+    )
+    assert stale_seq < cursor, "sanity: the rewritten leg is behind the cursor"
+
+    returned = driver.drain(cursor)
+
+    assert returned == cursor, "the returned cursor must not regress"
+    with psycopg.connect(configured_db) as conn:
+        (durable,) = conn.execute(
+            "SELECT last_processed_seq FROM processor_state WHERE processor_name = %s",
+            (driver.PROCESSOR_NAME,),
+        ).fetchone()
+    assert durable == cursor, "the DURABLE cursor must not regress either"
+
+
+def test_the_stale_pass_is_idempotent(configured_db: str) -> None:
+    """Once the stale leg has been re-derived, its stored hash matches the leg's
+    again, so a second drain has nothing to find. Pinned because the staleness
+    predicate IS the durable state for this pass (there is no cursor protecting
+    it): if re-deriving failed to clear the condition, every subsequent wake would
+    redo the same work forever."""
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+    _rewrite_leg_preserving_seq(
+        configured_db, ix_id="ix_al1", leg_type="response", payload_hash="p3_rewritten"
+    )
+    driver.drain(cursor)
+    first = _rows(configured_db)
+
+    driver.drain(cursor)
+
+    assert _rows(configured_db) == first, "a settled trace must re-derive to itself"
+
+
+def test_a_rewritten_leg_refreshes_the_whole_traces_lineage(configured_db: str) -> None:
+    """The stale pass re-derives the whole TRACE, not just the offending leg — the
+    algorithm's grain is a trace (ADR-0027 D1), and a rewritten payload changes what
+    every LATER leg of that trace inherits. Here the rewrite lands on the trace's
+    first leg, so a downstream leg's row must be rewritten too."""
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+
+    with psycopg.connect(configured_db) as conn:
+        # Corrupt a DOWNSTREAM leg's stored lineage. It is not itself stale by the
+        # hash predicate, so only a whole-trace re-derivation restores it.
+        conn.execute(
+            "UPDATE lineage_metadata SET data_sources = ARRAY['corrupt'] "
+            "WHERE interaction_id = 'ix_ua' AND leg_type = 'response'"
+        )
+        conn.commit()
+
+    _rewrite_leg_preserving_seq(
+        configured_db, ix_id="ix_ua", leg_type="request", payload_hash="p1_rewritten"
+    )
+    driver.drain(cursor)
+
+    rows = _rows(configured_db)
+    assert rows[("ix_ua", "response")]["data_sources"] == ["user:alice"], (
+        "the downstream leg was not refreshed, so the pass re-derived only the "
+        "stale leg rather than its whole trace"
+    )
+
+
+def test_an_unchanged_trace_is_not_rederived(configured_db: str) -> None:
+    """The stale pass must be driven by the hash predicate, not by "re-derive
+    everything on every wake". A drained, unmodified trace is not stale, so a
+    subsequent drain must leave it entirely alone."""
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+
+    with psycopg.connect(configured_db) as conn:
+        # A sentinel no legitimate derivation would produce. If the pass re-derives
+        # indiscriminately it will be overwritten; it must survive.
+        conn.execute(
+            "UPDATE lineage_metadata SET data_sources = ARRAY['sentinel'] "
+            "WHERE interaction_id = 'ix_al1' AND leg_type = 'response'"
+        )
+        conn.commit()
+
+    driver.drain(cursor)
+
+    rows = _rows(configured_db)
+    assert rows[("ix_al1", "response")]["data_sources"] == ["sentinel"], (
+        "an unchanged trace was re-derived: the pass is not gated on staleness"
+    )
+
+
+def test_a_stale_leg_in_another_trace_is_also_found(configured_db: str) -> None:
+    """The stale pass is not scoped to one trace — it sweeps whatever is stale. Two
+    traces, both drained, both rewritten: both must be refreshed in one drain."""
+    other = "u" * 32
+    _seed_agent_trace(configured_db)
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="e_user2", kind="user", natural_key="user:bob")
+        _entity(conn, eid="e_agent2", kind="agent", natural_key="agent:(demo,other)")
+        _interaction(
+            conn, ix_id="ix_o", trace_id=other, caller="e_user2", callee="e_agent2"
+        )
+        _leg(conn, ix_id="ix_o", leg_type="request", payload_hash="q1")
+        _leg(conn, ix_id="ix_o", leg_type="response", payload_hash="q2")
+        conn.commit()
+
+    cursor = driver.drain(0)
+    _rewrite_leg_preserving_seq(
+        configured_db, ix_id="ix_al1", leg_type="response", payload_hash="p3_rewritten"
+    )
+    _rewrite_leg_preserving_seq(
+        configured_db, ix_id="ix_o", leg_type="response", payload_hash="q2_rewritten"
+    )
+
+    driver.drain(cursor)
+
+    rows = _rows(configured_db)
+    assert rows[("ix_al1", "response")]["payload_hash"] == "p3_rewritten"
+    assert rows[("ix_o", "response")]["payload_hash"] == "q2_rewritten"
+
+
+def test_an_unconsumed_leg_is_left_to_the_cursor_arm(configured_db: str) -> None:
+    """A leg with no lineage row is *unconsumed*, not stale. It is still ahead of the
+    cursor, so the normal arm owns it — the staleness join is INNER precisely so the
+    two arms cannot race for the same leg.
+
+    Pinned because the tempting "fix" for an unconsumed leg is to outer-join
+    ``lineage_metadata``, which would hand it to both arms at once.
+    """
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+
+    # A brand-new leg, never derived: no lineage_metadata row exists for it.
+    with psycopg.connect(configured_db) as conn:
+        _interaction(
+            conn, ix_id="ix_late", trace_id=TRACE, caller="e_agent", callee="e_llm"
+        )
+        _leg(conn, ix_id="ix_late", leg_type="request", payload_hash="p7")
+        conn.commit()
+
+    # Ask the driver, not Postgres: restating the predicate here would pass even if
+    # _fetch_stale_traces were deleted.
+    with db.transaction() as tx:
+        assert driver._fetch_stale_traces(tx, 500) == [], (
+            "an unconsumed leg must not register as stale"
+        )
+
+    # The cursor arm still picks it up, because its seq is above the cursor.
+    driver.drain(cursor)
+    assert ("ix_late", "request") in _rows(configured_db)
+
+
+def test_a_leg_that_LOSES_its_payload_shrinks_the_trace_in_one_pass(
+    configured_db: str,
+) -> None:
+    """The seam between the new stale arm and D6/D9: a rewrite can set
+    ``payload_hash`` to NULL (the payload became unavailable), which moves D6's
+    absent-payload cutoff and makes the derivation SHORTER.
+
+    All three consequences must land in a single drain — the predicate clears (so the
+    pass converges rather than re-detecting forever), D9's delete removes the rows past
+    the new gap, and the trace's status flips to ``partial``. ``IS DISTINCT FROM`` is
+    what makes the NULL side detectable at all; a plain ``!=`` would be NULL-valued
+    and this trace would never be revisited.
+    """
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+    assert len(_rows(configured_db)) == 6, "sanity: the whole trace derived"
+
+    # The second leg of the trace loses its payload, the way a rewrite would.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE interaction_legs SET payload_hash = NULL "
+            "WHERE interaction_id = 'ix_al1' AND leg_type = 'request'"
+        )
+        conn.commit()
+
+    driver.drain(cursor)
+
+    # The predicate must be clear — otherwise every future wake redoes this work.
+    with db.transaction() as tx:
+        assert driver._fetch_stale_traces(tx, 500) == [], "the pass did not converge"
+
+    rows = _rows(configured_db)
+    assert len(rows) < 6, "D9's delete did not remove the rows past the new gap"
+    with psycopg.connect(configured_db) as conn:
+        status, stopped = conn.execute(
+            "SELECT status::text, stopped_at_seq FROM lineage_trace_status "
+            "WHERE trace_id = %s",
+            (TRACE,),
+        ).fetchone()
+    assert status == "partial", "the coverage claim did not follow the shrink"
+    assert stopped is not None

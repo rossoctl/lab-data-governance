@@ -23,6 +23,17 @@ themselves rewritten in place when P-interactions re-derives a trace — which i
 migration 0010's NOTIFY trigger covers UPDATE as well as INSERT. Insert-if-absent
 would freeze the first, most partial answer.
 
+**The drain has two arms** (:func:`_drain_spec`, issue #137). The cursor arm is the
+standard ``seq > cursor`` drain. The second arm exists because that cursor can never
+revisit a leg rewritten *in place*: P-interactions preserves a leg's ``seq`` across a
+re-derive (replay determinism), so the rewritten leg sits behind the cursor and the
+0010 wake finds nothing past it — leaving lineage derived from the old payload in
+place while the trace still claims ``complete``. :func:`_fetch_stale_traces` finds
+those by comparing the hash a row was derived from against the leg's current one, and
+re-derives the trace. That arm never advances the cursor (a stale ``seq`` is below it
+by definition), so the durable cursor stays monotonic; the hash comparison is its
+durable state instead, which is what makes it crash-safe without one.
+
 **Upserting alone is not enough once a derivation can get SHORTER** (ADR-0027 D6's
 absent-payload cutoff, issue #120). So for a leg whose trace has legs to derive,
 ``process_leg`` writes three things: the upsert above, a delete of the trace's rows
@@ -227,11 +238,18 @@ def _delete_stale(
     function needs on the spot:
 
     **Do NOT rewrite this as ``seq >= stop``.** A ``seq``-threshold delete would
-    spare exactly the rows it must remove. ``seq`` is a re-allocated cursor value,
-    not a stable position: rewriting a leg draws a fresh ``seq``, so the gap leg's
-    new ``seq`` sits *above* the stale rows written under its old one. Set
-    membership — "not in ``derived_keys``" — is the only correct condition, and it
-    additionally removes rows whose leg has vanished from the trace entirely.
+    spare exactly the rows it must remove. ``seq`` answers "when did this leg first
+    appear in the stream", not "where does it sit in this derivation": the cutoff
+    moves as payloads arrive and legs are rewritten, so rows written under an earlier,
+    longer derivation do not occupy any predictable ``seq`` range relative to the
+    current stop. Set membership — "not in ``derived_keys``" — is the only correct
+    condition, and it additionally removes rows whose leg has vanished from the trace
+    entirely.
+
+    (A rewritten leg KEEPS its ``seq`` — ``interactions/state.py`` preserves it for
+    replay determinism, which is the whole reason :func:`_fetch_stale_traces` has to
+    exist. So a ``seq`` threshold would not even reliably separate a rewrite's before
+    and after.)
 
     **Scope through ``interactions``.** ``lineage_metadata`` has no ``trace_id``
     (ADR-0025 keeps identity on the parent), so the join is load-bearing: getting it
@@ -361,6 +379,105 @@ def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[ArrivingLe
     return [ArrivingLeg(trace_id=r[0], seq=int(r[1])) for r in rows]
 
 
+def _fetch_stale_traces(tx: db.Transaction, limit: int) -> list[str]:
+    """Trace ids holding at least one leg whose stored lineage was derived from a
+    DIFFERENT payload than the leg now carries (issue #137).
+
+    **Why a second arm exists at all.** P-interactions rewrites a leg in place and
+    deliberately PRESERVES its ``seq`` (``interactions/state.py`` omits ``seq`` from
+    the upsert's ``DO UPDATE SET``, so replay and crash recovery cannot reshuffle
+    seqs a consumer already delivered). :func:`_fetch_batch` drains ``seq > cursor``.
+    A rewritten leg therefore sits *behind* the cursor: migration 0010's trigger does
+    wake us, we drain, we find nothing past the cursor, and the lineage derived from
+    the old payload survives — while ``lineage_trace_status`` still says
+    ``complete``. Over-reporting is the safe direction for a governance tool; serving
+    a stale origin claim as authoritative is not.
+
+    **The predicate is the durable state.** Unlike the cursor arm, nothing records
+    that this pass ran. It does not need to: ``lineage_metadata.payload_hash`` is the
+    hash the row was derived from, so "stored hash != current hash" both detects the
+    staleness and is cleared by fixing it. A crash mid-pass simply leaves the
+    condition true and the next wake re-detects it. That is why this arm can safely
+    skip the cursor advance that the shared loop's one-item-one-transaction contract
+    normally provides.
+
+    ``IS DISTINCT FROM`` rather than ``!=`` because ``payload_hash`` is nullable on
+    both sides (an absent payload — ADR-0027 D6): plain ``!=`` is NULL-valued for a
+    NULL operand, so a leg that gained or lost its payload would compare as "not
+    stale" and never be revisited.
+
+    The join to ``lineage_metadata`` is deliberately INNER: a leg with no lineage row
+    at all is not stale, it is *unconsumed*, and it still sits ahead of the cursor for
+    the normal arm to pick up (:func:`_fetch_batch` — e.g. a leg whose parent
+    interaction was not yet visible). Widening this to an outer join would have the
+    two arms racing for the same leg.
+
+    The INNER join is blind in the mirror direction too: a ``lineage_metadata`` row
+    whose *leg* has been deleted has nothing to compare against, so this arm cannot see
+    it and it survives until something else re-derives that trace (:func:`_delete_stale`
+    would then remove it). Latent rather than live — nothing in P-interactions hard-
+    deletes a leg today, the flush only upserts — so it is left alone deliberately
+    instead of widening the join and reintroducing the race above.
+
+    Returns DISTINCT trace ids, not legs: :func:`process_leg` re-derives a whole
+    trace, so two stale legs in one trace are one unit of work. ``LIMIT`` bounds the
+    pass — a large backlog is drained across successive wakes rather than
+    monopolising one, and the poll backstop guarantees those wakes happen.
+
+    **Known cost.** No index can serve this predicate: it compares two columns across
+    two tables, so the planner hash-joins ``lineage_metadata`` against
+    ``interaction_legs`` and applies ``IS DISTINCT FROM`` as a join filter (verified
+    with EXPLAIN). Cost therefore scales with the size of those tables, not with how
+    much is actually stale — and it is paid on EVERY wake, including the overwhelmingly
+    common one where nothing is stale at all. Acceptable at lab scale and strictly
+    better than serving stale lineage; against real traffic this wants a cheaper
+    trigger (a dirty-trace queue written by the same statement that rewrites the leg,
+    or a generated column the predicate can index). Recorded as an open item on issue
+    #137 rather than guessed at here.
+    """
+    rows = tx.fetch_all(
+        "SELECT DISTINCT i.trace_id FROM lineage_metadata m "
+        "JOIN interaction_legs l "
+        "  ON l.interaction_id = m.interaction_id AND l.leg_type = m.leg_type "
+        "JOIN interactions i ON i.id = m.interaction_id "
+        "WHERE m.payload_hash IS DISTINCT FROM l.payload_hash "
+        "ORDER BY i.trace_id LIMIT %s",
+        (limit,),
+    )
+    return [r[0] for r in rows]
+
+
+def _redrive_stale(spec: _driver.StreamSpec[ArrivingLeg], limit: int) -> int:
+    """Re-derive every trace :func:`_fetch_stale_traces` reports, one transaction per
+    trace. Returns how many traces were re-derived.
+
+    Deliberately does NOT touch the durable cursor. A stale leg's ``seq`` is below
+    the cursor by definition, so advancing to it would drag the cursor *backwards*
+    and re-drain every leg in between on the next wake — unboundedly, and in
+    violation of the monotonic advance the other consumers of the shared loop rely
+    on. The staleness predicate is this pass's durable state instead (see
+    :func:`_fetch_stale_traces`).
+
+    Each trace is re-derived through the spec's own ``process_item``, so the stale
+    path and the normal path run *identical* code — including the stale-row delete
+    and the status upsert. A rewritten payload can change what every later leg of the
+    trace inherits, so re-deriving the whole trace (not just the offending leg) is
+    what makes the refreshed answer self-consistent.
+    """
+    with db.transaction() as tx:
+        trace_ids = _fetch_stale_traces(tx, limit)
+    for trace_id in trace_ids:
+        with db.transaction() as tx:
+            # seq is unused by process_leg (it routes on trace_id alone) and must
+            # never reach advance_cursor from here — hence the sentinel 0.
+            spec.process_item(tx, ArrivingLeg(trace_id=trace_id, seq=0))
+    if trace_ids:
+        log.info(
+            "data-lineage re-derived %d trace(s) with rewritten legs", len(trace_ids)
+        )
+    return len(trace_ids)
+
+
 def _spec(matcher: Matcher | None = None) -> _driver.StreamSpec[ArrivingLeg]:
     """Build the data-lineage stream spec for the shared loop.
 
@@ -389,14 +506,43 @@ def read_cursor(tx: db.Transaction) -> int:
     return _driver.read_cursor(tx, PROCESSOR_NAME)
 
 
+def _drain_spec(spec: _driver.StreamSpec[ArrivingLeg], cursor: int) -> int:
+    """The two-arm drain, in ``_driver.DrainFn`` shape so ``_driver.run`` can invoke
+    it on each wake (the same seam the leg-readiness consumer uses for its
+    non-monotonic advance — issue #123).
+
+    Arm 1 is the standard cursor drain, unchanged: new legs past *cursor*, one
+    transaction each, cursor advancing with the write.
+
+    Arm 2 (:func:`_redrive_stale`) catches legs the cursor can never reach again
+    because they were rewritten in place under a preserved ``seq`` (issue #137). It
+    returns no cursor, and this function returns arm 1's — so the durable cursor
+    stays monotonic no matter what arm 2 does.
+
+    Order matters: arm 1 first, so a leg that is *both* new and stale is handled by
+    the cursor arm and arm 2 then finds nothing left to do for it.
+    """
+    cursor = _driver.drain(spec, cursor)
+    _redrive_stale(spec, _DRAIN_BATCH)
+    return cursor
+
+
 def drain(cursor: int, matcher: Matcher | None = None) -> int:
     """Process every leg past *cursor*, one transaction per leg (each re-deriving
-    that leg's whole trace). Returns the new cursor (the seq of the last leg
-    processed, or *cursor* if none)."""
-    return _driver.drain(_spec(matcher), cursor)
+    that leg's whole trace), then re-derive any trace whose stored lineage no longer
+    matches its legs' payloads (issue #137).
+
+    Returns the new cursor (the seq of the last leg processed, or *cursor* if none).
+    The stale-re-derivation arm never moves the cursor — see :func:`_drain_spec`."""
+    return _drain_spec(_spec(matcher), cursor)
 
 
 def run(stop_event: threading.Event, dsn: str, matcher: Matcher | None = None) -> None:
     """Wake-driven drain loop over the ``interaction_legs`` stream. Returns when
-    *stop_event* is set. See :func:`_driver.run`."""
-    _driver.run(_spec(matcher), stop_event, dsn)
+    *stop_event* is set. See :func:`_driver.run`.
+
+    Passes the two-arm :func:`_drain_spec` through ``_driver.run``'s ``drain_fn``
+    seam so each wake also sweeps for rewritten legs (issue #137). Migration 0010's
+    trigger covers UPDATE, so a re-derive does wake us; the poll backstop bounds the
+    latency if a notification is missed."""
+    _driver.run(_spec(matcher), stop_event, dsn, drain_fn=_drain_spec)

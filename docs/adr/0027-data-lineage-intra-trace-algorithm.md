@@ -328,7 +328,9 @@ decision because it is a deliberate departure from the pattern — and from the
 
 **Why a derivation shrinks.** Lineage is re-derived per arriving leg, and legs
 are themselves rewritten in place when P-interactions re-derives a trace
-(migration 0010's NOTIFY trigger covers UPDATE for exactly this reason). If a
+(migration 0010's NOTIFY trigger covers UPDATE for exactly this reason — though
+covering UPDATE only delivers the *wake*; making the rewritten leg reachable at all
+took D13). If a
 re-derivation leaves a leg without a payload, D6 truncates: the trace that
 previously produced a row per leg now produces only the prefix before the gap.
 An upsert rewrites the prefix and is silent about the rest, so the rows past the
@@ -588,6 +590,60 @@ then. Not a spec change — this is the reading the spec's own rules produce; it
 recorded because the earlier draft treated the difference as an unresolved
 inconsistency rather than as two different facts.
 
+### D13 — The drain needs a second, non-cursored arm to catch legs rewritten in place
+
+D9 established that a re-derivation must delete stale rows as well as upsert, and
+justified it by noting that legs are rewritten in place and that migration 0010's
+trigger covers UPDATE "for exactly this reason". That is true about the *wake* and
+was wrong about the *reach*: covering UPDATE means the consumer is notified, not that
+it can still see the rewritten leg. It could not.
+
+**Why the cursor cannot get there.** P-interactions preserves a leg's `seq` across a
+re-derive — `seq` is omitted from the upsert's `DO UPDATE SET` so that replay and
+crash recovery never reshuffle seqs a downstream consumer has already delivered
+(ADR-0007). P-data-lineage drains `WHERE seq > cursor`. A rewritten leg therefore
+sits *behind* the cursor: the trigger fires, the consumer drains, finds nothing past
+the cursor, and does nothing. The poll backstop runs the same query, so it does not
+help either. The lineage derived from the superseded payload survives while
+`lineage_trace_status` still reports `complete` — D9's stale-row delete never runs,
+because the derivation that would trigger it is never invoked.
+
+This is strictly worse than the failure D9 addressed. There, a stale row was at least
+accompanied by a `partial` status a reader could act on. Here the trace asserts full
+coverage over lineage derived from a payload that no longer exists.
+
+**The decision.** The drain gets two arms (`data_lineage/driver.py:_drain_spec`):
+
+1. the existing cursor arm, `seq > cursor`, unchanged;
+2. a staleness arm that re-derives any trace where
+   `lineage_metadata.payload_hash IS DISTINCT FROM interaction_legs.payload_hash`.
+
+The second arm **never advances the durable cursor**. A stale leg's `seq` is below the
+cursor by definition, so advancing to it would drag the cursor backwards and re-drain
+every leg in between — unboundedly, and in violation of the monotonic advance the
+other consumers of the shared loop rely on. It does not need a cursor: the hash
+comparison *is* its durable state, since re-deriving the trace is exactly what clears
+the condition. A crash mid-pass leaves the predicate true and the next wake
+re-detects it.
+
+Both arms route through the same `process_item`, so the stale path inherits D9's
+delete and D8's status upsert unchanged. The arm re-derives the whole *trace*, not
+just the offending leg, because a rewritten payload changes what every later leg
+inherits (D1).
+
+**Rejected: bump `seq` on rewrite.** A one-line change to `state.py` would put the
+rewritten leg above the cursor and need no new query. It trades this bug for a subtler
+one in the recovery path — the determinism `seq` preservation exists to protect — and
+perturbs a producer to fix a consumer's blind spot.
+
+**Accepted cost.** No index can serve a predicate comparing two columns across two
+tables, so the arm hash-joins `lineage_metadata` against `interaction_legs` on every
+wake, including the common one where nothing is stale. Cost scales with table size
+rather than with staleness. Acceptable at lab scale and strictly better than serving
+stale provenance; a cheaper trigger (a dirty-trace queue written by the statement that
+rewrites the leg, or an indexable generated column) is the shape to reach for against
+real traffic. Recorded as an open item rather than guessed at.
+
 ## Outputs
 
 - **API** — given a trace's interaction flow, compute/serve trace lineage;
@@ -670,6 +726,22 @@ matching how ADR-0024/0025 name their PKs.
   #120 stops the whole trace, so a branch that never touched the missing payload
   loses its lineage too. This would be per-leg state, not the trace-level row
   D8 added.
+
+- D13's staleness arm is blind to a `lineage_metadata` row whose **leg has been
+  deleted**: with nothing to compare against, the inner join cannot see it, so the
+  orphaned provenance claim survives until that trace is re-derived for some other
+  reason. Latent today — P-interactions only ever upserts legs, it does not hard-delete
+  them — and deliberately not fixed by widening the join, which would make the two arms
+  race for the same unconsumed leg. If leg deletion is ever introduced, this needs a
+  sweep of its own.
+
+- A cheaper staleness trigger than D13's per-wake hash join. The predicate cannot
+  be indexed (it compares two columns across two tables), so its cost tracks table
+  size and is paid even when nothing is stale. Candidates: a dirty-trace queue
+  written by the same statement that rewrites a leg (moves the cost to the writer,
+  which knows precisely what changed), or an indexable generated/denormalised
+  column. Not chosen now because the right shape depends on write volume this
+  deployment has not yet seen.
 
 - Distinguishing a **data-contributing** tool from a **pass-through** one (D12).
   The kind default makes every `tool` a source, which over-reports for
