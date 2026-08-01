@@ -6,7 +6,7 @@ The spec's default implementation, verbatim::
 
 "Returning to always without an analysis" — always matched, no transformation, no
 evidence. With it, lineage is **complete but full of maybes**: every structural edge
-in the interaction graph is treated as real data flow (ADR-0027). That is a
+in the interaction graph is treated as real data flow (ADR-0028). That is a
 deliberate trade — it makes lineage computable today, and better matchers prune the
 maybes later without any change to the lineage algorithm.
 """

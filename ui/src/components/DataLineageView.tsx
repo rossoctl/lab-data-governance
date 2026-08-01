@@ -7,7 +7,7 @@ import type { LineageState } from '../types';
 
 /**
  * The **Data lineage metadata** for one **Interaction leg**'s payload
- * (ADR-0027), rendered inside the flow view's expanded payload beside the
+ * (ADR-0028), rendered inside the flow view's expanded payload beside the
  * **Classification** verdict (issue #119). Read-only surface over
  * `GET /api/traces/{tid}/data-lineage`.
  *
@@ -23,7 +23,7 @@ import type { LineageState } from '../types';
  * differently, and a nullable triple can only spell two of them.
  *
  * **Names are resolved here, not passed in.** Lineage stores an entity's
- * *natural key* (ADR-0027) — the identity, qualified so two same-named tools on
+ * *natural key* (ADR-0028) — the identity, qualified so two same-named tools on
  * different agents cannot collapse into one source — but a reader recognises
  * `search_destinations`, not `tool:agent:(travel_advisor,travel-advisor):search_destinations`.
  * The friendly `display_name` lives on the entity rows, which this component was
@@ -63,7 +63,7 @@ export function DataLineageView({ state }: { state: LineageState }) {
     );
   }
 
-  // The eventual-consistency window (ADR-0027): the leg exists but
+  // The eventual-consistency window (ADR-0028): the leg exists but
   // P-data-lineage has not derived its metadata yet. Rendered as a distinct,
   // claim-less state — deliberately NOT an empty sources list, which would read
   // as the real "originates here, no upstream sources" verdict below. A
@@ -88,7 +88,7 @@ export function DataLineageView({ state }: { state: LineageState }) {
   return (
     <div>
       {data_sources.length === 0 ? (
-        // A genuinely empty triple is a REAL derived value (ADR-0027 D3: the
+        // A genuinely empty triple is a REAL derived value (ADR-0028 D3: the
         // payload originates at this entity), not the null state — so it is
         // stated in words rather than rendered as nothing.
         <div style={{ color: 'var(--dg-color-muted)', fontSize: '0.85rem' }}>
@@ -117,7 +117,7 @@ export function DataLineageView({ state }: { state: LineageState }) {
 
 /**
  * The origins, one row each, with the transformations applied to *that* source's
- * contribution (`data_source → set<transformation>`, ADR-0027). The row set is
+ * contribution (`data_source → set<transformation>`, ADR-0028). The row set is
  * driven off `data_sources`, not the map's keys: the source list is the
  * authority on which origins exist, and a source legitimately carries no map
  * entry (nothing recorded for it) — which must not silently drop the source.

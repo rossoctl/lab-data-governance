@@ -4,7 +4,7 @@ The spec's default implementation: ``simple_match(payload_a, payload_b) -> {true
 null, null}`` — always matched, no transformation, no evidence, "returning to
 always without an analysis" (``docs/data_lineage_alg.md``). This is what makes
 lineage computable today: complete but full of maybes, since every structural edge
-is treated as real flow (ADR-0027). Better matchers prune the maybes later without
+is treated as real flow (ADR-0028). Better matchers prune the maybes later without
 changing the lineage algorithm.
 
 Pure: no database, no network, no lineage import.

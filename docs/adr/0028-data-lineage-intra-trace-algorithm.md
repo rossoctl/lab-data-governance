@@ -12,6 +12,18 @@ metadata**. This ADR records the intra-trace algorithm and the decisions that
 shaped it. The human-owned spec lives at `docs/data_lineage_alg.md`; this ADR
 captures the *why* and the settled boundaries.
 
+> **Renumbered from 0027.** This ADR was originally written as ADR-0027 on the
+> data-lineage branch while ADR-0027 "Leg-readiness notification for governance
+> consumers" (#125) was written independently on `main` — the same
+> both-sides-took-the-next-free-number collision that produced the two alembic
+> heads that merge revision `0014` resolves. The merge left two files numbered
+> 0027 and no 0028. This one moved because leg-readiness was already merged to
+> `main` and could be cited from there, so keeping its number stable was the
+> lower-risk half. Citations meaning *this* ADR (including every `D<n>`
+> reference) were retargeted to 0028; citations meaning leg-readiness were left
+> alone. Pre-merge git history and commit messages still say "ADR-0027" for this
+> document.
+
 ## Lineage belongs to payloads; entities are nodes
 
 The unit that carries lineage is the **payload on an interaction leg**, not the

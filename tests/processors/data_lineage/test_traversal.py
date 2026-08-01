@@ -1,4 +1,4 @@
-"""Op selection + inbound routing over a trace's legs (issue #117, ADR-0027 D1/D2/D4).
+"""Op selection + inbound routing over a trace's legs (issue #117, ADR-0028 D1/D2/D4).
 
 Pure: the traversal takes the trace's legs and entities as plain values and
 returns per-leg **data lineage**, so the whole algorithm is testable without a
@@ -148,7 +148,7 @@ def test_spec_worked_example_inbound_sets(worked_example) -> None:
 def test_spec_worked_example_agents_first_outbound_merges_over_one_input(
     worked_example,
 ) -> None:
-    """ADR-0027 D4's old call-out was "an accumulating entity's **first** outbound
+    """ADR-0028 D4's old call-out was "an accumulating entity's **first** outbound
     legitimately has one inbound", which had to be said because that case fell on the
     *other side* of a selection branch. D11 removed the branch, so the claim is now
     purely about arity: the agent's first outbound merges over ONE input, its later
@@ -332,7 +332,7 @@ def test_an_accumulating_entity_retains_every_prior() -> None:
 
 def test_two_priors_with_identical_payloads_are_two_priors() -> None:
     """Priors are retained by **position**, not by content hash — the same reason
-    ADR-0027 D5 keys the table on the leg. Payloads are content-addressed and
+    ADR-0028 D5 keys the table on the leg. Payloads are content-addressed and
     deduped, so two distinct priors can carry byte-identical content; collapsing
     them would drop a whole branch of the merge's provenance.
 
@@ -363,7 +363,7 @@ def test_accumulating_kinds_are_declared_in_exactly_one_place() -> None:
     ``kind == 'agent'`` inline, so this test can move the goalposts by patching
     the single declaration.
 
-    Kept even though D11 stopped this predicate selecting an op (ADR-0027 D11
+    Kept even though D11 stopped this predicate selecting an op (ADR-0028 D11
     "what this deliberately does not remove"): it still decides how many priors pool
     and therefore ``merge_lineage``'s arity."""
     from data_governance.processors.data_lineage import memory
@@ -406,7 +406,7 @@ def test_traversal_honours_a_redeclared_accumulating_predicate(monkeypatch) -> N
 
 def test_memory_node_is_keyed_by_entity_and_a_nullable_memory_key() -> None:
     """Acceptance: "the memory node carries a nullable memory key defaulting to
-    unkeyed". ADR-0027's open item — keying memory per session/user/thread later
+    unkeyed". ADR-0028's open item — keying memory per session/user/thread later
     must be a value change, not a migration, so the node is ``(entity_id,
     memory_key)`` with ``None`` meaning unkeyed/blob (the v1 default)."""
     from data_governance.processors.data_lineage import memory
@@ -548,7 +548,7 @@ def test_the_degrade_branch_ignores_is_entity_source_in_the_traversal() -> None:
     in ``entities``.
 
     Contrast with the merge branch, which DOES put a source tool in ``entities``.
-    Both follow ADR-0027 D12's rule that ``entities`` records transit, not
+    Both follow ADR-0028 D12's rule that ``entities`` records transit, not
     origin: data passed through the tool there, whereas here the output originates
     at the tool with no upstream to have passed through. Unobservable under
     ``simple_match``; pinned so a real matcher's arrival is a deliberate decision

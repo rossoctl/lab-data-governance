@@ -6,7 +6,7 @@ authoritative; the construction rules below (transformation-set union,
 key-collision merge, the entity's own empty transformation set, degrade-to-init)
 are its rules, cited per function.
 
-**Two operations, not three** (ADR-0027 D11). The spec once named a separate
+**Two operations, not three** (ADR-0028 D11). The spec once named a separate
 single-payload ``linear_lineage``; it now defines one generic ``merge_lineage``
 covering "a single or multiple payloads", and a merge over one input computes the
 identical triple a linear did — union of one source set is that set, and there is
@@ -19,7 +19,7 @@ matcher injected as a parameter. The trace traversal (:mod:`.traversal`) decides
 (:mod:`.driver`) reads and persists. Keeping the algebra separate from both is
 what makes the spec's worked examples directly testable.
 
-**Matching is a black box** (ADR-0027). These functions call the injected matcher
+**Matching is a black box** (ADR-0028). These functions call the injected matcher
 and read only ``matched`` and ``transformation`` off the result — never
 ``evidence``, and never anything about *which* matcher ran. The caller resolves it
 through :func:`data_governance.matching.get_matcher`.
@@ -42,7 +42,7 @@ DataSource = str
 # is a matcher's business" (``matching.contract``), and the trivial default reads
 # neither argument. Named here rather than imported because ``matching``'s public
 # surface exports the verdict types and ``get_matcher`` — not its internal payload
-# alias — and lineage may only depend on the published contract (ADR-0027).
+# alias — and lineage may only depend on the published contract (ADR-0028).
 Payload = Any
 
 
@@ -87,7 +87,7 @@ def init_lineage(entity_name: str) -> DataLineage:
     joins the set only once a downstream op extends the set with it.
 
     This is also the shape :func:`merge_lineage` degrades to when the matcher
-    reports no relationship for *every* input (ADR-0027 D3(2)) — and it degrades
+    reports no relationship for *every* input (ADR-0028 D3(2)) — and it degrades
     there **regardless of ``is_entity_source``**: the spec's Example 3 states the
     rule for "false or true" alike, and the bracketed alternative reading beside it
     (``data_lineage_alg.md:104``) is an HTML comment the spec did not adopt.
@@ -115,7 +115,7 @@ def _inherit(
     Nor does the entity's *own source contribution* belong here: an
     ``is_entity_source`` entity is added with an **empty** transformation set, so
     routing it through this function would wrongly stamp an inherited input's
-    transformation onto it (ADR-0027 D12).
+    transformation onto it (ADR-0028 D12).
     """
     added = frozenset({transformation}) if transformation is not None else frozenset()
     return DataLineage(
@@ -140,7 +140,7 @@ def merge_lineage(
 
     The whole of the algebra bar the origin case — the spec's generic form covering
     "a single or multiple payloads", so a one-input call is a legitimate use and not
-    a degenerate one (ADR-0027 D11: there is no separate ``linear_lineage``).
+    a degenerate one (ADR-0028 D11: there is no separate ``linear_lineage``).
 
     "the idea here is to call the matching function with every source payload and
     output payload (e.g. payload_a,output_payload; payload_b,output_payload, ..)" —
@@ -163,7 +163,7 @@ def merge_lineage(
     set member, since ``None`` is "no transform performed or none was identified",
     not a kind of transformation.
 
-    **``is_entity_source``** (ADR-0027 D12) is a property of the producing *entity*,
+    **``is_entity_source``** (ADR-0028 D12) is a property of the producing *entity*,
     not of the payloads, which is why the caller supplies it rather than the op
     deriving it — the traversal reads :func:`.memory.is_entity_source`. It is
     orthogonal to ``matched``: ``matched`` decides whether upstream lineage is
@@ -174,7 +174,7 @@ def merge_lineage(
     match's transformation onto it would be a false claim.
 
     With no matching input at all the op degrades to :func:`init_lineage`
-    (ADR-0027 D3(2)) — a runtime *result* of matching, not a selection branch: the
+    (ADR-0028 D3(2)) — a runtime *result* of matching, not a selection branch: the
     traversal still chose ``merge``; matching simply found nothing to inherit. That
     branch **ignores ``is_entity_source``** (spec Example 3, stated for "false or
     true" alike): the output payload came from somewhere and its producer is the only
@@ -205,7 +205,7 @@ def merge_lineage(
             transformations[source] = transformations.get(source, frozenset()) | values
         entities |= contribution.entities
     if is_entity_source:
-        # The entity's OWN contribution (spec 2(2)1-2, ADR-0027 D12): it joins the
+        # The entity's OWN contribution (spec 2(2)1-2, ADR-0028 D12): it joins the
         # sources alongside what was inherited, with an EMPTY transformation set.
         # `setdefault`, not an assignment: were the entity already a source reached
         # through an input (an entity that appears upstream of itself in the trace),

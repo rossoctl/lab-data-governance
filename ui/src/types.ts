@@ -112,7 +112,7 @@ export interface Payload {
 }
 
 /**
- * The **Data lineage metadata** triple for one **Interaction leg** (ADR-0027):
+ * The **Data lineage metadata** triple for one **Interaction leg** (ADR-0028):
  * where the payload's data came from and what happened to it on the way.
  *
  * 1. `data_sources` — the origins, each an **Entity**'s natural key.
@@ -140,7 +140,7 @@ export interface DataLineage {
  * One **Interaction leg** of a trace with its nullable lineage, the element of
  * `GET /api/traces/{tid}/data-lineage`.
  *
- * The leg key is `(interaction_id, leg_type)` (ADR-0027 D5) — content-addressed
+ * The leg key is `(interaction_id, leg_type)` (ADR-0028 D5) — content-addressed
  * `payload_hash` is a fact about the row, NOT the key: identical bytes at
  * different positions carry completely different lineage. `lineage` is `null` in
  * the eventual-consistency window before P-data-lineage has derived this leg,
@@ -173,7 +173,7 @@ export type DataLineageByLeg = Map<string, DataLineage | null>;
  * demands a different action:
  *
  * - `'derived'` — P-data-lineage produced this triple. It is the answer, *including*
- *   when the triple is empty (the payload originates here, ADR-0027 D3).
+ *   when the triple is empty (the payload originates here, ADR-0028 D3).
  * - `'pending'` — the read succeeded but this leg has no lineage yet (the
  *   eventual-consistency window, or a not-yet-migrated DB). *Wait.*
  * - `'error'` — the read itself failed, so nothing is known. *Retry.*
@@ -181,7 +181,7 @@ export type DataLineageByLeg = Map<string, DataLineage | null>;
  * A nullable triple could only express two of those, which is how a failed fetch
  * came to render as "not yet computed" — telling a reader to wait for an answer
  * that was never going to arrive. Making the third state a distinct arm makes
- * that conflation unrepresentable rather than merely discouraged: ADR-0027's rule
+ * that conflation unrepresentable rather than merely discouraged: ADR-0028's rule
  * that "not yet computed" must never look like a derived answer applies with
  * equal force to "we failed to ask".
  */
@@ -191,7 +191,7 @@ export type LineageState =
   | { kind: 'error' };
 
 /**
- * Whether a trace's derived lineage covers the whole trace (ADR-0027 D6, issue
+ * Whether a trace's derived lineage covers the whole trace (ADR-0028 D6, issue
  * #120), as served on the `GET /api/traces/{tid}/data-lineage` envelope.
  *
  * - `'complete'` — every leg had a payload; the sources listed are the full set.

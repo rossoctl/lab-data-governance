@@ -78,7 +78,7 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
   is a deterministic function of committed state written entirely inside the
   loop's one transaction (ADR-0007), so concurrent derivations of a trace
   converge — wasted work, not corruption. `SEMANTIC_MATCHER` is pinned to
-  `simple`, the trivial always-match matcher (ADR-0027): lineage is complete but
+  `simple`, the trivial always-match matcher (ADR-0028): lineage is complete but
   full of maybes, and setting it explicitly makes that visible. Sized like the
   interactions processor (no model, no inference).
 - **NetworkPolicy.** Three policies, one per workload. Receiver and UI
@@ -192,7 +192,7 @@ So for a schema change the order above matters: build and load the image
 first, then restart every Deployment in the list, and do not apply a
 single manifest in isolation expecting only that component to be affected.
 If you applied one and reads started failing, restarting the rest is the
-fix (see ADR-0027 D10 for why the rename was accepted in this shape).
+fix (see ADR-0028 D10 for why the rename was accepted in this shape).
 
 ## Wire the kagenti collector to our receiver
 

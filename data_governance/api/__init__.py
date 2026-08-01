@@ -456,8 +456,8 @@ async def _data_lineage_handler(request: Request) -> Response:
 
     Thin adapter over :func:`retrieval.get_data_lineage`: the **Data lineage
     metadata** triple for every **Interaction leg** of the trace, keyed per leg
-    (ADR-0027 D5) with a nullable ``lineage`` for the eventual-consistency
-    window. A pure lookup (ADR-0027 D7) — no matcher runs on this path. The
+    (ADR-0028 D5) with a nullable ``lineage`` for the eventual-consistency
+    window. A pure lookup (ADR-0028 D7) — no matcher runs on this path. The
     empty-shape conventions (unknown trace, not-yet-migrated DB) live behind the
     seam; the handler only parses the id and encodes the result.
 
@@ -467,13 +467,13 @@ async def _data_lineage_handler(request: Request) -> Response:
     sorted so a re-derivation is byte-identical; that is a serialization property,
     not a sequence.
 
-    ``status`` / ``stopped_at_seq`` are the trace's lineage **coverage** (ADR-0027
+    ``status`` / ``stopped_at_seq`` are the trace's lineage **coverage** (ADR-0028
     D6, issue #120), served on the envelope beside ``legs`` because coverage is a
     whole-trace fact — and because a truncated leg has no lineage object left to
     carry it. ``"partial"`` truncates the *lineage*, not ``legs``: every leg is
     still listed, with ``lineage: null`` from ``stopped_at_seq`` on. ``null``
     status is **unknown** and is encoded as ``null`` rather than defaulted to
-    ``"complete"`` (ADR-0027 D6 "Reading the status").
+    ``"complete"`` (ADR-0028 D6 "Reading the status").
     """
     trace_id = request.path_params.get("tid")
     if not trace_id:
@@ -573,7 +573,7 @@ def build_app() -> Starlette:
             endpoint=_entity_spans_handler,
             methods=["GET"],
         ),
-        # Persisted data lineage for a trace (issue #118, ADR-0027). A sibling
+        # Persisted data lineage for a trace (issue #118, ADR-0028). A sibling
         # trace-scoped resource rather than a field on /interactions: it is keyed
         # per LEG (D5), it is a separately-derived stream with its own
         # eventual-consistency window, and the trace-level complete/partial status

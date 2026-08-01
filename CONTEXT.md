@@ -640,7 +640,7 @@ metadata** triple, derived by **P-data-lineage** and stored in
 source**s) and "what did it pass through" (which **Entities**, with which
 **Transformation**s applied). v1 is **intra-trace** only — lineage within one
 **Trace**; inter-trace lineage (flow through shared persistent storage, one
-trace writing and another reading) is Step II and deferred. See ADR-0027.
+trace writing and another reading) is Step II and deferred. See ADR-0028.
 _Avoid_: confusing this with **Span lineage** — the two are unrelated. Span
 lineage is a graph-structure concept (a **Span**'s ancestors ∪ subtree under a
 `seq` horizon, used by `P-interactions` to bound what one span's re-derivation
@@ -655,9 +655,9 @@ The triple recorded per **Interaction leg** by **P-data-lineage**: (1)
 **Entities** the data passed through — the spec is explicit that "this is
 unordered. In case an order is needed - it will need to be derived from the trace
 using an API", so ordering is a deferred trace-derived read and not something this
-field supplies (ADR-0027 D10; the field was named `entity_path` until migration
+field supplies (ADR-0028 D10; the field was named `entity_path` until migration
 `0013_lineage_entities_rename`). Keyed
-`(interaction_id, leg_type)` — the **leg**, not the `payload_hash` (ADR-0027
+`(interaction_id, leg_type)` — the **leg**, not the `payload_hash` (ADR-0028
 D5): payloads are content-addressed and deduped, so identical bytes at different
 positions carry completely different lineage, and a hash key would collide those
 distinct facts. `payload_hash` is kept as a *secondary index* for the deferred
@@ -672,7 +672,7 @@ byte-identical, which is serialization, not sequence.
 **Lineage coverage**:
 Whether a **Trace**'s derived **Data lineage** covers the whole trace, recorded
 per trace in `lineage_trace_status` as `complete` or `partial` plus the
-`stopped_at_seq` a partial one stopped at (ADR-0027 D6/D8). When an **Interaction
+`stopped_at_seq` a partial one stopped at (ADR-0028 D6/D8). When an **Interaction
 leg**'s payload is absent, lineage is derived only up to that leg in leg-`seq`
 order — a positional prefix — and the trace is `partial`. The flag exists to
 prevent one specific failure: a governance consumer reading a truncated prefix as
@@ -681,7 +681,7 @@ everywhere the lineage is served (the `data-lineage` API envelope, a warning at
 the top of the **Flow view**). Three values, not two: *absence* of the status row
 means **unknown** — the eventual-consistency window before **P-data-lineage** has
 reached the trace.
-_Avoid_: collapsing **unknown** into `complete` (ADR-0027 D6 "Reading the status" —
+_Avoid_: collapsing **unknown** into `complete` (ADR-0028 D6 "Reading the status" —
 they are opposite claims, and defaulting the absent value is the live trap). Also
 avoid reading `partial` as an error, or as a statement about *why* the payload is
 missing: it is a correct prefix plus a warning, and distinguishing *not captured*
@@ -696,7 +696,7 @@ An origin of data in **Data lineage** — recorded as an **Entity**'s **Natural
 key** ("the data source is assigned the entity name", spec rule 1). An
 **Entity** becomes a data source of a payload by any of three routes: structurally
 (it produced the payload with nothing inbound to it — a **Trace** root such as a
-user's prompt, ADR-0027 D3(1)); semantically (the matcher found no relationship
+user's prompt, ADR-0028 D3(1)); semantically (the matcher found no relationship
 between its input and its output, so the output is new data, D3(2)); or by
 **declaration** — it is a **Source entity**, so it contributes itself *alongside*
 whatever it inherited (D12). The declared route is the only one that fires under the
@@ -708,7 +708,7 @@ that matched reports *both* its own contribution and the sources it inherited.
 
 **Source entity**:
 An **Entity** declared to contribute content of its own, and therefore added to a
-payload's **Data source** set on top of what the payload inherited (ADR-0027 D12,
+payload's **Data source** set on top of what the payload inherited (ADR-0028 D12,
 spec "Entity Taxonomy"). It enters `source_transformations` with an **empty** set —
 its own contribution did not undergo the transformation the *inherited* sources did,
 so stamping one on would be a false claim. The eventual source of the answer is a
@@ -745,14 +745,14 @@ and never learns which matcher ran or how it decided. The default
 `simple_match` is trivial — always matched, no transformation — which makes
 lineage *complete but full of maybes* (every structural edge is treated as real
 flow); better matchers prune the maybes without any change to the lineage
-algorithm. Matching runs at **ingest**, not at query time (ADR-0027 D7): a read
+algorithm. Matching runs at **ingest**, not at query time (ADR-0028 D7): a read
 would otherwise cost a matcher call per payload pair over a trace's whole
 history. Matcher versioning and backfill after a matcher change are deferred.
 
 **Accumulating entity**:
 An **Entity** that retains its prior inbound payloads within a **Trace**, making
 it a partial mixing bowl for **Data lineage**: its output is derived from *all*
-its priors, not just its latest input. ADR-0027 D2 assumes
+its priors, not just its latest input. ADR-0028 D2 assumes
 transient/session memory is **always present**, so an accumulating entity's
 inbound set grows past one. Since D11 collapsed the algebra to two operations that
 size no longer *selects* an operation — every non-root leg runs `merge` — but it
@@ -893,7 +893,7 @@ present on both the `GET /api/traces` collection rows and the
 - **"Lineage"** meant two unrelated things. `P-interactions` and ADR-0007/0016
   use it for a **Span**'s ancestors ∪ subtree under a `seq` horizon — a
   graph-structure region bounding what one span's re-derivation may rewrite.
-  ADR-0027 uses it for content provenance. Resolved: **Span lineage** vs **Data
+  ADR-0028 uses it for content provenance. Resolved: **Span lineage** vs **Data
   lineage** — distinct terms, never the bare word. They share no code, no table,
   and no key; a grep for "lineage" hits both.
 - **"Source"** — a **Data source** is where a payload's content *originated*

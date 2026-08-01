@@ -8,7 +8,7 @@ mirroring the P-classification adapter (``processors/classification/driver.py``)
 
 **Re-derive-per-leg.** The shared loop's grain is one item, one transaction; data
 lineage's grain is a whole trace (``inbound(i)`` spans every earlier leg of the
-trace — ADR-0027 D1). So on each arriving leg we re-derive its ENTIRE trace: read
+trace — ADR-0028 D1). So on each arriving leg we re-derive its ENTIRE trace: read
 every leg of the trace with its parent's caller/callee, run the pure traversal
 (:func:`traversal.derive_trace_lineage`), upsert every resulting row, all in the one
 transaction the loop owns, then let the loop advance the cursor to that leg's seq.
@@ -34,16 +34,16 @@ re-derives the trace. That arm never advances the cursor (a stale ``seq`` is bel
 by definition), so the durable cursor stays monotonic; the hash comparison is its
 durable state instead, which is what makes it crash-safe without one.
 
-**Upserting alone is not enough once a derivation can get SHORTER** (ADR-0027 D6's
+**Upserting alone is not enough once a derivation can get SHORTER** (ADR-0028 D6's
 absent-payload cutoff, issue #120). So for a leg whose trace has legs to derive,
 ``process_leg`` writes three things: the upsert above, a delete of the trace's rows
 **that this derivation did not produce** (:func:`_delete_stale` — scoped by set
 membership, never by ``seq >= stop``), and the trace-level status in
 ``lineage_trace_status`` (migration 0012). Why the delete exists and why its scoping
-must be set membership: ADR-0027 D9. All three writes share the loop's one
+must be set membership: ADR-0028 D9. All three writes share the loop's one
 transaction, so a trace's metadata and its coverage claim can never disagree. A
 trace we cannot see yet gets none of the three — no status row, which is how
-*unknown* is expressed (ADR-0027 D6).
+*unknown* is expressed (ADR-0028 D6).
 
 **Trace scoping needs a join.** ``interaction_legs`` has no ``trace_id`` (ADR-0025
 puts identity on the parent), so both the arriving leg's trace and the trace's legs
@@ -53,7 +53,7 @@ a governance tool must not make (inter-trace lineage is Step II, deferred).
 
 **The matcher is resolved through the public contract only** — one
 :func:`data_governance.matching.get_matcher` call per drain, never an import of a
-matcher implementation (ADR-0027: lineage does not know how matching decides).
+matcher implementation (ADR-0028: lineage does not know how matching decides).
 
 Trade-off, accepted as in the graph driver: re-deriving a trace once per newly
 arrived leg is more CPU than an incremental derivation. It is always consistent and
@@ -160,7 +160,7 @@ def load_payloads(tx: db.Transaction, legs: list[Leg]) -> dict[str, object]:
     payload_b)`` is over payload content, not over hashes). The default matcher
     reads neither argument, so this read buys nothing today — it exists so that
     swapping in a real, content-reading matcher stays a pure configuration change
-    (ADR-0027), rather than requiring a new read here at that point.
+    (ADR-0028), rather than requiring a new read here at that point.
 
     A hash with no ``interaction_payloads`` row simply does not appear in the map;
     the traversal then falls back to the hash itself, which the matching contract
@@ -189,7 +189,7 @@ def process_leg(tx: db.Transaction, leg: ArrivingLeg, matcher: Matcher) -> None:
     Three writes, all in *tx* so a trace's metadata and its coverage status can
     never disagree: upsert the derived rows, **delete** any of this trace's rows the
     derivation no longer covers, and upsert the trace's ``complete``/``partial``
-    status (ADR-0027 D6, issue #120). Together they make the persisted lineage of a
+    status (ADR-0028 D6, issue #120). Together they make the persisted lineage of a
     trace exactly the derivation's output — no more, so a shrinking derivation
     genuinely shrinks the answer.
 
@@ -200,7 +200,7 @@ def process_leg(tx: db.Transaction, leg: ArrivingLeg, matcher: Matcher) -> None:
         # Deliberately writes NO status row: nothing was derived, so there is
         # nothing to claim. Do NOT "complete" this branch — absence of the row is
         # how the schema says *unknown*, and a `complete` here would assert full
-        # coverage of a trace whose legs have not landed (ADR-0027 D6 "Reading the
+        # coverage of a trace whose legs have not landed (ADR-0028 D6 "Reading the
         # status"). Note this is not the empty-TRACE case the traversal calls
         # complete; it is the trace we cannot see yet.
         return
@@ -234,7 +234,7 @@ def _delete_stale(
     produce, left behind by an earlier and longer one.
 
     Why the delete exists at all (a derivation can shrink, and an upsert is silent
-    about rows it is not producing) is ADR-0027 D9. Two things a reader editing this
+    about rows it is not producing) is ADR-0028 D9. Two things a reader editing this
     function needs on the spot:
 
     **Do NOT rewrite this as ``seq >= stop``.** A ``seq``-threshold delete would
@@ -277,13 +277,13 @@ def _delete_stale(
 def _upsert_status(
     tx: db.Transaction, trace_id: str, result: traversal.TraceLineage
 ) -> None:
-    """Record whether *trace_id*'s lineage covers the whole trace (ADR-0027 D6).
+    """Record whether *trace_id*'s lineage covers the whole trace (ADR-0028 D6).
 
     One row per trace (PK ``trace_id``), so this upsert is the entire idempotency
     story: the partial→complete transition, when a late payload arrives, is a plain
     overwrite of that single row with no earlier, longer answer left behind to
     shadow it. Why the status is persisted here rather than derived on read:
-    ADR-0027 D8 (migration 0012).
+    ADR-0028 D8 (migration 0012).
 
     ``stopped_at_seq`` is written as NULL for a complete trace, which the table's
     CHECK constraint pairs with the status so a half-written claim ("partial, but I
@@ -402,7 +402,7 @@ def _fetch_stale_traces(tx: db.Transaction, limit: int) -> list[str]:
     normally provides.
 
     ``IS DISTINCT FROM`` rather than ``!=`` because ``payload_hash`` is nullable on
-    both sides (an absent payload — ADR-0027 D6): plain ``!=`` is NULL-valued for a
+    both sides (an absent payload — ADR-0028 D6): plain ``!=`` is NULL-valued for a
     NULL operand, so a leg that gained or lost its payload would compare as "not
     stale" and never be revisited.
 

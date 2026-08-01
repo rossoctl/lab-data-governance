@@ -1,7 +1,7 @@
 """Tests for the ``lineage_trace_status`` derived-table migration (issue #120).
 
 Migration 0012 adds the trace-level **complete/partial** status for data lineage
-(ADR-0027 D6). This resolves the ADR's open item on *where* that status lives: a
+(ADR-0028 D6). This resolves the ADR's open item on *where* that status lives: a
 dedicated table keyed by trace, rather than derived on read.
 
 The assertions that carry design weight:
@@ -14,7 +14,7 @@ The assertions that carry design weight:
   was truncated", which is only ever true alongside ``status = 'complete'``, and
   a CHECK constraint enforces exactly that pairing so a half-written status
   cannot exist. ``status`` itself is NOT NULL, which is what makes absence of the
-  *row* the only expressible way to say *unknown* (ADR-0027 D6 "Reading the
+  *row* the only expressible way to say *unknown* (ADR-0028 D6 "Reading the
   status"; the same convention ``lineage_metadata`` uses) — a present row always
   makes a definite claim.
 - **FK-free**, like every other derived table (ADR-0002/0005): rebuildable by
@@ -101,7 +101,7 @@ def test_table_exists(migrated_dsn: str) -> None:
 
 
 def test_pk_is_trace_id(migrated_dsn: str) -> None:
-    """One row per trace: the status is a whole-trace fact (ADR-0027 D6), and a
+    """One row per trace: the status is a whole-trace fact (ADR-0028 D6), and a
     single-row key is what makes the driver's upsert the complete idempotency
     story — a re-derivation overwrites the one row rather than accumulating."""
     assert _pk_columns(migrated_dsn, TABLE) == ["trace_id"]
@@ -117,7 +117,7 @@ def test_columns_are_exactly_trace_status_and_stop_position(migrated_dsn: str) -
 
 
 def test_status_is_not_null_and_stop_seq_is_nullable(migrated_dsn: str) -> None:
-    """Pins the structural half of "absent row = unknown" (ADR-0027 D6). ``status``
+    """Pins the structural half of "absent row = unknown" (ADR-0028 D6). ``status``
     NOT NULL is what leaves absence of the ROW as the only way to say *unknown*:
     relax it and a NULL status becomes an in-band value someone can reinterpret as
     ``complete``. ``stopped_at_seq`` is nullable because a complete trace has no
@@ -155,7 +155,7 @@ def test_complete_forbids_a_stop_position(migrated_dsn: str) -> None:
 
 
 def test_out_of_set_status_is_rejected(migrated_dsn: str) -> None:
-    """``complete`` / ``partial`` are the only two values ADR-0027 D6 defines."""
+    """``complete`` / ``partial`` are the only two values ADR-0028 D6 defines."""
     with psycopg.connect(migrated_dsn, autocommit=True) as conn:
         with pytest.raises(psycopg.errors.Error):
             _upsert(conn, "t1", "mostly", 5)

@@ -1,4 +1,4 @@
-"""Persisting the prefix cutoff + the trace status (issue #120, ADR-0027 D6).
+"""Persisting the prefix cutoff + the trace status (issue #120, ADR-0028 D6).
 
 The pure cutoff rule is tested in ``test_absent_payload_cutoff.py``; this file is
 about what reaches the database, where two things get hard:
@@ -11,7 +11,7 @@ about what reaches the database, where two things get hard:
    lineage for legs *after* the gap while the status says partial: worse than silent
    truncation, because it is self-contradictory. The driver therefore also deletes
    the trace's rows **that the current derivation did not produce** — set
-   membership, NOT ``seq >= stop`` (ADR-0027 D9: ``seq`` is re-allocated on rewrite,
+   membership, NOT ``seq >= stop`` (ADR-0028 D9: ``seq`` is re-allocated on rewrite,
    so a threshold would spare exactly the stale rows).
 2. **partial → complete.** The reverse transition, an explicit acceptance
    criterion: a late response payload arrives and the trace becomes whole. The
@@ -115,7 +115,7 @@ _WORKED_EXAMPLE = [
 
 def _write_legs(dsn: str, *, unpayloaded: tuple[str, str] | None) -> None:
     """(Re)write the whole trace's legs in execution order, optionally with one leg
-    carrying NO payload — the ADR-0027 D6 gap.
+    carrying NO payload — the ADR-0028 D6 gap.
 
     Writing every leg, in order, is what P-interactions actually does when it
     re-derives a trace: each leg is rewritten in place and draws a fresh ``seq``
@@ -359,7 +359,7 @@ def test_partial_to_complete_derives_the_full_lineage_not_just_the_rows(
 def test_a_trace_with_no_legs_writes_no_status(configured_db: str) -> None:
     """Pins the *absence* of a row as a deliberate output, not an oversight: the
     driver returns early for a trace with no legs, so it must not claim a status
-    either (ADR-0027 D6 — absence is how *unknown* is said).
+    either (ADR-0028 D6 — absence is how *unknown* is said).
 
     Do not "strengthen" this into asserting ``complete``. The pure traversal does
     call an empty leg list complete, but the driver never gets there, and a

@@ -5,7 +5,7 @@ in the graph fixtures: the reference travel-agent trace reproduces the spec's
 worked example, where an agent's **first** outbound has one inbound payload and
 later outbounds pool two or more priors."
 
-Since ADR-0027 D11 collapsed the algebra, the op *name* no longer distinguishes
+Since ADR-0028 D11 collapsed the algebra, the op *name* no longer distinguishes
 those two cases — every non-root leg reads ``merge``. So the assertions here are on
 the **inbound sets**, which is where the acceptance criterion's content actually
 lives and which these tests already pinned as the "load-bearing half".
@@ -166,7 +166,7 @@ def _payloads_of(legs: list[DerivedLeg]) -> tuple[str, ...]:
 
 def _priors_of(entity: str, produced: DerivedLeg, trace: list[DerivedLeg]) -> list[DerivedLeg]:
     """The legs of *trace* whose payloads are inbound to *entity* before it produced
-    *produced* — **ADR-0027 D1 transcribed**, and the single place these tests express
+    *produced* — **ADR-0028 D1 transcribed**, and the single place these tests express
     it: "a payload is inbound to entity E iff, in a leg with lower ``seq``, E is the
     callee and the payload is the request, OR E is the caller and the payload is the
     response".
@@ -230,7 +230,7 @@ def test_canonical_trace_agent_roots_the_trace_then_merges_growing_priors(
     **no user/client entity**: the agent IS the trace root (no caller of the agent
     emits a span, so no user→agent interaction is derived). Its very first outbound
     therefore has nothing inbound at all and is a genuine structural ``init``
-    (ADR-0027 D3(1) — "the payload originates outside the trace"), where the spec's
+    (ADR-0028 D3(1) — "the payload originates outside the trace"), where the spec's
     hand-drawn example starts with an explicit ``-1-> Agent``.
 
     The one-prior → many-priors transition the criterion is about is asserted on the
@@ -285,7 +285,7 @@ def test_canonical_trace_agent_inbound_accumulates_exactly_its_priors(
     hash collision: the two ``get_flights`` calls (seq 11 and 15) errored with
     byte-identical payloads, so the agent's later inbound sets legitimately list
     that one hash *twice* — once per prior leg. Priors are retained by position, not
-    by content (ADR-0027 D5), and this trace is where that matters.
+    by content (ADR-0028 D5), and this trace is where that matters.
     """
     trace_id = _run_pipeline("travel_agent_III")
     derived = _derived(trace_id)
@@ -391,7 +391,7 @@ def test_canonical_trace_tool_results_flow_into_the_agents_answer(
 def test_canonical_trace_answer_roots_at_every_tool_that_fired(
     configured_db: str,
 ) -> None:
-    """**The observable D12 was landed for** (ADR-0027 D12, issue #131). Before it,
+    """**The observable D12 was landed for** (ADR-0028 D12, issue #131). Before it,
     every leg of this trace reported the agent as its sole source: a tool that read an
     external store had its ingress attributed to the caller, which is the exact
     failure a governance tool must not make.
@@ -401,7 +401,7 @@ def test_canonical_trace_answer_roots_at_every_tool_that_fired(
     answer roots at **every tool that fired** — not just at the agent.
 
     Under ``simple_match`` every tool leg adds its tool, so the set grows
-    monotonically. That is the accepted trade (ADR-0027 §Semantic matching): erring
+    monotonically. That is the accepted trade (ADR-0028 §Semantic matching): erring
     toward over-reporting origins, since the failure being replaced was
     *under*-reporting an external data ingress. It is also why this asserts equality
     against the trace's own tool set rather than a hand-written list."""
@@ -551,7 +551,7 @@ def test_patent_agent_replay_trace_accumulates_sources_monotonically(
 
 
 def test_two_traces_do_not_share_lineage(configured_db: str) -> None:
-    """Intra-trace only (ADR-0027; inter-trace is Step II, deferred). Two captured
+    """Intra-trace only (ADR-0028; inter-trace is Step II, deferred). Two captured
     traces in one database must produce disjoint source sets — a leak here would
     be a false cross-trace data-flow claim, the exact failure a governance tool
     must not make."""

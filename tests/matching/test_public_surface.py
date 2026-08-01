@@ -1,7 +1,7 @@
 """Only the contract is exported (issue #116).
 
 Lineage must not know how matching decides — that boundary is the point of this
-component (ADR-0027: matching is its own component with its own roadmap). So the
+component (ADR-0028: matching is its own component with its own roadmap). So the
 package's public surface is the contract and the selection entry point; a matcher's
 internals are not part of it, and nothing may depend on them.
 

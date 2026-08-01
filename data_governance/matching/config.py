@@ -2,7 +2,7 @@
 
 Lineage calls :func:`get_matcher` and never names an implementation, so shipping a
 real matcher is a ``SEMANTIC_MATCHER`` change plus one registry entry — not an edit
-at any call site. ADR-0027 requires exactly that separation: matching is its own
+at any call site. ADR-0028 requires exactly that separation: matching is its own
 component, and lineage quality is bounded by matcher quality without lineage
 knowing which matcher ran.
 
@@ -11,7 +11,7 @@ Follows the repo's env-var convention (``INTERACTIONS_ALGORITHM`` in
 default, and a hard failure on an unrecognized name.
 
 Matcher **versioning** and re-derivation of already-persisted lineage when the
-matcher changes are explicitly deferred (ADR-0027 D7), so nothing here stamps or
+matcher changes are explicitly deferred (ADR-0028 D7), so nothing here stamps or
 records which matcher produced a verdict.
 """
 
@@ -31,7 +31,7 @@ MATCHER_ENV_VAR = "SEMANTIC_MATCHER"
 _MATCHERS: dict[str, Matcher] = {"simple": simple_match}
 
 # The default when the environment says nothing: the trivial matcher, which is what
-# makes lineage computable before any real matcher exists (ADR-0027).
+# makes lineage computable before any real matcher exists (ADR-0028).
 _DEFAULT_MATCHER = "simple"
 
 

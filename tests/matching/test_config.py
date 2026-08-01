@@ -1,6 +1,6 @@
 """Which matcher is active is chosen by configuration (issue #116).
 
-ADR-0027 makes matching pluggable: lineage calls ``get_matcher()`` and never names
+ADR-0028 makes matching pluggable: lineage calls ``get_matcher()`` and never names
 an implementation, so shipping a real matcher (value-based, confidential-aware) is
 a ``SEMANTIC_MATCHER`` change plus a registry entry — never an edit at a call site.
 The default is the trivial ``simple_match``, which is what makes lineage computable

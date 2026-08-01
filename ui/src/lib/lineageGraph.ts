@@ -23,7 +23,7 @@
  * Every clause is load-bearing, so each is justified:
  *
  * 1. **Per-leg, rolled up to the entity.** Lineage is keyed at
- *    `(interaction_id, leg_type)` (ADR-0027 D5), not per entity, so a roll-up is
+ *    `(interaction_id, leg_type)` (ADR-0028 D5), not per entity, so a roll-up is
  *    unavoidable and the only question is which legs count. The alternative
  *    considered and REJECTED was "every leg where the entity is a participant",
  *    which would sweep in the legs the entity *sent* — the lineage of data leaving
@@ -41,7 +41,7 @@
  *
  * 2. **The union of `data_sources`, not of `entities`.** The triple's `entities`
  *    element is "entities the data passed THROUGH" — transit, explicitly unordered
- *    (ADR-0027, and see `DataLineageView`'s note refusing to draw it as a chain).
+ *    (ADR-0028, and see `DataLineageView`'s note refusing to draw it as a chain).
  *    `data_sources` is the ORIGINS element, which is the one the question names.
  *    Highlighting transit nodes as sources would inflate the answer with
  *    intermediaries the backend did not call origins.
@@ -72,7 +72,7 @@
  *    answer to "where did it come from" so much as a quiz. A leg whose lineage is
  *    derived but whose `data_sources` is EMPTY is still a contributing leg and is
  *    still highlighted: "this delivery originated here" is a real answer about that
- *    leg (ADR-0027 D3), and dimming the arrow would hide the delivery entirely.
+ *    leg (ADR-0028 D3), and dimming the arrow would hide the delivery entirely.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * TRI-STATE, AND WHY THE STATE IS A UNION RATHER THAN AN EMPTY SET. `null` lineage
@@ -82,7 +82,7 @@
  * discriminates instead (see {@link LineageDerivationState}), the same judgement
  * `types.LineageState` makes for one leg and for the same reason: an empty set can
  * only spell two of the three facts. `status: 'partial'` rides along untouched so
- * the view can say the answer is a prefix (ADR-0027 D6).
+ * the view can say the answer is a prefix (ADR-0028 D6).
  */
 import type { DataLineageByLeg, DataLineage, LineageStatus } from '../types';
 import { legLineageKey, type Entity, type Interaction } from './flow';
@@ -114,7 +114,7 @@ export interface UnresolvedLineageSource {
  * - `'derived'` — at least one contributing leg had a derived lineage row. The
  *   highlight is an answer. It is an answer *including* when
  *   `highlightedNodeIds` is empty: every contributing leg said "originates here"
- *   (ADR-0027 D3), which is the real verdict "this entity's data has no upstream
+ *   (ADR-0028 D3), which is the real verdict "this entity's data has no upstream
  *   sources in this trace".
  * - `'pending'` — legs deliver to this entity, but none of them has a derived
  *   lineage row yet (`null` values, or keys absent from the map entirely). *Wait.*
@@ -182,7 +182,7 @@ export interface LineageHighlight {
   inboundLegs: number;
   derivedLegs: number;
   /**
-   * The trace's lineage coverage, passed straight through (ADR-0027 D6). Not
+   * The trace's lineage coverage, passed straight through (ADR-0028 D6). Not
    * interpreted here: `'partial'` means the rows the union was taken from are a
    * PREFIX of the trace, so the answer is incomplete — a fact about the whole
    * trace that the view already has a component for (`LineageCoverageAlert`), and

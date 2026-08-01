@@ -7,7 +7,7 @@ The spec (``docs/data_lineage_alg.md``, "Semantic matching") gives one signature
 - ``matched`` — ``True``: the payloads are related, so we believe there is lineage.
   ``False``: no relationship, so we believe there is no lineage — that input
   contributes nothing, and if *every* input of a ``merge_lineage`` reports ``False``
-  the op degrades to ``init_lineage`` (ADR-0027 D3(2)).
+  the op degrades to ``init_lineage`` (ADR-0028 D3(2)).
 - ``transformation`` — reported only when matched: ``None`` if no transform was
   performed or none was identified, otherwise which one.
 - ``evidence`` — the spec's open ``...evidence`` tail: whatever the matcher wants to
@@ -17,7 +17,7 @@ The spec (``docs/data_lineage_alg.md``, "Semantic matching") gives one signature
 This module is the whole agreement. Lineage depends on these types and on
 :func:`~data_governance.matching.config.get_matcher` — never on a matcher
 implementation, because matching is its own component with its own roadmap
-(ADR-0027: "Lineage does **not** know how it decides").
+(ADR-0028: "Lineage does **not** know how it decides").
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class Transformation(enum.StrEnum):
     absent transformation cannot masquerade as a kind of transformation.
 
     Deliberately **open**: the enumeration is still being finalized with a human
-    (spec "transformation: to do with a human: work on this list"; ADR-0027
+    (spec "transformation: to do with a human: work on this list"; ADR-0028
     "Deliberately out of scope"), so further values (masking, redaction, …) are
     expected here. It is a :class:`enum.StrEnum` for that reason — members compare
     and serialize as their plain lowercase string, so adding one is additive at the
@@ -83,7 +83,7 @@ class Matcher(Protocol):
     is a function — any ``(payload_a, payload_b) -> MatchResult`` callable is a
     matcher. Call sites depend on this shape alone, which is what lets a real
     matcher (value-based, confidential-aware) replace the trivial default as a
-    configuration change (ADR-0027).
+    configuration change (ADR-0028).
     """
 
     def __call__(self, payload_a: Payload, payload_b: Payload, /) -> MatchResult:

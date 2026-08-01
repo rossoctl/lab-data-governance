@@ -6,7 +6,7 @@ database and no trace: metadata in, metadata out, with the matcher injected. Eve
 assertion below traces to a numbered rule in the spec, cited per test, because the
 spec is human-owned and authoritative.
 
-``merge_lineage`` is the generic op over "a single or multiple payloads" (ADR-0027
+``merge_lineage`` is the generic op over "a single or multiple payloads" (ADR-0028
 D11), so it is exercised at **both** arities. The single-input block below is the
 former ``linear_lineage`` suite, ported: those cases are about the degrade path and
 per-source transformation handling, which one input exercises most sharply, and they
@@ -78,7 +78,7 @@ def test_init_entities_is_empty_not_the_entity() -> None:
 # The spec's generic op explicitly covers "a single or multiple payloads"
 # (``data_lineage_alg.md:85-93``) and its worked examples call it at arity one
 # (``:171-175``), so these are first-class cases, not degenerate ones. This block is
-# the former ``linear_lineage`` suite ported onto ``merge_lineage`` (ADR-0027 D11):
+# the former ``linear_lineage`` suite ported onto ``merge_lineage`` (ADR-0028 D11):
 # every case here is about the D3(2) degrade or per-source transformation handling,
 # both of which one input pins most sharply.
 
@@ -139,7 +139,7 @@ def test_merge_with_no_transformation_leaves_the_sets_untouched() -> None:
 
 def test_merge_of_one_input_degrades_to_init_when_the_matcher_refuses() -> None:
     """Spec rule 2's false branch ("There is no lineage ... call init lineage") =
-    ADR-0027 D3(2). With one input, "false for *all* payloads" is "false for this
+    ADR-0028 D3(2). With one input, "false for *all* payloads" is "false for this
     one". The upstream metadata is discarded entirely; the output is a fresh origin
     rooted at the processing entity."""
     upstream = DataLineage(
@@ -317,7 +317,7 @@ def test_merge_spec_example_2_three_inputs_two_matching() -> None:
 
 
 def test_merge_with_no_matching_source_degrades_to_init() -> None:
-    """ADR-0027 D3(2): "if no source matches the op degrades to ``init``". A
+    """ADR-0028 D3(2): "if no source matches the op degrades to ``init``". A
     runtime *result*, not a selection branch — merge was still chosen, it simply
     found nothing to inherit."""
     a = init_lineage("user:alice")
@@ -395,7 +395,7 @@ def test_entity_set_is_order_free_for_equivalent_upstreams() -> None:
 
 
 def test_merge_of_one_input_is_the_triple_the_deleted_linear_op_computed() -> None:
-    """ADR-0027 D11's premise, pinned as a value: "a merge over one input and a
+    """ADR-0028 D11's premise, pinned as a value: "a merge over one input and a
     linear over that same input compute the identical triple".
 
     Written out literally rather than as an equality against ``linear_lineage``,
@@ -451,11 +451,11 @@ def test_merge_does_not_mutate_its_inputs() -> None:
     ] == before
 
 
-# --- is_entity_source (ADR-0027 D12, spec :106-112) --------------------------
+# --- is_entity_source (ADR-0028 D12, spec :106-112) --------------------------
 
 
 def test_a_source_entity_joins_all_three_fields_with_an_empty_transformation_set() -> None:
-    """Spec ``:106-112`` / ADR-0027 D12, the whole rule in one assertion: on a
+    """Spec ``:106-112`` / ADR-0028 D12, the whole rule in one assertion: on a
     successful match a source entity is added to ``Sources`` (union with the
     inherited ones), gains a ``Transformations`` key with an **EMPTY** set, and is
     extended into ``Entities``.
@@ -579,7 +579,7 @@ def test_the_degrade_branch_ignores_is_entity_source() -> None:
     there should be no meaningful output") is an HTML comment the spec did not adopt
     — implementing it would make a target-only entity that severs lineage produce
     *nothing*, where the honest answer is that its output exists and it is the only
-    origin left to name (ADR-0027 D3)."""
+    origin left to name (ADR-0028 D3)."""
     inputs = [("pa", init_lineage("user:alice")), ("pb", init_lineage("tool:db"))]
 
     as_source = merge_lineage(
@@ -592,7 +592,7 @@ def test_the_degrade_branch_ignores_is_entity_source() -> None:
     assert as_source == init_lineage("tool:anonymizer")
     assert as_source == not_source
     # Specifically: `entities` stays EMPTY even for a source entity. Consistent with
-    # ADR-0027 D12: `entities` is a claim that data passed *through*, and on this
+    # ADR-0028 D12: `entities` is a claim that data passed *through*, and on this
     # branch nothing did — the output originates here with no upstream at all. The
     # merge branch puts the entity in `entities` because data genuinely transited it.
     assert as_source.entities == frozenset()
@@ -650,7 +650,7 @@ def test_ops_pass_input_then_output_to_the_matcher() -> None:
 
 
 def test_ops_never_read_matcher_evidence() -> None:
-    """ADR-0027: "lineage does not read evidence". A matcher returning an
+    """ADR-0028: "lineage does not read evidence". A matcher returning an
     exploding evidence object must not break lineage."""
 
     class _Boom:

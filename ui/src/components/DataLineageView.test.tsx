@@ -168,7 +168,7 @@ describe('DataLineageView', () => {
 
   it('states an origin’s genuinely empty triple as a real derived result', () => {
     // A derived origin legitimately has no sources and an empty entity set
-    // (ADR-0027): that is a REAL value and must stay distinguishable from the
+    // (ADR-0028): that is a REAL value and must stay distinguishable from the
     // null state.
     render(
       <DataLineageView
@@ -241,7 +241,7 @@ describe('DataLineageView', () => {
 
   // ── Friendly names over qualified natural keys ─────────────────────────────
   //
-  // Lineage stores the natural key on purpose (ADR-0027) — it is the entity's
+  // Lineage stores the natural key on purpose (ADR-0028) — it is the entity's
   // identity, qualified so two same-named tools on different agents cannot
   // collapse into one source. But `tool:agent:(travel_advisor,travel-advisor):search_destinations`
   // is not what a reader recognises, and every other flow surface already shows
@@ -389,7 +389,7 @@ describe('DataLineageView', () => {
   });
 
   it('still distinguishes the three states once names are resolved', async () => {
-    // Guard on the resolution work not disturbing ADR-0027 D10's distinctions:
+    // Guard on the resolution work not disturbing ADR-0028 D10's distinctions:
     // the name lookup is a label concern and must not leak into error / pending /
     // derived, nor into the two derived empty-states.
     mockEntities([entity({ id: 't1', kind: 'tool', natural_key: TOOL_KEY, display_name: 'search_destinations' })]);

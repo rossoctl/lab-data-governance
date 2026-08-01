@@ -40,7 +40,7 @@ nothing may infer flow order from the array position.
 Migration 0011 is deliberately **left as it was**: it recorded the shape that was
 correct when it shipped, and rewriting applied history to look like it always knew
 better hides the fact that the spec moved. The *why* lives here, in the revision
-that made the change (ADR-0027 records the decision).
+that made the change (ADR-0028 records the decision).
 
 Per ADR-0002/0005 the DDL is hand-written ``op.execute(...)`` — no SQLAlchemy ORM
 models, no autogenerate. Reversible: the downgrade renames back, so a rollback to

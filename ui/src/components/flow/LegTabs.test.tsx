@@ -14,7 +14,7 @@ import type { DataLineage } from '../../types';
  * reached the way a reader reaches them. These are the ones that view cannot
  * express: a leg's Payload tab is active on arrival, so "a leg that never
  * activated a payload-backed section issues no payload read" — the load-bearing
- * half of the ADR-0024 / ADR-0027 D5 fetch split — has to be asserted against
+ * half of the ADR-0024 / ADR-0028 D5 fetch split — has to be asserted against
  * the component, by picking Data lineage as the very first interaction on a
  * freshly-mounted leg.
  */
@@ -62,7 +62,7 @@ describe('LegTabs', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('issues no payload read for a leg whose payload-backed tabs are never activated', async () => {
-    // The strict form of the ADR-0027 D5 half of the split: lineage arrives on
+    // The strict form of the ADR-0028 D5 half of the split: lineage arrives on
     // the trace-scoped read the panel already holds, so a reader who only ever
     // looks at provenance pays for no body. A `usePayload` that fired on mount —
     // or a gate keyed on "the pane exists" rather than on which section has been

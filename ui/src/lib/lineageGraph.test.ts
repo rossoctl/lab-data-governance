@@ -90,7 +90,7 @@ function ixReqOnly(
 
 /**
  * A derived lineage triple. `sources` are NATURAL KEYS (that is what the wire
- * carries — ADR-0027), so the fixtures spell them as `agent:(p,<id>)` to match
+ * carries — ADR-0028), so the fixtures spell them as `agent:(p,<id>)` to match
  * `ent`'s own key shape. Writing an entity ID here would silently make every test
  * pass against a broken bridge, which is the one thing this file must not do.
  */
@@ -294,7 +294,7 @@ describe('deriveLineageHighlight', () => {
 
   it('takes data_sources, NOT the `entities` transit set', () => {
     // `entities` is "entities the data passed THROUGH" — intermediaries, explicitly
-    // unordered (ADR-0027). Highlighting them as sources would inflate the answer
+    // unordered (ADR-0028). Highlighting them as sources would inflate the answer
     // with transit the backend never called an origin.
     const h = deriveLineageHighlight({
       entities: [ent('e1'), ent('e2'), ent('transit')],
@@ -379,7 +379,7 @@ describe('deriveLineageHighlight', () => {
   });
 
   it('reports `derived` for an EMPTY data_sources on a derived row — "originates here"', () => {
-    // ADR-0027 D3: an empty triple is a REAL derived value. The third distinct state,
+    // ADR-0028 D3: an empty triple is a REAL derived value. The third distinct state,
     // and the one an unhighlighted graph cannot show by itself — which is why the
     // view has to say it in words.
     const h = deriveLineageHighlight({
@@ -636,7 +636,7 @@ describe('deriveLineageHighlight', () => {
     expect(h.highlightedNodeIds).toEqual(['e1', 'e2']);
   });
 
-  // --- Trace coverage (ADR-0027 D6).
+  // --- Trace coverage (ADR-0028 D6).
 
   it('passes `partial` through untouched rather than folding it into the state', () => {
     // The truncation is a fact about the whole TRACE, not about this entity, so it

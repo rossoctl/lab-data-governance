@@ -165,12 +165,12 @@ export function useEntitySpans(
 
 /**
  * Persisted **Data lineage** for a whole trace: the per-leg lookup plus the
- * trace's coverage status. `GET /api/traces/{tid}/data-lineage` (ADR-0027, issues
+ * trace's coverage status. `GET /api/traces/{tid}/data-lineage` (ADR-0028, issues
  * #118 / #120).
  *
  * **One fetch per trace, not per payload.** The resource is trace-scoped while
  * the flow view's payload blocks are per-leg, so the hook unwraps `{legs:[…]}`
- * into a `(interaction_id, leg_type)` → lineage Map (ADR-0027 D5 — never keyed on
+ * into a `(interaction_id, leg_type)` → lineage Map (ADR-0028 D5 — never keyed on
  * `payload_hash`). Every expanded payload then reads the one cached query,
  * keyed on `traceId` alone. The trace-level `status` / `stopped_at_seq` ride on
  * the same response and therefore the same query — the coverage warning and the

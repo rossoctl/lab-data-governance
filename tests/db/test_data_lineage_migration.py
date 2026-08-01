@@ -1,6 +1,6 @@
 """Tests for the ``lineage_metadata`` derived-table migration (issue #117).
 
-Migration 0011 adds the store for intra-trace **data lineage** (ADR-0027): one
+Migration 0011 adds the store for intra-trace **data lineage** (ADR-0028): one
 row per interaction leg that received lineage, holding the metadata triple.
 
 The two assertions that carry design weight:
@@ -119,7 +119,7 @@ def test_table_exists(migrated_dsn: str) -> None:
 
 
 def test_pk_is_interaction_id_and_leg_type(migrated_dsn: str) -> None:
-    """ADR-0027 D5: the canonical key is the interaction **leg** — the grain at
+    """ADR-0028 D5: the canonical key is the interaction **leg** — the grain at
     which a lineage fact is unique."""
     assert _pk_columns(migrated_dsn, TABLE) == ["interaction_id", "leg_type"]
 
@@ -143,7 +143,7 @@ def test_has_the_metadata_triple_and_seq(migrated_dsn: str) -> None:
     row's own ``seq`` and the secondary-index ``payload_hash``.
 
     The third column is ``entities``, renamed from ``entity_path`` by migration
-    0013 when the spec redefined it as an unordered set (ADR-0027)."""
+    0013 when the spec redefined it as an unordered set (ADR-0028)."""
     cols = _columns(migrated_dsn, TABLE)
     assert set(cols) == {
         "interaction_id",

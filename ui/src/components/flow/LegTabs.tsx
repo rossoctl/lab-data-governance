@@ -56,7 +56,7 @@ const SECTION_LABEL: Record<Section, string> = {
  *   - **Classification** is an inlined nullable field of `GET /api/payloads/{hash}`
  *     (ADR-0024) — so it rides on the *payload* read and selecting its tab must
  *     trigger that read.
- *   - **Data lineage** is keyed by the leg, not the content hash (ADR-0027 D5),
+ *   - **Data lineage** is keyed by the leg, not the content hash (ADR-0028 D5),
  *     and comes from the one trace-scoped read the panel already holds. It is
  *     passed *in*, so selecting its tab fetches nothing.
  *
@@ -148,7 +148,7 @@ function LegPanel({ leg }: { leg: Leg }) {
   // `LegTabs` mounts ONLY the active leg, so an untouched leg issues no read at
   // all (see the `key={active.label}` note above, and the LegTabs tests that pin
   // both halves). Data lineage costs nothing regardless — it reads the `lineage`
-  // prop from the trace-scoped query the panel already holds (ADR-0027 D5).
+  // prop from the trace-scoped query the panel already holds (ADR-0028 D5).
   const { data, isLoading, isError } = usePayload(hash);
 
   /**
@@ -254,10 +254,10 @@ function LegPanel({ leg }: { leg: Leg }) {
             data sources, the transformations applied per source, and the
             unordered set of entities it passed through. An undelivered
             derivation renders as "lineage not yet computed" (the
-            eventual-consistency window, ADR-0027) and a failed read as an
+            eventual-consistency window, ADR-0028) and a failed read as an
             explicit error — never as each other, and never as a derived answer.
             No payload fetch here: the state is already in hand from the
-            trace-scoped read (ADR-0027 D5). */}
+            trace-scoped read (ADR-0028 D5). */}
         {section === 'lineage' && <DataLineageView state={lineage} />}
       </div>
     </>

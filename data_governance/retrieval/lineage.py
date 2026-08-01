@@ -5,13 +5,13 @@ Part of the :mod:`data_governance.retrieval` package. Sibling to
 content-addressed body + its inline verdict); this one reads what
 **P-data-lineage** has materialised into ``lineage_metadata``.
 
-**Pure lookup** (ADR-0027 D7). Matching runs at ingest and the metadata is
+**Pure lookup** (ADR-0028 D7). Matching runs at ingest and the metadata is
 persisted precisely so a read is a ``SELECT`` — no matcher is resolved here, no
 traversal is re-run, and nothing on this path can call an LLM/NER matcher per
 payload pair. If lineage is missing, the answer is "not yet computed", never
 "compute it now".
 
-**Keyed per leg, not per payload** (ADR-0027 D5). The unit is the
+**Keyed per leg, not per payload** (ADR-0028 D5). The unit is the
 **Interaction leg** ``(interaction_id, leg_type)``: identical payload bytes at
 different positions carry completely different lineage, so ``payload_hash``
 rides along as a *fact about the row* (the seam for the deferred reverse lookup)
@@ -37,18 +37,18 @@ Two absences are **graceful shapes, not errors**:
   scoping joins through) may not exist yet; the read returns an empty typed
   result rather than raising, mirroring :func:`.interactions._derived_tables_exist`.
 
-**Trace-level ``complete``/``partial`` status** (ADR-0027 D6, issue #120) rides on
+**Trace-level ``complete``/``partial`` status** (ADR-0028 D6, issue #120) rides on
 the result beside the legs, read straight from ``lineage_trace_status`` (migration
 0012) — a **lookup, not a recomputation**. Nothing on this path may re-derive the
 cutoff from ``interaction_legs.payload_hash IS NULL``: that would put a second copy
 of D6's rule in this module's SQL, free to drift from the traversal that actually
-produced the rows (ADR-0027 D8 for why the dedicated table beat derived-on-read).
+produced the rows (ADR-0028 D8 for why the dedicated table beat derived-on-read).
 
 A **third** absence therefore joins the two above: no ``lineage_trace_status`` row
 at all, served as ``status=None`` meaning *unknown*. Do **not** default it —
 ``status or "complete"`` or a ``COALESCE(status, 'complete')`` in the SQL below
 would turn every trace the processor has not reached yet into a false claim of full
-coverage (ADR-0027 D6 "Reading the status").
+coverage (ADR-0028 D6 "Reading the status").
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ class DataLineageView:
 class DataLineageLegView:
     """One **Interaction leg** of a trace with its nullable lineage.
 
-    The leg key is ``(interaction_id, leg_type)`` (ADR-0027 D5). ``payload_hash``
+    The leg key is ``(interaction_id, leg_type)`` (ADR-0028 D5). ``payload_hash``
     is the leg's payload (``None`` when the leg carries no body) — a fact about
     the row, not its key. ``lineage`` is ``None`` in the eventual-consistency
     window before P-data-lineage has derived this leg, which is distinct from a
@@ -120,7 +120,7 @@ class DataLineageLegView:
 class GetDataLineageResult:
     """A trace's lineage: the per-leg metadata plus the trace's own coverage.
 
-    ``status`` is ``"complete"`` | ``"partial"`` | ``None`` (ADR-0027 D6). The
+    ``status`` is ``"complete"`` | ``"partial"`` | ``None`` (ADR-0028 D6). The
     trace-level fields sit here rather than on a leg because coverage is a fact
     about the whole trace — and because the legs a truncation leaves *without*
     lineage have no triple to carry it, which is the case that matters.
@@ -133,7 +133,7 @@ class GetDataLineageResult:
       ``lineage=None``. Reading the prefix as the full source set is the failure
       D6's flag prevents.
     - ``None`` — not derived yet (or the status migration has not run) — *unknown*,
-      which is a third value and never ``complete`` (ADR-0027 D6).
+      which is a third value and never ``complete`` (ADR-0028 D6).
 
     ``stopped_at_seq`` is non-``None`` exactly when ``status == "partial"`` — the
     table's CHECK constraint guarantees the pairing, so a consumer never has to
@@ -191,7 +191,7 @@ def _status_table_exists(tx: db.Transaction) -> bool:
 def _trace_status(tx: db.Transaction, trace_id: str) -> tuple[str | None, int | None]:
     """*trace_id*'s recorded coverage, or ``(None, None)`` when unrecorded.
 
-    A pure lookup of what P-data-lineage concluded (ADR-0027 D7) — this must not
+    A pure lookup of what P-data-lineage concluded (ADR-0028 D7) — this must not
     look at ``interaction_legs.payload_hash`` and decide for itself, which would be
     a second implementation of D6's cutoff rule sitting in read-path SQL.
     """
@@ -216,14 +216,14 @@ def get_data_lineage(trace_id: str) -> GetDataLineageResult:
     """Read the persisted **Data lineage metadata** for every **Interaction
     leg** of *trace_id*, in leg ``seq`` order.
 
-    A pure lookup (ADR-0027 D7). Legs are driven off ``interaction_legs`` and
+    A pure lookup (ADR-0028 D7). Legs are driven off ``interaction_legs`` and
     ``lineage_metadata`` is LEFT JOINed on, so a leg whose lineage has not been
     derived yet is still returned with ``lineage=None`` ("not yet computed")
     rather than dropped or raised on. Empty when the trace has no interactions,
     and empty — never an error — when the lineage or interactions migration has
     not run.
 
-    The trace's ``status`` / ``stopped_at_seq`` (ADR-0027 D6) come back alongside.
+    The trace's ``status`` / ``stopped_at_seq`` (ADR-0028 D6) come back alongside.
     Note the query below has **no ``seq`` filter**: a ``"partial"`` trace still
     returns every leg, and it is the *lineage* that is a prefix (``None`` from
     ``stopped_at_seq`` on). ``status=None`` is *unknown*, never ``complete``.
@@ -244,7 +244,7 @@ def get_data_lineage(trace_id: str) -> GetDataLineageResult:
             " AND m.leg_type = l.leg_type "
             "WHERE i.trace_id = %s "
             # Leg seq is the only execution order the schema offers (the parent
-            # interactions row has no seq) — ADR-0025/ADR-0027 D6 both reason in
+            # interactions row has no seq) — ADR-0025/ADR-0028 D6 both reason in
             # it, so the lineage list reads in the order it was derived.
             "ORDER BY l.seq ASC",
             (trace_id,),

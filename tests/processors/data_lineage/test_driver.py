@@ -539,7 +539,7 @@ def test_the_stale_pass_is_idempotent(configured_db: str) -> None:
 
 def test_a_rewritten_leg_refreshes_the_whole_traces_lineage(configured_db: str) -> None:
     """The stale pass re-derives the whole TRACE, not just the offending leg — the
-    algorithm's grain is a trace (ADR-0027 D1), and a rewritten payload changes what
+    algorithm's grain is a trace (ADR-0028 D1), and a rewritten payload changes what
     every LATER leg of that trace inherits. Here the rewrite lands on the trace's
     first leg, so a downstream leg's row must be rewritten too."""
     _seed_agent_trace(configured_db)

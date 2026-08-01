@@ -3,7 +3,7 @@ import { Alert } from '@patternfly/react-core';
 import type { LineageStatus } from '../../types';
 
 /**
- * The trace-level **Data lineage** coverage warning (issue #120, ADR-0027 D6).
+ * The trace-level **Data lineage** coverage warning (issue #120, ADR-0028 D6).
  *
  * When a leg's payload is absent, lineage is derived only up to that point and the
  * trace is marked `partial`. Rendered at the top of the flow view and outside the

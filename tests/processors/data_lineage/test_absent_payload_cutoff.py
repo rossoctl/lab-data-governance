@@ -1,12 +1,12 @@
 """Absent-payload positional prefix cutoff + the trace-level status (issue #120).
 
-ADR-0027 **D6**, interim rule: if a leg's ``payload_hash`` is absent, lineage is
+ADR-0028 **D6**, interim rule: if a leg's ``payload_hash`` is absent, lineage is
 computed **up to that point only** — a positional prefix in leg ``seq`` order.
 Processing stops at the FIRST such leg; legs with lower ``seq`` keep their
 lineage, legs at and after it get none, and the trace's lineage is marked
 ``partial`` recording the leg ``seq`` it stopped at.
 
-Silent truncation is the failure mode the flag prevents (ADR-0027 D6 "Reading the
+Silent truncation is the failure mode the flag prevents (ADR-0028 D6 "Reading the
 status"), which is why every test below that asserts "legs after the gap have no
 lineage" has a partner asserting the status says so out loud. Neither half is
 sufficient alone: dropping the status assertion would let a truncation ship
@@ -15,7 +15,7 @@ unannounced.
 Pure-traversal level here; the persistence half (including the stale-row problem
 that a re-derivation with a *shorter* prefix creates) is in ``test_driver.py``.
 
-Deliberately NOT tested, because deliberately NOT built (ADR-0027 D6 keeps them
+Deliberately NOT tested, because deliberately NOT built (ADR-0028 D6 keeps them
 open): telling *not captured* / *redacted* / *genuinely empty* / *in-flight*
 apart, per-case break-chain vs conservative pass-through, and taint/reachability
 cutoff. This ticket stops the WHOLE trace at the gap.
@@ -174,7 +174,7 @@ def test_an_empty_trace_is_complete() -> None:
 
     This is the *pure* traversal only. It is NOT the same as "a trace whose legs
     have not landed", which the driver never asks about: it returns early and
-    writes no status row, leaving the trace *unknown* (ADR-0027 D6). So this
+    writes no status row, leaving the trace *unknown* (ADR-0028 D6). So this
     ``COMPLETE`` never reaches the database as a claim about an unseen trace."""
     result = derive_trace_lineage([], {}, matcher=_always)
 

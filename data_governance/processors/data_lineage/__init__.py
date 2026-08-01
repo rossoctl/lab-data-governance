@@ -3,15 +3,15 @@
 Answers two questions about every interaction leg's payload: **where did it
 originate** (its data sources), and **what did it pass through** (entities and the
 transformations applied). Derived at ingest and persisted to ``lineage_metadata``,
-so a governance read is a lookup rather than a recompute (ADR-0027 D7).
+so a governance read is a lookup rather than a recompute (ADR-0028 D7).
 
 The layering, innermost first — each layer is testable without the one outside it:
 
 - :mod:`.operations` — the two-op algebra (``init_lineage`` / ``merge_lineage``) from
   ``docs/data_lineage_alg.md``. Pure: metadata in, metadata out, matcher injected.
-  One generic ``merge_lineage`` covers "a single or multiple payloads" (ADR-0027
+  One generic ``merge_lineage`` covers "a single or multiple payloads" (ADR-0028
   D11).
-- :mod:`.memory` — **the** kind-driven entity predicates: accumulating (ADR-0027 D2)
+- :mod:`.memory` — **the** kind-driven entity predicates: accumulating (ADR-0028 D2)
   and data-source (D12), plus the ``(entity_id, memory_key)`` memory node. The
   single named place; nothing else tests ``kind == "agent"`` or ``kind == "tool"``.
 - :mod:`.traversal` — two-way op selection (D4/D11), structural inbound routing
@@ -24,7 +24,7 @@ The layering, innermost first — each layer is testable without the one outside
   covers (a re-derivation can get shorter — D6).
 
 Matching is a black box reached only through
-:func:`data_governance.matching.get_matcher` (ADR-0027: lineage does not know how
+:func:`data_governance.matching.get_matcher` (ADR-0028: lineage does not know how
 matching decides), so lineage quality improves with the matcher and lineage is
 computable today with the trivial default.
 

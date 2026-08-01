@@ -6,7 +6,7 @@ transformation connects them?
     match(payload_a, payload_b) -> {matched, transformation, ...evidence}
 
 Lineage is computed *on top of* this and does **not** know how the decision is made
-(ADR-0027: matching is deliberately out of scope of lineage — its own component with
+(ADR-0028: matching is deliberately out of scope of lineage — its own component with
 its own roadmap). Hence this package sits beside ``processors``/``retrieval`` rather
 than inside a lineage module, and hence the whole public surface is the contract:
 
@@ -23,7 +23,7 @@ than inside a lineage module, and hence the whole public surface is the contract
 
 Pure: no database, no network, no I/O, and no dependency on lineage. Matcher
 versioning and re-derivation of persisted lineage after a matcher change are
-deferred (ADR-0027 D7).
+deferred (ADR-0028 D7).
 """
 
 from __future__ import annotations

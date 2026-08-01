@@ -1,13 +1,13 @@
-"""lineage_trace_status — trace-level lineage coverage (issue #120, ADR-0027 D6).
+"""lineage_trace_status — trace-level lineage coverage (issue #120, ADR-0028 D6).
 
 Adds ``lineage_trace_status``: for each trace, whether its derived **data
 lineage** covers the whole trace (``complete``) or stops at an absent payload
 (``partial``, with the leg ``seq`` it stopped at). This table is what keeps D6's
 prefix cutoff from being *silent*; the two rules a consumer needs for reading the
 result — absence of a row is *unknown* and never ``complete``, and ``partial`` is a
-warning rather than an error — are ADR-0027 D6 "Reading the status".
+warning rather than an error — are ADR-0028 D6 "Reading the status".
 
-**This revision resolves ADR-0027's open item on where the status lives**: a
+**This revision resolves ADR-0028's open item on where the status lives**: a
 dedicated trace-keyed table, not derived on read. The reasoning, recorded in the
 ADR alongside:
 
@@ -21,7 +21,7 @@ ADR alongside:
     algorithm, drifting from the traversal that actually produced the rows.
 
     Note this revision *also* fixes the underlying staleness it describes: the
-    driver gained a stale-row delete alongside the upsert (ADR-0027 D9). That
+    driver gained a stale-row delete alongside the upsert (ADR-0028 D9). That
     makes the rows consistent with the status, but it does not resurrect
     derived-on-read as an option — the authoritative answer must be the one the
     traversal reached, not a second inference over its output.
@@ -48,7 +48,7 @@ Shape:
                         a present row always makes a definite claim, and there is
                         no in-band NULL for a reader to reinterpret as
                         ``complete``. Why unknown must never collapse into
-                        ``complete``: ADR-0027 D6 "Reading the status".
+                        ``complete``: ADR-0028 D6 "Reading the status".
   - ``stopped_at_seq``  the ``interaction_legs.seq`` of the first absent-payload
                         leg; NULL for a complete trace. Nullable *and* CHECK-
                         paired with ``status``, because "partial" without a stop
@@ -62,7 +62,7 @@ additive migration.
 FK-free like the rest of the derived schema (ADR-0002/0005), hand-written DDL per
 ADR-0002/0005 (no ORM models).
 
-What this revision deliberately does NOT add — these stay open in ADR-0027 D6:
+What this revision deliberately does NOT add — these stay open in ADR-0028 D6:
 
 - **No reason/classification column.** Telling *not captured* from *redacted*
   (data flowed but is opaque) from *genuinely empty* from *response in-flight* is
@@ -91,7 +91,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # The two values ADR-0027 D6 defines, as a structural ENUM (ADR-0014).
+    # The two values ADR-0028 D6 defines, as a structural ENUM (ADR-0014).
     op.execute("CREATE TYPE lineage_status AS ENUM ('complete', 'partial')")
     op.execute(
         """

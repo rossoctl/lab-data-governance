@@ -26,7 +26,7 @@ export interface Selection {
 
 /**
  * This payload's {@link LineageState} out of the trace-scoped query, keyed by the
- * leg it sits on (ADR-0027 D5).
+ * leg it sits on (ADR-0028 D5).
  *
  * A failed read is its own arm, taken FIRST: the map is empty on error, so
  * falling through would report every leg as "not yet computed" — telling the

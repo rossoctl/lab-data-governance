@@ -1,4 +1,4 @@
-"""Deployment manifest for the P-data-lineage processor (issue #117, ADR-0027).
+"""Deployment manifest for the P-data-lineage processor (issue #117, ADR-0028).
 
 A DB consumer, not an inbound API — the P-interactions shape
 (``deploy/k8s/70-interactions.yaml``), not the P-classification one: the SHARED
@@ -14,7 +14,7 @@ below.
 
 The other pinned specific is ``SEMANTIC_MATCHER``: set explicitly to ``simple``
 rather than left to the code default, so the manifest shows that lineage is derived
-under the trivial always-match matcher (complete but full of maybes, ADR-0027).
+under the trivial always-match matcher (complete but full of maybes, ADR-0028).
 
 These mirror ``test_classification_manifest.py``. The generic manifest-wide checks
 (placeholder ordering, apiVersion/kind/name presence) in ``test_manifests.py``
@@ -75,7 +75,7 @@ def test_single_replica(data_lineage_deployment: dict) -> None:
     The shared driver advances one ``processor_state`` cursor (the ``data_lineage``
     row) with no inter-pod lock; two replicas would re-derive the same traces.
     Unlike P-classification, the write is NOT write-once (upsert + stale-row delete
-    + status upsert, ADR-0027 D9), so what makes a brief overlap safe is that a
+    + status upsert, ADR-0028 D9), so what makes a brief overlap safe is that a
     derivation is a deterministic function of committed state computed entirely
     inside the loop's one transaction (ADR-0007) — concurrent derivations converge
     rather than corrupt. Wasted work, not a hazard; not a supported topology either.
@@ -192,7 +192,7 @@ def test_sets_semantic_matcher_to_simple(data_lineage_deployment: dict) -> None:
 
     ``simple`` is the trivial always-match matcher, so lineage derived under it is
     complete but full of maybes — every structural edge is treated as real data
-    flow (ADR-0027). Pinning it in the manifest makes that property visible to
+    flow (ADR-0028). Pinning it in the manifest makes that property visible to
     whoever reads the deployment, following the ``INTERACTIONS_ALGORITHM``
     precedent in 70-interactions.yaml. An unregistered name raises
     ``UnknownMatcher`` (issue #116), so a typo is a CrashLoopBackOff rather than

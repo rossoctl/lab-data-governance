@@ -1,6 +1,6 @@
 """Trace traversal: which op applies to which leg, and with what inputs (#117).
 
-This is ADR-0027 D1/D2/D4/D12 — inbound routing, memory, two-way op selection and
+This is ADR-0028 D1/D2/D4/D12 — inbound routing, memory, two-way op selection and
 the entity-source predicate — plus D6's absent-payload cutoff, over one trace's
 interaction legs.
 :func:`derive_trace_lineage` is **pure**: legs and entities in as plain values, a
@@ -72,13 +72,13 @@ from . import memory, operations
 from .operations import DataLineage, Payload
 
 # How a leg is identified everywhere in the traversal and in the persisted table:
-# ``(interaction_id, leg_type)`` — ADR-0027 D5's key, and the grain at which a
+# ``(interaction_id, leg_type)`` — ADR-0028 D5's key, and the grain at which a
 # lineage fact is unique.
 LegKey = tuple[str, str]
 
 
 class Operation(enum.StrEnum):
-    """Which of the two ops the traversal selected for a leg (ADR-0027 D4/D11).
+    """Which of the two ops the traversal selected for a leg (ADR-0028 D4/D11).
 
     Recorded on the result so the selection is observable — the persisted table
     stores the metadata, not the op, so this is how a test (or a debug read) sees
@@ -127,10 +127,10 @@ class Leg:
 
 
 class LineageStatus(enum.StrEnum):
-    """Whether a trace's derived lineage covers the whole trace (ADR-0027 D6).
+    """Whether a trace's derived lineage covers the whole trace (ADR-0028 D6).
 
     ``PARTIAL`` is the *warning*, not an error state: the derived prefix is correct,
-    it is simply a prefix (ADR-0027 D6 "Reading the status").
+    it is simply a prefix (ADR-0028 D6 "Reading the status").
 
     Two values only — there is deliberately no ``UNKNOWN`` member. "Not yet derived"
     is not something the traversal can conclude; it is said by the **absence** of a
@@ -220,7 +220,7 @@ def derive_trace_lineage(
     testable without a payload store.
 
     Returns a :class:`TraceLineage`: ``legs`` keyed ``(interaction_id, leg_type)``
-    (the ADR-0027 D5 key) plus the trace-level coverage ``status`` /
+    (the ADR-0028 D5 key) plus the trace-level coverage ``status`` /
     ``stopped_at_seq``.
 
     Op selection, per leg in ``seq`` order (D4/D11) — two-way, on emptiness alone::
@@ -234,7 +234,7 @@ def derive_trace_lineage(
     inbound set has nothing to match against, so ``merge_lineage`` has nothing to be
     called with.
 
-    **An absent payload TRUNCATES the trace (ADR-0027 D6, interim).** Traversal
+    **An absent payload TRUNCATES the trace (ADR-0028 D6, interim).** Traversal
     stops at the first leg in ``seq`` order whose ``payload_hash`` is ``None``:
     legs before it keep their lineage, that leg and every later one get none, and
     the result is ``PARTIAL`` with ``stopped_at_seq`` set to the gap's ``seq``. A
@@ -248,7 +248,7 @@ def derive_trace_lineage(
     This is deliberately the whole-trace stop, not a taint/reachability cutoff
     that would poison only the paths through the gap; likewise nothing here tries
     to tell *not captured* from *redacted* from *genuinely empty* from *in
-    flight*. Both remain open in ADR-0027 D6.
+    flight*. Both remain open in ADR-0028 D6.
 
     A leg is also skipped — **without** truncating the trace — when its producing
     entity is unknown. That is a different absence: the payload exists, so the
@@ -262,7 +262,7 @@ def derive_trace_lineage(
     # input side of the next op.
     #
     # Keyed by the leg (the POSITION), never by ``payload_hash``, for the same reason
-    # ADR-0027 D5 keys the table that way: payloads are content-addressed and
+    # ADR-0028 D5 keys the table that way: payloads are content-addressed and
     # deduped, so identical bytes appear at different positions with completely
     # different lineage, and a hash key collides them. This is not hypothetical — in
     # the captured ``patent_agent_II`` trace an LLM's response leg and the tool leg

@@ -95,7 +95,7 @@ describe('useDataLineage', () => {
     expect(calledUrl).toBe('/api/traces/T/data-lineage');
 
     // The hook unwraps `{legs:[...]}` into the per-leg map the flow view reads
-    // (ADR-0027 D5: the leg is the key, never the payload hash).
+    // (ADR-0028 D5: the leg is the key, never the payload hash).
     expect(result.current.data?.byLeg.get('i1:request')).toEqual(LEG.lineage);
     // A leg present with lineage=null is a real "not yet computed" entry, and
     // must stay distinguishable from an absent leg.
@@ -121,7 +121,7 @@ describe('useDataLineage', () => {
     expect(fetch as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
-  // --- trace-level coverage status (issue #120, ADR-0027 D6) -----------------
+  // --- trace-level coverage status (issue #120, ADR-0028 D6) -----------------
 
   it('carries the trace-level partial status and its stop position', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({

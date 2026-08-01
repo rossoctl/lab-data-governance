@@ -3,7 +3,7 @@ import type { Entity } from './flow';
 /**
  * Resolves an **Entity** natural key to the friendly `display_name` the rest of
  * the UI shows, for the **Data lineage** metadata's two string-valued elements
- * (`data_sources` and `entities`, ADR-0027).
+ * (`data_sources` and `entities`, ADR-0028).
  *
  * Lineage stores the *natural key* deliberately — it is the entity's identity,
  * and the qualified form (`tool:agent:(travel_advisor,travel-advisor):search_destinations`)
@@ -51,7 +51,7 @@ export function displayNamesByKey(entities: Entity[] | undefined): Map<string, s
  * than one entity claimed.
  *
  * THE BRIDGE THE GRAPH NEEDS. Data lineage cites its sources by **natural key**
- * (ADR-0027 — the qualified identity, see this module's header) while the Execution
+ * (ADR-0028 — the qualified identity, see this module's header) while the Execution
  * Flow graph's nodes are keyed on **entity id** (`lib/graph`'s `GraphNodeSpec.id`,
  * which is what an edge's source/target names). Highlighting a lineage source as a
  * node therefore needs this direction, and needs it as a MAP: the lineage view

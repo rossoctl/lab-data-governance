@@ -1,17 +1,17 @@
-"""lineage_metadata table for intra-trace data lineage (issue #117, ADR-0027).
+"""lineage_metadata table for intra-trace data lineage (issue #117, ADR-0028).
 
 Adds ``lineage_metadata`` — the store for **data lineage**: where each interaction
 leg's payload originated and what it passed through. It is the table the
 data-lineage processor writes (one row per payload-bearing leg of every trace it
 derives) and the read surface a future lineage API (#118) will serve, so "what are
-the data sources of this payload" is a **read** rather than a recompute (ADR-0027
+the data sources of this payload" is a **read** rather than a recompute (ADR-0028
 D7 — matching runs at ingest; a query-time matcher call per payload pair over a
 trace's whole history is exactly what persisting avoids).
 
 Shape, per the spec's "Lineage metadata" triple (``docs/data_lineage_alg.md``):
 
   - ``(interaction_id, leg_type)``   PK. **The leg is the key, not the payload
-                                    hash** (ADR-0027 D5): lineage is
+                                    hash** (ADR-0028 D5): lineage is
                                     position-dependent while a content hash is
                                     not. Payloads are content-addressed and
                                     deduped, so identical bytes can appear at
@@ -33,7 +33,7 @@ Shape, per the spec's "Lineage metadata" triple (``docs/data_lineage_alg.md``):
   - ``entity_path``                TEXT[] — the entities the data passed through
                                     (spec rule 3). **Renamed to ``entities`` and
                                     redefined as an unordered set by migration
-                                    0013** (ADR-0027 D10), after the human-owned
+                                    0013** (ADR-0028 D10), after the human-owned
                                     spec changed rule 3 from a list to a set; the
                                     array's order carries no meaning and the
                                     persisted sort is serialization-only. The name
@@ -67,12 +67,12 @@ established one: truncate this table, reset the ``data_lineage``
 ``processor_state`` cursor to 0, re-drain.
 
 **Superseded in part by 0012 — the write path is no longer upsert-only.** As of
-ADR-0027 D6/D9 (migration 0012) a derivation can get *shorter*: an absent payload
+ADR-0028 D6/D9 (migration 0012) a derivation can get *shorter*: an absent payload
 truncates the trace, so the rows past the new cutoff are stale and an upsert is
 silent about them. The driver therefore also **deletes** the trace's rows the
 current derivation did not produce. Anything below or elsewhere describing this
 table as written by upsert alone is this revision's history, not current
-behaviour — see 0012 and ADR-0027 D9 for what actually runs.
+behaviour — see 0012 and ADR-0028 D9 for what actually runs.
 
 ``leg_type`` reuses the ``leg_type`` ENUM from 0009 (ADR-0014's structural enums),
 so this key cannot hold a leg type ``interaction_legs`` could not.
@@ -84,16 +84,16 @@ FK to ``interaction_legs`` buys nothing and would only order the truncates.
 
 What this revision deliberately does NOT add:
 
-- **No trace-level ``partial``/``complete`` status table.** ADR-0027 D6 requires
+- **No trace-level ``partial``/``complete`` status table.** ADR-0028 D6 requires
   one to exist eventually, but *where* it lives (a ``lineage_trace_status`` table vs
   derived on read) was open when this revision landed, and absent-payload handling
   was its own ticket (#120). Shipping a column for it here would have fixed the open
-  choice by accident. (Since resolved: ADR-0027 **D8** chose the dedicated table,
+  choice by accident. (Since resolved: ADR-0028 **D8** chose the dedicated table,
   added by ``0012_lineage_trace_status``.)
-- **No reverse ``payload -> persisting entity`` map.** Deferred (ADR-0027's
+- **No reverse ``payload -> persisting entity`` map.** Deferred (ADR-0028's
   "Outputs"); the ``payload_hash`` index is the seam it will use.
 - **No matcher-version column.** Matcher versioning and backfill after a matcher
-  change are explicitly deferred (ADR-0027 D7).
+  change are explicitly deferred (ADR-0028 D7).
 
 Revision ID: 0011_lineage_metadata
 Revises: 0010_legs_notify_trigger

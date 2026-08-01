@@ -23,7 +23,7 @@ in shape, with two deliberate omissions:
   sibling's shape (next free port after the receiver's 9090 / P-interactions' 9091 /
   P-classification's 9092).
 - **No model/detector load.** Matching is pluggable and the default is trivial
-  (ADR-0027); any real matcher's setup cost belongs behind ``get_matcher``, not here.
+  (ADR-0028); any real matcher's setup cost belongs behind ``get_matcher``, not here.
 
 Before processing any legs the entry point runs the schema-version check (issue #10,
 ADR-0002): it reads ``alembic_version.version_num`` and refuses to start if that does

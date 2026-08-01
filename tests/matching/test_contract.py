@@ -3,7 +3,7 @@
 The matcher is the black box lineage is built on: ``match(payload_a, payload_b) ->
 {matched, transformation, ...evidence}`` (``docs/data_lineage_alg.md`` "Semantic
 matching"). These tests pin the *contract* — the shape lineage will depend on —
-independently of any implementation, because ADR-0027 makes matching its own
+independently of any implementation, because ADR-0028 makes matching its own
 component with its own roadmap and lineage must not know how it decides.
 
 Pure: no database, no network, no lineage import.
@@ -62,7 +62,7 @@ def test_transformation_carries_the_values_the_spec_names() -> None:
     losing the link to a specific person). The no-transformation case is ``None``,
     not a member, so "no transform" is unrepresentable as a transformation value.
 
-    The enumeration is still being finalized with a human (ADR-0027 "Deliberately
+    The enumeration is still being finalized with a human (ADR-0028 "Deliberately
     out of scope"), so this pins the named values without asserting the list is
     closed."""
     assert Transformation.SUMMARIZATION.value == "summarization"
