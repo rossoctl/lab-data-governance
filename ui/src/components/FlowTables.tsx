@@ -293,6 +293,31 @@ export function FlowTables({
     void selectInteraction(ix);
   }
 
+  /**
+   * The graph's NODE-click adapter: an entity id from the graph → the same
+   * `selectEntity` an Entities-table row click calls.
+   *
+   * The exact counterpart of {@link selectInteractionById} and it exists for the same
+   * reason: the graph holds ids, this component holds the entity array, the evidence
+   * fetch, the pin state and the `?eid` mirroring. Resolving the id here is what
+   * keeps ONE selection path — a node click and a row click are the same call with
+   * the same side effects, rather than two implementations that could drift on which
+   * of those five things they remember to do.
+   *
+   * NO `null` ARM, unlike the interaction adapter: deselect already arrives through
+   * `selectInteractionById(null)` when the graph background is clicked, and PF fires
+   * that one event for both element kinds. A second deselect route would be two ways
+   * to say one thing.
+   *
+   * A STALE ID IS A NO-OP for the same reason stated there — the graph's model can
+   * outlive a poll that removed an entity, and doing nothing is the honest response.
+   */
+  function selectEntityById(entityId: string) {
+    const e = entities.find((x) => x.id === entityId);
+    if (!e) return;
+    void selectEntity(e);
+  }
+
   function togglePin() {
     if (!selection) return;
     if (pins.isPinned(selection.pinKey)) {
@@ -458,10 +483,21 @@ export function FlowTables({
               traceId={traceId}
               entities={entities}
               interactions={interactions}
-              byLeg={lineageQ.data?.byLeg}
+              // `byLeg` is deliberately NOT passed any more. This tab's highlight now
+              // comes from the SERVED reachability reads (ADR-0028 D14/D15), which the
+              // tab queries itself — the per-leg map answered a strictly weaker
+              // question (one hop, composed client-side) and keeping it here would
+              // leave two suppliers of one answer. The trace's `status` still comes
+              // from this read, so the coverage banner and the tab quote one value.
               status={lineageQ.data?.status ?? null}
               isLineageError={lineageQ.isError}
               selectedEntityId={selectedEntityId}
+              // NODE clicks select an entity, through the very same `selectEntity`
+              // the Entities table row uses — so `?eid`, the detail panel and the
+              // highlight all follow one path and there is no second notion of
+              // "selected entity". See LineageGraph's prop note and
+              // `DraggableKindColouredNode` for the drag-vs-click evidence.
+              onSelectEntity={selectEntityById}
               // Edges are click targets on THIS tab too, not only on Execution Flow:
               // the two tabs are one graph, so an arrow that opened a panel on one
               // and did nothing on the other would be the fork the shared renderer

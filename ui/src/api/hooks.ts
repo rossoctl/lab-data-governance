@@ -25,6 +25,10 @@ import type {
   DataLineageLeg,
   LineageStatus,
   TraceDataLineage,
+  LineageDirection,
+  LineageGraphEntity,
+  LineageReachability,
+  LineageSummary,
 } from '../types';
 
 /** Recent-traces feed. `GET /api/traces` → the `traces` array. */
@@ -209,6 +213,118 @@ export function useDataLineage(
         // `?? null` rather than a default of `'complete'`: an older server, or a
         // DB without migration 0012, omits the field, and treating that silence
         // as full coverage is precisely the claim D6's flag exists to withhold.
+        status: r.status ?? null,
+        stoppedAtSeq: r.stopped_at_seq ?? null,
+      })),
+  });
+}
+
+/**
+ * One direction's **Lineage reachability** for one entity.
+ * `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…`
+ * (ADR-0028 D14, edge rule in D15).
+ *
+ * `direction` is **required** by the server and is part of the query key, so the
+ * two directions are two independently cached entries rather than one that
+ * overwrites itself — which is what lets both be on screen at once.
+ *
+ * Deliberately NOT a hook that fetches both directions itself. `direction` is
+ * single-valued on the wire, so "both" is two requests; expressing that as two
+ * `useQuery` calls keeps each direction's loading and error state its own, so one
+ * failing does not blank the other. {@link useLineageReachability} is the pair.
+ *
+ * `enabled` gates on having a seed: with nothing selected there is no question to
+ * ask, and firing the request with an empty entity id would ask about an entity
+ * that cannot exist.
+ *
+ * Every absence is a normal shape, not an error — an unknown trace or entity is a
+ * 200 with an empty result (the collection-read convention). The one genuine
+ * failure mode is a bad `direction`, which is a 400 and a programming error here
+ * rather than a data case, since the argument is typed. Note the response is
+ * passed through UNREDUCED: unlike `useDataLineage`, whose per-leg map is the
+ * shape every consumer wants, `state` / `pending_frontier` / `truncated` must all
+ * reach the view intact, and a reduction is exactly where a tri-state gets
+ * flattened into an empty list.
+ */
+export function useLineageGraph(
+  traceId: string,
+  entityId: string | null,
+  direction: LineageDirection,
+): UseQueryResult<LineageReachability> {
+  return useQuery({
+    enabled: entityId !== null,
+    queryKey: ['lineage-graph', traceId, entityId, direction],
+    queryFn: () =>
+      fetchJson<LineageReachability>(
+        `/traces/${traceId}/entities/${entityId}/data-lineage-graph`,
+        { direction },
+      ),
+  });
+}
+
+/**
+ * Both directions of **Lineage reachability** for one entity — the pair of
+ * {@link useLineageGraph} calls the Lineage tab needs.
+ *
+ * Two requests, because `direction` is required and single-valued (ADR-0028 D14).
+ * They are two hooks rather than one combined query so that each direction keeps
+ * its OWN loading and error state: fan-in and fan-out are different claims, and a
+ * failed fan-out must not be able to erase a perfectly good fan-in — collapsing
+ * them into one `isError` would make "we could not ask downstream" look like "we
+ * know nothing at all".
+ *
+ * A fixed-length tuple, not an array built in a loop, so the two hooks are called
+ * unconditionally and in a stable order (the rules of hooks).
+ */
+export function useLineageReachability(
+  traceId: string,
+  entityId: string | null,
+): {
+  fanin: UseQueryResult<LineageReachability>;
+  fanout: UseQueryResult<LineageReachability>;
+} {
+  const fanin = useLineageGraph(traceId, entityId, 'fanin');
+  const fanout = useLineageGraph(traceId, entityId, 'fanout');
+  return { fanin, fanout };
+}
+
+/**
+ * A trace's `list sources` / `list destinations` roll-up.
+ * `GET /api/traces/{tid}/data-lineage-summary` (ADR-0028 D14).
+ *
+ * **This is the only supplier of the source list**, and `sources` is the union of
+ * the trace's derived `data_sources` — NOT a taxonomy read of "entities declared
+ * sources", which is a different set (D14). Substituting the taxonomy is the
+ * specific mistake the ADR warns about, so there is no second path to this fact.
+ *
+ * Not gated on a selection: the trace's sources are a standing fact about the
+ * trace, so the Lineage tab shows them from its first paint with nothing selected.
+ * That is the same reasoning `useDataLineage`'s note gives for the coverage
+ * warning — a fact a reader has to click to discover is not being reported.
+ *
+ * `status` / `stopped_at_seq` are renamed to the camelCase the rest of the app
+ * uses (matching `useDataLineage`'s reduction) and `?? null` is *unknown*, never
+ * defaulted to `'complete'` (ADR-0028 D6 "Reading the status"). Nothing else is
+ * reshaped: `sources` stays natural keys and `destinations` stays entity rows,
+ * because they are different grains and merging them here would be the "two views
+ * of one list" error D14 names.
+ */
+export function useLineageSummary(traceId: string): UseQueryResult<LineageSummary> {
+  return useQuery({
+    queryKey: ['lineage-summary', traceId],
+    queryFn: () =>
+      fetchJson<{
+        sources?: string[];
+        destinations?: LineageGraphEntity[];
+        status?: LineageStatus;
+        stopped_at_seq?: number | null;
+      }>(`/traces/${traceId}/data-lineage-summary`).then((r) => ({
+        // `?? []` for an older server omitting either list: an absent list is an
+        // empty roll-up, which is a different (and safe) claim from a missing key
+        // crashing the view. It is NOT read as "no sources exist" anywhere — the
+        // view says "none attributed" only alongside the coverage status.
+        sources: r.sources ?? [],
+        destinations: r.destinations ?? [],
         status: r.status ?? null,
         stoppedAtSeq: r.stopped_at_seq ?? null,
       })),

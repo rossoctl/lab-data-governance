@@ -236,6 +236,26 @@ function mockFetchWithGraph() {
         { span_id: 'ev-span', role: 'anchor', parent_id: 'root', kind: 'CLIENT', service_name: 'svc' },
       ] }) };
     }
+    // The Lineage tab's two reads (ADR-0028 D14). Answered with well-formed,
+    // non-claiming responses rather than left to the `{spans: []}` fallthrough below:
+    // this file's cases are about ROUTING (`?legs` / `?eid` params surviving), so the
+    // lineage answer must be valid enough not to crash and empty enough not to assert
+    // anything. `state: 'no-adjacent'` is the one value that means "complete answer,
+    // nothing there" (D15) — the honest choice for a fixture with no lineage seeded.
+    if (url.includes('/data-lineage-graph')) {
+      return { ok: true, status: 200, json: async () => ({
+        direction: url.includes('direction=fanin') ? 'fanin' : 'fanout',
+        seed_entity_id: 'e1',
+        entities: [], legs: [], state: 'no-adjacent',
+        pending_frontier: [], truncated: false,
+        status: 'complete', stopped_at_seq: null,
+      }) };
+    }
+    if (url.includes('/data-lineage-summary')) {
+      return { ok: true, status: 200, json: async () => ({
+        sources: [], destinations: [], status: 'complete', stopped_at_seq: null,
+      }) };
+    }
     return { ok: true, status: 200, json: async () => ({ spans: [] }) };
   });
 }

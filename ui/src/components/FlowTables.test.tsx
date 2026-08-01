@@ -68,8 +68,54 @@ const INTERACTION_EVIDENCE = [
   { span_id: 'span-xyz', role: 'anchor', parent_id: 'span-parent', kind: 'CLIENT', service_name: 'svc' },
 ];
 
-function mockFetch() {
+/**
+ * A reachability response for either direction, defaulting to the non-claiming
+ * `no-adjacent` (ADR-0028 D15) so a test that does not care about lineage does not
+ * accidentally assert an answer.
+ */
+function mkReach(direction: 'fanin' | 'fanout') {
+  return {
+    direction,
+    seed_entity_id: 'e2',
+    entities: [] as unknown[],
+    legs: [] as unknown[],
+    state: 'no-adjacent',
+    pending_frontier: [] as string[],
+    truncated: false,
+    status: 'complete',
+    stopped_at_seq: null,
+  };
+}
+
+function mockFetch(over: { sources?: string[]; fanin?: unknown; fanout?: unknown } = {}) {
   (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+    // THE TWO LINEAGE-TAB READS FIRST, and the order is load-bearing rather than
+    // stylistic: the reachability URL is `/entities/<eid>/data-lineage-graph`, which
+    // also matches the `/entities/` evidence branch below. Matched after it, a
+    // reachability request would be answered with `{spans: […]}` — and because the
+    // entity-evidence branch is what the selection's fetch uses, the mis-ordering
+    // showed up as the ENTITY SELECTION silently failing rather than as a lineage bug.
+    if (url.includes('/data-lineage-graph')) {
+      const wantFanin = url.includes('direction=fanin');
+      const chosen = wantFanin ? over.fanin : over.fanout;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => chosen ?? mkReach(wantFanin ? 'fanin' : 'fanout'),
+      };
+    }
+    if (url.includes('/data-lineage-summary')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          sources: over.sources ?? [],
+          destinations: [],
+          status: 'complete',
+          stopped_at_seq: null,
+        }),
+      };
+    }
     if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: INTERACTIONS }) };
     if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
     if (url.includes('/entities/')) return { ok: true, status: 200, json: async () => ({ spans: ENTITY_EVIDENCE }) };
@@ -607,7 +653,7 @@ describe('FlowTables', () => {
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 
     expect(
-      screen.getByText(/Select an entity to see where its data came from/i),
+      screen.getByText(/Select an entity to trace its data in and out/i),
     ).toBeInTheDocument();
     // Nothing is dimmed: "no question asked" must not be painted as "not part of the
     // answer" (see ExecutionFlowGraph's HighlightRole on why `'none'` and `'dimmed'`
@@ -631,30 +677,34 @@ describe('FlowTables', () => {
     // both opens the detail panel (the pre-existing behaviour) and drives this tab's
     // highlight, because both read the same `selection` state.
     //
-    // agent-a (e1) calls search (e2); the request leg's lineage names agent-a's
-    // natural key as a source. Selecting `search` must therefore mark e2 selected and
-    // light e1 as its source.
-    const legs = [
-      {
-        interaction_id: 'i1',
-        leg_type: 'request',
-        payload_hash: null,
-        lineage: {
-          data_sources: ['agent:(p,a)'],
-          source_transformations: {},
-          entities: [],
-          seq: 1,
-        },
+    // agent-a (e1) calls search (e2). The served FAN-IN for e2 reaches e1 over the
+    // request leg, so selecting `search` must mark e2 selected and light e1 upstream.
+    //
+    // Driven through the reachability endpoint rather than the per-leg `byLeg` map,
+    // because that is what the tab now reads (ADR-0028 D14/D15): the server derives the
+    // reachability claim, so the UI renders a served answer instead of composing one.
+    mockFetch({
+      fanin: {
+        direction: 'fanin',
+        seed_entity_id: 'e2',
+        entities: [
+          { id: 'e1', natural_key: 'agent:(p,a)', kind: 'agent', display_name: 'agent-a', hops: 1 },
+        ],
+        legs: [
+          {
+            interaction_id: 'i1',
+            leg_type: 'request',
+            from_entity_id: 'e1',
+            to_entity_id: 'e2',
+            seq: 1,
+          },
+        ],
+        state: 'derived',
+        pending_frontier: [],
+        truncated: false,
+        status: 'complete',
+        stopped_at_seq: null,
       },
-    ];
-    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (url.endsWith('/data-lineage'))
-        return { ok: true, status: 200, json: async () => ({ legs, status: 'complete', stopped_at_seq: null }) };
-      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: INTERACTIONS }) };
-      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
-      if (url.includes('/entities/')) return { ok: true, status: 200, json: async () => ({ spans: ENTITY_EVIDENCE }) };
-      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
-      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
     });
     renderWithProviders(
       <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
@@ -669,9 +719,7 @@ describe('FlowTables', () => {
 
     // The instruction is gone (a question has now been asked)…
     await waitFor(() =>
-      expect(
-        screen.queryByText(/Select an entity to see where its data came from/i),
-      ).toBeNull(),
+      expect(screen.queryByText(/Select an entity to trace its data in and out/i)).toBeNull(),
     );
     // …and the same click also opened the entity detail panel, proving both read one
     // selection rather than each holding their own.
@@ -679,21 +727,21 @@ describe('FlowTables', () => {
 
     // The highlight, asserted through the EDGES — the honest observable in jsdom (node
     // content is culled; see the note in the "instructs the reader" case above). The
-    // request leg (e1 → e2) is the one that delivered data to `search`, so it is the
-    // carrier; the response leg is not part of the answer, so it is dimmed.
+    // request leg (e1 → e2) is the traversed leg of the fan-in answer, so it carries the
+    // upstream route class; the response leg is on neither route, so it is dimmed.
     //
     // This is a MODEL/CLASS assertion, not a visual one: jsdom applies no stylesheet
     // rules to computed style, so the actual dimming is Playwright/by-hand territory
     // and is deliberately not claimed here.
     await waitFor(() =>
       expect(
-        document.querySelector('[data-id="i1:request"] .dg-graph-edge--carrier'),
+        document.querySelector('[data-id="i1:request"] .dg-graph-edge--upstream'),
       ).not.toBeNull(),
     );
     expect(
       document.querySelector('[data-id="i1:response"] .dg-graph-edge--dimmed'),
     ).not.toBeNull();
-    // The carrier is not ALSO dimmed — the two roles are exclusive, so a reader can
+    // The lit leg is not ALSO dimmed — the two roles are exclusive, so a reader can
     // never be shown an arrow that is both the answer and not the answer.
     expect(
       document.querySelector('[data-id="i1:request"] .dg-graph-edge--dimmed'),
@@ -701,15 +749,27 @@ describe('FlowTables', () => {
     // The seq tag follows its own arrow, so a bright number never floats over a faded
     // line as the most eye-catching thing on screen.
     expect(
-      document.querySelector('[data-id="i1:request"] .dg-graph-edge-tag--carrier'),
+      document.querySelector('[data-id="i1:request"] .dg-graph-edge-tag--upstream'),
     ).not.toBeNull();
   });
 
-  it('says "not yet computed" — not "no sources" — when the inbound legs have no lineage', async () => {
+  it('says "not yet computed" — not "nothing flowed" — for a PENDING direction', async () => {
     // The second absence state, and the one this whole feature is disciplined around:
-    // legs DO deliver to the entity, but none has a derived row. An empty highlight
-    // with no words would read as "we checked and found nothing".
-    mockFetchWithLineage([{ ...LINEAGE_LEGS[0], lineage: null }]);
+    // adjacency EXISTS but has no derived row. An empty highlight with no words would
+    // read as "we checked and found nothing".
+    mockFetch({
+      fanin: {
+        direction: 'fanin',
+        seed_entity_id: 'e2',
+        entities: [],
+        legs: [],
+        state: 'pending',
+        pending_frontier: ['e1'],
+        truncated: false,
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+    });
     renderWithProviders(
       <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
@@ -719,22 +779,33 @@ describe('FlowTables', () => {
     await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
 
     await waitFor(() =>
-      expect(screen.getByText(/Lineage not yet computed for this entity/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Upstream lineage not yet computed/i)).toBeInTheDocument(),
     );
+    // The sentence the whole tri-state discipline hangs on.
+    expect(screen.getByText(/this is not "nothing flowed"/i)).toBeInTheDocument();
+    // The frontier is named, so "not yet" is visible rather than looking like a dead end.
+    expect(screen.getByText(/1 entity is on the pending frontier/i)).toBeInTheDocument();
     // Emphatically NOT the derived-empty verdict, which is a different fact.
-    expect(screen.queryByText(/originates here/i)).toBeNull();
+    expect(screen.queryByText(/derived, not missing/i)).toBeNull();
   });
 
-  it('states "originates here" for a DERIVED but empty source set', async () => {
-    // The third absence state: a real derived answer (ADR-0028 D3). An unhighlighted
-    // graph looks identical to the pending case above, so the difference has to be
-    // words — which is exactly what is asserted.
-    mockFetchWithLineage([
-      {
-        ...LINEAGE_LEGS[0],
-        lineage: { data_sources: [], source_transformations: {}, entities: [], seq: 1 },
+  it('states "derived, not missing" for a DERIVED but empty direction', async () => {
+    // The third absence state: a real derived answer (ADR-0028 D3/D15). An
+    // unhighlighted graph looks identical to the pending case above, so the difference
+    // has to be words — which is exactly what is asserted.
+    mockFetch({
+      fanin: {
+        direction: 'fanin',
+        seed_entity_id: 'e2',
+        entities: [],
+        legs: [],
+        state: 'derived',
+        pending_frontier: [],
+        truncated: false,
+        status: 'complete',
+        stopped_at_seq: null,
       },
-    ]);
+    });
     renderWithProviders(
       <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
@@ -744,55 +815,37 @@ describe('FlowTables', () => {
     await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
 
     await waitFor(() =>
-      expect(screen.getByText(/this data originates here/i)).toBeInTheDocument(),
+      expect(screen.getByText(/No upstream entities — derived, not missing/i)).toBeInTheDocument(),
     );
-    expect(screen.queryByText(/not yet computed for this entity/i)).toBeNull();
+    expect(screen.queryByText(/Upstream lineage not yet computed/i)).toBeNull();
   });
 
-  it('discloses a lineage source whose natural key matches no entity', async () => {
-    // A real origin the graph cannot draw. "3 sources, 2 nodes lit" with no notice is
-    // exactly the silent under-report a governance reader must never have to discover
-    // for themselves.
-    mockFetchWithLineage([
-      {
-        ...LINEAGE_LEGS[0],
-        lineage: {
-          data_sources: ['agent:(p,a)', 'service:(elsewhere,crm)'],
-          source_transformations: {},
-          entities: [],
-          seq: 1,
-        },
-      },
-    ]);
+  it('marks the trace data sources with nothing selected, and discloses undrawable ones', async () => {
+    // JOB 1 of the tab, end to end through this component: the sources come from
+    // `data-lineage-summary` and paint with NO selection. An origin the graph cannot
+    // draw is disclosed — "2 sources, 1 marked" with no notice is exactly the silent
+    // under-report a governance reader must never have to discover for themselves.
+    mockFetch({ sources: ['agent:(p,a)', 'service:(elsewhere,crm)'] });
     renderWithProviders(
       <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
 
+    // No selection was made, and the roll-up is already stated.
     await waitFor(() =>
-      expect(screen.getByText(/1 data source not shown as nodes/i)).toBeInTheDocument(),
+      expect(screen.getByText(/1 of 2 data sources marked on the graph/i)).toBeInTheDocument(),
     );
-    // Named, not merely counted — and stated as still real, so the reader knows the
-    // lit nodes are not the full set.
+    expect(screen.getByText(/1 data source not shown as nodes/i)).toBeInTheDocument();
+    // Named, not merely counted — and stated as still real.
     expect(screen.getByText(/service:\(elsewhere,crm\)/)).toBeInTheDocument();
     expect(screen.getByText(/not the full set/i)).toBeInTheDocument();
-    // The answer is still an answer: the leg whose lineage named BOTH sources is still
-    // the carrier, so one unresolvable key does not lose the part that did resolve.
-    // (Asserted on the edge rather than on the resolved node for the jsdom reason
-    // noted above — node content is culled here.) Waited for, not read straight away:
-    // the notices paint on the first render while the edge elements land only after
-    // PF's model push, so a synchronous read would race the mount.
-    await waitFor(() =>
-      expect(
-        document.querySelector('[data-id="i1:request"] .dg-graph-edge--carrier'),
-      ).not.toBeNull(),
-    );
+    // The legend is present, so a marked node is never unexplained.
+    expect(screen.getByRole('group', { name: /Lineage graph legend/i })).toBeInTheDocument();
   });
 
-  it('reports a failed lineage read as UNKNOWN sources, not as an absence', async () => {
+  it('reports a failed lineage read as UNKNOWN, not as an absence', async () => {
     // The fourth, separate fact. Nothing was retrieved, so the empty highlight below
     // it means nothing at all — and must not be allowed to read as "no sources".
     mockFetchWithLineageError();
@@ -802,23 +855,39 @@ describe('FlowTables', () => {
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+
+    // The SOURCES read failed, and that is reported as unknown before any selection.
+    await waitFor(() =>
+      expect(screen.getByText(/data sources could not be loaded/i)).toBeInTheDocument(),
+    );
+    expect(screen.getAllByText(/unknown/i).length).toBeGreaterThan(0);
+
     await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
 
+    // …and so is each DIRECTION's failure, separately from it.
     await waitFor(() =>
-      expect(screen.getByText(/Data lineage could not be loaded/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Upstream lineage could not be loaded/i)).toBeInTheDocument(),
     );
+    expect(screen.getByText(/Downstream lineage could not be loaded/i)).toBeInTheDocument();
     // Not the pending wording, and not the derived-empty verdict.
-    expect(screen.queryByText(/not yet computed for this entity/i)).toBeNull();
-    expect(screen.queryByText(/originates here/i)).toBeNull();
+    expect(screen.queryByText(/not yet computed/i)).toBeNull();
+    expect(screen.queryByText(/derived, not missing/i)).toBeNull();
   });
 
-  it('adds no new resource read for the Lineage tab', async () => {
-    // It is a reading of the three reads this view already holds
-    // (entities / interactions / data-lineage), so switching to it must not fetch a
-    // fourth thing. Asserted on the SET of resource URLs touched rather than a call
-    // count, for the same reason the graph tab's case is (no staleTime here, so
-    // TanStack may revalidate).
-    mockFetchWithLineage(LINEAGE_LEGS);
+  it('adds exactly the SUMMARY read on open, and the two directions only on selection', async () => {
+    // THIS ASSERTION CHANGED, and the change is faithful rather than a weakening: the
+    // previous version claimed the tab "adds no new resource read", which was true when
+    // it composed its answer from the per-leg map. It now renders the SERVED
+    // reachability reads (ADR-0028 D14/D15), so it genuinely does fetch more — and
+    // pinning the old claim would mean pinning a design that no longer exists. What is
+    // worth pinning instead is the SHAPE of the new reads, which is a real decision:
+    //
+    //   - the trace-level SUMMARY is ungated, because the trace's data sources are a
+    //     standing fact that must paint on first open;
+    //   - the two DIRECTIONS are gated on a selection, because with nothing selected
+    //     there is no question to ask — an ungated pair would fire two requests per
+    //     trace for an answer nobody asked for.
+    mockFetch();
     renderWithProviders(
       <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
@@ -826,16 +895,28 @@ describe('FlowTables', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 
-    const reads = new Set(
-      (fetch as ReturnType<typeof vi.fn>).mock.calls
-        .map((c) => String(c[0]))
-        .filter((u) => /\/(entities|interactions|data-lineage)$/.test(u)),
+    const urls = () => (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    // Asserted on the SET of resource URLs touched rather than a call count, for the
+    // same reason the graph tab's case is (no staleTime here, so TanStack may
+    // revalidate).
+    await waitFor(() =>
+      expect(urls().some((u) => u.includes('/data-lineage-summary'))).toBe(true),
     );
-    expect([...reads].sort()).toEqual([
-      '/api/traces/T1/data-lineage',
-      '/api/traces/T1/entities',
-      '/api/traces/T1/interactions',
-    ]);
+    // NOT yet asked: nothing is selected.
+    expect(urls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
+
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+
+    // Both directions, because `direction` is required and single-valued on the wire —
+    // "both" is necessarily two requests.
+    await waitFor(() =>
+      expect(urls().some((u) => u.includes('direction=fanin'))).toBe(true),
+    );
+    expect(urls().some((u) => u.includes('direction=fanout'))).toBe(true);
+    // …and both scoped to the entity the reader actually selected.
+    expect(
+      urls().some((u) => u.includes('/entities/e2/data-lineage-graph') && u.includes('direction=fanin')),
+    ).toBe(true);
   });
 
   it('renders the Lineage graph inside the detail gutter so the panel never covers it', async () => {
@@ -1206,6 +1287,31 @@ describe('FlowTables', () => {
   ) {
     const withPayload = [withLegHashes('reqhash0deadbeef', 'resphash0feedface')];
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      // The Lineage TAB's two reads, matched BEFORE the `/entities/` evidence branch
+      // for the reason `mockFetch` states at length: `/entities/<eid>/data-lineage-graph`
+      // also matches that branch, and answering it with `{spans: […]}` breaks the
+      // entity SELECTION rather than the lineage. These default to the non-claiming
+      // answers — this helper's cases are about the PER-LEG lineage, so the tab's
+      // reachability must not accidentally assert anything.
+      if (url.includes('/data-lineage-graph')) {
+        const wantFanin = url.includes('direction=fanin');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => mkReach(wantFanin ? 'fanin' : 'fanout'),
+        };
+      }
+      if (url.includes('/data-lineage-summary'))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            sources: [],
+            destinations: [],
+            status: 'complete',
+            stopped_at_seq: null,
+          }),
+        };
       if (url.endsWith('/data-lineage'))
         return { ok: true, status: 200, json: async () => ({ legs, ...coverage }) };
       if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
@@ -1307,6 +1413,12 @@ describe('FlowTables', () => {
   function mockFetchWithLineageError() {
     const withPayload = [withLegHashes('reqhash0deadbeef', 'resphash0feedface')];
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      // The reachability reads fail too, which is the honest shape of this fixture:
+      // it exists to prove a broken lineage read is reported as UNKNOWN rather than as
+      // an absence, and a version where only the per-leg read broke while the tab's
+      // own reads succeeded would be testing a different (and easier) situation.
+      if (url.includes('/data-lineage-graph') || url.includes('/data-lineage-summary'))
+        return { ok: false, status: 500, json: async () => ({ detail: 'boom' }) };
       if (url.endsWith('/data-lineage'))
         return { ok: false, status: 500, json: async () => ({ detail: 'boom' }) };
       if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };

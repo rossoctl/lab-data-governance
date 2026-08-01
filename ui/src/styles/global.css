@@ -33,6 +33,45 @@
    - --dg-tree-guide     #555     the interactions tree's │/└─ guide glyphs
    - --dg-row-selected   #3a4a66  span-tree selected-row background
    - --dg-row-highlight            flow-table selected-row tint
+   - --dg-lineage-source #ff6b4a  the Lineage tab's DATA SOURCE nodes (ADR-0028
+                                  D14 `list sources`). A DEDICATED token, and
+                                  deliberately NOT --dg-color-error, even though
+                                  both are reddish and the ask was "e.g. in red".
+                                  Two independent reasons:
+                                  (1) In a governance UI "is a data source" must
+                                  not look like "failed". --dg-color-error is
+                                  already the ERROR vocabulary — failed legs
+                                  (.dg-graph-edge--error), ERROR status, failed-
+                                  read notes — so painting a healthy origin with
+                                  it would say something false about the node in
+                                  the one place a reader is scanning for trouble.
+                                  (2) It would also be AMBIGUOUS, not merely
+                                  impolite: entity kind already owns node hue
+                                  (lib/entityKind), and the `external_service`
+                                  kind is painted PF's danger red. An error-red
+                                  source ring would be indistinguishable from an
+                                  ordinary external_service node.
+                                  Hence a distinct warmer orange-red, and hue is
+                                  NOT the only carrier — see
+                                  .dg-graph-node--datasource, which adds a halo
+                                  ring and a badge so the meaning survives a
+                                  colour-vision deficiency. A legend accompanies
+                                  it in the tab (a colour with no key is a
+                                  puzzle).
+   - --dg-lineage-upstream  #7aa2f7  fan-in: where the selection's data CAME FROM
+   - --dg-lineage-downstream #b48ead fan-out: where it WENT
+                                  Two tokens because upstream and downstream are
+                                  OPPOSITE claims about who gave data to whom, and
+                                  a reader who cannot tell them apart has been told
+                                  nothing useful. They are not a light/dark pair of
+                                  one hue: an entity is routinely BOTH (agent →
+                                  tool → agent is every tool call), so the two
+                                  treatments have to remain legible when they land
+                                  on the same node — which is why the node carries
+                                  them as two separate ring layers rather than one
+                                  blended colour. Direction is additionally carried
+                                  by dash pattern on the edges, again so hue is not
+                                  load-bearing alone.
 
    Layout: the floating detail panel's width is used TWICE — by the panel itself
    and by the right gutter the tables reserve so they shrink out from under the
@@ -51,6 +90,9 @@
   --dg-tree-guide: #555;
   --dg-row-selected: #3a4a66;
   --dg-row-highlight: rgba(56, 139, 253, 0.28);
+  --dg-lineage-source: #ff6b4a;
+  --dg-lineage-upstream: #7aa2f7;
+  --dg-lineage-downstream: #b48ead;
 
   /* Floating detail-panel geometry (flow view). The panel is
      `width: var(--dg-detail-panel-width)` with a
@@ -485,6 +527,187 @@ body {
    (not the arrowhead), which keeps its own size from PF's endTerminalSize. */
 .dg-graph-edge--carrier .pf-topology__edge__link {
   stroke-width: 3px;
+}
+
+/* ---------------------------------------------------------------------------
+   LINEAGE REACHABILITY (the Lineage tab only) — ADR-0028 D14/D15.
+
+   Three facts that CO-OCCUR on one node, which is why they are three independent
+   classes rather than more values of one role enum:
+     - `--datasource`  the trace's data sources (always on, no selection needed)
+     - `--upstream`    fan-in: where the selection's data came FROM
+     - `--downstream`  fan-out: where it WENT
+
+   All three genuinely land together. A source is very often upstream of whatever
+   you clicked; and an entity is routinely BOTH upstream and downstream, because
+   `agent → tool → agent` is the ordinary shape of every tool call (D15's cycle
+   note) — the tool's request leg puts it downstream, its response leg upstream.
+   Verified against a live trace: fan-in and fan-out of one leaf tool each returned
+   the same ten entities. A single-valued role would have to pick a winner and
+   silently discard the other two claims.
+
+   THE STACKING TRICK. Three rings on one 40px circle cannot be three strokes —
+   SVG gives a shape one stroke. So each fact takes a DIFFERENT visual channel:
+     - kind         → stroke COLOUR (already spoken for, lib/entityKind)
+     - data source  → an outer `filter: drop-shadow` halo, which composes
+     - upstream     → `stroke-dasharray` (dashed = data flowed IN to the selection)
+     - downstream   → a second drop-shadow layer in the downstream hue
+   Drop-shadows are used because they STACK: two `drop-shadow()` functions in one
+   filter list both paint, so source+downstream shows both haloes concentrically.
+   `outline` was rejected — it does not follow an SVG circle's geometry — and a
+   second `<circle>` element was rejected because it would mean changing the node
+   renderer's DOM for a purely decorative layer.
+
+   HUE IS NEVER THE ONLY CARRIER (colour-vision deficiency). The data-source node
+   also gets a visible ring via the halo's tight spread AND a textual badge in the
+   node's `<title>`/aria label from the renderer; upstream/downstream additionally
+   differ by dash pattern on both node and edge. A reader who sees no colour
+   difference still gets ring-vs-no-ring and dashed-vs-solid. */
+
+/* A trace DATA SOURCE. Always on while the Lineage tab is open — it answers a
+   question about the trace, not about a selection, so it does not wait for a click.
+   The halo sits OUTSIDE the kind-coloured stroke so both are readable: the node
+   keeps saying what kind it is while also saying it is an origin. */
+.dg-graph-node--datasource .pf-topology__node__background {
+  filter: drop-shadow(0 0 0 var(--dg-lineage-source))
+    drop-shadow(0 0 3px var(--dg-lineage-source));
+  stroke-width: 3px;
+}
+
+/* UPSTREAM of the selection (fan-in) — where its data came from. Dashed, reading as
+   "flowed in from here". A SHORT dash, distinct from `--selected`'s long 8 3 so the
+   selected node is still tellable apart when it is also upstream of itself (a real
+   cycle the server derives, not an edge case). */
+.dg-graph-node--upstream .pf-topology__node__background {
+  stroke-dasharray: 3 2;
+  stroke-width: 4px;
+}
+
+/* DOWNSTREAM of the selection (fan-out) — where its data went. A halo like the
+   source's but in its own hue, so a node that is BOTH a source and downstream shows
+   two concentric haloes rather than one overwriting the other. Solid stroke, the
+   deliberate opposite of upstream's dash. */
+.dg-graph-node--downstream .pf-topology__node__background {
+  filter: drop-shadow(0 0 4px var(--dg-lineage-downstream));
+  stroke-width: 4px;
+}
+
+/* BOTH directions on one node — data that went out and came back. The most
+   governance-relevant shape in the picture, so it is given its own rule rather than
+   being left to whichever of the two above happens to win the cascade (they set the
+   same properties, so source order alone would decide and the reader would see only
+   one of two true facts). Both haloes, and the upstream dash retained. */
+.dg-graph-node--upstream.dg-graph-node--downstream .pf-topology__node__background {
+  filter: drop-shadow(0 0 4px var(--dg-lineage-downstream))
+    drop-shadow(0 0 7px var(--dg-lineage-upstream));
+  stroke-dasharray: 3 2;
+  stroke-width: 4px;
+}
+
+/* A node on the PENDING FRONTIER: the walk reached it but could not continue
+   THROUGH it, because the onward leg has no derived lineage row yet. "We don't know
+   yet", which must never look like "there is nothing" (D15).
+
+   Deliberately NOT any of the three above and deliberately NOT dimmed: dimming would
+   file it with "not part of the answer", which is the precise conflation the
+   frontier exists to prevent. A muted dotted ring instead — present, marked,
+   visibly provisional. The `--dg-color-muted` grey says "unknown" rather than
+   borrowing either direction's hue, since we do not yet know what flows here. */
+.dg-graph-node--frontier .pf-topology__node__background {
+  stroke: var(--dg-color-muted);
+  stroke-dasharray: 1 3;
+  stroke-width: 3px;
+}
+
+/* The traversed legs — THE ROUTE, which is the reason the endpoint returns legs at
+   all. Direction is carried by DASH as well as hue, so the two routes stay tellable
+   apart without colour: fan-in dashed (data arriving), fan-out solid (data leaving).
+   Weight is raised on both so a lit route reads as a path against the dimmed rest. */
+.dg-graph-edge--upstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-upstream);
+  stroke-width: 3px;
+  stroke-dasharray: 6 3;
+}
+
+.dg-graph-edge--downstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-downstream);
+  stroke-width: 3px;
+}
+
+/* A leg traversed by BOTH walks — the two legs of one tool call, or a genuine cycle.
+   Given the upstream hue with the downstream dash so it is visibly neither plain
+   case, rather than letting cascade order silently pick one. */
+.dg-graph-edge--upstream.dg-graph-edge--downstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-upstream);
+  stroke-width: 4px;
+  stroke-dasharray: 6 3;
+}
+
+/* Edge tags follow their edge's direction hue, so the seq number stays attached to
+   the route it labels. */
+.dg-graph-edge-tag--upstream text {
+  fill: var(--dg-lineage-upstream);
+}
+
+.dg-graph-edge-tag--downstream text {
+  fill: var(--dg-lineage-downstream);
+}
+
+/* The tab's LEGEND. A colour with no key is a puzzle, so every treatment above is
+   named on screen. Inline flow rather than a floating overlay: it must not cover the
+   graph it explains, and it has to be reachable by a screen reader in document
+   order. */
+.dg-lineage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border-subtle);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  color: var(--dg-color-label);
+}
+
+.dg-lineage-legend-item {
+  display: inline-flex;
+  gap: 0.375rem;
+  align-items: center;
+  white-space: nowrap;
+}
+
+/* The swatch repeats the node treatment in miniature. `border` carries the ring so
+   the shape matches what the graph draws, and each variant below adds the same
+   halo/dash the node gets — so the key is the treatment itself, not a colour chip
+   that merely claims to stand for it. */
+.dg-lineage-swatch {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  border: 2px solid var(--dg-color-muted);
+}
+
+.dg-lineage-swatch--datasource {
+  border-color: var(--dg-lineage-source);
+  box-shadow: 0 0 3px var(--dg-lineage-source);
+}
+
+.dg-lineage-swatch--upstream {
+  border-color: var(--dg-lineage-upstream);
+  border-style: dashed;
+}
+
+.dg-lineage-swatch--downstream {
+  border-color: var(--dg-lineage-downstream);
+  box-shadow: 0 0 4px var(--dg-lineage-downstream);
+}
+
+.dg-lineage-swatch--frontier {
+  border-color: var(--dg-color-muted);
+  border-style: dotted;
 }
 
 /* ---------------------------------------------------------------------------

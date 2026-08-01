@@ -220,6 +220,149 @@ export interface TraceDataLineage {
   stoppedAtSeq: number | null;
 }
 
+/**
+ * Which way a **Lineage reachability** question points (ADR-0028 D14/D15).
+ *
+ * `'fanin'` is upstream / ancestors ("where did this entity's data come from"),
+ * `'fanout'` is downstream / descendants ("where did it go"). Required and
+ * single-valued on the wire — the server 400s a missing or unrecognized value
+ * rather than defaulting, because the two answers are different claims and a
+ * wrong default is a wrong claim rather than a mild one. Asking BOTH therefore
+ * means two requests; see `useLineageReachability`.
+ */
+export type LineageDirection = 'fanin' | 'fanout';
+
+/**
+ * One **Entity** a reachability walk reached, plus how far away it is — an element
+ * of the `entities` array of
+ * `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph`.
+ *
+ * `hops` is the FEWEST hops from the seed (the walk is breadth-first, so a first
+ * arrival is a shortest route). It is a DISTANCE, not a position in the flow: two
+ * entities at the same depth were reached by different routes, and the lineage
+ * algebra has no truthful interleaving to offer (ADR-0028 D10). So it may grade a
+ * highlight by nearness, and may not be read as an ordering.
+ *
+ * The metadata fields are nullable because the walk reports an entity it reached
+ * even when the entities read has no row for it — under-reporting a reached
+ * entity would be worse than showing it unnamed.
+ *
+ * Reused verbatim for the summary's `destinations`, where the server sends
+ * `hops: 0` — a membership claim with no distance to make, not "zero hops away".
+ */
+export interface LineageGraphEntity {
+  id: string;
+  natural_key: string | null;
+  kind: string | null;
+  display_name: string | null;
+  hops: number;
+}
+
+/**
+ * One **Interaction leg** a reachability walk traversed — THE ROUTE, which is why
+ * the endpoint returns it at all: an answer of lit nodes with no visible path
+ * between them is a quiz rather than a claim.
+ *
+ * `from_entity_id` / `to_entity_id` are the **per-leg** direction the walk
+ * actually followed, and the direction reverses with the question: a `fanin` walk
+ * reports the same physical leg as its own traversal order. Never re-derive this
+ * from the parent **Interaction**'s `caller_entity_id → callee_entity_id` — a
+ * response leg runs callee → caller (ADR-0028 D15).
+ *
+ * `(interaction_id, leg_type)` is the leg's canonical key, and joining the two
+ * with a colon is exactly `lib/graph`'s edge id — which is what lets a traversed
+ * leg be looked up as a drawn arrow without inventing an identifier.
+ */
+export interface LineageGraphLeg {
+  interaction_id: string;
+  leg_type: 'request' | 'response';
+  from_entity_id: string;
+  to_entity_id: string;
+  seq: number;
+}
+
+/**
+ * Why a reachability walk stopped — three values, and an empty `entities` list may
+ * NOT be read instead of them (ADR-0028 D15).
+ *
+ * - `'derived'` — the walk followed at least one derived hop. `entities` is the
+ *   answer.
+ * - `'pending'` — the seed HAS adjacent legs in this trace, but none of them
+ *   carries a derived lineage row yet. The eventual-consistency window, not "no
+ *   sources"; the entities involved are named in `pending_frontier`. *Wait.*
+ * - `'no-adjacent'` — the trace has no leg touching the seed in this direction at
+ *   all. **The only state where an empty answer is a COMPLETE answer.**
+ *
+ * A failed read is deliberately not a fourth value here: this type spells what the
+ * SERVER said, and a request that never returned said nothing. The view owns that
+ * arm (`isError`), the same split `LineageState` makes for one leg.
+ */
+export type LineageReachabilityState = 'derived' | 'pending' | 'no-adjacent';
+
+/**
+ * The whole `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…`
+ * response — one direction's reachability over one trace (ADR-0028 D14/D15).
+ *
+ * Field names are the wire's verbatim, so this doubles as the contract. Read
+ * `state` BEFORE `entities`.
+ *
+ * `pending_frontier` names entities the walk REACHED but could not continue
+ * through, because the onward leg has no derived row *yet*. It is the honest
+ * distinction between "provenance genuinely ends here" and "P-data-lineage has not
+ * got here yet" — two facts an empty tail cannot tell apart. Note it is a list of
+ * entity ids, not of natural keys.
+ *
+ * `truncated` and `pending_frontier` are DIFFERENT claims and must not be merged
+ * (ADR-0028 D15): `pending_frontier` means *not derived yet, ask again later*,
+ * `truncated` means *derived, but this answer declined to return it all*. An
+ * entity dropped by a walk bound lands in `truncated` only — putting it on the
+ * frontier would send a reader back to poll for something no amount of waiting
+ * delivers.
+ *
+ * One consequence defeats intuition and the UI must not "helpfully" hide it: a
+ * leaf tool's `fanout` is **not** empty, because its response delivers data back
+ * to its caller (ADR-0025).
+ */
+export interface LineageReachability {
+  direction: LineageDirection;
+  seed_entity_id: string;
+  entities: LineageGraphEntity[];
+  legs: LineageGraphLeg[];
+  state: LineageReachabilityState;
+  pending_frontier: string[];
+  truncated: boolean;
+  status: LineageStatus;
+  stopped_at_seq: number | null;
+}
+
+/**
+ * The whole `GET /api/traces/{tid}/data-lineage-summary` response — a trace's
+ * `list sources` and `list destinations` (ADR-0028 D14).
+ *
+ * `sources` is the **union of the derived `data_sources`** over the trace's legs,
+ * as **Entity** natural keys. It is emphatically NOT "entities declared as
+ * sources": that is a taxonomy read of a different set, and under the kind
+ * defaults the two diverge exactly where a delegation-shaped tool over-reports.
+ * Substituting one for the other is the specific mistake ADR-0028 D14 warns about,
+ * so this field's only supplier is this endpoint.
+ *
+ * Natural keys, not ids — so drawing them needs the `lineageLabels.entityIdsByKey`
+ * bridge, and a key matching no entity in the trace must be DISCLOSED rather than
+ * dropped (it is a real source the graph simply cannot draw).
+ *
+ * `destinations` is a different GRAIN — entity ROWS of the trace whose kind is a
+ * declared taxonomy target. The two lists are not two views of one list and must
+ * not be zipped. In v1 they overlap because the source and target kind defaults
+ * both resolve to `tool`; that early agreement is an artifact of the defaults, not
+ * corroboration.
+ */
+export interface LineageSummary {
+  sources: string[];
+  destinations: LineageGraphEntity[];
+  status: LineageStatus;
+  stoppedAtSeq: number | null;
+}
+
 // Entity, Interaction and its InteractionLeg wire shapes live in ./lib/flow (the
 // pure helpers key on them); re-export so consumers import all wire types from
 // one module. `InteractionLeg` is part of that contract too — since ADR-0025 the

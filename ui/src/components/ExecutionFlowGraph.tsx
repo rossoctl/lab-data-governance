@@ -29,6 +29,54 @@ import {
   VisualizationProvider,
   VisualizationSurface,
 } from '@patternfly/react-topology/dist/esm/components';
+// The pieces of `DefaultEdge` that `CurvedEdge` (below) re-assembles around its own
+// `<path>`. Each is deep-imported from its LEAF module for the same reason
+// everything else here is — `components/edges/index.js` and `components/layers/index.js`
+// are barrels, and the whole point of the discipline above is not to pull one in.
+//
+// WHY THESE ARE IMPORTED AT ALL, i.e. why `DefaultEdge` is forked rather than
+// wrapped: see `CurvedEdge`'s own note. Short version — the path command is
+// hardcoded in `DefaultEdge` with no seam, and the seam it DOES offer (`children`)
+// renders too late and cannot replace either of the two paths PF draws.
+import DefaultConnectorTerminal from '@patternfly/react-topology/dist/esm/components/edges/terminals/DefaultConnectorTerminal';
+import DefaultConnectorTag from '@patternfly/react-topology/dist/esm/components/edges/DefaultConnectorTag';
+import Layer from '@patternfly/react-topology/dist/esm/components/layers/Layer';
+import { TOP_LAYER } from '@patternfly/react-topology/dist/esm/const';
+// `useHover` drives PF's own `pf-m-hover` modifier and the TOP_LAYER hoist. Deep
+// path is `utils/useHover`, NOT `utils` — that index re-exports it but is itself a
+// barrel over the whole utils subtree.
+import useHover from '@patternfly/react-topology/dist/esm/utils/useHover';
+// `getEdgeStyleClassModifier` maps `EdgeStyle.dashed` → `pf-m-dashed`, which is what
+// marks a self-call on this graph (see the model builder's `edgeStyle`), and
+// `getEdgeAnimationDuration`/`StatusModifier` are the other two things `DefaultEdge`
+// derives for its class list. Re-derived here rather than re-implemented, so a
+// self-call's dash keeps coming from PF's own mapping.
+import {
+  StatusModifier,
+  getEdgeAnimationDuration,
+  getEdgeStyleClassModifier,
+} from '@patternfly/react-topology/dist/esm/utils/style-utils';
+// The collapsed-group early return `DefaultEdge` makes, kept verbatim: an edge whose
+// two ends have collapsed into one visible group must not be drawn at all.
+import { getClosestVisibleParent } from '@patternfly/react-topology/dist/esm/utils/element-utils';
+// `getConnectorStartPoint` is the function PF uses to back an arrowhead's tip off the
+// endpoint by the terminal's own size. Reused (not reimplemented) so the hit band's
+// trimmed ends agree exactly with where PF puts the head it is trimming for.
+import { getConnectorStartPoint } from '@patternfly/react-topology/dist/esm/components/edges/terminals/terminalUtils';
+// `observer`, which `CurvedEdge` must be wrapped in or a dragged node's edges stop
+// following it (see that component's note — this was found by a failing test, not
+// assumed).
+//
+// FROM PF'S OWN RE-EXPORT, not from `mobx-react` directly, and that is the point of
+// using this path: `mobx-react` is a transitive dependency of react-topology and is
+// NOT in our package.json, so importing it here would be an undeclared dependency that
+// happens to resolve — the kind that breaks on an unrelated `npm install`. PF publishes
+// `mobx-exports` for exactly this ("re-export for ease of use externally", its own
+// comment), so the version we observe with is by construction the one PF's own
+// observables were created by. Still a LEAF module, not the barrel: `index.js` does
+// `export * from './mobx-exports'`, which is how the barrel would otherwise be the
+// only route to it.
+import { observer } from '@patternfly/react-topology/dist/esm/mobx-exports';
 import {
   TopologyControlBar,
   createTopologyControlButtons,
@@ -59,6 +107,12 @@ import {
   EdgeTerminalType,
   ModelKind,
   NodeShape,
+  // The guard and the zoom-detail enum `CurvedEdge` needs to be a faithful stand-in
+  // for `DefaultEdge`: `isEdge` for its element assertion, `ScaleDetailsLevel` for the
+  // tag gating. (`isNode`, which PF's own collapsed-group guard calls, is deliberately
+  // NOT imported — see that guard's note.)
+  ScaleDetailsLevel,
+  isEdge,
   type ComponentFactory,
   type Model,
   type NodeModel,
@@ -89,18 +143,17 @@ import '@patternfly/react-topology/dist/esm/css/topology-components.css';
 import '@patternfly/react-topology/dist/esm/css/topology-view.css';
 import '@patternfly/react-topology/dist/esm/css/topology-controlbar.css';
 
-import { useEntities, useInteractions } from '../api/hooks';
+import { useEntities, useInteractions, useLineageReachability, useLineageSummary } from '../api/hooks';
 import { deriveGraph, type GraphEdgeSpec, type GraphNodeSpec, type GraphSpec } from '../lib/graph';
-import { deriveLineageHighlight } from '../lib/lineageGraph';
+import {
+  deriveReachabilityHighlight,
+  deriveSourceHighlight,
+  type DirectionHighlight,
+} from '../lib/lineageReachability';
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
 import { kindColorVar } from '../lib/entityKind';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
-import type {
-  DataLineageByLeg,
-  Entity,
-  Interaction,
-  LineageStatus,
-} from '../types';
+import type { Entity, Interaction, LineageStatus } from '../types';
 
 /**
  * Node box size. Fixed because the placement below is arithmetic on it, and
@@ -127,8 +180,64 @@ const NODE_DIAMETER = 40;
  */
 type HighlightRole = 'none' | 'selected' | 'source' | 'carrier' | 'dimmed';
 
+/**
+ * The lineage-reachability facts about one node, which are ORTHOGONAL to
+ * {@link HighlightRole} and therefore ride beside it rather than inside it.
+ *
+ * These four can be true in any combination, all at once, on one node:
+ *
+ * - `isDataSource` — the trace attributed content to this entity (ADR-0028 D14
+ *   `list sources`). A fact about the TRACE, so it is set with no selection at all,
+ *   which is by itself enough to rule it out of a selection-relative role enum.
+ * - `isUpstream` / `isDownstream` — fan-in / fan-out of the selection. Routinely
+ *   BOTH: `agent → tool → agent` is the ordinary shape of every tool call, so the
+ *   request leg makes the tool downstream and its response makes it upstream
+ *   (ADR-0028 D15's cycle note). Against a live trace, fan-in and fan-out of one
+ *   leaf tool each returned the same ten entities.
+ * - `isFrontier` — on the PENDING FRONTIER: reached, but the walk could not
+ *   continue through it because the onward leg has no derived row yet. Distinct
+ *   from every other value here and from `'dimmed'`, because "we don't know yet"
+ *   must never look like "there is nothing" (D15).
+ *
+ * `hops` grades the emphasis by distance (nearer = stronger). It is the FEWEST hops
+ * from the seed — a distance, not an ordering of the flow (D10) — and is `null`
+ * when the node is not in either answer.
+ *
+ * A single `HighlightRole` cannot express any of this: it would have to pick one
+ * winner per node and silently discard the rest, which for a governance reader
+ * means being shown one true fact and denied two others. Hence a record of
+ * independent booleans, and independent CSS classes composed from them.
+ */
+interface NodeLineageFacts {
+  isDataSource: boolean;
+  isUpstream: boolean;
+  isDownstream: boolean;
+  isFrontier: boolean;
+  hops: number | null;
+}
+
+/** The neutral value: no lineage claim about this node. The Execution Flow tab's every node. */
+const NO_LINEAGE_FACTS: NodeLineageFacts = {
+  isDataSource: false,
+  isUpstream: false,
+  isDownstream: false,
+  isFrontier: false,
+  hops: null,
+};
+
+/**
+ * Which reachability walk(s) traversed one edge — again orthogonal, because one leg
+ * can be on both routes at once (the two legs of a tool call, or a genuine cycle).
+ */
+interface EdgeLineageFacts {
+  isUpstream: boolean;
+  isDownstream: boolean;
+}
+
+const NO_EDGE_LINEAGE_FACTS: EdgeLineageFacts = { isUpstream: false, isDownstream: false };
+
 /** What the renderers read off `data`: the derived spec plus its highlight role. */
-type NodeData = GraphNodeSpec & { highlight: HighlightRole };
+type NodeData = GraphNodeSpec & { highlight: HighlightRole; lineage: NodeLineageFacts };
 /**
  * An edge's `data`: its derived spec, its highlight role, and whether its parent
  * INTERACTION is the flow view's selected one.
@@ -149,7 +258,11 @@ type NodeData = GraphNodeSpec & { highlight: HighlightRole };
  * here or in the Flat table (see `FlatLegsTable`'s note) or in the Interaction
  * diagram (which lights both of its messages for the same reason).
  */
-type EdgeData = GraphEdgeSpec & { highlight: HighlightRole; isSelected: boolean };
+type EdgeData = GraphEdgeSpec & {
+  highlight: HighlightRole;
+  isSelected: boolean;
+  lineage: EdgeLineageFacts;
+};
 
 /**
  * The highlight a caller asks the graph to draw: which nodes are sources of the
@@ -164,10 +277,62 @@ type EdgeData = GraphEdgeSpec & { highlight: HighlightRole; isSelected: boolean 
 export interface GraphHighlight {
   /** The node the reader selected, marked distinctly from its sources. */
   selectedNodeId: string | null;
-  /** Node ids that are direct sources of the selected entity's data. */
+  /** Node ids in the answer — for the reachability tab, the union of both directions. */
   nodeIds: readonly string[];
-  /** Edge ids (`<interaction>:<leg_type>`) whose legs carried that data. */
+  /** Edge ids (`<interaction>:<leg_type>`) in the answer — the traversed route. */
   edgeIds: readonly string[];
+  /**
+   * The **Lineage reachability** overlay (ADR-0028 D14/D15), when the caller has
+   * one. Omitted by the Execution Flow tab, which draws the plain graph.
+   *
+   * A SEPARATE, OPTIONAL field rather than more members of `nodeIds`, because every
+   * set here is orthogonal to the others and to `nodeIds` — see
+   * {@link NodeLineageFacts}. In particular `dataSourceNodeIds` is populated with
+   * NOTHING selected (it is a fact about the trace), so it cannot live inside a
+   * selection-relative answer set.
+   *
+   * All id sets, never natural keys: the translation from lineage's natural keys to
+   * node ids already happened in `lib/lineageReachability`, so this component still
+   * computes nothing about lineage and the graph stays one renderer of one graph.
+   */
+  reachability?: GraphReachabilityOverlay;
+}
+
+/**
+ * The reachability sets a caller asks the Lineage tab to paint.
+ *
+ * Every field is a set of ids the graph already contains, so a highlight can never
+ * name something the reader cannot see. All are derived in
+ * `lib/lineageReachability` from the two served `data-lineage-graph` reads plus the
+ * `data-lineage-summary` roll-up — this component does no derivation, for the
+ * repo's central reason: jsdom cannot measure an SVG, so the logic has to be
+ * somewhere a pure test can reach it.
+ */
+export interface GraphReachabilityOverlay {
+  /**
+   * The trace's DATA SOURCE node ids (`list sources`, ADR-0028 D14).
+   *
+   * Always-on: populated whenever the tab is open, selection or not. Note this is
+   * the union of the derived `data_sources`, NOT "entities whose kind is declared a
+   * source" — the two are different sets and substituting the taxonomy is the
+   * mistake D14 explicitly warns about.
+   */
+  dataSourceNodeIds: readonly string[];
+  /** Fan-in: node ids the selection's data came FROM. */
+  upstreamNodeIds: readonly string[];
+  /** Fan-out: node ids it went TO. */
+  downstreamNodeIds: readonly string[];
+  /** Legs the fan-in walk traversed — the upstream route. */
+  upstreamEdgeIds: readonly string[];
+  /** Legs the fan-out walk traversed — the downstream route. */
+  downstreamEdgeIds: readonly string[];
+  /**
+   * Node ids on either walk's PENDING FRONTIER: reached, but not traversable yet.
+   * Marked as provisional rather than dimmed — "not yet" is not "nothing".
+   */
+  frontierNodeIds: readonly string[];
+  /** `node id → fewest hops from the seed`, for the graded treatment. */
+  hopsByNodeId: ReadonlyMap<string, number>;
 }
 
 /**
@@ -184,12 +349,66 @@ export interface GraphHighlight {
  */
 function roleOf(id: string, h: GraphHighlight | undefined, isNode: boolean): HighlightRole {
   if (!h) return 'none';
+  // NOTHING SELECTED IS NOT A QUESTION, so nothing may be dimmed.
+  //
+  // This guard exists because the Lineage tab now passes a highlight even with no
+  // selection — it has to, since the trace's data sources are an always-on fact and
+  // they arrive through this same object. Without the guard, opening the tab would
+  // dim every node that is not a data source, which asserts "these are not part of
+  // the answer" when no answer was requested. That is exactly the lie the
+  // `'none'`-vs-`'dimmed'` distinction in {@link HighlightRole} was written to
+  // prevent; it just became reachable from a second direction.
+  //
+  // Note this deliberately keys on `selectedNodeId`, not on whether the sets are
+  // empty: a selected entity whose answer is legitimately empty (`no-adjacent`)
+  // SHOULD dim the rest, because a question was asked and the answer is "nothing".
+  if (h.selectedNodeId === null) return 'none';
   if (isNode && h.selectedNodeId === id) return 'selected';
   const inAnswer = isNode ? h.nodeIds.includes(id) : h.edgeIds.includes(id);
   // `'source'` for a node in the answer, `'carrier'` for an edge that delivered it
   // — two names because the two are different claims and the stylesheet treats
   // them differently (a lit arrow reads as a route, a lit node as an origin).
   return inAnswer ? (isNode ? 'source' : 'carrier') : 'dimmed';
+}
+
+/**
+ * The reachability facts about one node, read off the overlay.
+ *
+ * Independent booleans rather than a resolved single value — see
+ * {@link NodeLineageFacts} for why one node can be a data source AND upstream AND
+ * downstream at the same time, and why picking a winner would deny the reader two
+ * true facts.
+ *
+ * `isDataSource` is resolved with no reference to the selection, which is the whole
+ * point of the always-on half.
+ */
+function lineageFactsOf(id: string, h: GraphHighlight | undefined): NodeLineageFacts {
+  const r = h?.reachability;
+  if (!r) return NO_LINEAGE_FACTS;
+  return {
+    isDataSource: r.dataSourceNodeIds.includes(id),
+    isUpstream: r.upstreamNodeIds.includes(id),
+    isDownstream: r.downstreamNodeIds.includes(id),
+    // A node that IS in an answer is not on the frontier: a derived route to it
+    // exists, whatever else about it is undelivered. The server already subtracts
+    // the reached set from the frontier; this mirrors that so a server that ever
+    // stopped doing so could not make a node claim both at once on screen.
+    isFrontier:
+      r.frontierNodeIds.includes(id) &&
+      !r.upstreamNodeIds.includes(id) &&
+      !r.downstreamNodeIds.includes(id),
+    hops: r.hopsByNodeId.get(id) ?? null,
+  };
+}
+
+/** Which walk(s) traversed one edge. Both, for the two legs of one tool call. */
+function edgeLineageFactsOf(id: string, h: GraphHighlight | undefined): EdgeLineageFacts {
+  const r = h?.reachability;
+  if (!r) return NO_EDGE_LINEAGE_FACTS;
+  return {
+    isUpstream: r.upstreamEdgeIds.includes(id),
+    isDownstream: r.downstreamEdgeIds.includes(id),
+  };
 }
 
 /**
@@ -287,17 +506,26 @@ function gridPosition({ column, row }: { column: number; row: number }): { x: nu
  * gutter here is horizontal (to the side of the column) rather than vertical.
  *
  * WHY ONE BENDPOINT AND NOT AN ORTHOGONAL ROUTE. One point is enough to clear the
- * intervening cells, and PF renders a bendpointed edge as a polyline through it,
- * so the arrow visibly detours rather than cutting through — which is the whole
- * readable fact. A full orthogonal router (per-lane channel assignment, corner
- * radii) is a much larger thing, and it would have to be re-derived on every
- * drag: a bendpoint is stored geometry, and a dragged node's edges would keep
- * their stale detour. Keeping the detour to one point that is a pure function of
- * the two ENDPOINT CELLS means it is recomputed with the model and stays honest.
+ * intervening cells, and the edge is DRAWN THROUGH it, so the arrow visibly detours
+ * rather than cutting through — which is the whole readable fact. A full orthogonal
+ * router (per-lane channel assignment, corner radii) is a much larger thing, and it
+ * would have to be re-derived on every drag: a bendpoint is stored geometry, and a
+ * dragged node's edges would keep their stale detour. Keeping the detour to one point
+ * that is a pure function of the two ENDPOINT CELLS means it is recomputed with the
+ * model and stays honest.
+ *
+ * NOTE ON WHAT "THROUGH IT" MEANS NOW. It used to mean a POLYLINE — that is what PF's
+ * `DefaultEdge` draws, an `L` to the bendpoint and an `L` onwards. The graph no longer
+ * uses that renderer: `CurvedEdge` draws a smooth quadratic arc whose APEX is this
+ * bendpoint (see `controlThrough` for the compensation that makes the apex land on it
+ * exactly rather than at half the offset). Nothing in THIS function changed — the
+ * bendpoint is still the single notion of curvature and is still sized for clearance
+ * the same way — but the shape it produces is an arc, not a corner, and the clearance
+ * it buys is identical.
  *
  * THE OFFSET SIGN alternates with the edge's `seq` parity, so two edges over the
  * same span — a request and its response, or two parallel interactions — detour
- * to OPPOSITE sides instead of tracing the same polyline. That is what stops
+ * to OPPOSITE sides instead of tracing the same line. That is what stops
  * same-pair edges from drawing exactly on top of one another, which the staircase
  * did (and which its own comment admitted). Parity, not an index into the group,
  * because it needs no second pass over the edge list and `seq` is already unique
@@ -363,6 +591,182 @@ function edgeBendpoints(
   return [[(a.x + b.x) / 2, (a.y + b.y) / 2 + side * spans * (ROW_STEP_Y / 2)]];
 }
 
+/** A plain 2-D point. Structurally compatible with PF's geom `Point` for reading. */
+interface XY {
+  readonly x: number;
+  readonly y: number;
+}
+
+/**
+ * How far along the curve, as a fraction of the last segment, the point used to aim
+ * the END ARROWHEAD is taken from.
+ *
+ * THE ARROWHEAD IS AIMED BY A POINT, not by an angle, because that is the only lever
+ * PF gives: `ConnectorArrow` computes its own `rotate()` from
+ * `getConnectorRotationAngle(startPoint, endPoint)` — the angle of the chord between
+ * the two points it is handed — and exposes no rotation prop
+ * (`components/edges/terminals/ConnectorArrow.js`). So to point the head along the
+ * curve we hand `DefaultConnectorTerminal` an explicit `startPoint` that lies ON the
+ * curve just short of the end, making its "chord" a secant that approximates the
+ * tangent. (`DefaultConnectorTerminal` accepts `startPoint`/`endPoint` overrides and
+ * falls back to the bendpoint only when they are absent — verified in its source.)
+ *
+ * WHY A SECANT AND NOT THE EXACT TANGENT. The exact tangent direction of a quadratic
+ * at t=1 is `end - control`, and handing the terminal `control` as its start point
+ * would give precisely the right angle. It is deliberately not done, because PF does
+ * not only take the ANGLE from that point: `getConnectorStartPoint` also uses the
+ * distance between the two points to back the arrow's tip off the endpoint by
+ * `size`, and a far-away control point is fine there while a NEAR one silently is
+ * not (when the separation is under `size` the ratio goes negative and the head
+ * flips to the far side of the node). Sampling the curve at a fixed t gives a point
+ * whose direction is within a degree of the tangent for the curvatures this graph
+ * produces AND whose distance from the end is a stable fraction of the segment, so
+ * both of the things PF derives from it stay sane.
+ *
+ * 0.9 rather than something smaller: closer to 1 is a better tangent approximation
+ * but a shorter secant, and PF's `size` back-off needs the secant to be comfortably
+ * longer than the terminal (12px here). At the ~200px segments this grid produces,
+ * 0.1 of a segment is ~20px — longer than the head, short enough that the secant and
+ * the tangent are visually the same line.
+ */
+const TANGENT_SAMPLE_T = 0.9;
+
+/**
+ * Sample a quadratic Bézier at `t`.
+ *
+ * Its own function rather than inlined, because it is called for the start terminal,
+ * the end terminal and the hit band's two trimmed ends, and an off-by-one in the
+ * Bernstein coefficients would be a subtly wrong arrowhead angle in three places.
+ */
+function quadraticAt(from: XY, control: XY, to: XY, t: number): XY {
+  const u = 1 - t;
+  return {
+    x: u * u * from.x + 2 * u * t * control.x + t * t * to.x,
+    y: u * u * from.y + 2 * u * t * control.y + t * t * to.y,
+  };
+}
+
+/**
+ * The CONTROL point that makes a quadratic Bézier actually PASS THROUGH `via`.
+ *
+ * THIS IS THE COMPENSATION, and it is the whole reason this function exists rather
+ * than `Q<bendpoint>` being written straight into the path. A quadratic does not go
+ * through its control point: at t=0.5 it sits at `(from + 2*control + to) / 4`, i.e.
+ * exactly HALFWAY between the chord's midpoint and the control point. So naively
+ * using the bendpoint as the control would draw a curve with only HALF the
+ * bendpoint's offset — and that offset is not decorative. `edgeBendpoints` sizes it
+ * to clear the cells a straight line would cross (a column-skipping edge lifts by
+ * `spans * ROW_STEP_Y / 2` precisely to get above the rows in between), so halving
+ * it would put the curve back over the nodes the routing exists to avoid — silently
+ * re-introducing the overlap `edgeBendpoints` was written to fix.
+ *
+ * Inverting the t=0.5 identity gives `control = 2*via - (from + to)/2`: place the
+ * control at twice the bendpoint's offset from the chord midpoint and the curve's
+ * apex lands ON the bendpoint. The drawn arc therefore has the SAME clearance the
+ * polyline had, with the corner rounded off instead of the detour reduced.
+ *
+ * REJECTED: a cubic through the bendpoint. Two control points would let the curve
+ * hug the bend more tightly (flatter approach at both ends, sharper apex), which is
+ * arguably a closer match to the polyline's silhouette — but it needs a second
+ * invented parameter (how far along the chord each control sits) that no existing
+ * geometry supplies, and the task's constraint is to reuse the bendpoint as the ONE
+ * notion of curvature. The quadratic needs no such parameter: the bendpoint fully
+ * determines it. A single smooth arc through the same apex is also the more
+ * legible shape at this scale, where each edge spans one or two grid steps.
+ */
+function controlThrough(from: XY, via: XY, to: XY): XY {
+  return {
+    x: 2 * via.x - (from.x + to.x) / 2,
+    y: 2 * via.y - (from.y + to.y) / 2,
+  };
+}
+
+/**
+ * The pivot points a chain of quadratic arcs is built around, for an edge with N
+ * bendpoints.
+ *
+ * N BENDPOINTS IS HANDLED, NOT ASSERTED AWAY. `edgeBendpoints` returns 0 or 1 today,
+ * and it would have been legitimate to assert that and fail loudly — but the assert
+ * would have to live in the RENDERER, which also draws the Lineage tab and would
+ * then throw on a model some future router pushed rather than degrade. A general
+ * chain is barely more code than the assertion would be and cannot fail that way.
+ *
+ * The chain: for bendpoints b1..bN, draw an arc through each `bi`, joining
+ * consecutive arcs at the MIDPOINT of `bi`→`bi+1`. Joining at midpoints is what makes
+ * the chain smooth (it is the standard quadratic-spline construction): the tangent
+ * entering the joint and the tangent leaving it are both parallel to `bi`→`bi+1`, so
+ * there is no visible corner. Joining at the bendpoints themselves would put a kink
+ * at every one and be no better than the polyline.
+ *
+ * Returns the sequence of `[start, via, end]` triples, one per arc. For N=1 this is
+ * the single `[start, b1, end]` the common case wants, with no special-casing.
+ */
+function arcSegments(from: XY, bendpoints: readonly XY[], to: XY): Array<[XY, XY, XY]> {
+  const mid = (p: XY, q: XY): XY => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+  return bendpoints.map((via, i) => [
+    // First arc starts at the true start; later arcs start where the previous ended.
+    i === 0 ? from : mid(bendpoints[i - 1]!, via),
+    via,
+    // Last arc ends at the true end; earlier arcs end at the joint with the next.
+    i === bendpoints.length - 1 ? to : mid(via, bendpoints[i + 1]!),
+  ]);
+}
+
+/**
+ * The SVG path data for one edge, as a smooth curve, plus the points the two
+ * terminals must be aimed with.
+ *
+ * ONE BUILDER FOR BOTH PATHS PF DRAWS. `DefaultEdge` builds the visible link and the
+ * transparent ~10px hit band separately but identically, and the band is what makes
+ * a 1.5px arrow clickable — so if the band kept tracing the straight chord while the
+ * link curved, every edge would be clickable somewhere it is not drawn and not
+ * clickable where it is. They differ only in their ENDPOINTS (the band stops short of
+ * the terminals so the transparent stroke does not overhang the arrowhead), which is
+ * why this takes the two ends as arguments and is called twice.
+ *
+ * ZERO-LENGTH AND UNROUTED EDGES fall through to a straight `L`, deliberately: with
+ * no bendpoint there is no control geometry to curve with, and inventing one here
+ * would be the second notion of curvature this design exists to avoid. In practice
+ * the only such edges are SELF-CALLS (see the model builder) — every routed edge has
+ * a bendpoint after 94769aa, so every edge the reader sees as a connection curves.
+ */
+function curvePath(from: XY, bendpoints: readonly XY[], to: XY): string {
+  if (bendpoints.length === 0) return `M${from.x} ${from.y} L${to.x} ${to.y}`;
+  const segments = arcSegments(from, bendpoints, to);
+  return (
+    `M${from.x} ${from.y} ` +
+    segments
+      .map(([segFrom, via, segTo]) => {
+        const c = controlThrough(segFrom, via, segTo);
+        return `Q${c.x} ${c.y} ${segTo.x} ${segTo.y}`;
+      })
+      .join(' ')
+  );
+}
+
+/**
+ * A point ON the curve, `t` of the way along its FIRST or LAST arc — what the start
+ * and end terminals are aimed with (see {@link TANGENT_SAMPLE_T}).
+ *
+ * `fromEnd` picks which arc, because the two terminals need opposite ends of a
+ * multi-arc chain and the end one is the one that matters (it carries the arrowhead).
+ */
+function curveTangentPoint(
+  from: XY,
+  bendpoints: readonly XY[],
+  to: XY,
+  fromEnd: boolean,
+): XY {
+  if (bendpoints.length === 0) return fromEnd ? from : to;
+  const segments = arcSegments(from, bendpoints, to);
+  const [segFrom, via, segTo] = fromEnd ? segments[segments.length - 1]! : segments[0]!;
+  const c = controlThrough(segFrom, via, segTo);
+  // For the END terminal, sample near t=1 (approaching `segTo`); for the START one,
+  // sample near t=0 — in both cases a point just INSIDE the curve from the terminal
+  // it aims, so the secant to that terminal points the way the curve is going.
+  return quadraticAt(segFrom, c, segTo, fromEnd ? TANGENT_SAMPLE_T : 1 - TANGENT_SAMPLE_T);
+}
+
 /**
  * The graph element's own id in the topology model.
  *
@@ -395,6 +799,65 @@ const FIT_PADDING = 24;
  * `kindColorVar` returns a `var(--pf-v5-c-label--m-<colour>__content--Color)`
  * reference rather than a literal, so the dark theme's overrides apply here too.
  */
+/**
+ * A node's hover/AT text: kind, natural key, and every lineage claim IN WORDS.
+ *
+ * The words are the point, not a nicety. The lineage treatments are rings, haloes
+ * and dashes on a 40px circle, and a reader who cannot distinguish the hues (or who
+ * is using a screen reader, or who has simply not read the legend) gets the same
+ * facts here as text. That is what stops the meaning being encoded in hue alone —
+ * the requirement the stylesheet's stacking note also addresses visually.
+ *
+ * `hops` is included as a DISTANCE ("2 hops away"), never as a position in a
+ * sequence: two entities at the same depth were reached by different routes and the
+ * lineage algebra has no truthful interleaving to offer (ADR-0028 D10).
+ *
+ * Phrasing is deliberately the same vocabulary the tab's alerts use, so the tooltip
+ * and the notice above the graph cannot describe one state in two ways.
+ */
+function nodeTitle(data: NodeData | undefined): string {
+  const head = `${data?.kind ?? 'entity'} — ${data?.naturalKey ?? ''}`;
+  const l = data?.lineage;
+  if (!l) return head;
+  const claims: string[] = [];
+  // "data source" first: it is the standing fact about the trace, true regardless of
+  // what is selected, so it reads oddly after the selection-relative claims.
+  if (l.isDataSource) claims.push('data source for this trace');
+  if (l.isUpstream && l.isDownstream) {
+    // Called out as one claim rather than two, because "both" is the governance-
+    // relevant shape (data left and came back) and two separate clauses read as two
+    // unrelated coincidences.
+    claims.push('both upstream and downstream of the selected entity');
+  } else if (l.isUpstream) {
+    claims.push('upstream of the selected entity (its data came from here)');
+  } else if (l.isDownstream) {
+    claims.push('downstream of the selected entity (its data went here)');
+  }
+  if (l.isFrontier) {
+    claims.push('on the pending frontier — lineage through it is not derived yet');
+  }
+  if (l.hops !== null) claims.push(`${l.hops} hop${l.hops === 1 ? '' : 's'} away`);
+  return claims.length > 0 ? `${head} — ${claims.join('; ')}` : head;
+}
+
+/**
+ * Which reachability walk(s) traversed this leg, in words, for the edge's accessible
+ * name and hover text.
+ *
+ * Same reasoning as {@link nodeTitle}: the routes are distinguished visually by hue
+ * AND dash, and a reader who gets neither still needs to know that this arrow is
+ * part of the answer and which half of it. Returns `''` when no walk claims the leg,
+ * so the Execution Flow tab's labels are unchanged.
+ */
+function edgeLineageSuffix(data: EdgeData | undefined): string {
+  const l = data?.lineage;
+  if (!l) return '';
+  if (l.isUpstream && l.isDownstream) return ' (on both the upstream and downstream route)';
+  if (l.isUpstream) return ' (on the upstream route)';
+  if (l.isDownstream) return ' (on the downstream route)';
+  return '';
+}
+
 function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof DefaultNode>) {
   const data = element.getData() as NodeData | undefined;
   const colour = kindColorVar(data?.kind ?? '');
@@ -415,7 +878,7 @@ function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof Defa
         } as React.CSSProperties
       }
     >
-      <title>{`${data?.kind ?? 'entity'} — ${data?.naturalKey ?? ''}`}</title>
+      <title>{nodeTitle(data)}</title>
       <DefaultNode
         element={element}
         {...rest}
@@ -433,12 +896,310 @@ function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof Defa
           // the Execution Flow tab's DOM is byte-identical to what it was before
           // the highlight existed and cannot pick up a dimming rule by accident.
           data && data.highlight !== 'none' ? `dg-graph-node--${data.highlight}` : '',
+          // The reachability facts, as INDEPENDENT classes that compose. A node that
+          // is a data source, upstream AND downstream carries all three, and the
+          // stylesheet stacks their treatments (see global.css's stacking note) —
+          // which is only possible because these are not values of one enum.
+          data?.lineage.isDataSource ? 'dg-graph-node--datasource' : '',
+          data?.lineage.isUpstream ? 'dg-graph-node--upstream' : '',
+          data?.lineage.isDownstream ? 'dg-graph-node--downstream' : '',
+          data?.lineage.isFrontier ? 'dg-graph-node--frontier' : '',
         ]
           .filter(Boolean)
           .join(' ')}
       />
     </g>
   );
+}
+
+/**
+ * PF's `DefaultEdge`, re-assembled around a CURVED path instead of a polyline.
+ *
+ * A drop-in for `DefaultEdge` at the props this file uses, so `DirectedEdge` below
+ * reads the same as it did — the substitution is one identifier.
+ *
+ * ITS PROPS ARE TYPED AS `React.ComponentProps<typeof DefaultEdge>`, i.e. `DefaultEdge`
+ * is still imported even though nothing renders it. That is deliberate — deriving the
+ * prop shape from the component this stands in for is what makes "drop-in" a checked
+ * claim rather than a comment, so a 5.x bump that changes PF's edge props is a type
+ * error here instead of a silently divergent fork. It costs nothing at runtime:
+ * verified in the built chunk, Rollup tree-shakes the component's implementation away
+ * (its distinctive `bgStartPoint`/`backgroundPath` locals are absent from
+ * `dist/assets/ExecutionFlowGraph-*.js`), because a `typeof` in a type position is
+ * erased and leaves no value reference behind.
+ *
+ * WHY THE LIBRARY COMPONENT IS FORKED AT ALL, since forking is the expensive option
+ * and the whole of this comment block is the justification. Read from
+ * `components/edges/DefaultEdge.js` in 5.4.1, not inferred:
+ *
+ *   - IT HARDCODES THE PATH COMMAND. The link is built as
+ *     `` `M${start} ${bendpoints.map(b => `L${b} `)}L${end}` `` — literal `L`
+ *     segments, with no prop, hook, render-prop or context that influences it. Its
+ *     `backgroundPath` (the hit band) is built the same way, separately.
+ *   - IT IS THE ONLY EDGE RENDERER IN THE PACKAGE. There is no curved, bezier or
+ *     spline variant anywhere in 5.4.1 (`components/edges/` holds `DefaultEdge`,
+ *     `TaskEdge`, the connector terminals and the tag — nothing else draws a link).
+ *     So there is no supported component to switch to.
+ *
+ * REJECTED: rendering our own `<path>` through `DefaultEdge`'s `children` slot and
+ * hiding PF's link with CSS. This was the first thing tried, because it would have
+ * kept every feature below for free. It does not work, for two reasons found in the
+ * source and the stylesheet rather than guessed:
+ *
+ *   - THE HIT BAND CANNOT BE REPLACED, ONLY ADDED TO. `children` is rendered LAST
+ *     inside PF's `<g>`, after both paths. PF's `.pf-topology__edge__background` — the
+ *     `stroke-width: 10px; stroke: transparent` band that is the entire reason a 1.5px
+ *     arrow is clickable — would go on tracing the straight chord. Every edge would
+ *     then be clickable along a line it is not drawn on and NOT clickable where the
+ *     reader can see it, which breaks edge selection on precisely the bowed edges that
+ *     94769aa introduced. Hiding that band and adding our own means re-deriving its
+ *     `.pf-m-selected` / `.pf-m-hover` stroke rules ourselves, i.e. most of this
+ *     component anyway.
+ *   - THE STYLING IS KEYED ON PF'S TWO CLASS NAMES, ours and PF's alike. Our
+ *     `--carrier` (3px), `--selected` (4px + dash) and PF's own selected/hover rules
+ *     are all `… .pf-topology__edge__link`, and `pf-m-dashed` (which is how a self-call
+ *     is marked) is `.pf-topology__edge__link.pf-m-dashed`. A child path with a
+ *     different class silently loses all of it; a child path with the SAME class
+ *     cannot be distinguished from PF's by any CSS rule that would hide one and not
+ *     the other. Either way the fix is worse than the fork.
+ *
+ * So: our own two paths, carrying PF's own two class names, with everything else
+ * `DefaultEdge` does reproduced deliberately. What is reproduced, and why each
+ * matters here:
+ *
+ *   1. THE ARROWHEAD (`DefaultConnectorTerminal`), aimed along the CURVE. See
+ *      {@link TANGENT_SAMPLE_T} — this is the one thing a naive fork gets visibly
+ *      wrong, because PF's default aim is the chord from the last bendpoint and on a
+ *      bowed edge that chord points measurably off the curve's actual heading.
+ *   2. THE `seq` TAG (`DefaultConnectorTag`), with PF's `ScaleDetailsLevel` gating
+ *      and hover rescale, unchanged. The tag places itself at the CHORD midpoint,
+ *      which is now off the curve by half the bendpoint offset — see the note at its
+ *      call site for why that is left alone.
+ *   3. THE ~10px TRANSPARENT HIT BAND, now following the curve (see `curvePath`).
+ *   4. THE STATE CLASSES AND BEHAVIOURS: `pf-m-selected`, `pf-m-hover` via PF's own
+ *      `useHover`, `pf-m-dragging`, `StatusModifier`, the `TOP_LAYER` hoist on
+ *      hover/drag, `onClick`/`onSelect` (which is what edge selection is wired
+ *      through), `onContextMenu`, and the `edgeStyle` modifier that marks self-calls.
+ *   5. THE COLLAPSED-GROUP EARLY RETURN.
+ *
+ * NOT reproduced, deliberately: `onShowRemoveConnector`/`onHideRemoveConnector` and
+ * the `sourceDragRef`/`targetDragRef` reconnect handles. This graph registers no
+ * `useReconnect` or remove-connector behavior (verified — the only behaviors it
+ * composes are `withPanZoom`, `withSelection` and `withDragNode`), so those props are
+ * never passed and wiring them would be dead code that reads as if a feature existed.
+ *
+ * AN `observer`, exactly as `DefaultEdgeInner` is, and this is NOT ceremony — it was
+ * verified the hard way. The first draft of this fork omitted it on the reasoning that
+ * PF's `ElementWrapper` is already an `observer` and renders us inside it, so the
+ * subscription was someone else's job. That is wrong, and the existing "keeps both
+ * legs attached to a node that has moved" test caught it: a dragged node's edge stopped
+ * following. `ElementWrapper`'s `observer` only dereferences `element` itself; the
+ * observable actually read on a drag is the SOURCE NODE'S POSITION, and it is read
+ * here — `element.getStartPoint()` falls through to `sourceAnchor.getLocation(…)`,
+ * which reads the live node position. mobx tracks a dereference in the component that
+ * performs it, so the subscription has to be on THIS component. Without it the edge
+ * re-renders only when something else happens to re-render it, i.e. the arrows detach
+ * from the node the reader is dragging.
+ */
+const CurvedEdge = observer(function CurvedEdge({
+  element,
+  dragging,
+  edgeStyle,
+  animationDuration,
+  endTerminalType = EdgeTerminalType.directional,
+  endTerminalClass,
+  endTerminalStatus,
+  endTerminalSize = 14,
+  startTerminalType = EdgeTerminalType.none,
+  startTerminalClass,
+  startTerminalStatus,
+  startTerminalSize = 14,
+  tag,
+  tagClass,
+  tagStatus,
+  children,
+  className,
+  selected,
+  onSelect,
+  onContextMenu,
+}: React.ComponentProps<typeof DefaultEdge>) {
+  // PF's own hover hook, so `pf-m-hover` and the TOP_LAYER hoist behave exactly as
+  // they do on a `DefaultEdge` — including its 200ms in/out delays, which exist to
+  // stop the layer hoist flickering as the pointer crosses an edge.
+  const [hover, hoverRef] = useHover<SVGGElement>();
+
+  if (!isEdge(element)) throw new Error('CurvedEdge must be used only on Edge elements');
+
+  const startPoint = element.getStartPoint();
+  const endPoint = element.getEndPoint();
+  const bendpoints = element.getBendpoints();
+
+  // COLLAPSED GROUPS, kept verbatim from `DefaultEdge`: when both ends have collapsed
+  // into the SAME visible parent there is nothing to draw between, and drawing it
+  // anyway would put a stray loop on the group. Never fires on this graph (it builds
+  // no groups) but dropping it would be a silent behavioural change in a fork.
+  // `getClosestVisibleParent` returns `Node | null`, so the null is what is tested
+  // here. PF's own copy of this guard spells it `isNode(sourceParent) && …`, which
+  // under `strict` does not typecheck against that nullable return — and the `isNode`
+  // call is redundant regardless, since the declared return type is already `Node`.
+  const sourceParent = getClosestVisibleParent(element.getSource());
+  const targetParent = getClosestVisibleParent(element.getTarget());
+  if (sourceParent && sourceParent.isCollapsed() && sourceParent === targetParent) {
+    return null;
+  }
+
+  const detailsLevel = element.getGraph().getDetailsLevel();
+
+  // THE VISIBLE LINK, end to end.
+  const linkPath = curvePath(startPoint, bendpoints, endPoint);
+
+  // THE HIT BAND. Same curve, but each end pulled back by its terminal's size when a
+  // terminal is drawn there — `DefaultEdge` does this so the 10px transparent stroke
+  // does not overhang the arrowhead, and the back-off is measured along the TANGENT
+  // (via the same sampled point that aims the head) rather than along the chord, so
+  // on a bowed edge the band stops where the curve actually arrives instead of off to
+  // one side of it.
+  //
+  // Note the bendpoints are NOT trimmed — only the ends move — so the band is the
+  // same arc as the link through its whole middle. That is the property that makes a
+  // click anywhere along the drawn curve land.
+  const tangentToEnd = pointOf(curveTangentPoint(startPoint, bendpoints, endPoint, true));
+  const tangentToStart = pointOf(curveTangentPoint(startPoint, bendpoints, endPoint, false));
+  const bandStart =
+    !startTerminalType || startTerminalType === EdgeTerminalType.none
+      ? startPoint
+      : pointFromPair(getConnectorStartPoint(tangentToStart, startPoint, startTerminalSize));
+  const bandEnd =
+    !endTerminalType || endTerminalType === EdgeTerminalType.none
+      ? endPoint
+      : pointFromPair(getConnectorStartPoint(tangentToEnd, endPoint, endTerminalSize));
+  const backgroundPath = curvePath(bandStart, bendpoints, bandEnd);
+
+  // PF's own class composition, reproduced. `styles.topologyEdge` etc. are spelled as
+  // literals rather than imported from `css/topology-components`: that module is CJS
+  // with a `require('./topology-components.css')` side effect, the stylesheet is
+  // already imported at the top of this file, and the three names are the same
+  // literals our own global.css and the tests key on — so a literal here is the
+  // single source of truth those already share, not a fourth copy of it.
+  const groupClassName = [
+    'pf-topology__edge',
+    className,
+    dragging ? 'pf-m-dragging' : '',
+    hover && !dragging ? 'pf-m-hover' : '',
+    selected && !dragging ? 'pf-m-selected' : '',
+    endTerminalStatus ? StatusModifier[endTerminalStatus] : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const linkClassName = [
+    'pf-topology__edge__link',
+    getEdgeStyleClassModifier(edgeStyle ?? element.getEdgeStyle()),
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  // The tag's own gating and hover rescale, unchanged from `DefaultEdge`.
+  const showTag = tag && (detailsLevel === ScaleDetailsLevel.high || hover);
+  const scale = element.getGraph().getScale();
+  const tagScale = hover && detailsLevel !== ScaleDetailsLevel.high ? Math.max(1, 1 / scale) : 1;
+  const tagPositionScale =
+    hover && detailsLevel !== ScaleDetailsLevel.high ? Math.min(1, scale) : 1;
+
+  return (
+    <Layer id={dragging || hover ? TOP_LAYER : undefined}>
+      {/* `data-test-id="edge-handler"` is PF's own attribute on this group and the
+          existing tests target it to click an edge — kept, spelling included (it is
+          `data-test-id`, not the `data-testid` RTL looks for). */}
+      <g
+        ref={hoverRef}
+        data-test-id="edge-handler"
+        className={groupClassName}
+        onClick={onSelect}
+        onContextMenu={onContextMenu}
+      >
+        <path className="pf-topology__edge__background" d={backgroundPath} />
+        <path
+          className={linkClassName}
+          d={linkPath}
+          style={{
+            animationDuration: `${
+              animationDuration ?? getEdgeAnimationDuration(element.getEdgeAnimationSpeed())
+            }s`,
+          }}
+        />
+        {showTag && (
+          <g transform={`scale(${hover ? tagScale : 1})`}>
+            {/* THE TAG STILL SITS ON THE CHORD MIDPOINT, not on the curve, because
+                `DefaultConnectorTag` computes its own translate from the two points it
+                is given (`start + (end - start) * 0.5`) and takes no position
+                override. Handing it the curve's apex instead — which IS available, it
+                is the bendpoint — was considered and rejected: the apex is where the
+                two legs of a pair are FURTHEST apart, but the tag is a small filled
+                rect and putting it exactly on the drawn line hides that line under it
+                at the one place the reader uses to tell the two arcs apart. The chord
+                midpoint leaves the label just inside its own arc, off the stroke, and
+                the parity-signed bow keeps the request's and response's labels on
+                opposite sides — which is the collision this graph actually had to
+                fix. */}
+            <DefaultConnectorTag
+              className={tagClass}
+              startPoint={element.getStartPoint().scale(tagPositionScale)}
+              endPoint={element.getEndPoint().scale(tagPositionScale)}
+              tag={tag}
+              status={tagStatus}
+            />
+          </g>
+        )}
+        {/* THE TERMINALS, each aimed with an explicit `startPoint` sampled from the
+            curve (see TANGENT_SAMPLE_T). Without the override PF re-derives the aim
+            from `edge.getBendpoints()` itself — the chord from the last bendpoint to
+            the end — which on a bowed edge is visibly off the curve's heading at the
+            node, i.e. an arrowhead pointing somewhere the line does not go. This is
+            the single most noticeable way a curved fork goes wrong, so the override is
+            not an optimisation. */}
+        <DefaultConnectorTerminal
+          className={startTerminalClass}
+          isTarget={false}
+          edge={element}
+          size={startTerminalSize}
+          terminalType={startTerminalType}
+          status={startTerminalStatus}
+          highlight={dragging || hover}
+          startPoint={tangentToStart}
+          endPoint={startPoint}
+        />
+        <DefaultConnectorTerminal
+          className={endTerminalClass}
+          isTarget
+          edge={element}
+          size={endTerminalSize}
+          terminalType={endTerminalType}
+          status={endTerminalStatus}
+          highlight={dragging || hover}
+          startPoint={tangentToEnd}
+          endPoint={endPoint}
+        />
+        {children}
+      </g>
+    </Layer>
+  );
+});
+
+/**
+ * A geom `Point` from a plain `{x, y}`.
+ *
+ * Needed because PF's terminal props and `getConnectorStartPoint` are typed on the
+ * geom class, not on a structural `{x, y}` — the curve helpers above work in plain
+ * objects (they are arithmetic, and a `Point` per intermediate sample would be
+ * allocation for nothing), so the conversion happens once at the boundary.
+ */
+function pointOf(p: XY): Point {
+  return new Point(p.x, p.y);
+}
+
+/** The same, from the `[x, y]` tuple `getConnectorStartPoint` returns. */
+function pointFromPair([x, y]: [number, number]): Point {
+  return new Point(x, y);
 }
 
 /**
@@ -454,39 +1215,43 @@ function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof Defa
  *
  * Colours come from the repo's own `--dg-*` tokens, no raw hex.
  *
- * THE CLICK IS PF'S OWN `onSelect`, forwarded to `DefaultEdge` and nothing more.
- * `DefaultEdge` binds it as `onClick` on the outer `<g>` that carries the whole
- * edge (`components/edges/DefaultEdge.js`: `<g ref={hoverRef}
- * data-test-id="edge-handler" className={groupClassName} onClick={onSelect}>`), so
- * forwarding the prop is the entire wiring — there is no hand-rolled listener, no
- * `ref`, and no second hit target to keep in sync with the arrow's geometry.
+ * THE CLICK IS PF'S OWN `onSelect`, forwarded to the edge renderer and nothing more.
+ * That renderer binds it as `onClick` on the outer `<g>` that carries the whole edge
+ * (`<g ref={hoverRef} data-test-id="edge-handler" className={groupClassName}
+ * onClick={onSelect}>`), so forwarding the prop is the entire wiring — there is no
+ * hand-rolled listener, no `ref`, and no second hit target to keep in sync with the
+ * arrow's geometry. The renderer is now {@link CurvedEdge} rather than PF's
+ * `DefaultEdge`, and that group is reproduced there verbatim (attribute spelling
+ * included) precisely so this wiring did not have to change.
  *
  * REJECTED: a bespoke `onClick` on the wrapper `<g>` here. It would work, but it
- * would have to reinvent the two things `DefaultEdge` already does correctly — the
- * hit area (below) and `pf-m-selected` — and it would put the handler OUTSIDE the
+ * would have to reinvent the two things the edge renderer already does correctly —
+ * the hit area (below) and `pf-m-selected` — and it would put the handler OUTSIDE the
  * element PF hangs its own hover/drag state on, so a click during an edge drag
  * would still fire. Forwarding the prop PF already reads is strictly less code
  * doing strictly more.
  *
  * THE HIT TARGET IS ALREADY WIDE, verified in the library rather than assumed, and
  * this is the reason nothing like `InteractionDiagram`'s hand-rolled full-width hit
- * strip is needed here. `DefaultEdge` renders TWO paths inside that clickable `<g>`:
- * the visible `.pf-topology__edge__link` and, first, a
- * `.pf-topology__edge__background` tracing the same route — which
- * `css/topology-components.css` gives `stroke-width: 10px; stroke: transparent`.
- * A transparent STROKE (unlike a transparent fill) is hit-testable, and the only
- * `pointer-events` rule PF puts on an edge at all is `pointer-events: none` while
- * `.pf-m-dragging`. So the clickable band is ~10px wide along the whole polyline,
- * bendpoints included, not the 1.5px the reader can see. The sequence diagram had
- * to build its own strip because it is hand-rolled SVG with no such layer;
- * duplicating one here would be a second hit target competing with PF's.
+ * strip is needed here. The edge renders TWO paths inside that clickable `<g>`: the
+ * visible `.pf-topology__edge__link` and, first, a `.pf-topology__edge__background`
+ * tracing the same route — which `css/topology-components.css` gives
+ * `stroke-width: 10px; stroke: transparent`. A transparent STROKE (unlike a
+ * transparent fill) is hit-testable, and the only `pointer-events` rule PF puts on an
+ * edge at all is `pointer-events: none` while `.pf-m-dragging`. So the clickable band
+ * is ~10px wide along the whole ARC — bendpoint apex included, since `CurvedEdge`
+ * builds both paths from the same curve builder specifically so the band cannot drift
+ * onto the chord while the line bows away from it. Not the 1.5px the reader can see.
+ * The sequence diagram had to build its own strip because it is hand-rolled SVG with
+ * no such layer; duplicating one here would be a second hit target competing with the
+ * one already there.
  *
  * `pf-m-selectable` IS ours to add, though, and it is the one gap. PF's own
  * `TaskEdge` emits it (`onSelect && 'pf-m-selectable'`) but `DefaultEdge` never
- * does, and it is what flips `--edge--cursor` from `default` to `pointer`. Without
- * it the edge is clickable but does not LOOK clickable, which is a worse defect
- * than it sounds: a reader who never guesses the arrow is a target gets none of
- * this feature.
+ * does — and `CurvedEdge`, being a faithful fork of it, does not either. It is what
+ * flips `--edge--cursor` from `default` to `pointer`. Without it the edge is clickable
+ * but does not LOOK clickable, which is a worse defect than it sounds: a reader who
+ * never guesses the arrow is a target gets none of this feature.
  */
 function DirectedEdge({
   element,
@@ -581,7 +1346,7 @@ function DirectedEdge({
       // label was only "edge" would be reachable and unidentifiable.
       aria-label={`Interaction leg, seq ${data?.seq ?? '?'}, ${data?.legType ?? ''}: ${
         data?.title ?? ''
-      }${data?.isError ? ' (failed)' : ''}`}
+      }${data?.isError ? ' (failed)' : ''}${edgeLineageSuffix(data)}`}
       // Reflects the app's selection (per INTERACTION, so both legs read as pressed
       // together) — the state a sighted reader gets from the weight/dash treatment.
       aria-pressed={data?.isSelected ?? false}
@@ -599,7 +1364,12 @@ function DirectedEdge({
       {/* The interaction's summary, plus which leg of it this arrow is — the
           hover text, now that the visible label is the compact seq number. */}
       <title>{`#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}`}</title>
-      <DefaultEdge
+      {/* `CurvedEdge`, not PF's `DefaultEdge` — a drop-in at these props that draws a
+          smooth arc through the routed bendpoint instead of a polyline corner. Every
+          feature relied on below (the click target, the arrowhead, the tag, the wide
+          hit band, the state classes) is reproduced there; see its note for what forced
+          the fork and what was rejected first. */}
+      <CurvedEdge
         element={element}
         {...pfProps}
         // THE CLICK TARGET. Forwarded verbatim to the `<g>` PF already binds it on
@@ -626,6 +1396,10 @@ function DirectedEdge({
           // be the one arrow the reader is looking at and the one number they cannot
           // read. See `dg-graph-edge-tag--selected` in global.css.
           data?.isSelected ? 'dg-graph-edge-tag--selected' : '',
+          // The tag takes its arrow's direction hue, so the seq number stays visually
+          // attached to the route it labels rather than floating in the label grey.
+          data?.lineage.isUpstream ? 'dg-graph-edge-tag--upstream' : '',
+          data?.lineage.isDownstream ? 'dg-graph-edge-tag--downstream' : '',
         ]
           .filter(Boolean)
           .join(' ')}
@@ -640,6 +1414,12 @@ function DirectedEdge({
           // interaction's leg can also be an error leg, and can also be dimmed by an
           // active lineage highlight. All three have to be able to show at once.
           data?.isSelected ? 'dg-graph-edge--selected' : '',
+          // The traversed-route classes — THE ROUTE, which is what the endpoint
+          // returns `legs` for. Independent of every axis above and of each other: one
+          // leg can be on both walks (the two legs of a tool call), can be the selected
+          // interaction's, and can have failed, all at once.
+          data?.lineage.isUpstream ? 'dg-graph-edge--upstream' : '',
+          data?.lineage.isDownstream ? 'dg-graph-edge--downstream' : '',
           // PF's cursor modifier, which `DefaultEdge` does not add for itself (its
           // sibling `TaskEdge` does). Emitted unconditionally rather than gated on
           // `onSelect`, because this renderer is only ever reached through
@@ -667,20 +1447,46 @@ function DirectedEdge({
  * component type, remounting every node (and dropping the in-flight drag) on any
  * re-render.
  *
- * NOT wrapped in `withSelection` as well, and now deliberately UNLIKE the edges,
- * which are. The reason is the drag gesture, not a lack of anything to drive: a
- * node's whole `<g>` is its own drag surface, so `withSelection`'s `onClick` would
- * sit on the element the pointer is already holding down — and a drag that ends
- * where it began is indistinguishable from a click, so every abandoned or tiny drag
- * would also select. An EDGE has no drag behavior attached at all (verified: the
- * only `pointer-events` rule PF puts on an edge is `pointer-events: none` while
- * `.pf-m-dragging`, which is the *node* drag turning edges inert, and this graph
- * registers no `useReconnect`/`useBendpoint` behavior that would let an edge itself
- * be dragged), so there is no gesture for an edge click to fight. That asymmetry is
- * why edges became click targets and nodes did not.
+ * NOW WRAPPED IN `withSelection` TOO, which REVERSES an earlier decision here. The
+ * reversal is recorded rather than quietly applied, because the old reasoning was
+ * specific and is worth knowing was checked rather than forgotten.
  *
- * The Entities TABLE remains the way to select an entity, which is what the Lineage
- * tab's "click a row in the Entities table above" notice points at.
+ * **What the old note claimed, and why it was wrong.** It said a node's whole `<g>`
+ * is its own drag surface, so `withSelection`'s `onClick` would sit on the element
+ * the pointer is already holding down — and "a drag that ends where it began is
+ * indistinguishable from a click, so every abandoned or tiny drag would also
+ * select". The first half is true; the conclusion is not, because **d3-drag
+ * distinguishes them for us**. Read in the installed sources rather than assumed:
+ *
+ * - `d3-drag/src/drag.js` tracks `mousemoving`, set once the pointer travels
+ *   further than `clickDistance` (`dx*dx + dy*dy > clickDistance2`), and on mouseup
+ *   calls `yesdrag(event.view, mousemoving)`.
+ * - `d3-drag/src/nodrag.js`'s `yesdrag(view, noclick)` installs a **capturing**
+ *   `click.drag` handler that swallows the click — but ONLY when `noclick` is true,
+ *   i.e. only when the pointer actually moved — and removes it again on the next
+ *   tick (`setTimeout(..., 0)`).
+ *
+ * So a real drag's trailing click is suppressed by d3 itself, and a press-release
+ * with no movement is delivered as an ordinary click. The "tiny drag" case resolves
+ * the same way: any movement at all exceeds the default `clickDistance` of 0, so it
+ * counts as a drag and is suppressed. We are not fighting the gesture; we are using
+ * the discrimination d3 already performs.
+ *
+ * **PF ships exactly this combination.** `DefaultNode` binds `onClick: onSelect` on
+ * the same `<g>` that receives its `refs` — the ref list that includes
+ * `dragNodeRef` (`components/nodes/DefaultNode.js`). A draggable, selectable node is
+ * the library's own default arrangement, not a combination being invented here.
+ *
+ * **Why it matters enough to change.** The Lineage tab asks the reader to pick an
+ * entity and then shows its fan-in and fan-out. Requiring them to leave the graph,
+ * find the row in the Entities table and come back is a worse instrument for
+ * exploring a graph than clicking the node they are already looking at. The Entities
+ * table remains a fully equivalent control — the same `selectEntity` path, so there
+ * is still exactly ONE notion of "selected entity" — and remains the accessible
+ * route, since a table row is reachable by keyboard in a way an SVG circle is not.
+ *
+ * `raiseOnSelect: false` matches the edges: raising reorders the SVG, and a node
+ * jumping in z-order on click reads as the graph twitching.
  *
  * A drag moves the node, and its edges FOLLOW: we set no start/end points, so
  * `BaseEdge.getStartPoint`/`getEndPoint` fall through to
@@ -695,10 +1501,23 @@ function DirectedEdge({
  * than from the possibly-dragged position: a detour that chased the drag would
  * have to be re-derived on every pointer move, and a bendpoint recomputed against
  * a hand-placed node is dodging cells the reader has already rearranged. The
- * visible consequence is that a dragged node's skipping edge can bow oddly until
- * Reset View, which is a better failure than a per-frame re-route.
+ * visible consequence is that a dragged node's edge can bow oddly until Reset View,
+ * which is a better failure than a per-frame re-route.
+ *
+ * STILL TRUE AFTER THE CURVE, but the shape of the rough edge changed enough to be
+ * worth restating rather than left to be inferred. `CurvedEdge` anchors the arc's APEX
+ * on the bendpoint (see `controlThrough`), so a stale bendpoint now skews the whole
+ * curve rather than misplacing one corner of a polyline — the arc leans toward where
+ * the node used to be. It is the same staleness with the same cause and the same fix
+ * (Reset View), and it is if anything MORE legible as a drag artefact than a stray
+ * corner was: a smooth arc that leans is obviously a routing leftover, whereas a
+ * displaced polyline vertex read as a kink that might have been deliberate. No new
+ * defect, and nothing here needs to change — the two ends still track the drag
+ * exactly, which is what keeps the arrow attached to the node.
  */
-const DraggableKindColouredNode = withDragNode()(KindColouredNode);
+const DraggableKindColouredNode = withDragNode()(
+  withSelection({ raiseOnSelect: false })(KindColouredNode),
+);
 
 /**
  * The edge renderer, made SELECTABLE.
@@ -819,6 +1638,25 @@ export interface EntityGraphProps {
    */
   onSelectInteraction?: (interactionId: string | null) => void;
   /**
+   * Fired with the clicked NODE's entity id.
+   *
+   * An id for the same reason `onSelectInteraction` takes one: the graph holds a
+   * derived spec and no entities array, while `FlowTables` owns the reads, the
+   * evidence fetch and the `?eid` mirroring. So the graph reports "this node was
+   * clicked" and the owner routes it into the SAME `selectEntity` an Entities-table
+   * row click makes — which is what keeps one notion of "selected entity" rather
+   * than the graph growing a second one.
+   *
+   * Omitted by the Execution Flow tab. Node clicks still fire PF's selection event
+   * there (nodes are uniformly selectable), but with no handler the event is simply
+   * not acted on, so that tab's behaviour is unchanged.
+   *
+   * There is deliberately no `null` arm: a background click already deselects
+   * through `onSelectInteraction(null)`, and giving both callbacks a deselect would
+   * mean two ways to say one thing.
+   */
+  onSelectEntity?: (entityId: string) => void;
+  /**
    * Extra disclosures to render above the surface, alongside the graph's own three
    * notices (dropped interactions / isolated entities / parallel channels).
    *
@@ -869,6 +1707,7 @@ export function EntityGraph({
   highlight,
   selectedInteractionId = null,
   onSelectInteraction,
+  onSelectEntity,
   notices,
   testId = 'execution-flow-graph',
 }: EntityGraphProps) {
@@ -997,7 +1836,23 @@ export function EntityGraph({
    * a stable, distinct value rather than colliding with an empty highlight.
    */
   const highlightKey = highlight
-    ? `${highlight.selectedNodeId ?? ''}|${highlight.nodeIds.join(',')}|${highlight.edgeIds.join(',')}`
+    ? [
+        highlight.selectedNodeId ?? '',
+        highlight.nodeIds.join(','),
+        highlight.edgeIds.join(','),
+        // The reachability sets are part of the CONTENT, so they belong in the digest:
+        // they are baked into the element `data` exactly as the roles are, and a
+        // digest that ignored them would leave the source colouring painted from a
+        // stale model. That is not hypothetical — `dataSourceNodeIds` arrives from a
+        // separate query that resolves on its own schedule, typically AFTER the first
+        // model push, so it is the normal case rather than an edge one.
+        highlight.reachability?.dataSourceNodeIds.join(',') ?? '',
+        highlight.reachability?.upstreamNodeIds.join(',') ?? '',
+        highlight.reachability?.downstreamNodeIds.join(',') ?? '',
+        highlight.reachability?.upstreamEdgeIds.join(',') ?? '',
+        highlight.reachability?.downstreamEdgeIds.join(',') ?? '',
+        highlight.reachability?.frontierNodeIds.join(',') ?? '',
+      ].join('|')
     : '';
 
   // Push the derived spec into the topology model whenever it changes.
@@ -1048,7 +1903,11 @@ export function EntityGraph({
           // the element's highlight ROLE, resolved here because the renderers are
           // registered on the controller at module scope and are therefore outside
           // any provider this component could give them (see HighlightRole).
-          data: { ...n, highlight: roleOf(n.id, highlight, true) } satisfies NodeData,
+          data: {
+            ...n,
+            highlight: roleOf(n.id, highlight, true),
+            lineage: lineageFactsOf(n.id, highlight),
+          } satisfies NodeData,
         };
       }),
       edges: spec.edges.map((e) => ({
@@ -1056,14 +1915,21 @@ export function EntityGraph({
         type: 'dg-interaction',
         source: e.source,
         target: e.target,
-        // A self-call's source and target are the same point, so a straight line
-        // would have zero length and be invisible. `dashed` at least marks the
-        // node as carrying one; PF has no self-loop routing in 5.4.
+        // A self-call's source and target are the same point, so its path has zero
+        // length and is invisible. `dashed` at least marks the node as carrying one;
+        // PF has no self-loop routing in 5.4, and `CurvedEdge` deliberately did not
+        // add one — see its `curvePath`, and the `edgeBendpoints` early return, for
+        // why a self-loop arc would need a second notion of curvature beside the
+        // bendpoint. Unchanged by the curve work; still the weakest thing on this
+        // graph.
         edgeStyle: e.isSelfCall ? EdgeStyle.dashed : EdgeStyle.solid,
-        // THE ROUTING. Empty for the adjacent-column case (nothing to dodge), a
-        // single detour point for an edge that skips columns or stays within one —
-        // the two cases where a straight line would be drawn over an intervening
-        // node. See `edgeBendpoints`.
+        // THE ROUTING, and the apex the drawn arc bends through. One point for every
+        // edge that connects two distinct cells — a small parity-signed bow for the
+        // adjacent-column pair (so a request and its response separate rather than
+        // retrace one line), a larger detour for an edge that skips columns or stays
+        // within one. Empty ONLY for a self-call, which has nowhere to bend to. See
+        // `edgeBendpoints`, and `controlThrough` for how the arc is made to pass
+        // through this point exactly rather than at half its offset.
         bendpoints: edgeBendpoints(e, cellById),
         data: {
           ...e,
@@ -1073,6 +1939,7 @@ export function EntityGraph({
           // dependency list cannot express (`selectedInteractionId` is itself the
           // digest, unlike the highlight's object).
           isSelected: selectedInteractionId != null && e.interactionId === selectedInteractionId,
+          lineage: edgeLineageFactsOf(e.id, highlight),
         } satisfies EdgeData,
       })),
     };
@@ -1146,6 +2013,10 @@ export function EntityGraph({
   const onSelectRef = useRef(onSelectInteraction);
   onSelectRef.current = onSelectInteraction;
 
+  /** Same latest-value ref treatment for the node-click callback, same reasoning. */
+  const onSelectEntityRef = useRef(onSelectEntity);
+  onSelectEntityRef.current = onSelectEntity;
+
   /**
    * Translate PF's selection event into the app's own "an interaction was picked".
    *
@@ -1187,29 +2058,49 @@ export function EntityGraph({
    *      `else { selectedIds = []; }`). Treated as a deselect, which is also what
    *      makes a second click on an open interaction's arrow close its panel.
    *
-   * ANY OTHER id is IGNORED rather than treated as a deselect — a node, or an element
-   * this graph does not know. Nodes are not wrapped in `withSelection` (see
-   * `DraggableKindColouredNode`) so this is unreachable today, but if one ever became
-   * selectable, silently reading its selection as "no interaction" would close the
-   * reader's open panel for no visible reason. Doing nothing with an id we cannot
-   * interpret is the honest response.
+   *   4. `['<entityId>']` — a NODE was clicked. Select that entity. This shape is
+   *      new: nodes became selectable once d3-drag was confirmed to suppress the
+   *      trailing click of a real drag and pass a stationary one through (the
+   *      evidence is in `DraggableKindColouredNode`'s note). It routes to
+   *      `onSelectEntity`, i.e. to the SAME `selectEntity` the Entities table calls,
+   *      so clicking a node and clicking its row are one path and there is still one
+   *      notion of "selected entity".
+   *
+   * ANY OTHER id is IGNORED rather than treated as a deselect — an element this graph
+   * does not know. Silently reading an uninterpretable id as "no interaction" would
+   * close the reader's open panel for no visible reason. Doing nothing with an id we
+   * cannot interpret is the honest response.
+   *
+   * ORDER OF THE TWO LOOKUPS is not arbitrary: an edge id (`<uuid>:request`) and a
+   * node id (a bare uuid) cannot collide, so either order is correct — edges are
+   * tried first only because they are the older, more frequent case.
    */
   useEffect(() => {
     const onSelectionEvent = (ids: string[]) => {
       const id = ids[0];
-      // Shapes 2 and 3 — empty canvas, or the toggle-off of the selected edge.
+      // Shapes 2 and 3 — empty canvas, or the toggle-off of the selected element.
       if (id == null || id === GRAPH_ID) {
         onSelectRef.current?.(null);
         return;
       }
+      if (!controller.hasGraph()) return;
       // Shape 1. Looked up on the live graph rather than by splitting the id on `:`,
       // so the `<interaction>:<legType>` format stays stated in exactly one place
       // (`lib/graph`'s GraphEdgeSpec.id) — the edge already carries `interactionId`
       // as a field for precisely this mapping.
-      const edge = controller.hasGraph() ? controller.getEdgeById(id) : undefined;
+      const edge = controller.getEdgeById(id);
       const data = edge?.getData() as EdgeData | undefined;
-      if (!data) return;
-      onSelectRef.current?.(data.interactionId);
+      if (data) {
+        onSelectRef.current?.(data.interactionId);
+        return;
+      }
+      // Shape 4. A node's id IS its entity id (`GraphNodeSpec.id` is `Entity.id`), so
+      // unlike the edge there is nothing to map — but it is still resolved through the
+      // graph rather than passed through blind, so an id belonging to no drawn node
+      // cannot reach the caller as a selection.
+      const node = controller.getNodeById(id);
+      if (!node) return;
+      onSelectEntityRef.current?.(node.getId());
     };
     controller.addEventListener(SELECTION_EVENT, onSelectionEvent);
     return () => {
@@ -1441,45 +2332,77 @@ export function ExecutionFlowGraph({
 }
 
 /**
- * The **Lineage** tab: the SAME graph, with the selected entity's data sources
- * highlighted.
+ * The **Lineage** tab: the SAME graph, with the trace's data sources coloured and
+ * the selected entity's fan-in AND fan-out highlighted (ADR-0028 D14/D15).
  *
  * ONE QUESTION ASKED OF THE EXECUTION FLOW PICTURE, not a second picture. It
  * renders {@link EntityGraph} — the identical nodes, edges, layered layout, drag
  * lifecycle and zoom controls — and adds only a highlight plus the caveats that
- * highlight needs. See `lib/lineageGraph`'s header for the exact definition of
- * "all the sources of an entity's data" and why it is inbound-legs-only, direct-only
- * and never transitive.
+ * highlight needs.
  *
- * DELIBERATELY IN THIS MODULE, beside the tab it shares its renderer with. PF
- * topology's ~388kB of JS and ~130kB of CSS are imported at the top of THIS file, so
- * a separate component file would put the Lineage tab on a second lazy chunk (or
- * make its absence a Rollup hoisting coincidence). `FlowTables` lazily imports this
- * one module and takes both tab components out of it, so both tabs share one chunk
- * by construction.
+ * TWO DISTINCT VISUAL JOBS, and they are independent:
  *
- * THE THREE ABSENCE STATES ARE KEPT APART ON SCREEN, which is the whole discipline
- * of ADR-0028 restated for a graph:
- *   - nothing selected      → an instruction, no claim about any entity;
- *   - selected, not derived  → "not yet computed", the eventual-consistency window,
- *                              and NOT an empty highlight (which would read as
- *                              "checked, no sources");
- *   - selected, derived-empty → the real verdict "originates here" (ADR-0028 D3),
- *                              stated in words because an unhighlighted graph is
- *                              indistinguishable from the pending case otherwise.
- * A failed READ is a fourth, separate thing and is owned by the caller
- * (`LineageCoverageAlert`, already on screen above the tabs — see `isLineageError`).
+ * 1. **Source colouring, always on.** Driven by `data-lineage-summary`'s
+ *    `list sources` — the union of the trace's derived `data_sources` (NOT a
+ *    taxonomy read of "entities declared sources", which is a different set that
+ *    diverges exactly where a delegation-shaped tool over-reports, D14). Shown
+ *    from first paint with nothing selected, because it is a standing fact about
+ *    the trace and a fact a reader has to click to discover is not being reported.
+ * 2. **Fan-in and fan-out on selection.** Both at once, from the two
+ *    `data-lineage-graph` reads, with the traversed LEGS lit as well as the nodes —
+ *    the route is what the endpoint returns `legs` for.
+ *
+ * BOTH DIRECTIONS AT ONCE, NOT A TOGGLE, and the alternative was considered
+ * seriously. A toggle halves the API calls and the visual load; it was rejected
+ * because fan-in and fan-out are two halves of ONE question ("what touched this
+ * entity's data"), so a reader forced to flip between them has to hold half the
+ * graph in their head to assemble an answer the tool could simply have shown. It
+ * would also HIDE the most governance-relevant shape in the picture — an entity
+ * that is both upstream and downstream, i.e. data that went out and came back —
+ * because that fact only exists in the overlap of the two answers. They are kept
+ * visually DISTINCT instead (see `global.css`'s reachability block: separate hues,
+ * plus dash-vs-solid so the distinction is not carried by colour alone), which is
+ * what stops "show both" from becoming one undifferentiated blob.
+ *
+ * THE HIGHLIGHT IS NOT DERIVED HERE. Both jobs are mapped to node/edge id sets by
+ * `lib/lineageReachability`, for the repo's central reason: jsdom cannot measure an
+ * SVG, so anything mapping API responses to highlighted ids has to live where a
+ * pure test can reach it.
+ *
+ * WHAT REPLACED WHAT. This tab previously rolled its own answer up client-side from
+ * the per-leg `byLeg` map (`lib/lineageGraph`, now deleted): direct sources only,
+ * one hop, explicitly refusing to walk transitively because "a transitive claim the
+ * backend never derived would be the UI inventing lineage". That reasoning was
+ * right, and ADR-0028 D15 records that it is precisely what the server removed —
+ * the backend now derives the multi-hop claim, so it is citable. The tab therefore
+ * renders a SERVED answer instead of composing one, and the old module was deleted
+ * rather than kept beside this: two competing notions of "the lineage highlight" is
+ * the duplication that lets two readings of one trace disagree.
+ *
+ * THE ABSENCE STATES ARE KEPT APART ON SCREEN, PER DIRECTION, which is ADR-0028's
+ * discipline restated for a graph. Four states, never collapsed:
+ *   - `derived`     → an answer, including when it is empty (provenance ends here);
+ *   - `pending`     → the eventual-consistency window, with `pending_frontier`
+ *                     naming the entities the walk could not continue through YET.
+ *                     Emphatically not an empty answer;
+ *   - `no-adjacent` → the ONLY state where empty is a complete answer;
+ *   - a failed READ → a fourth, separate thing: nothing is known, so retry. It is
+ *                     tracked per direction, so a failed fan-out cannot erase a
+ *                     good fan-in.
+ * `truncated` is reported separately from the frontier because they are different
+ * claims (D15): the frontier says "ask again later", truncation says "derived, but
+ * this answer declined to return it all".
  */
 export function LineageGraph({
   traceId,
   entities,
   interactions,
-  byLeg,
   status,
   isLineageError,
   selectedEntityId,
   selectedInteractionId = null,
   onSelectInteraction,
+  onSelectEntity,
 }: {
   traceId: string;
   /**
@@ -1493,9 +2416,14 @@ export function LineageGraph({
    */
   entities: readonly Entity[];
   interactions: readonly Interaction[];
-  /** Per-leg lineage from `useDataLineage`; `undefined` while in flight. */
-  byLeg: DataLineageByLeg | undefined;
-  /** The trace's coverage (ADR-0028 D6), so a prefix answer says so. */
+  /**
+   * The trace's coverage (ADR-0028 D6), from the flow view's `useDataLineage`.
+   *
+   * Still taken from the caller even though this tab no longer reads `byLeg`: the
+   * coverage banner above the tabs and this tab's repeat of it must quote ONE value,
+   * and the reachability responses carry their own `status` that could in principle
+   * be read at a different instant. Passing the caller's keeps the two agreeing.
+   */
   status: LineageStatus;
   /** The trace-scoped lineage read failed — nothing is known, not "no sources". */
   isLineageError: boolean;
@@ -1523,37 +2451,102 @@ export function LineageGraph({
    */
   selectedInteractionId?: string | null;
   onSelectInteraction?: (interactionId: string | null) => void;
+  /**
+   * A NODE was clicked — routed to the same `selectEntity` the Entities table calls.
+   *
+   * Nodes became click targets once d3-drag was confirmed to suppress a real drag's
+   * trailing click while passing a stationary one through; the library evidence is in
+   * `DraggableKindColouredNode`'s note. The table remains an equivalent (and the
+   * keyboard-accessible) control, and both go through this one callback's owner, so
+   * there is still exactly one selection path.
+   */
+  onSelectEntity?: (entityId: string) => void;
 }) {
   const entitiesQ = useEntities(traceId);
   const interactionsQ = useInteractions(traceId);
 
+  // THE TWO NEW READS. The summary is ungated — the trace's sources are a standing
+  // fact, so they paint with nothing selected. The reachability pair is gated on
+  // having a seed, since with nothing selected there is no question to ask.
+  const summaryQ = useLineageSummary(traceId);
+  const reach = useLineageReachability(traceId, selectedEntityId);
+
   // Derived ONCE and handed to both the highlight and the renderer, so the
   // highlight can only ever name elements that are actually on screen.
   const spec = useMemo(() => deriveGraph(entities, interactions), [entities, interactions]);
-  const lineage = useMemo(
-    () =>
-      deriveLineageHighlight({
-        entities,
-        interactions,
-        byLeg,
-        status,
-        selectedEntityId,
-        graph: spec,
-      }),
-    [entities, interactions, byLeg, status, selectedEntityId, spec],
+
+  const sources = useMemo(
+    () => deriveSourceHighlight({ entities, summary: summaryQ.data, graph: spec }),
+    [entities, summaryQ.data, spec],
   );
 
-  // The prop `EntityGraph` bakes into the element data. Omitted entirely when no
-  // entity is selected: with nothing asked, nothing may be dimmed (see
-  // HighlightRole's note on why `'none'` and `'dimmed'` are different values).
-  const highlight: GraphHighlight | undefined =
-    lineage.selectedNodeId === null
-      ? undefined
-      : {
-          selectedNodeId: lineage.selectedNodeId,
-          nodeIds: lineage.highlightedNodeIds,
-          edgeIds: lineage.highlightedEdgeIds,
-        };
+  const reachability = useMemo(
+    () =>
+      deriveReachabilityHighlight({
+        selectedEntityId,
+        fanin: {
+          data: reach.fanin.data,
+          isError: reach.fanin.isError,
+          isLoading: reach.fanin.isLoading,
+        },
+        fanout: {
+          data: reach.fanout.data,
+          isError: reach.fanout.isError,
+          isLoading: reach.fanout.isLoading,
+        },
+        graph: spec,
+      }),
+    [
+      selectedEntityId,
+      reach.fanin.data,
+      reach.fanin.isError,
+      reach.fanin.isLoading,
+      reach.fanout.data,
+      reach.fanout.isError,
+      reach.fanout.isLoading,
+      spec,
+    ],
+  );
+
+  /**
+   * The prop `EntityGraph` bakes into the element data.
+   *
+   * Passed even with NOTHING selected — unlike the previous version, which omitted
+   * it — because the source colouring is selection-independent and travels on this
+   * same object. `selectedNodeId: null` is what tells `roleOf` not to dim anything
+   * (see its guard): "no question asked" must not be painted as "not part of the
+   * answer", and that distinction now has to survive a highlight being present.
+   */
+  const highlight: GraphHighlight = useMemo(
+    () => ({
+      selectedNodeId: reachability.selectedNodeId,
+      nodeIds: reachability.litNodeIds,
+      edgeIds: reachability.litEdgeIds,
+      reachability: {
+        dataSourceNodeIds: sources.sourceNodeIds,
+        upstreamNodeIds: reachability.fanin.nodeIds,
+        downstreamNodeIds: reachability.fanout.nodeIds,
+        upstreamEdgeIds: reachability.fanin.edgeIds,
+        downstreamEdgeIds: reachability.fanout.edgeIds,
+        // Both walks' frontiers, unioned: a node the reader cannot yet see through is
+        // provisional regardless of which direction discovered that.
+        frontierNodeIds: [
+          ...new Set([
+            ...reachability.fanin.pendingFrontierNodeIds,
+            ...reachability.fanout.pendingFrontierNodeIds,
+          ]),
+        ].sort(),
+        // Fan-in's distance wins a tie only because one number can be shown; the
+        // hover text names WHICH direction(s) claim the node, so the graded ring is
+        // never the only thing saying what the distance means.
+        hopsByNodeId: new Map([
+          ...reachability.fanout.hopsByNodeId,
+          ...reachability.fanin.hopsByNodeId,
+        ]),
+      },
+    }),
+    [reachability, sources.sourceNodeIds],
+  );
 
   // Friendly names for the natural keys the notices quote, from the same helper
   // every other lineage surface uses — so an unresolvable source is named the way
@@ -1574,181 +2567,363 @@ export function LineageGraph({
       highlight={highlight}
       selectedInteractionId={selectedInteractionId}
       onSelectInteraction={onSelectInteraction}
+      onSelectEntity={onSelectEntity}
       testId="lineage-graph"
       notices={
         <>
-          {/* NOTHING SELECTED. An instruction, not a verdict — the graph below is
-              drawn at full strength and claims nothing, because no question has
-              been asked of it yet. Points at the Entities table above, which is the
-              only place an ENTITY selection can be made: the graph's nodes are drag
-              surfaces rather than click targets (see the drag note in
-              `DraggableKindColouredNode` for why the gesture and the click cannot
-              share one element). The graph's EDGES *are* click targets, but an edge
-              selects an INTERACTION, which is not the question this tab answers. */}
-          {lineage.selectedNodeId === null && (
-            <Alert
-              variant="info"
-              isInline
-              title="Select an entity to see where its data came from"
-              style={{ marginBottom: '0.5rem' }}
-            >
-              {selectedEntityId === null
-                ? 'Click a row in the Entities table above. This tab then highlights the entities that are direct sources of that entity’s data, and the interaction legs that carried it; everything else is dimmed.'
-                : 'The selected entity is not in this trace’s entity set, so it has no node to highlight. Pick a row in the Entities table above.'}
-            </Alert>
-          )}
+          {/* THE LEGEND. A colour with no key is a puzzle, so every treatment the
+              graph can paint is named here — and it is rendered unconditionally,
+              because the source colouring is on from first paint and would otherwise
+              be a red ring with no explanation anywhere on screen. Marked as a
+              `group` with a label rather than a bare div so it is announced as the
+              key it is. */}
+          <div className="dg-lineage-legend" role="group" aria-label="Lineage graph legend">
+            <span className="dg-lineage-legend-item">
+              <span
+                className="dg-lineage-swatch dg-lineage-swatch--datasource"
+                aria-hidden="true"
+              />
+              Data source for this trace
+            </span>
+            <span className="dg-lineage-legend-item">
+              <span className="dg-lineage-swatch dg-lineage-swatch--upstream" aria-hidden="true" />
+              Upstream of selection (data came from)
+            </span>
+            <span className="dg-lineage-legend-item">
+              <span
+                className="dg-lineage-swatch dg-lineage-swatch--downstream"
+                aria-hidden="true"
+              />
+              Downstream of selection (data went to)
+            </span>
+            <span className="dg-lineage-legend-item">
+              <span className="dg-lineage-swatch dg-lineage-swatch--frontier" aria-hidden="true" />
+              Not derived yet (pending frontier)
+            </span>
+          </div>
 
-          {/* THE READ FAILED. First, because it invalidates every other statement
-              here: with no lineage in hand the highlight below is empty for a reason
-              that has nothing to do with the data. Worded as *unknown*, matching
-              LineageCoverageAlert — never as "no sources". */}
-          {isLineageError && lineage.selectedNodeId !== null && (
+          {/* THE SOURCE ROLL-UP, stated in words beside the colouring. Rendered with
+              no selection, because that is when the colouring is the only thing on
+              screen and a reader needs to know what it is claiming — specifically
+              that it is the union of DERIVED sources, not a list of entities someone
+              declared to be sources. */}
+          {summaryQ.isError ? (
             <Alert
               variant="warning"
               isInline
               role="alert"
-              title="Data lineage could not be loaded"
+              title="The trace’s data sources could not be loaded"
               style={{ marginBottom: '0.5rem' }}
             >
-              The lineage read failed, so this entity’s data sources are{' '}
-              <strong>unknown</strong> — not absent. Nothing is highlighted below
-              because nothing was retrieved. Reload to retry.
+              The sources read failed, so which entities are data sources is{' '}
+              <strong>unknown</strong> — not none. No node is marked as a source
+              below because nothing was retrieved. Reload to retry.
             </Alert>
-          )}
-
-          {/* NOT YET DERIVED. The eventual-consistency window (ADR-0028): legs DO
-              deliver to this entity, but none of them has a lineage row yet. Stated
-              as its own claim-less state, deliberately NOT as an empty highlight —
-              a governance tool must never let "we don't know yet" look like "we
-              checked". Same wording as DataLineageView's per-leg note, so one
-              phrase means one thing across the app. */}
-          {!isLineageError && lineage.state === 'pending' && (
+          ) : summaryQ.isLoading ? (
             <Alert
               variant="info"
               isInline
-              title="Lineage not yet computed for this entity"
+              title="Loading the trace’s data sources"
               style={{ marginBottom: '0.5rem' }}
             >
-              {`${lineage.inboundLegs} interaction leg${lineage.inboundLegs === 1 ? '' : 's'} deliver${lineage.inboundLegs === 1 ? 's' : ''} data to this entity, but none has lineage derived yet, so its sources are not yet known — this is not "no sources". P-data-lineage derives them as payloads arrive; nothing is highlighted until they do.`}
+              Which entities are data sources is not yet known.
             </Alert>
-          )}
-
-          {/* NOTHING DELIVERS HERE AT ALL. Structurally distinct from the pending
-              case above: there is no leg to wait for, so telling the reader to wait
-              would be telling them to wait forever. An isolated entity, or one that
-              only ever sends, lands here. */}
-          {!isLineageError && lineage.state === 'no-inbound' && lineage.selectedNodeId !== null && (
+          ) : sources.totalSources === 0 ? (
             <Alert
               variant="info"
               isInline
-              title="No data arrives at this entity in this trace"
+              title="No data sources attributed in this trace yet"
               style={{ marginBottom: '0.5rem' }}
             >
-              No interaction leg in this trace delivers data to this entity (no arrow
-              points at its node), so there is no lineage to roll up. This is a fact
-              about the trace, not a derivation still pending.
+              No derived lineage in this trace names an origin, so no node is marked
+              as a data source. Under a partial or not-yet-derived trace this is{' '}
+              <strong>not</strong> the same as "this trace has no sources" — check the
+              coverage note above.
+            </Alert>
+          ) : (
+            <Alert
+              variant="info"
+              isInline
+              title={`${sources.sourceNodeIds.length} of ${sources.totalSources} data source${sources.totalSources === 1 ? '' : 's'} marked on the graph`}
+              style={{ marginBottom: '0.5rem' }}
+            >
+              These are the origins the derived lineage attributed this trace’s
+              content to (the union of every derived leg’s data sources) — not a list
+              of entities declared to be sources, which is a different set.
             </Alert>
           )}
 
-          {/* DERIVED AND EMPTY — a REAL answer (ADR-0028 D3), and the one state a
-              graph cannot show by itself: "no sources" and "sources unknown" both
-              look like an unhighlighted picture, so the difference has to be words. */}
-          {!isLineageError &&
-            lineage.state === 'derived' &&
-            lineage.highlightedNodeIds.length === 0 &&
-            lineage.unresolved.length === 0 && (
-              <Alert
-                variant="info"
-                isInline
-                title="No upstream data sources — this data originates here"
-                style={{ marginBottom: '0.5rem' }}
-              >
-                {`Lineage IS derived for ${lineage.derivedLegs} of the ${lineage.inboundLegs} leg${lineage.inboundLegs === 1 ? '' : 's'} delivering to this entity, and names no upstream source, so nothing upstream is highlighted. That is a derived answer, not a missing one.`}
-              </Alert>
-            )}
-
-          {/* A PARTIAL ROLL-UP: some deliveries answered, others still in the
-              window. Neither "derived" nor "pending" alone tells the truth here, so
-              the counts are named — without them a third of the picture could be
-              missing with no sign of it. */}
-          {!isLineageError &&
-            lineage.state === 'derived' &&
-            lineage.derivedLegs < lineage.inboundLegs && (
-              <Alert
-                variant="warning"
-                isInline
-                role="alert"
-                title="This entity’s sources are incomplete"
-                style={{ marginBottom: '0.5rem' }}
-              >
-                {`Only ${lineage.derivedLegs} of the ${lineage.inboundLegs} interaction legs delivering data to this entity have lineage derived, so the highlighted sources are a PARTIAL set. The remaining legs' sources are not yet known.`}
-              </Alert>
-            )}
-
-          {/* THE TRACE-LEVEL PREFIX (ADR-0028 D6). Reused verbatim rather than
-              reworded: the truncation is a fact about the whole trace, so the tab
-              must not invent a second phrasing of it. Only rendered for a selection
-              — the banner is already on screen above the tabs at all times (see
-              FlowTables), and this repeat exists so the caveat sits next to the
-              answer it qualifies. `isError` is false here because the failure has
-              its own alert above. */}
-          {lineage.selectedNodeId !== null && !isLineageError && (
-            <LineageCoverageAlert
-              status={lineage.status}
-              stoppedAtSeq={null}
-              isError={false}
-              // Both false for the same reason: this repeat only renders once a
-              // node is selected, which requires the lineage read to have already
-              // settled successfully.
-              isLoading={false}
-            />
-          )}
-
-          {/* UNRESOLVABLE SOURCES: a real origin the graph cannot draw. Disclosed by
+          {/* SOURCES THE GRAPH CANNOT DRAW: a real origin with no node. Disclosed by
               count AND by key, the way lib/graph discloses a dropped interaction —
-              "this entity has 5 sources but 3 nodes are lit" is exactly the silent
-              under-report a governance reader must never have to discover for
-              themselves. Legitimate causes include an origin outside the trace's own
-              entity set. */}
-          {lineage.unresolved.length > 0 && (
+              "8 sources but 6 marked" is exactly the silent under-report a governance
+              reader must never have to discover for themselves. A legitimate cause is
+              an origin outside the trace's own entity set. */}
+          {sources.unresolved.length > 0 && (
             <Alert
               variant="warning"
               isInline
               role="alert"
-              title={`${lineage.unresolved.length} data source${lineage.unresolved.length === 1 ? '' : 's'} not shown as nodes`}
+              title={`${sources.unresolved.length} data source${sources.unresolved.length === 1 ? '' : 's'} not shown as nodes`}
               style={{ marginBottom: '0.5rem' }}
             >
-              {`The lineage names ${lineage.unresolved.length === 1 ? 'this source' : 'these sources'} by natural key, but no entity in this trace carries that key, so there is no node to highlight: ${lineage.unresolved
-                .map((u) => {
-                  const { label } = lineageLabel(u.naturalKey, namesByKey);
-                  return `${label} (${u.legCount} leg${u.legCount === 1 ? '' : 's'})`;
-                })
-                .join('; ')}. ${lineage.unresolved.length === 1 ? 'It is' : 'They are'} still a real source — the highlighted nodes are therefore not the full set.`}
+              {`The lineage names ${sources.unresolved.length === 1 ? 'this source' : 'these sources'} by natural key, but no node in this trace carries that key: ${sources.unresolved
+                .map((u) => lineageLabel(u.ref, namesByKey).label)
+                .join('; ')}. ${sources.unresolved.length === 1 ? 'It is' : 'They are'} still a real source — the marked nodes are therefore not the full set.`}
             </Alert>
           )}
 
           {/* AMBIGUOUS KEYS. Expected empty against a sane server (a natural key is
               an entity's identity, ADR-0013), which is exactly why it is disclosed
-              rather than assumed: if it ever fires, a highlighted node is a
-              deterministic but ARBITRARY pick among the claimants, and the reader
-              has to know that before trusting which node is lit. See
-              lineageLabels.entityIdsByKey for the first-wins rule. */}
-          {lineage.ambiguousKeys.length > 0 && (
+              rather than assumed: if it ever fires, a marked node is a deterministic
+              but ARBITRARY pick among the claimants, and the reader has to know that
+              before trusting which node is lit. See lineageLabels.entityIdsByKey for
+              the first-wins rule. */}
+          {sources.ambiguousKeys.length > 0 && (
             <Alert
               variant="warning"
               isInline
               role="alert"
-              title={`${lineage.ambiguousKeys.length} data source key${lineage.ambiguousKeys.length === 1 ? '' : 's'} matched more than one entity`}
+              title={`${sources.ambiguousKeys.length} data source key${sources.ambiguousKeys.length === 1 ? '' : 's'} matched more than one entity`}
               style={{ marginBottom: '0.5rem' }}
             >
-              {`A natural key should identify exactly one entity, but ${lineage.ambiguousKeys
+              {`A natural key should identify exactly one entity, but ${sources.ambiguousKeys
                 .map((k) => lineageLabel(k, namesByKey).label)
-                .join('; ')} matched several in this trace. The highlighted node is the first match in the entities read — deterministic, but an arbitrary choice among them.`}
+                .join('; ')} matched several in this trace. The marked node is the first match in the entities read — deterministic, but an arbitrary choice among them.`}
             </Alert>
+          )}
+
+          {/* NOTHING SELECTED. An instruction, not a verdict — the graph below is
+              drawn at full strength for everything except the source marks, and
+              claims nothing about any one entity because no such question has been
+              asked. Names BOTH controls: nodes are click targets now (see
+              `DraggableKindColouredNode`), and the table remains the keyboard route. */}
+          {reachability.selectedNodeId === null && (
+            <Alert
+              variant="info"
+              isInline
+              title="Select an entity to trace its data in and out"
+              style={{ marginBottom: '0.5rem' }}
+            >
+              {selectedEntityId === null
+                ? 'Click a node on the graph, or a row in the Entities table above. This tab then highlights the entities that entity’s data came FROM (upstream) and went TO (downstream), and the interaction legs that carried it; everything else is dimmed.'
+                : 'The selected entity is not in this trace’s entity set, so it has no node to highlight. Pick a node on the graph, or a row in the Entities table above.'}
+            </Alert>
+          )}
+
+          {/* THE TRACE-LEVEL PREFIX (ADR-0028 D6). Reused verbatim rather than
+              reworded: the truncation is a fact about the whole trace, so the tab
+              must not invent a second phrasing of it. Only rendered for a selection —
+              the banner is already on screen above the tabs at all times (see
+              FlowTables), and this repeat exists so the caveat sits next to the answer
+              it qualifies. */}
+          {reachability.selectedNodeId !== null && !isLineageError && (
+            <LineageCoverageAlert
+              status={status}
+              stoppedAtSeq={null}
+              isError={false}
+              isLoading={false}
+            />
+          )}
+
+          {/* PER-DIRECTION STATE. One component, rendered twice, so fan-in and
+              fan-out cannot end up worded differently for the same state — and so
+              each keeps its own four-way outcome rather than being merged into a
+              single verdict that would have to hide one of the two. */}
+          {reachability.selectedNodeId !== null && (
+            <>
+              <DirectionNotice highlight={reachability.fanin} />
+              <DirectionNotice highlight={reachability.fanout} />
+            </>
           )}
         </>
       }
     />
+  );
+}
+
+/** How one direction is named on screen. One place, so the two never drift apart. */
+const DIRECTION_WORDS = {
+  fanin: {
+    noun: 'Upstream',
+    /** The claim in plain words, for the states that need a sentence. */
+    came: 'came from',
+    /** What an empty-but-derived answer means for THIS direction. */
+    originates:
+      'Lineage IS derived here and reaches no further upstream, so this entity’s data originates at it within this trace. That is a derived answer, not a missing one.',
+    noAdjacent:
+      'No interaction leg in this trace delivers data to this entity along a lineage-bearing path, so there is nothing upstream to show. This is a fact about the trace, not a derivation still pending.',
+  },
+  fanout: {
+    noun: 'Downstream',
+    came: 'went to',
+    originates:
+      'Lineage IS derived here and reaches no further downstream, so this entity’s data goes nowhere else within this trace. That is a derived answer, not a missing one.',
+    noAdjacent:
+      'No interaction leg in this trace carries this entity’s data onward along a lineage-bearing path, so there is nothing downstream to show. This is a fact about the trace, not a derivation still pending.',
+  },
+} as const;
+
+/**
+ * One direction's outcome, in words — the four states kept visibly apart.
+ *
+ * A COMPONENT RENDERED TWICE rather than two blocks of JSX, because the two
+ * directions must not be able to word the same state differently: "not yet derived"
+ * meaning one thing for fan-in and another for fan-out is precisely the drift a
+ * governance UI cannot afford. The only per-direction text lives in
+ * {@link DIRECTION_WORDS}.
+ *
+ * Note the ORDER of the arms. A failed read comes first because it invalidates
+ * every other statement — with nothing retrieved, an empty highlight says nothing
+ * about the data. `pending` then precedes the derived arms so "we have not got here
+ * yet" can never be reached through a branch that would have called it an answer.
+ */
+function DirectionNotice({ highlight }: { highlight: DirectionHighlight }) {
+  const words = DIRECTION_WORDS[highlight.direction];
+  const style = { marginBottom: '0.5rem' };
+
+  // STATE 4 of 4: the read itself failed. Not one of the server's three, because a
+  // request that never returned said nothing at all. Worded as *unknown*, matching
+  // LineageCoverageAlert — never as "none".
+  if (highlight.isError) {
+    return (
+      <Alert
+        variant="warning"
+        isInline
+        role="alert"
+        title={`${words.noun} lineage could not be loaded`}
+        style={style}
+      >
+        The {highlight.direction} read failed, so where this entity’s data{' '}
+        {words.came} is <strong>unknown</strong> — not absent. Nothing is highlighted
+        for this direction because nothing was retrieved. Reload to retry.
+      </Alert>
+    );
+  }
+
+  if (highlight.isLoading) {
+    return (
+      <Alert variant="info" isInline title={`Loading ${highlight.direction} lineage`} style={style}>
+        Where this entity’s data {words.came} is not yet known.
+      </Alert>
+    );
+  }
+
+  // STATE 2 of 4: `pending`. The eventual-consistency window — adjacency EXISTS but
+  // carries no derived lineage row yet. Stated as its own claim-less state, and
+  // deliberately NOT as an empty answer: a governance tool must never let "we don't
+  // know yet" look like "we checked and there is nothing".
+  if (highlight.state === 'pending') {
+    const n = highlight.pendingFrontierNodeIds.length + highlight.unresolvedFrontier.length;
+    return (
+      <Alert
+        variant="info"
+        isInline
+        title={`${words.noun} lineage not yet computed for this entity`}
+        style={style}
+      >
+        {`This entity has adjacent interaction legs in this trace, but none has lineage derived yet, so where its data ${words.came} is not yet known — this is not "nothing flowed". P-data-lineage derives them as payloads arrive.`}
+        {n > 0 &&
+          ` ${n} entit${n === 1 ? 'y is' : 'ies are'} on the pending frontier: the walk reached ${n === 1 ? 'it' : 'them'} but cannot continue through ${n === 1 ? 'it' : 'them'} yet.`}
+      </Alert>
+    );
+  }
+
+  // STATE 3 of 4: `no-adjacent` — the ONE state where an empty answer is COMPLETE.
+  // There is nothing to wait for, so telling the reader to wait would be telling
+  // them to wait forever.
+  if (highlight.state === 'no-adjacent') {
+    return (
+      <Alert
+        variant="info"
+        isInline
+        title={`Nothing ${words.noun.toLowerCase()} of this entity in this trace`}
+        style={style}
+      >
+        {words.noAdjacent}
+      </Alert>
+    );
+  }
+
+  // STATE 1 of 4: `derived`. An answer — including when it is EMPTY, which is the one
+  // state a graph cannot show by itself (an unhighlighted picture looks identical to
+  // the pending case), so the difference has to be words.
+  const count = highlight.nodeIds.length;
+  return (
+    <>
+      {count === 0 ? (
+        <Alert
+          variant="info"
+          isInline
+          title={`No ${words.noun.toLowerCase()} entities — derived, not missing`}
+          style={style}
+        >
+          {words.originates}
+        </Alert>
+      ) : (
+        <Alert
+          variant="info"
+          isInline
+          title={`${count} ${words.noun.toLowerCase()} entit${count === 1 ? 'y' : 'ies'}, over ${highlight.edgeIds.length} interaction leg${highlight.edgeIds.length === 1 ? '' : 's'}`}
+          style={style}
+        >
+          {`Where this entity’s data ${words.came}, as derived lineage — the highlighted legs are the route the walk followed. A hop exists only where the trace has a leg AND that leg's lineage was derived, so this ends where provenance ends rather than where the call graph does. It inherits matcher quality: under a trivial matcher nothing prunes a hop, so a large answer is not evidence of thorough tracing.`}
+        </Alert>
+      )}
+
+      {/* PENDING FRONTIER ON A DERIVED ANSWER. Both can be true at once: the walk
+          followed real hops AND ran into legs it cannot pass yet, so the answer is
+          expected to GROW. Reported separately from the answer above rather than
+          folded into its count, which would overstate what is known. */}
+      {highlight.pendingFrontierNodeIds.length + highlight.unresolvedFrontier.length > 0 && (
+        <Alert
+          variant="info"
+          isInline
+          title={`${words.noun} answer may grow — ${highlight.pendingFrontierNodeIds.length + highlight.unresolvedFrontier.length} on the pending frontier`}
+          style={style}
+        >
+          The walk reached these entities but cannot continue through them yet,
+          because the onward leg has no derived lineage row. This is{' '}
+          <strong>not yet known</strong>, not a dead end — ask again once
+          P-data-lineage has caught up.
+        </Alert>
+      )}
+
+      {/* TRUNCATION IS A DIFFERENT CLAIM FROM THE FRONTIER (ADR-0028 D15) and must
+          not be merged with it: waiting will never deliver what a walk bound
+          declined to return, only a wider bound will. Kept as its own notice so the
+          reader is not told to poll for something that will not arrive. */}
+      {highlight.truncated && (
+        <Alert
+          variant="warning"
+          isInline
+          role="alert"
+          title={`${words.noun} answer is truncated`}
+          style={style}
+        >
+          The walk hit a size bound, so what is highlighted is a <strong>prefix</strong>{' '}
+          of the real reachable set. Unlike the pending frontier, waiting will not
+          complete this — it is derived data the answer declined to return in full.
+        </Alert>
+      )}
+
+      {/* FRONTIER ENTITIES WITH NO NODE. Same silent-under-report reasoning as the
+          unresolvable sources above: the walk named an entity this graph cannot draw,
+          so the marked frontier is not the whole frontier. */}
+      {highlight.unresolvedFrontier.length > 0 && (
+        <Alert
+          variant="info"
+          isInline
+          title={`${highlight.unresolvedFrontier.length} ${words.noun.toLowerCase()} frontier entit${highlight.unresolvedFrontier.length === 1 ? 'y is' : 'ies are'} not shown as nodes`}
+          style={style}
+        >
+          The walk named{' '}
+          {highlight.unresolvedFrontier.length === 1 ? 'an entity' : 'entities'} this
+          trace’s graph has no node for, so{' '}
+          {highlight.unresolvedFrontier.length === 1 ? 'it is' : 'they are'} counted
+          but not marked.
+        </Alert>
+      )}
+    </>
   );
 }
 

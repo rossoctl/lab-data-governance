@@ -9,9 +9,32 @@ import { runInAction } from 'mobx';
 // dependencies Vitest cannot resolve. See ExecutionFlowGraph.tsx's top comment.
 import Point from '@patternfly/react-topology/dist/esm/geom/Point';
 import { Visualization } from '@patternfly/react-topology/dist/esm/Visualization';
+import { SELECTION_EVENT } from '@patternfly/react-topology/dist/esm/behavior/useSelection';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { ExecutionFlowGraph, LineageGraph } from './ExecutionFlowGraph';
-import type { DataLineage, Entity, Interaction, InteractionLeg } from '../types';
+import type {
+  Entity,
+  Interaction,
+  InteractionLeg,
+  LineageGraphEntity,
+  LineageReachability,
+  LineageStatus,
+} from '../types';
+
+/**
+ * The summary as the WIRE spells it, which is what a fetch stub must return.
+ *
+ * Deliberately not `types.LineageSummary`: that is the REDUCED shape
+ * `useLineageSummary` produces (`stoppedAtSeq`, camelCase), and stubbing the reduced
+ * shape would bypass the reduction and stop testing it. The snake_case here is the
+ * server's, verified against a live `data-lineage-summary` response.
+ */
+interface WireLineageSummary {
+  sources: string[];
+  destinations: LineageGraphEntity[];
+  status: LineageStatus;
+  stopped_at_seq: number | null;
+}
 
 /**
  * Render coverage for the Execution Flow graph, deliberately scoped to what jsdom
@@ -197,8 +220,17 @@ function nodeAt(id: string): { x: number; y: number } | null {
  *
  * A model-level read, deliberately, and the honest limit of what jsdom offers: the
  * bendpoint is a number the component computed, so it IS observable, whereas
- * whether the resulting polyline visually clears a node needs real SVG geometry and
- * is never claimed here (see this file's header).
+ * whether the resulting ARC visually clears a node needs real SVG geometry and is
+ * never claimed here (see this file's header).
+ *
+ * STILL THE RIGHT READ AFTER THE CURVE CHANGE, which is worth saying because the
+ * drawn shape is no longer a polyline through these points. The bendpoint remains the
+ * one stored notion of curvature — `CurvedEdge` derives its arc from exactly this
+ * number and nothing else — so every case below that asserts on `bendsOf` is
+ * asserting the same fact it always was. The separate question of whether the arc
+ * actually passes through the point (rather than at half the offset, as a naive
+ * quadratic would) is a DIFFERENT fact, and is pinned on the emitted `d` by the
+ * curved-edge cases rather than here.
  */
 function bendsOf(id: string): Array<{ x: number; y: number }> {
   const edge = capturedController?.getEdgeById(id);
@@ -254,10 +286,47 @@ function clickBackground() {
  * a bug can live in either — a correct decision emitted under the wrong class name
  * would show here and not there, and vice versa.
  */
-function edgeData(id: string): { isSelected: boolean; highlight: string; interactionId: string } {
+function edgeData(id: string): {
+  isSelected: boolean;
+  highlight: string;
+  interactionId: string;
+  lineage: { isUpstream: boolean; isDownstream: boolean };
+} {
   const edge = capturedController?.getEdgeById(id);
   if (!edge) throw new Error(`no edge ${id} on the graph`);
-  return edge.getData() as { isSelected: boolean; highlight: string; interactionId: string };
+  return edge.getData() as {
+    isSelected: boolean;
+    highlight: string;
+    interactionId: string;
+    lineage: { isUpstream: boolean; isDownstream: boolean };
+  };
+}
+
+/**
+ * One node's `data`, read off the model PF holds.
+ *
+ * THE ONLY HONEST WAY to assert a node's lineage treatment in jsdom. A node's inner
+ * `<g>` renders EMPTY on a zero-size surface — PF culls node content at that scale
+ * (edge content is not culled), so the `dg-graph-node--datasource` className the
+ * stylesheet keys on is not in the DOM to query. The className is built directly from
+ * these fields, so asserting them is asserting the decision; asserting the class
+ * would silently pass-or-fail for the wrong reason. The class-to-fact mapping itself
+ * is a one-line ternary chain reviewed by eye and covered visually by hand.
+ */
+function nodeData(id: string): {
+  kind: string;
+  highlight: string;
+  lineage: {
+    isDataSource: boolean;
+    isUpstream: boolean;
+    isDownstream: boolean;
+    isFrontier: boolean;
+    hops: number | null;
+  };
+} {
+  const node = capturedController?.getNodeById(id);
+  if (!node) throw new Error(`no node ${id} on the graph`);
+  return node.getData() as ReturnType<typeof nodeData>;
 }
 
 /**
@@ -282,6 +351,19 @@ const cell = (column: number, row: number) => ({
   x: GRID_ORIGIN + column * STEP_X,
   y: GRID_ORIGIN + row * STEP_Y,
 });
+
+/**
+ * A plain 2-D point, for the curve assertions below.
+ *
+ * Declared here rather than imported from the component, on the same principle as
+ * everything else in this file: the tests restate the shapes they expect instead of
+ * borrowing them, so a change to the component's own types cannot make an assertion
+ * vacuous.
+ */
+interface XY {
+  readonly x: number;
+  readonly y: number;
+}
 
 /**
  * The `Visualization` the component under test built, captured by spying on the
@@ -508,6 +590,312 @@ describe('ExecutionFlowGraph', () => {
 
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
     expect(document.querySelectorAll('.pf-topology-connector-arrow').length).toBe(2);
+  });
+
+  /* -------------------------------------------------------------------------
+     CURVED EDGES (`CurvedEdge` in the component — the fork of PF's `DefaultEdge`
+     that draws a smooth arc instead of a polyline).
+
+     WHAT IS AND IS NOT ASSERTABLE HERE, because the temptation to overclaim is
+     strong for a change whose whole point is how something LOOKS. jsdom has no SVG
+     layout and does no hit-testing, so:
+       - NO test below claims the curve is "smooth", that it looks better, or that it
+         visually clears a node. Those are Playwright / by-hand facts.
+       - What IS observable is the `d` attribute — a string the component computed —
+         and the transform PF puts on the arrowhead. Both are pure arithmetic on
+         numbers the model already holds, so they are checked exactly.
+
+     The arithmetic is duplicated in the assertions on purpose (`quadAt` below
+     re-derives a Bézier sample rather than importing the component's helper): a test
+     that called the same function the component does would pass for any consistent
+     pair of bugs. Bernstein coefficients written out independently is the cheapest
+     real check available.
+     ------------------------------------------------------------------------- */
+
+  /** The `d` of one edge's VISIBLE link. */
+  const linkD = (id: string) =>
+    document.querySelector(`[data-id="${id}"] .pf-topology__edge__link`)!.getAttribute('d')!;
+
+  /** The `d` of one edge's transparent ~10px HIT BAND. */
+  const bandD = (id: string) =>
+    document.querySelector(`[data-id="${id}"] .pf-topology__edge__background`)!.getAttribute('d')!;
+
+  /**
+   * Parse a one-arc path (`M x y Qcx cy x y`) into its three points.
+   *
+   * Deliberately strict about the COMMAND LETTERS, not just the numbers: the thing
+   * being tested is that a `Q` is emitted at all, so a parser that accepted `L` here
+   * would let the whole change regress silently.
+   */
+  function parseQuad(d: string): { from: XY; control: XY; to: XY } {
+    const m =
+      /^M(-?[\d.]+) (-?[\d.]+) Q(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+)$/.exec(d.trim());
+    if (!m) throw new Error(`not a single-quadratic path: ${d}`);
+    const n = m.slice(1).map(Number);
+    return {
+      from: { x: n[0]!, y: n[1]! },
+      control: { x: n[2]!, y: n[3]! },
+      to: { x: n[4]!, y: n[5]! },
+    };
+  }
+
+  /** A quadratic Bézier sampled at `t`, from first principles. */
+  const quadAt = (from: XY, c: XY, to: XY, t: number): XY => ({
+    x: (1 - t) * (1 - t) * from.x + 2 * (1 - t) * t * c.x + t * t * to.x,
+    y: (1 - t) * (1 - t) * from.y + 2 * (1 - t) * t * c.y + t * t * to.y,
+  });
+
+  /** The rotation, in degrees, PF baked into one edge's arrowhead transform. */
+  function arrowAngle(id: string): number {
+    const t = document
+      .querySelector(`[data-id="${id}"] .pf-topology-connector-arrow`)!
+      .getAttribute('transform')!;
+    const m = /rotate\((-?[\d.]+)\)/.exec(t);
+    if (!m) throw new Error(`no rotate() in arrow transform: ${t}`);
+    return Number(m[1]);
+  }
+
+  /** PF's own convention for the angle of `start`→`end`, so the two are comparable. */
+  const chordAngle = (from: XY, to: XY) =>
+    180 - (Math.atan2(to.y - from.y, from.x - to.x) * 180) / Math.PI;
+
+  it('draws every edge as a CURVE, not a polyline — a Q command, no L segments', async () => {
+    // The headline change. PF's `DefaultEdge` emits `M… L… L…` and offers no seam to
+    // change it (hence the fork), so the presence of `Q` and the ABSENCE of `L` is
+    // exactly the substitution having taken effect — on both legs, since the user's
+    // requirement is one renderer for every edge rather than a curve-only-when-bowed
+    // hybrid.
+    mockApi(ENTITIES, [mkIx({ id: 'i1' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    for (const id of ['i1:request', 'i1:response']) {
+      expect(linkD(id)).toContain('Q');
+      expect(linkD(id)).not.toContain('L');
+    }
+  });
+
+  it('starts and ends the curve at the same anchors the straight line used', async () => {
+    // The curve must not move the endpoints — an arc that left the node discs would
+    // be a different defect from the one being fixed.
+    //
+    // Bounded by the node RADIUS, not equal to the cell centre, and the distinction is
+    // real rather than pedantic: `BaseEdge.getStartPoint` resolves to
+    // `sourceAnchor.getLocation(…)`, which puts the endpoint on the node's ELLIPSE
+    // BOUNDARY facing the other end — so it is offset from the centre by up to the
+    // radius, and on this fixture actually is (the curve leaves at (60,60) from a cell
+    // centred at (40,40)). The same bound the existing "keeps both legs attached to a
+    // node that has moved" case uses, for the same reason. "The arc still touches the
+    // node" is exactly what a radius-bounded check says.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const req = parseQuad(linkD('i1:request'));
+    const resp = parseQuad(linkD('i1:response'));
+
+    const radius = 20; // NODE_DIAMETER / 2
+    const onCell = (p: XY, c: { x: number; y: number }) => {
+      expect(Math.abs(p.x - c.x)).toBeLessThanOrEqual(radius);
+      expect(Math.abs(p.y - c.y)).toBeLessThanOrEqual(radius);
+    };
+    onCell(req.from, cell(0, 0));
+    onCell(req.to, cell(1, 0));
+
+    // The two legs agree EXACTLY about where each node is — the anchor offset is not a
+    // per-leg fudge, so the request's end and the response's start are the same point.
+    // This is the assertion the radius bound above cannot make, and it is the one that
+    // would catch a curve builder that trimmed one end and not the other.
+    expect(resp.from).toEqual(req.to);
+    expect(resp.to).toEqual(req.from);
+  });
+
+  it('bends the curve THROUGH the routed bendpoint, not halfway to it', async () => {
+    // THE COMPENSATION, and the one piece of this change that could silently undo an
+    // earlier fix. A quadratic does not pass through its control point — at t=0.5 it
+    // sits halfway between the chord midpoint and the control — so using the
+    // bendpoint AS the control would draw a curve with only HALF the routed
+    // clearance, putting a column-skipping edge back over the nodes `edgeBendpoints`
+    // exists to dodge. The component doubles the offset to compensate; this pins that
+    // it did, by sampling the emitted curve at its apex and requiring the bendpoint.
+    //
+    // Uses the SKIPPING edge, because that is the case where the clearance is load-
+    // bearing rather than merely cosmetic: e1→e3 crosses column 1, where e2 sits.
+    mockApi(ENTITIES, [
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+      mkIx({ id: 'i2', caller_entity_id: 'e2', callee_entity_id: 'e3' }, 3),
+      mkIx({ id: 'i3', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 5),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(6));
+
+    const { from, control, to } = parseQuad(linkD('i3:request'));
+    const apex = quadAt(from, control, to, 0.5);
+    const bend = bendsOf('i3:request')[0]!;
+    expect(apex.x).toBeCloseTo(bend.x, 6);
+    expect(apex.y).toBeCloseTo(bend.y, 6);
+
+    // And the apex really is off the chord — i.e. the clearance is a real detour and
+    // not a rounding artefact of a curve that collapsed onto the straight line.
+    const chordMidY = (from.y + to.y) / 2;
+    expect(Math.abs(apex.y - chordMidY)).toBeGreaterThan(STEP_Y / 2);
+  });
+
+  it('aims the arrowhead along the CURVE, not along the straight chord', async () => {
+    // The single most likely thing to look wrong on a curved edge, so it is pinned
+    // numerically rather than trusted. `ConnectorArrow` derives its own `rotate()`
+    // from the two points it is handed and exposes no rotation prop, so the component
+    // hands it a point sampled ON the curve near the end — making PF's chord a secant
+    // that approximates the tangent.
+    //
+    // Three angles are compared, which is what makes this a real test: the rendered
+    // one must match the curve's own heading at the node and must NOT match the
+    // straight start→end chord. On this fixture the chord is exactly horizontal (both
+    // nodes are in row 0) while the curve arrives at a clear angle, so an un-aimed
+    // arrowhead would read as flat — visible at a glance and caught here.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const { from, control, to } = parseQuad(linkD('i1:request'));
+    const rendered = arrowAngle('i1:request');
+
+    // The EXACT tangent direction of a quadratic at t=1 is `to - control`. The
+    // component samples a secant instead (a near-tangent, for reasons in its own
+    // note about PF's size back-off), so the two agree to within a couple of degrees
+    // rather than exactly — the tolerance is stated as the approximation it is.
+    const exactTangent = chordAngle(control, to);
+    expect(Math.abs(rendered - exactTangent)).toBeLessThan(3);
+
+    // And it is genuinely NOT the chord: the fixture's chord is flat (0°), the curve
+    // arrives well off flat. Without the override PF would have aimed the head from
+    // the bendpoint, which is a third, also-wrong angle — so "differs from the chord"
+    // alone would not have been enough, hence the tangent check above.
+    expect(Math.abs(rendered - chordAngle(from, to))).toBeGreaterThan(10);
+  });
+
+  it('makes the ~10px HIT BAND follow the curve, so a click lands where the line is drawn', async () => {
+    // Edge selection depends entirely on this band (PF gives it `stroke-width: 10px;
+    // stroke: transparent`, which is what makes a 1.5px arrow clickable). If it kept
+    // tracing the straight chord while the link curved, every bowed edge would be
+    // clickable along a line it is not drawn on and unclickable where the reader can
+    // see it.
+    //
+    // NOT a hit test — jsdom does none, and dispatches wherever it is told (see this
+    // file's header). What is asserted is that the band is the SAME ARC as the link:
+    // identical control point, and ends that sit ON the link's curve. That is the
+    // geometric property "the band follows the curve" means, and it is fully
+    // observable as a string.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const band = parseQuad(bandD('i1:request'));
+    const link = parseQuad(linkD('i1:request'));
+
+    // A curve, on the same terms as the link — not a straight `L` fallback.
+    expect(bandD('i1:request')).toContain('Q');
+    expect(bandD('i1:request')).not.toContain('L');
+
+    // The band's END is pulled back from the link's end (PF does this so the
+    // transparent stroke does not overhang the arrowhead) but stays ON the arc: the
+    // link's curve passes through it at some t < 1.
+    expect(band.to).not.toEqual(link.to);
+    const onLinkCurve = (p: XY) => {
+      // Find the t whose sample is nearest p, and require the miss to be sub-pixel.
+      let best = Infinity;
+      for (let t = 0; t <= 1.0001; t += 0.0005) {
+        const s = quadAt(link.from, link.control, link.to, t);
+        best = Math.min(best, Math.hypot(s.x - p.x, s.y - p.y));
+      }
+      return best;
+    };
+    expect(onLinkCurve(band.to)).toBeLessThan(1);
+
+    // The band's own apex tracks the link's, so the CLICKABLE middle of the edge is
+    // the drawn middle of the edge — the part a reader actually aims at.
+    const bandApex = quadAt(band.from, band.control, band.to, 0.5);
+    expect(onLinkCurve(bandApex)).toBeLessThan(1);
+  });
+
+  it('keeps the arrowhead and the seq tag on a curved edge', async () => {
+    // The fork must not have quietly dropped either of the two things `DefaultEdge`
+    // contributed besides the path. The arrowhead renders under jsdom; the tag's TEXT
+    // does not (it measures itself via getBBox — see this file's header), so the tag
+    // is asserted as its `<g>`, which is what is genuinely observable.
+    mockApi(ENTITIES, [mkIx({ id: 'i1' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    for (const id of ['i1:request', 'i1:response']) {
+      const el = document.querySelector(`[data-id="${id}"]`)!;
+      expect(el.querySelector('.pf-topology-connector-arrow')).not.toBeNull();
+      expect(el.querySelector('.pf-topology__edge__tag')).not.toBeNull();
+    }
+  });
+
+  it("keeps PF's own hover modifier on a curved edge", async () => {
+    // `pf-m-hover` is one of the state classes the fork had to reproduce, and it is the
+    // one that is easy to lose silently: it comes from PF's `useHover` hook, so a fork
+    // that hand-rolled `onMouseEnter` instead would look right and behave differently
+    // (PF's version carries 200ms in/out delays that stop the TOP_LAYER hoist
+    // flickering). Asserted here because nothing else in this file covered hover, which
+    // meant the claim to have preserved it was untested.
+    //
+    // `useHover` attaches NATIVE listeners via a callback ref, so the event has to be a
+    // real `mouseenter` — `fireEvent.mouseOver` does not trigger it. `mouseenter` is
+    // also safely away from d3-zoom's `mousedown` listener, so this does not hit the
+    // `svg.width.baseVal` gap that rules `userEvent` out for edges (see the header).
+    mockApi(ENTITIES, [mkIx({ id: 'i1' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const handler = document.querySelector(
+      '[data-id="i1:request"] [data-test-id="edge-handler"]',
+    )!;
+    expect(handler.classList.contains('pf-m-hover')).toBe(false);
+
+    await act(async () => {
+      fireEvent(handler, new MouseEvent('mouseenter', { bubbles: false }));
+      // Past PF's 200ms `delayIn`, so the debounced state change has landed.
+      await new Promise((r) => setTimeout(r, 250));
+    });
+
+    expect(
+      document
+        .querySelector('[data-id="i1:request"] [data-test-id="edge-handler"]')!
+        .classList.contains('pf-m-hover'),
+    ).toBe(true);
+  });
+
+  it('falls back to a straight line for a SELF-CALL, which has no bendpoint to curve with', async () => {
+    // Self-calls are deliberately LEFT AS THEY WERE by this change, and that is worth
+    // a test rather than a comment alone: with one endpoint there is no control
+    // geometry, and inventing some (a self-loop arc) would be a second notion of
+    // curvature beside the bendpoint — the exact thing this design avoids. So the
+    // path degenerates to `M… L…` and PF's `pf-m-dashed` remains the only marker,
+    // unchanged from before.
+    //
+    // This is the ONE place an `L` is still correct, which is why the curve tests
+    // above assert `not.toContain('L')` on ordinary edges: the two cases are
+    // distinguishable, and a regression that straightened everything would fail them.
+    mockApi(
+      [ENTITIES[0]!],
+      [mkIx({ id: 'self', caller_entity_id: 'e1', callee_entity_id: 'e1' })],
+    );
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    expect(bendsOf('self:request')).toHaveLength(0);
+    expect(linkD('self:request')).toContain('L');
+    expect(linkD('self:request')).not.toContain('Q');
+    // Still dashed, i.e. the marker that carries the whole meaning survived.
+    expect(
+      document.querySelector('[data-id="self:request"] .pf-topology__edge__link.pf-m-dashed'),
+    ).not.toBeNull();
   });
 
   it("colours an edge from its OWN leg's error, leaving its sibling leg uncoloured", async () => {
@@ -1640,43 +2028,155 @@ describe('ExecutionFlowGraph', () => {
  * is deliberately not attempted.
  */
 
-/** A derived lineage triple citing sources by NATURAL KEY, as the wire does. */
-function mkLineage(sources: string[]): DataLineage {
-  return { data_sources: sources, source_transformations: {}, entities: [], seq: 1 };
+/**
+ * A reachability response, as the wire spells it — verified against a live trace.
+ *
+ * Defaults to the non-claiming `no-adjacent`, so a test that cares about one
+ * direction says so and the other stays explicitly empty rather than accidentally
+ * asserting something.
+ */
+function mkReach(
+  direction: 'fanin' | 'fanout',
+  over: Partial<LineageReachability> = {},
+): LineageReachability {
+  return {
+    direction,
+    seed_entity_id: 'e2',
+    entities: [],
+    legs: [],
+    state: 'no-adjacent',
+    pending_frontier: [],
+    truncated: false,
+    status: 'complete',
+    stopped_at_seq: null,
+    ...over,
+  };
+}
+
+/** One reached entity. `hops` is a DISTANCE, never an ordering (ADR-0028 D10). */
+function mkReached(id: string, hops: number) {
+  return { id, natural_key: `nk:${id}`, kind: 'agent', display_name: id, hops };
+}
+
+/** One traversed leg — the ROUTE, in the response's own field names. */
+function mkTraversed(
+  interactionId: string,
+  legType: 'request' | 'response',
+  from: string,
+  to: string,
+  seq: number,
+) {
+  return {
+    interaction_id: interactionId,
+    leg_type: legType,
+    from_entity_id: from,
+    to_entity_id: to,
+    seq,
+  };
+}
+
+/**
+ * Stub the four reads the Lineage tab makes: entities, interactions, the
+ * sources/destinations summary and the two directions of reachability.
+ *
+ * The reachability stubs are keyed on the `direction` query parameter, because that
+ * parameter is REQUIRED and single-valued on the wire (ADR-0028 D14) — which is the
+ * whole reason "both directions" is two requests. A test that stubs only one and
+ * lets the other 404 would be testing the failed-read path by accident.
+ *
+ * `null` for any of them means "make that read fail", which is how the fourth state
+ * (a failed read, distinct from the server's three) is exercised.
+ */
+function mockLineageApi(opts: {
+  entities?: Entity[] | null;
+  interactions?: Interaction[] | null;
+  summary?: WireLineageSummary | null;
+  fanin?: LineageReachability | null;
+  fanout?: LineageReachability | null;
+}) {
+  const entities = opts.entities === undefined ? ENTITIES : opts.entities;
+  const interactions =
+    opts.interactions === undefined
+      ? [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]
+      : opts.interactions;
+  const fail = { ok: false, status: 500, json: async () => ({}) };
+  const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+
+  (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+    if (url.includes('/data-lineage-graph')) {
+      // The direction is read off the query string, exactly as the server requires it.
+      const wantFanin = url.includes('direction=fanin');
+      const chosen = wantFanin ? opts.fanin : opts.fanout;
+      if (chosen === null) return fail;
+      return ok(chosen ?? mkReach(wantFanin ? 'fanin' : 'fanout'));
+    }
+    if (url.includes('/data-lineage-summary')) {
+      if (opts.summary === null) return fail;
+      return ok(
+        opts.summary ?? { sources: [], destinations: [], status: 'complete', stopped_at_seq: null },
+      );
+    }
+    if (url.endsWith('/entities')) return entities === null ? fail : ok({ entities });
+    if (url.endsWith('/interactions')) return interactions === null ? fail : ok({ interactions });
+    return ok({});
+  });
 }
 
 /** Render the Lineage tab over the standard fixture set, with overridable bits. */
-function renderLineage(over: {
-  byLeg?: Map<string, DataLineage | null>;
-  selectedEntityId?: string | null;
-  selectedInteractionId?: string | null;
-  onSelectInteraction?: (id: string | null) => void;
-  isLineageError?: boolean;
-  status?: 'complete' | 'partial' | null;
-  interactions?: Interaction[];
-  entities?: Entity[];
-} = {}) {
+function renderLineage(
+  over: {
+    selectedEntityId?: string | null;
+    selectedInteractionId?: string | null;
+    onSelectInteraction?: (id: string | null) => void;
+    onSelectEntity?: (id: string) => void;
+    isLineageError?: boolean;
+    status?: 'complete' | 'partial' | null;
+    interactions?: Interaction[];
+    entities?: Entity[];
+    summary?: WireLineageSummary | null;
+    fanin?: LineageReachability | null;
+    fanout?: LineageReachability | null;
+  } = {},
+) {
   const entities = over.entities ?? ENTITIES;
   const interactions = over.interactions ?? [
     mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
   ];
-  // The two reads still happen (the component holds them for its loading/error
-  // states), so they are stubbed even though the data is also passed in as props.
-  mockApi(entities, interactions);
+  mockLineageApi({
+    entities,
+    interactions,
+    summary: over.summary,
+    fanin: over.fanin,
+    fanout: over.fanout,
+  });
   return renderWithProviders(
     <LineageGraph
       traceId="T1"
       entities={entities}
       interactions={interactions}
-      byLeg={over.byLeg ?? new Map()}
       status={over.status ?? 'complete'}
       isLineageError={over.isLineageError ?? false}
       selectedEntityId={over.selectedEntityId ?? null}
       selectedInteractionId={over.selectedInteractionId ?? null}
       onSelectInteraction={over.onSelectInteraction}
+      onSelectEntity={over.onSelectEntity}
     />,
   );
 }
+
+/** A fan-in answer over the standard fixture: e1 → e2's request leg is the route. */
+const FANIN_E1 = mkReach('fanin', {
+  entities: [mkReached('e1', 1)],
+  legs: [mkTraversed('i1', 'request', 'e1', 'e2', 1)],
+  state: 'derived',
+});
+
+/** A fan-out answer over the same fixture, on the OTHER leg. */
+const FANOUT_E1 = mkReach('fanout', {
+  entities: [mkReached('e1', 1)],
+  legs: [mkTraversed('i1', 'response', 'e2', 'e1', 2)],
+  state: 'derived',
+});
 
 describe('LineageGraph', () => {
   beforeEach(() => {
@@ -1744,7 +2244,7 @@ describe('LineageGraph', () => {
     }
   });
 
-  it('still discloses the graph\'s OWN edge cases, not only the lineage ones', async () => {
+  it("still discloses the graph's OWN edge cases, not only the lineage ones", async () => {
     // The three standing notices (dropped / isolated / parallel) belong to the graph,
     // so they must not have been lost by moving the tab-level chrome around.
     renderLineage();
@@ -1753,33 +2253,171 @@ describe('LineageGraph', () => {
     expect(screen.getByText(/1 isolated entity/i)).toBeInTheDocument();
   });
 
+  // --- JOB 1: the trace's data sources, coloured with NO selection.
+
+  it('renders the legend unconditionally, so a coloured node is never unexplained', async () => {
+    // A colour with no key is a puzzle. The legend is on from first paint because the
+    // source colouring is too.
+    renderLineage({ selectedEntityId: null });
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+
+    const legend = screen.getByRole('group', { name: /Lineage graph legend/i });
+    expect(legend).toBeInTheDocument();
+    expect(legend).toHaveTextContent(/Data source for this trace/i);
+    expect(legend).toHaveTextContent(/Upstream of selection/i);
+    expect(legend).toHaveTextContent(/Downstream of selection/i);
+    expect(legend).toHaveTextContent(/Not derived yet/i);
+  });
+
+  it('marks the trace data sources with NOTHING selected', async () => {
+    // JOB 1, and the point of it: the sources are a standing fact about the trace, so
+    // they paint before any question is asked. Asserted on the MODEL because a node's
+    // `<g>` renders empty on a zero-size surface (see the file header) — the class is
+    // built from exactly this `data`.
+    renderLineage({
+      selectedEntityId: null,
+      summary: {
+        sources: ['agent:(p,a)', 'llm:api.example.com/gpt'],
+        destinations: [],
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+    });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
+    await waitFor(() => expect(nodeData('e1').lineage.isDataSource).toBe(true));
+
+    expect(nodeData('e3').lineage.isDataSource).toBe(true);
+    // e2's key is not in the summary, so it is NOT a source — the marking is driven by
+    // the roll-up, not by kind.
+    expect(nodeData('e2').lineage.isDataSource).toBe(false);
+  });
+
+  it('drives the source marking from `list sources`, not from the entity kind', async () => {
+    // The trap ADR-0028 D14 names explicitly: `list sources` is the union of derived
+    // `data_sources`, NOT "entities whose kind is declared a source". e2 is a `tool`
+    // (the kind that IS the v1 source default) and is still not marked, because the
+    // roll-up did not name it.
+    renderLineage({
+      selectedEntityId: null,
+      summary: {
+        sources: ['agent:(p,a)'],
+        destinations: [],
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+    });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
+    await waitFor(() => expect(nodeData('e1').lineage.isDataSource).toBe(true));
+
+    expect(nodeData('e2').kind).toBe('tool');
+    expect(nodeData('e2').lineage.isDataSource).toBe(false);
+  });
+
+  it('says how many sources are marked, and that they are derived origins', async () => {
+    renderLineage({
+      selectedEntityId: null,
+      summary: {
+        sources: ['agent:(p,a)', 'llm:api.example.com/gpt'],
+        destinations: [],
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/2 of 2 data sources marked on the graph/i)).toBeInTheDocument(),
+    );
+    // The wording refuses the taxonomy reading out loud.
+    expect(screen.getByText(/not a list of entities declared to be sources/i)).toBeInTheDocument();
+  });
+
+  it('discloses a source natural key that matches no node, by count and by key', async () => {
+    // "8 sources, 6 marked" with no notice is exactly the silent under-report a
+    // governance reader must never have to discover for themselves. A legitimate cause
+    // is an origin outside the trace's own entity set.
+    renderLineage({
+      selectedEntityId: null,
+      summary: {
+        sources: ['agent:(p,a)', 'service:(elsewhere,crm)'],
+        destinations: [],
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/1 data source not shown as nodes/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/service:\(elsewhere,crm\)/)).toBeInTheDocument();
+    // Stated as still REAL, so the reader knows the marked nodes are not the full set.
+    expect(screen.getByText(/not the full set/i)).toBeInTheDocument();
+    // …and the count of marked ones is honest about being a subset.
+    expect(screen.getByText(/1 of 2 data sources marked/i)).toBeInTheDocument();
+  });
+
+  it('reports a failed SOURCES read as unknown, never as "no sources"', async () => {
+    // The fourth state for job 1. With nothing retrieved, an unmarked graph means
+    // nothing at all — and must not read as "this trace has no origins".
+    renderLineage({ selectedEntityId: null, summary: null });
+    await waitFor(() =>
+      expect(screen.getByText(/data sources could not be loaded/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/unknown/i)).toBeInTheDocument();
+    // Not confused with the genuinely-empty roll-up below.
+    expect(screen.queryByText(/No data sources attributed/i)).toBeNull();
+  });
+
+  it('distinguishes an EMPTY source roll-up from a failed one', async () => {
+    renderLineage({
+      selectedEntityId: null,
+      summary: { sources: [], destinations: [], status: 'complete', stopped_at_seq: null },
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/No data sources attributed in this trace yet/i)).toBeInTheDocument(),
+    );
+    // Still hedged against being read as a settled "there are none".
+    expect(screen.getByText(/check the coverage note above/i)).toBeInTheDocument();
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+  });
+
   // --- No selection: an instruction, and NOTHING claimed or dimmed.
 
   it('instructs the reader to select an entity when none is selected', async () => {
     renderLineage({ selectedEntityId: null });
     await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
 
-    expect(
-      screen.getByText(/Select an entity to see where its data came from/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/Click a row in the Entities table above/i)).toBeInTheDocument();
+    expect(screen.getByText(/Select an entity to trace its data in and out/i)).toBeInTheDocument();
+    // Names BOTH controls, since nodes are click targets now.
+    expect(screen.getByText(/Click a node on the graph, or a row in the Entities table/i)).toBeInTheDocument();
   });
 
   it('dims nothing at all while no entity is selected', async () => {
     // "No question asked" must never be painted as "not part of the answer" — the
-    // reason `'none'` and `'dimmed'` are distinct HighlightRole values. Asserted as
-    // the ABSENCE of the classes on the edges (the observable half — see the header).
-    renderLineage({ selectedEntityId: null });
+    // reason `'none'` and `'dimmed'` are distinct HighlightRole values. This is now
+    // load-bearing in a NEW way: the tab passes a highlight even with no selection (it
+    // carries the always-on source marks), so only `roleOf`'s `selectedNodeId === null`
+    // guard stands between that and a wholly dimmed graph.
+    renderLineage({
+      selectedEntityId: null,
+      summary: {
+        sources: ['agent:(p,a)'],
+        destinations: [],
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+    });
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    // The premise: a highlight IS active (a source is marked) …
+    await waitFor(() => expect(nodeData('e1').lineage.isDataSource).toBe(true));
 
+    // … and yet nothing is dimmed.
     expect(document.querySelector('.dg-graph-edge--dimmed')).toBeNull();
     expect(document.querySelector('.dg-graph-edge--carrier')).toBeNull();
     expect(document.querySelector('.dg-graph-edge-tag--dimmed')).toBeNull();
+    expect(nodeData('e2').highlight).toBe('none');
   });
 
   it('treats a selection that names no node in this trace as no selection', async () => {
     // A stale `?eid`. There is no node to anchor the question on, so the tab says so
-    // instead of silently highlighting nothing and letting that read as "no sources".
+    // instead of silently highlighting nothing and letting that read as "nothing flowed".
     renderLineage({ selectedEntityId: 'ghost' });
     await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
 
@@ -1787,62 +2425,155 @@ describe('LineageGraph', () => {
     expect(document.querySelector('.dg-graph-edge--dimmed')).toBeNull();
   });
 
-  // --- A real highlight.
+  // --- JOB 2: fan-in AND fan-out, with the traversed LEGS lit.
 
-  it('marks the carrying leg and dims the rest when an entity has derived sources', async () => {
-    // e1 → e2; the request leg delivers to e2 and its lineage names e1's natural key.
-    // So the request is the carrier and the response — not part of the answer — dims.
-    renderLineage({
-      selectedEntityId: 'e2',
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
-    });
+  it('lights the fan-in route and dims the rest', async () => {
+    // e1 → e2's request leg is the upstream route. The response leg is on neither
+    // route here, so it dims.
+    renderLineage({ selectedEntityId: 'e2', fanin: FANIN_E1 });
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--upstream')).not.toBeNull(),
+    );
 
-    expect(
-      document.querySelector('[data-id="i1:request"] .dg-graph-edge--carrier'),
-    ).not.toBeNull();
-    expect(
-      document.querySelector('[data-id="i1:response"] .dg-graph-edge--dimmed'),
-    ).not.toBeNull();
-    // Exclusive roles: an arrow is never both the answer and not the answer.
-    expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--dimmed')).toBeNull();
-    // No caveat is raised — this is a clean, complete answer.
-    expect(screen.queryByText(/not yet computed/i)).toBeNull();
-    expect(screen.queryByText(/not shown as nodes/i)).toBeNull();
+    expect(document.querySelector('[data-id="i1:response"] .dg-graph-edge--dimmed')).not.toBeNull();
+    // The node is marked upstream, and NOT downstream — the two claims stay apart.
+    expect(nodeData('e1').lineage).toMatchObject({ isUpstream: true, isDownstream: false });
+    expect(nodeData('e1').lineage.hops).toBe(1);
   });
 
-  it('dims the seq tag with its own arrow', async () => {
-    // Otherwise a bright number floats over a faded line — the most eye-catching
-    // thing left on screen and the least relevant.
+  it('lights the fan-out route, distinguishably from fan-in', async () => {
+    renderLineage({ selectedEntityId: 'e2', fanout: FANOUT_E1 });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-id="i1:response"] .dg-graph-edge--downstream'),
+      ).not.toBeNull(),
+    );
+
+    // The OTHER leg is the one lit, with the OTHER class — so the two directions are
+    // not interchangeable in the DOM.
+    expect(document.querySelector('[data-id="i1:response"] .dg-graph-edge--upstream')).toBeNull();
+    expect(nodeData('e1').lineage).toMatchObject({ isUpstream: false, isDownstream: true });
+  });
+
+  it('shows BOTH directions at once, keeping each identifiable', async () => {
+    // The core of the "show both, do not blend" decision. e1 is upstream AND
+    // downstream (data went out and came back), and both facts survive on one node —
+    // a single-valued role would have had to discard one.
+    renderLineage({ selectedEntityId: 'e2', fanin: FANIN_E1, fanout: FANOUT_E1 });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    await waitFor(() => expect(nodeData('e1').lineage.isUpstream).toBe(true));
+
+    expect(nodeData('e1').lineage.isDownstream).toBe(true);
+    // Each route keeps its own leg and its own class.
+    expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--upstream')).not.toBeNull();
+    expect(
+      document.querySelector('[data-id="i1:response"] .dg-graph-edge--downstream'),
+    ).not.toBeNull();
+    // Nothing is dimmed now — both legs are on a route.
+    expect(document.querySelector('.dg-graph-edge--dimmed')).toBeNull();
+  });
+
+  it('marks a leg on BOTH routes with both classes', async () => {
+    // One leg claimed by both walks — a genuine cycle. Both classes land, so the
+    // stylesheet's combined rule has something to key on.
+    const bothLegs = [mkTraversed('i1', 'request', 'e1', 'e2', 1)];
     renderLineage({
       selectedEntityId: 'e2',
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
+      fanin: mkReach('fanin', {
+        entities: [mkReached('e1', 1)],
+        legs: bothLegs,
+        state: 'derived',
+      }),
+      fanout: mkReach('fanout', {
+        entities: [mkReached('e1', 1)],
+        legs: bothLegs,
+        state: 'derived',
+      }),
     });
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--upstream')).not.toBeNull(),
+    );
+
+    const req = document.querySelector('[data-id="i1:request"]')!;
+    expect(req.querySelector('.dg-graph-edge--downstream')).not.toBeNull();
+    expect(edgeData('i1:request').lineage).toMatchObject({ isUpstream: true, isDownstream: true });
+  });
+
+  it('grades multi-hop distance off the response `hops`', async () => {
+    renderLineage({
+      selectedEntityId: 'e2',
+      fanin: mkReach('fanin', {
+        entities: [mkReached('e1', 1), mkReached('e3', 2)],
+        legs: [mkTraversed('i1', 'request', 'e1', 'e2', 1)],
+        state: 'derived',
+      }),
+    });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
+    await waitFor(() => expect(nodeData('e1').lineage.hops).toBe(1));
+
+    expect(nodeData('e3').lineage.hops).toBe(2);
+  });
+
+  it('carries every lineage claim on the node data the hover text is built from', async () => {
+    // The accessibility half of the treatment: hue is never the only carrier — the
+    // node's `<title>` names each claim in words (see `nodeTitle`).
+    //
+    // Asserted on the DATA, not on the rendered `<title>`, because the title lives
+    // inside the node content jsdom culls (see `nodeData`'s note — the node's `<g>` is
+    // verifiably childless here). `nodeTitle` is a pure function of exactly these
+    // fields, so this pins the facts reaching it. The node title's WORDING is
+    // MANUALLY-VERIFY-ONLY for that reason; the equivalent wording on an EDGE is
+    // asserted for real in the next case, since edge content is not culled.
+    renderLineage({
+      selectedEntityId: 'e2',
+      fanin: FANIN_E1,
+      fanout: FANOUT_E1,
+      summary: {
+        sources: ['agent:(p,a)'],
+        destinations: [],
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+    });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
+    await waitFor(() => expect(nodeData('e1').lineage.isDataSource).toBe(true));
+
+    // All three claims at once on one node — the co-occurrence a single-valued role
+    // could not have represented.
+    expect(nodeData('e1').lineage).toMatchObject({
+      isDataSource: true,
+      isUpstream: true,
+      isDownstream: true,
+      hops: 1,
+    });
+  });
+
+  it('names the route in the edge accessible name too', async () => {
+    renderLineage({ selectedEntityId: 'e2', fanin: FANIN_E1 });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--upstream')).not.toBeNull(),
+    );
 
     expect(
-      document.querySelector('[data-id="i1:request"] .dg-graph-edge-tag--carrier'),
-    ).not.toBeNull();
-    expect(
-      document.querySelector('[data-id="i1:response"] .dg-graph-edge-tag--dimmed'),
-    ).not.toBeNull();
+      screen.getByRole('button', { name: /on the upstream route/i }),
+    ).toBeInTheDocument();
   });
 
   it('encodes the highlight in NO raw hex colour', async () => {
-    // House rule, and also the accessibility one: the distinction is carried by
-    // opacity/weight in global.css, not by an inline colour — so there is nothing
-    // hue-shaped inlined on a highlighted element at all.
-    renderLineage({
-      selectedEntityId: 'e2',
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
-    });
+    // House rule, and also the accessibility one: every colour is a `--dg-*` token
+    // reference, so there is nothing hue-shaped inlined on a highlighted element.
+    renderLineage({ selectedEntityId: 'e2', fanin: FANIN_E1 });
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
     const carrier = document.querySelector('[data-id="i1:request"]')!.innerHTML;
     expect(carrier).not.toMatch(/#[0-9a-f]{3,8}\b/i);
   });
 
-  it('keeps an error leg\'s red AND its highlight role — the two are independent', async () => {
+  it("keeps an error leg's red AND its route class — the two are independent", async () => {
     // A failed leg can be the leg that carried the data, and a reader needs both
     // facts. One combined class would make one of them unrepresentable.
     renderLineage({
@@ -1856,13 +2587,15 @@ describe('LineageGraph', () => {
           any_error: true,
         }),
       ],
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
+      fanin: FANIN_E1,
     });
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--upstream')).not.toBeNull(),
+    );
 
     const req = document.querySelector('[data-id="i1:request"]')!;
     expect(req.querySelector('.dg-graph-edge--error')).not.toBeNull();
-    expect(req.querySelector('.dg-graph-edge--carrier')).not.toBeNull();
     expect(req.innerHTML).toContain('var(--dg-color-error)');
   });
 
@@ -1883,23 +2616,21 @@ describe('LineageGraph', () => {
     expect(onSelect).toHaveBeenCalledWith('i1');
   });
 
-  it('keeps BOTH class axes on one edge that is a carrier AND selected', async () => {
-    // The composition, at its most load-bearing: the request leg carried the data
-    // (`--carrier`) and its interaction is the open one (`--selected`). Both classes
-    // must be on the element — collapsing them would lose one of two independent facts
-    // the reader is being told.
-    renderLineage({
-      selectedEntityId: 'e2',
-      selectedInteractionId: 'i1',
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
-    });
+  it('keeps BOTH class axes on one edge that is on a route AND selected', async () => {
+    // The composition, at its most load-bearing: the request leg is on the upstream
+    // route and its interaction is the open one. Both classes must be on the element —
+    // collapsing them would lose one of two independent facts the reader is told.
+    renderLineage({ selectedEntityId: 'e2', selectedInteractionId: 'i1', fanin: FANIN_E1 });
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--upstream')).not.toBeNull(),
+    );
 
     const req = document.querySelector('[data-id="i1:request"]')!;
-    expect(req.querySelector('.dg-graph-edge--carrier')).not.toBeNull();
     expect(req.querySelector('.dg-graph-edge--selected')).not.toBeNull();
-    // The model agrees: the two live on separate fields, not one squashed enum.
+    // The model agrees: the axes live on separate fields, not one squashed enum.
     expect(edgeData('i1:request')).toMatchObject({ highlight: 'carrier', isSelected: true });
+    expect(edgeData('i1:request').lineage).toMatchObject({ isUpstream: true });
   });
 
   it('keeps a DIMMED edge selectable, and marks it selected while still dimmed', async () => {
@@ -1919,14 +2650,12 @@ describe('LineageGraph', () => {
     // asserted is the class pair it keys on, which is the part a unit test can honestly
     // own.
     const onSelect = vi.fn();
-    renderLineage({
-      selectedEntityId: 'e2',
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
-      onSelectInteraction: onSelect,
-    });
+    renderLineage({ selectedEntityId: 'e2', fanin: FANIN_E1, onSelectInteraction: onSelect });
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
     // The premise: the response leg really is dimmed.
-    expect(document.querySelector('[data-id="i1:response"] .dg-graph-edge--dimmed')).not.toBeNull();
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:response"] .dg-graph-edge--dimmed')).not.toBeNull(),
+    );
 
     // A dimmed edge is still a click target.
     clickEdge('i1:response');
@@ -1940,16 +2669,14 @@ describe('LineageGraph', () => {
     // treatment were suppressed here, clicking a dimmed arrow would open a panel with
     // no visible sign of which arrow it belonged to — the exact feedback gap this whole
     // treatment exists to close.
-    renderLineage({
-      selectedEntityId: 'e2',
-      selectedInteractionId: 'i1',
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
-    });
+    renderLineage({ selectedEntityId: 'e2', selectedInteractionId: 'i1', fanin: FANIN_E1 });
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:response"] .dg-graph-edge--dimmed')).not.toBeNull(),
+    );
 
     const resp = document.querySelector('[data-id="i1:response"]')!;
     // Both, on one element — neither erased by the other.
-    expect(resp.querySelector('.dg-graph-edge--dimmed')).not.toBeNull();
     expect(resp.querySelector('.dg-graph-edge--selected')).not.toBeNull();
     // The tag pair too, which is what the opacity override in global.css also covers —
     // a selected-but-dimmed leg whose seq number stayed faded would be the one number
@@ -1974,238 +2701,237 @@ describe('LineageGraph', () => {
     expect(document.querySelectorAll('.dg-graph-edge--selected')).toHaveLength(2);
   });
 
-  it('keeps a moved node where it was put when the SELECTION changes', async () => {
-    // The drag-survival invariant on the tab that also has a highlight active, so the
-    // model push is driven by two dependencies at once rather than one. Same
-    // guarantee, harder setup — this is where a re-introduced rebuild-per-render would
-    // show up first.
-    const { rerender } = renderLineage({
-      selectedEntityId: 'e2',
-      selectedInteractionId: null,
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
+  // --- NODE CLICK → the same entity selection the Entities table makes.
+
+  /**
+   * WHY THESE FIRE THE EVENT INSTEAD OF CLICKING THE NODE. A node's `<g>` renders
+   * COMPLETELY EMPTY in jsdom — verified, not assumed: the element is
+   * `<g data-id="e2" data-kind="node" transform="translate(260, 40)"></g>` with no
+   * children at all, because PF culls node CONTENT on a zero-size surface (edge
+   * content is not culled, which is why `clickEdge` works). The `onClick` PF binds
+   * lives on an inner `<g>` that therefore does not exist, so a `fireEvent.click` on
+   * the outer element reaches no handler and would fail for a reason that has nothing
+   * to do with this wiring.
+   *
+   * So the test is taken to the honest seam: PF's own `SELECTION_EVENT`, fired with
+   * the payload `withSelection` would fire. That covers everything this component
+   * actually owns — the id→entity resolution and the routing to the right callback.
+   * What it does NOT cover is whether the click reaches `onSelect` at all, which is
+   * PF's binding plus d3-drag's click suppression; that is
+   * MANUALLY-VERIFY-ONLY in a real browser (and is why
+   * `DraggableKindColouredNode`'s note cites the library sources rather than a test).
+   */
+  function fireSelection(ids: string[]) {
+    act(() => {
+      capturedController!.fireEvent(SELECTION_EVENT, ids);
     });
-    await waitFor(() => expect(nodeAt('e1')).toEqual(cell(0, 0)));
+  }
 
-    moveNode('e1', 777, 555);
-    await waitFor(() => expect(nodeAt('e1')).toEqual({ x: 777, y: 555 }));
+  it('routes a NODE selection to onSelectEntity', async () => {
+    // The user-facing ask: "click on any other entity". Coexists with the drag because
+    // d3-drag suppresses a moved gesture's trailing click and passes a stationary one
+    // through — see DraggableKindColouredNode's note for the library evidence.
+    const onSelectEntity = vi.fn();
+    renderLineage({ onSelectEntity });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
 
-    rerender(
-      <LineageGraph
-        traceId="T1"
-        entities={ENTITIES}
-        interactions={[mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]}
-        byLeg={new Map([['i1:request', mkLineage(['agent:(p,a)'])]])}
-        status="complete"
-        isLineageError={false}
-        selectedEntityId="e2"
-        selectedInteractionId="i1"
-      />,
-    );
-    await waitFor(() =>
-      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--selected')).not.toBeNull(),
-    );
-
-    expect(nodeAt('e1')).toEqual({ x: 777, y: 555 });
-    // The highlight was NOT lost by the selection push — both are still baked in.
-    expect(edgeData('i1:request')).toMatchObject({ highlight: 'carrier', isSelected: true });
-    expect(nodeAt('e2')).toEqual(cell(1, 0));
+    fireSelection(['e2']);
+    expect(onSelectEntity).toHaveBeenCalledWith('e2');
   });
 
-  // --- The three absence states, kept apart ON SCREEN.
+  it('does not report an entity selection as an interaction selection', async () => {
+    // The two callbacks are different questions. A node selection must not reach
+    // `onSelectInteraction` and close/replace the open interaction panel by accident.
+    const onSelectInteraction = vi.fn();
+    const onSelectEntity = vi.fn();
+    renderLineage({ onSelectInteraction, onSelectEntity });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
 
-  it('says "not yet computed" when the inbound legs have no derived lineage', async () => {
-    // A present key with a null value: the eventual-consistency window. An empty
-    // highlight with no words would read as "we checked and found nothing".
-    renderLineage({ selectedEntityId: 'e2', byLeg: new Map([['i1:request', null]]) });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
-
-    expect(screen.getByText(/Lineage not yet computed for this entity/i)).toBeInTheDocument();
-    // Explicitly says this is not the "no sources" verdict — the one sentence the
-    // whole tri-state discipline hangs on.
-    expect(screen.getByText(/this is not "no sources"/i)).toBeInTheDocument();
-    expect(screen.queryByText(/originates here/i)).toBeNull();
+    fireSelection(['e1']);
+    expect(onSelectEntity).toHaveBeenCalledWith('e1');
+    expect(onSelectInteraction).not.toHaveBeenCalled();
   });
 
-  it('says "not yet computed" for an ABSENT leg key too, indistinguishably', async () => {
-    // The other spelling of not-yet-derived. Both mean the same thing to a reader, so
-    // both must produce the same words — the distinction is preserved where it is
-    // actionable (the leg's own Data lineage tab), not invented into new wording here.
-    renderLineage({ selectedEntityId: 'e2', byLeg: new Map() });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+  it('still routes an EDGE selection to onSelectInteraction, not to the entity callback', async () => {
+    // The other half: adding the node arm must not have stolen the edge's own routing.
+    const onSelectInteraction = vi.fn();
+    const onSelectEntity = vi.fn();
+    renderLineage({ onSelectInteraction, onSelectEntity });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
-    expect(screen.getByText(/Lineage not yet computed for this entity/i)).toBeInTheDocument();
+    fireSelection(['i1:request']);
+    expect(onSelectInteraction).toHaveBeenCalledWith('i1');
+    expect(onSelectEntity).not.toHaveBeenCalled();
   });
 
-  it('says "originates here" for a DERIVED but empty source set', async () => {
-    // ADR-0028 D3: a real derived answer, and the state a graph cannot show by
-    // itself — an unhighlighted picture looks identical to the pending case above.
-    renderLineage({ selectedEntityId: 'e2', byLeg: new Map([['i1:request', mkLineage([])]]) });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+  it('ignores a selection id that names neither a drawn node nor a drawn edge', async () => {
+    // Doing nothing is the honest response to an id we cannot interpret — reading it
+    // as "no interaction" would close the reader's open panel for no visible reason.
+    const onSelectInteraction = vi.fn();
+    const onSelectEntity = vi.fn();
+    renderLineage({ onSelectInteraction, onSelectEntity });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
 
-    expect(screen.getByText(/this data originates here/i)).toBeInTheDocument();
-    expect(screen.getByText(/derived answer, not a missing one/i)).toBeInTheDocument();
-    expect(screen.queryByText(/not yet computed for this entity/i)).toBeNull();
-    // The DELIVERY is still lit even though it produced no source node: the arrow is
-    // what makes "arrived here, from nowhere upstream" visible at all.
-    //
-    // Waited for, not read straight away: the notices render on the FIRST paint (they
-    // are a pure function of the props) while the edge elements land only after PF's
-    // model push and its own render, so a synchronous read here raced the mount and
-    // was intermittently null. Every other edge assertion in this block already sits
-    // behind a `waitFor(edgeEls())`; this one had only waited for the wrapper.
-    await waitFor(() =>
-      expect(
-        document.querySelector('[data-id="i1:request"] .dg-graph-edge--carrier'),
-      ).not.toBeNull(),
-    );
+    fireSelection(['no-such-element']);
+    expect(onSelectInteraction).not.toHaveBeenCalled();
+    expect(onSelectEntity).not.toHaveBeenCalled();
   });
 
-  it('says nothing arrives at all when no leg targets the entity', async () => {
-    // Structurally distinct from pending: there is no leg to wait FOR, so telling the
-    // reader to wait would be telling them to wait forever.
-    renderLineage({ selectedEntityId: 'e3', byLeg: new Map([['i1:request', mkLineage([])]]) });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+  // --- The three server states plus the failed read, kept apart ON SCREEN, PER DIRECTION.
 
-    expect(screen.getByText(/No data arrives at this entity in this trace/i)).toBeInTheDocument();
-    expect(screen.getByText(/not a derivation still pending/i)).toBeInTheDocument();
-    expect(screen.queryByText(/not yet computed for this entity/i)).toBeNull();
-  });
-
-  // --- The fourth, separate fact: the read failed.
-
-  it('reports a failed lineage read as UNKNOWN, not as an absence', async () => {
-    // With nothing retrieved, the empty highlight means nothing at all — and must not
-    // be allowed to read as "no sources". Worded as *unknown*, matching
-    // LineageCoverageAlert's own refusal to let a broken read look like clean coverage.
-    renderLineage({ selectedEntityId: 'e2', isLineageError: true, byLeg: undefined });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
-
-    expect(screen.getByText(/Data lineage could not be loaded/i)).toBeInTheDocument();
-    expect(screen.getByText(/unknown/i)).toBeInTheDocument();
-    // Neither of the two absence verdicts is shown alongside it.
-    expect(screen.queryByText(/not yet computed for this entity/i)).toBeNull();
-    expect(screen.queryByText(/originates here/i)).toBeNull();
-  });
-
-  it('says nothing about a failed read while no entity is selected', async () => {
-    // No question has been asked, so there is no answer for the failure to invalidate
-    // — the trace-level banner above the tabs already carries that fact.
-    renderLineage({ selectedEntityId: null, isLineageError: true, byLeg: undefined });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
-
-    expect(screen.queryByText(/Data lineage could not be loaded/i)).toBeNull();
-    expect(
-      screen.getByText(/Select an entity to see where its data came from/i),
-    ).toBeInTheDocument();
-  });
-
-  // --- Partial answers.
-
-  it('names both leg counts when only SOME deliveries are derived', async () => {
-    // `derived` alone would let part of the picture go unmentioned. Two legs deliver
-    // to e2 here (i1's request and i2's request); only one is derived.
+  it('says "not yet computed" for a PENDING direction, and names the frontier', async () => {
+    // The eventual-consistency window: adjacency EXISTS but carries no derived row.
+    // An empty highlight with no words would read as "we checked and found nothing".
     renderLineage({
       selectedEntityId: 'e2',
-      interactions: [
-        mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
-        mkIx({ id: 'i2', caller_entity_id: 'e3', callee_entity_id: 'e2' }, 3),
-      ],
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
+      fanin: mkReach('fanin', { state: 'pending', pending_frontier: ['e1'] }),
     });
+    await waitFor(() =>
+      expect(screen.getByText(/Upstream lineage not yet computed/i)).toBeInTheDocument(),
+    );
+
+    // Explicitly says this is not the "nothing flowed" verdict — the one sentence the
+    // whole tri-state discipline hangs on.
+    expect(screen.getByText(/this is not "nothing flowed"/i)).toBeInTheDocument();
+    // The frontier is named, so "not yet" is visible rather than looking like a dead end.
+    expect(screen.getByText(/1 entity is on the pending frontier/i)).toBeInTheDocument();
+    // The frontier node is MARKED, and deliberately not dimmed.
+    await waitFor(() => expect(nodeData('e1').lineage.isFrontier).toBe(true));
+  });
+
+  it('says "derived, not missing" for a DERIVED but empty direction', async () => {
+    // ADR-0028 D3/D15: a real derived answer, and the state a graph cannot show by
+    // itself — an unhighlighted picture looks identical to the pending case above.
+    renderLineage({
+      selectedEntityId: 'e2',
+      fanin: mkReach('fanin', { state: 'derived', entities: [], legs: [] }),
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/No upstream entities — derived, not missing/i)).toBeInTheDocument(),
+    );
+
+    expect(screen.getByText(/derived answer, not a missing one/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Upstream lineage not yet computed/i)).toBeNull();
+  });
+
+  it('says NO-ADJACENT as its own state — the one complete empty answer', async () => {
+    // Structurally distinct from pending: there is no leg to wait FOR, so telling the
+    // reader to wait would be telling them to wait forever.
+    renderLineage({
+      selectedEntityId: 'e2',
+      fanin: mkReach('fanin', { state: 'no-adjacent' }),
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Nothing upstream of this entity in this trace/i)).toBeInTheDocument(),
+    );
+
+    // BOTH directions are `no-adjacent` in this fixture, so BOTH say so — which is the
+    // point rather than a nuisance: each direction reports its own outcome, and one
+    // silently standing in for the other is what `DirectionNotice`-rendered-twice
+    // prevents. Hence `getAllByText` and an explicit count.
+    expect(screen.getByText(/Nothing downstream of this entity in this trace/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/not a derivation still pending/i)).toHaveLength(2);
+    expect(screen.queryByText(/Upstream lineage not yet computed/i)).toBeNull();
+  });
+
+  it('reports a failed DIRECTION read as unknown, without erasing the other', async () => {
+    // The fourth state, and the reason the two directions keep their own error flags:
+    // "we could not ask downstream" must not look like "we know nothing at all".
+    renderLineage({ selectedEntityId: 'e2', fanin: FANIN_E1, fanout: null });
+    await waitFor(() =>
+      expect(screen.getByText(/Downstream lineage could not be loaded/i)).toBeInTheDocument(),
+    );
+
+    expect(screen.getByText(/unknown/i)).toBeInTheDocument();
+    // The good half survived and is still on screen.
+    expect(screen.getByText(/1 upstream entity, over 1 interaction leg/i)).toBeInTheDocument();
+    await waitFor(() => expect(nodeData('e1').lineage.isUpstream).toBe(true));
+  });
+
+  it('keeps TRUNCATED separate from the pending frontier', async () => {
+    // ADR-0028 D15: the frontier says "ask again later", truncation says "derived, but
+    // this answer declined to return it all". Merging them would send a reader to poll
+    // for something only a wider bound produces.
+    renderLineage({
+      selectedEntityId: 'e2',
+      fanin: mkReach('fanin', {
+        entities: [mkReached('e1', 1)],
+        legs: [mkTraversed('i1', 'request', 'e1', 'e2', 1)],
+        state: 'derived',
+        truncated: true,
+      }),
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Upstream answer is truncated/i)).toBeInTheDocument(),
+    );
+
+    expect(screen.getByText(/waiting will not complete this/i)).toBeInTheDocument();
+    // Not reported as a frontier, which would be the wrong instruction.
+    expect(screen.queryByText(/on the pending frontier/i)).toBeNull();
+  });
+
+  it('reports a frontier ALONGSIDE a derived answer — both can be true', async () => {
+    renderLineage({
+      selectedEntityId: 'e2',
+      fanin: mkReach('fanin', {
+        entities: [mkReached('e1', 1)],
+        legs: [mkTraversed('i1', 'request', 'e1', 'e2', 1)],
+        state: 'derived',
+        pending_frontier: ['e3'],
+      }),
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/Upstream answer may grow/i)).toBeInTheDocument(),
+    );
+
+    expect(screen.getByText(/not yet known/i)).toBeInTheDocument();
+    // The derived part is still stated as an answer.
+    expect(screen.getByText(/1 upstream entity, over 1 interaction leg/i)).toBeInTheDocument();
+  });
+
+  it('does not editorialise a large answer as thorough tracing', async () => {
+    // ADR-0028 D14: these reads inherit matcher quality, so a full fanout must not be
+    // read as evidence provenance was exhaustively traced. The wording says so.
+    renderLineage({ selectedEntityId: 'e2', fanout: FANOUT_E1 });
+    await waitFor(() =>
+      expect(screen.getByText(/1 downstream entity, over 1 interaction leg/i)).toBeInTheDocument(),
+    );
+
+    expect(screen.getByText(/not evidence of thorough tracing/i)).toBeInTheDocument();
+  });
+
+  it('says nothing about either direction while no entity is selected', async () => {
+    // No question has been asked, so there is no answer for anything to qualify.
+    renderLineage({ selectedEntityId: null });
     await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
 
-    const alert = screen.getByText(/sources are incomplete/i);
-    expect(alert).toBeInTheDocument();
-    // The counts are named, so the reader knows HOW much is missing.
-    expect(screen.getByText(/Only 1 of the 2 interaction legs/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Upstream lineage/i)).toBeNull();
+    expect(screen.queryByText(/Downstream lineage/i)).toBeNull();
+    expect(screen.getByText(/Select an entity to trace its data in and out/i)).toBeInTheDocument();
   });
+
+  // --- Trace-level coverage.
 
   it('surfaces the trace-level partial coverage beside the answer it qualifies', async () => {
     // Reused verbatim from LineageCoverageAlert rather than reworded: the truncation
     // is a fact about the whole trace, so this tab must not invent a second phrasing.
-    renderLineage({
-      selectedEntityId: 'e2',
-      status: 'partial',
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
-    });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
-
-    expect(screen.getByText(/not the complete set of data sources/i)).toBeInTheDocument();
+    renderLineage({ selectedEntityId: 'e2', status: 'partial', fanin: FANIN_E1 });
+    await waitFor(() =>
+      expect(screen.getByText(/not the complete set of data sources/i)).toBeInTheDocument(),
+    );
   });
 
   it('shows no coverage banner on a complete trace, or while the status is unknown', async () => {
     // Silence IS the no-truncation statement (LineageCoverageAlert's own rule), and a
     // `null` status warns about nothing because no truncation has been established.
-    const complete = renderLineage({
-      selectedEntityId: 'e2',
-      status: 'complete',
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
-    });
+    const complete = renderLineage({ selectedEntityId: 'e2', status: 'complete', fanin: FANIN_E1 });
     await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
     expect(screen.queryByText(/not the complete set of data sources/i)).toBeNull();
     complete.unmount();
 
-    renderLineage({
-      selectedEntityId: 'e2',
-      status: null,
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
-    });
+    renderLineage({ selectedEntityId: 'e2', status: null, fanin: FANIN_E1 });
     await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
     expect(screen.queryByText(/not the complete set of data sources/i)).toBeNull();
-  });
-
-  // --- Unresolvable sources: a real origin the graph cannot draw.
-
-  it('discloses a source natural key that matches no entity, by count and by key', async () => {
-    // "5 sources, 3 nodes lit" with no notice is exactly the silent under-report a
-    // governance reader must never have to discover for themselves.
-    renderLineage({
-      selectedEntityId: 'e2',
-      byLeg: new Map([
-        ['i1:request', mkLineage(['agent:(p,a)', 'service:(elsewhere,crm)'])],
-      ]),
-    });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
-
-    expect(screen.getByText(/1 data source not shown as nodes/i)).toBeInTheDocument();
-    expect(screen.getByText(/service:\(elsewhere,crm\)/)).toBeInTheDocument();
-    // Stated as still REAL, so the reader knows the lit nodes are not the full set.
-    expect(screen.getByText(/not the full set/i)).toBeInTheDocument();
-  });
-
-  it('pluralises and counts several unresolvable sources', async () => {
-    renderLineage({
-      selectedEntityId: 'e2',
-      byLeg: new Map([['i1:request', mkLineage(['ghost:one', 'ghost:two'])]]),
-    });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
-
-    expect(screen.getByText(/2 data sources not shown as nodes/i)).toBeInTheDocument();
-  });
-
-  it('keeps an entity that is a source of ITSELF, disclosing nothing as unresolvable', async () => {
-    // `tool:(p,svc)` is e2's OWN natural key, so the lineage names the receiving
-    // entity among its own origins — data it contributed earlier coming back. The
-    // backend derived that, so it is a real origin and filtering it would silently
-    // deny one (lib/lineageGraph clause 4). It resolves cleanly, so nothing is
-    // disclosed as unresolvable.
-    renderLineage({
-      selectedEntityId: 'e2',
-      byLeg: new Map([['i1:request', mkLineage(['tool:(p,svc)'])]]),
-    });
-    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
-
-    expect(screen.queryByText(/not shown as nodes/i)).toBeNull();
-    // Nor is it reported as "originates here": the source set is NOT empty, it just
-    // happens to contain the selected entity.
-    expect(screen.queryByText(/originates here/i)).toBeNull();
-    // Same `waitFor` as every other edge assertion here — the notices paint on the
-    // first render, the edge elements only after PF's own model push.
-    await waitFor(() =>
-      expect(
-        document.querySelector('[data-id="i1:request"] .dg-graph-edge--carrier'),
-      ).not.toBeNull(),
-    );
   });
 
   // --- Loading / error / empty: the SHARED read states.
@@ -2217,7 +2943,6 @@ describe('LineageGraph', () => {
         traceId="T1"
         entities={[]}
         interactions={[]}
-        byLeg={new Map()}
         status={null}
         isLineageError={false}
         selectedEntityId={null}
@@ -2231,13 +2956,12 @@ describe('LineageGraph', () => {
   it('reports a failed ENTITIES read as an error, not as an empty graph', async () => {
     // Shared `graphReadState`, so the wording is the graph tab's — two tabs over one
     // dataset must not disagree about what a failed read looks like.
-    mockApi(null, []);
+    mockLineageApi({ entities: null, interactions: [] });
     renderWithProviders(
       <LineageGraph
         traceId="T1"
         entities={[]}
         interactions={[]}
-        byLeg={new Map()}
         status={null}
         isLineageError={false}
         selectedEntityId={null}
@@ -2255,9 +2979,7 @@ describe('LineageGraph', () => {
 
     await waitFor(() => expect(screen.getByText(/No execution flow/i)).toBeInTheDocument());
     expect(screen.queryByTestId('lineage-graph')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/Select an entity to see where its data came from/i),
-    ).toBeNull();
+    expect(screen.queryByText(/Select an entity to trace its data/i)).toBeNull();
   });
 
   // --- The drag lifecycle, unchanged by the refactor.
@@ -2274,21 +2996,23 @@ describe('LineageGraph', () => {
     await waitFor(() => expect(nodeAt('e1')).toEqual({ x: 777, y: 555 }));
 
     // Select an entity — a new highlight, therefore a model push.
+    mockLineageApi({
+      entities: ENTITIES,
+      interactions: [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)],
+      fanin: FANIN_E1,
+    });
     rerender(
       <LineageGraph
         traceId="T1"
         entities={ENTITIES}
         interactions={[mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]}
-        byLeg={new Map([['i1:request', mkLineage(['agent:(p,a)'])]])}
         status="complete"
         isLineageError={false}
         selectedEntityId="e2"
       />,
     );
     await waitFor(() =>
-      expect(
-        document.querySelector('[data-id="i1:request"] .dg-graph-edge--carrier'),
-      ).not.toBeNull(),
+      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--upstream')).not.toBeNull(),
     );
 
     // The drag survived the highlight change…
@@ -2299,13 +3023,47 @@ describe('LineageGraph', () => {
     expect(nodeAt('e3')).toEqual(cell(2, 0));
   });
 
+  it('keeps a moved node where it was put when the SELECTION changes', async () => {
+    // The drag-survival invariant on the tab that also has a highlight active, so the
+    // model push is driven by two dependencies at once rather than one. Same
+    // guarantee, harder setup — this is where a re-introduced rebuild-per-render would
+    // show up first.
+    const { rerender } = renderLineage({
+      selectedEntityId: 'e2',
+      selectedInteractionId: null,
+      fanin: FANIN_E1,
+    });
+    await waitFor(() => expect(nodeAt('e1')).toEqual(cell(0, 0)));
+
+    moveNode('e1', 777, 555);
+    await waitFor(() => expect(nodeAt('e1')).toEqual({ x: 777, y: 555 }));
+
+    rerender(
+      <LineageGraph
+        traceId="T1"
+        entities={ENTITIES}
+        interactions={[mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]}
+        status="complete"
+        isLineageError={false}
+        selectedEntityId="e2"
+        selectedInteractionId="i1"
+      />,
+    );
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--selected')).not.toBeNull(),
+    );
+
+    expect(nodeAt('e1')).toEqual({ x: 777, y: 555 });
+    // The highlight was NOT lost by the selection push — both are still baked in.
+    expect(edgeData('i1:request')).toMatchObject({ highlight: 'carrier', isSelected: true });
+    expect(edgeData('i1:request').lineage).toMatchObject({ isUpstream: true });
+    expect(nodeAt('e2')).toEqual(cell(1, 0));
+  });
+
   it('puts moved nodes back on their grid cells when Reset View is clicked', async () => {
     // The affordance the layout rewrite re-implemented, confirmed to still work on the
     // tab that did not exist when it was written.
-    renderLineage({
-      selectedEntityId: 'e2',
-      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
-    });
+    renderLineage({ selectedEntityId: 'e2', fanin: FANIN_E1 });
     await waitFor(() => expect(nodeAt('e1')).toEqual(cell(0, 0)));
 
     moveNode('e1', 777, 555);
