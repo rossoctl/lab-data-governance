@@ -22,17 +22,25 @@ former single ``GET /spans`` pass-through):
 - ``GET /api/traces/{tid}/spans/{sid}/children`` — direct children, keyset-paginated
 
 The P-interactions execution-flow resources (``.../interactions``,
-``.../entities``, their ``/spans`` sub-resources), the per-trace
-``GET /api/traces/{tid}/data-lineage`` and ``GET /api/payloads/{hash}`` live
-under the same ``/api/`` namespace. Every handler is a thin adapter over
-the retrieval library: the span reads call ``get_spans``; the flow reads call
-**Interaction retrieval** (``get_interactions`` / ``get_entities`` /
-``get_interaction_spans`` / ``get_entity_spans``), and the governance reads call
-``get_payload`` / ``get_data_lineage``. All the read logic — nested legs,
-computed duration, error roll-up, chronological ordering, the
-nullable-classification / nullable-lineage and not-yet-migrated shapes — lives
-behind those seams; the handler only parses ids, dispatches to a worker thread,
-and encodes the returned dataclasses to the wire (ADR-0005).
+``.../entities``, their ``/spans`` sub-resources), the three **Data lineage**
+reads and ``GET /api/payloads/{hash}`` live under the same ``/api/`` namespace.
+The lineage reads are one per grain (ADR-0028 D14):
+
+- ``GET /api/traces/{tid}/data-lineage`` — per-**Interaction leg** metadata
+- ``GET /api/traces/{tid}/data-lineage-summary`` — the trace's sources/destinations
+- ``GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=fanin|fanout``
+  — entity reachability, upstream or downstream
+
+Every handler is a thin adapter over the retrieval library: the span reads call
+``get_spans``; the flow reads call **Interaction retrieval** (``get_interactions``
+/ ``get_entities`` / ``get_interaction_spans`` / ``get_entity_spans``), and the
+governance reads call ``get_payload`` / ``get_data_lineage`` /
+``get_lineage_graph`` / ``get_lineage_summary``. All the read logic — nested legs,
+computed duration, error roll-up, chronological ordering, the lineage walk's edge
+rule and tri-state, the nullable-classification / nullable-lineage and
+not-yet-migrated shapes — lives behind those seams; the handler only parses ids
+and the ``direction`` parameter, dispatches to a worker thread, and encodes the
+returned dataclasses to the wire (ADR-0005).
 """
 
 from __future__ import annotations
@@ -491,6 +499,99 @@ async def _data_lineage_handler(request: Request) -> Response:
     )
 
 
+async def _lineage_graph_handler(request: Request) -> Response:
+    """``GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…``.
+
+    Thin adapter over :func:`retrieval.get_lineage_graph` — the entity-grain lineage
+    traversal (ADR-0028 D14): which entities the seed's data reached (``fanout``) or
+    came from (``fanin``), over this trace only.
+
+    ``direction`` is a **required** query parameter, ``fanin`` or ``fanout``, and a
+    missing or unrecognized value is a 400 rather than a default. The two answers are
+    not interchangeable, so guessing which way a provenance question points would
+    answer a question the caller did not ask.
+
+    Unlike ``data-lineage`` this read *derives*: a hop is a leg the trace has whose
+    lineage was actually derived, so the walk ends where provenance ends. It still
+    runs no matcher (D7) and never leaves the trace (D14).
+
+    **Read ``state`` before ``entities``.** An empty list means one of three
+    different things — ``"no-adjacent"`` (nothing there), ``"pending"`` (adjacency
+    exists but is not derived yet) or a seed outside the trace — and only the first
+    is a complete answer. ``pending_frontier`` names the entities the walk could not
+    continue through yet, so the eventual-consistency window is visible rather than
+    looking like a dead end. ``truncated`` says a walk bound was hit.
+
+    An unknown trace or entity is ``200`` with an empty result, not a 404 — the
+    collection-read convention shared with the other trace sub-resources.
+    """
+    trace_id = request.path_params.get("tid")
+    entity_id = request.path_params.get("eid")
+    if not trace_id or not entity_id:
+        return JSONResponse(
+            {"error": "trace_id and entity_id required"}, status_code=400
+        )
+    direction = request.query_params.get("direction") or ""
+    try:
+        result = await asyncio.to_thread(
+            retrieval.get_lineage_graph, trace_id, entity_id, direction
+        )
+    except retrieval.UnknownDirection as exc:
+        # A caller error, not a missing-data case — so 400, and the message names
+        # the accepted values rather than only rejecting what was sent.
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return _json_ok(
+        {
+            "direction": result.direction,
+            "seed_entity_id": result.seed_entity_id,
+            "entities": [dataclasses.asdict(e) for e in result.entities],
+            "legs": [dataclasses.asdict(leg) for leg in result.legs],
+            "state": result.state,
+            "pending_frontier": result.pending_frontier,
+            "truncated": result.truncated,
+            "status": result.status,
+            "stopped_at_seq": result.stopped_at_seq,
+        }
+    )
+
+
+async def _lineage_summary_handler(request: Request) -> Response:
+    """``GET /api/traces/{tid}/data-lineage-summary`` — a trace's sources/destinations.
+
+    Thin adapter over :func:`retrieval.get_lineage_summary` — the trace-grain pair of
+    ADR-0028 D14's read surface: ``list sources`` (the union of the trace's derived
+    ``data_sources``, i.e. a read of the metadata triple) and ``list destinations``
+    (the trace's entities whose kind is a declared taxonomy target).
+
+    The two lists are at **different grains** and are not two views of one thing:
+    ``sources`` are **Entity** natural keys the derivation attributed content to,
+    ``destinations`` are entity rows. They also overlap in v1 for unrelated reasons,
+    since the source and target kind defaults both resolve to ``tool`` — early
+    agreement between them is an artifact of the defaults, not corroboration (D14).
+
+    ``status`` / ``stopped_at_seq`` ride along because a ``"partial"`` trace's source
+    union is a union over a *prefix* (ADR-0028 D6); ``null`` status is *unknown*,
+    never ``complete``.
+    """
+    trace_id = request.path_params.get("tid")
+    if not trace_id:
+        return JSONResponse({"error": "trace_id required"}, status_code=400)
+    try:
+        result = await asyncio.to_thread(retrieval.get_lineage_summary, trace_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return _json_ok(
+        {
+            "sources": result.sources,
+            "destinations": [dataclasses.asdict(d) for d in result.destinations],
+            "status": result.status,
+            "stopped_at_seq": result.stopped_at_seq,
+        }
+    )
+
+
 async def _payload_handler(request: Request) -> Response:
     """``GET /api/payloads/{hash}`` — a payload by content hash.
 
@@ -581,6 +682,23 @@ def build_app() -> Starlette:
         Route(
             "/api/traces/{tid:str}/data-lineage",
             endpoint=_data_lineage_handler,
+            methods=["GET"],
+        ),
+        # The other two grains of ADR-0028 D14's read surface. Separate resources
+        # rather than fields on /data-lineage because they answer different
+        # questions at different grains — entity reachability and a trace-level
+        # roll-up — and because unlike /data-lineage these DERIVE (a hop is a leg
+        # whose lineage was actually derived) rather than being a pure lookup.
+        # `data-lineage-summary` is listed before the entity route only for
+        # readability; the two cannot collide, since {tid:str} never matches a "/".
+        Route(
+            "/api/traces/{tid:str}/data-lineage-summary",
+            endpoint=_lineage_summary_handler,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/traces/{tid:str}/entities/{eid:str}/data-lineage-graph",
+            endpoint=_lineage_graph_handler,
             methods=["GET"],
         ),
         Route(

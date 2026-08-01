@@ -646,6 +646,34 @@ lineage is a graph-structure concept (a **Span**'s ancestors ∪ subtree under a
 `seq` horizon, used by `P-interactions` to bound what one span's re-derivation
 may rewrite — ADR-0007/0016). Data lineage is about content provenance. Qualify
 the word every time: "span lineage" or "data lineage", never bare "lineage".
+Served at three grains (ADR-0028 D14): the per-leg triple
+(`GET /api/traces/{tid}/data-lineage`), **Lineage reachability** per **Entity**, and
+a trace-level sources/destinations roll-up
+(`GET /api/traces/{tid}/data-lineage-summary`).
+
+**Lineage reachability** (fanin / fanout):
+Which **Entities** a selected entity's data reached (`fanout`, downstream /
+descendants) or came from (`fanin`, upstream / ancestors), within one **Trace** —
+served by `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph` with a
+**required** `direction` of `fanin` or `fanout` (ADR-0028 D14; edge rule in D15).
+A hop `A → B` exists iff the trace has an **Interaction leg** whose *per-leg*
+direction runs `A → B` **and** that leg has a derived **Lineage metadata** row: the
+trace supplies the candidate edges, the metadata supplies whether lineage actually
+flowed along them. So the walk ends where provenance ends, not where the call graph
+does. Reports the traversed legs as well as the reached entities (the route, so the
+answer can be drawn), each entity's fewest `hops` from the seed, and a three-valued
+`state` — `derived` / `pending` / `no-adjacent`.
+_Avoid_: reading the parent **Interaction**'s `caller_entity_id → callee_entity_id`
+as the hop direction. A **response** leg runs callee → caller, and an agent's data
+mostly *arrives* as the responses to calls it made (ADR-0025), so the parent's fixed
+direction would drop most real inbound flow. One consequence defeats intuition: a
+leaf tool's `fanout` is **not** empty, because its response delivers data back to its
+caller. Also avoid reading an empty `entities` list as "nothing flowed" — that is what
+`state` and `pending_frontier` (entities the walk could not continue through *yet*,
+because the onward leg has no derived row) exist to disambiguate, the same
+three-valued discipline **Lineage coverage** applies to a trace. Finally avoid reading
+a large `fanout` as thorough tracing: under the trivial matcher nothing prunes a hop,
+so these reads inherit matcher quality exactly as the triple does.
 
 **Lineage metadata**:
 The triple recorded per **Interaction leg** by **P-data-lineage**: (1)

@@ -583,9 +583,17 @@ use (inter-trace / Step II) and has no v1 semantics.
 
 **`target` has since gained a consumer.** When this decision was taken neither
 `target` nor `location` was read by anything. That is still true of `location`, but
-the spec's API section gives `target` its first reader — D14's `list destinations` —
-so it is no longer a parked column. No operation in the *algebra* reads it, which is
-what this decision was about; the read surface does.
+D14's `list destinations` gives `target` its first reader — shipped in D15 as
+`memory.TARGET_KINDS` / `memory.is_entity_target`, beside the other two predicates
+because the same deferred table supplies all three columns. No operation in the
+*algebra* reads it, which is what this decision was about; the read surface does.
+
+Note `TARGET_KINDS` and `SOURCE_KINDS` are both `{"tool"}` today, so a tool is
+usually both a source and a destination. They are independent taxonomy columns that
+happen to share a default and diverge once the declared table distinguishes a read
+tool from a write one — so `is_entity_target` must never be written as
+`not is_entity_source(...)`, and agreement between the two lists is an artifact rather
+than corroboration.
 
 **`Entities` membership follows data flow, not source-hood — resolved.**
 `Entities` answers "did data pass *through* this entity", which is a question about
@@ -677,10 +685,16 @@ questions that were open.
 | Read | Grain | Source |
 | --- | --- | --- |
 | per-leg lineage metadata | leg | `lineage_metadata` lookup — **shipped** (#118) |
-| `lineage fanout(entity)` | entity | trace **and** metadata (deferred) |
-| `lineage fanin(entity)` | entity | trace **and** metadata (deferred) |
-| `list sources` | trace | union of the trace's `data_sources` (deferred) |
-| `list destinations` | trace | taxonomy `target`, kind defaults today (deferred) |
+| `lineage fanout(entity)` | entity | trace **and** metadata — **shipped** |
+| `lineage fanin(entity)` | entity | trace **and** metadata — **shipped** |
+| `list sources` | trace | union of the trace's `data_sources` — **shipped** |
+| `list destinations` | trace | taxonomy `target`, kind defaults — **shipped** |
+
+All five now ship. The four added after #118 live in
+`retrieval/lineage_graph.py` behind two endpoints —
+`GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=fanin|fanout` and
+`GET /api/traces/{tid}/data-lineage-summary` — and D15 below records what their
+implementation had to decide that this decision left open.
 
 **The metadata triple cannot answer fanin/fanout alone, and the spec pairs the two
 sources correctly.** `lineage_metadata` records *sets* — sources, transformations,
@@ -731,14 +745,85 @@ is deferred), **cross-trace** (fanin/fanout do not cross a trace boundary — th
 Step II, so "ancestors" means ancestors *within the trace*), and **reading the
 entity-taxonomy table** (unchanged from D12).
 
+### D15 — The traversal's edge is a leg the trace has whose lineage was derived
+
+**Shipped**, implementing D14's four deferred reads (`retrieval/lineage_graph.py`).
+D14 settled *what* the reads are and *which two tables* answer them; it deliberately
+did not fix the edge rule. This records what the implementation had to decide, because
+each choice is one a later editor could plausibly reverse.
+
+**The edge rule.**
+
+```
+A hop A -> B exists iff the trace has an Interaction leg whose per-leg
+direction runs A -> B, AND that leg has a derived lineage_metadata row.
+```
+
+Both conjuncts are load-bearing and neither table can answer alone — D14's "the trace
+supplies the candidate edges, the metadata supplies whether lineage actually flowed
+along them", made operational.
+
+**Per-leg direction, never the interaction's caller→callee.** A response leg runs
+callee → caller, matching `traversal._producer_id`/`_consumer_id` and the UI's
+`legDirection`. This is the subtle half: keying on the parent's fixed direction would
+drop every response, and an agent's data mostly *arrives* as the responses to calls it
+made (ADR-0025) — so that reading would silently lose the majority of real inbound
+flow. A consequence worth stating because it defeats an intuition: a leaf tool's
+`fanout` is **not** empty, since its response delivers data back to its caller.
+
+**Absence of a lineage row ends the walk but is reported, not swallowed.** The result
+carries a `pending_frontier` naming the entities the walk reached but could not
+continue through, because the onward leg has no derived row *yet*. Without it "provenance
+genuinely ends here" and "P-data-lineage has not got here yet" would be the same empty
+tail — the same collapse D6 forbids for coverage, one level down. For the same reason
+the result carries a three-valued `state` (`derived` / `pending` / `no-adjacent`)
+rather than letting an empty entity list speak: an empty list has three unrelated
+causes and only `no-adjacent` is a complete answer.
+
+**In-Python BFS over an adjacency map, not a recursive CTE.** One flat query fetches
+the trace's legs with a `LEFT JOIN` lineage probe; the walk runs in Python. The
+recursive-CTE precedent (`processors/interactions/state.py`) walks a *single*
+self-referential FK with no filter; here an edge is derived from two tables plus the
+direction rule, and encoding that into a recursive join condition would bury the edge
+rule in SQL and put the frontier logic out of reach. Traces are bounded and
+`get_interactions` already scans one three times.
+
+**The cycle guard is load-bearing, unlike in the span walks.** `agent → tool → agent`
+is the ordinary shape of every tool call — both legs of one interaction form a
+two-node cycle — so the visited set is what makes the *common* case terminate. The
+span-tree CTEs in `state.py` have no such guard because a tree cannot cycle; do not
+read their absence as precedent.
+
+**Bounds are disclosed.** Hop and entity caps set `truncated` rather than silently
+returning a prefix, and a walk that merely *ends* on the boundary does not set it — a
+flag that cried truncation on complete answers would be trained away.
+
+**`truncated` and `pending_frontier` are different claims and must not be merged.**
+`pending_frontier` means *not derived yet — ask again later*; `truncated` means
+*derived, but this answer declined to return it all*. An entity skipped by the entity
+cap therefore lands in `truncated` only: putting it on the frontier would send a
+caller back to poll for something no amount of waiting delivers, since only a wider
+bound produces it. The two are independent and a single walk can legitimately report
+both.
+
+**Still no matcher, so D7 holds.** These reads re-walk structure and read persisted
+verdicts. An implementation that finds itself wanting a matcher call to answer a hop
+has violated D7; the edge should have been persisted instead.
+
+**The UI's refusal stands and is not superseded.** `ui/src/lib/lineageGraph.ts`
+clause 3 declines to walk transitively because "a transitive claim the backend never
+derived would be the UI inventing lineage". That reasoning was correct and is exactly
+what this decision removes *for the server*: the backend now derives the multi-hop
+claim, so it is citable. The client-side one-hop roll-up is unchanged, and a future UI
+consuming these endpoints would be rendering a served answer rather than composing one.
+
 ## Outputs
 
-- **API** — trace-scoped reads at two grains (D14). **Shipped**: per-leg lineage
-  metadata for a trace, `GET /api/traces/{tid}/data-lineage` (#118), carrying the D6
-  coverage status on the envelope (#120). **Deferred**: `lineage fanin`/`fanout` per
-  entity (trace **and** metadata — the trace supplies the edges, the metadata whether
-  lineage flowed along them), `list sources` (union of the trace's `data_sources`) and
-  `list destinations` (taxonomy `target`, kind defaults today).
+- **API** — trace-scoped reads at three grains (D14, edge rule in D15), all
+  **shipped**: per-leg lineage metadata, `GET /api/traces/{tid}/data-lineage` (#118),
+  carrying the D6 coverage status on the envelope (#120); `lineage fanin`/`fanout` per
+  entity, `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…`; and
+  `list sources` / `list destinations`, `GET /api/traces/{tid}/data-lineage-summary`.
 - **Tables** — a map `(interaction_id, leg_type) → lineage metadata` (D5), so
   "what are the data sources" is a read, not a recompute; `payload_hash` is a
   secondary index for the deferred reverse lookup.
@@ -785,9 +870,10 @@ matching how ADR-0024/0025 name their PKs.
 - **The `location` (internal/external) dimension** of the taxonomy (D12) — carried
   in the spec's table, read by nothing, reserved for Step II. (`target` is no longer
   in this position: D14's `list destinations` is its first consumer.)
-- **The entity-grain and trace-grain reads** (D14) — `lineage fanin`/`fanout`,
-  `list sources`, `list destinations`. The spec names all four; only the per-leg
-  read has shipped. Deployment-wide and cross-trace scope are deferred with them.
+- **Deployment-wide and cross-trace scope** for the entity- and trace-grain reads
+  (D14). The reads themselves shipped (D15), scoped to one trace; an all-traces
+  "what are my sources" and a walk that crosses a trace boundary (Step II) are not
+  in them.
 - **The transformation enumeration** (finalized with a human).
 - **Map `persisting-entity → payload`** (the reverse data-source index).
 - **Dependencies** (config, code/model versions) — non-data inputs to a

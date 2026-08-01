@@ -2,16 +2,23 @@
 
 **This module is the single named place for the data-lineage entity predicates.**
 Nothing else in the data-lineage code may test ``kind == "agent"`` or
-``kind == "tool"``: the traversal asks :func:`accumulates` and
-:func:`is_entity_source`, so redeclaring either is a one-line change here.
+``kind == "tool"``: callers ask :func:`accumulates`, :func:`is_entity_source` or
+:func:`is_entity_target`, so redeclaring any of them is a one-line change here.
 (The traversal test proves it for :func:`accumulates` by redeclaring the set and
 watching an inbound set grow.)
 
-Two predicates, one module, because **one deferred table supplies both**: the spec's
-Entity Taxonomy (``data_lineage_alg.md:24-35``) is meant to declare persistent
-storage, source and target per entity, and reading it is deferred (ADR-0028 D12).
-Until it lands both answers come from ``entities.kind``, and when it lands both
-functions grow the same lookup with no call site changing.
+Three predicates, one module, because **one deferred table supplies all of them**:
+the spec's Entity Taxonomy (``data_lineage_alg.md:24-35``) is meant to declare
+persistent storage, source and target per entity, and reading it is deferred
+(ADR-0028 D12). Until it lands every answer comes from ``entities.kind``, and when it
+lands all three functions grow the same lookup with no call site changing.
+
+Note the third predicate has a **read-path** consumer rather than an algebra one:
+:func:`is_entity_target` backs the trace-grain ``list destinations`` read (ADR-0028
+D14). It lives here anyway — beside the other two — because the deferred table
+supplies all three columns, so they must move together. Nothing in
+:mod:`.operations` or :mod:`.traversal` consults it, which is why D12's "``target``
+is unread" remains true *of the algebra*.
 
 ADR-0028 D2 — **transient/session memory is assumed always present**. Within a
 trace an accumulating entity retains every prior payload routed to it, so its
@@ -27,11 +34,11 @@ It is orthogonal to the matcher's verdict (``matched`` says whether upstream con
 survived; this says whether the entity also contributed content of its own), which
 is why it is a parameter of ``merge_lineage`` and not something an op could derive.
 
-**Why entity kind.** ``entities.kind`` is the only signal available today, so both
-predicates read it, but each stays in one named place rather than scattering
+**Why entity kind.** ``entities.kind`` is the only signal available today, so all
+three predicates read it, but each stays in one named place rather than scattering
 ``kind == 'agent'`` / ``kind == 'tool'`` checks — declared config is where this
 belongs eventually. An agent accumulates; an LLM or tool does not. A tool is a data
-source; an LLM or agent is not.
+source *and* a data target; an LLM or agent is neither.
 
 **Memory granularity stays open.** ADR-0028 lists blob-vs-keyed (per
 session/user/thread) as an unresolved item, and it matters for Step II (unkeyed
@@ -68,6 +75,26 @@ ACCUMULATING_KINDS: frozenset[str] = frozenset({"agent"})
 #
 # Editing this frozenset is the whole of "redeclare which entities are sources".
 SOURCE_KINDS: frozenset[str] = frozenset({"tool"})
+
+# The **Entity** kinds that are declared **data targets** — an entity data flows
+# *to*, as opposed to one that contributes content of its own. The spec's Entity
+# Taxonomy defaults (``data_lineage_alg.md:31-35``) put `target` ✓ on `tool` alone,
+# same as `source`: `LLM` ✗, `agent` ✗.
+#
+# Read by the trace-grain ``list destinations`` read (ADR-0028 D14), which is this
+# column's FIRST consumer — D12 recorded `target` as unread because no *operation*
+# in the algebra reads it, and that is still true: nothing in :mod:`.operations` or
+# :mod:`.traversal` consults this set. It lives here rather than in the retrieval
+# layer because the same deferred taxonomy table supplies all three predicates, so
+# they must move together when it lands.
+#
+# NOTE the v1 coincidence: this is currently the SAME set as `SOURCE_KINDS`, so
+# "sources" and "destinations" agree on membership for unrelated reasons. They are
+# two independent columns of the taxonomy that happen to share a default, and they
+# diverge as soon as the declared table distinguishes a read tool from a write one.
+# Do not collapse them into one constant — that would encode the coincidence as a
+# rule (ADR-0028 D14).
+TARGET_KINDS: frozenset[str] = frozenset({"tool"})
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -112,11 +139,35 @@ def is_entity_source(entity: Entity) -> bool:
     reporting an origin is the safe direction for a governance tool; the failure it
     replaces was *under*-reporting an external data ingress.
 
-    Note the taxonomy's other two columns have no consumer yet and so no function
-    here: ``target`` is unread, and ``location`` (internal/external) is a
-    placeholder with no v1 semantics (D12).
+    Of the taxonomy's other two columns, ``target`` now has :func:`is_entity_target`
+    below (a read-path consumer, not an algebra one — ADR-0028 D14), while
+    ``location`` (internal/external) remains a placeholder with no v1 semantics (D12).
     """
     return entity.kind in SOURCE_KINDS
+
+
+def is_entity_target(entity: Entity) -> bool:
+    """Is *entity* a **data target** — a place data flows *to*?
+
+    THE entity-target predicate, driven by :data:`TARGET_KINDS` — the spec's kind
+    defaults, since reading the declared taxonomy table is deferred
+    (``data_lineage_alg.md:26-27``).
+
+    **Read-path only.** This backs the trace-grain ``list destinations`` read
+    (ADR-0028 D14) and is consulted by nothing in the algebra: no operation in
+    :mod:`.operations` and no branch in :mod:`.traversal` asks whether an entity is a
+    target. That is why D12's "``target`` is unread" still holds where it was
+    written — it was a statement about the derivation, and the derivation has not
+    changed.
+
+    **Not the complement of :func:`is_entity_source`.** Source and target are two
+    independent taxonomy columns, and an entity can be both: the spec's defaults make
+    ``tool`` ✓ for each, because a tool legitimately both accepts data and returns
+    freshly-read data. So this predicate must never be written as ``not
+    is_entity_source(...)``, and the two sets sharing a value today is a coincidence
+    of the defaults rather than a rule (see :data:`TARGET_KINDS`).
+    """
+    return entity.kind in TARGET_KINDS
 
 
 def memory_node(entity: Entity, memory_key: str | None = None) -> MemoryNode:
