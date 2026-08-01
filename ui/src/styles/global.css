@@ -364,11 +364,14 @@ body {
 }
 
 /* The zoom control bar, floated over the bottom-left of the drawing area.
-   Bottom-LEFT specifically: the Dagre layout runs `rankdir: LR` from the
-   vertical centre, and the floating detail panel occupies the right, so this is
-   the corner least likely to sit on top of a node. Inside the surface's
-   `overflow: hidden` box, so it is clipped with the canvas rather than
-   overhanging it.
+   Bottom-LEFT specifically: the nodes are laid out on a layered grid that grows
+   RIGHTWARDS with call depth and DOWNWARDS with chronology (see
+   ExecutionFlowGraph's COLUMN_STEP_X / ROW_STEP_Y), so its mass is to the right,
+   and the floating detail panel occupies the right as well — leaving this the
+   corner least likely to sit on top of a node. (It was the same corner under the
+   earlier diagonal staircase and the `rankdir: LR` Dagre layout before it.)
+   Inside the surface's `overflow: hidden` box, so it is clipped with the canvas
+   rather than overhanging it.
 
    `width: max-content` keeps the container exactly as wide as the four buttons:
    PF's Toolbar is a block element and would otherwise span the full surface
@@ -415,4 +418,180 @@ body {
    v5-prefixed selector here matches nothing and fails silently. */
 .dg-graph-node--isolated .pf-topology__node__background {
   stroke-dasharray: 4 3;
+}
+
+/* ---------------------------------------------------------------------------
+   Lineage highlight (the `?legs=lineage` tab — ExecutionFlowGraph's LineageGraph
+   over lib/lineageGraph's derivation).
+
+   THE DE-EMPHASIS IS THE MECHANISM, not the brightening. In a graph of any density
+   "slightly brighter" is not findable — the reader has to compare every node
+   against every other to spot it — so everything outside the answer drops to a low
+   opacity and the answer is simply the only thing left at full strength.
+
+   NOTHING IS ENCODED IN HUE. Node and edge colour is already spoken for: a node's
+   stroke is its entity KIND (lib/entityKind) and a red edge is a failed leg, so
+   reusing colour here would either collide with those meanings or be invisible to a
+   colour-vision-deficient reader. Opacity and stroke WEIGHT (plus, for the selected
+   node, a dash) carry the whole distinction, which also means it survives a
+   greyscale print.
+
+   These classes are only ever emitted while a highlight is ACTIVE — the Execution
+   Flow tab's elements carry no highlight class at all (see ExecutionFlowGraph's
+   HighlightRole), so "no question asked" can never be painted as "not part of the
+   answer".
+
+   Note the class is `pf-topology__…`, NOT `pf-v5-topology__…`, for the same reason
+   the isolated rule above spells it that way — PF's topology package carries no
+   `v5` infix and a v5-prefixed selector matches nothing, silently. */
+
+/* Everything outside the answer. `opacity` on the whole `<g>` rather than a
+   per-shape stroke change, so the node's label fades WITH its circle: a full-
+   contrast label over a ghosted circle is the worst of both, still drawing the eye
+   to the thing being de-emphasised. 0.25 is dim enough to recede and high enough to
+   keep the graph's shape legible — the reader still needs the context to read the
+   answer against. */
+.dg-graph-node--dimmed,
+.dg-graph-edge--dimmed,
+.dg-graph-edge-tag--dimmed {
+  opacity: 0.25;
+}
+
+/* A SOURCE of the selected entity's data. Full opacity (it is what is left when the
+   rest recedes) plus a heavier outline, so the highlight also survives at a zoom
+   level where opacity differences compress. */
+.dg-graph-node--source .pf-topology__node__background {
+  stroke-width: 4px;
+}
+
+/* THE SELECTED entity — the node the reader asked ABOUT, not one of the answers.
+   Distinguished from a source by a DASH pattern rather than by another weight or
+   another colour: the two states have to be told apart at a glance even when the
+   selected node is also one of its own sources (a self-call, or data it contributed
+   earlier coming back — see lib/lineageGraph clause 4), in which case both classes
+   apply to one node and a weight-vs-weight distinction would simply be lost.
+
+   Deliberately NOT the same dash as `--isolated` above: the two can co-occur (an
+   isolated entity can be selected) and the longer dash reads as deliberate emphasis
+   rather than as the "present but unconnected" hint. */
+.dg-graph-node--selected .pf-topology__node__background {
+  stroke-width: 4px;
+  stroke-dasharray: 8 3;
+}
+
+/* A CARRIER: the interaction leg that actually delivered the data. Thicker so the
+   route between the lit nodes reads as a path rather than as an incidental line —
+   this is what makes the answer a story instead of a set. Applied to the link only
+   (not the arrowhead), which keeps its own size from PF's endTerminalSize. */
+.dg-graph-edge--carrier .pf-topology__edge__link {
+  stroke-width: 3px;
+}
+
+/* ---------------------------------------------------------------------------
+   Interaction diagram (InteractionDiagram / lib/sequenceDiagram): the
+   UML-style sequence diagram of the flat leg sequence.
+
+   Only the things that are genuinely PRESENTATION live here. Every coordinate
+   is computed in the component from the lifeline/message counts (see its
+   metrics block), because a sequence diagram's geometry is dictated by its
+   column and row assignment, not by a stylesheet — and because per-instance
+   colours (a lifeline's kind tint, a leg's error red) have to be attributes on
+   the element, not rules keyed on a class this file cannot know about.
+   --------------------------------------------------------------------------- */
+
+/* The scroll container. `overflow: auto` — NOT a `width: 100%` SVG — so a wide
+   trace SCROLLS rather than being shrunk to illegibility or silently clipped:
+   the arrows are the content, and a 12-participant diagram squeezed into the
+   panel width would have its seq tags collide into a smear. The fill and border
+   match `.dg-graph-surface` so the two visual tabs read as the same kind of
+   canvas. All tokens, no raw hex. */
+.dg-seq-scroll {
+  overflow: auto;
+  max-height: calc(100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) - 12rem);
+  min-height: 200px;
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border);
+  border-radius: 4px;
+}
+
+/* The SVG sits at its natural (viewBox) size inside the scroller; `display:
+   block` kills the inline-element baseline gap that would otherwise show as a
+   few stray pixels of container below it. */
+.dg-seq-svg {
+  display: block;
+}
+
+/* The vertical lifeline. Dashed — the UML convention, and it also keeps the
+   line from competing with the solid message arrows that cross it. The STROKE
+   colour is set per-element from lib/entityKind (the kind tint), so only the
+   dash and the weight are stated here. */
+.dg-seq-lifeline {
+  stroke-dasharray: 3 4;
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+/* The participant head box. The stroke and fill are the kind colour, set
+   per-element; the low fill opacity is what turns that saturated reference into
+   a tint the dark theme can carry text on top of. */
+.dg-seq-head {
+  fill-opacity: 0.16;
+  stroke-width: 1.5;
+}
+
+.dg-seq-head-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  fill: var(--dg-color-label);
+}
+
+/* The per-message `seq` tag. Muted rather than full-contrast for the same
+   reason `.dg-graph-edge-tag` is: the ordinal is a reference a reader looks up
+   when they need it, not the primary content of the arrow, and at two tags per
+   interaction a bright treatment turns a busy trace into noise. */
+.dg-seq-tag {
+  font-size: 0.7rem;
+  fill: var(--dg-color-label);
+  /* The tag sits over the row's hit strip; letting it swallow the pointer would
+     put a dead spot in the middle of the click target. */
+  pointer-events: none;
+}
+
+/* An error leg's tag matches its arrow, so the colour reads as one signal about
+   one leg rather than two unrelated marks. Same `--dg-color-error` the arrow
+   stroke uses (set in InteractionDiagram's MessageRow). */
+.dg-seq-tag--error {
+  fill: var(--dg-color-error);
+}
+
+/* The full-width invisible hit strip behind each message. `pointer-events: all`
+   because a transparent fill is not hit-testable by default — without it a
+   reader would have to click the 1.5px arrow itself. */
+.dg-seq-row-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.dg-seq-row {
+  cursor: pointer;
+}
+
+.dg-seq-row:hover .dg-seq-row-hit {
+  fill: var(--dg-row-highlight);
+  fill-opacity: 0.4;
+}
+
+/* The selected interaction's messages — BOTH legs, since the selection is the
+   interaction and lighting only the clicked leg would imply legs are separately
+   selectable. Same `--dg-row-highlight` tint the flow tables' selected row
+   uses, so "selected" looks the same whichever tab a reader is on. */
+.dg-seq-row--selected .dg-seq-row-hit {
+  fill: var(--dg-row-highlight);
+}
+
+/* Keyboard focus. The rows are focusable `<g role="button">` elements, and an
+   SVG group takes no default focus ring in every browser, so it is stated. */
+.dg-seq-row:focus-visible {
+  outline: 2px solid var(--dg-color-label);
+  outline-offset: -2px;
 }

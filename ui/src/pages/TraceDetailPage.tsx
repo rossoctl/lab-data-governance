@@ -33,7 +33,8 @@ import type { Span } from '../types';
 // The Execution Flow graph is NOT a third segment here. It used to be
 // (`/graph`), but it is a presentation of the flow view's own two reads rather
 // than a peer dataset of the span tree, so it now lives inside the flow view as
-// `?legs=graph` alongside Tree and Flat (see FlowTables' LegViewKey). A
+// `?legs=graph` alongside Tree, Flat, the Interaction diagram and Lineage (see
+// FlowTables' LegViewKey). A
 // consequence worth naming: `/traces/{id}/graph` is now an unknown segment and
 // therefore redirects to `/spans` like any other typo.
 type ViewKey = 'tree' | 'flow';
@@ -221,13 +222,18 @@ export function TraceDetailPage() {
     iid: searchParams.get('iid') ?? undefined,
     eid: searchParams.get('eid') ?? undefined,
   };
-  // The flow view's Interactions tab (?legs): Tree | Flat | Execution Flow.
-  // `tree` is the default and writes no param — same drop-the-default rule the
-  // list view's ?window uses, so a canonical URL never carries `?legs=tree`.
-  // Anything unrecognised reads as `tree` rather than throwing, matching
-  // parseWindowKey's coercion; the coercion itself lives in lib/flow next to the
-  // type it coerces to, so this read and the tab bar's onSelect share one
-  // definition of what a valid value is.
+  // The flow view's Interactions tab (?legs): Tree | Flat | Interaction diagram |
+  // Execution Flow | Lineage. `tree` is the default and writes no param — same
+  // drop-the-default rule the list view's ?window uses, so a canonical URL never
+  // carries `?legs=tree`. Anything unrecognised reads as `tree` rather than
+  // throwing, matching parseWindowKey's coercion; the coercion itself lives in
+  // lib/flow next to the type it coerces to, so this read and the tab bar's
+  // onSelect share one definition of what a valid value is.
+  //
+  // Nothing here enumerates the non-default values: the read goes through
+  // `parseLegViewKey` and the write is "drop the param iff it is the default", so a
+  // new presentation needs only the type and the tab — which is why adding
+  // `diagram`, and then `lineage`, touched this file's comments and nothing else.
   const legView: LegViewKey = parseLegViewKey(searchParams.get('legs'));
   const handleLegViewChange = useCallback(
     (key: LegViewKey) => {
@@ -343,10 +349,11 @@ export function TraceDetailPage() {
             </TabTitleText>
           }
         />
-        {/* The Execution Flow graph is reached from INSIDE this view, as its
-            `?legs=graph` tab — it draws the same entities/interactions these
-            tables list, so it belongs beside Tree and Flat rather than up here
-            claiming to be a peer of the span tree. */}
+        {/* The Execution Flow graph, the Interaction diagram and the Lineage
+            highlight are all reached from INSIDE this view, as its `?legs=graph` /
+            `?legs=diagram` / `?legs=lineage` tabs — they draw the same
+            entities/interactions these tables list, so they belong beside Tree and
+            Flat rather than up here claiming to be peers of the span tree. */}
         <Tab eventKey="flow" title={<TabTitleText>Interaction flow</TabTitleText>} />
       </Tabs>
 

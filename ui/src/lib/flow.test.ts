@@ -5,6 +5,7 @@ import {
   durationMs,
   roleMeta,
   legDirection,
+  parseLegViewKey,
 } from './flow';
 import type { Entity, Interaction } from './flow';
 
@@ -22,6 +23,38 @@ const entity = (kind: string, natural_key: string): Entity =>
  * the rule both depend on: when it was written twice, a response row could read
  * `A → B` in the table while the graph drew `B → A` for the same leg.
  */
+/**
+ * The `?legs` coercion. Tested here, at the single definition, rather than only
+ * through TraceDetailPage's URL round-trips: the page's read and the tab bar's
+ * `onSelect` both call this, so a value one accepts and the other does not would be
+ * a tab that activates but never survives a reload.
+ */
+describe('parseLegViewKey', () => {
+  it('accepts every non-default presentation verbatim', () => {
+    expect(parseLegViewKey('flat')).toBe('flat');
+    expect(parseLegViewKey('diagram')).toBe('diagram');
+    expect(parseLegViewKey('graph')).toBe('graph');
+    expect(parseLegViewKey('lineage')).toBe('lineage');
+  });
+
+  it('reads absent, empty and unrecognised values as the default tree', () => {
+    // Coerces rather than throwing, matching parseWindowKey's treatment of
+    // `?window`. `diagra`/`Diagram` and `lineag`/`Lineage` specifically: adding a
+    // value to the union must not make a typo or the wrong case resolve to anything.
+    expect(parseLegViewKey(null)).toBe('tree');
+    expect(parseLegViewKey(undefined)).toBe('tree');
+    expect(parseLegViewKey('')).toBe('tree');
+    expect(parseLegViewKey('tree')).toBe('tree');
+    expect(parseLegViewKey('diagra')).toBe('tree');
+    expect(parseLegViewKey('Diagram')).toBe('tree');
+    expect(parseLegViewKey('lineag')).toBe('tree');
+    expect(parseLegViewKey('Lineage')).toBe('tree');
+    // Not the neighbouring word either: `lineage` is a tab, `data-lineage` is the
+    // resource it reads, and the two must not be interchangeable in a URL.
+    expect(parseLegViewKey('data-lineage')).toBe('tree');
+  });
+});
+
 describe('legDirection', () => {
   const ix = { caller_entity_id: 'A', callee_entity_id: 'B' };
 

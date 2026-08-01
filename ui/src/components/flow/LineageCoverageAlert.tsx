@@ -21,24 +21,58 @@ import type { LineageStatus } from '../../types';
  * window. Claiming a truncation nobody has established would make the banner
  * noise, which is how a real one gets ignored.
  *
- * `isError` is the exception to that silence, and it is not a `status` value: a
+ * `isError` and `isLoading` are the two exceptions to that silence, and neither is
+ * a `status` value: a
  * failed read establishes *nothing*, including that coverage is complete — and in
  * this view silence IS the complete-coverage statement. So an error gets its own
  * banner, deliberately worded as *unknown* rather than as a truncation: it must
  * not let a broken read look like clean coverage, and equally must not invent a
  * prefix claim it never obtained. Distinct from the `null` case, where the read
  * did succeed and simply has nothing yet.
+ *
+ * `isLoading` is the same argument one step earlier: the tables paint before this
+ * query settles, so without its own arm an in-flight read reaches `status === null`
+ * and goes silent — publishing the clean-coverage signal while the answer is still
+ * unknown. Worded as *not yet known* and left non-assertive, since it resolves on
+ * its own in the common case.
  */
 export function LineageCoverageAlert({
   status,
   stoppedAtSeq,
   isError,
+  isLoading,
 }: {
   status: LineageStatus;
   stoppedAtSeq: number | null;
   /** The trace-scoped lineage read failed — coverage is unknown, not fine. */
   isError: boolean;
+  /**
+   * The trace-scoped lineage read is still in flight. Needs its own arm for the
+   * same reason as `isError`: the tables render before this query settles (their
+   * spinner gates on the interactions/entities reads only), and an in-flight read
+   * has established nothing about coverage — but in this view silence is read as
+   * the affirmative "no truncation" statement. Falling through to `status ===
+   * null` would emit exactly the clean-coverage signal a `partial` trace exists
+   * to prevent, for as long as the read takes.
+   */
+  isLoading: boolean;
 }) {
+  if (isLoading) {
+    return (
+      <Alert
+        variant="info"
+        isInline
+        title="Checking data lineage coverage for this trace"
+        // Not role="alert": unlike the error and truncation arms this is
+        // transient status chatter, and an assertive interrupt on every trace
+        // open would train the reader to tune the strip out. PF's default
+        // aria-live="polite" is the right register.
+        style={{ marginBottom: '0.75rem' }}
+      >
+        Whether the data sources shown below are complete is not yet known.
+      </Alert>
+    );
+  }
   if (isError) {
     return (
       <Alert

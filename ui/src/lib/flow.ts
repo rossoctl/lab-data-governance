@@ -11,22 +11,41 @@
 /**
  * How the flow view's Interactions section presents this trace's interactions:
  * the default parent/child `tree` (depth-indented interactions), `flat` (one row
- * per request/response leg, ordered by the trace-wide leg `seq`), or `graph` (the
- * Execution Flow — the same interactions drawn as a directed who-called-whom
- * graph). Mirrored to/from the URL as `?legs=flat` / `?legs=graph`; `tree` is the
- * default and writes no param, so canonical URLs stay clean.
+ * per request/response leg, ordered by the trace-wide leg `seq`), `diagram` (a
+ * UML-style sequence diagram of that same flat leg sequence — lifelines across
+ * the top, one arrow per leg down the page), `graph` (the Execution Flow — the
+ * same interactions drawn as a directed who-called-whom graph), or `lineage` (that
+ * SAME graph with the selected entity's **Data lineage** sources highlighted).
+ * Mirrored to/from the URL as `?legs=flat` / `?legs=diagram` / `?legs=graph` /
+ * `?legs=lineage`; `tree` is the default and writes no param, so canonical URLs
+ * stay clean.
  *
  * `graph` joined this set (rather than staying the top-level `/graph` view
- * segment it was) because all three are presentations of the SAME two reads the
+ * segment it was) because all of them are presentations of the SAME two reads the
  * flow view already holds: the tables answer "what happened, in order", the graph
  * answers "who talked to whom". A top-level tab claimed it was a peer of the span
  * tree — a different dataset — which it never was.
+ *
+ * `diagram` sits between `flat` and `graph` for the same reason, and in that
+ * ORDER deliberately: it is the flat leg list read down the page (so it belongs
+ * next to `flat`, whose row order it reproduces exactly), with the who-called-whom
+ * axis of the graph laid out horizontally. It is the two neighbours' shared
+ * middle, not a fourth unrelated dataset.
+ *
+ * `lineage` sits LAST, immediately after `graph`, and the adjacency is the point:
+ * it draws the identical node/edge set (one `deriveGraph`, one component — see
+ * `lib/lineageGraph` and `ExecutionFlowGraph`) and adds exactly one thing, a
+ * highlight of where the selected entity's data came from. Ordering it after
+ * `graph` says "same picture, one more question asked of it"; putting it anywhere
+ * earlier would separate it from the view it is a reading of. It also reads one
+ * MORE resource than its four neighbours (the trace's data-lineage, already held
+ * by the flow view), which is a second reason it is not one of them.
  *
  * Lives here, in the flow view's pure data module, rather than in `FlowTables`:
  * the page owns the `?legs` URL param and the component owns the tab bar, so both
  * need the type and the coercion, and neither is a natural owner of it.
  */
-export type LegViewKey = 'tree' | 'flat' | 'graph';
+export type LegViewKey = 'tree' | 'flat' | 'diagram' | 'graph' | 'lineage';
 
 /**
  * Coerce an arbitrary `?legs` value to a `LegViewKey`. Anything unrecognised —
@@ -35,7 +54,9 @@ export type LegViewKey = 'tree' | 'flat' | 'graph';
  * and the tab bar's `onSelect` cannot drift about what a valid value is.
  */
 export function parseLegViewKey(raw: string | null | undefined): LegViewKey {
-  return raw === 'flat' || raw === 'graph' ? raw : 'tree';
+  return raw === 'flat' || raw === 'diagram' || raw === 'graph' || raw === 'lineage'
+    ? raw
+    : 'tree';
 }
 
 /** A derived entity (ADR-0013): cross-trace-stable, no trace_id column. */

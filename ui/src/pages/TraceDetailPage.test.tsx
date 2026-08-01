@@ -495,6 +495,48 @@ describe('TraceDetailPage', () => {
     expect(screen.getByLabelText('Interactions')).toBeInTheDocument();
   });
 
+  it('writes ?legs=diagram when the Interaction diagram tab is selected, and swaps the table', async () => {
+    // The same URL contract the Flat tab has, restated for the new presentation —
+    // the page enumerates no tab values (the read goes through `parseLegViewKey`,
+    // the write drops the param iff it is the default), so this pins that the
+    // generic path really does carry a value it never mentions by name.
+    //
+    // `mockFetchWithGraph`, not `mockFetchWithFlow`: the diagram needs both
+    // participants RESOLVED to draw a lifeline, and the latter fixture's
+    // caller/callee are deliberately null (it is the empty-state fixture).
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+
+    await userEvent.click(await screen.findByRole('tab', { name: 'Interaction diagram' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('legs=diagram'),
+    );
+    expect(await screen.findByTestId('interaction-diagram')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
+  });
+
+  it('restores the Interaction diagram tab from ?legs=diagram on load', async () => {
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=diagram' });
+
+    expect(await screen.findByTestId('interaction-diagram')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Interaction diagram' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('keeps ?legs=diagram across a row selection (the two params coexist)', async () => {
+    // Clicking a diagram message selects its parent INTERACTION and writes ?iid;
+    // the tab param must survive that rewrite rather than being dropped.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=diagram' });
+
+    await userEvent.click((await screen.findAllByTestId('dg-seq-message'))[0]);
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('iid=i1'));
+    expect(screen.getByTestId('location')).toHaveTextContent('legs=diagram');
+  });
+
   it('keeps ?legs=flat across a row selection (the two params coexist)', async () => {
     mockFetchWithFlow();
     renderWithProviders(harness(), { route: '/traces/T1/flow?legs=flat' });
@@ -671,9 +713,18 @@ describe('TraceDetailPage', () => {
         .map((t) => t.textContent),
     );
     // The top-level row is back to TWO tabs; Execution Flow is not one of them,
-    // and the ?legs row carries it as its third, beside Tree and Flat.
+    // and the ?legs row carries it beside Tree, Flat, the Interaction diagram
+    // (which sits between Flat and the graph — it renders the Flat list's own rows
+    // as a picture, so it belongs next to that tab) and Lineage, which sits
+    // immediately after the graph because it IS the graph plus a highlight.
     expect(bars).toContainEqual(['Span tree', 'Interaction flow']);
-    expect(bars).toContainEqual(['Tree', 'Flat', 'Execution Flow']);
+    expect(bars).toContainEqual([
+      'Tree',
+      'Flat',
+      'Interaction diagram',
+      'Execution Flow',
+      'Lineage',
+    ]);
     expect(bars).toHaveLength(2);
 
     // The default Tree is active, so the graph tab is not.
@@ -792,6 +843,116 @@ describe('TraceDetailPage', () => {
     // …and the graph is now a DESCENDANT of the gutter, so it shrinks rather than
     // being overlapped.
     expect(screen.getByTestId('execution-flow-graph').closest('.dg-detail-gutter')).not.toBeNull();
+  });
+
+  // --- `?legs=lineage`: the same graph with the selected entity's data sources
+  // highlighted. The URL-level contract only — this file owns `?legs`, and the
+  // highlight's own logic lives in lib/lineageGraph.test.ts.
+
+  /** The Lineage tab's own surface, past the SAME lazy chunk the graph rides. */
+  async function findLineageGraph() {
+    return screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+  }
+
+  it('writes ?legs=lineage when the Lineage tab is clicked, and swaps the table', async () => {
+    // The same generic URL path every non-default presentation takes: this page
+    // enumerates no tab values (the read goes through `parseLegViewKey`, the write
+    // drops the param iff it is the default), so this pins that the generic path
+    // really does carry a value the page never names.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+
+    const tab = await screen.findByRole('tab', { name: 'Lineage' });
+    await userEvent.click(tab);
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('legs=lineage'),
+    );
+    expect(tab).toHaveAttribute('aria-selected', 'true');
+    // Still the flow view — the path segment does not change, only the param.
+    expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow');
+    expect(await findLineageGraph()).toBeInTheDocument();
+    expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
+    // The Entities table stays, and here it is load-bearing rather than merely kept:
+    // it is the only way to select the entity this tab answers about.
+    expect(screen.getByLabelText('Entities')).toBeInTheDocument();
+  });
+
+  it('restores the Lineage tab from ?legs=lineage on load', async () => {
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=lineage' });
+
+    expect(await findLineageGraph()).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Lineage' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    // The Execution Flow tab is NOT also active: they are two tabs over one renderer,
+    // not one tab with two names.
+    expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+    expect(screen.queryByTestId('execution-flow-graph')).not.toBeInTheDocument();
+  });
+
+  it('drops ?legs when switching from Lineage back to Tree', async () => {
+    // The drop-the-default rule, restated for the newest tab.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=lineage' });
+
+    await findLineageGraph();
+    await userEvent.click(screen.getByRole('tab', { name: 'Tree' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).not.toHaveTextContent('legs'),
+    );
+    expect(screen.getByLabelText('Interactions')).toBeInTheDocument();
+    expect(screen.queryByTestId('lineage-graph')).not.toBeInTheDocument();
+  });
+
+  it('coerces an unrecognised near-miss of ?legs=lineage to Tree', async () => {
+    // Adding `lineage` to LegViewKey must not make a typo resolve to it — nor make
+    // the RESOURCE name (`data-lineage`) a valid tab value, which would be an easy
+    // thing to get wrong given they sit next to each other in this feature.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=data-lineage' });
+
+    expect(await screen.findByRole('tab', { name: 'Tree' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByLabelText('Interactions')).toBeInTheDocument();
+    expect(screen.queryByTestId('lineage-graph')).not.toBeInTheDocument();
+  });
+
+  it('keeps ?legs=lineage across the entity selection that DRIVES it', async () => {
+    // The coexistence case that matters most for this tab: selecting an entity is not
+    // an aside here, it is how the tab is used at all. So the `?eid` write must carry
+    // the tab param through rather than dropping it — otherwise the act of asking the
+    // question would navigate away from the answer.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=lineage' });
+
+    await findLineageGraph();
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('agent-a'));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('eid=e1'));
+    expect(screen.getByTestId('location')).toHaveTextContent('legs=lineage');
+    // Both params in one URL means the whole question is deep-linkable: "this trace,
+    // the lineage view, this entity".
+    expect(screen.getByTestId('lineage-graph')).toBeInTheDocument();
+  });
+
+  it('shows the graph empty state through ?legs=lineage when nothing is derived', async () => {
+    // The empty-derivation wiring is SHARED with the Execution Flow tab (one
+    // `graphReadState`), and this is the guard that it really is shared: an empty
+    // trace must say so on this tab too rather than render a blank box with a
+    // "select an entity" instruction over nothing.
+    mockFetchWithFlow();
+    renderWithProviders(harness(), { route: '/traces/T1/flow?legs=lineage' });
+
+    expect(
+      await screen.findByText(/No entities or interactions for this trace yet/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('lineage-graph')).not.toBeInTheDocument();
   });
 
   it('redirects the retired /graph segment to the canonical /spans', async () => {

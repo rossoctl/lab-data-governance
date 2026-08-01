@@ -257,12 +257,12 @@ describe('FlowTables', () => {
     expect(within(cell(body[1], 'Callee')).getByText('agent-a')).toBeInTheDocument();
   });
 
-  // --- The Execution Flow graph as the third `?legs` tab. It moved here from the
+  // --- The Execution Flow graph as the last `?legs` tab. It moved here from the
   // top-level `/graph` view segment because it presents the SAME two reads these
   // tables do. The URL-level contract is pinned in TraceDetailPage.test.tsx (which
   // owns `?legs`); these are the cases only this component can state — that the
-  // tab set really is one row of three, that the graph replaces the interactions
-  // table but not the Entities table, and that the swap costs no extra fetch.
+  // tab set really is one row, that the graph replaces the interactions table but
+  // not the Entities table, and that the swap costs no extra fetch.
 
   it('offers Execution Flow in the same tab row as Tree and Flat', async () => {
     mockFetch();
@@ -270,13 +270,60 @@ describe('FlowTables', () => {
       <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    // One tab row, three tabs, in this order — not a separate control elsewhere.
+    // One tab row, five tabs, in this ORDER — not a separate control elsewhere.
+    // `Interaction diagram` sits between Flat and Execution Flow deliberately: it
+    // renders the Flat list's own rows as a picture, so it belongs next to the tab
+    // whose order it reproduces rather than after the graph.
+    // `Lineage` sits immediately AFTER Execution Flow, and the adjacency is the
+    // claim: it draws the identical graph (one component, one deriveGraph) and adds
+    // only a highlight, so it is the graph tab's reading rather than a peer of it.
     const row = screen.getByRole('tablist');
     expect(within(row).getAllByRole('tab').map((t) => t.textContent)).toEqual([
       'Tree',
       'Flat',
+      'Interaction diagram',
       'Execution Flow',
+      'Lineage',
     ]);
+  });
+
+  it('swaps the interactions table for the sequence diagram on the Interaction diagram tab', async () => {
+    // The diagram stands in for the interactions TABLE, like the graph — and for
+    // the same reason keeps the Entities table, which is a fact of the flow view
+    // rather than a part of that table. Unlike the graph it is NOT lazily imported
+    // (hand-rolled SVG, no new dependency), so no chunk-load await is needed here.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Interaction diagram' }));
+
+    expect(await screen.findByTestId('interaction-diagram')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Entities')).toBeInTheDocument();
+    // One lifeline per participant and one arrow per LEG of the single fixture
+    // interaction — the same two rows the Flat tab lists.
+    expect(screen.getAllByTestId('dg-seq-lifeline')).toHaveLength(2);
+    expect(screen.getAllByTestId('dg-seq-message')).toHaveLength(2);
+  });
+
+  it('opens the interaction detail panel when a diagram message is clicked', async () => {
+    // The diagram honours the same `onSelect(ix)` contract the tables do: a click
+    // on either leg selects the parent INTERACTION, since legs have no selection of
+    // their own. Asserted here rather than only in the component's own test because
+    // this is where the callback is actually wired to `selectInteraction`.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Interaction diagram' }));
+    await userEvent.click((await screen.findAllByTestId('dg-seq-message'))[1]);
+
+    // The same panel a Flat/Tree row click opens, with the interaction's fields.
+    await waitFor(() => expect(screen.getByText('agent calls search')).toBeInTheDocument());
+    expect(screen.getByText('interaction_id')).toBeInTheDocument();
   });
 
   it('swaps the interactions table for the graph, keeping the Entities table', async () => {
@@ -345,6 +392,303 @@ describe('FlowTables', () => {
     // …and the graph is now inside the gutter, so it shrinks instead of hiding
     // behind the panel. Same container the tables use — one rule, not two.
     const gutter = screen.getByTestId('execution-flow-graph').closest('.dg-detail-gutter');
+    expect(gutter).not.toBeNull();
+    expect(gutter).toContainElement(screen.getByLabelText('Entities'));
+  });
+
+  // --- The Lineage tab: the SAME graph with the selected entity's data sources
+  // highlighted. These are the cases only this component can state — that the tab
+  // exists in the right place, that it rides the graph's own lazy chunk, that it is
+  // driven by the EXISTING `?eid` selection rather than a second notion of one, and
+  // that it costs no fetch beyond the three this view already makes. The highlight's
+  // own logic is proven in lib/lineageGraph.test.ts (jsdom cannot measure an SVG, so
+  // the shape of the answer is not assertable here — see ExecutionFlowGraph.test.tsx's
+  // header for the same reasoning).
+
+  it('offers Lineage as the last ?legs tab, riding the graph\'s own lazy chunk', async () => {
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+
+    // Its own testid, distinct from the Execution Flow tab's, so the two tabs are
+    // separately addressable even though they are one component underneath.
+    const lineage = await screen.findByTestId('lineage-graph', undefined, {
+      timeout: GRAPH_CHUNK_TIMEOUT,
+    });
+    expect(lineage).toBeInTheDocument();
+    // It stands in for the interactions TABLE, like the graph and the diagram — and
+    // keeps the Entities table, which here is not merely retained but load-bearing:
+    // it is the ONLY way to select the entity this tab answers about.
+    expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Entities')).toBeInTheDocument();
+  });
+
+  it('instructs the reader to select an entity, claiming nothing, when none is selected', async () => {
+    // The first of the three absence states. With no entity selected the graph is
+    // drawn at full strength and asserts nothing about anyone's sources — an
+    // instruction, not a verdict.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+
+    expect(
+      screen.getByText(/Select an entity to see where its data came from/i),
+    ).toBeInTheDocument();
+    // Nothing is dimmed: "no question asked" must not be painted as "not part of the
+    // answer" (see ExecutionFlowGraph's HighlightRole on why `'none'` and `'dimmed'`
+    // are different values). Asserted as the ABSENCE of the class — a DOM fact jsdom
+    // can honestly check, unlike the visual dimming itself, which needs a browser.
+    //
+    // EDGES, not nodes. jsdom gives the topology surface zero dimensions, so PF culls
+    // every node's CONTENT (`Graph.isNodeInView` — see ExecutionFlowGraph.test.tsx's
+    // long note) and each `<g data-kind="node">` renders EMPTY: the node's own
+    // className never reaches the DOM here and asserting on it would silently pass
+    // for the wrong reason. Edge content is not culled, so the edge classes are the
+    // honest observable for the highlight in this environment.
+    expect(document.querySelector('.dg-graph-edge--dimmed')).toBeNull();
+    expect(document.querySelector('.dg-graph-edge--carrier')).toBeNull();
+    // The graph IS mounted — so the absence above is "no highlight", not "no graph".
+    expect(document.querySelectorAll('[data-kind="edge"]').length).toBeGreaterThan(0);
+  });
+
+  it('drives the highlight from the EXISTING entity selection, not a second one', async () => {
+    // Requirement: one notion of "selected entity". Clicking the Entities table row
+    // both opens the detail panel (the pre-existing behaviour) and drives this tab's
+    // highlight, because both read the same `selection` state.
+    //
+    // agent-a (e1) calls search (e2); the request leg's lineage names agent-a's
+    // natural key as a source. Selecting `search` must therefore mark e2 selected and
+    // light e1 as its source.
+    const legs = [
+      {
+        interaction_id: 'i1',
+        leg_type: 'request',
+        payload_hash: null,
+        lineage: {
+          data_sources: ['agent:(p,a)'],
+          source_transformations: {},
+          entities: [],
+          seq: 1,
+        },
+      },
+    ];
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/data-lineage'))
+        return { ok: true, status: 200, json: async () => ({ legs, status: 'complete', stopped_at_seq: null }) };
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: INTERACTIONS }) };
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.includes('/entities/')) return { ok: true, status: 200, json: async () => ({ spans: ENTITY_EVIDENCE }) };
+      if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
+      return { ok: true, status: 200, json: async () => ({ spans: [] }) };
+    });
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+
+    // Select `search` (e2) in the Entities table — the same click that selects a row
+    // anywhere else in this view.
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+
+    // The instruction is gone (a question has now been asked)…
+    await waitFor(() =>
+      expect(
+        screen.queryByText(/Select an entity to see where its data came from/i),
+      ).toBeNull(),
+    );
+    // …and the same click also opened the entity detail panel, proving both read one
+    // selection rather than each holding their own.
+    expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument();
+
+    // The highlight, asserted through the EDGES — the honest observable in jsdom (node
+    // content is culled; see the note in the "instructs the reader" case above). The
+    // request leg (e1 → e2) is the one that delivered data to `search`, so it is the
+    // carrier; the response leg is not part of the answer, so it is dimmed.
+    //
+    // This is a MODEL/CLASS assertion, not a visual one: jsdom applies no stylesheet
+    // rules to computed style, so the actual dimming is Playwright/by-hand territory
+    // and is deliberately not claimed here.
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-id="i1:request"] .dg-graph-edge--carrier'),
+      ).not.toBeNull(),
+    );
+    expect(
+      document.querySelector('[data-id="i1:response"] .dg-graph-edge--dimmed'),
+    ).not.toBeNull();
+    // The carrier is not ALSO dimmed — the two roles are exclusive, so a reader can
+    // never be shown an arrow that is both the answer and not the answer.
+    expect(
+      document.querySelector('[data-id="i1:request"] .dg-graph-edge--dimmed'),
+    ).toBeNull();
+    // The seq tag follows its own arrow, so a bright number never floats over a faded
+    // line as the most eye-catching thing on screen.
+    expect(
+      document.querySelector('[data-id="i1:request"] .dg-graph-edge-tag--carrier'),
+    ).not.toBeNull();
+  });
+
+  it('says "not yet computed" — not "no sources" — when the inbound legs have no lineage', async () => {
+    // The second absence state, and the one this whole feature is disciplined around:
+    // legs DO deliver to the entity, but none has a derived row. An empty highlight
+    // with no words would read as "we checked and found nothing".
+    mockFetchWithLineage([{ ...LINEAGE_LEGS[0], lineage: null }]);
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Lineage not yet computed for this entity/i)).toBeInTheDocument(),
+    );
+    // Emphatically NOT the derived-empty verdict, which is a different fact.
+    expect(screen.queryByText(/originates here/i)).toBeNull();
+  });
+
+  it('states "originates here" for a DERIVED but empty source set', async () => {
+    // The third absence state: a real derived answer (ADR-0027 D3). An unhighlighted
+    // graph looks identical to the pending case above, so the difference has to be
+    // words — which is exactly what is asserted.
+    mockFetchWithLineage([
+      {
+        ...LINEAGE_LEGS[0],
+        lineage: { data_sources: [], source_transformations: {}, entities: [], seq: 1 },
+      },
+    ]);
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+
+    await waitFor(() =>
+      expect(screen.getByText(/this data originates here/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/not yet computed for this entity/i)).toBeNull();
+  });
+
+  it('discloses a lineage source whose natural key matches no entity', async () => {
+    // A real origin the graph cannot draw. "3 sources, 2 nodes lit" with no notice is
+    // exactly the silent under-report a governance reader must never have to discover
+    // for themselves.
+    mockFetchWithLineage([
+      {
+        ...LINEAGE_LEGS[0],
+        lineage: {
+          data_sources: ['agent:(p,a)', 'service:(elsewhere,crm)'],
+          source_transformations: {},
+          entities: [],
+          seq: 1,
+        },
+      },
+    ]);
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+
+    await waitFor(() =>
+      expect(screen.getByText(/1 data source not shown as nodes/i)).toBeInTheDocument(),
+    );
+    // Named, not merely counted — and stated as still real, so the reader knows the
+    // lit nodes are not the full set.
+    expect(screen.getByText(/service:\(elsewhere,crm\)/)).toBeInTheDocument();
+    expect(screen.getByText(/not the full set/i)).toBeInTheDocument();
+    // The answer is still an answer: the leg whose lineage named BOTH sources is still
+    // the carrier, so one unresolvable key does not lose the part that did resolve.
+    // (Asserted on the edge rather than on the resolved node for the jsdom reason
+    // noted above — node content is culled here.) Waited for, not read straight away:
+    // the notices paint on the first render while the edge elements land only after
+    // PF's model push, so a synchronous read would race the mount.
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-id="i1:request"] .dg-graph-edge--carrier'),
+      ).not.toBeNull(),
+    );
+  });
+
+  it('reports a failed lineage read as UNKNOWN sources, not as an absence', async () => {
+    // The fourth, separate fact. Nothing was retrieved, so the empty highlight below
+    // it means nothing at all — and must not be allowed to read as "no sources".
+    mockFetchWithLineageError();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Data lineage could not be loaded/i)).toBeInTheDocument(),
+    );
+    // Not the pending wording, and not the derived-empty verdict.
+    expect(screen.queryByText(/not yet computed for this entity/i)).toBeNull();
+    expect(screen.queryByText(/originates here/i)).toBeNull();
+  });
+
+  it('adds no new resource read for the Lineage tab', async () => {
+    // It is a reading of the three reads this view already holds
+    // (entities / interactions / data-lineage), so switching to it must not fetch a
+    // fourth thing. Asserted on the SET of resource URLs touched rather than a call
+    // count, for the same reason the graph tab's case is (no staleTime here, so
+    // TanStack may revalidate).
+    mockFetchWithLineage(LINEAGE_LEGS);
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+
+    const reads = new Set(
+      (fetch as ReturnType<typeof vi.fn>).mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => /\/(entities|interactions|data-lineage)$/.test(u)),
+    );
+    expect([...reads].sort()).toEqual([
+      '/api/traces/T1/data-lineage',
+      '/api/traces/T1/entities',
+      '/api/traces/T1/interactions',
+    ]);
+  });
+
+  it('renders the Lineage graph inside the detail gutter so the panel never covers it', async () => {
+    // Same reason as the graph tab: the detail panel floats fixed over the right, and
+    // `dg-detail-gutter` is what reserves the space the content shrinks into. This
+    // matters MORE here than on the graph tab, because selecting an entity is how the
+    // tab is used at all — so the panel is open whenever there is an answer to read.
+    mockFetchWithLineage(LINEAGE_LEGS);
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    const graph = await screen.findByTestId('lineage-graph', undefined, {
+      timeout: GRAPH_CHUNK_TIMEOUT,
+    });
+    expect(graph.closest('.dg-detail-gutter')).toBeNull();
+
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('agent-a'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
+    const gutter = screen.getByTestId('lineage-graph').closest('.dg-detail-gutter');
     expect(gutter).not.toBeNull();
     expect(gutter).toContainElement(screen.getByLabelText('Entities'));
   });

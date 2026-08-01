@@ -390,6 +390,467 @@ describe('deriveGraph', () => {
     expect(g.edges).toHaveLength(0);
   });
 
+  // --- First-encounter ORDER (encounterIndex): the slot the view lays each
+  // entity out at. Derivation, not layout — the pixels are the component's
+  // business, this is "when did the trace first touch this entity".
+
+  it('numbers entities in the order the legs first touch them, source before target', () => {
+    // The whole point: slot 0 is where the trace STARTED. Within one edge the
+    // source is the earlier sighting, because that is the direction the leg
+    // travelled.
+    const g = deriveGraph(
+      [ent('e1'), ent('e2'), ent('e3')],
+      [ix('i1', 'e1', 'e2', 1, 4), ix('i2', 'e2', 'e3', 2, 3)],
+    );
+
+    const slot = (id: string) => g.nodes.find((n) => n.id === id)!.encounterIndex;
+    expect(slot('e1')).toBe(0);
+    expect(slot('e2')).toBe(1);
+    expect(slot('e3')).toBe(2);
+  });
+
+  it('walks the legs in seq order, not the interactions in arrival order', () => {
+    // `late` is listed first but happened second, so its callee must NOT claim an
+    // earlier slot than `early`'s. The ordering has to come off the seq-sorted
+    // edges or it is a fact about the API's response order instead of the trace.
+    const g = deriveGraph(
+      [ent('a'), ent('b'), ent('c')],
+      [ixReqOnly('late', 'a', 'c', 5), ixReqOnly('early', 'a', 'b', 1)],
+    );
+
+    const slot = (id: string) => g.nodes.find((n) => n.id === id)!.encounterIndex;
+    expect(slot('a')).toBe(0);
+    expect(slot('b')).toBe(1); // seq 1
+    expect(slot('c')).toBe(2); // seq 5
+  });
+
+  it('gives an entity first seen as a TARGET its slot at that moment', () => {
+    // `callee` never calls anything, so its only appearance is as a target. There
+    // is nothing earlier to give it, so it takes the slot right after its caller.
+    const g = deriveGraph(
+      [ent('callee'), ent('caller')],
+      [ixReqOnly('i1', 'caller', 'callee', 1)],
+    );
+
+    // Note `nodes` is in ENTITIES order — `callee` is first in the array — while
+    // the encounter slots are the trace's order. The two are deliberately
+    // different things.
+    expect(g.nodes.map((n) => n.id)).toEqual(['callee', 'caller']);
+    expect(g.nodes.find((n) => n.id === 'caller')!.encounterIndex).toBe(0);
+    expect(g.nodes.find((n) => n.id === 'callee')!.encounterIndex).toBe(1);
+  });
+
+  it('does not renumber an entity on its second, third or later sighting', () => {
+    // First encounter, not latest: an entity that keeps being called must not
+    // creep further down the chronology every time it is named.
+    const g = deriveGraph(
+      [ent('hub'), ent('x'), ent('y')],
+      [ix('i1', 'hub', 'x', 1, 2), ix('i2', 'hub', 'y', 3, 4)],
+    );
+
+    expect(g.nodes.find((n) => n.id === 'hub')!.encounterIndex).toBe(0);
+    expect(g.nodes.find((n) => n.id === 'x')!.encounterIndex).toBe(1);
+    expect(g.nodes.find((n) => n.id === 'y')!.encounterIndex).toBe(2);
+  });
+
+  it('spends only ONE slot on a self-call, not two', () => {
+    // Both ends of a self-edge are the same entity. Consuming two slots would
+    // leave a gap in the chronology — an unused slot with nothing at it.
+    const g = deriveGraph(
+      [ent('solo'), ent('next')],
+      [ix('i1', 'solo', 'solo', 1, 2), ixReqOnly('i2', 'solo', 'next', 3)],
+    );
+
+    expect(g.nodes.find((n) => n.id === 'solo')!.encounterIndex).toBe(0);
+    expect(g.nodes.find((n) => n.id === 'next')!.encounterIndex).toBe(1);
+  });
+
+  it('sorts entities the legs never reach LAST, in entities order', () => {
+    // An isolated entity was never encountered, so any slot in the middle of the
+    // chain would be a fabricated claim about when it appeared. Last also keeps it
+    // out of the readable chain, matching its dashed "unconnected" treatment.
+    const g = deriveGraph(
+      [ent('lonely1'), ent('e1'), ent('lonely2'), ent('e2')],
+      [ixReqOnly('i1', 'e1', 'e2', 1)],
+    );
+
+    const slot = (id: string) => g.nodes.find((n) => n.id === id)!.encounterIndex;
+    expect(slot('e1')).toBe(0);
+    expect(slot('e2')).toBe(1);
+    // The trailing group keeps `entities` order among itself — the API's order,
+    // which is stable for a trace, so a reload redraws the identical picture.
+    expect(slot('lonely1')).toBe(2);
+    expect(slot('lonely2')).toBe(3);
+  });
+
+  it('also sorts last an entity named only by a DROPPED interaction', () => {
+    // Not isolated (it demonstrably participated) but it contributes no edge, so
+    // the walk never reaches it and there is no encounter to place it at. The two
+    // notions are deliberately not each other's negation.
+    const g = deriveGraph(
+      [ent('halfway'), ent('e1'), ent('e2')],
+      [ixReqOnly('i1', 'e1', 'e2', 1), ixReqOnly('bad', 'halfway', null, 2)],
+    );
+
+    expect(g.nodes.find((n) => n.id === 'halfway')!.isIsolated).toBe(false);
+    expect(g.nodes.find((n) => n.id === 'halfway')!.encounterIndex).toBe(2);
+  });
+
+  it('numbers every entity when there are no interactions at all', () => {
+    // Nothing was encountered, so the whole set is the trailing group and falls
+    // back to entities order — still dense, still deterministic.
+    const g = deriveGraph([ent('a'), ent('b'), ent('c')], []);
+
+    expect(g.nodes.map((n) => n.encounterIndex)).toEqual([0, 1, 2]);
+  });
+
+  it('assigns a dense, unique slot per node — never a gap or a collision', () => {
+    // The invariant the row sort depends on: slots are exactly
+    // 0…nodes.length-1. A gap is an empty position, a collision is two nodes drawn
+    // on top of each other.
+    const g = deriveGraph(
+      [ent('a'), ent('b'), ent('c'), ent('d'), ent('orphan')],
+      [
+        ix('i1', 'b', 'c', 1, 6),
+        ix('i2', 'c', 'c', 2, 3),
+        ix('i3', 'c', 'a', 4, 5),
+        ixReqOnly('i4', 'a', null, 7),
+        ixReqOnly('i5', 'd', 'b', 8),
+      ],
+    );
+
+    const slots = g.nodes.map((n) => n.encounterIndex).sort((x, y) => x - y);
+    expect(slots).toEqual([0, 1, 2, 3, 4]);
+    const slot = (id: string) => g.nodes.find((n) => n.id === id)!.encounterIndex;
+    expect(slot('b')).toBe(0);
+    expect(slot('c')).toBe(1);
+    expect(slot('a')).toBe(2);
+    expect(slot('d')).toBe(3);
+    expect(slot('orphan')).toBe(4);
+  });
+
+  it('assigns no slots at all for empty input', () => {
+    expect(deriveGraph([], []).nodes).toEqual([]);
+  });
+
+  it('is deterministic: the same input yields the same slots every time', () => {
+    // A reader reloading the tab must get the same picture. Nothing in the walk may
+    // depend on Map/Set iteration order of anything but insertion.
+    const entities = [ent('z'), ent('y'), ent('x'), ent('w')];
+    const interactions = [ix('i1', 'y', 'x', 2, 3), ix('i2', 'x', 'z', 1, 4)];
+
+    const first = deriveGraph(entities, interactions).nodes.map((n) => n.encounterIndex);
+    for (let i = 0; i < 5; i += 1) {
+      expect(deriveGraph(entities, interactions).nodes.map((n) => n.encounterIndex)).toEqual(first);
+    }
+    // And it is the seq-ordered walk: i2's request (seq 1) is the first leg, so x
+    // starts the chain, then z, then i1's request brings in y, and w is isolated.
+    expect(first).toEqual([1, 2, 0, 3]);
+  });
+
+  // --- The LAYERED LAYOUT (column = call depth, row = chronology within it).
+  //
+  // Derivation, not rendering: "how deep in the call tree" and "which sibling came
+  // first" are facts about the trace, and the px pitch between cells is the
+  // component's business. jsdom cannot measure an SVG, so this is where the layout
+  // is actually proven.
+
+  const col = (g: ReturnType<typeof deriveGraph>, id: string) =>
+    g.nodes.find((n) => n.id === id)!.column;
+  const row = (g: ReturnType<typeof deriveGraph>, id: string) =>
+    g.nodes.find((n) => n.id === id)!.row;
+
+  it('puts a caller in a LOWER column than the entity it calls', () => {
+    // The user's first requirement, and the whole point of a column: "if A calls B,
+    // A can be to the left of B". Left is the smaller column.
+    const g = deriveGraph([ent('a'), ent('b')], [ix('i1', 'a', 'b', 1, 2)]);
+
+    expect(col(g, 'a')).toBe(0);
+    expect(col(g, 'b')).toBe(1);
+    expect(col(g, 'a')).toBeLessThan(col(g, 'b'));
+  });
+
+  it("THE USER'S EXAMPLE: A calls B then A calls C puts B ABOVE C in one column", () => {
+    // Pinned by name because it is the requirement stated verbatim: "if A calls C
+    // later, B can be ABOVE C". Both callees are at depth 1 — the SAME column — and
+    // they are separated on the row axis by the order the trace touched them.
+    //
+    // This is precisely what a flat sequence could not express, and why the diagonal
+    // staircase this replaced had to go: with every node on one line there is no
+    // cross axis left to stack siblings on.
+    const g = deriveGraph(
+      [ent('A'), ent('B'), ent('C')],
+      [ix('early', 'A', 'B', 1, 2), ix('later', 'A', 'C', 3, 4)],
+    );
+
+    // Same column: both are one call deep from A.
+    expect(col(g, 'B')).toBe(1);
+    expect(col(g, 'C')).toBe(1);
+    // Different rows, B first — B is ABOVE C.
+    expect(row(g, 'B')).toBe(0);
+    expect(row(g, 'C')).toBe(1);
+    expect(row(g, 'B')).toBeLessThan(row(g, 'C'));
+    // And A is to their left, alone in its own column.
+    expect(col(g, 'A')).toBe(0);
+    expect(row(g, 'A')).toBe(0);
+  });
+
+  it('orders siblings by ENCOUNTER, not by the entities read or by id', () => {
+    // The distinguishing case for the row axis. The entities read lists C before B
+    // and 'B' < 'C' alphabetically, but the trace calls B first — so B must still be
+    // the upper row. If the sort were reading the array index or the id, this is the
+    // test that separates them.
+    const g = deriveGraph(
+      [ent('C'), ent('B'), ent('A')],
+      [ixReqOnly('early', 'A', 'B', 1), ixReqOnly('later', 'A', 'C', 2)],
+    );
+
+    expect(row(g, 'B')).toBe(0);
+    expect(row(g, 'C')).toBe(1);
+  });
+
+  it('deepens the column on a REQUEST leg only — a response never pushes anything right', () => {
+    // The load-bearing exclusion. A response travels callee → caller, backwards
+    // along the call direction, so counting it would push the CALLER right of its
+    // own callee — and then the callee right of that, forever. Two entities that
+    // complete one interaction must sit in exactly two columns, not four.
+    const g = deriveGraph([ent('a'), ent('b')], [ix('i1', 'a', 'b', 1, 2)]);
+
+    expect(g.edges.map((e) => e.legType)).toEqual(['request', 'response']);
+    expect(col(g, 'a')).toBe(0);
+    expect(col(g, 'b')).toBe(1);
+  });
+
+  it('does not ratchet columns when the same pair interacts repeatedly', () => {
+    // The same exclusion, stated as the property that actually breaks if it is got
+    // wrong: three completed round trips between one pair is still two columns, not
+    // six. Under a response-counting depth this is where it would visibly explode.
+    const g = deriveGraph(
+      [ent('a'), ent('b')],
+      [ix('i1', 'a', 'b', 1, 2), ix('i2', 'a', 'b', 3, 4), ix('i3', 'a', 'b', 5, 6)],
+    );
+
+    expect(col(g, 'a')).toBe(0);
+    expect(col(g, 'b')).toBe(1);
+  });
+
+  it('takes the LONGEST request path, so no edge skips backwards', () => {
+    // A calls B directly AND calls C which calls B. Shortest-path depth would put B
+    // at 1, level with C, and the C→B edge would point backwards (or straight down
+    // into its own column). Longest path puts B at 2, so BOTH request edges point
+    // rightwards — A→B skipping one column, C→B adjacent.
+    const g = deriveGraph(
+      [ent('A'), ent('B'), ent('C')],
+      [ixReqOnly('ac', 'A', 'C', 1), ixReqOnly('cb', 'C', 'B', 2), ixReqOnly('ab', 'A', 'B', 3)],
+    );
+
+    expect(col(g, 'A')).toBe(0);
+    expect(col(g, 'C')).toBe(1);
+    expect(col(g, 'B')).toBe(2);
+  });
+
+  it('assigns a deeper column at each step of a call chain', () => {
+    const g = deriveGraph(
+      [ent('a'), ent('b'), ent('c'), ent('d')],
+      [
+        ixReqOnly('i1', 'a', 'b', 1),
+        ixReqOnly('i2', 'b', 'c', 2),
+        ixReqOnly('i3', 'c', 'd', 3),
+      ],
+    );
+
+    expect([col(g, 'a'), col(g, 'b'), col(g, 'c'), col(g, 'd')]).toEqual([0, 1, 2, 3]);
+    // A chain occupies one node per column, so every row is 0 — nothing to stack.
+    expect([row(g, 'a'), row(g, 'b'), row(g, 'c'), row(g, 'd')]).toEqual([0, 0, 0, 0]);
+  });
+
+  it('TERMINATES on a request cycle instead of spinning forever', () => {
+    // Real data: two agents that request each other (A asks B for a plan, B asks A
+    // for context). A "relax until nothing changes" pass would push both one column
+    // further right on every iteration and never settle; a recursive longest-path
+    // walk would recurse forever. The bounded pass count is what makes this a
+    // property of the code.
+    //
+    // A cycle cannot be drawn strictly left-to-right (that is a property of cycles),
+    // so the honest claim is not a particular column but that the answer is finite,
+    // TIGHTLY bounded and repeatable. The ceiling is `n - 1` — the longest simple
+    // path — so a 2-cycle yields two adjacent columns and not a runaway spread.
+    const entities = [ent('A'), ent('B')];
+    const interactions = [ixReqOnly('ab', 'A', 'B', 1), ixReqOnly('ba', 'B', 'A', 2)];
+
+    const g = deriveGraph(entities, interactions);
+    for (const n of g.nodes) {
+      expect(Number.isFinite(n.column)).toBe(true);
+      expect(n.column).toBeGreaterThanOrEqual(0);
+      expect(n.column).toBeLessThanOrEqual(g.nodes.length - 1);
+    }
+    // Exactly two columns for two nodes: the pair reads left-to-right on its first
+    // request and the return request is the one backwards edge.
+    expect(new Set(g.nodes.map((n) => n.column)).size).toBe(2);
+    // Repeatable — the ceiling does not make the result depend on anything but input.
+    expect(deriveGraph(entities, interactions).nodes.map((n) => n.column)).toEqual(
+      g.nodes.map((n) => n.column),
+    );
+  });
+
+  it('terminates on a THREE-node request cycle, still within n-1 columns', () => {
+    // The longer cycle, where a bound derived from the PASS count rather than from
+    // the column would let the nodes spread far past the node count. `n - 1` is the
+    // tightest bound that cannot distort an acyclic answer.
+    const g = deriveGraph(
+      [ent('a'), ent('b'), ent('c')],
+      [ixReqOnly('i1', 'a', 'b', 1), ixReqOnly('i2', 'b', 'c', 2), ixReqOnly('i3', 'c', 'a', 3)],
+    );
+
+    expect(g.nodes.every((n) => Number.isFinite(n.column))).toBe(true);
+    expect(g.nodes.every((n) => n.column <= g.nodes.length - 1)).toBe(true);
+    // The chain a→b→c still reads left-to-right; c→a is the single backwards edge.
+    expect([col(g, 'a'), col(g, 'b'), col(g, 'c')]).toEqual([0, 1, 2]);
+  });
+
+  it('can leave two request-connected nodes in ONE column, but only under the ceiling', () => {
+    // The residue a cycle leaves, and worth pinning because it is the ONLY way a
+    // request edge ends up within a column: the longest-path rule otherwise puts every
+    // target strictly right of its source. Here a→c, b→a, c→b relaxes to columns
+    // 1, 2, 2 against a ceiling of 2, so c→b runs inside column 2.
+    //
+    // The renderer needs this case to exist (it is what `edgeBendpoints`' same-column
+    // branch routes), so the layout must be honest that it can produce it rather than
+    // claiming every edge crosses a column boundary.
+    const g = deriveGraph(
+      [ent('a'), ent('b'), ent('c')],
+      [ixReqOnly('i1', 'a', 'c', 1), ixReqOnly('i2', 'b', 'a', 2), ixReqOnly('i3', 'c', 'b', 3)],
+    );
+
+    expect([col(g, 'a'), col(g, 'b'), col(g, 'c')]).toEqual([1, 2, 2]);
+    // Same column, different rows — so they are still two distinct cells and the
+    // within-column edge has somewhere to bow to.
+    expect(row(g, 'b')).not.toBe(row(g, 'c'));
+  });
+
+  it('leaves a SELF-call in its own column rather than marching it rightwards', () => {
+    // A self-request cannot be to the right of itself — that constraint is
+    // unsatisfiable — so it is skipped and the loop is drawn on the node instead.
+    // Without the skip, the capped relaxation would walk this one node `n` columns
+    // right for no reason at all.
+    const g = deriveGraph(
+      [ent('solo'), ent('next')],
+      [ix('loop', 'solo', 'solo', 1, 2), ixReqOnly('out', 'solo', 'next', 3)],
+    );
+
+    expect(col(g, 'solo')).toBe(0);
+    expect(col(g, 'next')).toBe(1);
+    expect(g.edges.filter((e) => e.isSelfCall)).toHaveLength(2);
+  });
+
+  it('parks an isolated entity in a TRAILING column, off the end of the chain', () => {
+    // Column 0 is a CLAIM — "nothing calls this, the flow starts here" — and an
+    // entity no leg touches has not earned it. It stays VISIBLE (an entity is a
+    // governance fact, and the view discloses these in an alert) but sits past the
+    // deepest real column, matching its dashed "present but unconnected" treatment.
+    const g = deriveGraph(
+      [ent('lonely'), ent('a'), ent('b')],
+      [ixReqOnly('i1', 'a', 'b', 1)],
+    );
+
+    expect(col(g, 'a')).toBe(0);
+    expect(col(g, 'b')).toBe(1);
+    expect(col(g, 'lonely')).toBe(2); // one past the deepest reached
+    // Not sharing the entry column with `a`, which is the specific confusion the
+    // trailing column exists to prevent.
+    expect(col(g, 'lonely')).not.toBe(col(g, 'a'));
+  });
+
+  it('stacks several isolated entities in the trailing column, in entities order', () => {
+    // Their rows have to be deterministic too. No leg encountered them, so their
+    // `encounterIndex` falls back to `entities` order — the API's order, stable for
+    // a trace — and the row sort follows it.
+    const g = deriveGraph(
+      [ent('l1'), ent('a'), ent('l2'), ent('b'), ent('l3')],
+      [ixReqOnly('i1', 'a', 'b', 1)],
+    );
+
+    expect([col(g, 'l1'), col(g, 'l2'), col(g, 'l3')]).toEqual([2, 2, 2]);
+    expect([row(g, 'l1'), row(g, 'l2'), row(g, 'l3')]).toEqual([0, 1, 2]);
+  });
+
+  it('parks an entity named only by a DROPPED interaction in the trailing column too', () => {
+    // Not isolated — it demonstrably participated — but no drawable request leg
+    // reaches it, so there is no depth to place it at. The two notions stay separate
+    // here exactly as they do for `encounterIndex`.
+    const g = deriveGraph(
+      [ent('halfway'), ent('a'), ent('b')],
+      [ixReqOnly('i1', 'a', 'b', 1), ixReqOnly('bad', 'halfway', null, 2)],
+    );
+
+    expect(g.nodes.find((n) => n.id === 'halfway')!.isIsolated).toBe(false);
+    expect(col(g, 'halfway')).toBe(2);
+  });
+
+  it('puts every entity in column 0 when NO interaction is drawable at all', () => {
+    // Nothing is reached, so the trailing column is 0 rather than 1: the unreached
+    // set is the whole picture, and pushing it off into empty space beside nothing
+    // would leave the graph starting one column in from the margin for no reason.
+    const g = deriveGraph([ent('a'), ent('b'), ent('c')], []);
+
+    expect(g.nodes.map((n) => n.column)).toEqual([0, 0, 0]);
+    // …stacked down the single column in entities order, so they are all distinct
+    // cells and nothing is drawn on top of anything.
+    expect(g.nodes.map((n) => n.row)).toEqual([0, 1, 2]);
+  });
+
+  it('gives no cells at all for empty input', () => {
+    expect(deriveGraph([], []).nodes).toEqual([]);
+  });
+
+  it('never puts two nodes in the SAME cell', () => {
+    // The invariant the placement depends on: two nodes at one (column, row) are two
+    // nodes drawn exactly on top of each other. Rows are dense per column, so this
+    // is really "the row sort is a total order within each column".
+    const g = deriveGraph(
+      [ent('a'), ent('b'), ent('c'), ent('d'), ent('e'), ent('orphan')],
+      [
+        ixReqOnly('i1', 'a', 'b', 1),
+        ixReqOnly('i2', 'a', 'c', 2),
+        ixReqOnly('i3', 'a', 'd', 3),
+        ixReqOnly('i4', 'b', 'e', 4),
+        ix('i5', 'c', 'c', 5, 6),
+      ],
+    );
+
+    const cells = g.nodes.map((n) => `${n.column},${n.row}`);
+    expect(new Set(cells).size).toBe(cells.length);
+    // …and the three siblings really did stack rather than pile up: a's three
+    // callees share column 1 at rows 0, 1, 2 in call order.
+    expect([col(g, 'b'), col(g, 'c'), col(g, 'd')]).toEqual([1, 1, 1]);
+    expect([row(g, 'b'), row(g, 'c'), row(g, 'd')]).toEqual([0, 1, 2]);
+  });
+
+  it('is deterministic: the same input yields the same cells every time', () => {
+    // A reader reloading the tab must get the identical picture. Nothing in the
+    // column relaxation or the row sort may depend on Map/Set iteration order of
+    // anything but insertion.
+    const entities = [ent('z'), ent('y'), ent('x'), ent('w')];
+    const interactions = [ix('i1', 'y', 'x', 2, 3), ix('i2', 'x', 'z', 1, 4)];
+
+    const first = deriveGraph(entities, interactions).nodes.map((n) => [n.column, n.row]);
+    for (let i = 0; i < 5; i += 1) {
+      expect(deriveGraph(entities, interactions).nodes.map((n) => [n.column, n.row])).toEqual(
+        first,
+      );
+    }
+    // Spelled out, so a change to the assignment is a change this test notices
+    // rather than one it silently re-baselines: i2's request (seq 1) puts x at 0 and
+    // z at 1, i1's request (seq 2) puts y left of x — so y is 0, x is 1, z is 2 —
+    // and w, unreached, trails at 3. `nodes` is in entities order (z, y, x, w).
+    expect(first).toEqual([
+      [2, 0], // z
+      [0, 0], // y
+      [1, 0], // x
+      [3, 0], // w — trailing column
+    ]);
+  });
+
   // --- EDGE CASE: parallel edges, recounted for the leg model.
 
   it('does NOT report a normal request/response pair as a parallel channel', () => {
@@ -575,6 +1036,14 @@ describe('deriveGraph', () => {
     expect(g.dropped.map((x) => x.id)).toEqual(['f']);
     expect(g.dropped[0].legCount).toBe(2);
     expect(g.nodes.filter((n) => n.isIsolated).map((n) => n.id)).toEqual(['orphan']);
+    // First-encounter order: a's request (seq 1) starts at user then agent, b's
+    // (seq 2) brings in tool, and orphan — never encountered — trails.
+    expect(g.nodes.map((n) => [n.id, n.encounterIndex])).toEqual([
+      ['user', 0],
+      ['agent', 1],
+      ['tool', 2],
+      ['orphan', 3],
+    ]);
     // Only the failed LEG is red, not its sibling.
     expect(g.edges.find((x) => x.id === 'c:response')!.isError).toBe(true);
     expect(g.edges.find((x) => x.id === 'c:request')!.isError).toBe(false);

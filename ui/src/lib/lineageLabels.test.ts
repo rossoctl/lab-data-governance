@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { displayNamesByKey, lineageLabel } from './lineageLabels';
+import { displayNamesByKey, entityIdsByKey, lineageLabel } from './lineageLabels';
 import type { Entity } from './flow';
 
 function entity(over: Partial<Entity> = {}): Entity {
@@ -80,5 +80,96 @@ describe('lineageLabel', () => {
   it('falls back for every key while the entity read is still in flight', () => {
     const empty = displayNamesByKey(undefined);
     expect(lineageLabel('user', empty)).toEqual({ label: 'user', qualified: false });
+  });
+});
+
+/**
+ * The `natural_key → entity.id` bridge. Tested at the definition rather than only
+ * through the Lineage view, because it is the ONE place two different keyspaces meet
+ * — data lineage's natural keys and the graph's entity ids — and getting it wrong
+ * fails silently: a highlight that lights nothing looks exactly like an entity with
+ * no sources.
+ */
+describe('entityIdsByKey', () => {
+  it('maps each entity natural key to its id', () => {
+    const { byKey, ambiguous } = entityIdsByKey([
+      entity(),
+      entity({ id: 'e2', natural_key: 'user', kind: 'user' }),
+    ]);
+    expect(byKey.get('tool:agent:(travel_advisor,travel-advisor):search_destinations')).toBe('e1');
+    expect(byKey.get('user')).toBe('e2');
+    expect(ambiguous).toEqual([]);
+  });
+
+  it('tolerates an entity read that has not landed yet', () => {
+    // Same asynchrony as displayNamesByKey: `undefined` is a normal first paint and
+    // must yield an empty map, not a throw.
+    const { byKey, ambiguous } = entityIdsByKey(undefined);
+    expect(byKey.size).toBe(0);
+    expect(ambiguous).toEqual([]);
+  });
+
+  it('misses (rather than throws) for a key no entity carries', () => {
+    // The expected case for a lineage source outside the trace's own entity set. The
+    // caller discloses the miss; this function simply has no answer.
+    const { byKey } = entityIdsByKey([entity()]);
+    expect(byKey.get('service:(elsewhere,api)')).toBeUndefined();
+  });
+
+  it('skips a blank natural key rather than letting one entity answer for all of them', () => {
+    // A blank key is not an identity. Mapping `''` would resolve every unkeyed
+    // lineage row to whichever entity happened to be blank.
+    const { byKey } = entityIdsByKey([entity({ id: 'blank', natural_key: '' }), entity()]);
+    expect(byKey.has('')).toBe(false);
+    expect(byKey.size).toBe(1);
+  });
+
+  it('keeps two DIFFERENT keys apart even when their display names collide', () => {
+    // The distinguishing case against the reverse direction this module refuses:
+    // `create_booking` exists on two agents, so display_name → key is not a function
+    // — but the qualified keys are distinct and each maps to its own entity.
+    const { byKey, ambiguous } = entityIdsByKey([
+      entity({ id: 'a', natural_key: 'tool:agent:(x,booking-agent):create_booking', display_name: 'create_booking' }),
+      entity({ id: 'b', natural_key: 'tool:agent:(y,other-agent):create_booking', display_name: 'create_booking' }),
+    ]);
+    expect(byKey.get('tool:agent:(x,booking-agent):create_booking')).toBe('a');
+    expect(byKey.get('tool:agent:(y,other-agent):create_booking')).toBe('b');
+    // Distinct keys, so nothing is ambiguous — the collision is in the LABELS, which
+    // this direction does not read.
+    expect(ambiguous).toEqual([]);
+  });
+
+  it('resolves a duplicated key to the FIRST entity and reports the key', () => {
+    // Should not happen (natural_key is the entity's identity, ADR-0013) — which is
+    // why it is detected rather than assumed away. First-wins keeps the map a total
+    // function so a highlight still resolves; the report is what stops the arbitrary
+    // pick being silent.
+    const { byKey, ambiguous } = entityIdsByKey([
+      entity({ id: 'first', natural_key: 'agent:(p,twin)' }),
+      entity({ id: 'second', natural_key: 'agent:(p,twin)' }),
+    ]);
+    expect(byKey.get('agent:(p,twin)')).toBe('first');
+    expect(ambiguous).toEqual(['agent:(p,twin)']);
+  });
+
+  it('reports a thrice-claimed key ONCE, not once per extra claimant', () => {
+    // The count is "how many identities are in doubt", not "how badly the duplication
+    // went" — the same one-entry-per-defect rule lib/graph's `dropped` follows.
+    const { ambiguous } = entityIdsByKey([
+      entity({ id: 'a', natural_key: 'agent:(p,twin)' }),
+      entity({ id: 'b', natural_key: 'agent:(p,twin)' }),
+      entity({ id: 'c', natural_key: 'agent:(p,twin)' }),
+    ]);
+    expect(ambiguous).toEqual(['agent:(p,twin)']);
+  });
+
+  it('is deterministic: entities order decides the winner, so a reload agrees', () => {
+    const entities = [
+      entity({ id: 'first', natural_key: 'agent:(p,twin)' }),
+      entity({ id: 'second', natural_key: 'agent:(p,twin)' }),
+    ];
+    for (let i = 0; i < 5; i += 1) {
+      expect(entityIdsByKey(entities).byKey.get('agent:(p,twin)')).toBe('first');
+    }
   });
 });

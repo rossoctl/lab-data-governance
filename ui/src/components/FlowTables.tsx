@@ -21,6 +21,7 @@ import {
   type LegViewKey,
 } from '../lib/flow';
 import type { PinStore } from '../lib/pins';
+import { InteractionDiagram } from './InteractionDiagram';
 import { EntitiesTable } from './flow/EntitiesTable';
 import { FlatLegsTable } from './flow/FlatLegsTable';
 import { FlowDetailPanel } from './flow/FlowDetailPanel';
@@ -33,16 +34,34 @@ import type { Entity, Interaction, SpanEvidence } from '../types';
  * The Execution Flow graph, behind a dynamic import.
  *
  * `@patternfly/react-topology` (plus the d3 / dagre / mobx it drags in) is ~388kB
- * of JS and ~130kB of CSS serving this ONE tab, so a static import made every
+ * of JS and ~130kB of CSS serving these TWO tabs, so a static import made every
  * reader of the trace list and the span tree pay for a view most never open.
  * `React.lazy` puts it in its own async chunk that is fetched the first time
- * `?legs=graph` is active — see the Suspense boundary at the render site, and
- * ExecutionFlowGraph.tsx's note on why its stylesheets moved in there too.
+ * `?legs=graph` or `?legs=lineage` is active — see the Suspense boundary at the
+ * render site, and ExecutionFlowGraph.tsx's note on why its stylesheets moved in
+ * there too.
  *
  * `ExecutionFlowGraph` has a default export purely so this needs no
  * `.then(m => ({ default: m.X }))` unwrap.
  */
 const ExecutionFlowGraph = lazy(() => import('./ExecutionFlowGraph'));
+
+/**
+ * The Lineage graph, from the SAME lazy module — which is the point.
+ *
+ * Two `lazy()` calls over one `import()` specifier: Vite/Rollup emits one chunk per
+ * module, so both tabs share the single PF-topology chunk rather than each carrying
+ * a copy of it (or relying on the bundler to hoist a shared dependency out of two
+ * sibling chunks, which is a guarantee nothing here would notice the loss of). It is
+ * also why `LineageGraph` lives in `ExecutionFlowGraph.tsx` beside the component it
+ * reuses instead of in a file of its own.
+ *
+ * The `.then` unwrap is needed because only one export can be the default, and the
+ * Execution Flow tab has been it since before this tab existed.
+ */
+const LineageGraph = lazy(() =>
+  import('./ExecutionFlowGraph').then((m) => ({ default: m.LineageGraph })),
+);
 
 /** Which flow row is selected, mirrored to/from the URL (?iid | ?eid). */
 export interface FlowSelection {
@@ -75,7 +94,7 @@ export interface FlowTablesProps {
   onSelectionChange?: (sel: FlowSelection | null) => void;
   /**
    * Which Interactions tab is active, from the URL (`?legs`) — including
-   * `graph`, the Execution Flow. The parent owns every URL param in this view
+   * `graph` (Execution Flow) and `lineage`. The parent owns every URL param in this view
    * (same as `initialSelection`), so this is a controlled prop rather than
    * internal state: this component never reaches for `useSearchParams` itself,
    * and reload / bookmark / back restore the tab. Defaults to `tree` when
@@ -93,13 +112,19 @@ export interface FlowTablesProps {
  * walk, pin dots mirroring the tree's highlight store, and lazy span-evidence
  * fetch + a detail panel on row click.
  *
- * The Interactions section has three peer presentations behind the `?legs` tabs
- * (`LegViewKey`): `tree`, `flat`, and the `graph` (Execution Flow) — all reading
- * the same two queries, so switching between them costs no fetch.
+ * The Interactions section has five peer presentations behind the `?legs` tabs
+ * (`LegViewKey`): `tree`, `flat`, `diagram` (the Interaction diagram — a sequence
+ * diagram of the flat leg list), `graph` (Execution Flow) and `lineage` (that same
+ * graph with the selected entity's **Data lineage** sources highlighted). The first
+ * four read the same two queries, so switching between them costs no fetch;
+ * `lineage` additionally reads the trace's lineage — which this component already
+ * holds for the coverage banner and the per-leg detail blocks, so it costs no fetch
+ * either.
  *
  * This module owns only the composition and the selection/URL state; the tables,
- * the floating detail panel and the coverage banner live in ./flow, and the graph
- * in ../ExecutionFlowGraph (lazy — see the import above).
+ * the floating detail panel and the coverage banner live in ./flow, the sequence
+ * diagram in ./InteractionDiagram, and BOTH graph tabs in ../ExecutionFlowGraph
+ * (lazy, one shared chunk — see the two imports above).
  */
 export function FlowTables({
   traceId,
@@ -303,6 +328,11 @@ export function FlowTables({
         status={lineageQ.data?.status ?? null}
         stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
         isError={lineageQ.isError}
+        // The `isLoading` gate above covers the interactions/entities reads only,
+        // so these tables are already on screen while the lineage read is in
+        // flight. The banner needs to know that, or its silence claims complete
+        // coverage before the answer exists.
+        isLoading={lineageQ.isLoading}
       />
       {/* Tables container. While the detail panel is open it floats fixed on the
           right, so `dg-detail-gutter` reserves a right gutter derived from the
@@ -323,14 +353,29 @@ export function FlowTables({
         <Title headingLevel="h3" size="md" style={{ marginTop: '1rem' }}>
           Interactions
         </Title>
-        {/* Three ways to present the same interactions — the default
+        {/* Five ways to present the same interactions — the default
             depth-indented parent/child tree, one row per request/response leg
-            ordered by the trace-wide `seq`, or the directed Execution Flow graph.
-            Tabs (not the old checkbox) because these are peer presentations of
-            one dataset, which is what a tab bar says; the active one is a URL
-            param so it survives reload. Kept inside the gutter div so the tab bar
-            shrinks out from under the floating detail panel along with the tables
-            and the graph. */}
+            ordered by the trace-wide `seq`, that same leg sequence as a UML
+            sequence diagram, the directed Execution Flow graph, or that graph with
+            the selected entity's data sources highlighted. Tabs (not the
+            old checkbox) because these are peer presentations of one dataset,
+            which is what a tab bar says; the active one is a URL param so it
+            survives reload. Kept inside the gutter div so the tab bar shrinks out
+            from under the floating detail panel along with the tables, the diagram
+            and the graph.
+
+            `Interaction diagram` sits between Flat and Execution Flow because it
+            is the Flat list read down the page (it renders that list's rows, in
+            that order, from the same `flatRows` derivation) with the graph's
+            who-called-whom axis laid out horizontally — the two neighbours' shared
+            middle rather than an unrelated sixth thing.
+
+            `Lineage` sits LAST, immediately after Execution Flow, because it IS the
+            Execution Flow picture with one more question asked of it: identical
+            nodes and edges (one component, one `deriveGraph` — see
+            ExecutionFlowGraph's `EntityGraph`), plus a highlight of where the
+            selected entity's data came from. Anywhere earlier would separate it
+            from the view it is a reading of. */}
         <Tabs
           activeKey={legView}
           onSelect={(_e, key) => onLegViewChange?.(parseLegViewKey(String(key)))}
@@ -338,9 +383,42 @@ export function FlowTables({
         >
           <Tab eventKey="tree" title={<TabTitleText>Tree</TabTitleText>} />
           <Tab eventKey="flat" title={<TabTitleText>Flat</TabTitleText>} />
+          <Tab eventKey="diagram" title={<TabTitleText>Interaction diagram</TabTitleText>} />
           <Tab eventKey="graph" title={<TabTitleText>Execution Flow</TabTitleText>} />
+          <Tab eventKey="lineage" title={<TabTitleText>Lineage</TabTitleText>} />
         </Tabs>
-        {legView === 'graph' ? (
+        {legView === 'lineage' ? (
+          /* The Lineage graph, in the interactions TABLE's place inside the same
+             gutter div — the same reasoning as the graph and the diagram: a selected
+             row floats the detail panel over the right, and this must shrink out from
+             under it rather than be overlapped.
+
+             THE ENTITIES TABLE ABOVE IS LOAD-BEARING HERE, not merely retained: it is
+             the ONLY way to select an entity (the graph's nodes are drag targets, not
+             click targets — see ExecutionFlowGraph's note on why `withSelection` is
+             not applied), so it is the control this tab's whole answer is driven from.
+
+             Fed the ALREADY-DERIVED `entities` / `interactions` / `lineageQ` and the
+             existing `selectedEntityId` — no new query and, crucially, no second
+             notion of "the selected entity". The highlight follows the same `?eid`
+             selection that highlights the Entities table row and opens the detail
+             panel, so the three cannot disagree about what the reader picked.
+
+             Same lazy chunk as the graph (see the two `lazy` calls above) and the
+             same Suspense fallback wording, so a chunk fetch is not a new loading
+             treatment for a reader who has already seen the graph tab. */
+          <Suspense fallback={<Spinner aria-label="Loading execution flow graph" />}>
+            <LineageGraph
+              traceId={traceId}
+              entities={entities}
+              interactions={interactions}
+              byLeg={lineageQ.data?.byLeg}
+              status={lineageQ.data?.status ?? null}
+              isLineageError={lineageQ.isError}
+              selectedEntityId={selectedEntityId}
+            />
+          </Suspense>
+        ) : legView === 'graph' ? (
           /* The graph stands in for the interactions TABLE, inside the same
              gutter div — so when a row is selected it shrinks out from under the
              floating detail panel exactly as the tables do, rather than being
@@ -360,6 +438,27 @@ export function FlowTables({
           <Suspense fallback={<Spinner aria-label="Loading execution flow graph" />}>
             <ExecutionFlowGraph traceId={traceId} />
           </Suspense>
+        ) : legView === 'diagram' ? (
+          /* The sequence diagram stands in for the interactions TABLE, inside the
+             same gutter div, for the same reason the graph does — a selected row
+             floats the detail panel over the right, and the diagram must shrink out
+             from under it rather than be overlapped.
+
+             NOT lazy, unlike the graph: this is hand-rolled SVG with no dependency
+             beyond what the bundle already carries, so there is no ~388kB chunk to
+             defer and a Suspense boundary would buy a spinner and nothing else.
+
+             Fed the ALREADY-DERIVED `entities` / `interactions` this component
+             holds — no new query. It re-derives its own lifelines/messages from
+             them (via lib/sequenceDiagram, which consumes the same
+             `flow.flatLegRows` `flatRows` above does), so the diagram's arrows and
+             the Flat tab's rows are the same list in the same order. */
+          <InteractionDiagram
+            entities={entities}
+            interactions={interactions}
+            selectedId={selectedInteractionId}
+            onSelect={selectInteraction}
+          />
         ) : legView === 'flat' ? (
           <FlatLegsTable
             rows={flatRows}
