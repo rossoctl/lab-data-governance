@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -84,6 +84,39 @@ import type { DataLineage, Entity, Interaction, InteractionLeg } from '../types'
  * a test claiming it would be lying. What IS asserted is the class the stylesheet
  * keys on, plus the WORDS each of the three lineage-absence states puts on screen,
  * which is the part a picture cannot carry.
+ *
+ * EDGE CLICKS ARE GENUINELY TESTABLE HERE, and that is a consequence of the same
+ * "edge content is not culled" fact. `DefaultEdge` renders a real
+ * `<g data-test-id="edge-handler" onClick={onSelect}>`, so dispatching a click at it
+ * runs the actual `withSelection` → `SELECTION_EVENT` → callback path this component
+ * wires — no simulation and no stand-in. Three limits are respected below rather
+ * than papered over:
+ *
+ *   - `fireEvent.click`, NOT `userEvent.click`. `userEvent` dispatches a full
+ *     pointer sequence including `mousedown`, which reaches the pan/zoom behavior's
+ *     d3-zoom listener on the surface — and d3-zoom's `defaultExtent` reads
+ *     `svg.width.baseVal`, which jsdom does not implement, so it throws an unhandled
+ *     `TypeError` that Vitest reports as an error for the whole FILE. The click is
+ *     the only event the edge handler reads (PF binds `onClick`), so dispatching
+ *     exactly that is both sufficient and the honest way to avoid an unrelated
+ *     library's jsdom gap. (The zoom-button cases above still use `userEvent`
+ *     because they click real HTML buttons, nowhere near the SVG surface.)
+ *   - THE HIT AREA IS NOT MEASURED. PF gives the edge a
+ *     `.pf-topology__edge__background` path at `stroke-width: 10px` with a
+ *     transparent stroke, which is what makes a 1.5px arrow clickable in a browser.
+ *     jsdom does no hit-testing at all — it dispatches wherever it is told — so a
+ *     test here can only assert that the wide path EXISTS, never that a click 4px
+ *     off the line lands. The width itself is a Playwright / by-hand fact.
+ *   - THE BACKGROUND RECT IS ZERO-SIZED. `GraphComponent` sizes its
+ *     click-to-deselect `<rect>` from `graph.getBounds()`, which is zero on an
+ *     unmeasured surface. The rect is still in the DOM with its handler attached, and
+ *     since jsdom ignores geometry when dispatching, the deselect path IS exercised
+ *     below — but only because dispatch is geometry-blind. That a reader can actually
+ *     HIT it needs a real layout.
+ *
+ * The SELECTED treatment is asserted as the class and the model `data`, never as a
+ * computed style, for exactly the reason the dimming is not: no stylesheet applies
+ * here.
  */
 
 const ENTITIES: Entity[] = [
@@ -174,6 +207,60 @@ function bendsOf(id: string): Array<{ x: number; y: number }> {
 }
 
 /**
+ * Click one edge, the way a reader does: on the `<g>` `DefaultEdge` binds its
+ * `onClick` to.
+ *
+ * `data-test-id="edge-handler"` is PF's own attribute on that group (note the
+ * hyphenated spelling — it is not the `data-testid` RTL looks for), so this targets
+ * the element that actually carries the handler rather than the outer wrapper, which
+ * has none. `fireEvent`, not `userEvent` — see this file's header for the d3-zoom
+ * reason.
+ */
+function clickEdge(id: string) {
+  const handler = document.querySelector(`[data-id="${id}"] [data-test-id="edge-handler"]`);
+  if (!handler) throw new Error(`no clickable handler on edge ${id}`);
+  // Wrapped in `act` because the click writes PF's mobx selection state, which
+  // re-renders the observer components PF wraps its edge parts in — an update React
+  // otherwise warns was not wrapped. `fireEvent` does batch its own dispatch, but the
+  // mobx reaction lands outside that batch.
+  act(() => {
+    fireEvent.click(handler);
+  });
+}
+
+/**
+ * Click the graph's own background — the deselect target.
+ *
+ * `GraphComponent` renders it as the first `<rect>` inside the graph element's `<g>`,
+ * bound to the graph's own `onSelect`. Zero-sized under jsdom (see the header), which
+ * is why this dispatches at it directly instead of clicking at a coordinate.
+ */
+function clickBackground() {
+  const rect = document.querySelector('[data-kind="graph"] > rect');
+  if (!rect) throw new Error('no graph background rect to click');
+  // `act` for the same reason as `clickEdge` — the mobx selection write re-renders
+  // PF's observer components outside `fireEvent`'s own batch.
+  act(() => {
+    fireEvent.click(rect);
+  });
+}
+
+/**
+ * One edge's `data`, read off the model PF holds — the `isSelected` flag and the
+ * highlight role as the component actually baked them in.
+ *
+ * The model-level companion to the className assertions: the class is what the
+ * stylesheet keys on, this is what the component decided. Both are asserted because
+ * a bug can live in either — a correct decision emitted under the wrong class name
+ * would show here and not there, and vice versa.
+ */
+function edgeData(id: string): { isSelected: boolean; highlight: string; interactionId: string } {
+  const edge = capturedController?.getEdgeById(id);
+  if (!edge) throw new Error(`no edge ${id} on the graph`);
+  return edge.getData() as { isSelected: boolean; highlight: string; interactionId: string };
+}
+
+/**
  * The layered grid's own arithmetic, restated for the test at the values the
  * component uses. Deliberately NOT imported from the component — those constants
  * are not exported, and a test that imported them would assert
@@ -207,6 +294,18 @@ const cell = (column: number, row: number) => ({
  * what the tests then move is the actual graph on screen.
  */
 let capturedController: Visualization | null = null;
+
+/**
+ * How many times the component has pushed a model, counted by the same `fromModel`
+ * spy that captures the controller.
+ *
+ * Exists for one case — that an unmemoised callback prop does NOT cause a push (see
+ * it) — and counted here rather than read off the spy's own `mock.calls`, because
+ * `vi.spyOn` is re-installed per test and the mock handle is not in scope where the
+ * assertion lives. A plain counter reset in `beforeEach` is the same fact with no
+ * reach-through.
+ */
+let modelPushes = 0;
 
 /**
  * Move a node the way PF's own drag behavior does at the end of a gesture:
@@ -259,6 +358,7 @@ describe('ExecutionFlowGraph', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
     capturedController = null;
+    modelPushes = 0;
     // `fromModel` is the one method the component always calls on its controller,
     // so it is the reliable capture point. The spy DELEGATES to the real method —
     // it observes which instance was used and changes nothing, so every other
@@ -271,6 +371,7 @@ describe('ExecutionFlowGraph', () => {
     const real = Visualization.prototype.fromModel;
     const capture = (vis: Visualization) => {
       capturedController = vis;
+      modelPushes += 1;
     };
     vi.spyOn(Visualization.prototype, 'fromModel').mockImplementation(function (
       this: Visualization,
@@ -883,6 +984,377 @@ describe('ExecutionFlowGraph', () => {
   });
 
 
+  // --- Edge selection: clicking an arrow selects its parent INTERACTION.
+  //
+  // The real path, not a stand-in: PF's `withSelection` binds `onSelect` as the
+  // `onClick` of the `<g data-test-id="edge-handler">` `DefaultEdge` renders, and
+  // this component subscribes to the `SELECTION_EVENT` that handler fires. Every
+  // case below dispatches at that real element (see `clickEdge`) and asserts on the
+  // callback, the model `data` and the classNames — never on a computed style or a
+  // pixel, since neither exists here (this file's header says exactly which limits
+  // apply and why).
+  //
+  // A LEG'S EDGE SELECTS ITS PARENT INTERACTION, which is FlatLegsTable's contract
+  // rather than a new one — legs have no selection of their own — so the callback
+  // carries an interaction id and BOTH legs of that interaction take the treatment.
+
+  it('reports the parent INTERACTION when an edge is clicked, not the leg', async () => {
+    // The contract. `i1:request` is one LEG; what the reader selected is `i1`, because
+    // that is what the detail panel is about and what `?iid` names.
+    const onSelect = vi.fn();
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" onSelectInteraction={onSelect} />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    clickEdge('i1:request');
+
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith('i1');
+  });
+
+  it('reports the SAME interaction from either of its two legs', async () => {
+    // The response leg is a separate edge with its own id, and clicking it must not
+    // select something different — there is one interaction behind both arrows.
+    const onSelect = vi.fn();
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" onSelectInteraction={onSelect} />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    clickEdge('i1:response');
+
+    expect(onSelect).toHaveBeenCalledWith('i1');
+  });
+
+  it('distinguishes the two interactions in a parallel channel', async () => {
+    // Two interactions between the SAME pair put four arrows in one visual channel.
+    // The click has to identify which interaction was hit, not merely which pair —
+    // otherwise the whole feature collapses on exactly the traces where a reader most
+    // needs it.
+    const onSelect = vi.fn();
+    mockApi(ENTITIES, [
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+      mkIx({ id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 3),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" onSelectInteraction={onSelect} />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+
+    clickEdge('i2:response');
+    expect(onSelect).toHaveBeenLastCalledWith('i2');
+    clickEdge('i1:request');
+    expect(onSelect).toHaveBeenLastCalledWith('i1');
+  });
+
+  it('offers a WIDE hit path on every edge, so a 1.5px arrow is not the click target', async () => {
+    // PF's `.pf-topology__edge__background` — a transparent 10px stroke tracing the
+    // same route, INSIDE the clickable `<g>`. Its existence is the honest assertable:
+    // jsdom does no hit-testing, so this can never claim that a click 4px off the line
+    // lands (that is a browser fact — see the header). What it does claim is that the
+    // wide band is present on both legs, which is the mechanism, and that we did not
+    // hand-roll a second hit target competing with PF's.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    for (const id of ['i1:request', 'i1:response']) {
+      const handler = document.querySelector(`[data-id="${id}"] [data-test-id="edge-handler"]`)!;
+      // The wide path is a CHILD of the element carrying the click handler, which is
+      // what makes a click on it bubble to that handler.
+      expect(handler.querySelector('.pf-topology__edge__background')).not.toBeNull();
+    }
+    // …and no hand-rolled strip of our own, which would be a second, competing target
+    // (the sequence diagram needs one only because it is hand-rolled SVG with no such
+    // layer of its own).
+    expect(document.querySelector('.dg-seq-row-hit')).toBeNull();
+  });
+
+  it('marks the edge as selectable so the cursor says it is clickable', async () => {
+    // `DefaultEdge` applies `pf-m-selected` for itself but never `pf-m-selectable`
+    // (its sibling `TaskEdge` does) — and that class is what flips PF's
+    // `--edge--cursor` from `default` to `pointer`. An arrow nobody guesses is a
+    // target is a feature nobody uses.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(document.querySelectorAll('.dg-graph-edge.pf-m-selectable')).toHaveLength(2);
+  });
+
+  it('gives BOTH legs of the selected interaction the selected treatment', async () => {
+    // The selection is the INTERACTION, so lighting only the clicked arrow would tell
+    // the reader that legs are separately selectable — which they are not, here or in
+    // the Flat table. Same rule the Interaction diagram follows for its two messages.
+    mockApi(ENTITIES, [
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+      mkIx({ id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" selectedInteractionId="i1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+
+    // Both of i1's legs carry the class the stylesheet keys on…
+    expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--selected')).not.toBeNull();
+    expect(document.querySelector('[data-id="i1:response"] .dg-graph-edge--selected')).not.toBeNull();
+    // …and exactly those two, so the OTHER interaction's arrows are untouched.
+    expect(document.querySelectorAll('.dg-graph-edge--selected')).toHaveLength(2);
+    expect(document.querySelector('[data-id="i2:request"] .dg-graph-edge--selected')).toBeNull();
+    // The model-level decision agrees with the emitted class (see `edgeData`).
+    expect(edgeData('i1:request').isSelected).toBe(true);
+    expect(edgeData('i1:response').isSelected).toBe(true);
+    expect(edgeData('i2:request').isSelected).toBe(false);
+  });
+
+  it('brings the selected legs\' seq tags out of the mute with their arrows', async () => {
+    // The tag is muted by default because an ordinal is a reference rather than
+    // content — but for the one interaction the reader has open, the number is how they
+    // cross-reference the arrow against the Flat tab's rows and the panel's fields.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" selectedInteractionId="i1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(document.querySelectorAll('.dg-graph-edge-tag--selected')).toHaveLength(2);
+  });
+
+  it('does NOT use PF\'s own pf-m-selected, which is per-leg and click-only', async () => {
+    // WHY THE OBVIOUS WIRING WAS REJECTED, pinned as a test because the failure mode is
+    // silent. `withSelection` injects a `selected` prop and `DefaultEdge` would turn it
+    // into `pf-m-selected` — but PF's selection is per-ELEMENT and populated only by its
+    // own click handler, so it marks the ONE clicked arrow (not its sibling leg) and is
+    // empty for a selection restored from a `?iid` URL. Either would be a treatment that
+    // contradicts the per-interaction contract or vanishes on reload.
+    //
+    // So `DirectedEdge` drops the prop and the treatment comes wholly from `isSelected`
+    // on the element `data`. This case is the guard against someone "fixing" that by
+    // passing the prop through again.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" selectedInteractionId="i1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    // Our own class is on BOTH legs — a selection with no click behind it, exactly the
+    // `?iid`-restore case PF's state cannot represent.
+    expect(document.querySelectorAll('.dg-graph-edge--selected')).toHaveLength(2);
+    // …and PF's modifier is on neither, so there is no second, disagreeing signal.
+    expect(document.querySelector('.pf-m-selected')).toBeNull();
+  });
+
+  it('still shows no pf-m-selected after a real CLICK, so the two legs never disagree', async () => {
+    // The same point from the other direction, and the case that actually exposed it: a
+    // click DOES populate PF's `selectedIds`, so if the prop were forwarded, the clicked
+    // leg would gain `pf-m-selected` while its sibling — equally part of the selected
+    // interaction — would not. One interaction, two arrows, one treatment.
+    // Rendered with the selection ALREADY applied, then clicked — which reaches the same
+    // state as click-then-owner-feeds-it-back without needing a rerender, and is the
+    // steady state a reader is actually in when they click a second arrow.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" selectedInteractionId="i1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    // Our per-interaction treatment is on both legs before the click.
+    expect(document.querySelectorAll('.dg-graph-edge--selected')).toHaveLength(2);
+
+    // The click populates PF's own `selectedIds` with just this ONE leg's id. If
+    // `selected` were forwarded, that leg alone would now gain `pf-m-selected` and its
+    // sibling — equally part of the selected interaction — would not.
+    clickEdge('i1:request');
+
+    expect(document.querySelector('.pf-m-selected')).toBeNull();
+    // …and our own treatment is still on BOTH, unchanged by PF's per-element notion.
+    expect(document.querySelectorAll('.dg-graph-edge--selected')).toHaveLength(2);
+  });
+
+  it('emits no selected class at all when nothing is selected', async () => {
+    // The Execution Flow tab's default. Same discipline as the highlight's `'none'`:
+    // "nothing picked" must not pick up a treatment by accident.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(document.querySelector('.dg-graph-edge--selected')).toBeNull();
+    expect(document.querySelector('.dg-graph-edge-tag--selected')).toBeNull();
+    expect(document.querySelector('.pf-m-selected')).toBeNull();
+    expect(edgeData('i1:request').isSelected).toBe(false);
+  });
+
+  it('keeps an error leg\'s red AND its selected treatment — independent axes', async () => {
+    // A failed leg can be the leg whose interaction is open, and the reader needs both
+    // facts. One combined class would make one of them unrepresentable — the same
+    // reasoning that already keeps `--error` apart from the highlight role.
+    mockApi(ENTITIES, [
+      mkIx({
+        id: 'i1',
+        caller_entity_id: 'e1',
+        callee_entity_id: 'e2',
+        legs: [mkLeg('request', 1, true), mkLeg('response', 2, false)],
+        any_error: true,
+      }),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" selectedInteractionId="i1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!;
+    expect(req.querySelector('.dg-graph-edge--error')).not.toBeNull();
+    expect(req.querySelector('.dg-graph-edge--selected')).not.toBeNull();
+    // The error red survives — the selected treatment carries weight and dash, never
+    // a repaint that would report a failed leg as healthy.
+    expect(req.innerHTML).toContain('var(--dg-color-error)');
+    // And its tag keeps the error colour class alongside the selected one.
+    expect(req.querySelector('.dg-graph-edge-tag--error')).not.toBeNull();
+    expect(req.querySelector('.dg-graph-edge-tag--selected')).not.toBeNull();
+  });
+
+  it('encodes the selected treatment in NO raw hex colour', async () => {
+    // House rule, and the accessibility one: the distinction is carried by
+    // weight/dash/opacity in global.css, so there is nothing hue-shaped inlined on a
+    // selected element at all.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" selectedInteractionId="i1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(document.querySelector('[data-id="i1:request"]')!.innerHTML).not.toMatch(
+      /#[0-9a-f]{3,8}\b/i,
+    );
+  });
+
+  // Keyboard / a11y. What is achievable on an SVG edge inside PF's rendering, and no
+  // more — the component's own note spells out the three limits (tab order is `seq`
+  // order with no skip affordance, no keyboard pan to an off-screen focused edge, no
+  // announcement of the selection change) rather than pretending to parity with the
+  // tables. These cases pin what IS wired, so a half-wired `tabIndex` that does
+  // nothing cannot pass for accessibility.
+
+  it('makes each edge a focusable button with a name that identifies the leg', async () => {
+    // Reachable AND identifiable: a focusable arrow labelled "edge" would be neither.
+    // The label carries the same facts as the hover `<title>` — seq, leg type, summary.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    // Resolved by ROLE + accessible NAME, which is what a screen reader announces —
+    // not by a test id, which would prove only that an attribute exists.
+    const req = screen.getByRole('button', { name: /seq 1, request: summary-i1/i });
+    expect(req).toHaveAttribute('tabindex', '0');
+    expect(screen.getByRole('button', { name: /seq 2, response: summary-i1/i })).toBeInTheDocument();
+  });
+
+  it('names a failed leg as failed, so the error is not colour-only', async () => {
+    // The red stroke is invisible to a screen reader and to a colour-vision-deficient
+    // reader; the accessible name is where that fact has to also live.
+    mockApi(ENTITIES, [
+      mkIx({
+        id: 'i1',
+        legs: [mkLeg('request', 1, true), mkLeg('response', 2, false)],
+        any_error: true,
+      }),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(screen.getByRole('button', { name: /seq 1, request:.*\(failed\)/i })).toBeInTheDocument();
+    // …and the leg that succeeded is not so named.
+    expect(screen.getByRole('button', { name: /seq 2, response:/i }).getAttribute('aria-label')).not.toMatch(
+      /failed/i,
+    );
+  });
+
+  it('reports the selection through aria-pressed on BOTH legs', async () => {
+    // The state a sighted reader gets from the weight/dash treatment, exposed to a
+    // screen reader. Both legs, because the selection is the interaction — the same
+    // per-interaction rule the visual treatment follows.
+    mockApi(ENTITIES, [
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+      mkIx({ id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" selectedInteractionId="i1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+
+    expect(screen.getAllByRole('button', { pressed: true })).toHaveLength(2);
+    // Both of them are i1's, not one of each interaction.
+    for (const el of screen.getAllByRole('button', { pressed: true })) {
+      expect(el.closest('[data-id]')?.getAttribute('data-id')).toMatch(/^i1:/);
+    }
+  });
+
+  it('activates an edge with Enter and with Space', async () => {
+    // Both, as a native button would — and through PF's own `onSelect`, so the keyboard
+    // path is the identical path a click takes rather than a second one that could
+    // drift from it.
+    const onSelect = vi.fn();
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" onSelectInteraction={onSelect} />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const req = screen.getByRole('button', { name: /seq 1, request/i });
+
+    act(() => {
+      fireEvent.keyDown(req, { key: 'Enter' });
+    });
+    expect(onSelect).toHaveBeenLastCalledWith('i1');
+
+    // Space on the SAME edge is PF's toggle, so it deselects — which is the click
+    // behaviour, faithfully. Asserted as "it fired again", not as a particular value,
+    // since the toggle direction is what the click test already pins.
+    onSelect.mockClear();
+    act(() => {
+      fireEvent.keyDown(req, { key: ' ' });
+    });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores other keys, so typing over the graph selects nothing', async () => {
+    const onSelect = vi.fn();
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" onSelectInteraction={onSelect} />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const req = screen.getByRole('button', { name: /seq 1, request/i });
+
+    for (const key of ['a', 'Tab', 'ArrowRight', 'Escape']) {
+      fireEvent.keyDown(req, { key });
+    }
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('deselects on a background click', async () => {
+    // The empty canvas is a deselect, matching the panel's own close button and the
+    // tables (where selecting nothing is how a reader gets back to no selection).
+    //
+    // PF reports this as the GRAPH element's own id, NOT as an empty array — the graph
+    // is itself selectable and `GraphComponent` binds the backdrop rect to its
+    // `onSelect`. That is the specific shape this test pins: a first cut of the handler
+    // read an unrecognised id as "ignore" and made background-click a silent no-op.
+    const onSelect = vi.fn();
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" onSelectInteraction={onSelect} />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    clickEdge('i1:request');
+    expect(onSelect).toHaveBeenLastCalledWith('i1');
+
+    clickBackground();
+    expect(onSelect).toHaveBeenLastCalledWith(null);
+  });
+
+  it('deselects when the already-selected edge is clicked a second time', async () => {
+    // PF's own toggle (`useSelection` resolves a re-click of the selected element to an
+    // empty `selectedIds`), surfaced as the same `null` a background click gives. So a
+    // second click on an open interaction's arrow closes its panel, which is the
+    // behaviour a reader gets from the toggle without being told about it.
+    const onSelect = vi.fn();
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" onSelectInteraction={onSelect} />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    clickEdge('i1:request');
+    expect(onSelect).toHaveBeenLastCalledWith('i1');
+    clickEdge('i1:request');
+    expect(onSelect).toHaveBeenLastCalledWith(null);
+  });
+
+  it('does not fire at all when no callback is passed', async () => {
+    // The prop is optional and both graph tabs' own tests render without it. A click
+    // must be a no-op rather than a crash — nothing here may assume an owner.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(() => clickEdge('i1:request')).not.toThrow();
+  });
+
   // --- Dragging.
   //
   // THE GESTURE IS NOT SIMULATED, and nothing here pretends it is. Two separate
@@ -934,6 +1406,75 @@ describe('ExecutionFlowGraph', () => {
     // also confirms the untouched nodes were re-derived rather than carried over.
     expect(nodeAt('e2')).toEqual(cell(1, 0));
     expect(nodeAt('e3')).toEqual(cell(1, 1));
+  });
+
+  it('keeps a moved node where it was put when the SELECTION changes', async () => {
+    // The exact counterpart of the Lineage block's highlight-change case, and the
+    // regression edge selection could most plausibly have introduced: `isSelected` is
+    // baked into the element `data`, so `selectedInteractionId` is a model-effect
+    // dependency and changing it rebuilds the model — which is precisely what used to
+    // lose the reader's drag. The positions must ride through a selection change the
+    // same way they ride through a poll and a highlight change.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    const { rerender } = renderWithProviders(
+      <ExecutionFlowGraph traceId="T1" selectedInteractionId={null} />,
+    );
+    await waitFor(() => expect(nodeAt('e1')).toEqual(cell(0, 0)));
+
+    moveNode('e1', 777, 555);
+    await waitFor(() => expect(nodeAt('e1')).toEqual({ x: 777, y: 555 }));
+
+    // Select the interaction — a new `data` flag on both its edges, therefore a push.
+    rerender(<ExecutionFlowGraph traceId="T1" selectedInteractionId="i1" />);
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--selected')).not.toBeNull(),
+    );
+
+    // The drag survived the selection change…
+    expect(nodeAt('e1')).toEqual({ x: 777, y: 555 });
+    // …and the untouched nodes are still on their derived cells, so one drag did not
+    // freeze the rest of the layout. e3 is isolated here → trailing column.
+    expect(nodeAt('e2')).toEqual(cell(1, 0));
+    expect(nodeAt('e3')).toEqual(cell(2, 0));
+
+    // And it survives DESELECTION too, which is a second push in the other direction —
+    // the asymmetry would be easy to miss if only the select half were covered.
+    rerender(<ExecutionFlowGraph traceId="T1" selectedInteractionId={null} />);
+    await waitFor(() => expect(document.querySelector('.dg-graph-edge--selected')).toBeNull());
+    expect(nodeAt('e1')).toEqual({ x: 777, y: 555 });
+  });
+
+  it('does NOT rebuild the model for an unmemoised callback prop', async () => {
+    // The drag-survival guarantee's real mechanism, asserted at its cause rather than
+    // only at its symptom. `onSelectInteraction` is a fresh arrow function on every
+    // parent render (which is exactly how `FlowTables` passes it), and if it reached
+    // the model effect's dependency list every parent re-render would push a new model
+    // — harvesting and re-applying positions each time, and churning the whole graph.
+    // The callback is held in a ref precisely so it cannot.
+    //
+    // Observable as the `fromModel` call COUNT: re-rendering with a brand-new function
+    // and otherwise identical props must not add a push.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    const { rerender } = renderWithProviders(
+      <ExecutionFlowGraph traceId="T1" onSelectInteraction={() => {}} />,
+    );
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    // `modelPushes` is bumped by the same `beforeEach` spy that captures the
+    // controller, so this reads the REAL push count rather than a second stub.
+    const pushes = modelPushes;
+
+    // A different function identity, same everything else.
+    rerender(<ExecutionFlowGraph traceId="T1" onSelectInteraction={() => {}} />);
+    rerender(<ExecutionFlowGraph traceId="T1" onSelectInteraction={() => {}} />);
+
+    expect(modelPushes).toBe(pushes);
+    // …and the LATEST callback is still the one that fires, so the ref is kept current
+    // rather than capturing the first render's closure — which is the bug the ref
+    // pattern invites if the assignment is put inside a `useEffect`.
+    const latest = vi.fn();
+    rerender(<ExecutionFlowGraph traceId="T1" onSelectInteraction={latest} />);
+    clickEdge('i1:request');
+    expect(latest).toHaveBeenCalledWith('i1');
   });
 
   it('does NOT carry a moved position across to a different trace', async () => {
@@ -1067,6 +1608,8 @@ function mkLineage(sources: string[]): DataLineage {
 function renderLineage(over: {
   byLeg?: Map<string, DataLineage | null>;
   selectedEntityId?: string | null;
+  selectedInteractionId?: string | null;
+  onSelectInteraction?: (id: string | null) => void;
   isLineageError?: boolean;
   status?: 'complete' | 'partial' | null;
   interactions?: Interaction[];
@@ -1088,6 +1631,8 @@ function renderLineage(over: {
       status={over.status ?? 'complete'}
       isLineageError={over.isLineageError ?? false}
       selectedEntityId={over.selectedEntityId ?? null}
+      selectedInteractionId={over.selectedInteractionId ?? null}
+      onSelectInteraction={over.onSelectInteraction}
     />,
   );
 }
@@ -1101,9 +1646,11 @@ describe('LineageGraph', () => {
     // owns its own lifecycle, and a spy installed for a block that does not use it is
     // a hidden dependency between the two.
     capturedController = null;
+    modelPushes = 0;
     const real = Visualization.prototype.fromModel;
     const capture = (vis: Visualization) => {
       capturedController = vis;
+      modelPushes += 1;
     };
     vi.spyOn(Visualization.prototype, 'fromModel').mockImplementation(function (
       this: Visualization,
@@ -1278,6 +1825,151 @@ describe('LineageGraph', () => {
     expect(req.innerHTML).toContain('var(--dg-color-error)');
   });
 
+  // --- Edge selection COMPOSED with the lineage highlight. Two different questions,
+  // both allowed to be active at once (see EdgeData): the highlight is "what carried
+  // the selected entity's data", the selection is "whose detail panel is open".
+  // Neither may silently mask the other, and the cases below are what pins that.
+
+  it('offers edge selection on THIS tab too, not only on Execution Flow', async () => {
+    // The anti-fork guard for the click, matching the block's other sharing cases: the
+    // two tabs are one graph, so an arrow that opened a panel on one and did nothing on
+    // the other would be exactly the divergence the shared renderer exists to prevent.
+    const onSelect = vi.fn();
+    renderLineage({ onSelectInteraction: onSelect });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    clickEdge('i1:response');
+    expect(onSelect).toHaveBeenCalledWith('i1');
+  });
+
+  it('keeps BOTH class axes on one edge that is a carrier AND selected', async () => {
+    // The composition, at its most load-bearing: the request leg carried the data
+    // (`--carrier`) and its interaction is the open one (`--selected`). Both classes
+    // must be on the element — collapsing them would lose one of two independent facts
+    // the reader is being told.
+    renderLineage({
+      selectedEntityId: 'e2',
+      selectedInteractionId: 'i1',
+      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
+    });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!;
+    expect(req.querySelector('.dg-graph-edge--carrier')).not.toBeNull();
+    expect(req.querySelector('.dg-graph-edge--selected')).not.toBeNull();
+    // The model agrees: the two live on separate fields, not one squashed enum.
+    expect(edgeData('i1:request')).toMatchObject({ highlight: 'carrier', isSelected: true });
+  });
+
+  it('keeps a DIMMED edge selectable, and marks it selected while still dimmed', async () => {
+    // THE case the composition has to get right. With e2 selected for lineage, the
+    // response leg is outside the answer and therefore `--dimmed`. A reader may still
+    // click it — dimming is a de-emphasis, not a disablement, and PF puts no
+    // `pointer-events` gate on a dimmed edge (the only such rule in its stylesheet is
+    // `pointer-events: none` while `.pf-m-dragging`). Making a dimmed arrow inert would
+    // mean an active lineage question silently removed most of the graph's click
+    // targets, which is a far worse surprise than a dim arrow that responds.
+    //
+    // So BOTH classes land on the same element: `--dimmed` still states the lineage
+    // fact, `--selected` states the selection, and the stylesheet's
+    // `.dg-graph-edge--dimmed.dg-graph-edge--selected { opacity: 1 }` is what stops the
+    // selection from being invisible. THAT rule's effect is a computed style and is NOT
+    // asserted here (no stylesheet applies in jsdom — see the file header); what is
+    // asserted is the class pair it keys on, which is the part a unit test can honestly
+    // own.
+    const onSelect = vi.fn();
+    renderLineage({
+      selectedEntityId: 'e2',
+      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
+      onSelectInteraction: onSelect,
+    });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    // The premise: the response leg really is dimmed.
+    expect(document.querySelector('[data-id="i1:response"] .dg-graph-edge--dimmed')).not.toBeNull();
+
+    // A dimmed edge is still a click target.
+    clickEdge('i1:response');
+    expect(onSelect).toHaveBeenCalledWith('i1');
+  });
+
+  it('shows the selected treatment on a dimmed edge rather than losing it to the dim', async () => {
+    // The other half of the case above, now with the selection actually applied: the
+    // reader clicked a leg that the lineage highlight had dimmed, so the arrow they
+    // picked must carry the selected marks WHILE keeping its dimmed class. If the
+    // treatment were suppressed here, clicking a dimmed arrow would open a panel with
+    // no visible sign of which arrow it belonged to — the exact feedback gap this whole
+    // treatment exists to close.
+    renderLineage({
+      selectedEntityId: 'e2',
+      selectedInteractionId: 'i1',
+      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
+    });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const resp = document.querySelector('[data-id="i1:response"]')!;
+    // Both, on one element — neither erased by the other.
+    expect(resp.querySelector('.dg-graph-edge--dimmed')).not.toBeNull();
+    expect(resp.querySelector('.dg-graph-edge--selected')).not.toBeNull();
+    // The tag pair too, which is what the opacity override in global.css also covers —
+    // a selected-but-dimmed leg whose seq number stayed faded would be the one number
+    // the reader wants and cannot read.
+    expect(resp.querySelector('.dg-graph-edge-tag--dimmed')).not.toBeNull();
+    expect(resp.querySelector('.dg-graph-edge-tag--selected')).not.toBeNull();
+    expect(edgeData('i1:response')).toMatchObject({ highlight: 'dimmed', isSelected: true });
+  });
+
+  it('does not let a selection dim anything on its own', async () => {
+    // Selection is not a question about lineage, so selecting an interaction with NO
+    // entity selected must leave every other arrow at full strength. Otherwise the
+    // selected treatment would quietly acquire the highlight's de-emphasis semantics
+    // and "I clicked an arrow" would start reading as "everything else is not the
+    // answer" — the same conflation `'none'` vs `'dimmed'` exists to prevent.
+    renderLineage({ selectedEntityId: null, selectedInteractionId: 'i1' });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(document.querySelector('.dg-graph-edge--dimmed')).toBeNull();
+    expect(document.querySelector('.dg-graph-edge--carrier')).toBeNull();
+    // …while the selection itself IS shown.
+    expect(document.querySelectorAll('.dg-graph-edge--selected')).toHaveLength(2);
+  });
+
+  it('keeps a moved node where it was put when the SELECTION changes', async () => {
+    // The drag-survival invariant on the tab that also has a highlight active, so the
+    // model push is driven by two dependencies at once rather than one. Same
+    // guarantee, harder setup — this is where a re-introduced rebuild-per-render would
+    // show up first.
+    const { rerender } = renderLineage({
+      selectedEntityId: 'e2',
+      selectedInteractionId: null,
+      byLeg: new Map([['i1:request', mkLineage(['agent:(p,a)'])]]),
+    });
+    await waitFor(() => expect(nodeAt('e1')).toEqual(cell(0, 0)));
+
+    moveNode('e1', 777, 555);
+    await waitFor(() => expect(nodeAt('e1')).toEqual({ x: 777, y: 555 }));
+
+    rerender(
+      <LineageGraph
+        traceId="T1"
+        entities={ENTITIES}
+        interactions={[mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]}
+        byLeg={new Map([['i1:request', mkLineage(['agent:(p,a)'])]])}
+        status="complete"
+        isLineageError={false}
+        selectedEntityId="e2"
+        selectedInteractionId="i1"
+      />,
+    );
+    await waitFor(() =>
+      expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--selected')).not.toBeNull(),
+    );
+
+    expect(nodeAt('e1')).toEqual({ x: 777, y: 555 });
+    // The highlight was NOT lost by the selection push — both are still baked in.
+    expect(edgeData('i1:request')).toMatchObject({ highlight: 'carrier', isSelected: true });
+    expect(nodeAt('e2')).toEqual(cell(1, 0));
+  });
+
   // --- The three absence states, kept apart ON SCREEN.
 
   it('says "not yet computed" when the inbound legs have no derived lineage', async () => {
@@ -1304,7 +1996,7 @@ describe('LineageGraph', () => {
   });
 
   it('says "originates here" for a DERIVED but empty source set', async () => {
-    // ADR-0027 D3: a real derived answer, and the state a graph cannot show by
+    // ADR-0028 D3: a real derived answer, and the state a graph cannot show by
     // itself — an unhighlighted picture looks identical to the pending case above.
     renderLineage({ selectedEntityId: 'e2', byLeg: new Map([['i1:request', mkLineage([])]]) });
     await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());

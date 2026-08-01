@@ -140,7 +140,7 @@ export function FlowTables({
   const interactionsQ = useInteractions(traceId);
   const entitiesQ = useEntities(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
-  // Persisted **Data lineage** for the whole trace (ADR-0027), read ONCE per
+  // Persisted **Data lineage** for the whole trace (ADR-0028), read ONCE per
   // trace and keyed per leg — not per payload expansion. TanStack caches on
   // `traceId`, so the panel switching between rows/legs never re-fetches.
   //
@@ -148,7 +148,7 @@ export function FlowTables({
   // the trace's complete/partial coverage, and that warning belongs on the first
   // paint. A truncation a reader must select a row to discover cannot stop them
   // reading the visible rows as the whole picture — which is the entire point of
-  // the flag (ADR-0027 D6).
+  // the flag (ADR-0028 D6).
   const lineageQ = useDataLineage(traceId);
   // Monotonic click token: each row click bumps it, and a click's async
   // evidence fetch only commits its setState if it is still the latest click.
@@ -245,6 +245,52 @@ export function FlowTables({
       responsePayloadHash: null,
     });
     onSelectionChange?.({ eid: e.id });
+  }
+
+  /**
+   * An edge in either graph tab was clicked: select its parent INTERACTION, or
+   * deselect on a background click.
+   *
+   * A THIN ADAPTER over `selectInteraction`, deliberately containing no selection
+   * logic of its own. The graph reports an interaction ID (it holds a derived
+   * `GraphSpec` and has no interactions array to resolve against — see
+   * `EntityGraphProps.onSelectInteraction`), and all this does is turn that id into
+   * the `Interaction` object the existing function takes. So an edge click produces
+   * byte-for-byte the same selection a Flat-table row click does: the same evidence
+   * fetch behind the same click-token race guard, the same fields, the same pin key,
+   * the same `?iid` write.
+   *
+   * A LEG'S EDGE SELECTS ITS PARENT INTERACTION, which is `FlatLegsTable`'s contract
+   * followed exactly rather than re-decided: legs have no selection of their own.
+   * That is also why both of the interaction's edges then carry the selected
+   * treatment (see `EdgeData.isSelected`) — the same reason the Interaction diagram
+   * lights both of a selected interaction's messages.
+   *
+   * DESELECT (`null`) CLEARS THE PANEL, matching the panel's own close button
+   * exactly: same `setSelection(null)`, same `onSelectionChange?.(null)` that drops
+   * `?iid` from the URL. It is NOT gated on the current selection being an
+   * interaction — a background click in the graph is an unambiguous "nothing", and
+   * leaving a selected ENTITY's panel open because the reader had picked it from the
+   * table would make the same gesture mean two different things depending on
+   * invisible history. No evidence fetch is involved, so the click token is left
+   * alone; an in-flight fetch from a previous click is superseded by the next click
+   * that bumps it, exactly as before.
+   *
+   * A STALE ID IS A NO-OP, not a crash: the graph is drawn from the same
+   * `interactions` array this resolves against, so a miss is unreachable today —
+   * but the graph's model can outlive a poll that removed an interaction, and
+   * silently doing nothing is the honest response to "select something that is no
+   * longer there".
+   */
+  function selectInteractionById(interactionId: string | null) {
+    if (interactionId === null) {
+      setSelection(null);
+      onSelectionChange?.(null);
+      return;
+    }
+    const ix = interactions.find((i) => i.id === interactionId);
+    if (!ix) return;
+    void selectInteraction(ix);
   }
 
   function togglePin() {
@@ -416,6 +462,14 @@ export function FlowTables({
               status={lineageQ.data?.status ?? null}
               isLineageError={lineageQ.isError}
               selectedEntityId={selectedEntityId}
+              // Edges are click targets on THIS tab too, not only on Execution Flow:
+              // the two tabs are one graph, so an arrow that opened a panel on one
+              // and did nothing on the other would be the fork the shared renderer
+              // exists to prevent. Note the flow view holds ONE selection, so an
+              // edge click here replaces the selected ENTITY and therefore clears
+              // this tab's own highlight — see LineageGraph's prop note.
+              selectedInteractionId={selectedInteractionId}
+              onSelectInteraction={selectInteractionById}
             />
           </Suspense>
         ) : legView === 'graph' ? (
@@ -428,15 +482,27 @@ export function FlowTables({
              of the flow VIEW, not a part of the interactions table this tab
              replaces, and the graph's nodes ARE those entities — keeping the
              table gives the reader the kind/natural-key/detected-from columns the
-             nodes can only hint at, and a click target for the entity detail
-             panel the graph does not offer.
+             nodes can only hint at, and a click target for the ENTITY detail
+             panel the graph still does not offer (its nodes are drag surfaces;
+             its edges select an INTERACTION, which is a different thing).
 
              The Suspense fallback is the same PF `Spinner` + `aria-label` pairing
              every loading state in this view uses (the `isLoading` return above,
              `LegTabs`' per-leg payload read), so a chunk fetch is not a new,
              fourth loading treatment a reader has to learn. */
           <Suspense fallback={<Spinner aria-label="Loading execution flow graph" />}>
-            <ExecutionFlowGraph traceId={traceId} />
+            <ExecutionFlowGraph
+              traceId={traceId}
+              // The graph's EDGES are the interaction click target this tab used to
+              // lack — one edge is one leg, and clicking it opens the same detail
+              // panel a Flat-table row click opens, through the same
+              // `selectInteraction`. The nodes remain drag surfaces rather than click
+              // targets (the Entities table above is still where an entity is
+              // selected), which is why the comment above says the graph offers no
+              // entity click target rather than no click target at all.
+              selectedInteractionId={selectedInteractionId}
+              onSelectInteraction={selectInteractionById}
+            />
           </Suspense>
         ) : legView === 'diagram' ? (
           /* The sequence diagram stands in for the interactions TABLE, inside the

@@ -2,7 +2,7 @@ import React from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { FlowTables, type LegViewKey } from './FlowTables';
@@ -369,6 +369,174 @@ describe('FlowTables', () => {
     expect(graph).not.toBeInTheDocument();
   });
 
+  // --- Clicking a graph EDGE opens the interaction detail panel. The end-to-end path
+  // through the real component, which is what only this file can state: the graph
+  // reports an interaction id, THIS component resolves it and calls the very
+  // `selectInteraction` a Flat/Tree row click calls, and the panel plus the `?iid`
+  // mirroring follow from that single path. The graph-side mechanics (which element
+  // carries the click, the per-interaction treatment, composition with the lineage
+  // highlight) are pinned in ExecutionFlowGraph.test.tsx.
+  //
+  // `fireEvent.click`, NOT `userEvent.click`, for the edge: `userEvent` sends a
+  // `mousedown` too, which reaches the pan/zoom behavior's d3-zoom listener, and
+  // d3-zoom reads `svg.width.baseVal` — unimplemented in jsdom, so it throws an
+  // unhandled error for the whole file. PF binds the edge handler to `onClick` alone,
+  // so dispatching exactly that is both sufficient and honest. (Every other click in
+  // this file stays on `userEvent` — they are all real HTML controls.)
+
+  /** The `<g>` PF binds the edge's click handler to. Note PF's hyphenated attribute. */
+  const edgeHandler = (id: string) =>
+    document.querySelector(`[data-id="${id}"] [data-test-id="edge-handler"]`)!;
+
+  it('opens the interaction detail panel when a graph EDGE is clicked', async () => {
+    // The requirement, end to end: an edge IS one leg, clicking it selects the leg's
+    // parent INTERACTION, and the panel that opens is the SAME one a Flat-table row
+    // click opens — same evidence fetch, same fields.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
+    await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
+
+    fireEvent.click(edgeHandler('i1:request'));
+
+    // The interaction's own panel: its summary and the promoted section caption, which
+    // is exactly what a row click produces (asserted for the diagram case above with
+    // the same two strings — one panel, one path).
+    await waitFor(() => expect(screen.getByText('agent calls search')).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument();
+    expect(screen.getByText('interaction_id')).toBeInTheDocument();
+    // The evidence really was fetched through the shared `selectInteraction`, not
+    // faked: the anchor span id from the interaction /spans stub is on screen. `getAll`
+    // because it legitimately appears twice — once as the `anchor span(s)` field and
+    // once as a row in the evidence list — which is itself the shape a row click
+    // produces.
+    expect(screen.getAllByText(/span-xyz/).length).toBeGreaterThan(0);
+  });
+
+  it('mirrors the clicked edge\'s interaction into ?iid', async () => {
+    // The URL half of the same path. `onSelectionChange` is what the page turns into
+    // `?iid`, so an edge click must fire it with the INTERACTION's id — not the leg's
+    // `i1:request` edge id, which is not a thing the URL knows about.
+    mockFetch();
+    const onSelectionChange = vi.fn();
+    renderWithProviders(
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
+    await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
+
+    fireEvent.click(edgeHandler('i1:response'));
+
+    await waitFor(() => expect(onSelectionChange).toHaveBeenCalledWith({ iid: 'i1' }));
+  });
+
+  it('gives BOTH legs of the clicked interaction the selected treatment', async () => {
+    // The feedback the panel alone cannot give: the reader must see WHICH arrow they
+    // picked. Both legs, because the selection is the interaction — and this is the
+    // round trip, so it also proves the id the graph reported came back down as
+    // `selectedInteractionId` rather than the graph marking itself locally.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
+    await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
+    // Nothing selected yet, so no treatment anywhere.
+    expect(document.querySelector('.dg-graph-edge--selected')).toBeNull();
+
+    fireEvent.click(edgeHandler('i1:request'));
+
+    await waitFor(() =>
+      expect(document.querySelectorAll('.dg-graph-edge--selected')).toHaveLength(2),
+    );
+    expect(document.querySelector('[data-id="i1:response"] .dg-graph-edge--selected')).not.toBeNull();
+  });
+
+  it('selects the SAME interaction from an edge as from a Flat row — one path', async () => {
+    // The anti-duplication guard, and the whole reason `selectInteractionById` is a
+    // three-line adapter rather than a second selection implementation: the panel a
+    // reader gets from an arrow must be indistinguishable from the one they get from a
+    // row. Asserted by producing both and comparing the rendered field list.
+    mockFetch();
+    const { unmount } = renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    // Via the FLAT table's row.
+    await userEvent.click(screen.getByRole('tab', { name: 'Flat' }));
+    await userEvent.click(screen.getAllByText('request')[0]);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
+    // `.dg-detail-panel` is the panel's root (global.css). Read by class rather than
+    // by a testid added for this one comparison: the panel is already addressable and a
+    // production attribute existing only for a test is the wrong trade.
+    const viaRow = document.querySelector('.dg-detail-panel')!.textContent;
+    unmount();
+
+    // Via the GRAPH's edge.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
+    await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
+    fireEvent.click(edgeHandler('i1:request'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
+
+    expect(document.querySelector('.dg-detail-panel')!.textContent).toBe(viaRow);
+  });
+
+  it('closes the panel when the graph BACKGROUND is clicked', async () => {
+    // Deselection, consistent with the panel's own close button: same `setSelection(null)`
+    // and the same `onSelectionChange(null)` that drops `?iid`.
+    //
+    // NOTE THE JSDOM CAVEAT, stated rather than hidden: PF sizes this backdrop `<rect>`
+    // from `graph.getBounds()`, which is zero on an unmeasured surface — so this passes
+    // only because jsdom dispatches without hit-testing. That the rect is actually
+    // REACHABLE by a pointer needs a real layout and is a by-hand / Playwright fact.
+    mockFetch();
+    const onSelectionChange = vi.fn();
+    renderWithProviders(
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
+    await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
+
+    fireEvent.click(edgeHandler('i1:request'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
+
+    fireEvent.click(document.querySelector('[data-kind="graph"] > rect')!);
+
+    // Panel gone, treatment gone, URL cleared — all three, since a partial deselect
+    // would leave the reader with one of the three still claiming a selection.
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Interaction' })).not.toBeInTheDocument(),
+    );
+    expect(document.querySelector('.dg-graph-edge--selected')).toBeNull();
+    expect(onSelectionChange).toHaveBeenLastCalledWith(null);
+  });
+
   it('renders the graph inside the detail gutter so the floating panel never covers it', async () => {
     // Why the graph is a CHILD of the `dg-detail-gutter` div rather than a sibling:
     // the detail panel floats fixed over the right of the content, and that class
@@ -558,7 +726,7 @@ describe('FlowTables', () => {
   });
 
   it('states "originates here" for a DERIVED but empty source set', async () => {
-    // The third absence state: a real derived answer (ADR-0027 D3). An unhighlighted
+    // The third absence state: a real derived answer (ADR-0028 D3). An unhighlighted
     // graph looks identical to the pending case above, so the difference has to be
     // words — which is exactly what is asserted.
     mockFetchWithLineage([
@@ -1006,7 +1174,7 @@ describe('FlowTables', () => {
     expect(screen.queryByRole('tab', { name: /Response: Data lineage/i })).toBeNull();
   });
 
-  // --- Data lineage (issue #119, ADR-0027) ------------------------------------
+  // --- Data lineage (issue #119, ADR-0028) ------------------------------------
   // Lineage is read once per trace and keyed per LEG (interaction_id, leg_type),
   // so a payload's block is found by its leg identity, never by content hash.
 
@@ -1083,7 +1251,7 @@ describe('FlowTables', () => {
   it('keys lineage per leg: the response leg does not inherit the request leg’s lineage', async () => {
     // Only the request leg has lineage in the fixture, so the response leg's
     // lineage tab must report "not yet computed" — the leg key is
-    // (interaction_id, leg_type), never the payload/content hash (ADR-0027 D5).
+    // (interaction_id, leg_type), never the payload/content hash (ADR-0028 D5).
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
@@ -1194,7 +1362,7 @@ describe('FlowTables', () => {
 
   // --- the two-level tabs (leg → section) and the shared payload read --------
   // Classification is INLINED on the payload read (ADR-0024); Data lineage comes
-  // from the trace-scoped read (ADR-0027 D5). The tabs' fetch behaviour has to
+  // from the trace-scoped read (ADR-0028 D5). The tabs' fetch behaviour has to
   // follow that split, or a reader either waits on a request nobody made or pays
   // for one they did not need.
 
@@ -1452,7 +1620,7 @@ describe('FlowTables', () => {
     expect(lineageCalls).toHaveLength(1);
   });
 
-  // --- trace-level coverage (issue #120, ADR-0027 D6) ------------------------
+  // --- trace-level coverage (issue #120, ADR-0028 D6) ------------------------
   // A partial trace must be UNMISTAKABLE: the flow view shows its tables before
   // anything is selected, so a warning that only appeared inside an expanded
   // payload would let a reader take the visible rows for the whole picture.

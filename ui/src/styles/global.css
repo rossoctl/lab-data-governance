@@ -488,6 +488,112 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
+   Edge selection (both graph tabs — ExecutionFlowGraph's DirectedEdge, wrapped in
+   PF's `withSelection`). One edge is one **Interaction leg**, and clicking it opens
+   the SAME floating detail panel a Flat-table row click opens.
+
+   A SEPARATE AXIS FROM THE LINEAGE HIGHLIGHT ABOVE, not a sixth highlight role.
+   Selection answers "whose detail panel is open", the highlight answers "what is
+   part of the lineage answer" — a reader can have both at once, so the two carry
+   independent classes and both can land on one arrow. They are composed below rather
+   than left to collide.
+
+   BOTH LEGS of the selected interaction are marked, because the selection IS the
+   interaction — legs have no selection of their own (`FlatLegsTable`), and lighting
+   only the clicked arrow would say otherwise. Same rule as
+   `.dg-seq-row--selected` in the sequence diagram.
+
+   NOT HUE AT ALL, which is the accessibility requirement AND a hard constraint here:
+   stroke colour on this graph is already spoken for twice over — `--dg-color-error`
+   marks a failed leg and `--dg-tree-guide` is every other one — so a third meaning in
+   the same channel would be either ambiguous or invisible. WEIGHT, a DASH and opacity
+   carry the whole signal below, so it survives greyscale, a colour-vision deficiency,
+   and the dimming of an active highlight.
+
+   PF'S OWN `.pf-m-selected` IS DELIBERATELY NOT USED, and that is worth stating here
+   because its stylesheet is loaded and the rule is sitting right there. `DefaultEdge`
+   would apply it from its `selected` prop, but PF's notion of selected is per-ELEMENT
+   and click-only: it marks the one arrow that was clicked (not its sibling leg) and it
+   is empty for a selection restored from a `?iid` URL. Both are wrong for a
+   per-interaction treatment that has to survive a reload, so `DirectedEdge` drops the
+   prop and these rules key on our own class instead. See its note for the detail.
+
+   Note the class is `pf-topology__…`, NOT `pf-v5-topology__…`, for the same reason
+   the rules above spell it that way — PF's topology package carries no `v5` infix
+   and a v5-prefixed selector matches nothing, silently. */
+
+/* THE SELECTED interaction's legs. Heavier than a `--carrier` (3px) so the two are
+   distinguishable when one arrow is both, plus a dash — the same
+   distinguish-by-pattern-not-by-weight trick `.dg-graph-node--selected` uses against
+   `--source`, and for the identical reason: a weight-vs-weight distinction is simply
+   lost when both classes apply to one element.
+
+   Deliberately NOT the same dash as PF's own `.pf-m-dashed` link modifier, which
+   already means SELF-CALL on this graph (see the model builder's `edgeStyle`). A
+   selected self-call carries both, and the longer dash reads as emphasis over the
+   top of the shorter one rather than replacing its meaning. */
+.dg-graph-edge--selected .pf-topology__edge__link {
+  stroke-width: 4px;
+  stroke-dasharray: 10 4;
+}
+
+/* SELECTION BEATS DIMMING. The composition rule, stated explicitly because the
+   alternative is a silent failure: with an entity selected for lineage, every arrow
+   outside the answer is at `opacity: 0.25`, so clicking one of THOSE arrows would
+   otherwise open a detail panel while the arrow the reader just clicked stayed
+   ghosted — the panel would be the only feedback that anything was picked, which is
+   precisely the gap this whole treatment exists to close.
+
+   So a selected edge returns to full opacity even while dimmed. It does NOT lose its
+   `--dimmed` class: the class still states the lineage fact (this leg did not carry
+   the selected entity's data), and only the OPACITY is overridden, so the two
+   readings coexist rather than one erasing the other. The heavier dashed stroke
+   above is what then distinguishes it from a `--carrier` at the same full opacity.
+
+   The specificity is what makes this work without an `!important`: `0,2,0` (two
+   classes) against the dimming rule's `0,1,0`, so it wins on specificity regardless
+   of source order — and it is written as a compound selector on ONE element rather
+   than as a descendant, because both classes land on the same `<g>`. */
+.dg-graph-edge--dimmed.dg-graph-edge--selected,
+.dg-graph-edge-tag--dimmed.dg-graph-edge-tag--selected {
+  opacity: 1;
+}
+
+/* The seq tag of a selected leg, brought back to full-contrast label colour. The tag
+   is muted by default (`.dg-graph-edge-tag`) because an ordinal is a reference
+   rather than content — but for the ONE interaction the reader has open, the number
+   is how they cross-reference the arrow against the Flat tab's rows and the panel's
+   own fields, so it stops being incidental. */
+.dg-graph-edge-tag--selected text {
+  fill: var(--dg-color-label);
+  font-weight: 600;
+}
+
+/* Keyboard focus on an edge. The wrapper `<g>` is a focusable
+   `role="button"` (see DirectedEdge), and an SVG group takes no default focus ring in
+   any browser, so it is stated — same rule and same reason as `.dg-seq-row`'s.
+
+   Stated on the WRAPPER, which is the element that actually receives focus, and using
+   `outline` rather than a stroke change so it cannot be confused with the selected
+   treatment above (focus and selection are different states and a reader tabbing
+   through must be able to see which arrow is focused without it looking selected). */
+.dg-graph-edge-focus:focus-visible {
+  outline: 2px solid var(--dg-color-label);
+  /* Negative offset keeps the ring inside the element's own box, so a focused arrow
+     near the surface's rounded `overflow: hidden` edge is not clipped. */
+  outline-offset: -2px;
+}
+
+/* An error leg keeps its red when selected. `--error` and `--selected` are
+   independent axes (see the classes in DirectedEdge), so the selected treatment must
+   not silently repaint a failed leg as a healthy one — the weight and the dash above
+   already carry "selected" without touching the colour. Restated here because the
+   rule above would otherwise win on source order for a leg that is both. */
+.dg-graph-edge-tag--error.dg-graph-edge-tag--selected text {
+  fill: var(--dg-color-error);
+}
+
+/* ---------------------------------------------------------------------------
    Interaction diagram (InteractionDiagram / lib/sequenceDiagram): the
    UML-style sequence diagram of the flat leg sequence.
 
