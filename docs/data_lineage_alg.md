@@ -190,9 +190,6 @@ lineage[i] = for each interaction i in seq order:
 ## Lineage result
 
 1. step I - Intra-Trace lineage - 
-		Assumptions: 
-			A payload exists on each interaction, 
-			Identification of entities with storage
 		Output:
 			lineage metadata for each ineraction leg
 
@@ -219,7 +216,7 @@ Current scope Per-trace:
 
 - given a trace's execution-flow interactions, serve the lineage metadata of every interaction leg.
 
-Derived from the trace *and* metadata:
+Derived from the trace *and* metadata Step one:
 - lineage fanout(entity) — interactions + entities downstream (descendants)
 - lineage fanin(entity)  — interactions + entities upstream (ancestors)
 Note the fanout and the fanin have lineage semantics - If there is no lineage through an entity that Entity is the end of fanin or fanout
