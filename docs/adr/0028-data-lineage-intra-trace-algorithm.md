@@ -411,7 +411,9 @@ legitimately read hop-by-hop, and a field that no longer carries one must not ke
 advertising it. A stale name on a governance claim is worse than a rename.
 
 **Ordering is deliberately deferred, not lost.** The spec routes it to a future
-trace-derived API, and that is the honest home for it: the trace has the leg `seq`
+trace-derived API — since named, and the same shape D14's `fanin`/`fanout` take:
+derived from the trace *and* the metadata rather than from the triple alone. That is
+the honest home for it: the trace has the leg `seq`
 order that could answer "in what order", whereas the metadata triple does not. A
 `merge` unions two branches that reached the entity through different routes, and
 there is no single truthful interleaving of them to store — the old implementation
@@ -579,6 +581,12 @@ where the failure this replaces was *under*-reporting an external data ingress.
 internal/external column that no operation reads. It is recorded for future
 use (inter-trace / Step II) and has no v1 semantics.
 
+**`target` has since gained a consumer.** When this decision was taken neither
+`target` nor `location` was read by anything. That is still true of `location`, but
+the spec's API section gives `target` its first reader — D14's `list destinations` —
+so it is no longer a parked column. No operation in the *algebra* reads it, which is
+what this decision was about; the read surface does.
+
 **`Entities` membership follows data flow, not source-hood — resolved.**
 `Entities` answers "did data pass *through* this entity", which is a question about
 flow and is **independent of `is_entity_source`**. So the entity is extended into
@@ -656,10 +664,81 @@ stale provenance; a cheaper trigger (a dirty-trace queue written by the statemen
 rewrites the leg, or an indexable generated column) is the shape to reach for against
 real traffic. Recorded as an open item rather than guessed at.
 
+### D14 — The read surface is five reads at three grains, all trace-scoped
+
+The spec gained an **API** section (`data_lineage_alg.md` "API") naming five reads
+where it previously named one ("given execution flow interactions, we can easily
+compute the trace lineage"). Recorded here because most of them are a *different kind*
+of read from the one that shipped, and because the section closes three scope
+questions that were open.
+
+**The reads, and what each is answerable from:**
+
+| Read | Grain | Source |
+| --- | --- | --- |
+| per-leg lineage metadata | leg | `lineage_metadata` lookup — **shipped** (#118) |
+| `lineage fanout(entity)` | entity | trace **and** metadata (deferred) |
+| `lineage fanin(entity)` | entity | trace **and** metadata (deferred) |
+| `list sources` | trace | union of the trace's `data_sources` (deferred) |
+| `list destinations` | trace | taxonomy `target`, kind defaults today (deferred) |
+
+**The metadata triple cannot answer fanin/fanout alone, and the spec pairs the two
+sources correctly.** `lineage_metadata` records *sets* — sources, transformations,
+entities — per leg, and deliberately records no edges (D10: a merge unions branches
+that reached an entity by different routes, and there is no truthful interleaving to
+store). Ancestors/descendants is a *stronger* claim than the ordering D10 deferred, so
+these reads need the leg structure in `interaction_legs` too. Hence the spec's phrase
+"derived from the trace **and** metadata": **the trace supplies the candidate edges,
+the metadata supplies whether lineage actually flowed along them.**
+
+**That pairing is what makes these *lineage* fanin/fanout rather than a call-graph
+walk** — the load-bearing sentence of the spec's section: "if there is no lineage
+through an entity that Entity is the end of fanin or fanout". A structural walk would
+report every entity the trace reached; these stop where provenance stops.
+
+**Consequence, and it is the trade the triple already accepts:** these traversals
+inherit matcher quality. Under the trivial `simple_match` nothing terminates early, so
+fanout degenerates to the whole reachable call graph and fanin to the whole ancestry —
+complete but full of maybes, exactly as the triple is. Not a new weakness, but a full
+fanout must not be read as evidence that data genuinely reached everything it lists.
+
+**No re-derivation on the read path, so D7 is intact.** These reads re-walk
+*structure* and read *persisted* verdicts; they do not call the matcher. D7's
+constraint is that matching runs at ingest — an LLM/NER call per payload pair over a
+trace's history is what persisting avoids — and a structural walk over
+already-decided lineage does not reintroduce it. An implementation that finds itself
+needing a matcher call to answer fanin/fanout has violated D7 and should persist the
+edge instead.
+
+**`list sources` reads the triple, not the taxonomy.** The spec resolves it to "union
+of data sources, scoped to trace" — buildable today against a table that already
+exists, needing no taxonomy entry. It deliberately does *not* mean "entities declared
+sources": that is a different set, and under D12's kind defaults the two diverge
+exactly where a delegation-shaped tool over-reports.
+
+**`list destinations` gives the taxonomy's `target` column its first consumer**,
+retiring half of D12's "`target` is unread, `location` is a placeholder". Until the
+declared table lands the answer is the kind default (`tool` ✓, `llm` ✗, `agent` ✗).
+Note the v1 consequence: `SOURCE_KINDS` and the taxonomy's `target` both currently
+resolve to `tool`, so `list sources` and `list destinations` return overlapping
+membership for unrelated reasons. They diverge only once the declared table
+distinguishes a read tool from a write one — so early agreement between the two reads
+is an artifact of the defaults, not corroboration.
+
+**Three scopes the section closes**, all now explicit in the spec's Deferred block:
+**deployment scope** (these are per-trace reads; an all-traces "what are my sources"
+is deferred), **cross-trace** (fanin/fanout do not cross a trace boundary — that is
+Step II, so "ancestors" means ancestors *within the trace*), and **reading the
+entity-taxonomy table** (unchanged from D12).
+
 ## Outputs
 
-- **API** — given a trace's interaction flow, compute/serve trace lineage;
-  return lineage metadata for any interaction/payload.
+- **API** — trace-scoped reads at two grains (D14). **Shipped**: per-leg lineage
+  metadata for a trace, `GET /api/traces/{tid}/data-lineage` (#118), carrying the D6
+  coverage status on the envelope (#120). **Deferred**: `lineage fanin`/`fanout` per
+  entity (trace **and** metadata — the trace supplies the edges, the metadata whether
+  lineage flowed along them), `list sources` (union of the trace's `data_sources`) and
+  `list destinations` (taxonomy `target`, kind defaults today).
 - **Tables** — a map `(interaction_id, leg_type) → lineage metadata` (D5), so
   "what are the data sources" is a read, not a recompute; `payload_hash` is a
   secondary index for the deferred reverse lookup.
@@ -701,9 +780,14 @@ matching how ADR-0024/0025 name their PKs.
 - **Matcher implementation and its versioning/re-derivation** (D7).
 - **Reading the declared entity-taxonomy table** (D12) — source/target/persistent-
   storage/location per entity. Kind-based defaults stand in; the table's own shape
-  and population are out of scope here.
+  and population are out of scope here. The spec's API section names this deferral
+  too (D14), so `list destinations` runs on the `target` kind default until it lands.
 - **The `location` (internal/external) dimension** of the taxonomy (D12) — carried
-  in the spec's table, read by nothing, reserved for Step II.
+  in the spec's table, read by nothing, reserved for Step II. (`target` is no longer
+  in this position: D14's `list destinations` is its first consumer.)
+- **The entity-grain and trace-grain reads** (D14) — `lineage fanin`/`fanout`,
+  `list sources`, `list destinations`. The spec names all four; only the per-leg
+  read has shipped. Deployment-wide and cross-trace scope are deferred with them.
 - **The transformation enumeration** (finalized with a human).
 - **Map `persisting-entity → payload`** (the reverse data-source index).
 - **Dependencies** (config, code/model versions) — non-data inputs to a
@@ -783,3 +867,11 @@ matching how ADR-0024/0025 name their PKs.
 - Kinds absent from the taxonomy table (`user` / `client` / `service`) — **D12**
   defaults them to "not a source". A default that a later entry or the declared
   table overrides, not a finding about those kinds.
+- Where the deferred **ordering** read lives (D10) — **D14** names it. D10 routed
+  "in what order did the data pass through these entities" to "a future
+  trace-derived API" without saying what that API was; the spec's API section
+  supplies the shape, and `fanin`/`fanout` are derived from the trace *and* the
+  metadata for exactly D10's reason: the triple has no edges to walk.
+- Whether the read path may re-derive (D7) — **D14**: no. The entity- and
+  trace-grain reads re-walk structure and read persisted verdicts; needing a
+  matcher call to answer one means the edge should have been persisted instead.

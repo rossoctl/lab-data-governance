@@ -206,16 +206,34 @@ lineage[i] = for each interaction i in seq order:
 	Step two is currently deferred
 
 
-	"outputs":
-	an API - Given execution flow interactions, we can easily compute the trace lineage - And provide lineage metadata for which interaction/payload in the trace 
+## Tables
 
 	Tables - Addressing the What are the data sources (without the need to recompute everything)
 	- Map from interaction/payload -> lineage metadata 
 
-	Defferred:
-	- Map payloads (hash) -> persisting entity (e.g file sysytem tool)
+
+
+## API
+Current scope Per-trace: 
+
+
+- given a trace's execution-flow interactions, serve the lineage metadata of every interaction leg.
+
+Derived from the trace *and* metadata:
+- lineage fanout(entity) — interactions + entities downstream (descendants)
+- lineage fanin(entity)  — interactions + entities upstream (ancestors)
+Note the fanout and the fanin have lineage semantics - If there is no lineage through an entity that Entity is the end of fanin or fanout
+
+- list sources      — union of data sources, scoped to trace,
+- list destinations — based on the default, scoped to trace,
+
+
 	
 
 ## deferred issues
+- Deployment scope, 
+- cross trace.
+- Reading from the Entity taxonomy table
+- Map payloads (hash) -> persisting entity (e.g file sysytem tool)
 - how to handle interactions with no payloads (not captured, not arrived, missing or genuinely empty)
 - How to handle entity persistency - And, handle it as keyed or blob
