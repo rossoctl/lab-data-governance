@@ -819,23 +819,55 @@ describe('ExecutionFlowGraph', () => {
     expect(nodeAt('e3')!.x).not.toBe(nodeAt('e1')!.x);
   });
 
-  it('gives an ADJACENT-column edge no bendpoint — nothing to route around', async () => {
-    // The common case (a request to the entity you call) must stay a clean straight
-    // arrow. Observable as the drawn link path having exactly two coordinate pairs:
-    // a start and an end, with no vertex between them.
+  it('BOWS an adjacent-column request and its response to opposite sides', async () => {
+    // THE OVERLAP BUG, pinned. An earlier version returned no bendpoint at all for
+    // an adjacent-column edge, reasoning that a straight line crosses no
+    // intervening cell. That is true and beside the point: A→B and B→A over one
+    // column step share BOTH anchor points, so the request and the response were
+    // drawn on top of each other — one line with an arrowhead at each end and the
+    // two `seq` tags colliding. The user reported seeing exactly that.
+    //
+    // This is the COMMON case (a plain call to the entity you call), which is why
+    // it mattered more than the skipping cases that were already fanned.
     mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
     renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
 
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
-    const pts = (id: string) =>
-      [
-        ...document
-          .querySelector(`[data-id="${id}"] .pf-topology__edge__link`)!
-          .getAttribute('d')!
-          .matchAll(/-?[\d.]+\s+-?[\d.]+/g),
-      ].length;
-    expect(pts('i1:request')).toBe(2);
-    expect(pts('i1:response')).toBe(2);
+    const req = bendsOf('i1:request')[0];
+    const resp = bendsOf('i1:response')[0];
+
+    // Each leg now carries exactly one bend — not zero, which was the bug.
+    expect(req).toBeDefined();
+    expect(resp).toBeDefined();
+    // e1 and e2 are both on row 0, so the direct line is horizontal at that y.
+    // One leg bows above it and the other below: two distinguishable arrows.
+    const mid = cell(0, 0).y;
+    expect(Math.sign(req!.y - mid)).toBe(-Math.sign(resp!.y - mid));
+    expect(req!.y).not.toBe(resp!.y);
+    // Both bend at the span's midpoint in x — the bow is vertical only, so each
+    // leg still reads as the direct connection it is.
+    expect(req!.x).toBe(resp!.x);
+  });
+
+  it('keeps the adjacent-column bow inside the row gutter', async () => {
+    // The bow separates the pair; it must NOT wander so far that it enters the
+    // neighbouring row's band, where it would read as pointing at a different
+    // entity. Two rows are ROW_STEP_Y apart, so a bow of less than half that stays
+    // in its own lane — pinned as a relationship rather than against the literal
+    // 18, so retuning the constant cannot silently break the invariant.
+    mockApi(ENTITIES, [
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+      // A second callee, so there IS a row 1 for the bow to intrude into.
+      mkIx({ id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+    const rowPitch = cell(0, 1).y - cell(0, 0).y;
+    for (const id of ['i1:request', 'i1:response']) {
+      const bend = bendsOf(id)[0]!;
+      expect(Math.abs(bend.y - cell(0, 0).y)).toBeLessThan(rowPitch / 2);
+    }
   });
 
   it('routes a COLUMN-SKIPPING edge around the cells it would otherwise cross', async () => {
@@ -847,8 +879,15 @@ describe('ExecutionFlowGraph', () => {
     // Asserted at the MODEL level (`getBendpoints()`), not as a claim about pixels
     // overlapping: jsdom has no SVG layout, so actual visual non-overlap is
     // unobservable here and a test claiming it would be lying. What is observable is
-    // that the skipping edge carries a vertex and the adjacent ones do not, and that
-    // the vertex is off the straight line between the endpoints.
+    // that the skipping edge's vertex is off the straight line between its
+    // endpoints, and that it detours MUCH further than an adjacent-column leg's
+    // separating bow does.
+    //
+    // Note this used to assert the adjacent legs carried NO vertex. They now carry a
+    // small one (see the overlap test above — a straight adjacent pair drew on top of
+    // itself), so the distinction between the two cases is the SIZE of the offset,
+    // not its presence: the skipping edge clears a whole row band, the adjacent bow
+    // only has to separate two arrows.
     mockApi(ENTITIES, [
       mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
       mkIx({ id: 'i2', caller_entity_id: 'e2', callee_entity_id: 'e3' }, 3),
@@ -857,11 +896,13 @@ describe('ExecutionFlowGraph', () => {
     renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
 
     await waitFor(() => expect(edgeEls()).toHaveLength(6));
-    // The two adjacent-column legs are straight.
-    expect(bendsOf('i1:request')).toHaveLength(0);
-    expect(bendsOf('i2:request')).toHaveLength(0);
     // The skipping leg (column 0 → column 2) detours.
     expect(bendsOf('i3:request')).toHaveLength(1);
+    // …far further than an adjacent leg's separating bow, which is what makes the
+    // detour read as routing AROUND something rather than as a pair being fanned.
+    const adjacentBow = Math.abs(bendsOf('i1:request')[0]!.y - cell(0, 0).y);
+    const skipDetour = Math.abs(bendsOf('i3:request')[0]!.y - cell(0, 0).y);
+    expect(skipDetour).toBeGreaterThan(adjacentBow);
     // …and the detour really is OFF the direct line, which is what "routes around"
     // means. e1 and e3 are both on row 0, so the straight line is horizontal at that
     // y — a bend at the same y would be no detour at all.

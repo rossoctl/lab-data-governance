@@ -215,6 +215,25 @@ const COLUMN_STEP_X = 220;
 const ROW_STEP_Y = 96;
 
 /**
+ * How far, in px, an ADJACENT-COLUMN edge bows off the straight line between its
+ * two cells — applied with the `seq` parity sign, so a request and its response
+ * arc to opposite sides of the same span.
+ *
+ * Sized for LEGIBILITY, not clearance: there is nothing between two adjacent
+ * cells to route around (that is what distinguishes this from the skipping and
+ * same-column cases), so the only job is to separate the pair. It has to clear
+ * the node discs at both ends — `NODE_DIAMETER / 2` is the radius the arrow
+ * leaves from — while staying well inside the row gutter, or the bow would
+ * wander into the row above/below and read as pointing at the wrong entity.
+ * At a 96px row pitch with 40px discs there is ~28px of clear gutter each side,
+ * so 18px separates the two legs plainly without crowding either neighbour.
+ *
+ * The two legs therefore sit 36px apart at the midpoint — comfortably more than
+ * the `seq` tags need to stop colliding, which is the specific defect this fixes.
+ */
+const ADJACENT_BOW_Y = 18;
+
+/**
  * Which way the columns grow: `1` = deeper calls further RIGHT, `-1` = further
  * LEFT.
  *
@@ -283,6 +302,23 @@ function gridPosition({ column, row }: { column: number; row: number }): { x: nu
  * did (and which its own comment admitted). Parity, not an index into the group,
  * because it needs no second pass over the edge list and `seq` is already unique
  * per leg.
+ *
+ * AN ADJACENT-COLUMN PAIR IS BOWED, NOT LEFT STRAIGHT — and this is the case that
+ * matters most, because it is the shape of an ordinary call. An earlier version of
+ * this function returned no bendpoint for `spans === 1` on the reasoning that a
+ * straight line there crosses no intervening cell. True, but it missed the other
+ * reason an edge needs routing: A→B and B→A over one column step share BOTH
+ * anchor points, so the request and its response were drawn exactly on top of each
+ * other — one line with an arrowhead at each end and the two `seq` tags colliding.
+ * The claim that parity "stops same-pair edges from drawing on top of one another"
+ * was therefore only true for the spans that fell past that early return, i.e. the
+ * rarer ones.
+ *
+ * So `spans === 1` now gets a SMALL parity-signed bow (`ADJACENT_BOW_Y`) rather
+ * than the half-row lift a skipping edge takes: the pair has to separate enough to
+ * read as two arrows, while each still reads as the direct connection it is. There
+ * is nothing between the two cells to clear, so the offset is sized for legibility
+ * (clear of the node discs, well inside the row gutter), not for clearance.
  */
 function edgeBendpoints(
   edge: GraphEdgeSpec,
@@ -299,15 +335,20 @@ function edgeBendpoints(
   if (!from || !to) return [];
 
   const spans = Math.abs(to.column - from.column);
-  // Adjacent columns: nothing in between, so a straight line crosses nothing.
-  // This is the common case (a request to the entity you call) and it stays the
-  // clean, unbent arrow it should be.
-  if (spans === 1) return [];
 
   const a = gridPosition(from);
   const b = gridPosition(to);
   // Opposite sides for the two legs of a pair, so they do not retrace one line.
   const side = edge.seq % 2 === 0 ? 1 : -1;
+
+  if (spans === 1) {
+    // ADJACENT COLUMNS — the ordinary call, and the pair that used to overlap
+    // exactly (see the note above). Nothing sits between the two cells, so this
+    // bow exists purely to separate the request from its response: a small
+    // parity-signed lift at the midpoint, so the two legs arc apart and each
+    // keeps its own `seq` tag legible instead of both landing on one line.
+    return [[(a.x + b.x) / 2, (a.y + b.y) / 2 + side * ADJACENT_BOW_Y]];
+  }
 
   if (spans === 0) {
     // SAME COLUMN. The gutter is horizontal: push the midpoint sideways, clear of
