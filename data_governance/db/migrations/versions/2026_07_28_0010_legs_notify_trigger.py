@@ -4,7 +4,7 @@ Migration 0009 gave ``interaction_legs`` the *cursorable* half of a stream — a
 ``seq BIGINT`` column fed by the dedicated ``interaction_legs_seq`` sequence plus
 the ``interaction_legs_seq_idx`` cursor-pagination index (ADR-0007's shape, one
 layer down). Nothing announced those writes, so a downstream lineage deriver
-(ADR-0027) would have to poll blindly. This revision adds the missing half: a
+(ADR-0028) would have to poll blindly. This revision adds the missing half: a
 ``pg_notify`` on a dedicated channel, so the deriver becomes a straightforward
 instance of the existing shared processor loop (``LISTEN`` for work, poll as the
 backstop) rather than a bespoke poller — exactly what migration 0007 did for
@@ -27,16 +27,25 @@ What this revision adds — mirroring ``dg_notify_payloads()`` / 0005's
 every write that can ever change a row. Legs are not: the P-interactions flush
 writes them with an **upsert** —
 ``INSERT ... ON CONFLICT (interaction_id, leg_type) DO UPDATE SET occurred_at,
-payload_hash, error, seq`` (``processors/interactions/state.py:flush``) — because
+payload_hash, error`` (``processors/interactions/state.py:flush``) — because
 re-deriving a trace rewrites that trace's legs in place (ADR-0025: the PK is
 ``(interaction_id, leg_type)``, at most one request + one response leg per
 interaction, so a re-derivation cannot insert a second row). An
 ``ON CONFLICT DO UPDATE`` that lands on the update path fires **UPDATE**
 triggers, not INSERT triggers. An ``AFTER INSERT``-only trigger would therefore
-be silent for every re-derived trace, and the lineage deriver would never learn
-that the legs it already consumed have changed underneath it. Covering both
-events closes that gap: first derivation → INSERT → notify; re-derivation →
-UPDATE → notify.
+be silent for every re-derived trace. Covering both events means the *wake* still
+happens: first derivation → INSERT → notify; re-derivation → UPDATE → notify.
+
+**What the wake does NOT currently achieve.** Note that ``seq`` is deliberately
+*excluded* from that ``DO UPDATE SET`` — ``state.py`` preserves a leg's
+once-assigned ``seq`` across a re-derive, for replay determinism. A consumer that
+drains ``WHERE seq > cursor`` (as the P-data-lineage deriver does) has therefore
+already passed the rewritten leg's ``seq``, so it wakes, finds nothing new past
+its cursor, and does nothing: the stale derived rows survive. This trigger
+delivers the notification but cannot on its own make a rewritten leg reachable —
+closing that requires a staleness check on the consumer side (e.g. comparing the
+stored derived ``payload_hash`` against the leg's current one). Tracked in issue
+#137; do not read the ``OR UPDATE`` here as "re-derivations are handled".
 
 **Why statement-level**, following 0007 rather than 0006's row-level pair:
 
@@ -54,10 +63,10 @@ UPDATE → notify.
   writes one statement per leg today; a future batched writer would fire once
   per batch instead of once per row, which is strictly better at zero cost now.
 - Similarly there is no ``WHEN (NEW.seq IS DISTINCT FROM OLD.seq)`` guard (0006's
-  defensive extra on the spans finalization trigger). It would be wrong here:
-  a re-derivation *is* meaningful work for the lineage consumer even in the
-  degenerate case where the rewritten row lands on the same ``seq``, and a
-  statement-level trigger has no ``NEW``/``OLD`` to test in any case.
+  defensive extra on the spans finalization trigger). A statement-level trigger
+  has no ``NEW``/``OLD`` to test in any case. (Such a guard would in fact suppress
+  nothing that matters today: a re-derive never changes ``seq``, so *every*
+  re-derivation is the "same seq" case — see the caveat above.)
 
 What this revision deliberately does NOT add:
 
@@ -113,10 +122,13 @@ def upgrade() -> None:
         """
     )
     # Statement-level AFTER INSERT **OR UPDATE**: one notification per write
-    # statement, empty payload. The OR UPDATE is load-bearing — legs are written
-    # with ON CONFLICT (interaction_id, leg_type) DO UPDATE, and a conflict that
-    # lands on the update path fires UPDATE triggers, not INSERT triggers, so an
-    # INSERT-only trigger would leave every re-derived trace unannounced.
+    # statement, empty payload. The OR UPDATE is load-bearing for the *wake* —
+    # legs are written with ON CONFLICT (interaction_id, leg_type) DO UPDATE, and a
+    # conflict that lands on the update path fires UPDATE triggers, not INSERT
+    # triggers, so an INSERT-only trigger would leave every re-derived trace
+    # unannounced. It does NOT by itself make a rewritten leg re-derivable: seq is
+    # preserved across a re-derive, so a seq>cursor consumer wakes to find nothing
+    # past its cursor. See the module docstring.
     op.execute(
         """
         CREATE TRIGGER dg_legs_notify

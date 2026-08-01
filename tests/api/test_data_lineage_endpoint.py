@@ -2,14 +2,14 @@
 
 ``GET /api/traces/{tid}/data-lineage`` → ``{"legs": [DataLineageLeg], ...}`` — the
 persisted per-leg **Data lineage metadata** for one trace, served as a pure
-lookup against ``lineage_metadata`` (ADR-0027 D7: matching runs at ingest, so no
+lookup against ``lineage_metadata`` (ADR-0028 D7: matching runs at ingest, so no
 matcher call and no traversal happen here).
 
 This file owns the per-leg half of the contract. The envelope's trace-level
-``status`` / ``stopped_at_seq`` (ADR-0027 D6, issue #120) are covered in
+``status`` / ``stopped_at_seq`` (ADR-0028 D6, issue #120) are covered in
 ``test_data_lineage_status_endpoint.py``.
 
-Each element keys the leg (``interaction_id`` + ``leg_type``, ADR-0027 D5),
+Each element keys the leg (``interaction_id`` + ``leg_type``, ADR-0028 D5),
 carries the leg's ``payload_hash``, and nests the metadata triple under a
 nullable ``lineage``:
 
@@ -67,14 +67,14 @@ def seeded(configured_db: str) -> str:
         )
         conn.execute(
             "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-            "payload_hash, error, original_seq) "
-            "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false, 1)",
+            "payload_hash, error) "
+            "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false)",
             (_IX_ID,),
         )
         conn.execute(
             "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-            "payload_hash, error, original_seq) "
-            "VALUES (%s, 'response', '2026-01-01T00:00:02Z', 'resphash', true, 2)",
+            "payload_hash, error) "
+            "VALUES (%s, 'response', '2026-01-01T00:00:02Z', 'resphash', true)",
             (_IX_ID,),
         )
         conn.execute(

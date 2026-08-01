@@ -1,17 +1,17 @@
-"""The trace-level lineage status on the read path (issue #120, ADR-0027 D6).
+"""The trace-level lineage status on the read path (issue #120, ADR-0028 D6).
 
 ``get_data_lineage`` gains the trace's ``complete``/``partial`` coverage alongside
 the per-leg metadata. The ``{"legs": [...]}`` envelope #118 shaped exists for
 exactly this: the status is a whole-trace fact and has nowhere to live on a leg.
 
-Still a **pure lookup** (ADR-0027 D7): the status is read from
+Still a **pure lookup** (ADR-0028 D7): the status is read from
 ``lineage_trace_status`` (migration 0012), never recomputed here from the presence
 of a payload gap. Two copies of the cutoff rule — one in the traversal, one in the
 read's SQL — is the drift this table's existence avoids.
 
 The absence cases matter as much as the present ones and get equal coverage below:
 a trace whose status row has not landed reads as *unknown*, never ``complete``
-(ADR-0027 D6 "Reading the status").
+(ADR-0028 D6 "Reading the status").
 """
 
 from __future__ import annotations
@@ -35,14 +35,14 @@ def _seed_trace(conn: psycopg.Connection, trace_id: str, ix_id: str) -> None:
     )
     conn.execute(
         "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-        "payload_hash, error, original_seq) "
-        "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false, 1)",
+        "payload_hash, error) "
+        "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false)",
         (ix_id,),
     )
     conn.execute(
         "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-        "payload_hash, error, original_seq) "
-        "VALUES (%s, 'response', '2026-01-01T00:00:02Z', NULL, false, 2)",
+        "payload_hash, error) "
+        "VALUES (%s, 'response', '2026-01-01T00:00:02Z', NULL, false)",
         (ix_id,),
     )
 
@@ -118,7 +118,7 @@ def test_complete_status_has_no_stop_position(configured_db: str) -> None:
 
 def test_status_is_null_when_not_yet_derived(configured_db: str) -> None:
     """No status row → ``status=None``, meaning *unknown*, never ``complete``
-    (ADR-0027 D6). This is the eventual-consistency window, so it is the common
+    (ADR-0028 D6). This is the eventual-consistency window, so it is the common
     case rather than an edge one — the legs assertion below keeps it honest that
     the read still serves them."""
     with psycopg.connect(configured_db) as conn:
@@ -177,7 +177,7 @@ def test_status_survives_a_missing_status_table(seeded: str, configured_db: str)
 def test_the_read_does_not_recompute_the_status_from_the_gap(
     seeded: str, configured_db: str
 ) -> None:
-    """A pure lookup (ADR-0027 D7), and the reason the status got its own table:
+    """A pure lookup (ADR-0028 D7), and the reason the status got its own table:
     the read reports what the PROCESSOR concluded, never its own reading of the
     legs. Here the recorded status is deliberately ``complete`` while a leg's
     payload is absent — a state the running system would not produce, which is

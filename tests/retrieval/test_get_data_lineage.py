@@ -2,7 +2,7 @@
 
 These drive ``retrieval.get_data_lineage`` directly against a migrated DB — the
 seam that owns the read *logic*: the pure lookup against ``lineage_metadata``
-(no matcher call, no traversal at read time — ADR-0027 D7), the trace scoping
+(no matcher call, no traversal at read time — ADR-0028 D7), the trace scoping
 through ``interactions`` (the derived table has no ``trace_id`` of its own), the
 JSONB ``source_transformations`` map shaped back into a
 ``data_source -> list<transformation>`` dict, and the two graceful-absence
@@ -43,14 +43,14 @@ def _seed_trace(conn: psycopg.Connection, trace_id: str, ix_id: str) -> None:
     )
     conn.execute(
         "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-        "payload_hash, error, original_seq) "
-        "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false, 1)",
+        "payload_hash, error) "
+        "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false)",
         (ix_id,),
     )
     conn.execute(
         "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-        "payload_hash, error, original_seq) "
-        "VALUES (%s, 'response', '2026-01-01T00:00:02Z', 'resphash', true, 2)",
+        "payload_hash, error) "
+        "VALUES (%s, 'response', '2026-01-01T00:00:02Z', 'resphash', true)",
         (ix_id,),
     )
 
@@ -117,7 +117,7 @@ def seeded(configured_db: str) -> str:
 
 def test_lineage_triple_round_trips(seeded: str) -> None:
     """The full metadata triple comes back: data sources, the per-source
-    transformation map, and the entity SET (ADR-0027 / spec "Lineage
+    transformation map, and the entity SET (ADR-0028 / spec "Lineage
     metadata")."""
     result = retrieval.get_data_lineage(seeded)
     by_key = {(row.interaction_id, row.leg_type): row for row in result.legs}
@@ -151,7 +151,7 @@ def test_leg_without_lineage_row_reads_as_not_yet_computed(seeded: str) -> None:
 
 def test_legs_ordered_by_leg_seq(seeded: str) -> None:
     """Rows come back in leg ``seq`` order — the only execution order the schema
-    offers (ADR-0027 D6 reasons in leg seq)."""
+    offers (ADR-0028 D6 reasons in leg seq)."""
     result = retrieval.get_data_lineage(seeded)
     assert [row.leg_type for row in result.legs] == ["request", "response"]
 

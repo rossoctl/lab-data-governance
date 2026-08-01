@@ -1,4 +1,4 @@
-"""Wire contract for the trace-level lineage status (issue #120, ADR-0027 D6).
+"""Wire contract for the trace-level lineage status (issue #120, ADR-0028 D6).
 
 ``GET /api/traces/{tid}/data-lineage`` gains two sibling fields beside ``legs``:
 
@@ -10,7 +10,7 @@ status is a whole-trace fact, so it sits on the envelope rather than repeated on
 every leg — and the legs a truncation removes have no element to carry it anyway.
 
 Three status values on the wire, not two: ``null`` is **unknown**, never
-``"complete"`` (ADR-0027 D6 "Reading the status"). The tests below pin all three, so
+``"complete"`` (ADR-0028 D6 "Reading the status"). The tests below pin all three, so
 a handler that defaulted the absent status would fail here rather than in
 production.
 """
@@ -46,14 +46,14 @@ def _seed(conn: psycopg.Connection, trace_id: str, ix_id: str) -> None:
     )
     conn.execute(
         "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-        "payload_hash, error, original_seq) "
-        "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false, 1)",
+        "payload_hash, error) "
+        "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false)",
         (ix_id,),
     )
     conn.execute(
         "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-        "payload_hash, error, original_seq) "
-        "VALUES (%s, 'response', '2026-01-01T00:00:02Z', NULL, false, 2)",
+        "payload_hash, error) "
+        "VALUES (%s, 'response', '2026-01-01T00:00:02Z', NULL, false)",
         (ix_id,),
     )
     conn.execute(
@@ -115,7 +115,7 @@ def test_partial_status_and_stop_seq_serialize(partial_trace, api_server, config
 def test_partial_trace_serves_only_the_prefix_legs_with_lineage(
     partial_trace, api_server
 ):
-    """``partial`` truncates the *lineage*, not the leg list (ADR-0027 D6). Both legs
+    """``partial`` truncates the *lineage*, not the leg list (ADR-0028 D6). Both legs
     are listed — they exist — but only the pre-gap one carries a lineage object, so
     the truncation is visible in the payload *and* announced by the status. Do not
     "fix" this to expect the post-gap leg to be absent: the read has no ``seq``
