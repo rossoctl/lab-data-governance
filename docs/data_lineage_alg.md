@@ -216,10 +216,11 @@ Current scope Per-trace:
 
 - given a trace's execution-flow interactions, serve the lineage metadata of every interaction leg.
 
-Derived from the trace *and* metadata Step one:
-- lineage fanout(entity) — interactions + entities downstream (descendants)
-- lineage fanin(entity)  — interactions + entities upstream (ancestors)
-Note the fanout and the fanin have lineage semantics - If there is no lineage through an entity that Entity is the end of fanin or fanout
+Derived from the trace *and* metadata:
+- lineage fanout(entity, source) — interactions + entities downstream (descendants)
+- lineage fanin(entity, source)  — interactions + entities upstream (ancestors)
+Note the fanout and the fanin have lineage semantics - If there is no lineage, from the source, through an entity that entity is the end of fanin or fanout. In other words, the traversal accounts for the entity, the interaction sequence number and lineage. Specifically, the traversal is on entities, the interaction sequence number governs the edges to be considered and their order (fanout - larger numbers, fanin - smaller numbers). Lastly, we should traverse an edge towards the next/previous entity based iff the source is part of the edge/interaction metadata sources.
+
 
 - list sources      — union of data sources, scoped to trace,
 - list destinations — based on the default, scoped to trace,
@@ -228,8 +229,8 @@ Note the fanout and the fanin have lineage semantics - If there is no lineage th
 	
 
 ## deferred issues
-- Deployment scope, 
-- cross trace.
+- Lineage fanout/fanin Given multiple sources - semantics are not clear: Do we expect the exact set of sources? Any of them?  
+- cross trace - Apis.
 - Reading from the Entity taxonomy table
 - Map payloads (hash) -> persisting entity (e.g file sysytem tool)
 - how to handle interactions with no payloads (not captured, not arrived, missing or genuinely empty)
