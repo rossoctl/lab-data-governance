@@ -1,7 +1,7 @@
 # Sidecar wire contract — two-span lineage (v1.3)
 
 The single source of truth for what the AuthBridge lineage plugin emits and what the
-P-interactions `sidecar` algorithm (ADR-0028) consumes. Fixes the attribute names that were left
+P-interactions `sidecar` algorithm (ADR-0029) consumes. Fixes the attribute names that were left
 "pending confirmation". Producer: `kagenti-extensions-snp/authbridge/authlib/plugins/lineage/`.
 Consumer: `data_governance/processors/interactions/sidecar.py` (vocabulary:
 `data_governance/sidecar_facts.py`).
@@ -95,7 +95,7 @@ Resource (unchanged): `service.name=authbridge`, `authbridge.component=lineage-t
 | `lineage.role` | both | `request` \| `response` | which half this span is |
 | `lineage.direction` | both | `inbound` \| `outbound` | |
 | `lineage.self.id` | both | `weather-service` | from `self_id` / `self_id_file` |
-| `lineage.peer.addr` | both spans, **inbound only** | `10.244.2.5:47312` | the direct TCP caller's address. Not emitted on outbound — there the proxy only observes the app's own socket, which would mislabel the fact; outbound callee identity comes from `peer.host`. **Currently never produced in the deployed envoy-sidecar (ext_proc) mode**, where the remote address is unavailable to the plugin — anonymous inbound callers derive as `client:(unknown)`; a producer-side follow-up (ADR-0028) |
+| `lineage.peer.addr` | both spans, **inbound only** | `10.244.2.5:47312` | the direct TCP caller's address. Not emitted on outbound — there the proxy only observes the app's own socket, which would mislabel the fact; outbound callee identity comes from `peer.host`. **Currently never produced in the deployed envoy-sidecar (ext_proc) mode**, where the remote address is unavailable to the plugin — anonymous inbound callers derive as `client:(unknown)`; a producer-side follow-up (ADR-0029) |
 | `lineage.peer.host` | both | `weather-tool-mcp.team1.svc:8000` | Host/authority header when present |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched; `http` = none |
 | `lineage.parent.source` | request | `tracestate` \| `wire` | v1.3: which mechanism chose the request span's parent — the tracestate stamp (exact) or the wire traceparent. Inbound is always `wire`. `map` was a legal value in v1.2 only; stored spans predating v1.3 may still carry it. A fact for auditing attribution; the consumer derives nothing from it |

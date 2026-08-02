@@ -6,7 +6,7 @@ A guided path through `INTERACTIONS_ALGORITHM=sidecar` — the derivation that t
 15 minutes, in the order below.
 
 It is one of three peer algorithms inside the P-interactions processor
-(`streaming` — ADR-0007, `graph` — ADR-0026, `sidecar` — ADR-0028); exactly one
+(`streaming` — ADR-0007, `graph` — ADR-0026, `sidecar` — ADR-0029); exactly one
 runs at a time, selected by env, sharing one cursor. See
 `docs/CUTOVER-two-span.md` for switching between them.
 
@@ -84,7 +84,7 @@ deterministic, idempotent, order-independent.
    divergence from upstream's shared `state.flush`: our reconcile can legitimately
    **shrink** (an inbound entry is a real interaction until its outbound ancestor
    arrives, at which point it must be deleted and folded in as the callee echo),
-   and `flush`'s anchors are emit-once. ADR-0028 records the trade.
+   and `flush`'s anchors are emit-once. ADR-0029 records the trade.
 
 5. **`sidecar_driver.py` → `process_span()` / `drain()`** — the cursor pattern:
    each arriving span triggers a **full re-derive of its trace**. That is what

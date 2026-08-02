@@ -1,7 +1,7 @@
 # Cutover: selecting the sidecar interactions algorithm
 
 The two-span sidecar derivation runs **inside** the P-interactions processor as
-`INTERACTIONS_ALGORITHM=sidecar` (ADR-0028), a peer of `streaming` and `graph`
+`INTERACTIONS_ALGORITHM=sidecar` (ADR-0029), a peer of `streaming` and `graph`
 (ADR-0026). All algorithms write the same derived tables and share the one
 `interactions` cursor, so switching algorithms is a *selection change plus a
 data reset* — never an addition.

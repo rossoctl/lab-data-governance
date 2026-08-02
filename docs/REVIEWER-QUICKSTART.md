@@ -14,7 +14,7 @@ The AuthBridge lineage sidecar emits **two spans per HTTP exchange** — one whe
 sees the request, one when it sees the response — paired by `lineage.exchange.id`.
 The producer emits **facts only**; every judgment about what those facts mean lives
 in the consumer. The P-interactions processor derives them with
-`INTERACTIONS_ALGORITHM=sidecar` (ADR-0028), a peer of `streaming` and `graph`,
+`INTERACTIONS_ALGORITHM=sidecar` (ADR-0029), a peer of `streaming` and `graph`,
 writing the ADR-0025 legs schema. Apps are **not modified**: a deploy-time,
 propagate-only OTel shim makes `traceparent` flow through the app, exporting
 nothing.
@@ -133,7 +133,7 @@ what distinguishes real correlation from a lucky single-request path.
 | Question | Where |
 |---|---|
 | How does the algorithm work? | [`reading-the-sidecar-algorithm.md`](reading-the-sidecar-algorithm.md) — a 15-minute guided read |
-| Why this shape, and what was traded? | `docs/adr/0028-*` (sidecar algorithm), `0025` (legs), `0026` (algorithm selection) |
+| Why this shape, and what was traded? | `docs/adr/0029-*` (sidecar algorithm), `0025` (legs), `0026` (algorithm selection) |
 | What exactly does the wire carry? | [`sidecar-wire-contract.md`](sidecar-wire-contract.md) (law) |
 | Switching or resetting algorithms | [`CUTOVER-two-span.md`](CUTOVER-two-span.md) — note step 7's skipped-span assertion |
 | Adapting another app | the kit's `RUNBOOK.md`; per-app evidence in its `validation/` cards |
