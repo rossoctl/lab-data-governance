@@ -685,16 +685,25 @@ questions that were open.
 | Read | Grain | Source |
 | --- | --- | --- |
 | per-leg lineage metadata | leg | `lineage_metadata` lookup — **shipped** (#118) |
-| `lineage fanout(entity)` | entity | trace **and** metadata — **shipped** |
-| `lineage fanin(entity)` | entity | trace **and** metadata — **shipped** |
+| `lineage fanout(entity, source)` | entity | trace **and** metadata — **shipped** |
+| `lineage fanin(entity, source)` | entity | trace **and** metadata — **shipped** |
 | `list sources` | trace | union of the trace's `data_sources` — **shipped** |
 | `list destinations` | trace | taxonomy `target`, kind defaults — **shipped** |
 
 All five now ship. The four added after #118 live in
 `retrieval/lineage_graph.py` behind two endpoints —
-`GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=fanin|fanout` and
-`GET /api/traces/{tid}/data-lineage-summary` — and D15 below records what their
-implementation had to decide that this decision left open.
+`GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=fanin|fanout`
+`&source=<natural-key>` and `GET /api/traces/{tid}/data-lineage-summary` — and D15
+below records what their implementation had to decide that this decision left open.
+
+**Amended.** The two entity-grain reads were first recorded here, and shipped, as
+`fanout(entity)` / `fanin(entity)`. The spec's **API** section was subsequently
+rewritten (`data_lineage_alg.md`, commit `399f4fc`) to make them
+`fanout(entity, source)` / `fanin(entity, source)` and to add the traversal rule quoted
+in D15. The table above and the endpoint signature are corrected to match; D15 carries
+the substance and records what the source-less version got wrong. Nothing else in this
+decision changes — the grains, the two-table pairing and the three closed scope
+questions all stand.
 
 **The metadata triple cannot answer fanin/fanout alone, and the spec pairs the two
 sources correctly.** `lineage_metadata` records *sets* — sources, transformations,
@@ -710,11 +719,25 @@ walk** — the load-bearing sentence of the spec's section: "if there is no line
 through an entity that Entity is the end of fanin or fanout". A structural walk would
 report every entity the trace reached; these stop where provenance stops.
 
+The rewritten spec sharpens *what* "no lineage through an entity" is measured against,
+and it is not the mere existence of a metadata row: it is **whether the traced source is
+in that row's set**, evaluated in **sequence order**. D15 records the operational rule.
+The paragraph above is still the right reading of why two tables are needed; what it
+under-specified is which bit of the metadata answers the question.
+
 **Consequence, and it is the trade the triple already accepts:** these traversals
 inherit matcher quality. Under the trivial `simple_match` nothing terminates early, so
 fanout degenerates to the whole reachable call graph and fanin to the whole ancestry —
 complete but full of maybes, exactly as the triple is. Not a new weakness, but a full
 fanout must not be read as evidence that data genuinely reached everything it lists.
+
+Partly bounded by the amendment: the sequence rule prunes **regardless of matcher
+quality**, because it is a fact about the trace's own ordering rather than about
+provenance. So even under `simple_match` a fanout is now the seq-*forward* reachable
+graph rather than the whole of it, and fanin the seq-backward one. The source rule still
+inherits matcher quality as described — `simple_match` propagates every upstream source
+into every downstream leg, so membership rarely fails — and the caveat above stands
+undiminished for it.
 
 **No re-derivation on the read path, so D7 is intact.** These reads re-walk
 *structure* and read *persisted* verdicts; they do not call the matcher. D7's
@@ -739,29 +762,136 @@ membership for unrelated reasons. They diverge only once the declared table
 distinguishes a read tool from a write one — so early agreement between the two reads
 is an artifact of the defaults, not corroboration.
 
-**Three scopes the section closes**, all now explicit in the spec's Deferred block:
-**deployment scope** (these are per-trace reads; an all-traces "what are my sources"
-is deferred), **cross-trace** (fanin/fanout do not cross a trace boundary — that is
-Step II, so "ancestors" means ancestors *within the trace*), and **reading the
-entity-taxonomy table** (unchanged from D12).
+**Three scopes the section closes**, all explicit in the spec's Deferred block when this
+decision was written: **deployment scope** (these are per-trace reads; an all-traces "what
+are my sources" is deferred), **cross-trace** (fanin/fanout do not cross a trace
+boundary — that is Step II, so "ancestors" means ancestors *within the trace*), and
+**reading the entity-taxonomy table** (unchanged from D12). The first of those lines has
+since been removed from the spec — see the note below on what that does and does not
+mean.
 
-### D15 — The traversal's edge is a leg the trace has whose lineage was derived
+**The deferred block changed with the amendment, in two ways.** It gained
+**multi-source**, deferred verbatim — "Lineage fanout/fanin Given multiple sources -
+semantics are not clear: Do we expect the exact set of sources? Any of them?" So these
+reads take exactly **one** source; see D15 for why that makes the parameter required
+rather than optional.
+
+It also **dropped the "Deployment scope" line** (`399f4fc`). Read as a deletion rather
+than a resolution: nothing in the spec now describes an all-traces read, and no such read
+is implemented — every one of the five remains scoped through `interactions.trace_id`.
+Recorded here so the earlier sentence above ("an all-traces 'what are my sources' is
+deferred") is not later cited as spec text; it is this ADR's own reading, and it still
+holds in practice. Reaching for a deployment-wide read should re-open the question with a
+human rather than treat the removed line as permission.
+
+### D15 — The traversal's edge is a leg carrying *this source*, crossed in sequence order
 
 **Shipped**, implementing D14's four deferred reads (`retrieval/lineage_graph.py`).
 D14 settled *what* the reads are and *which two tables* answer them; it deliberately
 did not fix the edge rule. This records what the implementation had to decide, because
 each choice is one a later editor could plausibly reverse.
 
+**Amended** after `data_lineage_alg.md` commit `399f4fc` rewrote the spec's **API**
+section (`ee3a493` is its parent, which reworked the surrounding algorithm text but left
+`fanout(entity)` / `fanin(entity)` intact). The first shipped version of this decision had a two-conjunct edge rule and no
+`source` parameter; that reading is superseded, and the section "**What the previous
+edge rule got wrong**" below records it explicitly, because it is plausible enough to be
+re-derived by a reader who assumes it was merely a coarser version of this one. It was
+not — it was a different and false answer.
+
+**The signature.** `fanout(entity, source)` / `fanin(entity, source)`, served as
+`GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=fanin|fanout`
+`&source=<natural-key>`. `source` is a **data source natural key** as stored in
+`lineage_metadata.data_sources` — lineage stores keys, not entity ids (ADR-0027, D5) —
+so the accepted values are exactly what `list sources` returns. The two reads are keyed
+the same way deliberately: list, then drill in.
+
+**`source` is required, not optional.** It is half the question. An entity handles
+content from several sources at once — on the live corpus a mid-trace agent leg
+routinely carries four or five — and each has its own fanout, so there is no default
+that answers what was asked. The only candidate default, the union over all of them, is
+precisely the **multi-source read the spec defers** ("Given multiple sources - semantics
+are not clear: Do we expect the exact set of sources? Any of them?"), so serving it
+silently would ship a guess at an open design question under the name of a settled one.
+A missing or empty `source` is therefore a `400` carrying the same error shape a bad
+`direction` already does (`retrieval.MissingSource`, mirroring `UnknownDirection`) —
+both are malformed questions, as against answerable ones with empty answers.
+
+*Rejected: optional, defaulting to the old source-less walk.* It would have kept
+existing callers working, but that walk is not a weaker version of this one (see below),
+so leaving it reachable behind a default would make the wrong answer the easiest to ask
+for.
+
+**An *unknown* source is a valid empty answer, NOT a 404.** A key matching no
+`data_sources` value anywhere in the trace returns `200` with `state="no-adjacent"` and
+empty lists, exactly as an unknown seed entity does. Three reasons:
+
+- it is the truthful reply — the walk genuinely computed "no eligible edge exists",
+  whereas a 404 would claim the *question* was malformed, which is a different claim;
+- **a 404 would have to be inferred from absence, and absence is not yet knowledge
+  here.** Deciding "this key is unknown to this trace" means scanning the trace's
+  derived rows, and a mid-derivation trace has few or none — so the same request would
+  404 now and 200 later. That is exactly the collapse D6's three-valued `status` and
+  this read's `state`/`pending_frontier` exist to prevent: *"we don't know yet" must
+  never be served as "there is nothing"*. The tri-state already handles it correctly —
+  an undelivered trace answers `pending` with a frontier, which a 404 would destroy;
+- it matches the convention one field over: unknown trace and unknown entity are both
+  200-with-empty here, and `state` is how the caller tells the cases apart.
+
 **The edge rule.**
 
 ```
-A hop A -> B exists iff the trace has an Interaction leg whose per-leg
-direction runs A -> B, AND that leg has a derived lineage_metadata row.
+Arriving at entity A at sequence position s, a hop A -> B is followed iff:
+  1. the trace has an Interaction leg whose per-leg direction runs A -> B;
+  2. that leg has a derived lineage_metadata row;
+  3. `source` is a MEMBER of that row's stored `data_sources`; and
+  4. the leg's `seq` is strictly later than s (fanout) / earlier (fanin).
 ```
 
-Both conjuncts are load-bearing and neither table can answer alone — D14's "the trace
-supplies the candidate edges, the metadata supplies whether lineage actually flowed
-along them", made operational.
+Clauses 1-2 are D14's "the trace supplies the candidate edges, the metadata supplies
+whether lineage actually flowed along them", made operational; neither table can answer
+alone. Clauses 3-4 are the spec's own sentence, which is the whole of the amendment:
+
+> we should traverse an edge towards the next/previous entity based iff the source is
+> part of the edge/interaction metadata sources
+>
+> the interaction sequence number governs the edges to be considered and their order
+> (fanout - larger numbers, fanin - smaller numbers)
+
+**Clause 3: the source is held CONSTANT for the whole walk.** It is the thing being
+*traced*, not a per-hop comparison against the previously-visited entity. A leg whose
+`data_sources` omits it is a leg this source's content demonstrably did not travel on,
+so the walk must not cross it even though *some other* source's content did.
+
+**Clause 3 is a set-membership test, never a re-derivation — D7 is intact.** The read
+path reads `m.data_sources` and asks `source in data_sources`. No matching, no
+normalisation, no prefix or fuzzy comparison: the natural keys were written by the
+ingest-time derivation and are compared verbatim. This is the clause where D7 is easiest
+to violate — an implementation that finds itself wanting to *decide* whether a source
+belongs to a leg has violated it, and the fix is to persist the attribution at ingest,
+not to compute it here.
+
+**Clause 4: `seq` governs eligibility AND order.** Data cannot flow backwards in time,
+so an entity's downstream is what happened *after* the content arrived there. `seq` is
+the per-leg execution cursor (ADR-0025 puts it on the leg; the parent `interactions` row
+has none), and it does two jobs: it *gates* which edges may be crossed, and it *orders*
+the departures within an entity, which is what the spec's "and their order" asks for.
+Ordering does not change which entities are reachable; it makes the walk deterministic
+and gives the earliest-in-time route the claim on a given hop count.
+
+**Strict (`>`), not non-strict (`>=`), and the corpus settles it rather than taste.** A
+request and its response are two *different* legs at two different `seq`s — ADR-0025
+splits them, and on live trace `e62610bec7e8c1f4372aacc392eb9be5` the
+`search_destinations` call is seq 2 request / seq 3 response — so a genuine round trip is
+always expressible under `>`. Two legs can never share a `seq`, it being drawn from a
+sequence, so `>=` could only ever re-admit the very leg just arrived on: data flowing
+straight back where it came from in zero elapsed time. That is a false hop. Relaxing
+this is also not a free widening — it removes the termination argument below.
+
+**The seed is unconstrained.** It has not arrived *on* a leg, so it may depart on any
+eligible one. Pinning it to its earliest/latest touching leg would silently narrow the
+question to "downstream of that particular arrival" when the caller asked about the
+entity.
 
 **Per-leg direction, never the interaction's caller→callee.** A response leg runs
 callee → caller, matching `traversal._producer_id`/`_consumer_id` and the UI's
@@ -780,23 +910,113 @@ the result carries a three-valued `state` (`derived` / `pending` / `no-adjacent`
 rather than letting an empty entity list speak: an empty list has three unrelated
 causes and only `no-adjacent` is a complete answer.
 
+**Clause 3 splits "no hop" into two facts, and they must never collapse.** This is the
+crux of the tri-state discipline once the read is source-scoped:
+
+| The leg | Meaning | Disclosure |
+| --- | --- | --- |
+| no derived row yet | *ask again later* — the answer may grow | on `pending_frontier` |
+| derived, `source` not in `data_sources` | **final**: this source did not flow here | silently not an edge |
+
+Merging them is a lie in either direction. Treating the undelivered case as final
+under-reports a still-arriving answer; treating the source-absent case as pending sends a
+caller back to poll for something no amount of waiting will deliver. The `LEFT JOIN` plus
+null-probe in `_fetch_legs` exists precisely to keep them apart, and the pair is asserted
+together in the tests so the two branches cannot be "simplified" into one.
+
+**Clause 4 also filters the frontier; clause 3 deliberately does not.** The asymmetry
+follows from where each fact lives. A leg's `seq` is on `interaction_legs` and is known
+**whether or not** the lineage row has landed, so an undelivered leg on the wrong side of
+the arrival is *already* a settled "never an edge" — naming its entity as pending would
+promise growth no derivation can deliver. Its `data_sources`, by contrast, is precisely
+what has not landed, so membership is genuinely unknown and the entity is honestly named.
+Filtering the frontier by source would under-promise; not filtering it by seq would
+over-promise. Both directions are pinned by paired tests.
+
+A source-absent dead end therefore shares `no-adjacent` with "nothing there" rather than
+getting a fourth `state` value. *Rejected: a `source-absent` state.* It would name the
+distinction without being useful — every such case is the same actionable fact ("this is
+the end of the fanout"), and a caller can do nothing different with them. The distinction
+that *does* change caller behaviour, final versus not-yet, is already carried.
+
 **In-Python BFS over an adjacency map, not a recursive CTE.** One flat query fetches
 the trace's legs with a `LEFT JOIN` lineage probe; the walk runs in Python. The
 recursive-CTE precedent (`processors/interactions/state.py`) walks a *single*
 self-referential FK with no filter; here an edge is derived from two tables plus the
-direction rule, and encoding that into a recursive join condition would bury the edge
-rule in SQL and put the frontier logic out of reach. Traces are bounded and
-`get_interactions` already scans one three times.
+direction rule, a source-membership test and a `seq` comparison against the *arrival* —
+encoding that into a recursive join condition would bury the edge rule in SQL and put
+the frontier logic out of reach. Traces are bounded and `get_interactions` already scans
+one three times.
 
-**The cycle guard is load-bearing, unlike in the span walks.** `agent → tool → agent`
-is the ordinary shape of every tool call — both legs of one interaction form a
-two-node cycle — so the visited set is what makes the *common* case terminate. The
-span-tree CTEs in `state.py` have no such guard because a tree cannot cycle; do not
-read their absence as precedent.
+**The query selects `m.data_sources`, not a `has_lineage` boolean.** This is the root
+fix, not a refinement of one. Reducing the lineage row to `(m.seq IS NOT NULL)` makes
+clause 3 *unaskable* at every layer above the query: with only a boolean the walk cannot
+test whether *this* source is in the leg's set, so it can only fall back on "this leg has
+some lineage row" — which is the false rule the previous version shipped.
+`source_transformations` and `entities` are deliberately **not** selected: the spec's
+hop rule names only *sources*, and `entities` would be actively wrong to test against,
+being an unordered "passed through here" claim (D10) that would let the walk hop to
+anything the metadata ever mentioned.
+
+**Clause 4 makes `visited: set[str]` unsound, and this is the subtle consequence.** With
+the seq gate an entity can be legitimately **re-entered** at a different position, and a
+different arrival opens edges the first one could not take: an agent reached at seq 30 may
+only leave on seq > 30, while the same agent reached at seq 10 may also leave on seq 20.
+A plain "seen it, skip it" set keeps whichever arrival happened to be dequeued first and
+silently drops every entity reachable only past the better one. This is the ordinary shape
+of the corpus — a coordinating agent is re-entered on every tool response it receives —
+not a corner case.
+
+The replacement is `best_arrival[entity]`: the most **permissive** arrival seq seen, and an
+entity is re-enqueued iff a new arrival is strictly more permissive. An arrival opens
+exactly the legs on its permissive side, so a strictly more permissive one opens a
+superset and anything else a subset. Note the sign, which is the opposite of the direction
+of travel and is the easiest thing here to get backwards: fanout departs on `seq >
+arrival`, so an *earlier* arrival is the more permissive one; fanin is the mirror.
+
+**Depth is deliberately not part of that test, and `hops` is tracked separately.** This is
+the trap one refinement in from the `visited` bug, and it is easy to walk straight into: a
+`(depth, arrival)` dominance test reading "shallower, or equal depth and more permissive"
+looks natural and is wrong. A **deeper** arrival can be **more permissive** — reached the
+long way round but earlier in the trace — and it then opens edges the shallow arrival
+cannot; rejecting it loses everything beyond it, the same class of silent under-reporting
+merely rarer. So permissiveness alone gates expansion, while `hops` keeps its own map and
+is written with `min` so a deeper permissive revisit records reachability without
+lengthening the reported distance.
+
+**Termination, and it no longer rests on the cycle guard.** `agent → tool → agent` is
+still the ordinary shape of every tool call, and the graph is still genuinely cyclic — but
+what makes it finite now is **clause 4**, not the visited bookkeeping: every traversal
+must strictly advance `seq`, and a trace has finitely many legs. `best_arrival` is a
+pruning optimisation; the seq monotonicity is the termination argument. Formally,
+`best_arrival[entity]` is only ever replaced by a strictly more permissive value drawn
+from the trace's **finite** set of leg seqs, so it can improve at most `|legs|` times per
+entity; every enqueue is either an entity's first or a strict improvement, bounding total
+enqueues at `|entities| × (|legs| + 1)`.
+
+That reassignment matters for a future editor: relaxing clause 4 to `>=` would remove the
+termination guarantee, not merely widen the answer. The span-tree CTEs in `state.py`
+still have no guard because a tree cannot cycle; do not read their absence as precedent.
+
+**`hops` is now sequence-aware, and plain hop-BFS no longer yields it.** `hops` is the
+fewest hops along a path that respects *both* clauses, and the shortest **structural**
+route may be closed to this source or run backwards in time while a longer route is open.
+Two properties make the reported number right: the queue is processed in non-decreasing
+depth order (a plain FIFO, every enqueue at `depth + 1` — the standard BFS invariant,
+which survives the seq gate because the gate only ever *removes* edges), and a shallower
+route already found is never overwritten by a deeper one. So the first depth at which an
+entity becomes reachable *at all* is the depth recorded.
 
 **Bounds are disclosed.** Hop and entity caps set `truncated` rather than silently
 returning a prefix, and a walk that merely *ends* on the boundary does not set it — a
-flag that cried truncation on complete answers would be trained away.
+flag that cried truncation on complete answers would be trained away. A cap is also not
+tripped by legs the seq rule had already excluded: reporting `truncated` there would tell
+the caller a wider bound reveals more, which is false.
+
+The spec's "and their order" earns its keep at exactly this boundary. Ordering departures
+by `seq` does not change *reachability*, so it is easy to dismiss as cosmetic — but it
+decides which prefix a truncated answer returns, and "the earliest flows" is the only
+prefix a reader can interpret. An insertion-order walk would return an arbitrary one.
 
 **`truncated` and `pending_frontier` are different claims and must not be merged.**
 `pending_frontier` means *not derived yet — ask again later*; `truncated` means
@@ -808,22 +1028,83 @@ both.
 
 **Still no matcher, so D7 holds.** These reads re-walk structure and read persisted
 verdicts. An implementation that finds itself wanting a matcher call to answer a hop
-has violated D7; the edge should have been persisted instead.
+has violated D7; the edge should have been persisted instead. Clause 3 does not change
+this: it reads a persisted set, it does not decide one.
 
-**The UI's refusal stands and is not superseded.** `ui/src/lib/lineageGraph.ts`
-clause 3 declines to walk transitively because "a transitive claim the backend never
-derived would be the UI inventing lineage". That reasoning was correct and is exactly
-what this decision removes *for the server*: the backend now derives the multi-hop
-claim, so it is citable. The client-side one-hop roll-up is unchanged, and a future UI
-consuming these endpoints would be rendering a served answer rather than composing one.
+#### What the previous edge rule got wrong, and why it looked plausible
+
+Recorded at length because the superseded reading is *reasonable-sounding* and a future
+reader could re-derive it believing it equivalent to this one. It is not equivalent. It
+is false, and the failure is silent — it returns a large, confident, well-formed answer.
+
+The shipped implementation had clauses 1-2 only. It reduced the lineage row to
+`(m.seq IS NOT NULL) AS has_lineage`, never selecting `data_sources`, and it carried
+`seq` on the edge but used it *solely to sort the reported legs* — the walk's state was
+`(entity, depth)`, so an entity departed on edges that had fired **before** the one it
+arrived on. Two consequences, both reproduced on live trace
+`e62610bec7e8c1f4372aacc392eb9be5`, seeding the leaf tool `search_destinations`
+(`6e400213-…`), which touches exactly two legs: seq 2 inbound, seq 3 outbound.
+
+**1. `fanin` and `fanout` were byte-identical, and returned everything.** Both answered
+with **all 10 other entities and all 50 legs** — not merely the same membership but the
+same `hops` for every entity. The mechanism is worth stating because it is not obvious:
+`_adjacency` builds fan-in as the exact edge-*reversal* of fan-out, and a trace's
+aggregate request+response edge set is symmetric (every request has a response running
+the other way). Reversing a symmetric relation is a no-op — so once time is discarded
+there is nothing left for the reversal to distinguish. **The direction reversal itself was
+correct; it just had no purchase.** What separates upstream from downstream is *when*, and
+that was the discarded information.
+
+**2. A leaf tool's ancestry included an entity from 36 legs later.** `charge_card`
+appeared at 4 hops in the seed's `fanin`, though its only legs are seq 39/40 — long after
+the seed finished — and its `data_sources` never mention `search_destinations` at all. So
+*both* new clauses independently exclude it, and neither existed.
+
+**The same seed under the amended rule**, on the same trace, for comparison:
+
+| | entities | legs | `charge_card` |
+| --- | --- | --- | --- |
+| before, `fanout` | 10 | 50 | 4 hops |
+| before, `fanin` | 10 | 50 | 4 hops |
+| after, `fanout` | 7 | 36 | absent |
+| after, `fanin` | 0 | 0 | absent |
+
+The empty `fanin` is correct and is the sharpest illustration: `search_destinations` is
+where that source *originates*, so it has no ancestors, and the two legs carrying it are
+both later than the seed's own arrival.
+
+**Why it looked plausible.** The reading "a leg with a derived lineage row is a lineage
+edge" is a faithful rendering of D14's own sentence, *"the metadata supplies whether
+lineage actually flowed along them"* — if you read "whether lineage flowed" as a property
+of the leg rather than of the (leg, source) pair. Under the trivial `simple_match` it
+even looks corroborated: every leg gets a row, so the walk returns the whole call graph,
+which is *exactly* what a correct implementation also returns when nothing prunes it.
+D14's own "accepted degeneracy" paragraph then explains the full fanout away. The bug and
+the documented limitation are indistinguishable from the output alone.
+
+That is the trap. **A full fanout under the old rule was not "matcher too weak to prune";
+it was "no pruning implemented".** The two are testable apart only by checking that
+`fanin != fanout` on a seq-asymmetric trace, which is why that inequality is now a named
+regression test at both the pure and DB-backed layers.
+
+**The UI's refusal stands and is not superseded.** `ui/src/lib/lineageGraph.ts`'s own
+clause 3 (that module's numbering, unrelated to the edge rule's clauses above) declines to
+walk transitively because "a transitive claim the backend never derived would be the UI
+inventing lineage". That reasoning was correct and is exactly what this decision removes
+*for the server*: the backend now derives the multi-hop claim, so it is citable. The
+client-side one-hop roll-up is unchanged, and a UI consuming these endpoints is rendering
+a served answer rather than composing one — which now also means it must pass a `source`,
+since the server no longer has a question to answer without one.
 
 ## Outputs
 
 - **API** — trace-scoped reads at three grains (D14, edge rule in D15), all
   **shipped**: per-leg lineage metadata, `GET /api/traces/{tid}/data-lineage` (#118),
   carrying the D6 coverage status on the envelope (#120); `lineage fanin`/`fanout` per
-  entity, `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…`; and
-  `list sources` / `list destinations`, `GET /api/traces/{tid}/data-lineage-summary`.
+  entity **per data source**,
+  `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…&source=…`
+  (both parameters required — D15); and `list sources` / `list destinations`,
+  `GET /api/traces/{tid}/data-lineage-summary`.
 - **Tables** — a map `(interaction_id, leg_type) → lineage metadata` (D5), so
   "what are the data sources" is a read, not a recompute; `payload_hash` is a
   secondary index for the deferred reverse lookup.

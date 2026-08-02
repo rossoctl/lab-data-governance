@@ -59,6 +59,33 @@ export function parseLegViewKey(raw: string | null | undefined): LegViewKey {
     : 'tree';
 }
 
+/**
+ * Coerce the Lineage tab's `?src` param — the **Entity natural key** of the single
+ * data source being traced — to `string | null`.
+ *
+ * WHY THIS EXISTS BESIDE {@link parseLegViewKey} RATHER THAN INSIDE THE PAGE. Same
+ * reason: the page reads the param and a component's control writes it, so the two
+ * need one shared notion of "a valid value" or they drift. It is a sibling of that
+ * function on purpose, so the pattern for adding a flow-view URL param is one thing
+ * and not two.
+ *
+ * WHY IT IS NOT AN ENUM COERCION LIKE `?legs` IS. A natural key is open-ended data
+ * (`tool:agent:(travel_advisor,travel-advisor):search_destinations`), so there is no
+ * closed set to validate against HERE — the only authority on which sources exist is
+ * the trace's own `data-lineage-summary`, which this module cannot read. So this
+ * function does exactly the syntactic half (absent or blank → `null`, so `?src=`
+ * cannot become a request for a source named empty string), and the SEMANTIC half —
+ * "is this a source THIS trace has?" — belongs to
+ * `lineageReachability.resolveSourceChoice`, which has the roll-up in hand and
+ * reports a mismatch as its own `'stale'` state rather than silently blanking it.
+ * That split is what makes a bad `?src` behave like a bad `?legs`: coerced, never
+ * thrown, and never sent to the server.
+ */
+export function parseLineageSource(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
+}
+
 /** A derived entity (ADR-0013): cross-trace-stable, no trace_id column. */
 export interface Entity {
   id: string;

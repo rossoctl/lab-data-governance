@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, waitFor, waitForElementToBeRemoved, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, waitForElementToBeRemoved, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { renderWithProviders } from '../test/renderWithProviders';
@@ -253,7 +253,12 @@ function mockFetchWithGraph() {
     }
     if (url.includes('/data-lineage-summary')) {
       return { ok: true, status: 200, json: async () => ({
-        sources: [], destinations: [], status: 'complete', stopped_at_seq: null,
+        // `sources` is now ALSO the Lineage tab's choosable source list, so it offers
+        // e1's key: with an empty array the tab correctly reports "nothing to trace" and
+        // this file's `?src` routing cases would have no source to round-trip. Still
+        // non-claiming for the routing cases that ignore it — one source coloured is not
+        // an answer about any entity.
+        sources: ['agent:(p,a)'], destinations: [], status: 'complete', stopped_at_seq: null,
       }) };
     }
     return { ok: true, status: 200, json: async () => ({ spans: [] }) };
@@ -958,6 +963,56 @@ describe('TraceDetailPage', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('legs=lineage');
     // Both params in one URL means the whole question is deep-linkable: "this trace,
     // the lineage view, this entity".
+    expect(screen.getByTestId('lineage-graph')).toBeInTheDocument();
+  });
+
+  it('restores the traced data source from ?src, and mirrors a change back into it', async () => {
+    // `?src` is the Lineage tab's traced DATA SOURCE — the second required half of
+    // `fanin(entity, source)`. In the URL beside `?legs` / `?eid` for the same reason
+    // they are: a reload or a shared link has to restore the whole reading of the trace,
+    // and on a governance surface "here is what I was looking at" must be a link rather
+    // than a sequence of clicks to reproduce.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), {
+      route: '/traces/T1/flow?legs=lineage&src=agent%3A(p%2Ca)',
+    });
+
+    await findLineageGraph();
+    // RESTORED: the control shows the source from the URL, without the reader touching
+    // it. A chosen source that were not visible would be a highlight with no subject.
+    expect(await screen.findByRole('button', { name: /Tracing data source/i })).toHaveTextContent(
+      'agent-a',
+    );
+
+    // …and a change goes back OUT to the URL, so the two never disagree. `replace`, like
+    // `?legs`, so trying several sources does not fill the Back button.
+    fireEvent.click(screen.getByRole('button', { name: /Tracing data source/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /agent-a/ }));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('src=agent'));
+    // The tab param survives the write — otherwise choosing a source would navigate away
+    // from the tab that needs it.
+    expect(screen.getByTestId('location')).toHaveTextContent('legs=lineage');
+  });
+
+  it('treats an unknown ?src the way it treats an unknown ?legs — coerced, disclosed, never thrown', async () => {
+    // The stale-value contract, matching `parseLegViewKey`'s: a `?src` this trace's
+    // roll-up does not contain must not throw and must not be silently blanked. It is
+    // named on screen instead, so a reader who followed a link from another trace learns
+    // why it did not restore rather than seeing an unexplained bare prompt.
+    mockFetchWithGraph();
+    renderWithProviders(harness(), {
+      route: '/traces/T1/flow?legs=lineage&src=svc%3A(elsewhere%2Cgone)',
+    });
+
+    await findLineageGraph();
+    await waitFor(() =>
+      expect(screen.getByText(/not one of this trace’s sources/i)).toBeInTheDocument(),
+    );
+    // The page did not rewrite the URL behind the reader's back: the value they asked
+    // for is still there to be corrected or shared, exactly as a bad `?legs` is left in
+    // place and merely read as the default.
+    expect(screen.getByTestId('location')).toHaveTextContent('src=svc');
+    // The tab still renders — a bad param is a notice, not a crash.
     expect(screen.getByTestId('lineage-graph')).toBeInTheDocument();
   });
 

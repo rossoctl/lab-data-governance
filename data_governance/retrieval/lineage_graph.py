@@ -5,7 +5,8 @@ which serves the *per-leg* metadata triple as a flat list. This module serves th
 two reads ADR-0028 **D14** puts at the other two grains:
 
 - **entity grain** — :func:`get_lineage_graph`: ``fanin`` (upstream / ancestors) or
-  ``fanout`` (downstream / descendants) from one **Entity**, over one trace.
+  ``fanout`` (downstream / descendants) of one **data source**, seeded at one
+  **Entity**, over one trace.
 - **trace grain** — :func:`get_lineage_summary`: ``list sources`` and
   ``list destinations`` for one trace.
 
@@ -16,8 +17,11 @@ being quietly weakened by a walk sharing its file.
 
 **THE EDGE RULE.** This is the whole of the design, and every clause is load-bearing::
 
-    A hop A -> B exists iff the trace has an Interaction leg whose per-leg
-    direction runs A -> B, AND that leg has a derived lineage_metadata row.
+    Arriving at entity A at sequence position `s`, a hop A -> B is followed iff:
+      1. the trace has an Interaction leg whose per-leg direction runs A -> B;
+      2. that leg has a derived lineage_metadata row;
+      3. the seeded `source` is a MEMBER of that row's stored `data_sources`; and
+      4. the leg's `seq` is strictly later than `s` (fanout) / earlier (fanin).
 
 - **The trace supplies the candidate edges; the metadata supplies whether lineage
   actually flowed along them** (D14's wording, literally). Neither table can answer
@@ -27,6 +31,19 @@ being quietly weakened by a walk sharing its file.
   is no lineage through an entity that Entity is the end of fanin or fanout"
   (``data_lineage_alg.md`` "API") — so the walk stops where provenance stops rather
   than where the call graph happens to end.
+- **Clause 3 is the source scoping**, and it is the spec's own sentence: "we should
+  traverse an edge towards the next/previous entity based iff the source is part of
+  the edge/interaction metadata sources". The ``source`` is the thing being *traced*,
+  so it is held **constant** for the whole walk — it is not a per-hop comparison
+  against the previously-visited entity. A leg whose ``data_sources`` does not contain
+  it is a leg this source's content demonstrably did not travel on, so the walk must
+  not cross it even though some *other* source's content did.
+- **Clause 4 is the sequence scoping.** Data cannot flow backwards in time, so an
+  entity's downstream is what happened *after* the content arrived. ``seq`` is the
+  per-leg execution cursor (ADR-0025 puts it on the leg; the parent ``interactions``
+  row has none), and it both **gates** which edges are eligible and **orders** them —
+  the spec: "the interaction sequence number governs the edges to be considered and
+  their order (fanout - larger numbers, fanin - smaller numbers)".
 - **Per-leg direction, never the interaction's caller->callee.** A response leg
   travels callee -> caller. This mirrors ``traversal._producer_id`` /
   ``_consumer_id`` and the UI's ``legDirection`` (``ui/src/lib/flow.ts``). Keying on
@@ -34,10 +51,31 @@ being quietly weakened by a walk sharing its file.
   mostly *arrives* as the responses to calls it made (ADR-0025), so that reading
   would drop the majority of real inbound flow.
 
+**Why clauses 3 and 4 are not optional refinements.** The first shipped
+implementation had only clauses 1-2: it reduced the lineage row to a boolean
+``has_lineage`` and let ``seq`` ride along unused, sorting the reported legs and
+gating nothing. That version is not a coarser answer, it is a *different and false*
+one. On the live trace ``e62610bec7e8c1f4372aacc392eb9be5``, seeding the leaf tool
+``search_destinations`` — which touches exactly two legs, seq 2 inbound and seq 3
+outbound — returned **all 10 other entities and all 50 legs for BOTH directions,
+byte-identical** (same membership *and* same ``hops`` per entity), including
+``charge_card``, whose only legs are at seq 39/40 and whose ``data_sources`` never
+mention ``search_destinations``. Fan-in equalled fan-out because :func:`_adjacency`
+builds fan-in as the exact edge-reversal of fan-out, and once time is discarded the
+aggregate request+response edge set is symmetric, so reversing it is a no-op — the
+reversal was correct, it simply had no purchase. Under this module's rule the same seed
+answers ``fanout`` with 7 entities / 36 legs and ``fanin`` with nothing (the source
+*originates* at that tool, so it has no ancestors). Both facts are asserted as
+regressions in the test suites.
+
 **No matcher runs here** (ADR-0028 D7). These reads re-walk structure and read
 *persisted* verdicts; matching happened at ingest. An implementation that finds
 itself wanting a matcher call to answer a hop has violated D7 — the edge should have
-been persisted instead.
+been persisted instead. Clause 3 is where that is easiest to get wrong: it is a **set
+membership test against the stored array**, never a re-derivation. Lineage is *read*
+here, not recomputed — no matching, no inference, no re-attribution of a source to a
+payload. If a walk ever needs to *decide* whether a source belongs to a leg, the
+answer is to persist it at ingest, not to decide it here.
 
 **Intra-trace only** (D14). Every query is scoped through ``interactions.trace_id``,
 so "ancestors" means ancestors *within this trace*. Flow through shared persistent
@@ -46,18 +84,36 @@ would be a false cross-trace data-flow claim, the one thing a governance tool mu
 not make.
 
 **What an empty answer means, and why the state is a third field.** An empty entity
-list has three unrelated causes — nothing adjacent to the seed, adjacency that exists
-but is not derived yet, or a seed that is not in the trace at all. Collapsing them
-would let "not computed yet" read as "no sources", which is the same failure D6's
-three-valued status exists to prevent one level up. So :class:`GetLineageGraphResult`
-carries ``state`` and ``pending_frontier`` beside the lists, and the caller is told
-*why* the walk stopped rather than being handed a bare empty set.
+list has several unrelated causes — nothing adjacent to the seed, adjacency that exists
+but is not derived yet, adjacency that *is* derived but does not carry this source, or
+a seed that is not in the trace at all. Collapsing them would let "not computed yet"
+read as "no sources", which is the same failure D6's three-valued status exists to
+prevent one level up. So :class:`GetLineageGraphResult` carries ``state`` and
+``pending_frontier`` beside the lists, and the caller is told *why* the walk stopped
+rather than being handed a bare empty set.
+
+**The two ways a hop can fail are DIFFERENT FACTS and never collapse.** This is the
+crux of the tri-state discipline once clause 3 exists:
+
+- a leg with **no derived row yet** is "ask again later" — it goes on
+  ``pending_frontier``, and the answer may grow;
+- a leg with **a derived row that does not contain this source** is a real, *final*
+  answer: lineage for this source does not flow here. It is silently not an edge, and
+  it must NOT appear on the frontier, because no amount of waiting will change it.
+
+The ``LEFT JOIN`` plus null-probe in :func:`_fetch_legs` exists precisely to keep
+those apart. Merging them either way is a lie: treating the undelivered case as final
+under-reports a still-arriving answer, and treating the source-absent case as pending
+sends a caller back to poll forever.
 
 **Accepted degeneracy, already recorded in D14.** Under the trivial ``simple_match``
-every leg gets a derived row, so no hop is ever pruned and ``fanout`` approaches the
-whole reachable call graph. These reads inherit matcher quality exactly as the triple
-does. That is why ``pending_frontier`` and ``truncated`` are reported: a full fanout
-must be readable as "nothing pruned it", not as "provenance was exhaustively traced".
+every leg gets a derived row *and* inherits every upstream source, so clause 3 prunes
+little and ``fanout`` approaches the whole seq-forward reachable call graph. These
+reads inherit matcher quality exactly as the triple does — though note clause 4 prunes
+regardless of matcher quality, because it is a fact about the trace's own ordering
+rather than about provenance. That is why ``pending_frontier`` and ``truncated`` are
+reported: a full fanout must be readable as "nothing pruned it", not as "provenance
+was exhaustively traced".
 """
 
 from __future__ import annotations
@@ -77,6 +133,7 @@ __all__ = [
     "GetLineageSummaryResult",
     "LineageGraphEntityView",
     "LineageGraphLegView",
+    "MissingSource",
     "UnknownDirection",
     "get_lineage_graph",
     "get_lineage_summary",
@@ -106,6 +163,29 @@ class UnknownDirection(ValueError):
     """
 
 
+class MissingSource(ValueError):
+    """*source* was absent or empty.
+
+    ``source`` is **required**, for the same reason ``direction`` is: it is half the
+    question. "What did this entity's data reach" is not answerable without saying
+    *whose* data — an entity handles content from several sources at once (on the live
+    corpus a mid-trace agent leg routinely carries four or five), and each has its own
+    fanout. There is no defensible default: the union over all sources is the
+    *multi-source* read the spec explicitly defers ("Given multiple sources - semantics
+    are not clear: Do we expect the exact set of sources? Any of them?",
+    ``data_lineage_alg.md`` "deferred issues"), so silently answering it would ship a
+    guess at an open design question under the name of a settled one.
+
+    **Rejected: optional, defaulting to the untimed source-less walk.** It would have
+    kept the old callers working. But that walk is not a weaker version of this one, it
+    is a false one (see the module docstring's live reproduction), so keeping it
+    reachable behind a default would leave the wrong answer as the easiest to ask for.
+
+    Distinct from an *unknown* source, which is NOT an error — see
+    :func:`get_lineage_graph`.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Return types — field names serialize verbatim to the wire shape
 # ---------------------------------------------------------------------------
@@ -115,10 +195,17 @@ class UnknownDirection(ValueError):
 class LineageGraphEntityView:
     """One **Entity** the walk reached, with how far away it is.
 
-    ``hops`` is the *fewest* hops from the seed: the walk is breadth-first, so the
-    first arrival at an entity is the shortest route to it. It is a distance, not an
-    ordering of the flow — two entities at the same depth were reached by different
-    routes and the lineage algebra has no truthful interleaving to offer (D10).
+    ``hops`` is the *fewest* hops from the seed **along a path that respects the edge
+    rule** — every leg on it carries the source, and its seqs run monotonically away
+    from the seed. That qualifier is the whole subtlety: a plain hop-BFS no longer
+    yields it, because the shortest *structural* route may be closed to this source or
+    run backwards in time while a longer route is open. :func:`_walk` therefore
+    computes it explicitly rather than reading it off arrival order; see its docstring.
+
+    It is a distance, not an ordering of the flow — two entities at the same depth were
+    reached by different routes and the lineage algebra has no truthful interleaving to
+    offer (D10). ``seq`` on the reported legs is the only ordering the schema genuinely
+    supports.
 
     The seed entity itself is **not** in this list (it is the question, not the
     answer). It can still legitimately appear if the trace's flow returns to it —
@@ -155,24 +242,43 @@ class LineageGraphLegView:
 
 @dataclass(frozen=True)
 class GetLineageGraphResult:
-    """One entity's lineage reachability over one trace, plus why the walk stopped.
+    """One source's lineage reachability from one entity over one trace, plus why the
+    walk stopped.
+
+    ``source`` is echoed back because the answer is meaningless without it: the same
+    seed entity has a different fanout per source it handled, so a cached or logged
+    result that lost the source would be unattributable.
 
     ``state`` is three-valued and must not be inferred from ``entities`` being
     empty:
 
-    - ``"derived"`` — the walk followed at least one derived hop. ``entities`` is
+    - ``"derived"`` — the walk followed at least one eligible hop. ``entities`` is
       the answer.
     - ``"pending"`` — the seed has adjacent legs in the trace but none of them has
       a derived lineage row yet. **Not** "no sources": the eventual-consistency
       window, and the entities involved are named in ``pending_frontier``.
-    - ``"no-adjacent"`` — the trace has no leg touching the seed in this direction
-      at all. This is the only state where an empty answer is a *complete* answer.
+    - ``"no-adjacent"`` — no leg is available to leave the seed on. This covers the
+      trace having no leg touching the seed at all, and the case that clause 3 and 4
+      added: every candidate leg is derived but none carries this source, or none is on
+      the right side of the seed's arrival ``seq``. Those are all *complete* answers —
+      lineage for this source genuinely does not flow onward from here — which is why
+      they share a state with "nothing there" rather than getting a fourth value.
+
+      **Rejected: a fourth ``"source-absent"`` state.** It would name the distinction,
+      but not usefully: every one of these is the same actionable fact ("this is the
+      end of the fanout"), and a caller cannot do anything different with them. The
+      distinction that *does* change caller behaviour — final versus not-yet — is
+      already carried, by ``pending`` and ``pending_frontier``.
 
     ``pending_frontier`` lists entities the walk reached but could not continue
-    through, because the onward leg carries no derived lineage row yet. It is the
+    through, because the onward leg carries no derived lineage row **yet**. It is the
     honest distinction between "provenance genuinely ends here" and "P-data-lineage
     has not got here yet" — two facts an empty tail cannot tell apart. A consumer
     reading a frontier should expect the answer to grow.
+
+    A leg that IS derived but whose ``data_sources`` lacks ``source`` is deliberately
+    **not** on the frontier: that is a settled answer, not a pending one, and polling
+    for it would never terminate. Same for a leg on the wrong side of the seq boundary.
 
     ``truncated`` says a walk bound was hit, so the answer is a prefix of the real
     reachable set. Like D6's ``partial`` it is a *warning*, not an error.
@@ -186,6 +292,7 @@ class GetLineageGraphResult:
 
     direction: str
     seed_entity_id: str
+    source: str = ""
     entities: list[LineageGraphEntityView] = field(default_factory=list)
     legs: list[LineageGraphLegView] = field(default_factory=list)
     state: str = "no-adjacent"
@@ -239,7 +346,12 @@ class GetLineageSummaryResult:
 
 @dataclass(frozen=True)
 class _Edge:
-    """One directed, lineage-bearing hop, as the walk consumes it."""
+    """One directed, lineage-bearing hop, as the walk consumes it.
+
+    ``seq`` is no longer decoration. In the first shipped version it rode along here
+    and was used only to sort the reported legs; now it *gates* the hop (edge-rule
+    clause 4), which is the difference between a lineage answer and a call-graph one.
+    """
 
     to_entity_id: str
     interaction_id: str
@@ -247,90 +359,254 @@ class _Edge:
     seq: int
 
 
+# The seed's virtual arrival position. The seed has not arrived *on* a leg — it is
+# where the question starts — so it must be able to depart on any eligible leg
+# whatsoever. Using +/-infinity rather than the seed's earliest/latest touching leg is
+# deliberate: picking a real leg would silently narrow the question to "downstream of
+# that particular arrival", and the caller asked about the entity, not about one leg of
+# it. `float` and not a large int so no real `seq` can ever equal it.
+#
+# The sign also makes the seed unbeatable under `_walk`'s `more_permissive`, which is
+# what it should be: no arrival can open more onward legs than "no constraint at all",
+# so a cycle returning to the seed can never displace its virtual arrival.
+_SEED_ARRIVAL = {FANOUT: float("-inf"), FANIN: float("inf")}
+
+
 def _walk(
     derived: dict[str, list[_Edge]],
-    undelivered: dict[str, list[str]],
+    undelivered: dict[str, list[tuple[str, int]]],
     seed: str,
+    direction: str,
     *,
     max_hops: int = _MAX_HOPS,
     max_entities: int = _MAX_ENTITIES,
 ) -> tuple[dict[str, int], list[LineageGraphLegView], list[str], bool]:
-    """Breadth-first walk from *seed*, returning
+    """Sequence-aware breadth-first walk from *seed*, returning
     ``(hops_by_entity, legs, pending_frontier, truncated)``.
 
-    *derived* is the adjacency of hops that HAVE a lineage row — the traversable
-    graph. *undelivered* is the adjacency of legs that touch an entity but carry no
-    derived row yet; it is never followed, only *reported*, which is what turns a
-    silent dead end into ``pending_frontier``.
+    *derived* is the adjacency of hops that have a lineage row **carrying the seeded
+    source** — clause 3 was applied when this map was built (:func:`_adjacency`), so
+    every edge in here is already source-eligible and the walk only has to enforce the
+    seq rule. *undelivered* is ``entity -> [(far_entity, seq), ...]`` for legs that touch
+    an entity but carry no derived row **yet**; it is never followed, only *reported*,
+    which is what turns a silent dead end into ``pending_frontier``. It carries ``seq``
+    because clause 4 applies to it as well — see the loop below. A derived leg that
+    simply lacks the source appears in *neither* map: that is a final "no", not a
+    pending one.
 
-    Breadth-first specifically so a first arrival is a shortest route, which is the
-    only reading of ``hops`` that survives a graph with more than one path to the
-    same entity.
+    **The seq rule (clause 4), and why it is strict.** Arriving at an entity at
+    position ``s``, ``fanout`` may only depart on legs with ``seq > s`` and ``fanin``
+    only on ``seq < s``. Strict, not ``>=``, and the corpus settles it rather than
+    taste: a request and its response are two *different* legs at two different seqs
+    (ADR-0025 splits them, and on trace ``e62610bec7e8c1f4372aacc392eb9be5`` the
+    ``search_destinations`` call is seq 2 request / seq 3 response), so a genuine
+    round trip never needs ``>=`` to be expressible. Two legs sharing a ``seq`` is
+    impossible — ``seq`` is a per-leg cursor drawn from a sequence — so ``>=`` could
+    only ever re-admit the leg the walk just arrived on, i.e. let data flow straight
+    back where it came from in zero time. That is a false hop, so strict it is.
 
-    **The visited set is load-bearing, not defensive.** This graph is genuinely
-    cyclic: ``agent -> tool -> agent`` is the ordinary shape of every tool call, and
-    an agent that calls itself or a tool that calls back is normal. That is the
-    difference from the span-tree walks in ``processors/interactions/state.py``,
-    which have no cycle guard because a span tree cannot have one. Without this set
-    the ordinary case would not terminate.
+    **``visited: set[str]`` would now be UNSOUND, and this is the subtle part.** With
+    clause 4 an entity can be legitimately re-entered at a *different* position, and a
+    different arrival opens edges the first one could not take: an agent reached at seq
+    30 may only leave on seq > 30, while the same agent reached at seq 10 may also leave
+    on seq 20. A plain "seen it, skip it" set keeps whichever arrival happened to be
+    dequeued first and silently drops every entity reachable only past the better one.
+    This is the ordinary shape of the corpus, not a corner case: a coordinating agent is
+    re-entered on every tool response it receives.
+
+    The replacement is ``best_arrival[entity]``, the most **permissive** arrival seq seen
+    — smaller for fanout, larger for fanin, since fanout departs on ``seq > arrival``.
+    An entity is re-enqueued iff the new arrival is strictly more permissive than the
+    recorded one, because an arrival opens exactly the legs on its permissive side: a
+    strictly more permissive one opens a superset, anything else a subset.
+
+    **Depth is deliberately NOT part of that test**, and this is the trap one refinement
+    in from the ``visited`` bug. A *deeper* arrival can be *more permissive* — reached
+    the long way round but earlier in the trace — and it then opens edges the shallow
+    arrival cannot. Requiring "shallower, or equal depth and more permissive" would
+    reject it and lose everything beyond it, which is the same class of silent
+    under-reporting, merely rarer. So ``hops`` is tracked in its own map.
+
+    **How ``hops`` stays correct.** ``hops`` is the fewest hops along a path that
+    respects both clauses, and plain arrival-order BFS no longer delivers that for
+    free — a structurally shorter route may be closed to this source or run the wrong
+    way in time. Two things make it right:
+
+    1. the queue is processed in **non-decreasing depth order** (it is a plain FIFO and
+       every enqueue is at ``depth + 1``, so depths leave the queue sorted — the
+       standard BFS invariant, which survives the seq gate because the gate only ever
+       *removes* edges); and
+    2. ``hops[target]`` is written with ``min``, so a later, deeper, more-permissive
+       revisit records its reachability without lengthening the reported distance.
+
+    So the first depth at which an entity becomes reachable at all is the depth
+    recorded.
+
+    **Termination**, on a genuinely cyclic graph, and it does *not* rest on the visited
+    bookkeeping. ``best_arrival[entity]`` is only ever replaced by a strictly more
+    permissive value, and ``arrival_seq`` is drawn from the trace's **finite** set of leg
+    seqs, so it can strictly improve only finitely many times — at most ``|legs|`` per
+    entity. Every enqueue either is the entity's first or strictly improves its
+    ``best_arrival``, so the total number of enqueues is bounded by
+    ``|entities| × (|legs| + 1)`` and the queue drains.
+
+    The deeper reason is clause 4 itself: ``agent -> tool -> agent`` — the ordinary shape
+    of every tool call, and a two-node cycle — cannot loop forever because each traversal
+    must strictly **advance** ``seq``, and legs are finite. **The seq gate subsumes the
+    old cycle guard.** ``best_arrival`` is a pruning optimisation; the seq monotonicity is
+    the termination argument. Worth stating because a future editor relaxing clause 4 to
+    ``>=`` would remove the termination guarantee, not merely widen the answer.
 
     Bounds are reported, never silently applied: hitting either cap returns
     ``truncated=True`` so the caller can tell a bounded answer from a complete one.
     """
+    # `fanout` departs on larger seqs, `fanin` on smaller. One sign flip is the whole
+    # of the direction's effect on the seq rule, which keeps a single comparison rather
+    # than two mirrored branches that could drift apart.
+    forward = direction == FANOUT
+
+    def eligible(edge_seq: int, arrival: float) -> bool:
+        """Clause 4. Strict — see the docstring's request/response evidence."""
+        return edge_seq > arrival if forward else edge_seq < arrival
+
+    def more_permissive(new: float, old: float) -> bool:
+        """Does arriving at *new* leave strictly more onward legs open than *old*?
+
+        **Note the sign, which is the opposite of the direction of travel** and is the
+        easiest thing here to get backwards. ``fanout`` departs on ``seq > arrival``, so
+        an *earlier* arrival opens strictly more onward legs — arriving at an agent at
+        seq 10 can leave on seq 20, while arriving at the same agent at seq 30 cannot.
+        Mirror for ``fanin``, which departs on ``seq < arrival`` and so prefers a
+        *later* arrival. Getting this backwards silently under-reports: the walk keeps
+        the more restrictive arrival and drops every entity only reachable past the
+        better one.
+        """
+        return new < old if forward else new > old
+
     hops: dict[str, int] = {}
     legs: list[LineageGraphLegView] = []
     frontier: set[str] = set()
     truncated = False
 
-    visited: set[str] = {seed}
-    queue: deque[tuple[str, int]] = deque([(seed, 0)])
+    # **Two separate maps, and conflating them is a correctness bug.**
+    #
+    # `best_arrival[entity]` — the most PERMISSIVE arrival seq seen, which is the only
+    # thing that decides whether re-expanding is worthwhile: an arrival opens exactly
+    # the legs on its permissive side, so a strictly more permissive one opens a
+    # superset and anything else opens a subset. Depth is deliberately NOT part of this
+    # test. A *deeper* arrival can be more permissive (reached the long way round but
+    # earlier in the trace), and it then opens edges the shallow one cannot — so
+    # requiring "shallower, or equal depth and more permissive" would reject it and
+    # silently lose every entity beyond it. That is the same class of under-reporting as
+    # the old `visited: set[str]`, one refinement in.
+    #
+    # `hops[entity]` — the shortest depth at which the entity was reached at all, which
+    # is what gets reported. Kept apart because the shortest route and the most
+    # permissive route need not be the same route, and the answer wants one of each.
+    seed_arrival = _SEED_ARRIVAL[direction]
+    best_arrival: dict[str, float] = {seed: seed_arrival}
+    # A separate record of legs already reported, so a re-enqueued entity does not
+    # duplicate the route. Keyed on the leg's identity plus the direction it was
+    # crossed in, because the same leg can legitimately be crossed from both ends over
+    # a trace (its two entities each depart on it under different arrivals).
+    reported: set[tuple[str, str, str, str]] = set()
+    queue: deque[tuple[str, int, float]] = deque([(seed, 0, seed_arrival)])
 
     while queue:
-        current, depth = queue.popleft()
+        current, depth, arrival = queue.popleft()
 
-        # Any leg touching `current` that has no derived lineage row is a place the
-        # walk *could* have continued once the derivation catches up. Record the
-        # entity on the far side and do not follow it.
-        for pending_id in undelivered.get(current, ()):
-            if pending_id not in visited:
+        # A stale queue entry: a strictly more permissive arrival at `current` was
+        # recorded after this one was enqueued, so this weaker visit can only reach a
+        # subset of what that one will. Skip rather than re-expand — the dominating
+        # entry either already ran or is still queued.
+        known = best_arrival.get(current)
+        if known is not None and more_permissive(known, arrival):
+            continue
+
+        # Any leg touching `current` that has no derived lineage row *and* is on the
+        # right side of the arrival is a place the walk could continue once the
+        # derivation catches up. Record the entity on the far side; do not follow it.
+        #
+        # Clause 4 IS applied here, clause 3 is not, and the asymmetry is the point: a
+        # leg's `seq` lives on `interaction_legs` and is known whether or not the lineage
+        # row has landed, whereas its `data_sources` is exactly what has not landed. So
+        # seq-ineligibility is already a settled "never an edge" and belongs excluded,
+        # while source membership is genuinely unknown and the entity is honestly pending.
+        for pending_id, pending_seq in undelivered.get(current, ()):
+            if eligible(pending_seq, arrival):
                 frontier.add(pending_id)
 
         if depth >= max_hops:
-            # Reached the depth bound with somewhere still to go.
-            if derived.get(current):
+            # Reached the depth bound. Only cry truncation if there was actually
+            # somewhere eligible left to go — a walk that merely ends on the boundary
+            # is a complete answer.
+            if any(eligible(e.seq, arrival) for e in derived.get(current, ())):
                 truncated = True
             continue
 
-        for edge in derived.get(current, ()):
+        # Order the departures by seq, in the direction of travel: the spec makes the
+        # sequence number govern "the edges to be considered and *their order*". It does
+        # not change which entities are reachable, but it makes the walk deterministic
+        # and makes the earliest-in-time route the one that claims a given depth.
+        candidates = sorted(
+            (e for e in derived.get(current, ()) if eligible(e.seq, arrival)),
+            key=lambda e: (e.seq if forward else -e.seq, e.interaction_id, e.leg_type),
+        )
+        for edge in candidates:
             # Every traversed leg is reported, including one that arrives at an
-            # already-visited entity: the hop really happened and is part of the
-            # route, even though the entity is not newly reached. Dropping it would
-            # leave a cycle drawn as a dead end.
-            legs.append(
-                LineageGraphLegView(
-                    interaction_id=edge.interaction_id,
-                    leg_type=edge.leg_type,
-                    from_entity_id=current,
-                    to_entity_id=edge.to_entity_id,
-                    seq=edge.seq,
+            # already-known entity: the hop really happened and is part of the route,
+            # even though the entity is not newly reached. Dropping it would leave a
+            # cycle drawn as a dead end.
+            leg_key = (edge.interaction_id, edge.leg_type, current, edge.to_entity_id)
+            if leg_key not in reported:
+                reported.add(leg_key)
+                legs.append(
+                    LineageGraphLegView(
+                        interaction_id=edge.interaction_id,
+                        leg_type=edge.leg_type,
+                        from_entity_id=current,
+                        to_entity_id=edge.to_entity_id,
+                        seq=edge.seq,
+                    )
                 )
-            )
             target = edge.to_entity_id
-            if target in visited:
-                continue
-            if len(hops) >= max_entities:
-                # The entity bound. `truncated` is the headline, but the entity is
-                # also NOT recorded as pending: `pending_frontier` means "not derived
-                # yet, ask again later", and this one is derived — we simply declined
-                # to return it. Conflating the two would send a caller back to poll
-                # for something that will never arrive without a wider bound.
+            new_depth = depth + 1
+            new_arrival = float(edge.seq)
+            known_arrival = best_arrival.get(target)
+            first_visit = known_arrival is None
+
+            if first_visit and len(hops) >= max_entities and target != seed:
+                # The entity bound, and only for a *newly* discovered entity — revisiting
+                # one already counted costs no extra slot.
+                #
+                # `truncated` is the headline, but the entity is also NOT recorded as
+                # pending: `pending_frontier` means "not derived yet, ask again later",
+                # and this one is derived — we simply declined to return it. Conflating
+                # the two would send a caller back to poll for something that will
+                # never arrive without a wider bound.
                 truncated = True
                 continue
-            visited.add(target)
-            hops[target] = depth + 1
-            queue.append((target, depth + 1))
 
-    # An entity the walk actually reached is not "pending" — a derived route to it
+            # The reported distance: shortest depth at which the entity was reached at
+            # all. `min` because a *more permissive* revisit is usually also a *deeper*
+            # one, and it must not lengthen the answer — the shallower route was real.
+            # The seed is the question, not the answer, so it is excluded; a genuine
+            # cycle back to it still shows up in `legs`.
+            if target != seed:
+                hops[target] = (
+                    new_depth if target not in hops else min(hops[target], new_depth)
+                )
+
+            # Expand only if this arrival opens something the best-known one does not.
+            # Depth plays no part: see the `best_arrival` comment above — a deeper but
+            # more permissive arrival opens a strict superset of legs and must be
+            # followed, or every entity beyond it is silently lost.
+            if not first_visit and not more_permissive(new_arrival, known_arrival):
+                continue
+            best_arrival[target] = new_arrival
+            queue.append((target, new_depth, new_arrival))
+
+    # An entity the walk actually reached is not "pending" — an eligible route to it
     # exists, whatever else about it is undelivered.
     frontier -= set(hops)
     frontier.discard(seed)
@@ -339,25 +615,52 @@ def _walk(
 
 
 def _adjacency(
-    rows: list[tuple], direction: str
+    rows: list[tuple], direction: str, source: str
 ) -> tuple[dict[str, list[_Edge]], dict[str, list[str]]]:
-    """Build the derived and undelivered adjacency maps for *direction*.
+    """Build the eligible and undelivered adjacency maps for *direction* / *source*.
 
     One pass over the trace's legs. Each row is
-    ``(interaction_id, leg_type, seq, caller_id, callee_id, has_lineage)``.
+    ``(interaction_id, leg_type, seq, caller_id, callee_id, data_sources)``, where
+    ``data_sources`` is the stored ``TEXT[]`` or ``None`` for a leg with no derived
+    lineage row yet (the ``LEFT JOIN``'s null probe).
 
-    **Per-leg direction** (the module docstring's edge rule): a request runs
+    **Per-leg direction** (the module docstring's edge rule clause 1): a request runs
     caller -> callee, a response runs callee -> caller. ``fanout`` follows that
     direction as-is; ``fanin`` follows it reversed, which is the entire difference
-    between the two reads.
+    between the two reads' *topology* — the seq rule in :func:`_walk` is what makes
+    them differ in *content*.
+
+    **Clause 3 is applied here**, and it is a plain ``in`` against the persisted array:
+    lineage is READ, never recomputed (ADR-0028 D7). No matching, no normalisation, no
+    prefix or fuzzy comparison — the natural keys in ``data_sources`` were written by
+    the ingest-time derivation and are compared verbatim. Anything cleverer here would
+    be re-deriving lineage on the read path, which is exactly what D7 forbids.
+
+    The three outcomes are kept distinct, because two of them are different *facts*
+    (see :class:`GetLineageGraphResult`):
+
+    - ``data_sources is None`` — no derived row **yet**. Goes to *undelivered*, is
+      never followed, and surfaces as ``pending_frontier``: ask again later.
+    - ``source in data_sources`` — an eligible edge. Goes to *derived*.
+    - derived but ``source not in data_sources`` — a **final** no. Goes to neither map:
+      this source's content did not travel on this leg, and no amount of waiting
+      changes that. Putting it on the frontier would be a false promise.
+
+    *undelivered* carries the leg's ``seq`` alongside the far entity, so :func:`_walk`
+    can apply clause 4 to it too. That matters: a leg's ``seq`` lives on
+    ``interaction_legs`` and is therefore known **whether or not** the lineage row has
+    landed. An undelivered leg on the wrong side of the arrival could never become an
+    edge however the derivation turns out, so naming its entity as pending would promise
+    growth that cannot happen — the same false promise as the source-absent case, and it
+    would be missed by only filtering the derived map.
 
     A leg with an unresolved participant (either id ``NULL`` — the caller-inference
-    window) contributes no edge in either map: there is no node to walk to or from,
+    window) contributes no edge in any map: there is no node to walk to or from,
     and inventing one would be a claim about an entity we cannot name.
     """
     derived: dict[str, list[_Edge]] = {}
-    undelivered: dict[str, list[str]] = {}
-    for interaction_id, leg_type, seq, caller_id, callee_id, has_lineage in rows:
+    undelivered: dict[str, list[tuple[str, int]]] = {}
+    for interaction_id, leg_type, seq, caller_id, callee_id, data_sources in rows:
         if caller_id is None or callee_id is None:
             continue
         if leg_type == "response":
@@ -368,7 +671,9 @@ def _adjacency(
         origin, destination = (
             (producer, consumer) if direction == FANOUT else (consumer, producer)
         )
-        if has_lineage:
+        if data_sources is None:
+            undelivered.setdefault(origin, []).append((destination, int(seq)))
+        elif source in data_sources:
             derived.setdefault(origin, []).append(
                 _Edge(
                     to_entity_id=destination,
@@ -377,8 +682,7 @@ def _adjacency(
                     seq=int(seq),
                 )
             )
-        else:
-            undelivered.setdefault(origin, []).append(destination)
+        # else: derived, but this source is not in it — a settled "no lineage here".
     return derived, undelivered
 
 
@@ -388,22 +692,44 @@ def _adjacency(
 
 
 def _fetch_legs(tx: db.Transaction, trace_id: str) -> list[tuple]:
-    """Every leg of *trace_id* with its parent's participants and whether its
-    lineage has been derived.
+    """Every leg of *trace_id* with its parent's participants and its **stored**
+    ``data_sources`` set (``None`` where lineage is not derived yet).
 
     One flat query, then the walk happens in Python. A recursive CTE was the
     alternative and is the shape ``processors/interactions/state.py`` uses for span
     trees — but that walks a single self-referential FK, whereas an edge here is
-    derived from two tables plus the per-leg direction rule. Encoding that into a
-    recursive join condition would bury the edge rule in SQL and put the
-    pending-frontier logic out of reach; a trace is bounded, and
-    :func:`.interactions.get_interactions` already scans one three times.
+    derived from two tables plus the per-leg direction rule, a source-membership test
+    and a seq comparison against the *arrival*. Encoding that into a recursive join
+    condition would bury the edge rule in SQL and put the pending-frontier logic out of
+    reach; a trace is bounded, and :func:`.interactions.get_interactions` already scans
+    one three times.
 
-    ``LEFT JOIN`` with an ``m.seq IS NOT NULL`` probe rather than an inner join,
-    because the *absence* of the lineage row is itself an answer here (it is what
-    ``pending_frontier`` reports). ``m.seq`` is the probe column for the reason
-    :func:`.lineage._lineage_view` gives: every metadata column is ``NOT NULL``, so
-    it separates "no row" from "a derived row whose triple is empty".
+    **``m.data_sources`` is selected, not a ``has_lineage`` boolean.** The first
+    shipped version reduced the whole lineage row to ``(m.seq IS NOT NULL)``, which
+    made the spec's hop rule untestable at any layer above: with only a boolean the
+    walk cannot ask "is *this* source in this leg's set", so it degenerated into
+    treating "this leg has some lineage row" as "lineage flowed here". Selecting the
+    real set is the root fix, not a refinement of it.
+
+    ``LEFT JOIN`` with a null-probe rather than an inner join, because the *absence* of
+    the lineage row is itself an answer here (it is what ``pending_frontier`` reports),
+    and it is a **different** answer from a row that exists without this source. Those
+    two must not collapse — see :func:`_adjacency`.
+
+    The probe is now ``m.data_sources IS NULL`` from the same column the walk reads,
+    rather than the separate ``m.seq`` probe :func:`.lineage._lineage_view` uses. Both
+    are sound for the reason that module states — every metadata column is ``NOT
+    NULL``, so a ``NULL`` can only mean "no row", never "a derived row whose triple is
+    empty" — and reading the probe off the column being fetched keeps the two facts
+    from drifting apart in a way one extra column could not justify.
+
+    ``source_transformations`` and ``entities`` are deliberately **not** selected. The
+    spec's hop rule names only *sources* ("iff the source is part of the edge/
+    interaction metadata sources"), and ``entities`` in particular would be the wrong
+    set to test: it is an unordered "passed through here" claim (D10) that would make
+    the walk hop to anything the metadata ever mentioned, defeating the traversal's
+    whole purpose. Selecting them would also cost the payload of a JSONB map per leg
+    for no read.
 
     Scoped through ``interactions`` because ``interaction_legs`` has no ``trace_id``
     (ADR-0025 keeps identity on the parent). Getting that join wrong would pull
@@ -412,7 +738,7 @@ def _fetch_legs(tx: db.Transaction, trace_id: str) -> list[tuple]:
     return tx.fetch_all(
         "SELECT l.interaction_id::text, l.leg_type::text, l.seq, "
         "       i.caller_entity_id::text, i.callee_entity_id::text, "
-        "       (m.seq IS NOT NULL) AS has_lineage "
+        "       m.data_sources "
         "FROM interaction_legs l "
         "JOIN interactions i ON i.id = l.interaction_id "
         "LEFT JOIN lineage_metadata m "
@@ -447,35 +773,80 @@ def _fetch_entities(
 
 
 def get_lineage_graph(
-    trace_id: str, entity_id: str, direction: str
+    trace_id: str, entity_id: str, direction: str, source: str
 ) -> GetLineageGraphResult:
-    """Walk one trace's lineage from *entity_id*, upstream or downstream.
+    """Walk one trace's lineage for *source*, from *entity_id*, upstream or downstream.
 
     *direction* is ``"fanin"`` (upstream / ancestors) or ``"fanout"`` (downstream /
     descendants) and is **required** — see :class:`UnknownDirection`.
 
+    *source* is a **data source natural key** and is likewise **required** — see
+    :class:`MissingSource`. It is a key as stored in ``lineage_metadata.data_sources``
+    (ADR-0027/0028: lineage stores natural keys, not entity ids), so the values that
+    can be passed are exactly what :func:`get_lineage_summary`'s ``sources`` lists.
+
     Follows the module's edge rule: a hop exists where the trace has a leg running
-    that way *and* that leg has a derived ``lineage_metadata`` row, so the walk ends
-    where provenance ends (``data_lineage_alg.md`` "API"). Intra-trace only (D14).
+    that way, that leg has a derived ``lineage_metadata`` row, *this source is in that
+    row's* ``data_sources``, and the leg's ``seq`` is on the correct side of the
+    arrival. So the walk ends where **this source's** provenance ends
+    (``data_lineage_alg.md`` "API"). Intra-trace only (D14).
+
+    **A single source only.** The spec defers multi-source semantics explicitly — "Given
+    multiple sources - semantics are not clear: Do we expect the exact set of sources?
+    Any of them?" — so this takes one key and answers the one question that *is*
+    settled. A caller wanting several must ask several times and decide for itself how
+    to combine them, which keeps the undecided union out of the served contract.
+
+    **An unknown *source* is a valid, EMPTY answer — not a 404.** A key that matches no
+    ``data_sources`` value anywhere in the trace yields ``state="no-adjacent"`` with
+    empty lists, exactly as a seed entity with no legs does. Three reasons, all this
+    repo's existing discipline:
+
+    - It is the truthful answer to the question asked. "This source's data reached
+      nothing from here" is a real finding, and it is what the walk genuinely computed:
+      no eligible edge exists. A 404 would claim the *question* was malformed, which is
+      a different and false claim.
+    - **A 404 would have to be derived from absence, and absence is not yet knowledge
+      here.** Deciding "this source is unknown to this trace" means scanning the
+      trace's derived rows — but a trace mid-derivation has few or none, so the same
+      key would 404 now and 200 later. That is precisely the failure D6's three-valued
+      ``status`` and this module's ``state``/``pending_frontier`` exist to prevent:
+      "we don't know yet" must never be served as "there is nothing". The tri-state
+      already carries this correctly — a not-yet-derived trace answers ``"pending"``
+      with a frontier, which a 404 would have destroyed.
+    - It matches the collection-read convention already used one field over: an unknown
+      *trace* and an unknown *seed entity* are both 200-with-empty here, and ``state``
+      is how a caller distinguishes the cases. A source is the third coordinate of the
+      same question and gets the same treatment.
+
+    Rejected, then: validating *source* against the trace's source union and 404-ing.
+    It costs an extra query to turn a correct answer into a wrong one, and it makes the
+    endpoint's response depend on derivation progress.
 
     Returns a :class:`GetLineageGraphResult`. Read its ``state`` before its
-    ``entities``: an empty list means one of three different things, and only
+    ``entities``: an empty list means several different things, and only
     ``"no-adjacent"`` means "there is genuinely nothing there". Empty — never an
     error — when the trace, the entity or the lineage migration is absent.
 
-    Raises :class:`UnknownDirection` for any other *direction*. That is the one
-    failure mode here, and it is a caller error rather than a missing-data case.
+    Raises :class:`UnknownDirection` / :class:`MissingSource` on a malformed question.
+    Those are the two failure modes here, and both are caller errors rather than
+    missing-data cases.
     """
     if direction not in _DIRECTIONS:
         raise UnknownDirection(
             f"direction must be one of {sorted(_DIRECTIONS)}; got {direction!r}"
+        )
+    if not source:
+        raise MissingSource(
+            "source is required: a data source natural key, as listed by "
+            "the data-lineage-summary read's `sources`"
         )
     with db.transaction() as tx:
         if not _lineage_tables_exist(tx):
             # No status either: the table it lives in may be equally absent, and
             # `_trace_status` is not safe to call before the probe.
             return GetLineageGraphResult(
-                direction=direction, seed_entity_id=entity_id
+                direction=direction, seed_entity_id=entity_id, source=source
             )
 
         status, stopped_at_seq = _trace_status(tx, trace_id)
@@ -487,19 +858,28 @@ def get_lineage_graph(
             return GetLineageGraphResult(
                 direction=direction,
                 seed_entity_id=entity_id,
+                source=source,
                 status=status,
                 stopped_at_seq=stopped_at_seq,
             )
 
-        derived, undelivered = _adjacency(rows, direction)
-        hops, legs, frontier, truncated = _walk(derived, undelivered, entity_id)
+        derived, undelivered = _adjacency(rows, direction, source)
+        hops, legs, frontier, truncated = _walk(
+            derived, undelivered, entity_id, direction
+        )
 
-        # The three-valued state. Order matters: a derived hop is the answer; with
+        # The three-valued state. Order matters: an eligible hop is the answer; with
         # none, an undelivered leg touching the seed means "not yet", and only the
-        # absence of both means the trace genuinely has nothing adjacent.
+        # absence of both means there is genuinely nothing to follow. Note the last
+        # case now also covers "every candidate leg is derived but does not carry this
+        # source" — a complete answer, which is why it shares `no-adjacent` rather
+        # than getting a fourth value (see `GetLineageGraphResult`).
         if hops:
             state = "derived"
         elif frontier or undelivered.get(entity_id):
+            # `undelivered.get(entity_id)` needs no seq filter: the seed's arrival is
+            # unconstrained, so every leg leaving it is eligible by construction. (The
+            # walk still filters, because that same loop runs at every later entity too.)
             state = "pending"
         else:
             state = "no-adjacent"
@@ -520,6 +900,7 @@ def get_lineage_graph(
         return GetLineageGraphResult(
             direction=direction,
             seed_entity_id=entity_id,
+            source=source,
             entities=entities,
             legs=legs,
             state=state,

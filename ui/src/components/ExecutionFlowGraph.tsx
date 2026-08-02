@@ -148,11 +148,13 @@ import { deriveGraph, type GraphEdgeSpec, type GraphNodeSpec, type GraphSpec } f
 import {
   deriveReachabilityHighlight,
   deriveSourceHighlight,
+  resolveSourceChoice,
   type DirectionHighlight,
 } from '../lib/lineageReachability';
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
 import { kindColorVar } from '../lib/entityKind';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
+import { LineageSourcePicker } from './flow/LineageSourcePicker';
 import type { Entity, Interaction, LineageStatus } from '../types';
 
 /**
@@ -189,6 +191,12 @@ type HighlightRole = 'none' | 'selected' | 'source' | 'carrier' | 'dimmed';
  * - `isDataSource` — the trace attributed content to this entity (ADR-0028 D14
  *   `list sources`). A fact about the TRACE, so it is set with no selection at all,
  *   which is by itself enough to rule it out of a selection-relative role enum.
+ * - `isChosenSource` — this entity is the ONE source whose data the current answer
+ *   traces (`fanin(entity, source)` / `fanout(entity, source)`). A STRICT REFINEMENT
+ *   of `isDataSource`, never a replacement: the trace's whole source set stays
+ *   coloured, and this says which of them is the subject. Two independent booleans
+ *   rather than a `'source' | 'chosen-source'` value, because the reader needs both
+ *   facts at once — "five origins, and this is the one you are looking at".
  * - `isUpstream` / `isDownstream` — fan-in / fan-out of the selection. Routinely
  *   BOTH: `agent → tool → agent` is the ordinary shape of every tool call, so the
  *   request leg makes the tool downstream and its response makes it upstream
@@ -210,6 +218,7 @@ type HighlightRole = 'none' | 'selected' | 'source' | 'carrier' | 'dimmed';
  */
 interface NodeLineageFacts {
   isDataSource: boolean;
+  isChosenSource: boolean;
   isUpstream: boolean;
   isDownstream: boolean;
   isFrontier: boolean;
@@ -219,6 +228,7 @@ interface NodeLineageFacts {
 /** The neutral value: no lineage claim about this node. The Execution Flow tab's every node. */
 const NO_LINEAGE_FACTS: NodeLineageFacts = {
   isDataSource: false,
+  isChosenSource: false,
   isUpstream: false,
   isDownstream: false,
   isFrontier: false,
@@ -270,9 +280,11 @@ type EdgeData = GraphEdgeSpec & {
  *
  * Optional on {@link EntityGraph} — absent means "draw the plain graph", which is
  * what the Execution Flow tab passes. The graph itself computes NOTHING about
- * lineage: the sets arrive already derived from `lib/lineageGraph`, so this
+ * lineage: the sets arrive already derived from `lib/lineageReachability`, so this
  * component stays the one renderer of one graph and the lineage question stays in
- * a pure, testable module (jsdom cannot measure an SVG).
+ * a pure, testable module (jsdom cannot measure an SVG). (`lib/lineageGraph`, which
+ * this used to name, was deleted when the client-side roll-up was replaced by the
+ * served reachability reads — see LineageGraph's "WHAT REPLACED WHAT".)
  */
 export interface GraphHighlight {
   /** The node the reader selected, marked distinctly from its sources. */
@@ -318,6 +330,19 @@ export interface GraphReachabilityOverlay {
    * mistake D14 explicitly warns about.
    */
   dataSourceNodeIds: readonly string[];
+  /**
+   * The ONE chosen source's node id — the subject of the current answer — or `null`.
+   *
+   * A single id rather than a set, and that is the constraint made structural:
+   * multi-source semantics are deferred upstream (`docs/data_lineage_alg.md`'s
+   * `## deferred issues`), so a UI that could paint two chosen sources at once could
+   * paint a union nobody derived. A field that cannot hold two cannot express one.
+   *
+   * Always a member of {@link dataSourceNodeIds} when non-null (guaranteed by
+   * `deriveSourceHighlight`, which resolves it through the same key bridge), so the
+   * refinement can never contradict the always-on set.
+   */
+  chosenSourceNodeId: string | null;
   /** Fan-in: node ids the selection's data came FROM. */
   upstreamNodeIds: readonly string[];
   /** Fan-out: node ids it went TO. */
@@ -387,6 +412,12 @@ function lineageFactsOf(id: string, h: GraphHighlight | undefined): NodeLineageF
   if (!r) return NO_LINEAGE_FACTS;
   return {
     isDataSource: r.dataSourceNodeIds.includes(id),
+    // A REFINEMENT, so it is set independently of `isDataSource` and both land
+    // together on the chosen node. Not `=== id && isDataSource`: the invariant that a
+    // chosen source is always in the source set belongs to `deriveSourceHighlight`
+    // (which resolves both through one bridge), and re-asserting it here would be a
+    // second place for it to be true — the duplication the house rules forbid.
+    isChosenSource: r.chosenSourceNodeId === id,
     isUpstream: r.upstreamNodeIds.includes(id),
     isDownstream: r.downstreamNodeIds.includes(id),
     // A node that IS in an answer is not on the frontier: a derived route to it
@@ -822,7 +853,16 @@ function nodeTitle(data: NodeData | undefined): string {
   const claims: string[] = [];
   // "data source" first: it is the standing fact about the trace, true regardless of
   // what is selected, so it reads oddly after the selection-relative claims.
-  if (l.isDataSource) claims.push('data source for this trace');
+  //
+  // THE CHOSEN SOURCE IS NAMED IN WORDS, which is the accessibility half of the
+  // distinction: the visual refinement is a second ring plus a heavier weight (see
+  // global.css), and hue is already spoken for three times over on this graph. A
+  // reader who sees no colour difference at all still gets "the source being traced"
+  // in the tooltip and the screen-reader name. Stated as ONE claim rather than two
+  // adjacent clauses, because "a data source, and also the traced one" reads as two
+  // coincidences rather than as a refinement.
+  if (l.isChosenSource) claims.push('the data source being traced (this trace’s source too)');
+  else if (l.isDataSource) claims.push('data source for this trace');
   if (l.isUpstream && l.isDownstream) {
     // Called out as one claim rather than two, because "both" is the governance-
     // relevant shape (data left and came back) and two separate clauses read as two
@@ -901,6 +941,10 @@ function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof Defa
           // stylesheet stacks their treatments (see global.css's stacking note) —
           // which is only possible because these are not values of one enum.
           data?.lineage.isDataSource ? 'dg-graph-node--datasource' : '',
+          // Both classes on the chosen source, never one instead of the other — see
+          // NodeLineageFacts. The stylesheet keys the refinement on the PAIR, so the
+          // trace's source ring is still what says "this is an origin".
+          data?.lineage.isChosenSource ? 'dg-graph-node--chosen-source' : '',
           data?.lineage.isUpstream ? 'dg-graph-node--upstream' : '',
           data?.lineage.isDownstream ? 'dg-graph-node--downstream' : '',
           data?.lineage.isFrontier ? 'dg-graph-node--frontier' : '',
@@ -1698,8 +1742,11 @@ export interface EntityGraphProps {
  * new endpoint), which is what lets the Lineage tab derive its highlight against
  * the very spec being rendered. All node/edge derivation lives in
  * `lib/graph.deriveGraph` and all highlight derivation in
- * `lib/lineageGraph.deriveLineageHighlight`, so both are testable without laying out
- * an SVG (jsdom cannot measure one).
+ * `lib/lineageReachability` (`deriveSourceHighlight` / `deriveReachabilityHighlight` /
+ * `resolveSourceChoice`), so all of it is testable without laying out an SVG (jsdom
+ * cannot measure one). Note `resolveSourceChoice` is in that list because it decides
+ * whether a read FIRES at all, which is likewise not something a render test of an
+ * SVG-bearing component can honestly assert.
  */
 export function EntityGraph({
   spec,
@@ -1847,6 +1894,11 @@ export function EntityGraph({
         // separate query that resolves on its own schedule, typically AFTER the first
         // model push, so it is the normal case rather than an edge one.
         highlight.reachability?.dataSourceNodeIds.join(',') ?? '',
+        // The chosen source is part of the CONTENT for exactly the reason the note
+        // above gives for the source set: switching source repaints one node's
+        // refinement and, if the answer is cached, may change nothing else at all — so
+        // a digest without it would leave the previous source marked as the traced one.
+        highlight.reachability?.chosenSourceNodeId ?? '',
         highlight.reachability?.upstreamNodeIds.join(',') ?? '',
         highlight.reachability?.downstreamNodeIds.join(',') ?? '',
         highlight.reachability?.upstreamEdgeIds.join(',') ?? '',
@@ -2332,13 +2384,29 @@ export function ExecutionFlowGraph({
 }
 
 /**
- * The **Lineage** tab: the SAME graph, with the trace's data sources coloured and
- * the selected entity's fan-in AND fan-out highlighted (ADR-0028 D14/D15).
+ * The **Lineage** tab: the SAME graph, with the trace's data sources coloured and —
+ * for ONE chosen source and one selected entity — that source's fan-in AND fan-out
+ * highlighted (ADR-0028 D14/D15).
  *
  * ONE QUESTION ASKED OF THE EXECUTION FLOW PICTURE, not a second picture. It
  * renders {@link EntityGraph} — the identical nodes, edges, layered layout, drag
  * lifecycle and zoom controls — and adds only a highlight plus the caveats that
  * highlight needs.
+ *
+ * THE QUESTION HAS TWO REQUIRED HALVES, which is the shape of the read rather than a
+ * UI choice: `docs/data_lineage_alg.md`'s `## API` specifies
+ * `fanin(entity, source)` / `fanout(entity, source)`, and an edge is traversed only
+ * when the chosen source appears in that leg's lineage `data_sources`. So the tab
+ * traces "THIS source's data through THIS entity", and neither half alone is askable —
+ * omitting `source` is a 400, not a broader answer. Hence a source PICKER
+ * ({@link LineageSourcePicker}) beside the existing entity selection, and a reachability
+ * read gated on both.
+ *
+ * EXACTLY ONE SOURCE AT A TIME. Multi-source semantics are deferred upstream
+ * (`docs/data_lineage_alg.md`'s `## deferred issues`: "Do we expect the exact set of
+ * sources? Any of them?"), so offering "all sources" would mean this component choosing
+ * between a union and an intersection and presenting its choice as a served answer.
+ * The picker is therefore single-select by design — see its header before "improving" it.
  *
  * TWO DISTINCT VISUAL JOBS, and they are independent:
  *
@@ -2348,9 +2416,15 @@ export function ExecutionFlowGraph({
  *    diverges exactly where a delegation-shaped tool over-reports, D14). Shown
  *    from first paint with nothing selected, because it is a standing fact about
  *    the trace and a fact a reader has to click to discover is not being reported.
- * 2. **Fan-in and fan-out on selection.** Both at once, from the two
- *    `data-lineage-graph` reads, with the traversed LEGS lit as well as the nodes —
- *    the route is what the endpoint returns `legs` for.
+ *    It is emphatically NOT conditional on which source is chosen; the chosen one is
+ *    marked as a REFINEMENT on top (a double halo — see `global.css`), so a reader sees
+ *    both "the trace has these origins" and "this graph is about that one". The same
+ *    read is also the picker's only supplier of options.
+ * 2. **Fan-in and fan-out on selection AND a chosen source.** Both directions at once,
+ *    from the two `data-lineage-graph` reads, with the traversed LEGS lit as well as the
+ *    nodes — the route is what the endpoint returns `legs` for. Every verdict names the
+ *    source it is about, because "nothing upstream of this entity" is a far stronger
+ *    claim than a source-scoped walk supports.
  *
  * BOTH DIRECTIONS AT ONCE, NOT A TOGGLE, and the alternative was considered
  * seriously. A toggle halves the API calls and the visual load; it was rejected
@@ -2392,6 +2466,18 @@ export function ExecutionFlowGraph({
  * `truncated` is reported separately from the frontier because they are different
  * claims (D15): the frontier says "ask again later", truncation says "derived, but
  * this answer declined to return it all".
+ *
+ * THE FOUR ABOVE ARE STATES OF AN ANSWER, and they sit BELOW three states in which
+ * there is no answer to be in a state about — kept apart from them for the same reason
+ * the four are kept apart from each other:
+ *   - **no source chosen** → an INSTRUCTION ("choose a data source to trace"), rendered
+ *     by the picker. No request is fired at all, so none of the four applies;
+ *   - **a stale `?src`**   → a WARNING naming what was asked for, so a bookmark that
+ *     does not restore says why instead of degrading to a bare prompt;
+ *   - **zero sources**     → nothing derived to trace. Stated once, by the source
+ *     roll-up alert, and distinct from both "still loading" and "the read failed".
+ * `resolveSourceChoice` decides which of the three applies; none of them is an answer,
+ * and none may be worded as one.
  */
 export function LineageGraph({
   traceId,
@@ -2400,6 +2486,8 @@ export function LineageGraph({
   status,
   isLineageError,
   selectedEntityId,
+  lineageSource = null,
+  onLineageSourceChange,
   selectedInteractionId = null,
   onSelectInteraction,
   onSelectEntity,
@@ -2429,6 +2517,27 @@ export function LineageGraph({
   isLineageError: boolean;
   /** The flow view's `?eid` selection. THE one notion of "selected entity". */
   selectedEntityId: string | null;
+  /**
+   * The reader's chosen data source (`?src`), as an **Entity natural key**, or `null`.
+   *
+   * A CONTROLLED PROP, like `selectedEntityId` and `legView`, because the page owns
+   * every URL param in this view (`TraceDetailPage`) — this component never reaches
+   * for `useSearchParams`, so a reload/bookmark restores the choice through the same
+   * one path the other params use rather than through a second mechanism.
+   *
+   * A natural KEY, not an entity id, because that is what lineage stores and what the
+   * endpoint's `source` parameter takes (`lineageLabels`' header). It is reconciled
+   * against the trace's own roll-up by `resolveSourceChoice` before anything is
+   * asked, so a value this trace has no lineage for becomes a *notice* rather than a
+   * request the server would refuse.
+   *
+   * EXACTLY ONE, never a list: multi-source semantics are deferred upstream
+   * (`docs/data_lineage_alg.md`'s `## deferred issues`), so a union would be the UI
+   * inventing an answer. See `LineageSourcePicker`'s header.
+   */
+  lineageSource?: string | null;
+  /** Fired with the newly chosen source so the parent can mirror `?src`. */
+  onLineageSourceChange?: (source: string) => void;
   /**
    * The flow view's `?iid` selection, and its click callback — offered on THIS tab
    * too, not only on Execution Flow.
@@ -2466,24 +2575,52 @@ export function LineageGraph({
   const interactionsQ = useInteractions(traceId);
 
   // THE TWO NEW READS. The summary is ungated — the trace's sources are a standing
-  // fact, so they paint with nothing selected. The reachability pair is gated on
-  // having a seed, since with nothing selected there is no question to ask.
+  // fact, so they paint with nothing selected, AND it is the only supplier of the
+  // choosable source list, so the picker cannot be drawn before it lands.
   const summaryQ = useLineageSummary(traceId);
-  const reach = useLineageReachability(traceId, selectedEntityId);
+
+  /**
+   * The reader's `?src`, reconciled against the trace's actual roll-up.
+   *
+   * Derived BEFORE the reachability hooks because it decides whether they fire at all:
+   * `source` is required by the read (`fanin(entity, source)`), so an unchosen or
+   * stale choice means there is no askable question and `useLineageGraph`'s `enabled`
+   * must be false. Firing anyway would produce an unavoidable 400 on first paint,
+   * which the tab would then have to render as the "failed read" state — telling the
+   * reader to retry something that cannot succeed until they choose.
+   */
+  const sourceChoice = useMemo(
+    () => resolveSourceChoice({ requested: lineageSource, summary: summaryQ.data }),
+    [lineageSource, summaryQ.data],
+  );
+
+  // Gated on BOTH halves of the question: a seed entity and a chosen source. Either
+  // missing → no request. See `useLineageGraph`.
+  const reach = useLineageReachability(traceId, selectedEntityId, sourceChoice.source);
 
   // Derived ONCE and handed to both the highlight and the renderer, so the
   // highlight can only ever name elements that are actually on screen.
   const spec = useMemo(() => deriveGraph(entities, interactions), [entities, interactions]);
 
   const sources = useMemo(
-    () => deriveSourceHighlight({ entities, summary: summaryQ.data, graph: spec }),
-    [entities, summaryQ.data, spec],
+    () =>
+      deriveSourceHighlight({
+        entities,
+        summary: summaryQ.data,
+        graph: spec,
+        // The chosen source is resolved to a node HERE, through the same key bridge
+        // every other source goes through — so the "this is the traced one" mark can
+        // only ever land on a node that is also one of the trace's marked sources.
+        chosenSource: sourceChoice.source,
+      }),
+    [entities, summaryQ.data, spec, sourceChoice.source],
   );
 
   const reachability = useMemo(
     () =>
       deriveReachabilityHighlight({
         selectedEntityId,
+        source: sourceChoice.source,
         fanin: {
           data: reach.fanin.data,
           isError: reach.fanin.isError,
@@ -2498,6 +2635,7 @@ export function LineageGraph({
       }),
     [
       selectedEntityId,
+      sourceChoice.source,
       reach.fanin.data,
       reach.fanin.isError,
       reach.fanin.isLoading,
@@ -2524,6 +2662,7 @@ export function LineageGraph({
       edgeIds: reachability.litEdgeIds,
       reachability: {
         dataSourceNodeIds: sources.sourceNodeIds,
+        chosenSourceNodeId: sources.chosenSourceNodeId,
         upstreamNodeIds: reachability.fanin.nodeIds,
         downstreamNodeIds: reachability.fanout.nodeIds,
         upstreamEdgeIds: reachability.fanin.edgeIds,
@@ -2545,13 +2684,30 @@ export function LineageGraph({
         ]),
       },
     }),
-    [reachability, sources.sourceNodeIds],
+    [reachability, sources.sourceNodeIds, sources.chosenSourceNodeId],
   );
 
   // Friendly names for the natural keys the notices quote, from the same helper
   // every other lineage surface uses — so an unresolvable source is named the way
   // the detail panel names a resolvable one.
   const namesByKey = useMemo(() => displayNamesByKey([...entities]), [entities]);
+
+  /**
+   * The chosen source's friendly label, for the verdicts that name their subject.
+   *
+   * Read off `reachability.source` rather than off `sourceChoice.source`, and the
+   * difference matters: `reachability` is the object the highlight was built from, so
+   * the label and the lit nodes are guaranteed to be about the SAME source even
+   * mid-transition. Taking it from the choice would let a re-select move the label a
+   * render before the highlight follows — a correct label over the previous source's
+   * graph, which is the one failure mode worse than no label at all.
+   *
+   * `''` when there is no source, which is unreachable where it is used (the notices
+   * are gated on `selectedNodeId !== null`, which implies a source) but is the honest
+   * value rather than a non-null assertion.
+   */
+  const sourceLabel =
+    reachability.source === null ? '' : lineageLabel(reachability.source, namesByKey).label;
 
   const readState = graphReadState({
     isLoading: entitiesQ.isLoading || interactionsQ.isLoading,
@@ -2584,6 +2740,19 @@ export function LineageGraph({
                 aria-hidden="true"
               />
               Data source for this trace
+            </span>
+            {/* THE REFINEMENT, named right after the set it refines so the pair reads
+                as "origins, and the one being traced" rather than as two unrelated
+                treatments. Explained unconditionally alongside the others: the whole
+                point of a legend is that a treatment is never on screen unexplained,
+                and gating this entry on a choice having been made would mean the one
+                time it appears is the one time it has no key. */}
+            <span className="dg-lineage-legend-item">
+              <span
+                className="dg-lineage-swatch dg-lineage-swatch--chosen-source"
+                aria-hidden="true"
+              />
+              The source being traced (double ring)
             </span>
             <span className="dg-lineage-legend-item">
               <span className="dg-lineage-swatch dg-lineage-swatch--upstream" aria-hidden="true" />
@@ -2629,6 +2798,14 @@ export function LineageGraph({
               Which entities are data sources is not yet known.
             </Alert>
           ) : sources.totalSources === 0 ? (
+            /* ZERO SOURCES, and the ONE statement of it. Two consequences follow from
+               this single fact — no node is marked, and there is nothing to trace — and
+               they are deliberately worded together here rather than split across this
+               alert and the picker's own: two alerts stating one fact in two wordings is
+               precisely the drift that lets a reader think they are two different
+               problems. `LineageSourcePicker` therefore renders NOTHING in this state
+               (it takes the `'no-sources'` branch, which is a null render) and this
+               alert speaks for both. */
             <Alert
               variant="info"
               isInline
@@ -2636,9 +2813,12 @@ export function LineageGraph({
               style={{ marginBottom: '0.5rem' }}
             >
               No derived lineage in this trace names an origin, so no node is marked
-              as a data source. Under a partial or not-yet-derived trace this is{' '}
-              <strong>not</strong> the same as "this trace has no sources" — check the
-              coverage note above.
+              as a data source and there is <strong>nothing to trace</strong> — the
+              reachability walk follows one named source, and this trace has none.
+              Under a partial or not-yet-derived trace this is <strong>not</strong> the
+              same as "this trace has no sources" — check the coverage note above. It
+              is also neither a failed read nor a pending one: the roll-up came back
+              and named nothing.
             </Alert>
           ) : (
             <Alert
@@ -2692,20 +2872,49 @@ export function LineageGraph({
             </Alert>
           )}
 
+          {/* THE SOURCE PICKER, and the two states that belong to it: nothing chosen
+              yet (an instruction) and a stale `?src` (a warning).
+
+              PLACED ABOVE THE ENTITY PROMPT, in the order the question is assembled:
+              the walk is `fanin(entity, source)`, and the source is the half a reader
+              is least likely to guess is required — so it is asked for first and its
+              control sits immediately under the roll-up that supplies its options.
+
+              The control is a component rather than inline JSX because it owns real
+              interaction state (menu open/closed) and three of the four choice states'
+              wording; keeping it here would put a `useState` inside a notices prop and
+              mix the states of two different questions in one block. */}
+          <LineageSourcePicker
+            chosen={sourceChoice}
+            namesByKey={namesByKey}
+            // Not defaulted to a no-op: an absent handler means the parent does not own
+            // a `?src` mirror, in which case offering a control that visibly changes
+            // nothing would be worse than not offering one. `LineageSourcePicker`
+            // requires the callback, so this component supplies one that is honest
+            // about doing nothing only when the parent genuinely passed none.
+            onChange={onLineageSourceChange ?? (() => {})}
+          />
+
           {/* NOTHING SELECTED. An instruction, not a verdict — the graph below is
               drawn at full strength for everything except the source marks, and
               claims nothing about any one entity because no such question has been
               asked. Names BOTH controls: nodes are click targets now (see
-              `DraggableKindColouredNode`), and the table remains the keyboard route. */}
-          {reachability.selectedNodeId === null && (
+              `DraggableKindColouredNode`), and the table remains the keyboard route.
+
+              Gated on a source being CHOSEN as well, so the reader is asked for one
+              missing half at a time: with no source there is nothing an entity
+              selection could answer yet, and two simultaneous prompts read as a broken
+              tab rather than as a two-step question. The picker's own `'unchosen'`
+              alert is what is on screen instead. */}
+          {sourceChoice.state === 'chosen' && reachability.selectedNodeId === null && (
             <Alert
               variant="info"
               isInline
-              title="Select an entity to trace its data in and out"
+              title="Select an entity to trace this source’s data in and out"
               style={{ marginBottom: '0.5rem' }}
             >
               {selectedEntityId === null
-                ? 'Click a node on the graph, or a row in the Entities table above. This tab then highlights the entities that entity’s data came FROM (upstream) and went TO (downstream), and the interaction legs that carried it; everything else is dimmed.'
+                ? 'Click a node on the graph, or a row in the Entities table above. This tab then highlights the entities the chosen source’s data reached that entity FROM (upstream) and went TO (downstream), and the interaction legs that carried it; everything else is dimmed.'
                 : 'The selected entity is not in this trace’s entity set, so it has no node to highlight. Pick a node on the graph, or a row in the Entities table above.'}
             </Alert>
           )}
@@ -2728,11 +2937,19 @@ export function LineageGraph({
           {/* PER-DIRECTION STATE. One component, rendered twice, so fan-in and
               fan-out cannot end up worded differently for the same state — and so
               each keeps its own four-way outcome rather than being merged into a
-              single verdict that would have to hide one of the two. */}
+              single verdict that would have to hide one of the two.
+
+              `sourceLabel` is passed so every verdict names its SUBJECT. Since the
+              walk is `fanin(entity, source)`, "nothing upstream" is only true OF ONE
+              SOURCE — an unqualified "nothing upstream of this entity" would be a
+              much stronger (and false) claim, and it is the claim a reader would
+              naturally take away. `reachability.selectedNodeId !== null` already
+              implies a chosen source (see `deriveReachabilityHighlight`), so this is
+              never rendered without one. */}
           {reachability.selectedNodeId !== null && (
             <>
-              <DirectionNotice highlight={reachability.fanin} />
-              <DirectionNotice highlight={reachability.fanout} />
+              <DirectionNotice highlight={reachability.fanin} sourceLabel={sourceLabel} />
+              <DirectionNotice highlight={reachability.fanout} sourceLabel={sourceLabel} />
             </>
           )}
         </>
@@ -2776,10 +2993,30 @@ const DIRECTION_WORDS = {
  * every other statement — with nothing retrieved, an empty highlight says nothing
  * about the data. `pending` then precedes the derived arms so "we have not got here
  * yet" can never be reached through a branch that would have called it an answer.
+ *
+ * EVERY VERDICT NAMES ITS SOURCE, because the walk is `fanin(entity, source)` and so
+ * each of the four states is a claim about ONE source's data, not about the entity in
+ * general. "Nothing upstream of this entity" is a far stronger statement than the read
+ * supports and is exactly what an unqualified sentence would be taken to mean — the
+ * entity may well have plenty upstream, for a different source. The qualification is
+ * therefore appended to the state's own sentence rather than replacing it, so the
+ * distinction between the four states is untouched and only their scope is corrected.
  */
-function DirectionNotice({ highlight }: { highlight: DirectionHighlight }) {
+function DirectionNotice({
+  highlight,
+  sourceLabel,
+}: {
+  highlight: DirectionHighlight;
+  /**
+   * The chosen source's friendly label. `''` only where a source is impossible, in
+   * which case the qualifying clause is omitted rather than rendering "for source ''".
+   */
+  sourceLabel: string;
+}) {
   const words = DIRECTION_WORDS[highlight.direction];
   const style = { marginBottom: '0.5rem' };
+  // One clause, built once, so the six arms below cannot word the scope six ways.
+  const forSource = sourceLabel ? ` for the data source ${sourceLabel}` : '';
 
   // STATE 4 of 4: the read itself failed. Not one of the server's three, because a
   // request that never returned said nothing at all. Worded as *unknown*, matching
@@ -2794,7 +3031,8 @@ function DirectionNotice({ highlight }: { highlight: DirectionHighlight }) {
         style={style}
       >
         The {highlight.direction} read failed, so where this entity’s data{' '}
-        {words.came} is <strong>unknown</strong> — not absent. Nothing is highlighted
+        {words.came}
+        {forSource} is <strong>unknown</strong> — not absent. Nothing is highlighted
         for this direction because nothing was retrieved. Reload to retry.
       </Alert>
     );
@@ -2803,7 +3041,8 @@ function DirectionNotice({ highlight }: { highlight: DirectionHighlight }) {
   if (highlight.isLoading) {
     return (
       <Alert variant="info" isInline title={`Loading ${highlight.direction} lineage`} style={style}>
-        Where this entity’s data {words.came} is not yet known.
+        Where this entity’s data {words.came}
+        {forSource} is not yet known.
       </Alert>
     );
   }
@@ -2821,7 +3060,7 @@ function DirectionNotice({ highlight }: { highlight: DirectionHighlight }) {
         title={`${words.noun} lineage not yet computed for this entity`}
         style={style}
       >
-        {`This entity has adjacent interaction legs in this trace, but none has lineage derived yet, so where its data ${words.came} is not yet known — this is not "nothing flowed". P-data-lineage derives them as payloads arrive.`}
+        {`This entity has adjacent interaction legs in this trace, but none has lineage derived yet, so where its data ${words.came}${forSource} is not yet known — this is not "nothing flowed". P-data-lineage derives them as payloads arrive.`}
         {n > 0 &&
           ` ${n} entit${n === 1 ? 'y is' : 'ies are'} on the pending frontier: the walk reached ${n === 1 ? 'it' : 'them'} but cannot continue through ${n === 1 ? 'it' : 'them'} yet.`}
       </Alert>
@@ -2839,7 +3078,14 @@ function DirectionNotice({ highlight }: { highlight: DirectionHighlight }) {
         title={`Nothing ${words.noun.toLowerCase()} of this entity in this trace`}
         style={style}
       >
+        {/* The state's own sentence UNCHANGED, plus the scope. Two sentences rather
+            than a reworded one so this arm still reads as the same distinct state it
+            was — and because `noAdjacent` is shared with the other direction and must
+            not grow per-source grammar. */}
         {words.noAdjacent}
+        {sourceLabel
+          ? ` This is scoped to the data source ${sourceLabel}: a different source may well reach this entity, and this answer says nothing about that.`
+          : ''}
       </Alert>
     );
   }
@@ -2858,6 +3104,12 @@ function DirectionNotice({ highlight }: { highlight: DirectionHighlight }) {
           style={style}
         >
           {words.originates}
+          {/* Same two-sentence treatment as `no-adjacent` above, and needed MORE here:
+              "this entity's data originates at it" is the strongest claim on this tab,
+              and it is only true of the traced source. */}
+          {sourceLabel
+            ? ` Scoped to the data source ${sourceLabel} — a different source may reach further, and this answer does not speak for it.`
+            : ''}
         </Alert>
       ) : (
         <Alert
@@ -2866,7 +3118,7 @@ function DirectionNotice({ highlight }: { highlight: DirectionHighlight }) {
           title={`${count} ${words.noun.toLowerCase()} entit${count === 1 ? 'y' : 'ies'}, over ${highlight.edgeIds.length} interaction leg${highlight.edgeIds.length === 1 ? '' : 's'}`}
           style={style}
         >
-          {`Where this entity’s data ${words.came}, as derived lineage — the highlighted legs are the route the walk followed. A hop exists only where the trace has a leg AND that leg's lineage was derived, so this ends where provenance ends rather than where the call graph does. It inherits matcher quality: under a trivial matcher nothing prunes a hop, so a large answer is not evidence of thorough tracing.`}
+          {`Where this entity’s data ${words.came}${forSource}, as derived lineage — the highlighted legs are the route the walk followed. A hop exists only where the trace has a leg, that leg's lineage was derived, AND that lineage names this source, so this ends where THIS source's provenance ends rather than where the call graph does. It inherits matcher quality: under a trivial matcher nothing prunes a hop, so a large answer is not evidence of thorough tracing.`}
         </Alert>
       )}
 

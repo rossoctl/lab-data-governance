@@ -652,17 +652,28 @@ a trace-level sources/destinations roll-up
 (`GET /api/traces/{tid}/data-lineage-summary`).
 
 **Lineage reachability** (fanin / fanout):
-Which **Entities** a selected entity's data reached (`fanout`, downstream /
-descendants) or came from (`fanin`, upstream / ancestors), within one **Trace** —
-served by `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph` with a
-**required** `direction` of `fanin` or `fanout` (ADR-0028 D14; edge rule in D15).
-A hop `A → B` exists iff the trace has an **Interaction leg** whose *per-leg*
-direction runs `A → B` **and** that leg has a derived **Lineage metadata** row: the
-trace supplies the candidate edges, the metadata supplies whether lineage actually
-flowed along them. So the walk ends where provenance ends, not where the call graph
-does. Reports the traversed legs as well as the reached entities (the route, so the
-answer can be drawn), each entity's fewest `hops` from the seed, and a three-valued
-`state` — `derived` / `pending` / `no-adjacent`.
+Which **Entities** one **Data source**'s content reached from a selected entity
+(`fanout`, downstream / descendants) or came from (`fanin`, upstream / ancestors),
+within one **Trace** — served by
+`GET /api/traces/{tid}/entities/{eid}/data-lineage-graph` with a **required**
+`direction` of `fanin` or `fanout` **and a required `source`** (a **Data source**
+natural key, as listed by the summary read) — ADR-0028 D14; edge rule in D15.
+Arriving at `A` at sequence position `s`, a hop `A → B` is followed iff the trace has
+an **Interaction leg** whose *per-leg* direction runs `A → B`, that leg has a derived
+**Lineage metadata** row, the traced `source` is a **member of that row's
+`data_sources`**, and the leg's `seq` is strictly later than `s` (`fanout`) or earlier
+(`fanin`). The trace supplies the candidate edges, the metadata supplies whether *this
+source's* lineage actually flowed along them, and `seq` supplies which edges are
+eligible and in what order. So the walk ends where **that source's** provenance ends,
+not where the call graph does. The source is held *constant* for the whole walk (it is
+the thing being traced), and the membership test is a **read** of the stored set — no
+matching or inference happens at read time (ADR-0028 D7). Reports the traversed legs as
+well as the reached entities (the route, so the answer can be drawn), each entity's
+fewest `hops` along a *seq-and-source-respecting* path, and a three-valued `state` —
+`derived` / `pending` / `no-adjacent`. Multi-source fanin/fanout is **deferred** by the
+spec ("Given multiple sources - semantics are not clear"), so the read takes exactly
+one; an *unknown* source is a valid empty answer (`no-adjacent`), never a 404, while a
+*missing* one is a 400.
 _Avoid_: reading the parent **Interaction**'s `caller_entity_id → callee_entity_id`
 as the hop direction. A **response** leg runs callee → caller, and an agent's data
 mostly *arrives* as the responses to calls it made (ADR-0025), so the parent's fixed
@@ -671,9 +682,16 @@ leaf tool's `fanout` is **not** empty, because its response delivers data back t
 caller. Also avoid reading an empty `entities` list as "nothing flowed" — that is what
 `state` and `pending_frontier` (entities the walk could not continue through *yet*,
 because the onward leg has no derived row) exist to disambiguate, the same
-three-valued discipline **Lineage coverage** applies to a trace. Finally avoid reading
-a large `fanout` as thorough tracing: under the trivial matcher nothing prunes a hop,
-so these reads inherit matcher quality exactly as the triple does.
+three-valued discipline **Lineage coverage** applies to a trace. Note a derived leg that
+simply *lacks* the traced source is deliberately **not** on `pending_frontier`: that is a
+settled "no", where an undelivered leg is "ask again later", and merging the two would
+send a caller back to poll forever. Also avoid assuming `fanin` is just `fanout` with the
+edges reversed — the reversal alone is a no-op on a trace's (symmetric) request+response
+edge set, and what actually separates upstream from downstream is `seq`. Finally avoid
+reading a large `fanout` as thorough tracing: under the trivial matcher every leg inherits
+every upstream source, so the *source* rule prunes little and these reads inherit matcher
+quality exactly as the triple does. (The `seq` rule prunes regardless of matcher quality,
+being a fact about the trace's own ordering.)
 
 **Lineage metadata**:
 The triple recorded per **Interaction leg** by **P-data-lineage**: (1)

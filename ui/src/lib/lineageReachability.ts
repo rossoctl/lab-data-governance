@@ -7,9 +7,13 @@
  * 1. {@link deriveSourceHighlight} — which nodes are the trace's **data sources**,
  *    from `GET /api/traces/{tid}/data-lineage-summary`. A standing fact about the
  *    trace, shown with NO selection.
- * 2. {@link deriveReachabilityHighlight} — for a selected entity, its fan-in AND
- *    fan-out, from the two `data-lineage-graph` reads. The nodes *and the traversed
- *    legs*, because the route is what the endpoint returns the legs for.
+ * 2. {@link deriveReachabilityHighlight} — for a selected entity AND ONE CHOSEN
+ *    SOURCE, its fan-in AND fan-out, from the two `data-lineage-graph` reads. The
+ *    nodes *and the traversed legs*, because the route is what the endpoint returns
+ *    the legs for.
+ * 3. {@link resolveSourceChoice} — reconciling the reader's `?src` against the
+ *    trace's actual source list, so a stale or absent choice is a *state* rather
+ *    than a request nobody can answer.
  *
  * Render-free and unit-tested, like every `lib/` module here: jsdom cannot measure
  * an SVG, so the real coverage of this feature is `lineageReachability.test.ts`
@@ -40,6 +44,14 @@
  * - **Multi-hop is now in scope**, with `hops` as the distance. `lineageGraph`'s
  *   clause 3 forbade composing it client-side; reading it off the response is not
  *   composing it.
+ * - **The walk is SOURCE-RELATIVE, not merely direction-relative.**
+ *   `docs/data_lineage_alg.md` specifies the read as `fanout(entity, source)` /
+ *   `fanin(entity, source)`: an edge is traversed only if the chosen source is in
+ *   that leg's lineage `data_sources`. So the question is "trace THIS source's data
+ *   through this entity", not "everything reachable from this entity", and the same
+ *   entity has a *different* answer per source. An earlier draft of this module
+ *   documented the read as taking only a direction; that is now false and is
+ *   corrected here rather than left standing.
  * - **The tri-state moved but did not soften.** `state` is the server's
  *   `derived` / `pending` / `no-adjacent`, and `pending_frontier` names the
  *   entities the walk could not continue through *yet*. An empty `entities` list
@@ -147,6 +159,23 @@ export interface SourceHighlight {
    * from "the trace has eight and we could draw six".
    */
   totalSources: number;
+  /**
+   * The node id of the CHOSEN source — the one whose data the current answer traces
+   * — or `null` when nothing is chosen or its key resolves to no drawn node.
+   *
+   * A SUBSET of {@link sourceNodeIds}, never a replacement for it. Colouring every
+   * source is a standing fact about the trace and stays unconditional (ADR-0028 D14);
+   * this is the separate claim "…and THIS one is the subject of the highlight you are
+   * looking at". Both must be visible at once: a reader has to be able to see that
+   * the trace has five origins AND which of the five this graph is about, and a
+   * treatment that lit only the chosen one would silently shrink the trace's source
+   * set every time somebody picked one.
+   *
+   * `null` for an unresolvable chosen key is not a silent drop — the key is already
+   * in {@link unresolved}, and the view names the choice in the control and in its
+   * own notice regardless of whether a node could be marked.
+   */
+  chosenSourceNodeId: string | null;
 }
 
 /** The empty source answer — for a trace with no roll-up, and for a failed read. */
@@ -155,6 +184,7 @@ const NO_SOURCES: SourceHighlight = {
   unresolved: [],
   ambiguousKeys: [],
   totalSources: 0,
+  chosenSourceNodeId: null,
 };
 
 /**
@@ -170,11 +200,19 @@ export function deriveSourceHighlight({
   entities,
   summary,
   graph,
+  chosenSource = null,
 }: {
   entities: readonly Entity[];
   summary: LineageSummary | undefined;
   /** The rendered graph, so a lit id is always an id the reader can actually see. */
   graph: GraphSpec;
+  /**
+   * The source natural key the reader is tracing ({@link SourceChoice.source}), or
+   * `null`. Resolved to {@link SourceHighlight.chosenSourceNodeId} through the SAME
+   * key bridge every other source goes through, so the chosen node can never be a
+   * node that is not also in `sourceNodeIds`.
+   */
+  chosenSource?: string | null;
 }): SourceHighlight {
   if (!summary || summary.sources.length === 0) return NO_SOURCES;
 
@@ -202,6 +240,11 @@ export function deriveSourceHighlight({
     sourceNodeIds.add(id);
   }
 
+  // Resolved through the same `byKey` bridge and then checked against the LIT set
+  // rather than merely against `drawable`: a chosen key that named a real entity the
+  // graph did not draw is already in `unresolved`, and reporting it here as well
+  // would let the view mark a node that is not one of the trace's marked sources.
+  const chosenId = chosenSource === null ? undefined : byKey.get(chosenSource);
   return {
     sourceNodeIds: [...sourceNodeIds].sort(),
     unresolved,
@@ -210,7 +253,104 @@ export function deriveSourceHighlight({
       return id !== undefined && sourceNodeIds.has(id);
     }),
     totalSources: summary.sources.length,
+    chosenSourceNodeId: chosenId !== undefined && sourceNodeIds.has(chosenId) ? chosenId : null,
   };
+}
+
+/**
+ * WHY THE READER PICKS EXACTLY ONE SOURCE, AND WHY THE UI MUST NOT UNION THEM.
+ *
+ * `docs/data_lineage_alg.md`'s `## deferred issues` says it outright: "Lineage
+ * fanout/fanin Given multiple sources - semantics are not clear: Do we expect the
+ * exact set of sources? Any of them?" With that question open upstream, a UI that
+ * offered "all sources" would have to *choose* an answer — ANY-of (a union of
+ * per-source walks) or ALL-of (an intersection) — and then present its choice as
+ * though the server had derived it. Those two produce different graphs on the same
+ * trace, and a governance reader has no way to tell which they are looking at.
+ *
+ * So: exactly one source at a time, always named on screen. **Do not "improve" this
+ * into a multi-select union.** It is not a missing feature, it is a deliberate
+ * refusal to invent semantics the algorithm has not settled.
+ */
+export type SourceChoiceState =
+  /** The reader has not chosen yet. An INSTRUCTION state, not an empty result. */
+  | 'unchosen'
+  /** The trace's roll-up named no sources at all — nothing derived to trace. */
+  | 'no-sources'
+  /**
+   * A choice was supplied but this trace's roll-up does not contain it — a stale
+   * `?src` from another trace, a hand-edited URL, or a source that has since
+   * dropped out of the roll-up. Treated as unchosen for the purposes of asking (a
+   * question about a source this trace has no lineage for cannot be answered), but
+   * kept DISTINCT from `'unchosen'` so the view can say why the bookmark did not
+   * restore instead of silently blanking it.
+   */
+  | 'stale'
+  /** A real source of this trace is chosen. `source` is non-null exactly here. */
+  | 'chosen';
+
+/** The reader's source choice, reconciled against what the trace actually offers. */
+export interface SourceChoice {
+  state: SourceChoiceState;
+  /**
+   * The source natural key to ASK WITH, or `null` when there is nothing askable.
+   *
+   * Non-null iff `state === 'chosen'`. Every caller gates its query on this one
+   * field, which is what stops a `'stale'` or `'no-sources'` trace from firing a
+   * request the server would 400 — the source parameter is required.
+   */
+  source: string | null;
+  /** The value the reader supplied, even when it did not resolve. For the notice. */
+  requested: string | null;
+  /** The trace's selectable sources, in the roll-up's own order. */
+  available: readonly string[];
+}
+
+/**
+ * Reconcile a requested source (the `?src` URL param) against the trace's roll-up.
+ *
+ * PURE AND HERE, not inline in the view, for this module's standing reason: it
+ * decides whether a query fires at all, and "did the read fire?" is exactly the kind
+ * of thing a render test cannot honestly assert about an SVG-bearing component. The
+ * four states it returns are what the view branches on.
+ *
+ * NO AUTO-PICK OF THE FIRST SOURCE, and this was the tempting alternative. It would
+ * make the tab show an answer immediately, which is precisely the problem: the
+ * reader would be looking at a highlighted graph that answers a question they never
+ * asked, about whichever source happened to sort first. On a governance surface an
+ * unrequested claim is worse than a prompt. `'unchosen'` is therefore a real state
+ * the view renders as an instruction.
+ *
+ * `summary` is `undefined` while the read is in flight or after it failed — the same
+ * ambiguity {@link deriveSourceHighlight} documents. Both yield `'unchosen'` with
+ * `available: []`, and NEITHER may be rendered as "this trace has no sources": the
+ * view distinguishes them by the query's own state, exactly as it already does for
+ * the source colouring. Note this means `'no-sources'` is only ever returned for a
+ * summary that actually landed and actually named nothing.
+ */
+export function resolveSourceChoice({
+  requested,
+  summary,
+}: {
+  /** The `?src` param, or `null` when absent. */
+  requested: string | null | undefined;
+  summary: LineageSummary | undefined;
+}): SourceChoice {
+  const available = summary?.sources ?? [];
+  const req = requested ?? null;
+  // In flight / failed: `available` is empty but that is not a claim about the
+  // trace, so this cannot be `'no-sources'`. A requested value is held in
+  // `requested` and re-reconciled once the summary lands — which is what makes a
+  // bookmarked `?src` restore rather than being judged stale against no data.
+  if (!summary) return { state: 'unchosen', source: null, requested: req, available };
+  if (available.length === 0) {
+    return { state: 'no-sources', source: null, requested: req, available };
+  }
+  if (req === null) return { state: 'unchosen', source: null, requested: null, available };
+  if (!available.includes(req)) {
+    return { state: 'stale', source: null, requested: req, available };
+  }
+  return { state: 'chosen', source: req, requested: req, available };
 }
 
 /**
@@ -268,6 +408,16 @@ export interface DirectionHighlight {
 
 /** The whole selection-driven answer: both directions, plus what to dim. */
 export interface ReachabilityHighlight {
+  /**
+   * The source natural key this answer is ABOUT, or `null` when none is chosen.
+   *
+   * Carried on the answer rather than only in the view's own state because the
+   * highlight is meaningless without it: "these entities are upstream" is not a
+   * claim, "these entities are upstream *of this source's data*" is. A view that
+   * held the two separately could paint one source's highlight under another
+   * source's label during the instant between a re-select and its response landing.
+   */
+  source: string | null;
   /**
    * The selected entity's own node id, or `null` when nothing is selected / the
    * selection names no node in this trace.
@@ -420,15 +570,35 @@ function deriveDirection(
  * both upstream and downstream, i.e. data that came back). They are kept
  * DISTINGUISHABLE instead, by separate id sets the renderer styles differently, so
  * showing both does not blend them into one undifferentiated set.
+ *
+ * TWO THINGS ARE NOW REQUIRED BEFORE THERE IS AN ANSWER, not one: a seed entity AND
+ * a chosen source. `source === null` short-circuits to the same non-claiming empty
+ * highlight `selectedEntityId === null` does — deliberately, because a walk with no
+ * source is not a weaker question, it is not a question at all (the parameter is
+ * required, so the request cannot even be made). Note the two are NOT collapsed into
+ * one "not ready" flag: the VIEW words them differently ("select an entity" vs
+ * "choose a data source"), so it reads them separately off {@link SourceChoice} and
+ * `selectedNodeId`.
  */
 export function deriveReachabilityHighlight({
   selectedEntityId,
+  source,
   fanin,
   fanout,
   graph,
 }: {
   /** The flow view's `?eid` selection. THE one notion of "selected entity". */
   selectedEntityId: string | null;
+  /**
+   * The chosen data source natural key (`SourceChoice.source`), or `null`.
+   *
+   * A natural KEY, not an entity id, because that is what lineage stores and what
+   * the endpoint's `source` parameter takes (ADR-0028 / `lineageLabels`' header). It
+   * is deliberately NOT resolved to a node here: this function's job is to say what
+   * the answer covers, and the chosen source's own node is already lit by
+   * {@link deriveSourceHighlight}'s always-on set.
+   */
+  source: string | null;
   fanin: {
     data: LineageReachability | undefined;
     isError: boolean;
@@ -449,8 +619,16 @@ export function deriveReachabilityHighlight({
   // the same way, but reached through the explicit lookup so the two stay legible.
   const selectedNodeId =
     selectedEntityId !== null && drawableNodes.has(selectedEntityId) ? selectedEntityId : null;
-  if (selectedNodeId === null) {
+  // NO SOURCE IS THE SAME NON-CLAIM AS NO SEED. The reads are gated on both (see
+  // `useLineageGraph`'s `enabled`), so with either missing `fanin.data`/`fanout.data`
+  // are `undefined` and every direction would come out empty anyway — but returning
+  // the explicit non-claiming shape here means `selectedNodeId` also stays `null`,
+  // which is what `roleOf` keys on to dim NOTHING. Without this arm, choosing an
+  // entity but no source would dim the whole graph while claiming nothing, i.e. paint
+  // "not part of the answer" over a question that was never asked.
+  if (selectedNodeId === null || source === null) {
     return {
+      source,
       selectedNodeId: null,
       fanin: emptyDirection('fanin'),
       fanout: emptyDirection('fanout'),
@@ -479,6 +657,7 @@ export function deriveReachabilityHighlight({
   const litEdges = new Set<string>([...inHighlight.edgeIds, ...outHighlight.edgeIds]);
 
   return {
+    source,
     selectedNodeId,
     fanin: inHighlight,
     fanout: outHighlight,

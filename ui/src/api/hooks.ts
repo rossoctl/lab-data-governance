@@ -220,51 +220,69 @@ export function useDataLineage(
 }
 
 /**
- * One direction's **Lineage reachability** for one entity.
- * `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…`
- * (ADR-0028 D14, edge rule in D15).
+ * One direction's **Lineage reachability** for one entity, tracing ONE data source.
+ * `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…&source=…`
+ * (ADR-0028 D14, edge rule in D15; the read's signature is
+ * `docs/data_lineage_alg.md`'s `fanin(entity, source)` / `fanout(entity, source)`).
  *
  * `direction` is **required** by the server and is part of the query key, so the
  * two directions are two independently cached entries rather than one that
  * overwrites itself — which is what lets both be on screen at once.
+ *
+ * `source` IS EQUALLY REQUIRED, and this is the correction to an earlier version of
+ * this hook that sent only a direction. The traversal walks an edge only when the
+ * chosen source appears in that leg's lineage `data_sources`, so the question is
+ * "trace THIS source's data", not "everything reachable" — and omitting the
+ * parameter is a 400, not a broader answer. Two consequences are load-bearing here:
+ *
+ *  - **`source` is in the query key.** The same entity and direction have a
+ *    *different* answer per source, so a key without it would serve the previous
+ *    source's cached graph after a re-select — a wrong highlight under a correct
+ *    label, which is the worst available failure on a governance surface.
+ *  - **`enabled` gates on it.** With no source chosen there is no askable question,
+ *    and an unavoidable 400 on first paint is not a loading state. The view renders
+ *    "choose a data source" instead (see `resolveSourceChoice`).
  *
  * Deliberately NOT a hook that fetches both directions itself. `direction` is
  * single-valued on the wire, so "both" is two requests; expressing that as two
  * `useQuery` calls keeps each direction's loading and error state its own, so one
  * failing does not blank the other. {@link useLineageReachability} is the pair.
  *
- * `enabled` gates on having a seed: with nothing selected there is no question to
- * ask, and firing the request with an empty entity id would ask about an entity
- * that cannot exist.
- *
  * Every absence is a normal shape, not an error — an unknown trace or entity is a
- * 200 with an empty result (the collection-read convention). The one genuine
- * failure mode is a bad `direction`, which is a 400 and a programming error here
- * rather than a data case, since the argument is typed. Note the response is
- * passed through UNREDUCED: unlike `useDataLineage`, whose per-leg map is the
- * shape every consumer wants, `state` / `pending_frontier` / `truncated` must all
- * reach the view intact, and a reduction is exactly where a tri-state gets
- * flattened into an empty list.
+ * 200 with an empty result (the collection-read convention). The genuine failure
+ * modes are a bad `direction` and a MISSING `source`, both 400s; the first is
+ * unreachable because the argument is typed, and the second is unreachable because
+ * of the `enabled` gate above. Note the response is passed through UNREDUCED: unlike
+ * `useDataLineage`, whose per-leg map is the shape every consumer wants, `state` /
+ * `pending_frontier` / `truncated` must all reach the view intact, and a reduction is
+ * exactly where a tri-state gets flattened into an empty list.
  */
 export function useLineageGraph(
   traceId: string,
   entityId: string | null,
   direction: LineageDirection,
+  source: string | null,
 ): UseQueryResult<LineageReachability> {
   return useQuery({
-    enabled: entityId !== null,
-    queryKey: ['lineage-graph', traceId, entityId, direction],
+    // BOTH gates, not just the seed: the request is unanswerable without either.
+    enabled: entityId !== null && source !== null,
+    // `source` in the key, for the stale-answer reason in the doc-comment. `?? null`
+    // keeps "no source" a stable, distinct key rather than `undefined`, which
+    // TanStack would serialise away and collide with a keyless entry.
+    queryKey: ['lineage-graph', traceId, entityId, direction, source ?? null],
     queryFn: () =>
       fetchJson<LineageReachability>(
         `/traces/${traceId}/entities/${entityId}/data-lineage-graph`,
-        { direction },
+        // Non-null by the `enabled` gate above; asserted rather than defaulted
+        // because a default would be this hook silently inventing a source.
+        { direction, source: source as string },
       ),
   });
 }
 
 /**
- * Both directions of **Lineage reachability** for one entity — the pair of
- * {@link useLineageGraph} calls the Lineage tab needs.
+ * Both directions of **Lineage reachability** for one entity and one source — the
+ * pair of {@link useLineageGraph} calls the Lineage tab needs.
  *
  * Two requests, because `direction` is required and single-valued (ADR-0028 D14).
  * They are two hooks rather than one combined query so that each direction keeps
@@ -273,18 +291,26 @@ export function useLineageGraph(
  * them into one `isError` would make "we could not ask downstream" look like "we
  * know nothing at all".
  *
+ * ONE `source` FOR BOTH, which is not an arbitrary economy: fan-in and fan-out are
+ * the two halves of one question about one source's data, and letting them differ
+ * would produce a graph whose upstream and downstream halves were about different
+ * things. Multi-source is deferred upstream (`docs/data_lineage_alg.md`'s
+ * `## deferred issues`), so there is exactly one source in play at a time — do not
+ * grow this into an array.
+ *
  * A fixed-length tuple, not an array built in a loop, so the two hooks are called
  * unconditionally and in a stable order (the rules of hooks).
  */
 export function useLineageReachability(
   traceId: string,
   entityId: string | null,
+  source: string | null,
 ): {
   fanin: UseQueryResult<LineageReachability>;
   fanout: UseQueryResult<LineageReachability>;
 } {
-  const fanin = useLineageGraph(traceId, entityId, 'fanin');
-  const fanout = useLineageGraph(traceId, entityId, 'fanout');
+  const fanin = useLineageGraph(traceId, entityId, 'fanin', source);
+  const fanout = useLineageGraph(traceId, entityId, 'fanout', source);
   return { fanin, fanout };
 }
 
@@ -301,6 +327,13 @@ export function useLineageReachability(
  * trace, so the Lineage tab shows them from its first paint with nothing selected.
  * That is the same reasoning `useDataLineage`'s note gives for the coverage
  * warning — a fact a reader has to click to discover is not being reported.
+ *
+ * **`sources` is also the CHOOSABLE set for the reachability read.** Since that read
+ * requires a `source` (see {@link useLineageGraph}), the Lineage tab's source picker
+ * is populated from this one array and nothing else — no second endpoint, and no
+ * client-side guess at what the trace's origins are. A `?src` value absent from this
+ * array is therefore stale by definition; `lineageReachability.resolveSourceChoice`
+ * owns that reconciliation.
  *
  * `status` / `stopped_at_seq` are renamed to the camelCase the rest of the app
  * uses (matching `useDataLineage`'s reduction) and `?? null` is *unknown*, never

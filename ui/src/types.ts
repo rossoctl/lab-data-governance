@@ -300,8 +300,23 @@ export interface LineageGraphLeg {
 export type LineageReachabilityState = 'derived' | 'pending' | 'no-adjacent';
 
 /**
- * The whole `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…`
- * response — one direction's reachability over one trace (ADR-0028 D14/D15).
+ * The whole
+ * `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…&source=…`
+ * response — one direction's reachability over one trace, FOR ONE DATA SOURCE
+ * (ADR-0028 D14/D15).
+ *
+ * `source` IS AS REQUIRED AS `direction`, and it changes what the answer means. The
+ * read's signature is `docs/data_lineage_alg.md`'s `fanin(entity, source)` /
+ * `fanout(entity, source)`: an edge is traversed only when the chosen source appears
+ * in that leg's lineage `data_sources`, so the question is "trace THIS source's data
+ * through this entity" — not "everything reachable from this entity". The same entity
+ * and direction therefore have a DIFFERENT answer per source, which is why the UI
+ * traces exactly one at a time and names it beside every verdict.
+ *
+ * MULTI-SOURCE IS DEFERRED UPSTREAM, not merely unimplemented here:
+ * `docs/data_lineage_alg.md`'s `## deferred issues` records that the semantics of a
+ * source SET are undecided ("Do we expect the exact set of sources? Any of them?"), so
+ * a caller that unioned several sources' walks would be inventing an answer.
  *
  * Field names are the wire's verbatim, so this doubles as the contract. Read
  * `state` BEFORE `entities`.

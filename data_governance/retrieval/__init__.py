@@ -22,12 +22,14 @@ derivation stays behind the interface (ADR-0005):
   has been derived, and empty before the lineage migration has run — never an
   error.
 - :mod:`.lineage_graph` — the other two **Data lineage** grains (ADR-0028 D14):
-  ``get_lineage_graph`` walks one trace's lineage upstream (``fanin``) or
+  ``get_lineage_graph`` walks **one data source's** lineage upstream (``fanin``) or
   downstream (``fanout``) from an **Entity**, and ``get_lineage_summary`` serves a
   trace's ``list sources`` / ``list destinations``. Unlike :mod:`.lineage` these
-  *derive* — a hop is a leg the trace has whose lineage was actually derived, so
-  the walk ends where provenance ends — but they still run no matcher (D7) and
-  never cross a trace boundary (D14).
+  *derive* — a hop is a leg the trace has whose stored ``data_sources`` contains the
+  seeded source and whose ``seq`` runs the right way in time, so the walk ends where
+  that source's provenance ends — but they still run no matcher (D7) and never cross a
+  trace boundary (D14). Both ``direction`` and ``source`` are required; multi-source
+  fanin/fanout is deferred by the spec.
 
 Only the public surface is re-exported here. Consumers of the private
 row-mapping helpers (``spans._COLUMNS`` / ``spans._row_to_span`` — the
@@ -65,6 +67,7 @@ from data_governance.retrieval.lineage_graph import (
     GetLineageSummaryResult,
     LineageGraphEntityView,
     LineageGraphLegView,
+    MissingSource,
     UnknownDirection,
     get_lineage_graph,
     get_lineage_summary,
@@ -117,6 +120,7 @@ __all__ = [
     "GetLineageSummaryResult",
     "LineageGraphEntityView",
     "LineageGraphLegView",
+    "MissingSource",
     "UnknownDirection",
     "get_lineage_graph",
     "get_lineage_summary",

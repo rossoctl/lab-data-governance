@@ -6,6 +6,7 @@ import {
   roleMeta,
   legDirection,
   parseLegViewKey,
+  parseLineageSource,
 } from './flow';
 import type { Entity, Interaction } from './flow';
 
@@ -52,6 +53,43 @@ describe('parseLegViewKey', () => {
     // Not the neighbouring word either: `lineage` is a tab, `data-lineage` is the
     // resource it reads, and the two must not be interchangeable in a URL.
     expect(parseLegViewKey('data-lineage')).toBe('tree');
+  });
+});
+
+/**
+ * The `?src` coercion — the Lineage tab's traced data source.
+ *
+ * Tested at the single definition for the same reason `parseLegViewKey` is: the page
+ * reads the param and the tab's picker writes it, so a value one accepts and the other
+ * does not would be a choice that applies and then vanishes on reload.
+ *
+ * Note what is deliberately NOT tested here, because it is not this function's job: a
+ * source that no longer exists in the TRACE. This function has no access to the trace's
+ * roll-up, so the semantic check lives in `lineageReachability.resolveSourceChoice`
+ * (which reports it as its own `'stale'` state). Splitting them is what keeps a bad
+ * `?src` behaving like a bad `?legs` — coerced, never thrown, never sent to the server.
+ */
+describe('parseLineageSource', () => {
+  it('passes a natural key through verbatim, including its punctuation', () => {
+    // A qualified key carries colons, parentheses and commas by design; none of them
+    // may be normalised away, because the key IS the source's identity on the wire.
+    expect(parseLineageSource('agent:(prod,travel-advisor)')).toBe('agent:(prod,travel-advisor)');
+    expect(
+      parseLineageSource('tool:agent:(travel_advisor,travel-advisor):search_destinations'),
+    ).toBe('tool:agent:(travel_advisor,travel-advisor):search_destinations');
+  });
+
+  it('reads absent, empty and whitespace-only values as no choice at all', () => {
+    // `?src=` must not become a request for a source NAMED empty string: the parameter
+    // is required by the server, so an empty one is a 400 rather than a wildcard.
+    expect(parseLineageSource(null)).toBeNull();
+    expect(parseLineageSource(undefined)).toBeNull();
+    expect(parseLineageSource('')).toBeNull();
+    expect(parseLineageSource('   ')).toBeNull();
+  });
+
+  it('trims surrounding whitespace a hand-edited or wrapped URL can introduce', () => {
+    expect(parseLineageSource('  agent:(p,a)  ')).toBe('agent:(p,a)');
   });
 });
 

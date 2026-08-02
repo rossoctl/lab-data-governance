@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { deriveSourceHighlight, deriveReachabilityHighlight } from './lineageReachability';
+import {
+  deriveSourceHighlight,
+  deriveReachabilityHighlight,
+  resolveSourceChoice,
+} from './lineageReachability';
 import { deriveGraph } from './graph';
 import type { Entity, Interaction, InteractionLeg } from './flow';
 import type { LineageReachability, LineageSummary } from '../types';
@@ -134,6 +138,22 @@ function traversed(
 
 const IDLE = { isError: false, isLoading: false };
 
+/**
+ * The chosen data source every `deriveReachabilityHighlight` case below traces.
+ *
+ * Threaded through EVERY existing case rather than defaulted inside the function,
+ * because the read it models is `fanin(entity, source)` with `source` REQUIRED
+ * (`docs/data_lineage_alg.md`'s `## API`) — a call site that could omit it would be
+ * modelling a request the server refuses with a 400. `'a'`'s own natural key is used
+ * so the fixture's source is a real entity of the chain, which is the ordinary case.
+ *
+ * Note this is deliberately NOT one of `SOURCES` below: these cases assert what the
+ * mapping does with a served answer, and the served answer already accounts for the
+ * source (the server scoped the walk). Nothing here re-filters by source — see
+ * `deriveReachabilityHighlight`'s note on why it derives nothing.
+ */
+const SOURCE = 'agent:(p,a)';
+
 // ---------------------------------------------------------------------------
 // deriveSourceHighlight — the always-on trace source colouring
 // ---------------------------------------------------------------------------
@@ -223,6 +243,67 @@ describe('deriveSourceHighlight', () => {
     expect(h.totalSources).toBe(0);
   });
 
+  // --- The CHOSEN source: a refinement of the always-on set, never a replacement.
+
+  it('marks the chosen source as a node id WITHOUT shrinking the trace source set', () => {
+    // The distinction requirement, at its load-bearing point: the trace has two
+    // origins and one of them is the subject of the current answer. Both facts have to
+    // survive, because "this trace has two sources" and "this graph is about that one"
+    // are different claims and a reader needs each.
+    const h = deriveSourceHighlight({
+      entities: ENTITIES,
+      summary: summary({ sources: ['agent:(p,a)', 'agent:(p,c)'] }),
+      graph: GRAPH,
+      chosenSource: 'agent:(p,c)',
+    });
+    expect(h.sourceNodeIds).toEqual(['a', 'c']);
+    expect(h.chosenSourceNodeId).toBe('c');
+  });
+
+  it('reports NO chosen source node when nothing is chosen', () => {
+    // First open, and the state the tab renders as an instruction. The trace's sources
+    // are still coloured — that colouring is not conditional on a choice.
+    const h = deriveSourceHighlight({
+      entities: ENTITIES,
+      summary: summary({ sources: ['agent:(p,a)'] }),
+      graph: GRAPH,
+    });
+    expect(h.sourceNodeIds).toEqual(['a']);
+    expect(h.chosenSourceNodeId).toBeNull();
+  });
+
+  it('reports no chosen source node for a chosen key that resolves to no drawn node', () => {
+    // An UNRESOLVED natural key that happens to be the chosen one: a real origin
+    // outside the trace's own entity set (`entityIdsByKey` simply misses it). There is
+    // no node to mark, so none is claimed — and the key is still disclosed as a source
+    // the graph cannot draw, so the reader is not left thinking the marks are the set.
+    const h = deriveSourceHighlight({
+      entities: ENTITIES,
+      summary: summary({ sources: ['agent:(p,a)', 'svc:external-crm'] }),
+      graph: GRAPH,
+      chosenSource: 'svc:external-crm',
+    });
+    expect(h.chosenSourceNodeId).toBeNull();
+    expect(h.unresolved).toEqual([{ ref: 'svc:external-crm' }]);
+    // …and the resolvable source is still marked, so choosing an undrawable source did
+    // not blank the trace's colouring.
+    expect(h.sourceNodeIds).toEqual(['a']);
+  });
+
+  it('never marks a chosen source that is not one of the trace’s sources', () => {
+    // A stale `?src`. `resolveSourceChoice` already refuses to pass one through as
+    // askable, but this function is defensive at the same boundary: the chosen mark is
+    // a REFINEMENT of the source set, so it can only ever land on a member of it.
+    const h = deriveSourceHighlight({
+      entities: ENTITIES,
+      summary: summary({ sources: ['agent:(p,a)'] }),
+      graph: GRAPH,
+      chosenSource: 'agent:(p,c)',
+    });
+    expect(h.sourceNodeIds).toEqual(['a']);
+    expect(h.chosenSourceNodeId).toBeNull();
+  });
+
   it('is deterministic: sorted node ids regardless of the summary order', () => {
     const forward = deriveSourceHighlight({
       entities: ENTITIES,
@@ -239,13 +320,178 @@ describe('deriveSourceHighlight', () => {
 });
 
 // ---------------------------------------------------------------------------
+// resolveSourceChoice — the reader's `?src` against what the trace offers
+// ---------------------------------------------------------------------------
+
+describe('resolveSourceChoice', () => {
+  const TWO = summary({ sources: ['agent:(p,a)', 'agent:(p,c)'] });
+
+  it('accepts a requested source the trace actually has', () => {
+    const c = resolveSourceChoice({ requested: 'agent:(p,c)', summary: TWO });
+    expect(c.state).toBe('chosen');
+    // `source` is the ONE field every caller gates its query on, so it is what a
+    // `'chosen'` state has to hand back.
+    expect(c.source).toBe('agent:(p,c)');
+    expect(c.available).toEqual(['agent:(p,a)', 'agent:(p,c)']);
+  });
+
+  it('is UNCHOSEN with no request, and offers nothing askable', () => {
+    // First open. The tab renders an instruction and — the point of `source: null` —
+    // fires no reachability request at all, since the parameter is required and
+    // omitting it is a 400 rather than a broader answer.
+    const c = resolveSourceChoice({ requested: null, summary: TWO });
+    expect(c.state).toBe('unchosen');
+    expect(c.source).toBeNull();
+    // The options are still offered, so the reader can act on the instruction.
+    expect(c.available).toHaveLength(2);
+  });
+
+  it('does NOT auto-pick the first source', () => {
+    // The rejected alternative, pinned: auto-selecting would show the reader a
+    // highlighted graph answering a question they never asked, about whichever source
+    // happened to come first. An unrequested claim is worse than a prompt.
+    const c = resolveSourceChoice({ requested: undefined, summary: TWO });
+    expect(c.source).toBeNull();
+  });
+
+  it('reports a request the trace does not have as STALE, keeping what was asked for', () => {
+    // A bookmark from another trace, or a source that has dropped out of this trace's
+    // roll-up. Not askable — but not silently blanked either, so the view can say why
+    // the link did not restore instead of showing a bare prompt.
+    const c = resolveSourceChoice({ requested: 'svc:from-another-trace', summary: TWO });
+    expect(c.state).toBe('stale');
+    expect(c.source).toBeNull();
+    expect(c.requested).toBe('svc:from-another-trace');
+    expect(c.available).toHaveLength(2);
+  });
+
+  it('reports a trace whose roll-up named NO sources as its own state', () => {
+    // Nothing derived to trace — structurally different from "not chosen yet", because
+    // there is nothing the reader could choose. Distinct again from loading and failed
+    // (below), which is the whole discipline.
+    const c = resolveSourceChoice({ requested: null, summary: summary({ sources: [] }) });
+    expect(c.state).toBe('no-sources');
+    expect(c.source).toBeNull();
+    expect(c.available).toEqual([]);
+  });
+
+  it('a stale request against a zero-source trace still reads as no-sources', () => {
+    // The order of the arms matters: "this trace has nothing to trace" is the more
+    // fundamental fact, and telling the reader their source is merely *stale* would
+    // imply picking a different one could work.
+    const c = resolveSourceChoice({ requested: 'anything', summary: summary({ sources: [] }) });
+    expect(c.state).toBe('no-sources');
+  });
+
+  it('an ABSENT summary is UNCHOSEN, never "no sources"', () => {
+    // In flight or failed. This function cannot tell those apart and deliberately does
+    // not try (the view does, from the query state) — but it must not let either look
+    // like a settled "this trace has no origins", which is the exact collapse ADR-0028
+    // is disciplined against.
+    const c = resolveSourceChoice({ requested: null, summary: undefined });
+    expect(c.state).toBe('unchosen');
+    expect(c.available).toEqual([]);
+  });
+
+  it('holds a requested source through the summary being in flight, so a bookmark restores', () => {
+    // The reason `requested` survives the `!summary` arm rather than being judged
+    // against an empty list: a `?src` on a cold open arrives BEFORE the roll-up, and
+    // discarding it there would make every bookmarked link fail to restore.
+    const pending = resolveSourceChoice({ requested: 'agent:(p,c)', summary: undefined });
+    expect(pending.state).toBe('unchosen');
+    expect(pending.requested).toBe('agent:(p,c)');
+    // …and once the summary lands, the SAME request resolves.
+    expect(resolveSourceChoice({ requested: 'agent:(p,c)', summary: TWO }).state).toBe('chosen');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // deriveReachabilityHighlight — fan-in AND fan-out for the selection
 // ---------------------------------------------------------------------------
 
 describe('deriveReachabilityHighlight', () => {
+  it('carries the traced source on the answer, so the highlight has a named subject', () => {
+    // The highlight is meaningless without it: "these entities are upstream" is not a
+    // claim, "…of this source's data" is. Held on the answer rather than only in the
+    // view's state so a label and the lit nodes cannot be about two different sources.
+    const h = deriveReachabilityHighlight({
+      selectedEntityId: 'b',
+      source: SOURCE,
+      fanin: {
+        data: reach('fanin', {
+          entities: [reached('a', 1)],
+          legs: [traversed('ix1', 'request', 'a', 'b', 1)],
+          state: 'derived',
+        }),
+        ...IDLE,
+      },
+      fanout: { data: reach('fanout', { state: 'no-adjacent' }), ...IDLE },
+      graph: GRAPH,
+    });
+    expect(h.source).toBe(SOURCE);
+    expect(h.fanin.nodeIds).toEqual(['a']);
+  });
+
+  it('claims NOTHING when no source is chosen, even with an entity selected and data in hand', () => {
+    // THE no-source-chosen state, and the reason it is its own arm rather than falling
+    // out of the reads being gated. `selectedNodeId` must stay `null` so `roleOf` dims
+    // NOTHING: choosing an entity but no source would otherwise dim the entire graph
+    // while claiming nothing — painting "not part of the answer" over a question that
+    // was never asked. The stale `data` here (which a cache could genuinely hand over
+    // after a source is cleared) is deliberately ignored rather than rendered.
+    const h = deriveReachabilityHighlight({
+      selectedEntityId: 'b',
+      source: null,
+      fanin: {
+        data: reach('fanin', {
+          entities: [reached('a', 1)],
+          legs: [traversed('ix1', 'request', 'a', 'b', 1)],
+          state: 'derived',
+        }),
+        ...IDLE,
+      },
+      fanout: { data: reach('fanout', { state: 'no-adjacent' }), ...IDLE },
+      graph: GRAPH,
+    });
+    expect(h.source).toBeNull();
+    expect(h.selectedNodeId).toBeNull();
+    expect(h.litNodeIds).toEqual([]);
+    expect(h.litEdgeIds).toEqual([]);
+    expect(h.fanin.nodeIds).toEqual([]);
+    expect(h.hasAnswer).toBe(false);
+    // Not misreported as an error or a load — nothing was asked, so nothing is wrong.
+    expect(h.fanin.isError).toBe(false);
+    expect(h.fanin.isLoading).toBe(false);
+  });
+
+  it('keeps "no source" and "no selection" as separately observable, not one flag', () => {
+    // The view words them differently ("choose a data source" vs "select an entity"),
+    // so the two missing halves have to stay tellable apart from the outside.
+    const noSource = deriveReachabilityHighlight({
+      selectedEntityId: 'b',
+      source: null,
+      fanin: { data: undefined, ...IDLE },
+      fanout: { data: undefined, ...IDLE },
+      graph: GRAPH,
+    });
+    const noSeed = deriveReachabilityHighlight({
+      selectedEntityId: null,
+      source: SOURCE,
+      fanin: { data: undefined, ...IDLE },
+      fanout: { data: undefined, ...IDLE },
+      graph: GRAPH,
+    });
+    expect(noSource.source).toBeNull();
+    expect(noSeed.source).toBe(SOURCE);
+    // Both are non-claiming, which is the shared half.
+    expect(noSource.hasAnswer).toBe(false);
+    expect(noSeed.hasAnswer).toBe(false);
+  });
+
   it('returns the non-claiming empty answer when nothing is selected', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: null,
+      source: SOURCE,
       fanin: { data: undefined, ...IDLE },
       fanout: { data: undefined, ...IDLE },
       graph: GRAPH,
@@ -260,6 +506,7 @@ describe('deriveReachabilityHighlight', () => {
     // on, so no answer — and emphatically not an answer of "nothing found".
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'not-in-this-trace',
+      source: SOURCE,
       fanin: { data: reach('fanin', { entities: [reached('a', 1)] }), ...IDLE },
       fanout: { data: undefined, ...IDLE },
       graph: GRAPH,
@@ -271,6 +518,7 @@ describe('deriveReachabilityHighlight', () => {
   it('maps FAN-IN only: upstream nodes, the traversed legs, and hops', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: {
         data: reach('fanin', {
           entities: [reached('a', 1)],
@@ -297,6 +545,7 @@ describe('deriveReachabilityHighlight', () => {
   it('maps FAN-OUT only, keeping it separate from fan-in', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: { data: reach('fanin', { state: 'no-adjacent' }), ...IDLE },
       fanout: {
         data: reach('fanout', {
@@ -320,6 +569,7 @@ describe('deriveReachabilityHighlight', () => {
     // which is which — the exact blend this shape exists to prevent.
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: {
         data: reach('fanin', {
           entities: [reached('c', 1)],
@@ -351,6 +601,7 @@ describe('deriveReachabilityHighlight', () => {
   it('grades MULTI-HOP distance off the response hops, nearer being smaller', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'a',
+      source: SOURCE,
       fanin: { data: reach('fanin', { state: 'no-adjacent' }), ...IDLE },
       fanout: {
         data: reach('fanout', {
@@ -379,6 +630,7 @@ describe('deriveReachabilityHighlight', () => {
     // so the reader can tell "you clicked this" from "and it is also upstream".
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: {
         data: reach('fanin', {
           entities: [reached('b', 2), reached('c', 1)],
@@ -403,6 +655,7 @@ describe('deriveReachabilityHighlight', () => {
     // not be rebranded as `no-adjacent`, which is a different claim.
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: { data: reach('fanin', { entities: [], legs: [], state: 'derived' }), ...IDLE },
       fanout: { data: reach('fanout', { state: 'no-adjacent' }), ...IDLE },
       graph: GRAPH,
@@ -414,6 +667,7 @@ describe('deriveReachabilityHighlight', () => {
   it('surfaces PENDING with its frontier, never as an empty "nothing flowed"', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: {
         data: reach('fanin', {
           entities: [],
@@ -438,6 +692,7 @@ describe('deriveReachabilityHighlight', () => {
   it('discloses a frontier entity with no drawn node instead of dropping it', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: {
         data: reach('fanin', { state: 'pending', pending_frontier: ['a', 'phantom'] }),
         ...IDLE,
@@ -452,6 +707,7 @@ describe('deriveReachabilityHighlight', () => {
   it('reports NO-ADJACENT as its own state — the one complete empty answer', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: { data: reach('fanin', { state: 'no-adjacent' }), ...IDLE },
       fanout: { data: reach('fanout', { state: 'no-adjacent' }), ...IDLE },
       graph: GRAPH,
@@ -467,6 +723,7 @@ describe('deriveReachabilityHighlight', () => {
     // only a wider bound produces.
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: {
         data: reach('fanin', {
           entities: [reached('a', 1)],
@@ -488,6 +745,7 @@ describe('deriveReachabilityHighlight', () => {
     // downstream" must not look like "we know nothing at all".
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: {
         data: reach('fanin', {
           entities: [reached('a', 1)],
@@ -510,6 +768,7 @@ describe('deriveReachabilityHighlight', () => {
   it('a LOADING direction is neither an answer nor an error', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: { data: undefined, isError: false, isLoading: true },
       fanout: { data: undefined, isError: false, isLoading: true },
       graph: GRAPH,
@@ -522,6 +781,7 @@ describe('deriveReachabilityHighlight', () => {
   it('skips a traversed leg the graph did not draw rather than inventing an edge', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: {
         data: reach('fanin', {
           entities: [reached('a', 1)],
@@ -542,6 +802,7 @@ describe('deriveReachabilityHighlight', () => {
   it('skips a reached entity the graph has no node for', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'b',
+      source: SOURCE,
       fanin: {
         data: reach('fanin', {
           entities: [reached('a', 1), reached('phantom', 2)],
@@ -561,6 +822,7 @@ describe('deriveReachabilityHighlight', () => {
   it('de-duplicates a leg the walk reported twice, preserving response order', () => {
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'a',
+      source: SOURCE,
       fanin: { data: reach('fanin', { state: 'no-adjacent' }), ...IDLE },
       fanout: {
         data: reach('fanout', {
@@ -586,6 +848,7 @@ describe('deriveReachabilityHighlight', () => {
     // surprises a reader the UI must not "helpfully" hide it.
     const h = deriveReachabilityHighlight({
       selectedEntityId: 'c',
+      source: SOURCE,
       fanin: { data: reach('fanin', { state: 'no-adjacent' }), ...IDLE },
       fanout: {
         data: reach('fanout', {

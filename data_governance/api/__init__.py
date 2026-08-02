@@ -29,7 +29,8 @@ The lineage reads are one per grain (ADR-0028 D14):
 - ``GET /api/traces/{tid}/data-lineage`` — per-**Interaction leg** metadata
 - ``GET /api/traces/{tid}/data-lineage-summary`` — the trace's sources/destinations
 - ``GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=fanin|fanout``
-  — entity reachability, upstream or downstream
+  ``&source=<natural-key>`` — one data source's reachability from an entity, upstream
+  or downstream. Both query parameters are required (ADR-0028 D15).
 
 Every handler is a thin adapter over the retrieval library: the span reads call
 ``get_spans``; the flow reads call **Interaction retrieval** (``get_interactions``
@@ -39,8 +40,8 @@ governance reads call ``get_payload`` / ``get_data_lineage`` /
 computed duration, error roll-up, chronological ordering, the lineage walk's edge
 rule and tri-state, the nullable-classification / nullable-lineage and
 not-yet-migrated shapes — lives behind those seams; the handler only parses ids
-and the ``direction`` parameter, dispatches to a worker thread, and encodes the
-returned dataclasses to the wire (ADR-0005).
+and the ``direction`` / ``source`` parameters, dispatches to a worker thread, and
+encodes the returned dataclasses to the wire (ADR-0005).
 """
 
 from __future__ import annotations
@@ -500,30 +501,47 @@ async def _data_lineage_handler(request: Request) -> Response:
 
 
 async def _lineage_graph_handler(request: Request) -> Response:
-    """``GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…``.
+    """``GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=…&source=…``.
 
     Thin adapter over :func:`retrieval.get_lineage_graph` — the entity-grain lineage
-    traversal (ADR-0028 D14): which entities the seed's data reached (``fanout``) or
-    came from (``fanin``), over this trace only.
+    traversal (ADR-0028 D14/D15): which entities **one data source's** content reached
+    from the seed (``fanout``) or came from (``fanin``), over this trace only.
 
-    ``direction`` is a **required** query parameter, ``fanin`` or ``fanout``, and a
-    missing or unrecognized value is a 400 rather than a default. The two answers are
-    not interchangeable, so guessing which way a provenance question points would
-    answer a question the caller did not ask.
+    ``direction`` (``fanin``/``fanout``) and ``source`` (a data source natural key) are
+    both **required** query parameters, and a missing or unrecognized value of either
+    is a 400 rather than a default:
+
+    - ``direction`` — the two answers are not interchangeable, so guessing which way a
+      provenance question points would answer a question the caller did not ask.
+    - ``source`` — it is the other half of the question. An entity handles content from
+      several sources at once and each has its own fanout, so there is no sensible
+      default; and the only candidate default, the union over all sources, is the
+      *multi-source* read ``data_lineage_alg.md`` explicitly defers ("Do we expect the
+      exact set of sources? Any of them?"). Serving it silently would ship a guess at an
+      open design question.
 
     Unlike ``data-lineage`` this read *derives*: a hop is a leg the trace has whose
-    lineage was actually derived, so the walk ends where provenance ends. It still
-    runs no matcher (D7) and never leaves the trace (D14).
+    stored ``data_sources`` **contains this source** and whose ``seq`` is on the correct
+    side of the arrival, so the walk ends where this source's provenance ends. It still
+    runs no matcher (D7) — the source test is a set-membership check against the
+    persisted array, never a re-derivation — and never leaves the trace (D14).
 
-    **Read ``state`` before ``entities``.** An empty list means one of three
-    different things — ``"no-adjacent"`` (nothing there), ``"pending"`` (adjacency
-    exists but is not derived yet) or a seed outside the trace — and only the first
-    is a complete answer. ``pending_frontier`` names the entities the walk could not
-    continue through yet, so the eventual-consistency window is visible rather than
-    looking like a dead end. ``truncated`` says a walk bound was hit.
+    **Read ``state`` before ``entities``.** An empty list means several different things
+    — ``"no-adjacent"`` (nothing eligible to follow, including "derived but this source
+    is not on any of the seed's legs"), ``"pending"`` (adjacency exists but is not
+    derived yet) or a seed outside the trace — and only the first is a complete answer.
+    ``pending_frontier`` names the entities the walk could not continue through *yet*,
+    so the eventual-consistency window is visible rather than looking like a dead end;
+    a leg that is derived but lacks the source is deliberately **not** on it, being a
+    settled answer rather than a pending one. ``truncated`` says a walk bound was hit.
 
-    An unknown trace or entity is ``200`` with an empty result, not a 404 — the
-    collection-read convention shared with the other trace sub-resources.
+    An unknown trace, entity **or source** is ``200`` with an empty result, not a 404 —
+    the collection-read convention shared with the other trace sub-resources. For
+    ``source`` specifically: 404-ing an unrecognized key would mean deciding "unknown to
+    this trace" from the *absence* of derived rows, which a mid-derivation trace cannot
+    distinguish from "not there yet" — the exact collapse the three-valued ``state`` and
+    D6's ``status`` exist to prevent. See :func:`retrieval.get_lineage_graph` for the
+    full argument.
     """
     trace_id = request.path_params.get("tid")
     entity_id = request.path_params.get("eid")
@@ -532,13 +550,16 @@ async def _lineage_graph_handler(request: Request) -> Response:
             {"error": "trace_id and entity_id required"}, status_code=400
         )
     direction = request.query_params.get("direction") or ""
+    source = request.query_params.get("source") or ""
     try:
         result = await asyncio.to_thread(
-            retrieval.get_lineage_graph, trace_id, entity_id, direction
+            retrieval.get_lineage_graph, trace_id, entity_id, direction, source
         )
-    except retrieval.UnknownDirection as exc:
-        # A caller error, not a missing-data case — so 400, and the message names
-        # the accepted values rather than only rejecting what was sent.
+    except (retrieval.UnknownDirection, retrieval.MissingSource) as exc:
+        # Caller errors, not missing-data cases — so 400, and the message names what
+        # IS accepted rather than only rejecting what was sent. Both arms share the
+        # response shape because they are the same class of failure: a malformed
+        # question, as against an answerable one with an empty answer.
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -546,6 +567,9 @@ async def _lineage_graph_handler(request: Request) -> Response:
         {
             "direction": result.direction,
             "seed_entity_id": result.seed_entity_id,
+            # Echoed back: the answer is unattributable without it, since the same
+            # seed has a different fanout per source.
+            "source": result.source,
             "entities": [dataclasses.asdict(e) for e in result.entities],
             "legs": [dataclasses.asdict(leg) for leg in result.legs],
             "state": result.state,

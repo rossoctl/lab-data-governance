@@ -103,6 +103,24 @@ export interface FlowTablesProps {
   legView?: LegViewKey;
   /** Fired when the Interactions tab changes so the parent can mirror `?legs`. */
   onLegViewChange?: (key: LegViewKey) => void;
+  /**
+   * Which single **data source** the Lineage tab is tracing (`?src`), as an **Entity
+   * natural key**, or `null` for "none chosen yet".
+   *
+   * A CONTROLLED PROP for exactly the same reason `legView` and `initialSelection`
+   * are: the parent owns every URL param in this view (`TraceDetailPage`), so this
+   * component never reaches for `useSearchParams` and a reload / bookmark / back
+   * button restores the choice through the one path the other params already use.
+   * Adding a second mechanism here is what would let the tab's state and the URL
+   * disagree.
+   *
+   * Passed straight through to `LineageGraph` — this component neither validates it
+   * (only the trace's own roll-up can, and `LineageGraph` holds that read) nor uses
+   * it for anything else. It is `?src`'s courier, no more.
+   */
+  lineageSource?: string | null;
+  /** Fired when the traced source changes so the parent can mirror `?src`. */
+  onLineageSourceChange?: (source: string) => void;
 }
 
 /**
@@ -115,11 +133,16 @@ export interface FlowTablesProps {
  * The Interactions section has five peer presentations behind the `?legs` tabs
  * (`LegViewKey`): `tree`, `flat`, `diagram` (the Interaction diagram — a sequence
  * diagram of the flat leg list), `graph` (Execution Flow) and `lineage` (that same
- * graph with the selected entity's **Data lineage** sources highlighted). The first
- * four read the same two queries, so switching between them costs no fetch;
- * `lineage` additionally reads the trace's lineage — which this component already
- * holds for the coverage banner and the per-leg detail blocks, so it costs no fetch
- * either.
+ * graph, highlighting how ONE chosen **data source**'s data reached the selected
+ * entity and where it went). The first four read the same two queries, so switching
+ * between them costs no fetch.
+ *
+ * `lineage` DOES cost reads, and the earlier claim here that it "costs no fetch
+ * either" is no longer true: it owns the trace's `data-lineage-summary` (which is both
+ * the source colouring and the choosable source list) plus the two directional
+ * `data-lineage-graph` reads, gated on having BOTH an entity selection and a chosen
+ * source. Only its trace-level `status` still comes from this component's
+ * `useDataLineage`, so the coverage banner and the tab quote one value.
  *
  * This module owns only the composition and the selection/URL state; the tables,
  * the floating detail panel and the coverage banner live in ./flow, the sequence
@@ -136,6 +159,8 @@ export function FlowTables({
   onSelectionChange,
   legView = 'tree',
   onLegViewChange,
+  lineageSource = null,
+  onLineageSourceChange,
 }: FlowTablesProps) {
   const interactionsQ = useInteractions(traceId);
   const entitiesQ = useEntities(traceId);
@@ -444,9 +469,9 @@ export function FlowTables({
             `Lineage` sits LAST, immediately after Execution Flow, because it IS the
             Execution Flow picture with one more question asked of it: identical
             nodes and edges (one component, one `deriveGraph` — see
-            ExecutionFlowGraph's `EntityGraph`), plus a highlight of where the
-            selected entity's data came from. Anywhere earlier would separate it
-            from the view it is a reading of. */}
+            ExecutionFlowGraph's `EntityGraph`), plus a highlight of where ONE chosen
+            data source's data reached the selected entity from and went to. Anywhere
+            earlier would separate it from the view it is a reading of. */}
         <Tabs
           activeKey={legView}
           onSelect={(_e, key) => onLegViewChange?.(parseLegViewKey(String(key)))}
@@ -492,6 +517,17 @@ export function FlowTables({
               status={lineageQ.data?.status ?? null}
               isLineageError={lineageQ.isError}
               selectedEntityId={selectedEntityId}
+              // THE OTHER HALF OF THE QUESTION. The reachability read is
+              // `fanin(entity, source)` / `fanout(entity, source)` with `source`
+              // REQUIRED (docs/data_lineage_alg.md's `## API`), so the tab needs a
+              // chosen source before it can ask anything — an entity selection alone is
+              // no longer a complete question. It arrives from `?src` through the parent
+              // for the same reason `?eid` does: one owner of the URL, one notion of
+              // what the reader picked. Exactly ONE source is traced at a time;
+              // multi-source semantics are deferred upstream, so there is deliberately
+              // no array here.
+              lineageSource={lineageSource}
+              onLineageSourceChange={onLineageSourceChange}
               // NODE clicks select an entity, through the very same `selectEntity`
               // the Entities table row uses — so `?eid`, the detail panel and the
               // highlight all follow one path and there is no second notion of

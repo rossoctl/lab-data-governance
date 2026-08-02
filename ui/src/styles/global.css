@@ -58,6 +58,17 @@
                                   colour-vision deficiency. A legend accompanies
                                   it in the tab (a colour with no key is a
                                   puzzle).
+                                  ONE token serves BOTH the trace's source set and
+                                  the single CHOSEN source the walk is tracing:
+                                  they are the same kind of fact (an origin), and
+                                  the refinement is geometry — a double halo and a
+                                  heavier stroke, see
+                                  .dg-graph-node--chosen-source. A fourth hue was
+                                  rejected for the reason this whole block gives:
+                                  hue on this graph is already carrying entity
+                                  kind, error and two directions, and one more
+                                  would be both ambiguous and invisible to a
+                                  colour-vision-deficient reader.
    - --dg-lineage-upstream  #7aa2f7  fan-in: where the selection's data CAME FROM
    - --dg-lineage-downstream #b48ead fan-out: where it WENT
                                   Two tokens because upstream and downstream are
@@ -464,7 +475,9 @@ body {
 
 /* ---------------------------------------------------------------------------
    Lineage highlight (the `?legs=lineage` tab — ExecutionFlowGraph's LineageGraph
-   over lib/lineageGraph's derivation).
+   over lib/lineageReachability's derivation; the `lib/lineageGraph` this used to name
+   was deleted when the client-side roll-up was replaced by the served reachability
+   reads).
 
    THE DE-EMPHASIS IS THE MECHANISM, not the brightening. In a graph of any density
    "slightly brighter" is not findable — the reader has to compare every node
@@ -510,8 +523,9 @@ body {
    Distinguished from a source by a DASH pattern rather than by another weight or
    another colour: the two states have to be told apart at a glance even when the
    selected node is also one of its own sources (a self-call, or data it contributed
-   earlier coming back — see lib/lineageGraph clause 4), in which case both classes
-   apply to one node and a weight-vs-weight distinction would simply be lost.
+   earlier coming back — a real cycle the server derives, see
+   lib/lineageReachability's THE THREE AXES), in which case both classes apply to one
+   node and a weight-vs-weight distinction would simply be lost.
 
    Deliberately NOT the same dash as `--isolated` above: the two can co-occur (an
    isolated entity can be selected) and the longer dash reads as deliberate emphasis
@@ -572,6 +586,33 @@ body {
   filter: drop-shadow(0 0 0 var(--dg-lineage-source))
     drop-shadow(0 0 3px var(--dg-lineage-source));
   stroke-width: 3px;
+}
+
+/* THE CHOSEN SOURCE — the ONE source whose data the current answer traces
+   (`fanin(entity, source)`). A REFINEMENT of `--datasource`, which is why the
+   selector requires BOTH classes: the trace's whole source set keeps its ring, and
+   this says which of them is the subject of the highlight on screen. Colouring only
+   the chosen one was rejected outright — it would silently shrink the trace's source
+   set the moment anybody picked one, turning a standing fact into a function of the
+   reader's current question.
+
+   NOT HUE. It reuses `--dg-lineage-source`, deliberately: a fourth colour would both
+   collide with the three already in play here and be exactly the hue-only encoding the
+   rest of this sheet refuses. The distinction is GEOMETRY — a wider, brighter DOUBLE
+   halo (a visible gap between two rings, from the 0-spread inner ring at 2px offset and
+   the outer at 8px) plus the heaviest stroke on the graph. A colour-vision-deficient
+   reader sees one ring vs two; a greyscale print keeps both. The node's `<title>` and
+   accessible name additionally say "the data source being traced" in words
+   (`nodeTitle`), so the fact is never carried by the picture alone.
+
+   Placed AFTER `--datasource` so the more specific pair (0,3,0 vs 0,2,0 — it also wins
+   on specificity, so order is belt-and-braces) replaces its filter rather than being
+   averaged with it: two `filter` declarations do not compose across rules, only within
+   one list, which is why this restates both rings instead of adding one. */
+.dg-graph-node--datasource.dg-graph-node--chosen-source .pf-topology__node__background {
+  filter: drop-shadow(0 0 2px var(--dg-lineage-source))
+    drop-shadow(0 0 8px var(--dg-lineage-source));
+  stroke-width: 5px;
 }
 
 /* UPSTREAM of the selection (fan-in) — where its data came from. Dashed, reading as
@@ -695,6 +736,19 @@ body {
   box-shadow: 0 0 3px var(--dg-lineage-source);
 }
 
+/* The chosen source's key: the same hue, TWO rings — `box-shadow`'s spread-then-gap
+   layering is the flat-DOM equivalent of the node's stacked drop-shadows, so the
+   swatch shows the treatment itself rather than a chip that merely stands for it
+   (this block's own rule). The legend text says "double ring" as well, because a
+   0.75rem swatch is small enough that the gap is easy to miss. */
+.dg-lineage-swatch--chosen-source {
+  border-color: var(--dg-lineage-source);
+  box-shadow:
+    0 0 0 1px var(--dg-lineage-source),
+    0 0 0 3px var(--dg-surface-panel),
+    0 0 0 4px var(--dg-lineage-source);
+}
+
 .dg-lineage-swatch--upstream {
   border-color: var(--dg-lineage-upstream);
   border-style: dashed;
@@ -708,6 +762,47 @@ body {
 .dg-lineage-swatch--frontier {
   border-color: var(--dg-color-muted);
   border-style: dotted;
+}
+
+/* ---------------------------------------------------------------------------
+   The Lineage tab's DATA SOURCE picker (LineageSourcePicker) — which single source
+   the reachability walk is tracing.
+
+   A LABELLED ROW, not a bare dropdown, and the visible label is the requirement
+   rather than decoration: the chosen source is the SUBJECT of every highlight below
+   it, so a reader looking at a lit graph must be able to read which source's flow it
+   is without opening a menu. An `aria-label` alone would leave a sighted reader
+   guessing.
+
+   Inline flow directly above the legend and the graph, matching `.dg-lineage-legend`
+   — it must not float over the picture it qualifies, and it has to sit in document
+   order for a screen reader. Fixed height regardless of how many sources the trace
+   rolled up, which is the reason a `Select` was chosen over a per-source toggle group
+   (see the component's header). */
+.dg-lineage-source-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.dg-lineage-source-picker-label {
+  color: var(--dg-color-label);
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* The toggle carries a qualified natural key, which is long by design
+   (`tool:agent:(travel_advisor,travel-advisor):search_destinations`). A floor wide
+   enough to read a friendly `display_name` without the control jittering as the
+   choice changes, and a ceiling so one long label cannot push the graph's own
+   controls off the row. PF truncates the toggle text itself; the full key stays
+   reachable as the `title`. */
+.dg-lineage-source-toggle {
+  min-width: 16rem;
+  max-width: 28rem;
 }
 
 /* ---------------------------------------------------------------------------

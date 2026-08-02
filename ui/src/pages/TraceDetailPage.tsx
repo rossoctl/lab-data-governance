@@ -20,7 +20,7 @@ import { fetchJson } from '../api/client';
 import { SpanTree, type SpanTreeHandle } from '../components/SpanTree';
 import { SpanDetailPanel } from '../components/SpanDetailPanel';
 import { FlowTables, type FlowSelection } from '../components/FlowTables';
-import { parseLegViewKey, type LegViewKey } from '../lib/flow';
+import { parseLegViewKey, parseLineageSource, type LegViewKey } from '../lib/flow';
 import { HighlightLegend } from '../components/HighlightLegend';
 import type { Span } from '../types';
 
@@ -44,7 +44,8 @@ const URL_TO_VIEW: Record<string, ViewKey> = { spans: 'tree', flow: 'flow' };
 /**
  * Trace-detail view: a two-way switcher (Span tree | Interaction flow) over one
  * trace. The active tab, the tree's selected span (`?sel`), the flow's selected
- * interaction/entity (`?iid` / `?eid`) and the flow's presentation (`?legs`) all
+ * interaction/entity (`?iid` / `?eid`), the flow's presentation (`?legs`) and the
+ * Lineage tab's traced data source (`?src`) all
  * live in the URL, so reload / bookmark / back restore exactly what's on screen.
  * Seeds from the cold-open `useTrace` listing root (deep-link / paste path). The
  * Tree and Flow views share a highlight PinStore — pinning an
@@ -252,6 +253,48 @@ export function TraceDetailPage() {
     [setSearchParams],
   );
 
+  // The Lineage tab's traced DATA SOURCE (?src): the **Entity natural key** of the
+  // ONE source whose flow the reachability walk follows. In the URL for the same
+  // reason `?legs` and `?eid` are — a reload, a bookmark or a shared link restores
+  // the whole reading of the trace, and on a governance surface "here is what I was
+  // looking at" has to be a link rather than a sequence of clicks to reproduce.
+  //
+  // `parseLineageSource` does only the syntactic half (absent or blank → null, so
+  // `?src=` cannot become a request for a source named empty string). The SEMANTIC
+  // half — is this a source THIS trace actually has? — cannot be answered here: only
+  // the trace's own `data-lineage-summary` knows, and that read lives in the tab. So
+  // a stale value is passed DOWN rather than dropped, and
+  // `lineageReachability.resolveSourceChoice` reports it as its own `'stale'` state
+  // with a notice. That is the same coercion discipline `?legs` follows (never throw,
+  // never trust) with the validation pushed to the only place that can perform it —
+  // and it is why an unknown `?src` reads as "not one of this trace's sources"
+  // instead of silently showing an unexplained bare prompt.
+  //
+  // NO default and NO auto-pick. Unlike `?legs`, whose default is `tree`, there is no
+  // source this page is entitled to choose on the reader's behalf: an unrequested
+  // highlight is a claim nobody asked for (see resolveSourceChoice's note). Absent
+  // therefore stays absent, and the tab renders an instruction.
+  const lineageSource: string | null = parseLineageSource(searchParams.get('src'));
+  const handleLineageSourceChange = useCallback(
+    (source: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          // Always written, never dropped-as-default: there is no default source, so
+          // every value is a real choice worth carrying. The picker offers no "clear",
+          // which is why there is no delete arm here — see LineageSourcePicker.
+          next.set('src', source);
+          return next;
+        },
+        // `replace`, matching `?legs`: switching which source you are tracing is
+        // re-reading one dataset, not navigating, and stacking a history entry per
+        // source would make Back walk through every source the reader tried.
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
   const handleFlowSelectionChange = useCallback(
     (sel: FlowSelection | null) => {
       setSearchParams(
@@ -402,6 +445,8 @@ export function TraceDetailPage() {
               onSelectionChange={handleFlowSelectionChange}
               legView={legView}
               onLegViewChange={handleLegViewChange}
+              lineageSource={lineageSource}
+              onLineageSourceChange={handleLineageSourceChange}
             />
           )}
         </div>

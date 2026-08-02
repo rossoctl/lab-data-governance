@@ -9,16 +9,49 @@ import { FlowTables, type LegViewKey } from './FlowTables';
 import { PinStore } from '../lib/pins';
 
 /**
- * The Interactions tab (`legView`) is a controlled prop — TraceDetailPage owns
- * it as the `?legs` URL param. This harness stands in for that owner so a test
- * can click the tab and see the table swap, exactly as the page does.
+ * The Interactions tab (`legView`) AND the Lineage tab's traced data source
+ * (`lineageSource`) are controlled props — TraceDetailPage owns both as the `?legs` and
+ * `?src` URL params. This harness stands in for that owner so a test can click the tab
+ * and see the table swap, and can pick a source and see the reads fire, exactly as the
+ * page does.
+ *
+ * `initialSource` seeds `?src` the way a deep link or a reload does. It defaults to
+ * `null` — NOT to a source — because that is the honest first-open state: there is no
+ * source the app is entitled to pick on the reader's behalf (see
+ * `lineageReachability.resolveSourceChoice`), so a test wanting an ANSWER has to supply
+ * one, exactly as a reader has to choose one.
  */
-function FlowTablesWithLegTabs(
-  props: Omit<React.ComponentProps<typeof FlowTables>, 'legView' | 'onLegViewChange'>,
-) {
+function FlowTablesWithLegTabs({
+  initialSource = null,
+  ...props
+}: Omit<
+  React.ComponentProps<typeof FlowTables>,
+  'legView' | 'onLegViewChange' | 'lineageSource' | 'onLineageSourceChange'
+> & { initialSource?: string | null }) {
   const [legView, setLegView] = React.useState<LegViewKey>('tree');
-  return <FlowTables {...props} legView={legView} onLegViewChange={setLegView} />;
+  const [source, setSource] = React.useState<string | null>(initialSource);
+  return (
+    <FlowTables
+      {...props}
+      legView={legView}
+      onLegViewChange={setLegView}
+      lineageSource={source}
+      onLineageSourceChange={setSource}
+    />
+  );
 }
+
+/**
+ * The natural key of `e1` in the `ENTITIES` fixture below — the source the Lineage-tab
+ * cases trace.
+ *
+ * The reachability read is `fanin(entity, source)` with `source` REQUIRED
+ * (`docs/data_lineage_alg.md`'s `## API`), so a case asserting an answer must name one
+ * or the tab correctly asks nothing at all. It also has to be a member of the summary's
+ * `sources` (see `mockFetch`'s `sources` default), or `resolveSourceChoice` reports it
+ * `'stale'` and still asks nothing.
+ */
+const SOURCE_E1 = 'agent:(p,a)';
 
 /**
  * Deadline for awaiting the lazily-imported Execution Flow graph past its Suspense
@@ -96,6 +129,11 @@ function mockFetch(over: { sources?: string[]; fanin?: unknown; fanout?: unknown
     // entity-evidence branch is what the selection's fetch uses, the mis-ordering
     // showed up as the ENTITY SELECTION silently failing rather than as a lineage bug.
     if (url.includes('/data-lineage-graph')) {
+      // A SOURCE-LESS REQUEST IS A 400 ON THE REAL SERVER, so it is one here. Answering
+      // it with data instead would let a regression that dropped the required `source`
+      // parameter keep every one of these tests green while shipping a tab that 400s on
+      // every read.
+      if (!/[?&]source=/.test(url)) return { ok: false, status: 400, json: async () => ({}) };
       const wantFanin = url.includes('direction=fanin');
       const chosen = wantFanin ? over.fanin : over.fanout;
       return {
@@ -109,7 +147,10 @@ function mockFetch(over: { sources?: string[]; fanin?: unknown; fanout?: unknown
         ok: true,
         status: 200,
         json: async () => ({
-          sources: over.sources ?? [],
+          // Defaults to OFFERING `SOURCE_E1`, because this array is now also the
+          // choosable source list: a summary that did not contain the source a case
+          // traces would make that case silently exercise the `'stale'` state.
+          sources: over.sources ?? [SOURCE_E1],
           destinations: [],
           status: 'complete',
           stopped_at_seq: null,
@@ -644,16 +685,29 @@ describe('FlowTables', () => {
     // The first of the three absence states. With no entity selected the graph is
     // drawn at full strength and asserts nothing about anyone's sources — an
     // instruction, not a verdict.
+    //
+    // `initialSource` IS SUPPLIED, and that is the change: the walk is
+    // `fanin(entity, source)`, so a chosen source is now the other required half of the
+    // question and this case is specifically about the ENTITY half being missing.
+    // Without one, the tab correctly shows "choose a data source" instead (asserted in
+    // its own case below), and this test would be checking the wrong prompt.
     mockFetch();
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialSource={SOURCE_E1}
+      />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 
+    // WORDING CHANGED faithfully: the prompt names the source, because the answer it
+    // promises is source-relative.
     expect(
-      screen.getByText(/Select an entity to trace its data in and out/i),
+      screen.getByText(/Select an entity to trace this source’s data in and out/i),
     ).toBeInTheDocument();
     // Nothing is dimmed: "no question asked" must not be painted as "not part of the
     // answer" (see ExecutionFlowGraph's HighlightRole on why `'none'` and `'dimmed'`
@@ -707,7 +761,13 @@ describe('FlowTables', () => {
       },
     });
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        // A chosen source is now required before the tab asks anything (`fanin(entity, source)`).
+        initialSource={SOURCE_E1}
+      />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
@@ -771,7 +831,13 @@ describe('FlowTables', () => {
       },
     });
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        // A chosen source is required before the tab asks anything (`fanin(entity, source)`).
+        initialSource={SOURCE_E1}
+      />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
@@ -807,7 +873,13 @@ describe('FlowTables', () => {
       },
     });
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        // A chosen source is required before the tab asks anything (`fanin(entity, source)`).
+        initialSource={SOURCE_E1}
+      />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
@@ -845,12 +917,32 @@ describe('FlowTables', () => {
     expect(screen.getByRole('group', { name: /Lineage graph legend/i })).toBeInTheDocument();
   });
 
-  it('reports a failed lineage read as UNKNOWN, not as an absence', async () => {
-    // The fourth, separate fact. Nothing was retrieved, so the empty highlight below
-    // it means nothing at all — and must not be allowed to read as "no sources".
+  it('reports a failed SOURCES read as UNKNOWN, not as an absence, and asks nothing further', async () => {
+    // THIS TEST WAS SPLIT IN TWO, and the split is a consequence of the new contract
+    // rather than a weakening. It used to assert that a wholly-broken lineage stack
+    // produced BOTH the "sources unknown" notice AND each direction's failure notice.
+    // The second half is no longer reachable from this fixture, and correctly so: the
+    // reachability read requires a `source`, and the only authority on which sources
+    // this trace has is the summary — which failed here. With no roll-up to confirm the
+    // requested source against, `resolveSourceChoice` cannot make the request, so there
+    // is no directional failure to report.
+    //
+    // Asking anyway was considered and REJECTED: the request would very likely 400, and
+    // the reader would then be shown "upstream lineage could not be loaded" — pointing
+    // at the wrong failure entirely, when what actually broke is the sources read the
+    // notice above already names. One failure, one notice.
+    //
+    // The per-direction failure notices are still asserted, in the next case, against a
+    // GOOD summary and broken directional reads — which is the situation they actually
+    // describe.
     mockFetchWithLineageError();
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialSource={SOURCE_E1}
+      />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
     await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
@@ -864,7 +956,46 @@ describe('FlowTables', () => {
 
     await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
 
-    // …and so is each DIRECTION's failure, separately from it.
+    // No reachability request was made at all — see the note above.
+    const urls = () => (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(urls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
+    // …and none of the four per-direction states is claimed, because none was asked.
+    expect(screen.queryByText(/not yet computed/i)).toBeNull();
+    expect(screen.queryByText(/derived, not missing/i)).toBeNull();
+    expect(screen.queryByText(/Upstream lineage could not be loaded/i)).toBeNull();
+    // The "no sources" wording is emphatically NOT used: the read failed, so which
+    // sources exist is unknown rather than none.
+    expect(screen.queryByText(/No data sources attributed/i)).toBeNull();
+  });
+
+  it('reports each DIRECTION’s own failed read as unknown, separately from the sources', async () => {
+    // The other half of the split above: the sources read SUCCEEDED (so a source is
+    // choosable and the question is askable) and the two directional reads failed. This
+    // is the situation the per-direction failure notices actually describe, and the
+    // reason each direction keeps its own error flag — "we could not ask downstream"
+    // must not look like "we know nothing at all".
+    mockFetch();
+    // Both directions fail, on top of the otherwise-healthy fixture.
+    const base = fetch as ReturnType<typeof vi.fn>;
+    const inner = base.getMockImplementation()!;
+    base.mockImplementation(async (url: string) => {
+      if (url.includes('/data-lineage-graph'))
+        return { ok: false, status: 500, json: async () => ({ detail: 'boom' }) };
+      return inner(url);
+    });
+    renderWithProviders(
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialSource={SOURCE_E1}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+
     await waitFor(() =>
       expect(screen.getByText(/Upstream lineage could not be loaded/i)).toBeInTheDocument(),
     );
@@ -872,23 +1003,38 @@ describe('FlowTables', () => {
     // Not the pending wording, and not the derived-empty verdict.
     expect(screen.queryByText(/not yet computed/i)).toBeNull();
     expect(screen.queryByText(/derived, not missing/i)).toBeNull();
+    // The sources read was fine, so its own notice is the count — not the failure.
+    expect(screen.queryByText(/data sources could not be loaded/i)).toBeNull();
   });
 
-  it('adds exactly the SUMMARY read on open, and the two directions only on selection', async () => {
-    // THIS ASSERTION CHANGED, and the change is faithful rather than a weakening: the
-    // previous version claimed the tab "adds no new resource read", which was true when
-    // it composed its answer from the per-leg map. It now renders the SERVED
-    // reachability reads (ADR-0028 D14/D15), so it genuinely does fetch more — and
-    // pinning the old claim would mean pinning a design that no longer exists. What is
-    // worth pinning instead is the SHAPE of the new reads, which is a real decision:
+  it('adds exactly the SUMMARY read on open, and the two directions only once BOTH halves are supplied', async () => {
+    // THIS ASSERTION CHANGED TWICE, and both changes are faithful rather than
+    // weakenings.
+    //
+    // FIRST it claimed the tab "adds no new resource read", which was true when it
+    // composed its answer from the per-leg map and stopped being true when it started
+    // rendering the SERVED reachability reads (ADR-0028 D14/D15).
+    //
+    // NOW the gate has a second condition. `source` became REQUIRED
+    // (docs/data_lineage_alg.md's `## API`: `fanin(entity, source)`), so an entity
+    // selection is no longer a complete question and the previous version of this
+    // case — select an entity, expect two requests — would be asserting a request the
+    // server refuses with a 400. What is pinned instead:
     //
     //   - the trace-level SUMMARY is ungated, because the trace's data sources are a
-    //     standing fact that must paint on first open;
-    //   - the two DIRECTIONS are gated on a selection, because with nothing selected
-    //     there is no question to ask — an ungated pair would fire two requests per
-    //     trace for an answer nobody asked for.
+    //     standing fact that must paint on first open AND are the picker's only source
+    //     of options;
+    //   - the two DIRECTIONS need BOTH a selection and a chosen source. Either missing
+    //     → no request, because an unavoidable 400 on first paint is not a loading
+    //     state.
+    //
+    // The whole gesture is driven through the real UI — click the tab, pick a source in
+    // the picker, click an entity — so this is also the end-to-end proof that the
+    // control writes the value the reads then carry.
     mockFetch();
     renderWithProviders(
+      // No `initialSource`: the honest first-open state, since nothing may be chosen on
+      // the reader's behalf.
       <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
@@ -902,21 +1048,104 @@ describe('FlowTables', () => {
     await waitFor(() =>
       expect(urls().some((u) => u.includes('/data-lineage-summary'))).toBe(true),
     );
-    // NOT yet asked: nothing is selected.
+    // NOT yet asked: neither half of the question is supplied.
+    expect(urls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
+    // The tab says which half it wants first.
+    expect(screen.getByText(/Choose a data source to trace/i)).toBeInTheDocument();
+
+    // ONE half: an entity, still no source. Deliberately in this order, because it is
+    // the order that would have fired a 400 under the old gate.
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
     expect(urls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
 
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    // THE OTHER HALF, through the real control: open the picker and choose the source.
+    // `fireEvent`, not `userEvent`, on the option — this file's rule for anything inside
+    // the topology surface's subtree (see the graph cases), and harmless here.
+    fireEvent.click(screen.getByRole('button', { name: /Tracing data source/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /agent-a/ }));
 
     // Both directions, because `direction` is required and single-valued on the wire —
-    // "both" is necessarily two requests.
+    // "both" is necessarily two requests — and both now carrying the chosen `source`.
+    const sourceParam = new URLSearchParams({ source: SOURCE_E1 }).toString();
     await waitFor(() =>
-      expect(urls().some((u) => u.includes('direction=fanin'))).toBe(true),
+      expect(urls().some((u) => u.includes('direction=fanin') && u.includes(sourceParam))).toBe(
+        true,
+      ),
     );
-    expect(urls().some((u) => u.includes('direction=fanout'))).toBe(true);
+    expect(
+      urls().some((u) => u.includes('direction=fanout') && u.includes(sourceParam)),
+    ).toBe(true);
     // …and both scoped to the entity the reader actually selected.
     expect(
       urls().some((u) => u.includes('/entities/e2/data-lineage-graph') && u.includes('direction=fanin')),
     ).toBe(true);
+  });
+
+  it('says a ZERO-SOURCE trace has nothing to trace, with no picker and no read', async () => {
+    // A real state of its own — nothing derived to trace — and kept apart from "still
+    // loading" and "the read failed", which are the two it is easiest to conflate with.
+    // No picker is drawn either: a dropdown over an empty list is a control that looks
+    // broken.
+    mockFetch({ sources: [] });
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+
+    await waitFor(() =>
+      expect(screen.getByText(/No data sources attributed in this trace yet/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/nothing to trace/i)).toBeInTheDocument();
+    // Distinct from a failed read and from a load, in words.
+    expect(screen.getByText(/neither a failed read nor a pending one/i)).toBeInTheDocument();
+    expect(screen.queryByText(/data sources could not be loaded/i)).toBeNull();
+    // No control, and no instruction to use one — an instruction to choose from nothing
+    // would be a dead end.
+    expect(screen.queryByRole('button', { name: /Tracing data source/i })).toBeNull();
+    expect(screen.queryByText(/Choose a data source to trace/i)).toBeNull();
+
+    // Selecting an entity still asks nothing, because there is no source to ask about.
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
+    const urls = () => (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(urls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
+  });
+
+  it('restores a bookmarked ?src and asks with it, without the reader touching the picker', async () => {
+    // The reason the choice went into the URL at all: a reload or a shared link has to
+    // restore the whole reading of the trace, not just the tab. Modelled the way the page
+    // supplies it — a controlled prop seeded from `?src`.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialSource={SOURCE_E1}
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+
+    // The restored choice is VISIBLE on the closed control — a reader arriving by link
+    // must be able to see which source the highlight is about.
+    expect(await screen.findByRole('button', { name: /Tracing data source/i })).toHaveTextContent(
+      'agent-a',
+    );
+    // …and no "choose a source" prompt, because one is chosen.
+    expect(screen.queryByText(/Choose a data source to trace/i)).toBeNull();
+
+    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    const urls = () => (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    await waitFor(() =>
+      expect(
+        urls().some((u) => u.includes(new URLSearchParams({ source: SOURCE_E1 }).toString())),
+      ).toBe(true),
+    );
   });
 
   it('renders the Lineage graph inside the detail gutter so the panel never covers it', async () => {

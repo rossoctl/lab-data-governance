@@ -318,6 +318,8 @@ function nodeData(id: string): {
   highlight: string;
   lineage: {
     isDataSource: boolean;
+    /** The ONE source being traced — a refinement of `isDataSource`, never a substitute. */
+    isChosenSource: boolean;
     isUpstream: boolean;
     isDownstream: boolean;
     isFrontier: boolean;
@@ -2076,6 +2078,30 @@ function mkTraversed(
 }
 
 /**
+ * The natural key of `e1` in the `ENTITIES` fixture, and the DEFAULT traced source
+ * for every case below that has an answer to assert.
+ *
+ * A default in the harness rather than a per-case argument, because `source` is now
+ * REQUIRED by the read (`fanin(entity, source)` — `docs/data_lineage_alg.md`'s
+ * `## API`): a case that omitted it would be exercising the no-source-chosen state by
+ * accident rather than the answer it means to assert. The cases that DO mean to
+ * exercise the unchosen state pass `lineageSource: null` explicitly.
+ *
+ * Note this also has to be a member of the summary's `sources`, or
+ * `resolveSourceChoice` reports it `'stale'` and asks nothing — which is why
+ * `renderLineage` defaults the summary to contain it (see there).
+ */
+const SOURCE_E1 = 'agent:(p,a)';
+
+/** A summary whose `sources` contains {@link SOURCE_E1}, so a choice can resolve. */
+const SUMMARY_WITH_SOURCE: WireLineageSummary = {
+  sources: [SOURCE_E1],
+  destinations: [],
+  status: 'complete',
+  stopped_at_seq: null,
+};
+
+/**
  * Stub the four reads the Lineage tab makes: entities, interactions, the
  * sources/destinations summary and the two directions of reachability.
  *
@@ -2083,6 +2109,12 @@ function mkTraversed(
  * parameter is REQUIRED and single-valued on the wire (ADR-0028 D14) — which is the
  * whole reason "both directions" is two requests. A test that stubs only one and
  * lets the other 404 would be testing the failed-read path by accident.
+ *
+ * THE `source` PARAMETER IS ASSERTED, NOT MERELY TOLERATED. It is equally required
+ * (`docs/data_lineage_alg.md`'s `## API`), so a request that arrives without one is
+ * answered with a FAILURE here rather than with data — mirroring the server's 400.
+ * Without that, a regression that dropped the parameter would still see green tests
+ * while shipping a tab that 400s on every read.
  *
  * `null` for any of them means "make that read fail", which is how the fourth state
  * (a failed read, distinct from the server's three) is exercised.
@@ -2104,6 +2136,9 @@ function mockLineageApi(opts: {
 
   (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
     if (url.includes('/data-lineage-graph')) {
+      // A source-less reachability request is a 400 on the real server, so it is a
+      // failure here too — see this function's note.
+      if (!/[?&]source=/.test(url)) return { ok: false, status: 400, json: async () => ({}) };
       // The direction is read off the query string, exactly as the server requires it.
       const wantFanin = url.includes('direction=fanin');
       const chosen = wantFanin ? opts.fanin : opts.fanout;
@@ -2126,6 +2161,13 @@ function mockLineageApi(opts: {
 function renderLineage(
   over: {
     selectedEntityId?: string | null;
+    /**
+     * The traced source (`?src`). Defaults to {@link SOURCE_E1} — a real member of the
+     * default summary — so a case asserting an ANSWER gets one. Pass `null` explicitly
+     * for the no-source-chosen state.
+     */
+    lineageSource?: string | null;
+    onLineageSourceChange?: (source: string) => void;
     selectedInteractionId?: string | null;
     onSelectInteraction?: (id: string | null) => void;
     onSelectEntity?: (id: string) => void;
@@ -2142,10 +2184,14 @@ function renderLineage(
   const interactions = over.interactions ?? [
     mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
   ];
+  // The summary defaults to one that CONTAINS the default source: with the reads gated
+  // on `resolveSourceChoice`, a summary that did not offer the chosen source would make
+  // every answer-asserting case silently exercise the `'stale'` state instead.
+  const summary = 'summary' in over ? over.summary : SUMMARY_WITH_SOURCE;
   mockLineageApi({
     entities,
     interactions,
-    summary: over.summary,
+    summary,
     fanin: over.fanin,
     fanout: over.fanout,
   });
@@ -2157,6 +2203,8 @@ function renderLineage(
       status={over.status ?? 'complete'}
       isLineageError={over.isLineageError ?? false}
       selectedEntityId={over.selectedEntityId ?? null}
+      lineageSource={'lineageSource' in over ? over.lineageSource : SOURCE_E1}
+      onLineageSourceChange={over.onLineageSourceChange}
       selectedInteractionId={over.selectedInteractionId ?? null}
       onSelectInteraction={over.onSelectInteraction}
       onSelectEntity={over.onSelectEntity}
@@ -2378,13 +2426,358 @@ describe('LineageGraph', () => {
     expect(screen.queryByText(/could not be loaded/i)).toBeNull();
   });
 
+  // --- THE SOURCE CHOICE: the second required half of the question.
+  //
+  // The read is `fanin(entity, source)` / `fanout(entity, source)` with `source`
+  // REQUIRED (docs/data_lineage_alg.md's `## API`), so an entity selection alone is no
+  // longer a complete question. These cases pin the four states the choice can be in,
+  // that they stay apart from the states DirectionNotice words, and — the one a
+  // "nothing rendered" assertion could not catch — that NO REQUEST is fired without a
+  // source.
+
+  /** Every URL `fetch` was called with, for the "was the read fired?" assertions. */
+  const fetchedUrls = () =>
+    (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+
+  /**
+   * The `source=…` query fragment as `apiPath` would actually write it.
+   *
+   * Built with `URLSearchParams` because that is what `apiPath` uses, and the two common
+   * encoders disagree on precisely the characters a qualified natural key is made of:
+   * `encodeURIComponent` leaves `(`, `)`, `,` and `!` literal while `URLSearchParams`
+   * percent-escapes them. Asserting against the wrong one fails for an encoding reason
+   * that says nothing about whether the parameter was sent.
+   */
+  const sourceParam = (source: string) => new URLSearchParams({ source }).toString();
+
+  it('fires NO reachability read at all while no source is chosen', async () => {
+    // ASSERTED ON THE REQUESTS, not on the absence of a highlight — the distinction the
+    // requirement insists on. An ungated pair would 400 on every first paint (the
+    // parameter is required), and the tab would then have to render that as the
+    // failed-read state: telling the reader to retry something that cannot succeed
+    // until they choose. So the gate is `useLineageGraph`'s `enabled`, and this is what
+    // proves it holds.
+    renderLineage({ selectedEntityId: 'e2', lineageSource: null });
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+    // The SUMMARY is ungated — the trace's sources are a standing fact and the picker's
+    // options come from it, so it must have been read.
+    await waitFor(() =>
+      expect(fetchedUrls().some((u) => u.includes('/data-lineage-summary'))).toBe(true),
+    );
+
+    // …and the two directional reads were NOT made, despite an entity being selected.
+    expect(fetchedUrls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
+  });
+
+  it('sends the chosen source on BOTH directional reads', async () => {
+    renderLineage({ selectedEntityId: 'e2', lineageSource: SOURCE_E1, fanin: FANIN_E1 });
+    await waitFor(() =>
+      expect(fetchedUrls().some((u) => u.includes('direction=fanin'))).toBe(true),
+    );
+
+    // One source for both halves of one question: fan-in and fan-out about DIFFERENT
+    // sources would be a graph whose two halves were about different things.
+    //
+    // Encoded through `URLSearchParams`, not `encodeURIComponent`: that is what
+    // `apiPath` uses, and the two DIFFER on exactly the characters a qualified natural
+    // key is full of (`(`, `)`, `,` are left literal by one and escaped by the other).
+    // A hand-rolled expectation would fail for an encoding reason that has nothing to
+    // do with whether the parameter was sent.
+    const encoded = sourceParam(SOURCE_E1);
+    expect(
+      fetchedUrls().some((u) => u.includes('direction=fanin') && u.includes(encoded)),
+    ).toBe(true);
+    expect(
+      fetchedUrls().some((u) => u.includes('direction=fanout') && u.includes(encoded)),
+    ).toBe(true);
+  });
+
+  it('REFETCHES on a source change rather than serving the previous source’s answer', async () => {
+    // The cache-key case, and the worst available failure if it regresses: the same
+    // entity and direction have a DIFFERENT answer per source, so a query key without
+    // `source` would paint source A's graph under source B's label. Asserted as a real
+    // second request carrying the new source.
+    const twoSources: WireLineageSummary = {
+      sources: [SOURCE_E1, 'llm:api.example.com/gpt'],
+      destinations: [],
+      status: 'complete',
+      stopped_at_seq: null,
+    };
+    const { rerender } = renderLineage({
+      selectedEntityId: 'e2',
+      lineageSource: SOURCE_E1,
+      summary: twoSources,
+      fanin: FANIN_E1,
+    });
+    await waitFor(() =>
+      expect(fetchedUrls().some((u) => u.includes(sourceParam(SOURCE_E1)))).toBe(true),
+    );
+
+    rerender(
+      <LineageGraph
+        traceId="T1"
+        entities={ENTITIES}
+        interactions={[mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]}
+        status="complete"
+        isLineageError={false}
+        selectedEntityId="e2"
+        lineageSource="llm:api.example.com/gpt"
+      />,
+    );
+
+    // A NEW request for the new source — not a cache hit on the old one.
+    await waitFor(() =>
+      expect(
+        fetchedUrls().some(
+          (u) =>
+            u.includes('direction=fanin') && u.includes(sourceParam('llm:api.example.com/gpt')),
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it('says "choose a data source" as an INSTRUCTION, distinct from every absence state', async () => {
+    // Not an empty result, and not one of the four states DirectionNotice words. With no
+    // source there is no question, so none of those four can even apply — and the
+    // entity prompt is withheld too, so the reader is asked for one missing half at a
+    // time rather than shown two simultaneous prompts.
+    renderLineage({ selectedEntityId: 'e2', lineageSource: null });
+    await waitFor(() =>
+      expect(screen.getByText(/Choose a data source to trace/i)).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByText(/Upstream lineage could not be loaded/i)).toBeNull();
+    expect(screen.queryByText(/not yet computed/i)).toBeNull();
+    expect(screen.queryByText(/derived, not missing/i)).toBeNull();
+    expect(screen.queryByText(/Nothing upstream of this entity/i)).toBeNull();
+    expect(screen.queryByText(/Select an entity to trace/i)).toBeNull();
+  });
+
+  it('dims nothing while no source is chosen, even with an entity selected', async () => {
+    // The same "no question asked is not an empty answer" rule as the no-selection case,
+    // now reachable from the OTHER missing half. A selected entity with no source must
+    // not dim the graph: that would paint "not part of the answer" over a question
+    // nobody asked.
+    renderLineage({ selectedEntityId: 'e2', lineageSource: null });
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(document.querySelector('.dg-graph-edge--dimmed')).toBeNull();
+    expect(document.querySelector('.dg-graph-edge--carrier')).toBeNull();
+    expect(nodeData('e2').highlight).toBe('none');
+  });
+
+  it('offers the trace’s sources in the picker, labelled friendly with the key reachable', async () => {
+    // `lineageLabel`'s contract, reused rather than reimplemented: the friendly
+    // `display_name` is the label and the QUALIFIED natural key stays reachable, because
+    // two agents' tools can share a display name and a governance surface must not make
+    // two distinct sources look identical.
+    renderLineage({ selectedEntityId: null, lineageSource: null, summary: SUMMARY_WITH_SOURCE });
+    const toggle = await screen.findByRole('button', { name: /Tracing data source/i });
+    // Nothing chosen → the toggle says so rather than naming an arbitrary source.
+    expect(toggle).toHaveTextContent(/Choose a data source/i);
+
+    fireEvent.click(toggle);
+    // e1's display_name in the ENTITIES fixture. The option is named by it…
+    const option = await screen.findByRole('option', { name: /agent-a/ });
+    // …and shows the QUALIFIED key as its description, so two same-named sources are
+    // visibly two options rather than one apparently-duplicated row.
+    //
+    // Asserted on the DESCRIPTION rather than on a `title` attribute: PF's
+    // `SelectOption` is a `MenuItem` and does not forward `title` to the DOM (verified —
+    // the attribute is absent), so a `toHaveAttribute('title', …)` assertion would fail
+    // for a PF-internals reason rather than tell us anything. The description is what
+    // actually reaches a reader's eyes, which is the honest thing to pin.
+    expect(option).toHaveTextContent(SOURCE_E1);
+  });
+
+  it('makes the chosen source VISIBLE on the closed control, not merely implicit', async () => {
+    // The governance requirement: an unlabelled highlight is a claim without a subject.
+    // A reader looking at a lit graph must be able to read WHICH source's flow it is
+    // without opening a menu.
+    renderLineage({ selectedEntityId: 'e2', lineageSource: SOURCE_E1, fanin: FANIN_E1 });
+    const toggle = await screen.findByRole('button', { name: /Tracing data source/i });
+
+    expect(toggle).toHaveTextContent('agent-a');
+    // The qualified key on the toggle too, since the friendly label alone can name two
+    // different sources identically.
+    expect(toggle).toHaveAttribute('title', SOURCE_E1);
+  });
+
+  it('reports the chosen source through onLineageSourceChange, so the parent owns the URL', async () => {
+    // One owner of `?src`, matching `?eid` / `?legs`: the control reports the choice and
+    // the page mirrors it. This component never touches `useSearchParams`.
+    const onLineageSourceChange = vi.fn();
+    renderLineage({
+      selectedEntityId: null,
+      lineageSource: null,
+      summary: SUMMARY_WITH_SOURCE,
+      onLineageSourceChange,
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /Tracing data source/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /agent-a/ }));
+
+    // The natural KEY, not the display name — that is what the endpoint's `source`
+    // parameter takes.
+    expect(onLineageSourceChange).toHaveBeenCalledWith(SOURCE_E1);
+  });
+
+  it('names a STALE ?src as not one of this trace’s sources, and asks nothing', async () => {
+    // A bookmark from another trace, or a source that has dropped out of this trace's
+    // roll-up. Handled the way `parseLegViewKey` handles a bad `?legs` — coerced, never
+    // thrown — but DISCLOSED rather than silently blanked, so the reader learns why
+    // their link did not restore instead of seeing a bare prompt.
+    renderLineage({
+      selectedEntityId: 'e2',
+      lineageSource: 'svc:(elsewhere,from-another-trace)',
+      summary: SUMMARY_WITH_SOURCE,
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText(/not one of this trace’s sources/i),
+      ).toBeInTheDocument(),
+    );
+
+    // The requested value is named, so the reader can recognise their own link.
+    expect(screen.getByText(/svc:\(elsewhere,from-another-trace\)/)).toBeInTheDocument();
+    // NOTHING was asked of the server, because the source is unanswerable here.
+    expect(fetchedUrls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
+    // Not confused with "no sources": this trace HAS one, it is just not that one.
+    expect(screen.queryByText(/No data sources attributed/i)).toBeNull();
+  });
+
+  it('says a ZERO-SOURCE trace has nothing to trace, exactly once and not as a failure', async () => {
+    // A real state of its own — nothing derived to trace — and distinct from loading and
+    // from a failed read. Stated ONCE: the picker renders nothing in this state and the
+    // roll-up alert speaks for both consequences (nothing marked, nothing to trace), so
+    // two alerts cannot word one fact two ways.
+    renderLineage({
+      selectedEntityId: 'e2',
+      lineageSource: null,
+      summary: { sources: [], destinations: [], status: 'complete', stopped_at_seq: null },
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/No data sources attributed in this trace yet/i)).toBeInTheDocument(),
+    );
+
+    expect(screen.getByText(/nothing to trace/i)).toBeInTheDocument();
+    expect(screen.getByText(/neither a failed read nor a pending one/i)).toBeInTheDocument();
+    // No picker to operate, and no "choose a source" instruction — there is nothing to
+    // choose, so an instruction to choose would be a dead end.
+    expect(screen.queryByRole('button', { name: /Tracing data source/i })).toBeNull();
+    expect(screen.queryByText(/Choose a data source to trace/i)).toBeNull();
+    // Emphatically not the failed-read or loading wording.
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull();
+    expect(screen.queryByText(/Loading the trace’s data sources/i)).toBeNull();
+    // And nothing was asked.
+    expect(fetchedUrls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
+  });
+
+  it('keeps a FAILED summary read distinct from a zero-source trace, and asks nothing', async () => {
+    // The read failed, so which sources exist is UNKNOWN — not none. That means there is
+    // also nothing choosable, but for a completely different reason, and the two must not
+    // be worded alike.
+    renderLineage({ selectedEntityId: 'e2', lineageSource: SOURCE_E1, summary: null });
+    await waitFor(() =>
+      expect(screen.getByText(/data sources could not be loaded/i)).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByText(/No data sources attributed/i)).toBeNull();
+    // No reachability read either: with no roll-up, the requested source cannot be
+    // confirmed to belong to this trace, so nothing is asked. Deliberately NOT
+    // optimistic — asking anyway would risk a 400 the reader would read as a lineage
+    // failure rather than as the sources read failing.
+    expect(fetchedUrls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
+  });
+
+  // --- The CHOSEN source, distinguished from the trace's other source nodes.
+
+  it('marks the chosen source distinctly WITHOUT unmarking the trace’s other sources', async () => {
+    // Requirement 3: the source colouring is a standing fact and stays unconditional,
+    // while the chosen one is separately identifiable. Asserted on the MODEL `data` the
+    // classes are built from, because PF culls node content on a zero-size surface (see
+    // this block's header) — the visual double-ring is manually-verify-only.
+    renderLineage({
+      selectedEntityId: 'e2',
+      lineageSource: SOURCE_E1,
+      summary: {
+        // e1 and e3's keys, both sources; e1 is the one being traced.
+        sources: [SOURCE_E1, 'llm:api.example.com/gpt'],
+        destinations: [],
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+      fanin: FANIN_E1,
+    });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
+    await waitFor(() => expect(nodeData('e1').lineage.isChosenSource).toBe(true));
+
+    // BOTH facts on the chosen node: still one of the trace's sources, AND the subject.
+    expect(nodeData('e1').lineage.isDataSource).toBe(true);
+    // The OTHER source keeps its standing mark and is NOT claimed as the chosen one —
+    // which is the whole distinction.
+    expect(nodeData('e3').lineage).toMatchObject({ isDataSource: true, isChosenSource: false });
+  });
+
+  it('claims no chosen source node while none is chosen', async () => {
+    renderLineage({
+      selectedEntityId: null,
+      lineageSource: null,
+      summary: SUMMARY_WITH_SOURCE,
+    });
+    await waitFor(() => expect(nodeData('e1').lineage.isDataSource).toBe(true));
+
+    // Coloured as a source, not claimed as the traced one — nothing is being traced.
+    expect(nodeData('e1').lineage.isChosenSource).toBe(false);
+  });
+
+  it('explains the chosen-source treatment in the legend, and not by hue alone', async () => {
+    // A treatment with no key is a puzzle, and the legend entry is rendered
+    // unconditionally for the same reason the others are. The distinguishing channel is
+    // named in WORDS ("double ring"), so it is not carried by colour.
+    renderLineage({ selectedEntityId: null, lineageSource: null });
+    const legend = await screen.findByRole('group', { name: /Lineage graph legend/i });
+
+    expect(legend).toHaveTextContent(/Data source for this trace/i);
+    expect(legend).toHaveTextContent(/The source being traced/i);
+    expect(legend).toHaveTextContent(/double ring/i);
+  });
+
+  it('names the traced source in every direction verdict, so a verdict has a subject', async () => {
+    // "Nothing upstream of this entity" is a much stronger claim than the read supports:
+    // the walk is source-scoped, so each verdict is true OF ONE SOURCE. The
+    // qualification is appended to the state's own sentence, so the four states stay
+    // distinct and only their scope is corrected.
+    renderLineage({
+      selectedEntityId: 'e2',
+      lineageSource: SOURCE_E1,
+      fanin: mkReach('fanin', { state: 'no-adjacent' }),
+      fanout: FANOUT_E1,
+    });
+    // The `no-adjacent` verdict keeps its own title AND gains the scope.
+    await waitFor(() =>
+      expect(screen.getByText(/Nothing upstream of this entity in this trace/i)).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText(/scoped to the data source agent-a/i),
+    ).toBeInTheDocument();
+    // …and the derived verdict names it too, by the friendly label.
+    expect(screen.getByText(/went to for the data source agent-a/i)).toBeInTheDocument();
+  });
+
   // --- No selection: an instruction, and NOTHING claimed or dimmed.
 
   it('instructs the reader to select an entity when none is selected', async () => {
-    renderLineage({ selectedEntityId: null });
+    // WORDING CHANGED, and faithfully: the prompt now says "trace THIS SOURCE's data"
+    // because the walk is `fanin(entity, source)` and the answer is source-relative. It
+    // is also now gated on a source having been chosen — hence the explicit
+    // `lineageSource` here, without which the picker's own "choose a data source" alert
+    // is what is on screen instead (asserted separately below).
+    renderLineage({ selectedEntityId: null, lineageSource: SOURCE_E1 });
     await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
 
-    expect(screen.getByText(/Select an entity to trace its data in and out/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Select an entity to trace this source’s data in and out/i),
+    ).toBeInTheDocument();
     // Names BOTH controls, since nodes are click targets now.
     expect(screen.getByText(/Click a node on the graph, or a row in the Entities table/i)).toBeInTheDocument();
   });
@@ -2907,7 +3300,10 @@ describe('LineageGraph', () => {
 
     expect(screen.queryByText(/Upstream lineage/i)).toBeNull();
     expect(screen.queryByText(/Downstream lineage/i)).toBeNull();
-    expect(screen.getByText(/Select an entity to trace its data in and out/i)).toBeInTheDocument();
+    // Same faithful re-wording as the case above.
+    expect(
+      screen.getByText(/Select an entity to trace this source’s data in and out/i),
+    ).toBeInTheDocument();
   });
 
   // --- Trace-level coverage.
@@ -2979,7 +3375,10 @@ describe('LineageGraph', () => {
 
     await waitFor(() => expect(screen.getByText(/No execution flow/i)).toBeInTheDocument());
     expect(screen.queryByTestId('lineage-graph')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Select an entity to trace its data/i)).toBeNull();
+    expect(screen.queryByText(/Select an entity to trace/i)).toBeNull();
+    // …and no source picker either: with no graph there is nothing to trace a source
+    // through, so the whole notices strip is short-circuited by `graphReadState`.
+    expect(screen.queryByText(/Choose a data source to trace/i)).toBeNull();
   });
 
   // --- The drag lifecycle, unchanged by the refactor.
@@ -2995,10 +3394,13 @@ describe('LineageGraph', () => {
     moveNode('e1', 777, 555);
     await waitFor(() => expect(nodeAt('e1')).toEqual({ x: 777, y: 555 }));
 
-    // Select an entity — a new highlight, therefore a model push.
+    // Select an entity — a new highlight, therefore a model push. `lineageSource` is
+    // carried through both renders: the answer is source-relative now, so without it the
+    // rerender would have no question to ask and no highlight to survive.
     mockLineageApi({
       entities: ENTITIES,
       interactions: [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)],
+      summary: SUMMARY_WITH_SOURCE,
       fanin: FANIN_E1,
     });
     rerender(
@@ -3009,6 +3411,7 @@ describe('LineageGraph', () => {
         status="complete"
         isLineageError={false}
         selectedEntityId="e2"
+        lineageSource={SOURCE_E1}
       />,
     );
     await waitFor(() =>
@@ -3046,6 +3449,7 @@ describe('LineageGraph', () => {
         status="complete"
         isLineageError={false}
         selectedEntityId="e2"
+        lineageSource={SOURCE_E1}
         selectedInteractionId="i1"
       />,
     );
