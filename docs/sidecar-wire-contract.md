@@ -21,7 +21,13 @@ Principles (agreed 2026-07-21):
   is recoverable downstream; a confidently wrong one is not, because it is indistinguishable from a
   true one.
 - **Parsers reduce payloads.** `input.value`/`output.value` are semantic content produced by the
-  a2a/mcp/inference parser plugins, not raw bytes.
+  a2a/mcp/inference parser plugins, not raw bytes. Two documented heuristics live in this
+  reduction (payload enrichment only — interactions are never affected): the a2a parser falls
+  back to the *status message* text when a result carries no artifact, and the lineage plugin
+  suppresses A2A protocol events from `output.value` by matching event-kind substrings
+  (`status`, `artifact-update`, `working`, `canceled`). Both can mislabel unusual payloads;
+  since payload absence is contract-legal, the failure mode is a missing or imprecise
+  `output.value`, never a wrong interaction.
 - **Interactions are independent of payloads.** Every exchange the sidecar saw becomes a full
   interaction — kind, endpoints, timing, status — whether or not a body could be read (unparsed
   protocol, streamed response, `capture_io` off, or encrypted content). Payload columns are
@@ -44,8 +50,10 @@ Exchange duration = response.end − request.start (computed downstream). The re
 emitted at stream end **even when no response was produced** (client disconnect, upstream reset,
 plugin denial) — it then carries `lineage.outcome` (`ok` | `denied` | `error` | `abandoned`) and
 whatever status exists, so the row completes as failed instead of dangling. A lone request span
-therefore means exactly one thing: the sidecar itself died mid-exchange — rendered as in-flight,
-never a wrong pairing.
+therefore means one of exactly two things: the sidecar itself died mid-exchange, or the plugin
+recovered a panic while emitting the response span (WARN logged) — rendered as in-flight, never
+a wrong pairing. A response span whose `lineage.outcome` is somehow absent derives with
+`error=NULL` (honest unknown), never `false`.
 
 **Scope limit on `denied`:** the lineage plugin runs after the gate plugins, and the pipeline
 short-circuits on a request-phase denial — an exchange a gate rejects **before** the request span
@@ -72,6 +80,11 @@ follow-up, not current behavior.
   Malformed stamps fall through to the wire parent silently.
 - Forwarded traceparent (outbound only) is rewritten to name the request span as parent — the
   splice. Inbound requests are forwarded with headers untouched EXCEPT the tracestate stamp.
+  **Mode caveat:** in the deployed envoy-sidecar (ext_proc) mode the outbound listener forwards
+  no header mutation except Authorization, so the outbound rewrite is inert on the wire — the
+  mechanical cause of the by-design dangling wire parent on every stored trace. The rewrite is
+  live in proxy-sidecar mode. Making ext_proc outbound emit the SetHeaders diff is a named
+  follow-up (the inbound stamp already does).
 - **The trace-keyed map is gone (v1.3).** It answered from "the last inbound seen for this trace",
   which is correct only while exactly one inbound of that trace is in flight — a precondition it
   never checked and could not verify. Under same-trace concurrency it produced a real, exported,
@@ -99,7 +112,7 @@ Resource (unchanged): `service.name=authbridge`, `authbridge.component=lineage-t
 | `lineage.peer.host` | both | `weather-tool-mcp.team1.svc:8000` | Host/authority header when present |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched; `http` = none |
 | `lineage.parent.source` | request | `tracestate` \| `wire` | v1.3: which mechanism chose the request span's parent — the tracestate stamp (exact) or the wire traceparent. Inbound is always `wire`. `map` was a legal value in v1.2 only; stored spans predating v1.3 may still carry it. A fact for auditing attribution; the consumer derives nothing from it |
-| `http.method` | request | `POST` | standard OTel key |
+| `http.method` | request | `POST` | standard OTel key, emitted when the listener supplies the method. As of the 2026-08-02 upstream merge all three listeners do (reverse/forward proxy from `r.Method`, ext_proc from `:method`); spans stored before that merge lack it |
 | `url.path` | request | `/mcp` | standard OTel key |
 | `a2a.method`, `a2a.session_id` | request (a2a) | `message/send` | parsed facts |
 | `mcp.method`, `mcp.tool` | request (mcp) | `tools/call`, `get_weather` | tool name only for `tools/call` |

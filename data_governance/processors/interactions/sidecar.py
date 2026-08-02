@@ -81,6 +81,21 @@ def _coerce(value: Any) -> Any:
     return value
 
 
+def _require_self_id(span: Span) -> str:
+    """``lineage.self.id`` is contract-unconditional ("on: both", no caveat) and
+    the producer refuses to start without a resolved identity. A span missing it
+    is a producer contract violation; minting a shared ``agent:(unknown)``
+    entity here would silently weld every broken pod into one graph participant
+    — fail loudly instead ("no mechanism may guess")."""
+    self_id = _attr(span, "lineage.self.id")
+    if not self_id:
+        raise ValueError(
+            f"span {span.span_id}: lineage span without lineage.self.id "
+            "(contract-unconditional) — producer contract violation"
+        )
+    return str(self_id)
+
+
 def _peer_ip(span: Span) -> str:
     """The direct TCP caller's ip with the port stripped — the stable fold key
     for an anonymous inbound client. ``lineage.peer.addr`` is inbound-only
@@ -139,7 +154,12 @@ class _Row:
 
 def _mk_payload(content_kind: str | None, value: Any) -> _Payload | None:
     """Content-address one body. None when the body is absent OR the protocol
-    carries no semantic content kind — the row stays complete with a NULL hash."""
+    carries no semantic content kind — the row stays complete with a NULL hash.
+
+    Absence is judged on the RAW attribute, before ``_coerce``: a wire body
+    that decodes to JSON ``null`` still produces a payload row (content null,
+    hash of ``b"null"``) — a captured body must stay distinguishable from
+    ``capture_io`` being off."""
     if content_kind is None or value is None:
         return None
     content = _coerce(value)
@@ -159,8 +179,10 @@ def _outcome_error(resp: Span | None) -> bool | None:
     if outcome in ("denied", "error", "abandoned"):
         return True
     # No outcome attribute (e.g. an unparsed response): fall back to the span's
-    # own OTEL error projection, defaulting to not-errored.
-    return bool(resp.error) if resp.error is not None else False
+    # own OTEL error projection. When that too is absent, the honest answer is
+    # None — "we could not determine the outcome" must never be recorded as
+    # "it succeeded" on a governance column that can hold the unknown.
+    return bool(resp.error) if resp.error is not None else None
 
 
 def _callee(kinds: Kinds, req: Span, echo_self_id: str | None) -> _Entity:
@@ -168,11 +190,14 @@ def _callee(kinds: Kinds, req: Span, echo_self_id: str | None) -> _Entity:
     entry: this pod's self.id. Outbound: the callee's echoed self.id when the
     callee-side inbound exists, else peer.host."""
     if kinds.callee_kind == "llm":
+        # peer.host is contract-conditional ("when present") and inference.model
+        # comes from a parsed body that may be absent — (unknown) is the honest
+        # value for both, mirroring the sanctioned client:(unknown) case.
         host = str(_attr(req, "lineage.peer.host") or _UNKNOWN)
         model = str(_attr(req, "inference.model") or _UNKNOWN)
         return _Entity("llm", f"{host}/{model}")
     if _direction(req) == "inbound":
-        return _Entity(kinds.callee_kind, str(_attr(req, "lineage.self.id") or _UNKNOWN))
+        return _Entity(kinds.callee_kind, _require_self_id(req))
     ident = echo_self_id or str(_attr(req, "lineage.peer.host") or _UNKNOWN)
     return _Entity(kinds.callee_kind, ident)
 
@@ -185,7 +210,7 @@ def _caller(kinds: Kinds, req: Span) -> _Entity:
         if sub:
             return _Entity("user", str(sub))
         return _Entity("client", _peer_ip(req))
-    return _Entity("agent", str(_attr(req, "lineage.self.id") or _UNKNOWN))
+    return _Entity("agent", _require_self_id(req))
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +261,27 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
             continue  # not a sidecar lineage span
         role = _role(s)
         if role == "request":
+            # A request span with a garbled direction would silently fall out
+            # of BOTH anchor sets (neither outbound anchor nor inbound entry
+            # nor echo) — the exchange would simply not exist in the derived
+            # graph. The contract promises every exchange derives; a producer
+            # violation dies loudly here instead ("no mechanism may guess").
+            if _direction(s) not in ("inbound", "outbound"):
+                raise ValueError(
+                    f"span {s.span_id} (trace {trace_id}): lineage request span "
+                    f"with lineage.direction={_direction(s)!r}, want inbound|outbound"
+                )
             reqs[xid] = s
         elif role == "response":
             resps[xid] = s
+        else:
+            # Carries an exchange id — contractually a sidecar lineage span —
+            # but a role we don't know. Dropping it silently would hide a
+            # producer contract change; fail loudly instead.
+            raise ValueError(
+                f"span {s.span_id} (trace {trace_id}): lineage span with "
+                f"lineage.role={role!r}, want request|response"
+            )
 
     # Anchors: every outbound request, plus an inbound request with no ANCHOR
     # ancestor (the trace entry). Outbound requests are unconditionally anchors,
@@ -493,12 +536,14 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
         leg_type = (
             "response" if response_leg_span_of.get(span_id) == owner else None
         )
+        # Deliberately NO ON CONFLICT, matching the anchor insert above: the
+        # trace-scoped wipe plus one-row-per-span iteration make a conflict
+        # unreachable single-writer, so a conflict can only mean a concurrent
+        # writer — and the old DO UPDATE would have silently downgraded its
+        # anchor row to connector. Same invariant, same loud failure.
         tx.execute(
             "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, "
-            "role, leg_type) VALUES (%s, %s, %s, 'connector', %s) "
-            "ON CONFLICT (trace_id, span_id) DO UPDATE SET "
-            "interaction_id = EXCLUDED.interaction_id, role = EXCLUDED.role, "
-            "leg_type = EXCLUDED.leg_type",
+            "role, leg_type) VALUES (%s, %s, %s, 'connector', %s)",
             (_interaction_id(trace_id, owner), trace_id, span_id, leg_type),
         )
 

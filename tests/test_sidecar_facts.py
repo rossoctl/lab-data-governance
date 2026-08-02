@@ -106,3 +106,15 @@ def test_content_kind_parity_every_emitted_kind_is_projectable():
     assert CONTENT_KINDS  # non-empty
     for ck in CONTENT_KINDS:
         assert projection.is_projectable(ck), ck
+
+
+def test_missing_or_garbled_direction_raises():
+    """lineage.direction is contract-unconditional: classify never defaults it.
+
+    A fabricated "inbound" here would silently diverge from the derivation's
+    own _direction() on the same span (audit 2026-08-02, PY-3)."""
+    import pytest
+
+    for bad in ({}, _attrs("", "a2a"), _attrs("both", "a2a"), _attrs("Inbound ", "a2a")):
+        with pytest.raises(ValueError):
+            classify_attrs(bad)

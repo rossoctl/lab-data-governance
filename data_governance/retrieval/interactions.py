@@ -228,7 +228,13 @@ def _kinds_from_anchor_attrs(attrs: dict[str, Any] | None) -> InteractionKindsVi
     a = attrs or {}
     if "lineage.exchange.id" not in a or "lineage.direction" not in a:
         return None
-    kinds = classify_attrs(a)
+    try:
+        kinds = classify_attrs(a)
+    except ValueError:
+        # A present-but-invalid direction (one malformed stored span) must not
+        # poison the whole trace's read path with a 500 forever: the write path
+        # raises loudly on this; the read path renders an honest absence.
+        return None
     proto = str(a.get("lineage.protocol") or "http").lower()
     return InteractionKindsView(
         protocol=proto if proto in ("a2a", "mcp", "inference") else "http",
@@ -314,13 +320,17 @@ def get_interactions(trace_id: str) -> GetInteractionsResult:
         # Sidecar kinds, re-derived from the anchor spans' stored attributes
         # (one grouped scan). A streaming cross-service interaction can carry
         # two anchor rows; the first anchor bearing lineage facts wins — the
-        # guard makes any pick safe (non-sidecar anchors contribute nothing).
+        # guard makes any pick safe (non-sidecar anchors contribute nothing),
+        # and ORDER BY span_id makes the pick deterministic (without it, two
+        # fact-bearing anchors could report different kinds across identical
+        # requests).
         anchor_rows = tx.fetch_all(
             "SELECT isp.interaction_id::text, s.attributes "
             "FROM interaction_spans isp "
             "JOIN spans s "
             "  ON s.trace_id = isp.trace_id AND s.span_id = isp.span_id "
-            "WHERE isp.trace_id = %s AND isp.role = 'anchor'",
+            "WHERE isp.trace_id = %s AND isp.role = 'anchor' "
+            "ORDER BY isp.span_id",
             (trace_id,),
         )
         kinds_of: dict[str, InteractionKindsView] = {}

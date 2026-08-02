@@ -103,8 +103,8 @@ def _serialize_whole(content: Any) -> str:
 
 
 # The closed branch set, one per handled **Content kind**. Kinds absent here
-# (``unknown``, ``http_request_body``, ``http_response_body``, …) take the
-# whole-JSONB fallback until a branch is added — a code change, mirroring the
+# (``unknown``, ``agent_message``, ``http_request_body``, ``http_response_body``,
+# …) take the whole-JSONB fallback until a branch is added — a code change, mirroring the
 # Payload extraction rule. The ``agent_*`` pair is emitted by the two-span
 # sidecar derivation; its content-kind parity test asserts every kind it can
 # emit is present here.

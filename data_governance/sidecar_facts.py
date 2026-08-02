@@ -2,7 +2,7 @@
 
 One HTTP exchange through the AuthBridge sidecar emits TWO spans (request +
 response) joined by ``lineage.exchange.id``; the request span's attributes carry
-the classification facts (``docs/sidecar-wire-contract.md``, v1.1). This module
+the classification facts (``docs/sidecar-wire-contract.md``, v1.3). This module
 is the ONLY sidecar-vocabulary code: a static table over ``(direction,
 protocol[, mcp.method])`` yielding caller/callee entity kinds and
 request/response content kinds. It never reads a body: a bodyless exchange
@@ -94,11 +94,23 @@ def classify_attrs(attributes: dict[str, Any] | None) -> Kinds:
     didn't claim (SSE stream opens, session teardowns; live wire fact
     2026-07-26: those request spans carry no ``http.method`` at all).
     ``input.value`` is checked for *presence*, never read; with ``capture_io``
-    off every /mcp http exchange matches — acceptable, since the override only
-    re-labels content kinds and hides nothing at the data level.
+    off every /mcp http exchange matches. The override re-labels content kinds
+    only — nothing is dropped at the data level, though the UI does hide
+    lifecycle rows by default (with a visible "N hidden" count and reveal).
+
+    ``lineage.direction`` is contract-unconditional: a span without a valid
+    one raises rather than classifying — a fabricated default here would
+    silently diverge from the derivation's own ``_direction`` ("no mechanism
+    may guess", contract v1.3). Callers that may see non-sidecar spans guard
+    on attribute presence first (see retrieval's ``_kinds_from_anchor_attrs``).
     """
     a = attributes or {}
-    direction = str(a.get("lineage.direction") or "").lower() or "inbound"
+    direction = str(a.get("lineage.direction") or "").lower()
+    if direction not in ("inbound", "outbound"):
+        raise ValueError(
+            f"lineage.direction is {direction!r}, want inbound|outbound — "
+            "not a sidecar request span, or a producer contract violation"
+        )
     proto = str(a.get("lineage.protocol") or "http").lower()
     protocol = proto if proto in ("a2a", "mcp", "inference") else "http"
     caller_kind, callee_kind, req_ck, resp_ck = _KIND_TABLE[(direction, protocol)]

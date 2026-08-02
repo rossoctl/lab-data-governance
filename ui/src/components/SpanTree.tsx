@@ -113,6 +113,30 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
     onServiceFilterChange?.(services.every((s) => next.has(s)) ? null : Array.from(next).sort());
   };
 
+  // Spans the service filter removes from the tree — a deselected service
+  // prunes its whole SUBTREE, so descendants of other (still-selected)
+  // services vanish too. That must never be silent: the count renders next to
+  // the checkboxes, mirroring the flow view's "N hidden" affordance.
+  const hiddenByServiceFilter = useMemo(() => {
+    if (selectedServices === null) return 0;
+    const byKey = new Map(spans.map((s) => [spanKey(s.trace_id, s.span_id), s]));
+    const hiddenMemo = new Map<string, boolean>();
+    const isHidden = (s: Span): boolean => {
+      const k = spanKey(s.trace_id, s.span_id);
+      const memo = hiddenMemo.get(k);
+      if (memo !== undefined) return memo;
+      hiddenMemo.set(k, false); // cycle guard: a revisit on the walk counts as visible
+      let hidden = s.service_name != null && !selectedServices.has(s.service_name);
+      if (!hidden && s.parent_id) {
+        const parent = byKey.get(spanKey(s.trace_id, s.parent_id));
+        if (parent) hidden = isHidden(parent);
+      }
+      hiddenMemo.set(k, hidden);
+      return hidden;
+    };
+    return spans.filter(isHidden).length;
+  }, [spans, selectedServices]);
+
   // Fetch one page of a parent's children (keyset-paginated by seq, ADR-0001)
   // and append it. `cursor` is the max seq of the children already loaded, so
   // the next page continues past the last one. Marks the parent exhausted when
@@ -470,6 +494,12 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
               onChange={(_e, checked) => toggleService(svc, checked)}
             />
           ))}
+          {hiddenByServiceFilter > 0 && (
+            <span data-testid="svc-filter-hidden-count" style={{ color: '#888', fontSize: '0.85em' }}>
+              {hiddenByServiceFilter} span{hiddenByServiceFilter === 1 ? '' : 's'} hidden
+              (deselecting a service hides its whole subtree)
+            </span>
+          )}
         </div>
       )}
       <ul style={{ margin: 0, padding: 0 }}>{renderNode(root, 0, new Set())}</ul>

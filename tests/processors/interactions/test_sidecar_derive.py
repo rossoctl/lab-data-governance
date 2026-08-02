@@ -116,3 +116,60 @@ def test_interaction_id_is_trace_slash_exchange():
     assert _interaction_id(golden.TRACE, golden.A1).count("-") == 4  # a uuid
     # Deterministic: same inputs → same id.
     assert _interaction_id("t", "x") == _interaction_id("t", "x")
+
+
+# --- loud failures on producer contract violations (audit 2026-08-02) ------
+
+import pytest
+
+
+def test_unknown_lineage_role_raises():
+    """A span carrying an exchange id but an unknown role is contractually a
+    sidecar span the derivation doesn't understand — never silently skipped."""
+    spans = golden.build_spans()
+    spans[0].attributes["lineage.role"] = "heartbeat"
+    with pytest.raises(ValueError, match="lineage.role"):
+        plan_trace(golden.TRACE, spans)
+
+
+def test_garbled_direction_on_request_raises():
+    """A request span with an invalid direction would otherwise fall out of
+    every anchor set and the exchange would silently not derive."""
+    spans = golden.build_spans()
+    req = next(s for s in spans if s.attributes.get("lineage.role") == "request")
+    req.attributes["lineage.direction"] = "sideways"
+    with pytest.raises(ValueError, match="lineage.direction"):
+        plan_trace(golden.TRACE, spans)
+
+
+def test_missing_self_id_on_anchor_raises():
+    """lineage.self.id is contract-unconditional; minting agent:(unknown) would
+    weld every broken pod into one shared entity."""
+    spans = golden.build_spans()
+    outb = next(
+        s for s in spans
+        if s.attributes.get("lineage.role") == "request"
+        and s.attributes.get("lineage.direction") == "outbound"
+    )
+    del outb.attributes["lineage.self.id"]
+    with pytest.raises(ValueError, match="lineage.self.id"):
+        plan_trace(golden.TRACE, spans)
+
+
+def test_missing_outcome_and_error_projection_yields_none_not_false():
+    """"Could not determine the outcome" must never be recorded as "succeeded":
+    with no lineage.outcome and no OTEL error projection, error is None."""
+    import dataclasses
+
+    spans = golden.build_spans()
+    idx, resp = next(
+        (i, s) for i, s in enumerate(spans)
+        if s.attributes.get("lineage.role") == "response"
+        and s.attributes.get("lineage.exchange.id") in golden.ANCHORS
+    )
+    resp.attributes.pop("lineage.outcome", None)
+    spans[idx] = dataclasses.replace(resp, error=None)
+    xid = resp.attributes["lineage.exchange.id"]
+    plan = plan_trace(golden.TRACE, spans)
+    row = next(r for r in plan.want.values() if r.anchor_span_id == xid)
+    assert row.error is None
