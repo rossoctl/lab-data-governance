@@ -1,4 +1,4 @@
-# Sidecar wire contract — two-span lineage (v1.2)
+# Sidecar wire contract — two-span lineage (v1.3)
 
 The single source of truth for what the AuthBridge lineage plugin emits and what the
 P-interactions `sidecar` algorithm (ADR-0028) consumes. Fixes the attribute names that were left
@@ -11,9 +11,15 @@ Principles (agreed 2026-07-21):
   All vocabulary (hop kinds, entity kinds, caller/callee) lives in the consumer's `classify()`.
 - **Emit on sight.** Two spans per exchange, each emitted as soon as its half is seen. No open span
   held across the wait, no request body buffered for the exchange's lifetime.
-- **The splice stays.** One deterministic header rewrite on outbound plus the trace-keyed inbound
-  map — the standard mesh behavior that keeps the exported parent chain walkable. All fallbacks
-  (`agentCurrentInbound`, inbound seed-inject) are removed.
+- **The splice stays.** One deterministic header rewrite on outbound — the standard mesh behavior
+  that keeps the exported parent chain walkable. **All attribution fallbacks are removed**
+  (`agentCurrentInbound`, inbound seed-inject, and as of v1.3 the trace-keyed inbound map): an
+  outbound is attributed by the tracestate stamp or not at all.
+- **No mechanism may guess.** A mechanism whose correctness depends on a precondition it cannot
+  verify at runtime does not belong in the producer. When attribution is unknown the sidecar says
+  so (the wire parent, `lineage.parent.source=wire`) and the edge is visibly absent. A missing edge
+  is recoverable downstream; a confidently wrong one is not, because it is indistinguishable from a
+  true one.
 - **Parsers reduce payloads.** `input.value`/`output.value` are semantic content produced by the
   a2a/mcp/inference parser plugins, not raw bytes.
 - **Interactions are independent of payloads.** Every exchange the sidecar saw becomes a full
@@ -62,13 +68,22 @@ follow-up, not current behavior.
   concurrency was and stays 6/6). Foreign tracestate members are preserved; the stamp requires a
   valid wire traceparent (without one the shim roots a fresh trace and drops tracestate anyway).
 - Request span parent: inbound → the wire traceparent's parent; outbound → the tracestate stamp
-  (`kglin`, exact per-inbound attribution), else this pod's inbound request span for the same
-  trace_id (the trace-keyed map), else the wire parent. Malformed stamps fall through silently.
+  (`kglin`, exact per-inbound attribution), else the wire parent. There is no third option.
+  Malformed stamps fall through to the wire parent silently.
 - Forwarded traceparent (outbound only) is rewritten to name the request span as parent — the
   splice. Inbound requests are forwarded with headers untouched EXCEPT the tracestate stamp.
-- The map keeps entries 5 minutes past exchange finish (SSE-drop tolerance; documented, not
-  tuned). Since v1.2 it is fallback-only — un-stamped traffic (no traceparent on inbound, or an
-  app that strips tracestate) lands on it and keeps today's single-in-flight-per-trace envelope.
+- **The trace-keyed map is gone (v1.3).** It answered from "the last inbound seen for this trace",
+  which is correct only while exactly one inbound of that trace is in flight — a precondition it
+  never checked and could not verify. Under same-trace concurrency it produced a real, exported,
+  walkable parent that was simply untrue, and no signal that it had done so. Measured on the live
+  fleet before removal: **zero** spans were ever attributed via the map (`parent.source` census
+  2026-07-31: `tracestate` 138 outbound, `wire` 35 inbound, `map` 0), because every shimmed app
+  couriers the stamp.
+- **Consequence for un-stamped traffic** (an app with no propagate-only shim, or one that strips
+  `tracestate`): its outbound requests now carry `lineage.parent.source=wire`, whose span id is an
+  app-internal span this pipeline never exported. The exchange still derives into a complete,
+  first-class interaction — it simply has no parent anchor, so it renders as a trace entry rather
+  than a child. The trace fragments at that pod, visibly, instead of being welded with a guess.
 
 ## Attributes
 
@@ -83,7 +98,7 @@ Resource (unchanged): `service.name=authbridge`, `authbridge.component=lineage-t
 | `lineage.peer.addr` | both spans, **inbound only** | `10.244.2.5:47312` | the direct TCP caller's address. Not emitted on outbound — there the proxy only observes the app's own socket, which would mislabel the fact; outbound callee identity comes from `peer.host`. **Currently never produced in the deployed envoy-sidecar (ext_proc) mode**, where the remote address is unavailable to the plugin — anonymous inbound callers derive as `client:(unknown)`; a producer-side follow-up (ADR-0028) |
 | `lineage.peer.host` | both | `weather-tool-mcp.team1.svc:8000` | Host/authority header when present |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched; `http` = none |
-| `lineage.parent.source` | request | `tracestate` \| `map` \| `wire` | v1.2: which mechanism chose the request span's parent — the tracestate stamp (exact), the trace-keyed map (fallback), or the wire traceparent. Inbound is always `wire`. A fact for auditing attribution; the consumer derives nothing from it |
+| `lineage.parent.source` | request | `tracestate` \| `wire` | v1.3: which mechanism chose the request span's parent — the tracestate stamp (exact) or the wire traceparent. Inbound is always `wire`. `map` was a legal value in v1.2 only; stored spans predating v1.3 may still carry it. A fact for auditing attribution; the consumer derives nothing from it |
 | `http.method` | request | `POST` | standard OTel key |
 | `url.path` | request | `/mcp` | standard OTel key |
 | `a2a.method`, `a2a.session_id` | request (a2a) | `message/send` | parsed facts |
