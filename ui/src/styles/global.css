@@ -101,6 +101,12 @@
   --dg-tree-guide: #555;
   --dg-row-selected: #3a4a66;
   --dg-row-highlight: rgba(56, 139, 253, 0.28);
+  /* Translucent BLACK overlays, not palette colours — a drop shadow and a chip's
+     hairline scrim. Tokenised so they are governed like everything else rather than
+     restated inline, but kept separate from the palette above because they darken
+     whatever is behind them instead of naming a colour of their own. */
+  --dg-shadow-float: rgba(0, 0, 0, 0.5);
+  --dg-scrim-chip: rgba(0, 0, 0, 0.35);
   --dg-lineage-source: #ff6b4a;
   --dg-lineage-upstream: #7aa2f7;
   --dg-lineage-downstream: #b48ead;
@@ -227,7 +233,7 @@ body {
   background: var(--dg-surface-panel);
   border: 1px solid var(--dg-border);
   border-radius: 4px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 16px var(--dg-shadow-float);
   padding: 1rem;
   z-index: 100;
 }
@@ -450,14 +456,38 @@ body {
    full-contrast: the tag is an ordinal reference a reader looks up when they need
    it, not the primary content of the arrow, and at two tags per interaction a
    bright treatment turns a busy trace into noise. */
-.dg-graph-edge-tag text {
+/* EVERY RULE IN THIS BLOCK IS PREFIXED WITH ITS CO-LOCATED PF CLASS, and it is not
+   decoration — without it none of them render.
+
+   PF ships `.pf-topology__edge__tag > text { fill; stroke; stroke-width }` at
+   specificity (0,1,1). A bare `.dg-graph-edge-tag text` is ALSO (0,1,1), so the two
+   tie — and a tie is broken by source order, which we lose: PF's topology stylesheets
+   are imported inside ExecutionFlowGraph.tsx so they ride the lazy chunk, and that
+   chunk's CSS is injected AFTER index.css. Verified in the built output, not inferred.
+   Naming the PF class (which sits on the same element) makes ours (0,2,1) and settles
+   it on specificity, where source order cannot reach.
+
+   The same applies to the node-background and edge-link rules further down, for the
+   same reason. See also ExecutionFlowGraph.tsx's import-order note, which used to claim
+   the `.dg-*` graph rules were order-independent — true when there were three of them,
+   and the thing that let this class of bug through once there were twenty.
+
+   `> text` rather than ` text` mirrors PF's own child combinator, so the two selectors
+   match exactly the same element and neither can drift onto a descendant the other
+   misses. */
+.pf-topology__edge__tag.dg-graph-edge-tag > text {
   fill: var(--dg-color-label);
+  /* PF also paints a 0.5px `stroke` in its tag-text colour (white in dark theme), so
+     overriding `fill` alone leaves every tag outlined in white and the colour barely
+     reads. The outline exists to lift PF's tag off a busy background; our tags sit on
+     the tag's own filled background rect, so there is nothing to lift away from. */
+  stroke: none;
 }
 
 /* An error leg's tag matches its arrow, so the colour reads as one signal about
    one leg rather than two unrelated marks. Same `--dg-color-error` the edge
    stroke uses (set in ExecutionFlowGraph's DirectedEdge). */
-.dg-graph-edge-tag--error text {
+.pf-topology__edge__tag.dg-graph-edge-tag--error > text {
   fill: var(--dg-color-error);
 }
 
@@ -469,7 +499,7 @@ body {
    Note the class is `pf-topology__…`, NOT `pf-v5-topology__…` — PF's topology
    package does not carry the `v5` infix its react-core siblings do, so a
    v5-prefixed selector here matches nothing and fails silently. */
-.dg-graph-node--isolated .pf-topology__node__background {
+.pf-topology__node.dg-graph-node.dg-graph-node--isolated .pf-topology__node__background {
   stroke-dasharray: 4 3;
 }
 
@@ -515,7 +545,7 @@ body {
 /* A SOURCE of the selected entity's data. Full opacity (it is what is left when the
    rest recedes) plus a heavier outline, so the highlight also survives at a zoom
    level where opacity differences compress. */
-.dg-graph-node--source .pf-topology__node__background {
+.pf-topology__node.dg-graph-node.dg-graph-node--source .pf-topology__node__background {
   stroke-width: 4px;
 }
 
@@ -530,7 +560,7 @@ body {
    Deliberately NOT the same dash as `--isolated` above: the two can co-occur (an
    isolated entity can be selected) and the longer dash reads as deliberate emphasis
    rather than as the "present but unconnected" hint. */
-.dg-graph-node--selected .pf-topology__node__background {
+.pf-topology__node.dg-graph-node.dg-graph-node--selected .pf-topology__node__background {
   stroke-width: 4px;
   stroke-dasharray: 8 3;
 }
@@ -539,7 +569,7 @@ body {
    route between the lit nodes reads as a path rather than as an incidental line —
    this is what makes the answer a story instead of a set. Applied to the link only
    (not the arrowhead), which keeps its own size from PF's endTerminalSize. */
-.dg-graph-edge--carrier .pf-topology__edge__link {
+.pf-topology__edge.dg-graph-edge--carrier .pf-topology__edge__link {
   stroke-width: 3px;
 }
 
@@ -582,10 +612,27 @@ body {
    question about the trace, not about a selection, so it does not wait for a click.
    The halo sits OUTSIDE the kind-coloured stroke so both are readable: the node
    keeps saying what kind it is while also saying it is an origin. */
-.dg-graph-node--datasource .pf-topology__node__background {
-  filter: drop-shadow(0 0 0 var(--dg-lineage-source))
-    drop-shadow(0 0 3px var(--dg-lineage-source));
+.pf-topology__node.dg-graph-node.dg-graph-node--datasource .pf-topology__node__background {
+  /* One halo layer, not two. The old first layer was `drop-shadow(0 0 0 …)` — zero
+     offset AND zero blur — which paints an exact-alpha silhouette of the stroke ring
+     directly beneath the visible stroke, fully occluded by it. It contributed nothing;
+     only the blurred layer ever rendered. */
+  filter: drop-shadow(0 0 3px var(--dg-lineage-source));
   stroke-width: 3px;
+  /* A LONG DASH, so hue is genuinely not the only carrier of "this is an origin".
+     The block at the top of this file claims a reader who sees no colour difference
+     still gets ring-vs-no-ring — true for --upstream (dash), --frontier (dotted),
+     --selected and --isolated, but it was FALSE for this one specific pair:
+     `--datasource` and `--downstream` were both "solid ring + one halo", differing only
+     in hue, 1px of stroke and 1px of blur. A deuteranope saw two haloed nodes and no
+     reliable way to say which was an origin and which was fan-out — the two claims a
+     lineage answer most needs kept apart.
+
+     8 3 is deliberately distinct from every other dash in use here: --upstream's 5 3,
+     --selected's 8 3 on a *node* (different element state, never co-occurring hue),
+     --frontier's 1 3 dots, --isolated's 4 3. Long-on/short-off reads as a deliberate
+     ring rather than as the "unresolved" texture the dotted patterns carry. */
+  stroke-dasharray: 8 3;
 }
 
 /* THE CHOSEN SOURCE — the ONE source whose data the current answer traces
@@ -609,7 +656,7 @@ body {
    on specificity, so order is belt-and-braces) replaces its filter rather than being
    averaged with it: two `filter` declarations do not compose across rules, only within
    one list, which is why this restates both rings instead of adding one. */
-.dg-graph-node--datasource.dg-graph-node--chosen-source .pf-topology__node__background {
+.pf-topology__node.dg-graph-node.dg-graph-node--datasource.dg-graph-node--chosen-source .pf-topology__node__background {
   filter: drop-shadow(0 0 2px var(--dg-lineage-source))
     drop-shadow(0 0 8px var(--dg-lineage-source));
   stroke-width: 5px;
@@ -619,7 +666,7 @@ body {
    "flowed in from here". A SHORT dash, distinct from `--selected`'s long 8 3 so the
    selected node is still tellable apart when it is also upstream of itself (a real
    cycle the server derives, not an edge case). */
-.dg-graph-node--upstream .pf-topology__node__background {
+.pf-topology__node.dg-graph-node.dg-graph-node--upstream .pf-topology__node__background {
   stroke-dasharray: 3 2;
   stroke-width: 4px;
 }
@@ -628,7 +675,7 @@ body {
    source's but in its own hue, so a node that is BOTH a source and downstream shows
    two concentric haloes rather than one overwriting the other. Solid stroke, the
    deliberate opposite of upstream's dash. */
-.dg-graph-node--downstream .pf-topology__node__background {
+.pf-topology__node.dg-graph-node.dg-graph-node--downstream .pf-topology__node__background {
   filter: drop-shadow(0 0 4px var(--dg-lineage-downstream));
   stroke-width: 4px;
 }
@@ -638,7 +685,7 @@ body {
    being left to whichever of the two above happens to win the cascade (they set the
    same properties, so source order alone would decide and the reader would see only
    one of two true facts). Both haloes, and the upstream dash retained. */
-.dg-graph-node--upstream.dg-graph-node--downstream .pf-topology__node__background {
+.pf-topology__node.dg-graph-node.dg-graph-node--upstream.dg-graph-node--downstream .pf-topology__node__background {
   filter: drop-shadow(0 0 4px var(--dg-lineage-downstream))
     drop-shadow(0 0 7px var(--dg-lineage-upstream));
   stroke-dasharray: 3 2;
@@ -654,7 +701,7 @@ body {
    frontier exists to prevent. A muted dotted ring instead — present, marked,
    visibly provisional. The `--dg-color-muted` grey says "unknown" rather than
    borrowing either direction's hue, since we do not yet know what flows here. */
-.dg-graph-node--frontier .pf-topology__node__background {
+.pf-topology__node.dg-graph-node.dg-graph-node--frontier .pf-topology__node__background {
   stroke: var(--dg-color-muted);
   stroke-dasharray: 1 3;
   stroke-width: 3px;
@@ -664,13 +711,13 @@ body {
    all. Direction is carried by DASH as well as hue, so the two routes stay tellable
    apart without colour: fan-in dashed (data arriving), fan-out solid (data leaving).
    Weight is raised on both so a lit route reads as a path against the dimmed rest. */
-.dg-graph-edge--upstream .pf-topology__edge__link {
+.pf-topology__edge.dg-graph-edge--upstream .pf-topology__edge__link {
   stroke: var(--dg-lineage-upstream);
   stroke-width: 3px;
   stroke-dasharray: 6 3;
 }
 
-.dg-graph-edge--downstream .pf-topology__edge__link {
+.pf-topology__edge.dg-graph-edge--downstream .pf-topology__edge__link {
   stroke: var(--dg-lineage-downstream);
   stroke-width: 3px;
 }
@@ -678,19 +725,43 @@ body {
 /* A leg traversed by BOTH walks — the two legs of one tool call, or a genuine cycle.
    Given the upstream hue with the downstream dash so it is visibly neither plain
    case, rather than letting cascade order silently pick one. */
-.dg-graph-edge--upstream.dg-graph-edge--downstream .pf-topology__edge__link {
+.pf-topology__edge.dg-graph-edge--upstream.dg-graph-edge--downstream .pf-topology__edge__link {
   stroke: var(--dg-lineage-upstream);
   stroke-width: 4px;
   stroke-dasharray: 6 3;
 }
 
+/* DIRECTION HUE SURVIVES HOVER. PF paints
+   `.pf-topology__edge.pf-m-hover .pf-topology__edge__link { stroke: var(--edge--hover--stroke) }`
+   at (0,3,0) — in dark theme a neutral grey — which ties the direction rules above and
+   wins on source order (PF's sheet is in the later-injected lazy chunk). The effect was
+   that pointing at a route to inspect it repainted it grey and threw away the one thing
+   the reader was inspecting: whether it runs upstream or downstream.
+
+   Restated at (0,4,0) so hover changes nothing about direction. Hover still reads,
+   because PF also thickens the edge's own background stroke and hoists the edge to
+   TOP_LAYER — neither of which these rules touch, so the affordance survives without
+   the colour being the thing that carries it. */
+.pf-topology__edge.pf-m-hover.dg-graph-edge--upstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-upstream);
+}
+
+.pf-topology__edge.pf-m-hover.dg-graph-edge--downstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-downstream);
+}
+
+.pf-topology__edge.pf-m-hover.dg-graph-edge--upstream.dg-graph-edge--downstream
+  .pf-topology__edge__link {
+  stroke: var(--dg-lineage-upstream);
+}
+
 /* Edge tags follow their edge's direction hue, so the seq number stays attached to
    the route it labels. */
-.dg-graph-edge-tag--upstream text {
+.pf-topology__edge__tag.dg-graph-edge-tag--upstream > text {
   fill: var(--dg-lineage-upstream);
 }
 
-.dg-graph-edge-tag--downstream text {
+.pf-topology__edge__tag.dg-graph-edge-tag--downstream > text {
   fill: var(--dg-lineage-downstream);
 }
 
@@ -731,8 +802,15 @@ body {
   border: 2px solid var(--dg-color-muted);
 }
 
+/* Dashed to match the node's own ring — the swatch has to SHOW the treatment, not
+   merely stand for it, and the node's dash is what keeps "origin" distinguishable from
+   "downstream" without relying on hue (see --dg-graph-node--datasource). Without the
+   dash here the legend would be the one place the two are told apart by colour alone,
+   which is exactly backwards: the legend is what a reader consults *because* they
+   could not tell the colours apart. */
 .dg-lineage-swatch--datasource {
   border-color: var(--dg-lineage-source);
+  border-style: dashed;
   box-shadow: 0 0 3px var(--dg-lineage-source);
 }
 
@@ -850,7 +928,7 @@ body {
    already means SELF-CALL on this graph (see the model builder's `edgeStyle`). A
    selected self-call carries both, and the longer dash reads as emphasis over the
    top of the shorter one rather than replacing its meaning. */
-.dg-graph-edge--selected .pf-topology__edge__link {
+.pf-topology__edge.dg-graph-edge--selected .pf-topology__edge__link {
   stroke-width: 4px;
   stroke-dasharray: 10 4;
 }
@@ -882,7 +960,7 @@ body {
    rather than content — but for the ONE interaction the reader has open, the number
    is how they cross-reference the arrow against the Flat tab's rows and the panel's
    own fields, so it stops being incidental. */
-.dg-graph-edge-tag--selected text {
+.pf-topology__edge__tag.dg-graph-edge-tag--selected > text {
   fill: var(--dg-color-label);
   font-weight: 600;
 }
@@ -907,7 +985,7 @@ body {
    not silently repaint a failed leg as a healthy one — the weight and the dash above
    already carry "selected" without touching the colour. Restated here because the
    rule above would otherwise win on source order for a leg that is both. */
-.dg-graph-edge-tag--error.dg-graph-edge-tag--selected text {
+.pf-topology__edge__tag.dg-graph-edge-tag--error.dg-graph-edge-tag--selected > text {
   fill: var(--dg-color-error);
 }
 

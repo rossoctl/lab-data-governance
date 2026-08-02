@@ -190,7 +190,7 @@ function LegPanel({ leg }: { leg: Leg }) {
         // At the panel's old 320px floor these three labels (`Payload` /
         // `Classification` / `Data lineage`) did not fit on one line and PF fell
         // back to its horizontal scroll buttons, hiding `Data lineage` behind a
-        // forward arrow. The floor is now 420px (`--dg-detail-panel-min`), which
+        // forward arrow. The floor is now 520px (`--dg-detail-panel-min`), which
         // fits all three — so these labels should never be reachable in practice.
         // Kept because PF renders the buttons off its own width measurement, not
         // off our var: at an extreme zoom or font-size they can still appear, and

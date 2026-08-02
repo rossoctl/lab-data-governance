@@ -127,18 +127,35 @@ import {
 // of this module's dependency graph and therefore ride the lazy chunk: a reader
 // who never opens the Execution Flow tab downloads neither the JS nor the CSS.
 //
-// Moving them out of main.tsx inverts the load ORDER relative to global.css —
-// these now land after it, not before — and that is safe because the two `.dg-*`
-// rules that touch the graph do not depend on order:
-//   - `.dg-graph-surface` names a class PF has no rule for at all, so there is
-//     nothing to lose a tie against.
-//   - `.dg-graph-node--isolated .pf-topology__node__background` is specificity
-//     0,2,0 against PF's 0,1,0 `.pf-topology__node__background`, so it wins on
-//     specificity regardless of which sheet came last.
-//   - The `--dg-*` design tokens on `:root` are a disjoint namespace from PF's
-//     `--pf-topology__*`, so nothing overwrites anything.
-// main.tsx's original "imported BEFORE global.css so ours win on equal
-// specificity" note was therefore guarding a tie that never actually existed.
+// LOAD ORDER: THESE SHEETS LAND *AFTER* global.css, AND EVERY `.dg-graph-*` RULE HAS
+// TO BEAT PF ON SPECIFICITY BECAUSE OF IT. Importing them here (rather than in
+// main.tsx) is what puts them in the lazy chunk, and that chunk's CSS is injected last
+// — so on any tie PF wins, in the built output, every time.
+//
+// This comment previously said the inversion was "safe because the two `.dg-*` rules
+// that touch the graph do not depend on order", and enumerated three. That was true
+// when there were three. It is now false — there are ~24 — and its individual claims
+// staying correct (`.dg-graph-surface` really does name a class PF has no rule for;
+// `--dg-*` tokens really are a disjoint namespace from `--pf-topology__*`) is exactly
+// what made it read as reassurance while going stale. It authorised three real bugs,
+// all found by review and all fixed in global.css:
+//   - five of six edge-tag colour rules were dead — `.dg-graph-edge-tag text` is
+//     (0,1,1) and so is PF's `.pf-topology__edge__tag > text`, so every seq tag
+//     rendered in PF's white, error tags included;
+//   - a selected node lost its 4px ring to PF's (0,3,0)
+//     `.pf-topology__node.pf-m-selected .pf-…__background`, collapsing to 2px — the
+//     same weight as an unselected node;
+//   - a selected self-call kept PF's 4-2 `pf-m-dashed` instead of the 10-4 selected
+//     dash, both (0,2,0).
+//
+// THE RULE, for anyone adding a `.dg-graph-*` rule: name the co-located PF class in the
+// selector (`.pf-topology__node.dg-graph-node.dg-graph-node--x`,
+// `.pf-topology__edge__tag.dg-graph-edge-tag--x > text`) so the rule wins on
+// specificity rather than on an import order it does not control. Check what PF sets on
+// the same element first — including `stroke` on tag text, which is why overriding
+// `fill` alone left every tag outlined in white. Do NOT try to fix this by reordering
+// the imports: moving these back to main.tsx would drag ~130kB of topology CSS onto
+// every reader of the trace list, which is the whole reason they live here.
 import '@patternfly/react-topology/dist/esm/css/topology-components.css';
 import '@patternfly/react-topology/dist/esm/css/topology-view.css';
 import '@patternfly/react-topology/dist/esm/css/topology-controlbar.css';
@@ -1373,7 +1390,7 @@ function DirectedEdge({
       //     or focus-group mechanism to build one on, and hand-rolling one would mean
       //     owning focus for elements PF re-renders and re-layers on hover and drag.
       //   - THERE IS NO KEYBOARD PATH TO PAN OR ZOOM to a focused edge that is off
-      //     screen, so a focused arrow may not be visible. `.dg-graph-edge:focus-visible`
+      //     screen, so a focused arrow may not be visible. `.dg-graph-edge-focus:focus-visible`
       //     draws a ring (global.css) but cannot scroll the surface to it.
       //   - NOTHING ANNOUNCES THE SELECTION CHANGE. The detail panel is not a live
       //     region and focus does not move into it, so a screen-reader user gets no

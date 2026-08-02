@@ -103,7 +103,7 @@ export function FlowDetailPanel({
                     width: 10,
                     height: 10,
                     borderRadius: 2,
-                    border: '1px solid rgba(0, 0, 0, 0.35)',
+                    border: '1px solid var(--dg-scrim-chip)',
                     // Extra gap beyond PF's default icon spacing so the color
                     // chip doesn't crowd the label text.
                     marginRight: '0.375rem',

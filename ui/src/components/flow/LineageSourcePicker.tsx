@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   Alert,
   MenuToggle,
@@ -88,6 +88,11 @@ export interface LineageSourcePickerProps {
  */
 export function LineageSourcePicker({ chosen, namesByKey, onChange }: LineageSourcePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
+  // A generated id, not the literal `dg-lineage-source-label` this used to hardcode.
+  // Only one picker is rendered today, so the literal was correct-by-accident; a second
+  // instance would emit a duplicate id and every `aria-labelledby` would resolve to
+  // whichever came first in the document, silently mislabelling one of them.
+  const labelId = useId();
 
   // ZERO SOURCES: NOTHING AT ALL FROM THIS COMPONENT. A dropdown over an empty list is
   // a control that looks broken, so the picker is not drawn — and the STATEMENT of the
@@ -115,7 +120,7 @@ export function LineageSourcePicker({ chosen, namesByKey, onChange }: LineageSou
           which source's flow it is, and an accessible name only a screen reader can
           reach does not do that. */}
       <div className="dg-lineage-source-picker">
-        <span className="dg-lineage-source-picker-label" id="dg-lineage-source-label">
+        <span className="dg-lineage-source-picker-label" id={labelId}>
           Tracing data source
         </span>
         <Select
@@ -137,7 +142,7 @@ export function LineageSourcePicker({ chosen, namesByKey, onChange }: LineageSou
               ref={toggleRef}
               onClick={() => setIsOpen((o) => !o)}
               isExpanded={isOpen}
-              aria-labelledby="dg-lineage-source-label"
+              aria-labelledby={labelId}
               // The qualified key on the toggle too, not only on the options: once the
               // menu is closed this is the only place the choice is stated, and the
               // friendly label alone can name two distinct sources identically.
