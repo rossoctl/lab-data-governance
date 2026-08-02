@@ -1,4 +1,4 @@
-"""Step 1 — build the base graph. THROWAWAY.
+"""Step 1 — build the base graph.
 
 ADR-0026 Step 1: one node per span; one White directed parent→child edge per
 traceparent relationship (`build_base_graph`).

@@ -17,7 +17,7 @@ carried over from the pre-split shape but never earns its keep on a leg:
   information a consumer could act on.
 
 Scope is **legs only.** ``entities.original_seq`` stays — it IS read back
-(into ``ProtoEntity.first_seen_seq``); ``interactions`` has no ``original_seq``
+(into ``Entity.first_seen_seq``); ``interactions`` has no ``original_seq``
 column (ADR-0025 moved the leg-dependent fields out of the parent). Neither is
 touched here.
 

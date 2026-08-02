@@ -1,4 +1,4 @@
-"""Cross-step shared helpers for the p_interactions builder. THROWAWAY.
+"""Cross-step shared helpers for the graph interactions builder.
 
 These helpers are used by more than one top-level step of the algorithm
 (Step 2 enrichment and Step 3 entity-graph construction), so they live here to
