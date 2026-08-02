@@ -66,14 +66,14 @@ LEG_READY_CHANNEL = "dg_interaction_leg_ready"
 # --- leg projection (ADR-0025) ----------------------------------------------
 # The one place the request/response <-> (timestamp, payload) mapping lives, so
 # the flush projection and the rehydrate fold-back cannot drift apart. The
-# current (Case-X) source has one in-memory ProtoInteraction; the request leg
+# current (Case-X) source has one in-memory Interaction; the request leg
 # carries its start-side (started_at, request payload), the response leg its
 # end-side (ended_at, response payload). ``error`` is shared across both derived
 # legs; ``seq`` is now DB-owned and DISTINCT per leg (request inserted first ->
 # lower seq; ADR-0027 Reversal). See the Leg-provenance term in CONTEXT.md.
 
 
-def _legs_of(ix: procedure.ProtoInteraction) -> list[tuple[str, Any, str | None]]:
+def _legs_of(ix: procedure.Interaction) -> list[tuple[str, Any, str | None]]:
     """Forward projection: one interaction -> [(leg_type, occurred_at,
     payload_hash), ...], request leg first. Both legs are always emitted so the
     parent is never leg-less (ADR-0025)."""
@@ -319,7 +319,7 @@ def _rehydrate_derived(
             list(visible_ix),
         )
         for ix_id, tid, sid, role in ispans:
-            proc.interaction_spans.append(procedure.ProtoInteractionSpan(ix_id, tid, sid, role))
+            proc.interaction_spans.append(procedure.InteractionSpan(ix_id, tid, sid, role))
             proc._owners_by_span[sid] = ix_id
             proc._role_by_span[sid] = role
             proc._attached_span_ids.setdefault(ix_id, set()).add(sid)
@@ -336,18 +336,18 @@ def _rehydrate_derived(
         # Leg-dependent fields from interaction_legs — the read half of the flush
         # boundary projection: fold the request leg back into started_at /
         # request_payload_hash and the response leg into ended_at /
-        # response_payload_hash, so the in-memory ProtoInteraction stays the
+        # response_payload_hash, so the in-memory Interaction stays the
         # single-row shape procedure.py expects (unchanged). error folds off
         # whichever leg carries it (both derived legs share it).
         #
         # ``seq`` is DELIBERATELY NOT read off the legs anymore
         # (ADR-0027 reversal, issue #123). The two legs no longer share one seq —
         # each has its own DB-owned ``nextval`` value — so "the leg's seq" is not a
-        # single value to fold back, and ``ProtoInteraction.seq`` never needed it:
+        # single value to fold back, and ``Interaction.seq`` never needed it:
         # its only former reader was the leg-stamping INSERT (now DB-owned) and
         # ``procedure.py`` orders/cursors/dedups on ``span.seq`` /
         # ``last_processed_seq``, never on ``ix.seq``. So we reconstruct
-        # ``ProtoInteraction.seq`` from the PRIMARY ANCHOR SPAN's seq — exactly how
+        # ``Interaction.seq`` from the PRIMARY ANCHOR SPAN's seq — exactly how
         # ``procedure._materialise`` sets it at creation (``seq=primary_span.seq``)
         # — keeping the in-memory shape faithful without depending on a shared leg
         # seq that no longer exists.
@@ -370,11 +370,11 @@ def _rehydrate_derived(
             req = legs.get("request")
             resp = legs.get("response")
             err = (req or resp or (None, None, None))[2]
-            # ``ProtoInteraction.seq`` from the anchor span (as _materialise does).
+            # ``Interaction.seq`` from the anchor span (as _materialise does).
             # The primary anchor span is in the loaded lineage (_span_by_id_index).
             anchor_span = proc._span_by_id_index.get(primary_anchor)
             seq = anchor_span.seq if anchor_span is not None else 0
-            proc.interactions_by_anchor[primary_anchor] = procedure.ProtoInteraction(
+            proc.interactions_by_anchor[primary_anchor] = procedure.Interaction(
                 id=ix_id,
                 trace_id=tid,
                 parent_interaction_id=parent,
@@ -402,7 +402,7 @@ def _rehydrate_derived(
     )
     entity_ids: set[str] = set()
     for eid, tid, sid, role in espans:
-        proc.entity_spans.append(procedure.ProtoEntitySpan(eid, tid, sid, role))
+        proc.entity_spans.append(procedure.EntitySpan(eid, tid, sid, role))
         entity_ids.add(eid)
     # Entities referenced by the loaded interactions too (their identity rows are
     # needed so _resolve_caller_around_oi_span etc. resolve).
@@ -418,7 +418,7 @@ def _rehydrate_derived(
             list(entity_ids),
         )
         for eid, kind, nk, disp, proj, detected, seq, oseq in erows:
-            proc.entities[nk] = procedure.ProtoEntity(
+            proc.entities[nk] = procedure.Entity(
                 id=eid,
                 kind=kind,
                 natural_key=nk,
@@ -481,7 +481,7 @@ def flush(
     algorithm (no attribute sniffing):
 
       - ``None`` — the STREAMING algorithm (``driver.py``). Legs are projected
-        from the single in-memory ProtoInteraction via ``_legs_of`` (a Case-X
+        from the single in-memory Interaction via ``_legs_of`` (a Case-X
         DERIVED leg: request/response timings bracket one synchronous call; both
         legs share the interaction's ``error`` but each gets its OWN DB-owned
         ``seq``, request lower — ADR-0027 Reversal), and step 4b re-aggregates
@@ -518,7 +518,7 @@ def flush(
         )
 
     # 3. interactions + interaction_legs (ADR-0025 boundary projection).
-    #    The verified in-memory ProtoInteraction is still ONE object per anchor;
+    #    The verified in-memory Interaction is still ONE object per anchor;
     #    the split into a parent identity row + a request leg + a response leg
     #    happens HERE, at the write boundary, so procedure.py is unchanged.
     #    id / seq deterministic; parent_interaction_id written directly.

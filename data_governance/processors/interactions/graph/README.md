@@ -37,8 +37,8 @@ tables (the production driver does).
     in this trace and originates the trace's first cross-service hop.
   - `external_service` — referenced via CLIENT POST `attributes['http.url']`
     host, no SERVER span anywhere with that service.
-  - `user` — not detected by this prototype (no UI annotation present).
-- **Identity (prototype only):** UUIDs for the graph's own `entities.id` and
+  - `user` — not detected by this algorithm (no UI annotation present).
+- **Identity (standalone/debug only):** UUIDs for the graph's own `entities.id` and
   `interactions.id`. In production these are re-derived deterministically by
   `interactions/graph_adapter.py` (uuid5 of the natural key / anchor) — see
   ADR-0026 and the adapter.
@@ -47,7 +47,7 @@ tables (the production driver does).
   - `llm.output_messages.*` → `llm_completion`
   - tool input attributes (`input.value`) → `tool_call_arguments`
   - tool output attributes (`output.value`) → `tool_call_result`
-  - HTTP request/response bodies → not extracted in prototype (rare on these traces)
+  - HTTP request/response bodies → not extracted by this algorithm (rare on these traces)
   - everything else recognised as payload-shaped → `unknown`
 - **Canonicalization:** sorted-keys JSON for chat prompts and completions;
   raw JSON for tool args/results; raw bytes for `unknown`. SHA-256 over

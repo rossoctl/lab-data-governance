@@ -7,7 +7,7 @@ between the entities, with direction, count, error signal, and evidence.
 Per ADR-0026 each call site becomes a *pair* of Black edges — source→target
 (request) and target→source (response) — so a caller and each peer are joined in
 both directions, and the extractor turns every Black edge into one
-ProtoInteraction. We assert on the directed (caller_key -> callee_key) pair
+Interaction. We assert on the directed (caller_key -> callee_key) pair
 counts (entity identity is the `natural_key`, the stable ADR-0026 signal).
 
 The travel-advisor's two delegations are `agent → agent` interactions, NOT calls

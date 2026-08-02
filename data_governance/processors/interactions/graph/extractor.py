@@ -1,5 +1,5 @@
 """Graph-based extractor: spans -> (entities, interactions, interaction_spans, payloads)
-plus the intermediate base / colored / entity graphs for evaluation. THROWAWAY.
+plus the intermediate base / colored / entity graphs for evaluation.
 
 Algorithm (see docs/adr/0026-p-interactions-graph-algorithm.md):
 
@@ -20,7 +20,7 @@ Algorithm (see docs/adr/0026-p-interactions-graph-algorithm.md):
                transport chain between two Blue components (per-chain — distinct
                calls stay distinct)
 
-Then the extractor derives ProtoEntity / ProtoInteraction / ProtoPayload
+Then the extractor derives Entity / Interaction / Payload
 output rows from the entity graph.
 """
 
@@ -59,7 +59,7 @@ from .graph import BaseGraph, EntityGraph
 
 
 @dataclasses.dataclass
-class ProtoEntity:
+class Entity:
     id: str
     # natural_key is the classifier-derived label with a typed prefix:
     # `llm:<model>` | `tool:<name>` | `agent:<name>`. The prefix doubles
@@ -80,7 +80,7 @@ class ProtoEntity:
 
 
 @dataclasses.dataclass
-class ProtoInteraction:
+class Interaction:
     id: str
     caller_entity_id: str
     callee_entity_id: str
@@ -98,7 +98,7 @@ class ProtoInteraction:
 
 
 @dataclasses.dataclass
-class ProtoInteractionSpan:
+class InteractionSpan:
     interaction_id: str
     trace_id: str
     span_id: str
@@ -106,7 +106,7 @@ class ProtoInteractionSpan:
 
 
 @dataclasses.dataclass
-class ProtoPayload:
+class Payload:
     content_hash: str
     content_kind: str
     content: Any
@@ -115,10 +115,10 @@ class ProtoPayload:
 
 @dataclasses.dataclass
 class ExtractResult:
-    entities: list[ProtoEntity]
-    interactions: list[ProtoInteraction]
-    interaction_spans: list[ProtoInteractionSpan]
-    payloads: list[ProtoPayload]
+    entities: list[Entity]
+    interactions: list[Interaction]
+    interaction_spans: list[InteractionSpan]
+    payloads: list[Payload]
     notes: list[str]
     # Intermediate graphs for evaluation. The base graph after Step 1 is
     # snapshotted *before* Step 2 mutates it; the colored graph is the
@@ -144,15 +144,15 @@ def _hash_payload(canonical: bytes) -> str:
 
 # Payload-shape selection (LLM messages vs. tool/agent input.value/output.value)
 # lives in `adapters.payload_shapes_for_facts`, keyed off `SpanFacts.kind`.
-# This module only owns hashing and `ProtoPayload` construction.
+# This module only owns hashing and `Payload` construction.
 
 
-def _proto_payload(shape: tuple[str, Any] | None) -> ProtoPayload | None:
+def _build_payload(shape: tuple[str, Any] | None) -> Payload | None:
     if shape is None:
         return None
     content_kind, content = shape
     canon = _canonical_bytes(content)
-    return ProtoPayload(_hash_payload(canon), content_kind, content, len(canon))
+    return Payload(_hash_payload(canon), content_kind, content, len(canon))
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +206,8 @@ def _entity_display_name(
 
 def _derive_entities(
     entity_graph: EntityGraph, span_by_id: dict[str, Span]
-) -> list[ProtoEntity]:
-    """Build ProtoEntity rows from the entity graph.
+) -> list[Entity]:
+    """Build Entity rows from the entity graph.
 
     Step 3.a entity key per ADR-0026: each entity is named from its subgraph —
     service.name, else the natural-key suffix, else 'unknown' (see
@@ -216,7 +216,7 @@ def _derive_entities(
     entity subgraph).
 
     The classifier-derived natural key (`tool:<name>`, `llm:<model>`,
-    `agent:<name>`) is propagated as-is so prototype consumers can tell
+    `agent:<name>`) is propagated as-is so graph consumers can tell
     entities apart, and so payload-routing in `_derive_interactions` can
     split on the prefix.
     """
@@ -230,7 +230,7 @@ def _derive_entities(
         else:
             detected = "inferred stub"
         natural_key = n.label or "unknown"
-        out.append(ProtoEntity(
+        out.append(Entity(
             id=n.id,
             natural_key=natural_key,
             display_name=_entity_display_name(n, natural_key, span_by_id),
@@ -245,15 +245,15 @@ def _derive_entities(
 def _derive_interactions(
     entity_graph: EntityGraph,
     spans: list[Span],
-    entity_by_id: dict[str, ProtoEntity],
-) -> tuple[list[ProtoInteraction], list[ProtoInteractionSpan], list[ProtoPayload], list[str]]:
+    entity_by_id: dict[str, Entity],
+) -> tuple[list[Interaction], list[InteractionSpan], list[Payload], list[str]]:
     notes: list[str] = []
-    interactions: list[ProtoInteraction] = []
-    ix_spans: list[ProtoInteractionSpan] = []
-    payloads: dict[str, ProtoPayload] = {}
+    interactions: list[Interaction] = []
+    ix_spans: list[InteractionSpan] = []
+    payloads: dict[str, Payload] = {}
     span_by_id: dict[str, Span] = {s.span_id: s for s in spans}
 
-    def _ensure(p: ProtoPayload | None) -> str | None:
+    def _ensure(p: Payload | None) -> str | None:
         if p is None:
             return None
         if p.content_hash not in payloads:
@@ -317,8 +317,8 @@ def _derive_interactions(
         # arguments). Prefer the edge-carried request payload when present.
         if ee.req_payload is not None:
             req_shape = ee.req_payload
-        req_hash = _ensure(_proto_payload(req_shape))
-        resp_hash = _ensure(_proto_payload(resp_shape))
+        req_hash = _ensure(_build_payload(req_shape))
+        resp_hash = _ensure(_build_payload(resp_shape))
 
         # The summary uses the natural_key (the typed classifier label), which
         # is the most distinguishing identifier; the display_name (Step 3.a entity key) is
@@ -326,7 +326,7 @@ def _derive_interactions(
         caller_label = caller.natural_key or caller.display_name
         callee_label = callee.natural_key or callee.display_name
         ix_id = str(uuid.uuid4())
-        interactions.append(ProtoInteraction(
+        interactions.append(Interaction(
             id=ix_id,
             caller_entity_id=caller.id,
             callee_entity_id=callee.id,
@@ -342,7 +342,7 @@ def _derive_interactions(
         # One evidence row per interaction: the anchor span. (error / timing /
         # payload above are still computed over every span the edge pooled, so
         # a callee span's error signal is not lost.)
-        ix_spans.append(ProtoInteractionSpan(
+        ix_spans.append(InteractionSpan(
             interaction_id=ix_id,
             trace_id=anchor_span.trace_id,
             span_id=anchor_span.span_id,

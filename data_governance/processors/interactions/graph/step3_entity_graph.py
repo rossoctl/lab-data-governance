@@ -1,4 +1,4 @@
-"""Step 3 — build the entity graph (Step 3.a / 3.b / 3.d). THROWAWAY.
+"""Step 3 — build the entity graph (Step 3.a / 3.b / 3.d).
 
 ADR-0026:
   Step 3.a — structural grouping (nodes) + Step 3.b (edges):
