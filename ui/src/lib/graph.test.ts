@@ -83,6 +83,27 @@ function ixReqOnly(
   });
 }
 
+/**
+ * An interaction carrying ONLY a response leg — the mirror of `ixReqOnly`, and not a
+ * hypothetical: nothing in `flatLegRows` or `legOfType` requires a response's request to
+ * be present, so the derivation has to be honest about this shape rather than assume it
+ * away. Used to pin that such an interaction still draws an arrow and leaves neither
+ * participant flagged isolated.
+ */
+function ixRespOnly(
+  id: string,
+  caller: string | null,
+  callee: string | null,
+  respSeq: number,
+  over: Partial<Interaction> = {},
+): Interaction {
+  return ix(id, caller, callee, respSeq, respSeq + 1, {
+    legs: [leg('response', respSeq)],
+    duration_seconds: null,
+    ...over,
+  });
+}
+
 describe('deriveGraph', () => {
   // --- Nodes. Unchanged by the leg model: a node is still an entity.
 
@@ -693,6 +714,54 @@ describe('deriveGraph', () => {
     );
   });
 
+  it('does not drift a cycle rightward as unrelated entities are added', () => {
+    // The columns are NORMALISED so the leftmost occupied one is 0, and this is what
+    // pins it. `assignColumns`' ceiling is `n - 1` over ALL nodes and a cycle relaxes
+    // until it hits that ceiling — so before normalisation, adding entities that
+    // participate in no edge whatsoever *moved the cycle*: `A⇄B` alone sat in columns
+    // 0 and 1, but `A⇄B` plus eight isolated entities sat in 8 and 9, leaving columns
+    // 0-7 empty and the renderer drawing a growing blank left gutter.
+    //
+    // It also vacated `GraphNodeSpec.column`'s documented contract that `0` means "an
+    // entity nothing ever calls". On a wholly cyclic graph NO node held column 0.
+    //
+    // The sibling cycle tests above pass either way — they assert `column <= n - 1`
+    // and a distinct-column count, both true before and after — so `min === 0` is the
+    // assertion that actually catches this.
+    const cycle = [ixReqOnly('ab', 'A', 'B', 1), ixReqOnly('ba', 'B', 'A', 2)];
+    // Explicit lambda, not `.map(ent)`: `ent`'s second parameter is a `Partial<Entity>`
+    // override, and a bare reference would hand it the array index.
+    const bystanders = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8'].map((id) => ent(id));
+
+    const bare = deriveGraph([ent('A'), ent('B')], cycle);
+    const padded = deriveGraph([ent('A'), ent('B'), ...bystanders], cycle);
+
+    // Someone occupies column 0 in both, regardless of how many bystanders exist.
+    expect(Math.min(...bare.nodes.map((n) => n.column))).toBe(0);
+    expect(Math.min(...padded.nodes.map((n) => n.column))).toBe(0);
+    // And the cycle itself sits in the same two columns either way — the bystanders
+    // are parked in a trailing column, they do not push the cycle.
+    const colOf = (g: ReturnType<typeof deriveGraph>, id: string) =>
+      g.nodes.find((n) => n.id === id)!.column;
+    expect(colOf(padded, 'A')).toBe(colOf(bare, 'A'));
+    expect(colOf(padded, 'B')).toBe(colOf(bare, 'B'));
+  });
+
+  it('does not park a response-only interaction as unconnected', () => {
+    // An interaction carrying ONLY a response leg still draws an arrow, so neither of
+    // its participants is isolated. The isolated test used to be built from REQUEST
+    // edges alone, on the reasoning that a response's source must be some request's
+    // callee — which ASSERTS an invariant nothing enforces. `flatLegRows` imposes no
+    // such rule, so a response-only interaction put both real participants in the
+    // trailing "unconnected" column, dashed as present-but-unconnected, with a drawn
+    // edge running between them.
+    const g = deriveGraph([ent('A'), ent('B')], [ixRespOnly('ar', 'A', 'B', 1)]);
+
+    expect(g.edges).toHaveLength(1);
+    expect(g.nodes.find((n) => n.id === 'A')!.isIsolated).toBe(false);
+    expect(g.nodes.find((n) => n.id === 'B')!.isIsolated).toBe(false);
+  });
+
   it('terminates on a THREE-node request cycle, still within n-1 columns', () => {
     // The longer cycle, where a bound derived from the PASS count rather than from
     // the column would let the nodes spread far past the node count. `n - 1` is the
@@ -711,18 +780,29 @@ describe('deriveGraph', () => {
   it('can leave two request-connected nodes in ONE column, but only under the ceiling', () => {
     // The residue a cycle leaves, and worth pinning because it is the ONLY way a
     // request edge ends up within a column: the longest-path rule otherwise puts every
-    // target strictly right of its source. Here a→c, b→a, c→b relaxes to columns
-    // 1, 2, 2 against a ceiling of 2, so c→b runs inside column 2.
+    // target strictly right of its source. Here a→c, b→a, c→b relaxes against a ceiling
+    // of 2 and leaves b and c sharing a column, so c→b runs inside it.
     //
     // The renderer needs this case to exist (it is what `edgeBendpoints`' same-column
     // branch routes), so the layout must be honest that it can produce it rather than
     // claiming every edge crosses a column boundary.
+    //
+    // Expected columns are `0, 1, 1` and not the `1, 2, 2` this asserted before the
+    // normalisation pass: the relaxation still produces 1/2/2, but columns are now
+    // shifted so the leftmost occupied one is 0. Only the RELATIVE column is
+    // load-bearing (the renderer multiplies it by a step; edge routing reads the
+    // difference), and the shift is what stops a cycle drifting rightward with the count
+    // of unrelated entities — see the drift test above. The claim under test is
+    // unchanged: two request-connected nodes share one column.
     const g = deriveGraph(
       [ent('a'), ent('b'), ent('c')],
       [ixReqOnly('i1', 'a', 'c', 1), ixReqOnly('i2', 'b', 'a', 2), ixReqOnly('i3', 'c', 'b', 3)],
     );
 
-    expect([col(g, 'a'), col(g, 'b'), col(g, 'c')]).toEqual([1, 2, 2]);
+    expect([col(g, 'a'), col(g, 'b'), col(g, 'c')]).toEqual([0, 1, 1]);
+    // The point of the fixture, stated independently of the absolute offset.
+    expect(col(g, 'b')).toBe(col(g, 'c'));
+    expect(col(g, 'a')).toBeLessThan(col(g, 'b'));
     // Same column, different rows — so they are still two distinct cells and the
     // within-column edge has somewhere to bow to.
     expect(row(g, 'b')).not.toBe(row(g, 'c'));

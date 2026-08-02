@@ -34,7 +34,7 @@
  *
  * `lineage` sits LAST, immediately after `graph`, and the adjacency is the point:
  * it draws the identical node/edge set (one `deriveGraph`, one component — see
- * `lib/lineageGraph` and `ExecutionFlowGraph`) and adds exactly one thing, a
+ * `lib/lineageReachability` and `ExecutionFlowGraph`) and adds exactly one thing, a
  * highlight of where the selected entity's data came from. Ordering it after
  * `graph` says "same picture, one more question asked of it"; putting it anywhere
  * earlier would separate it from the view it is a reading of. It also reads one

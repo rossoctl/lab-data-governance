@@ -656,7 +656,7 @@ describe('FlowTables', () => {
   // exists in the right place, that it rides the graph's own lazy chunk, that it is
   // driven by the EXISTING `?eid` selection rather than a second notion of one, and
   // that it costs no fetch beyond the three this view already makes. The highlight's
-  // own logic is proven in lib/lineageGraph.test.ts (jsdom cannot measure an SVG, so
+  // own logic is proven in lib/lineageReachability.test.ts (jsdom cannot measure an SVG, so
   // the shape of the answer is not assertable here — see ExecutionFlowGraph.test.tsx's
   // header for the same reasoning).
 

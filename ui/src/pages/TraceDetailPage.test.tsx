@@ -872,7 +872,7 @@ describe('TraceDetailPage', () => {
 
   // --- `?legs=lineage`: the same graph with the selected entity's data sources
   // highlighted. The URL-level contract only — this file owns `?legs`, and the
-  // highlight's own logic lives in lib/lineageGraph.test.ts.
+  // highlight's own logic lives in lib/lineageReachability.test.ts.
 
   /** The Lineage tab's own surface, past the SAME lazy chunk the graph rides. */
   async function findLineageGraph() {

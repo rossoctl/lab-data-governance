@@ -667,6 +667,52 @@ def test_hops_is_not_lengthened_by_a_later_better_arrival() -> None:
     assert _reach(rows, "seed", FANOUT)["x"] == 1
 
 
+def test_hops_beyond_a_dominated_arrival_use_the_shallow_route() -> None:
+    """The regression the removed stale-entry skip caused, one hop further out.
+
+    Identical fixture to the test above plus ``x -(60)-> y``, and that one extra leg is
+    what the previous implementation got wrong. ``x`` is reached at depth 1 via seq 50
+    and again at depth 2 via seq 10; seq 10 is more *permissive*, so the depth-1 queue
+    entry was skipped as "stale" when it popped, and ``y`` was only ever discovered from
+    the depth-2 arrival — reported at **3** hops.
+
+    But ``seed -(50)-> x -(60)-> y`` satisfies clause 4 at every step (60 > 50), so 2 is
+    the truthful distance. The test above passes either way, because ``min`` rescues the
+    dominated entity ITSELF; nothing rescued the entities beyond it. Hence this case.
+    """
+    rows = [
+        _row("i0", "request", 50, "seed", "x"),
+        _row("i1", "request", 5, "seed", "mid"),
+        _row("i2", "request", 10, "mid", "x"),
+        _row("i3", "request", 60, "x", "y"),
+    ]
+    reached = _reach(rows, "seed", FANOUT)
+    assert reached["x"] == 1
+    assert reached["y"] == 2
+
+
+def test_a_truncated_answer_cites_no_leg_to_an_entity_it_withheld() -> None:
+    """`legs` may never reference an entity absent from `entities`.
+
+    The entity bound is a *reporting* bound, not a licence to return a route with holes
+    in it: a client drawing an edge to an id that never appeared in `entities` has a
+    dangling edge, i.e. an unexplained node — and ``truncated`` does not cover that. It
+    says the answer is incomplete, not that parts of it point at nothing.
+
+    Five leaves behind a bound of three used to yield 3 entities and 5 legs, the last two
+    naming leaves the caller was never given, because the leg was appended before the
+    bound was consulted.
+    """
+    rows = [_row(f"i{n}", "request", 10 + n, "hub", f"leaf{n}") for n in range(5)]
+    hops, legs, _frontier, truncated = _walk_all(rows, "hub", FANOUT, max_entities=3)
+
+    assert truncated is True
+    assert len(hops) == 3
+    cited = {leg.to_entity_id for leg in legs} | {leg.from_entity_id for leg in legs}
+    # Every endpoint of every reported leg is either the seed or a returned entity.
+    assert cited - set(hops) - {"hub"} == set()
+
+
 def test_the_hop_bound_truncates_and_says_so() -> None:
     """A bounded answer is reported as bounded, never silently returned as whole."""
     rows = [_row(f"i{n}", "request", n, f"e{n}", f"e{n + 1}") for n in range(10)]

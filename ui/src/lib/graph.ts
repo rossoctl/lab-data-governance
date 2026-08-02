@@ -368,6 +368,7 @@ function assignColumns(
     }
     if (!changed) break;
   }
+
   return column;
 }
 
@@ -517,25 +518,63 @@ export function deriveGraph(
   // "present but unconnected" story the dashed outline and the trailing
   // `encounterIndex` slots already tell.
   //
-  // Note this is decided from the REQUEST edges, same as the columns: an entity
-  // that only ever appears as a response's source is the callee of a request, so
-  // it is reached and is NOT parked here.
-  const reachedByRequest = new Set<string>();
+  // Decided from EVERY drawn edge, not just the request legs — and the difference is a
+  // real defect, not a refinement. The columns are assigned from request edges alone (a
+  // response must not push its target rightwards), and this set used to reuse that same
+  // filter on the reasoning that "an entity that only ever appears as a response's source
+  // is the callee of a request, so it is reached anyway". That ASSERTS an invariant the
+  // code does not enforce: it holds only if a response leg never arrives without its
+  // request leg, and nothing here guarantees that — `flatLegRows` imposes no such rule and
+  // `legOfType` treats a leg list as arbitrary. Feed `deriveGraph` an interaction carrying
+  // only a response leg and both of its participants land in the trailing "unconnected"
+  // column, styled as present-but-unconnected, with a drawn edge running between them.
+  //
+  // The honest test is whether the node has an edge at all: if an arrow touches it, it is
+  // not isolated, whatever kind of leg drew that arrow. Columns keep the narrower filter
+  // for their own separate reason, so the two are now deliberately different sets rather
+  // than one set doing two jobs.
+  const hasAnyEdge = new Set<string>();
   for (const e of edges) {
-    if (e.legType !== 'request') continue;
-    reachedByRequest.add(e.source);
-    reachedByRequest.add(e.target);
+    hasAnyEdge.add(e.source);
+    hasAnyEdge.add(e.target);
   }
-  const unreached = entities.filter((e) => !reachedByRequest.has(e.id));
+  const unreached = entities.filter((e) => !hasAnyEdge.has(e.id));
   // `-1` when nothing is reached at all (a trace with no drawable request leg), so
   // the trailing column is 0 and the unreached entities are the whole picture
   // rather than being pushed off into empty space beside nothing.
   const deepestReached = Math.max(
     -1,
-    ...entities.filter((e) => reachedByRequest.has(e.id)).map((e) => columnById.get(e.id) ?? 0),
+    ...entities.filter((e) => hasAnyEdge.has(e.id)).map((e) => columnById.get(e.id) ?? 0),
   );
   const trailingColumn = deepestReached + 1;
   for (const e of unreached) columnById.set(e.id, trailingColumn);
+
+  // NORMALISE so the leftmost occupied column is 0. Done HERE, after the trailing column
+  // is assigned, and not inside `assignColumns` — the unreached entities are placed after
+  // that helper returns, so normalising earlier would fix a minimum that is not yet final.
+  //
+  // Without this, a cycle drifts rightward with the count of nodes that have nothing to do
+  // with it. `assignColumns`' ceiling is `n - 1` over ALL nodes and a cycle relaxes until
+  // it hits that ceiling, so adding entities which participate in no request edge *moves
+  // the cycle*: `A⇄B` alone occupies columns 0 and 1, while `A⇄B` plus eight isolated
+  // entities occupies 8 and 9 — leaving columns 0-7 empty and the renderer drawing a
+  // growing blank left gutter.
+  //
+  // That also silently vacated `GraphNodeSpec.column`'s documented contract, which says
+  // `0` means "an entity nothing ever calls — the trace's entry point". On a wholly cyclic
+  // call graph no node held column 0 at all, so the field meant nothing.
+  //
+  // Shifting is safe because only the RELATIVE column is load-bearing: the renderer
+  // consumes `column` as a left-to-right ordinal (multiplying it by a px step), and every
+  // edge's routing depends on the DIFFERENCE between two columns, which a uniform shift
+  // preserves exactly. The pre-existing tests pass either way — they assert
+  // `column <= n - 1` and that a 2-cycle occupies two distinct columns, both true before
+  // and after — which is why this went unnoticed; `min === 0` is what actually pins it.
+  let minColumn = Infinity;
+  for (const c of columnById.values()) if (c < minColumn) minColumn = c;
+  if (minColumn > 0 && minColumn !== Infinity) {
+    for (const [id, c] of columnById) columnById.set(id, c - minColumn);
+  }
 
   // THE ROWS. Within each column, nodes stack in `encounterIndex` order — the
   // trace's chronology — so reading down a column reads forwards in time. THIS IS

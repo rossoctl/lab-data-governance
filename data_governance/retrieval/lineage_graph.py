@@ -65,8 +65,14 @@ builds fan-in as the exact edge-reversal of fan-out, and once time is discarded 
 aggregate request+response edge set is symmetric, so reversing it is a no-op — the
 reversal was correct, it simply had no purchase. Under this module's rule the same seed
 answers ``fanout`` with 7 entities / 36 legs and ``fanin`` with nothing (the source
-*originates* at that tool, so it has no ancestors). Both facts are asserted as
-regressions in the test suites.
+*originates* at that tool, so it has no ancestors).
+
+Those two figures are a **measurement against that one live trace**, not a regression
+guard: they are reproducible by hand but deliberately not asserted anywhere, because a
+test pinning them would be pinning the demo data rather than this module's rule. What the
+suites do pin is the *shape* of the same claim on small synthetic fixtures — fan-in and
+fan-out differing on a symmetric edge set, and an entity whose legs are all seq-earlier
+being absent from a fanout. Do not read the numbers here as covered by a test.
 
 **No matcher runs here** (ADR-0028 D7). These reads re-walk structure and read
 *persisted* verdicts; matching happened at ingest. An implementation that finds
@@ -416,39 +422,56 @@ def _walk(
 
     The replacement is ``best_arrival[entity]``, the most **permissive** arrival seq seen
     — smaller for fanout, larger for fanin, since fanout departs on ``seq > arrival``.
-    An entity is re-enqueued iff the new arrival is strictly more permissive than the
-    recorded one, because an arrival opens exactly the legs on its permissive side: a
-    strictly more permissive one opens a superset, anything else a subset.
+    An entity is re-enqueued iff the new arrival **either** is strictly more permissive
+    than the recorded one **or** reaches it at a strictly smaller depth. Two clauses,
+    because permissiveness and depth are independent dominance axes:
 
-    **Depth is deliberately NOT part of that test**, and this is the trap one refinement
-    in from the ``visited`` bug. A *deeper* arrival can be *more permissive* — reached
-    the long way round but earlier in the trace — and it then opens edges the shallow
-    arrival cannot. Requiring "shallower, or equal depth and more permissive" would
-    reject it and lose everything beyond it, which is the same class of silent
-    under-reporting, merely rarer. So ``hops`` is tracked in its own map.
+    - an arrival opens exactly the legs on its permissive side, so a strictly more
+      permissive one opens a *superset* and must be followed or everything beyond it is
+      lost;
+    - a *shallower* arrival opens no new legs, but reaches everything beyond it at a
+      smaller depth — and ``hops`` is a distance, so dropping it reports a longer route
+      than one that exists.
 
-    **How ``hops`` stays correct.** ``hops`` is the fewest hops along a path that
-    respects both clauses, and plain arrival-order BFS no longer delivers that for
-    free — a structurally shorter route may be closed to this source or run the wrong
-    way in time. Two things make it right:
+    A visit that is neither is genuinely redundant and is dropped.
 
-    1. the queue is processed in **non-decreasing depth order** (it is a plain FIFO and
-       every enqueue is at ``depth + 1``, so depths leave the queue sorted — the
-       standard BFS invariant, which survives the seq gate because the gate only ever
-       *removes* edges); and
-    2. ``hops[target]`` is written with ``min``, so a later, deeper, more-permissive
-       revisit records its reachability without lengthening the reported distance.
+    **Depth is deliberately not part of the PERMISSIVENESS test**, which is the trap one
+    refinement in from the ``visited`` bug: a *deeper* arrival can be *more permissive* —
+    reached the long way round but earlier in the trace — and it opens edges the shallow
+    arrival cannot. Requiring "shallower AND more permissive" would reject it and lose
+    everything beyond it. Hence two independent records, each keeping its own best:
+    writing one from the other's winner reintroduces exactly the loss the other prevents.
 
-    So the first depth at which an entity becomes reachable at all is the depth
-    recorded.
+    **How ``hops`` stays correct.** ``hops`` is the fewest hops along a path respecting
+    both clauses, and plain arrival-order BFS does not deliver that for free — a
+    structurally shorter route may be closed to this source or run the wrong way in time.
+    Note the FIFO/non-decreasing-depth argument that used to sit here **was not
+    sufficient**, and believing it was is what let a real defect through: the queue is a
+    FIFO, but entries were being *dropped* by a stale-entry skip rather than merely
+    reordered, so a shallow route could be discarded before it ever expanded and the
+    entities beyond it were then only found the long way round. What actually makes the
+    distance right is:
+
+    1. the two-clause re-enqueue above, so a shallower arrival is always expanded even
+       when a more permissive one has been recorded; and
+    2. ``hops[target]`` written with ``min``, so a deeper revisit records reachability
+       without lengthening the reported distance.
+
+    ``min`` alone is not enough either — it rescues the dominated entity itself but
+    nothing beyond it. See the long note at the top of the pop loop for the concrete
+    four-leg fixture where that produced ``hops[y] == 3`` for a valid 2-hop path.
 
     **Termination**, on a genuinely cyclic graph, and it does *not* rest on the visited
-    bookkeeping. ``best_arrival[entity]`` is only ever replaced by a strictly more
-    permissive value, and ``arrival_seq`` is drawn from the trace's **finite** set of leg
-    seqs, so it can strictly improve only finitely many times — at most ``|legs|`` per
-    entity. Every enqueue either is the entity's first or strictly improves its
-    ``best_arrival``, so the total number of enqueues is bounded by
-    ``|entities| × (|legs| + 1)`` and the queue drains.
+    bookkeeping. Both records improve **monotonically in one direction only**, which is
+    what bounds the enqueues. ``best_arrival[entity]`` is only ever replaced by a strictly
+    more permissive value, drawn from the trace's **finite** set of leg seqs, so it can
+    improve at most ``|legs|`` times per entity. ``best_depth[entity]`` is only ever
+    replaced by a strictly *smaller* non-negative integer, so it can improve at most
+    ``max_hops`` times per entity. Every enqueue is the entity's first or strictly
+    improves one of the two, so enqueues are bounded by
+    ``|entities| × (|legs| + max_hops + 1)`` and the queue drains. Removing the
+    stale-entry skip therefore cost a constant factor of redundant pops, never
+    termination — that skip was an optimisation, never the guarantee.
 
     The deeper reason is clause 4 itself: ``agent -> tool -> agent`` — the ordinary shape
     of every tool call, and a two-node cycle — cannot loop forever because each traversal
@@ -505,6 +528,13 @@ def _walk(
     # permissive route need not be the same route, and the answer wants one of each.
     seed_arrival = _SEED_ARRIVAL[direction]
     best_arrival: dict[str, float] = {seed: seed_arrival}
+    # The shallowest depth at which each entity has been ENQUEUED. A third record,
+    # distinct from both of its neighbours: `hops` is the *answer* (and excludes the
+    # seed), while `best_arrival` tracks permissiveness rather than distance. It exists
+    # because those two dominance axes are independent — an arrival can be more
+    # permissive AND deeper — so neither map alone can decide whether a queue entry is
+    # genuinely redundant. See the expand guard, which consults both.
+    best_depth: dict[str, int] = {seed: 0}
     # A separate record of legs already reported, so a re-enqueued entity does not
     # duplicate the route. Keyed on the leg's identity plus the direction it was
     # crossed in, because the same leg can legitimately be crossed from both ends over
@@ -515,13 +545,39 @@ def _walk(
     while queue:
         current, depth, arrival = queue.popleft()
 
-        # A stale queue entry: a strictly more permissive arrival at `current` was
-        # recorded after this one was enqueued, so this weaker visit can only reach a
-        # subset of what that one will. Skip rather than re-expand — the dominating
-        # entry either already ran or is still queued.
-        known = best_arrival.get(current)
-        if known is not None and more_permissive(known, arrival):
-            continue
+        # NO STALE-ENTRY SKIP HERE, DELIBERATELY. The removed version read as obviously
+        # right and was wrong, so it is worth spelling out.
+        #
+        # It skipped a popped entry whenever a strictly more permissive arrival at
+        # `current` had since been recorded, reasoning that the weaker visit can only
+        # reach a subset of what the dominating one will. That much is true — but
+        # SUBSET-OF-ENTITIES IS NOT SUBSET-OF-DISTANCES. The more permissive arrival is
+        # typically the *deeper* one (it reached here the long way round, which is
+        # exactly why it arrived earlier in seq), so every entity the weaker-but-
+        # shallower visit would have reached at `depth + 1` was instead rediscovered
+        # from the dominator at its own greater depth. `hops` is a distance, so the
+        # answer reported a longer route than one that demonstrably exists.
+        #
+        # Concretely, with `seed -(50)-> x`, `seed -(5)-> mid`, `mid -(10)-> x` and
+        # `x -(60)-> y`: candidates are walked in seq order, so `x` is first reached at
+        # depth 1 via seq 50, then `mid` offers it again at depth 2 via seq 10. Seq 10 is
+        # more permissive, so the depth-1 entry was skipped when it popped and `y` came
+        # back at **3** hops — when `seed -> x -> y` is a valid 2-hop path, 60 > 50
+        # satisfying clause 4 at every step.
+        #
+        # Guarding the skip on depth as well does NOT fix it, which is the subtle part
+        # and was tried first: a single best-depth scalar per entity is written by
+        # whichever arrival got there first, so the permissive-but-deeper arrival lowers
+        # the very record the guard consults, and the shallow entry is skipped anyway.
+        # Deciding it correctly needs the depth OF THE DOMINATING ARRIVAL — per-arrival
+        # state, strictly more bookkeeping than the skip could ever save.
+        #
+        # So it is gone. It was always an optimisation, never a correctness device:
+        # termination rests on `best_arrival` improving monotonically (see this
+        # function's docstring) and on the expand guard below, which is what actually
+        # bounds re-enqueues. A redundant pop costs one re-scan of `current`'s
+        # candidates, and both of its side effects are idempotent — legs dedupe through
+        # `reported`, and `hops` writes go through `min`.
 
         # Any leg touching `current` that has no derived lineage row *and* is on the
         # right side of the arrival is a place the walk could continue once the
@@ -553,28 +609,25 @@ def _walk(
             key=lambda e: (e.seq if forward else -e.seq, e.interaction_id, e.leg_type),
         )
         for edge in candidates:
-            # Every traversed leg is reported, including one that arrives at an
-            # already-known entity: the hop really happened and is part of the route,
-            # even though the entity is not newly reached. Dropping it would leave a
-            # cycle drawn as a dead end.
-            leg_key = (edge.interaction_id, edge.leg_type, current, edge.to_entity_id)
-            if leg_key not in reported:
-                reported.add(leg_key)
-                legs.append(
-                    LineageGraphLegView(
-                        interaction_id=edge.interaction_id,
-                        leg_type=edge.leg_type,
-                        from_entity_id=current,
-                        to_entity_id=edge.to_entity_id,
-                        seq=edge.seq,
-                    )
-                )
             target = edge.to_entity_id
             new_depth = depth + 1
             new_arrival = float(edge.seq)
             known_arrival = best_arrival.get(target)
             first_visit = known_arrival is None
 
+            # THE ENTITY BOUND IS CHECKED BEFORE THE LEG IS REPORTED, and the order is
+            # the fix for a real defect: reporting first meant a truncated answer cited
+            # legs whose target never appeared in `entities`. With `max_entities=3` over a
+            # five-leaf hub the read returned 3 entities and 5 legs, two of them pointing
+            # at entities the caller was never given — so a client drawing the route got
+            # edges to nodes that do not exist. For a UI whose whole rule is that an
+            # unknown must never be rendered as a verdict, a dangling edge is precisely an
+            # unexplained node, and `truncated` does not excuse it: it says the answer is
+            # incomplete, not that parts of it refer to nothing.
+            #
+            # A leg to an ALREADY-KNOWN entity is still reported (see below) — that hop is
+            # part of the route and both its endpoints are in `entities`. Only the leg
+            # that would introduce an entity we are declining to return is withheld.
             if first_visit and len(hops) >= max_entities and target != seed:
                 # The entity bound, and only for a *newly* discovered entity — revisiting
                 # one already counted costs no extra slot.
@@ -587,6 +640,24 @@ def _walk(
                 truncated = True
                 continue
 
+            # Every traversed leg is reported, including one that arrives at an
+            # already-known entity: the hop really happened and is part of the route,
+            # even though the entity is not newly reached. Dropping it would leave a
+            # cycle drawn as a dead end. Deduped on the leg's identity plus the direction
+            # it was crossed in, so a re-expanded entity does not duplicate the route.
+            leg_key = (edge.interaction_id, edge.leg_type, current, edge.to_entity_id)
+            if leg_key not in reported:
+                reported.add(leg_key)
+                legs.append(
+                    LineageGraphLegView(
+                        interaction_id=edge.interaction_id,
+                        leg_type=edge.leg_type,
+                        from_entity_id=current,
+                        to_entity_id=edge.to_entity_id,
+                        seq=edge.seq,
+                    )
+                )
+
             # The reported distance: shortest depth at which the entity was reached at
             # all. `min` because a *more permissive* revisit is usually also a *deeper*
             # one, and it must not lengthen the answer — the shallower route was real.
@@ -597,13 +668,34 @@ def _walk(
                     new_depth if target not in hops else min(hops[target], new_depth)
                 )
 
-            # Expand only if this arrival opens something the best-known one does not.
-            # Depth plays no part: see the `best_arrival` comment above — a deeper but
-            # more permissive arrival opens a strict superset of legs and must be
-            # followed, or every entity beyond it is silently lost.
-            if not first_visit and not more_permissive(new_arrival, known_arrival):
+            # Expand if this arrival opens legs the best-known one does not, OR if it
+            # reaches the target more SHALLOWLY than anything enqueued for it so far.
+            #
+            # Both clauses are load-bearing, because permissiveness and depth are
+            # INDEPENDENT dominance axes and neither implies the other:
+            #   - more permissive → opens a strict superset of onward legs, so dropping
+            #     it silently loses every entity beyond it (this clause was always here);
+            #   - shallower → opens no new legs, but reaches everything beyond it at a
+            #     smaller depth, and `hops` is a distance. Dropping it reports a longer
+            #     route than one that exists — the `hops[y] == 3` case dissected in the
+            #     stale-entry note at the top of this loop.
+            # A visit that is neither is genuinely redundant: same-or-narrower legs at
+            # the same-or-greater depth, so it can change no field of the answer.
+            #
+            # The two records are kept INDEPENDENTLY on purpose. Writing one from the
+            # other's winner is the trap the removed skip fell into: a deep-permissive
+            # arrival would raise the recorded depth (or a shallow-narrow one narrow the
+            # recorded permissiveness), reintroducing the very loss each clause exists to
+            # prevent.
+            known_depth = best_depth.get(target)
+            opens_more = first_visit or more_permissive(new_arrival, known_arrival)
+            arrives_sooner = known_depth is None or new_depth < known_depth
+            if not opens_more and not arrives_sooner:
                 continue
-            best_arrival[target] = new_arrival
+            if opens_more:
+                best_arrival[target] = new_arrival
+            if arrives_sooner:
+                best_depth[target] = new_depth
             queue.append((target, new_depth, new_arrival))
 
     # An entity the walk actually reached is not "pending" — an eligible route to it
