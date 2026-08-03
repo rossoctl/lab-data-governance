@@ -162,7 +162,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TABLE alerts (
-            alert_id              UUID        NOT NULL DEFAULT gen_random_uuid(),
+            alert_id               UUID        NOT NULL DEFAULT gen_random_uuid(),
             timestamp              TIMESTAMPTZ NOT NULL,
             trace_id               TEXT        NOT NULL,
             trace_risk_record_id   UUID,
