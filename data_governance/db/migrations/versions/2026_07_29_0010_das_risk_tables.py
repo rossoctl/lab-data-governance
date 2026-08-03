@@ -38,6 +38,16 @@ per the #98 plan rather than silently applied:
     carry values that originate from OPA — an external, policy-driven
     authority — and churn with policy, same reasoning that keeps
     ``interaction_payloads.content_kind`` as TEXT.
+  - **Confidence/score columns are ``NUMERIC(4,3)``, not ``DOUBLE
+    PRECISION``.** ``overall_confidence`` on both ``interaction_risk_records``
+    and ``trace_risk_records`` is a bounded probability in ``[0, 1]``, always
+    expressed to three decimal places (per PRD confidence-scoring
+    conventions). ``NUMERIC(4,3)`` stores that exactly — no float rounding
+    drift on repeated reads/writes — and the fixed precision/scale rejects an
+    out-of-range or over-precise value at the DB layer rather than silently
+    truncating it. Apply ``NUMERIC(4,3)`` to any future DAS/ARC column with
+    the same shape (confidence scores, risk scores in ``[0, 1]``), not
+    ``DOUBLE PRECISION``/``FLOAT``.
 
 All three tables are FK-free per the 0004 convention: DAS re-derives its
 tables idempotently from upstream data rather than being enforced by a hard
@@ -83,7 +93,7 @@ def upgrade() -> None:
             legs_evidenced           TEXT[]      NOT NULL DEFAULT '{}',
             classification_summary   JSONB,
             opa_policy_versions_used TEXT[]      NOT NULL DEFAULT '{}',
-            overall_confidence       DOUBLE PRECISION,
+            overall_confidence       NUMERIC(4,3),
             PRIMARY KEY (interaction_risk_id)
         )
         """
@@ -128,7 +138,7 @@ def upgrade() -> None:
             policy_event_count                INTEGER     NOT NULL,
             all_entity_ids                    TEXT[]      NOT NULL DEFAULT '{}',
             triggered_rule_ids                TEXT[]      NOT NULL DEFAULT '{}',
-            overall_confidence                DOUBLE PRECISION,
+            overall_confidence                NUMERIC(4,3),
             contributing_interaction_risk_ids UUID[]      NOT NULL DEFAULT '{}',
             PRIMARY KEY (trace_risk_id)
         )

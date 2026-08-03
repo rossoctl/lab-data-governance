@@ -31,17 +31,25 @@ import psycopg
 
 
 def _columns(dsn: str, table: str) -> dict[str, dict[str, object]]:
-    """Map column-name -> {data_type, is_nullable, column_default}."""
+    """Map column-name -> {data_type, is_nullable, column_default,
+    numeric_precision, numeric_scale}."""
     with psycopg.connect(dsn) as conn:
         rows = conn.execute(
-            "SELECT column_name, data_type, is_nullable, column_default "
+            "SELECT column_name, data_type, is_nullable, column_default, "
+            "numeric_precision, numeric_scale "
             "FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name = %s",
             (table,),
         ).fetchall()
     return {
-        name: {"data_type": dt, "is_nullable": nn, "column_default": default}
-        for name, dt, nn, default in rows
+        name: {
+            "data_type": dt,
+            "is_nullable": nn,
+            "column_default": default,
+            "numeric_precision": precision,
+            "numeric_scale": scale,
+        }
+        for name, dt, nn, default, precision, scale in rows
     }
 
 
@@ -180,6 +188,13 @@ def test_interaction_risk_records_table_exists_with_expected_columns(
     assert cols["triggered_rule_ids"]["data_type"] == "ARRAY"
     assert cols["legs_evidenced"]["data_type"] == "ARRAY"
     assert cols["opa_policy_versions_used"]["data_type"] == "ARRAY"
+    # NUMERIC(4,3), not DOUBLE PRECISION/FLOAT — overall_confidence is a
+    # bounded [0, 1] probability expressed to three decimal places; fixed
+    # precision/scale avoids float rounding drift and rejects out-of-range
+    # values at the DB layer.
+    assert cols["overall_confidence"]["data_type"] == "numeric"
+    assert cols["overall_confidence"]["numeric_precision"] == 4
+    assert cols["overall_confidence"]["numeric_scale"] == 3
 
 
 def test_interaction_risk_records_primary_key(migrated_dsn: str) -> None:
@@ -213,6 +228,24 @@ def test_interaction_id_version_unique_constraint_rejects_duplicate(
             psycopg.errors.UniqueViolation
         ):
             _insert_min_interaction_risk_record(conn, interaction_id="ix1", version=1)
+
+
+def test_overall_confidence_rejects_out_of_range_value(migrated_dsn: str) -> None:
+    """NUMERIC(4,3) caps overall_confidence at 4 total digits / 3 after the
+    decimal point — a value like 12.345 (5 significant digits) must be
+    rejected at the DB layer, not silently truncated."""
+    with psycopg.connect(migrated_dsn, autocommit=True) as conn:
+        with conn.transaction(), __import__("pytest").raises(
+            psycopg.errors.NumericValueOutOfRange
+        ):
+            conn.execute(
+                "INSERT INTO interaction_risk_records ("
+                "interaction_id, trace_id, caller_entity_id, callee_entity_id, "
+                "version, computed_at, risk_level, policy_event_count, "
+                "overall_confidence"
+                ") VALUES (%s, 't1', 'agent:a', 'agent:b', 1, now(), 'low', 0, 12.345)",
+                ("ix-oor",),
+            )
 
 
 def test_interaction_id_allows_multiple_versions(migrated_dsn: str) -> None:
@@ -254,6 +287,9 @@ def test_trace_risk_records_table_exists_with_expected_columns(
         assert name in cols, f"missing column {name!r}"
     assert cols["trace_risk_id"]["data_type"] == "uuid"
     assert cols["contributing_interaction_risk_ids"]["data_type"] == "ARRAY"
+    assert cols["overall_confidence"]["data_type"] == "numeric"
+    assert cols["overall_confidence"]["numeric_precision"] == 4
+    assert cols["overall_confidence"]["numeric_scale"] == 3
 
 
 def test_trace_risk_records_primary_key(migrated_dsn: str) -> None:
