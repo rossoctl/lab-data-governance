@@ -1,4 +1,4 @@
-"""Agentic-scope classifier facade for the graph prototype. THROWAWAY.
+"""Agentic-scope classifier facade for the graph interactions algorithm.
 
 Per ADR-0026, the current algorithm covers the **openinference** agentic
 scope only. a2a and mcp are deferred — their adapters do not exist yet.

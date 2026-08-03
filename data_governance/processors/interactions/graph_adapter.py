@@ -2,7 +2,7 @@
 
 The batch graph algorithm (``processors.interactions.graph``) derives the same
 **Entities** and **Interactions** as the streaming algorithm, but emits its own
-prototype-shaped rows (coarse ``natural_key`` labels with no ``kind`` column,
+coarse extractor rows (coarse ``natural_key`` labels with no ``kind`` column,
 run-unstable ``uuid4`` ids, no ``seq``). This module maps one ``ExtractResult``
 onto the *production* row model so the graph algorithm can write the SAME tables
 (``entities`` / ``interactions`` / ``interaction_spans`` / ``interaction_payloads``)
@@ -16,7 +16,7 @@ Single-source-of-truth choices (CLAUDE.md):
   to what the streaming algorithm produces. Because entity ids are ``uuid5`` of the
   ``natural_key`` (``procedure._entity_id``), the SAME logical entity collapses onto
   the SAME ``entities`` row regardless of which algorithm wrote it. Translating the
-  proto's coarse ``llm:<model>`` / ``tool:<name>`` label is deliberately rejected:
+  graph extractor's coarse ``llm:<model>`` / ``tool:<name>`` label is deliberately rejected:
   it cannot recover the host-qualified LLM key, the ``(project,canonical)`` tuple
   keys, or the user/client/service distinctions, and would mint a parallel,
   non-colliding entity universe that fails the ``entity_kind`` ENUM.
@@ -89,15 +89,15 @@ class ProductionRows:
     ``legs_by_ix`` is an OPT-IN channel unique to the graph algorithm: when
     present, ``state.flush`` writes these leg rows verbatim (each leg's own
     ``occurred_at``/``payload_hash``/``error``/``seq``) instead of projecting them
-    from the single ``ProtoInteraction`` via ``_legs_of``. ``procedure.Processor``
+    from the single ``Interaction`` via ``_legs_of``. ``procedure.Processor``
     never sets it, so ``getattr(proc, "legs_by_ix", None)`` is ``None`` on the
     streaming path and the derived-leg projection runs unchanged."""
 
-    entities: dict[str, procedure.ProtoEntity]  # natural_key -> entity
-    payloads: dict[str, procedure.ProtoPayload]  # content_hash -> payload
-    interactions_by_anchor: dict[str, procedure.ProtoInteraction]  # anchor span id -> ix
-    interaction_spans: list[procedure.ProtoInteractionSpan]
-    entity_spans: list[procedure.ProtoEntitySpan]
+    entities: dict[str, procedure.Entity]  # natural_key -> entity
+    payloads: dict[str, procedure.Payload]  # content_hash -> payload
+    interactions_by_anchor: dict[str, procedure.Interaction]  # anchor span id -> ix
+    interaction_spans: list[procedure.InteractionSpan]
+    entity_spans: list[procedure.EntitySpan]
     _repaired_span_ids: set[str]
     legs_by_ix: dict[str, list[LegRow]] | None = None  # interaction id -> its legs
 
@@ -122,12 +122,12 @@ def _is_mcp_server(span: Span) -> bool:
 
 
 def _coarse_kind(node: EntityNode) -> str | None:
-    """The node's coarse kind from the proto's ``label`` prefix.
+    """The node's coarse kind from the graph extractor's ``label`` prefix.
 
     Per ADR-0026 the label prefix (``agent:`` / ``llm:`` / ``tool:``) is the
     sanctioned coarse-kind signal — it is set from classification, not guessed
     from a pooled span. Only the natural-key *format* after the prefix is a
-    prototype construct we must re-derive; the prefix itself is trustworthy and
+    graph-extractor construct we must re-derive; the prefix itself is trustworthy and
     tells us WHICH ``caller_inference`` builder applies. This is why we dispatch
     on it rather than scanning the node's pooled spans (an agent node legitimately
     pools an LLM ``generation`` span in its own subtree — scanning for "any LLM
@@ -259,8 +259,8 @@ def _has_payload_or_error(span: Span) -> bool:
 def _innermost_owner(
     span: Span,
     span_by_id: dict[str, Span],
-    ix_by_anchor: dict[str, procedure.ProtoInteraction],
-) -> procedure.ProtoInteraction | None:
+    ix_by_anchor: dict[str, procedure.Interaction],
+) -> procedure.Interaction | None:
     """The interaction whose anchor is the nearest ancestor-or-self of *span* on
     the same canonical service — its innermost enclosing territory. Mirrors
     ``procedure._innermost_owner_for`` (ADR-0008), so graph territory ownership
@@ -282,7 +282,7 @@ def _innermost_owner(
 
 
 def _compute_parents(
-    interactions: list[procedure.ProtoInteraction],
+    interactions: list[procedure.Interaction],
     span_by_id: dict[str, Span],
 ) -> None:
     """Fill each interaction's ``parent_interaction_id`` in place, per ADR-0008.
@@ -302,7 +302,7 @@ def _compute_parents(
     deterministic representative (lowest id) so the ancestor lookup is stable.
     """
     # real anchor span id -> the interaction anchored there (deterministic pick).
-    ix_by_anchor: dict[str, procedure.ProtoInteraction] = {}
+    ix_by_anchor: dict[str, procedure.Interaction] = {}
     for ix in interactions:
         prior = ix_by_anchor.get(ix.primary_anchor_span_id)
         if prior is None or ix.id < prior.id:
@@ -369,8 +369,8 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
                     node_identity[n.id] = ident
 
     # --- build production entities, collapsing on natural_key ------------------
-    entities: dict[str, procedure.ProtoEntity] = {}
-    # proto node id -> production entity id (uuid5). Many proto nodes may collapse
+    entities: dict[str, procedure.Entity] = {}
+    # graph node id -> production entity id (uuid5). Many graph nodes may collapse
     # onto one natural_key; every node must still map to the one uuid5.
     entity_id_by_node: dict[str, str] = {}
     for n in entity_graph.nodes:
@@ -384,7 +384,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         detected = "inferred" if n.inferred else ident.detected_from
         existing = entities.get(ident.natural_key)
         if existing is None:
-            entities[ident.natural_key] = procedure.ProtoEntity(
+            entities[ident.natural_key] = procedure.Entity(
                 id=eid,
                 kind=ident.kind,
                 natural_key=ident.natural_key,
@@ -404,23 +404,23 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
                 existing.detected_from = ident.detected_from
 
     # --- build interactions, payloads, spans, entity_spans ---------------------
-    payloads: dict[str, procedure.ProtoPayload] = {}
-    interactions_by_anchor: dict[str, procedure.ProtoInteraction] = {}
-    interaction_spans: list[procedure.ProtoInteractionSpan] = []
-    entity_spans: list[procedure.ProtoEntitySpan] = []
+    payloads: dict[str, procedure.Payload] = {}
+    interactions_by_anchor: dict[str, procedure.Interaction] = {}
+    interaction_spans: list[procedure.InteractionSpan] = []
+    entity_spans: list[procedure.EntitySpan] = []
     legs_by_ix: dict[str, list[LegRow]] = {}  # interaction id -> its request/response legs
 
-    # Reuse the proto's own payload rows (same content_kind + hashing as main).
-    proto_payload_by_hash = {p.content_hash: p for p in result.payloads}
+    # Reuse the graph extractor's own payload rows (same content_kind + hashing as main).
+    extract_payload_by_hash = {p.content_hash: p for p in result.payloads}
 
     def _ensure_payload(content_hash: str | None) -> str | None:
         if content_hash is None:
             return None
         if content_hash not in payloads:
-            src = proto_payload_by_hash.get(content_hash)
+            src = extract_payload_by_hash.get(content_hash)
             if src is None:
                 return None
-            payloads[content_hash] = procedure.ProtoPayload(
+            payloads[content_hash] = procedure.Payload(
                 content_hash=src.content_hash,
                 content_kind=src.content_kind,
                 content=src.content,
@@ -577,7 +577,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
 
         interactions_by_anchor[anchor_span_id if anchor_span_id not in claimed_spans
                                else f"{anchor_span_id}/{callee_nk}/{primary.pi.order}"] = (
-            procedure.ProtoInteraction(
+            procedure.Interaction(
                 id=ix_id,
                 trace_id=trace_id,
                 parent_interaction_id=None,
@@ -604,7 +604,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         # fabricate a leg: emit a LegRow only for a leg backed by a real edge. A
         # request-less call has only a response leg; a response-less call only a
         # request leg. `state.flush` writes these instead of deriving legs from
-        # the collapsed ProtoInteraction's started_at/ended_at.
+        # the collapsed Interaction's started_at/ended_at.
         legs: list[LegRow] = []
         if req_leg is not None:
             legs.append(
@@ -639,7 +639,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         )
         claimed_spans.add(anchor_span_id)
         interaction_spans.append(
-            procedure.ProtoInteractionSpan(
+            procedure.InteractionSpan(
                 interaction_id=ix_id,
                 trace_id=trace_id,
                 span_id=span_for_row,
@@ -659,7 +659,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
     # are already represented by anchor rows, so they are excluded here — that keeps
     # UNIQUE(trace_id, span_id) intact (each span → exactly one interaction_spans
     # row). Deterministic pick when several interactions share one anchor span.
-    ix_by_anchor: dict[str, procedure.ProtoInteraction] = {}
+    ix_by_anchor: dict[str, procedure.Interaction] = {}
     for ix in all_interactions:
         prior = ix_by_anchor.get(ix.primary_anchor_span_id)
         if prior is None or ix.id < prior.id:
@@ -673,7 +673,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             continue
         role = "info" if _has_payload_or_error(s) else "connector"
         interaction_spans.append(
-            procedure.ProtoInteractionSpan(
+            procedure.InteractionSpan(
                 interaction_id=owner.id,
                 trace_id=s.trace_id,
                 span_id=s.span_id,
@@ -691,7 +691,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             if s is None:
                 continue
             entity_spans.append(
-                procedure.ProtoEntitySpan(
+                procedure.EntitySpan(
                     entity_id=eid,
                     trace_id=s.trace_id,
                     span_id=sid,

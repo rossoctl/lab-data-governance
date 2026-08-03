@@ -1,6 +1,6 @@
-"""Per-(scope, framework) span adapters for the P-interactions graph prototype.
+"""Per-(scope, framework) span adapters for the graph interactions algorithm.
 
-This module is the **single place** in the prototype where raw OTel attribute
+This module is the **single place** in the algorithm where raw OTel attribute
 keys are consulted. Everything else in the algorithm reads from the typed
 `SpanFacts` value object that an adapter produces.
 
