@@ -1,0 +1,104 @@
+{
+  "policy_id": "data-governance-v1",
+  "policy_type": "data_governance",
+  "status": "active",
+  "version": "1.0.0",
+  "runtime_enforcement_mode": {
+    "unknown_behavior_enforcement_type": "block"
+  },
+  "rules": [
+    {
+      "rule_id": "DG-001",
+      "rule_name": "pii_to_untrusted_external",
+      "rule_categories": ["data_exfiltration", "pii_protection"],
+      "rule_sources": [
+        {
+          "document_name": "OWASP Top 10 for LLM Applications",
+          "version": "2025",
+          "section": "LLM02",
+          "article_clause": "Sensitive Information Disclosure"
+        },
+        {
+          "document_name": "NVIDIA Safety & Security Framework",
+          "version": "2025",
+          "section": "2.1",
+          "article_clause": "Confidentiality"
+        }
+      ],
+      "conditions": [
+        {"type": "event_type_in",          "values": ["external_sharing"]},
+        {"type": "has_regulatory_tag",     "tag": "PII"},
+        {"type": "destination_trust_level","level": "UNTRUSTED_EXTERNAL"}
+      ],
+      "policy_decision": {
+        "risk_level": "critical",
+        "enforcement_type": "block",
+        "allowed_actions": ["redact_pii", "require_approval"],
+        "explanation": "PII detected in payload sent to UNTRUSTED_EXTERNAL destination. Data exfiltration risk.",
+        "confidence": 0.95
+      }
+    },
+    {
+      "rule_id": "DG-002",
+      "rule_name": "phi_to_untrusted_external",
+      "rule_categories": ["data_exfiltration", "phi_protection", "hipaa"],
+      "rule_sources": [
+        {
+          "document_name": "HIPAA Security Rule",
+          "version": "2013",
+          "section": "45 CFR §164.312",
+          "article_clause": "Technical Safeguards"
+        },
+        {
+          "document_name": "OWASP Top 10 for LLM Applications",
+          "version": "2025",
+          "section": "LLM02",
+          "article_clause": "Sensitive Information Disclosure"
+        }
+      ],
+      "conditions": [
+        {"type": "event_type_in",          "values": ["external_sharing"]},
+        {"type": "has_regulatory_tag",     "tag": "PHI"},
+        {"type": "destination_trust_level","level": "UNTRUSTED_EXTERNAL"}
+      ],
+      "policy_decision": {
+        "risk_level": "critical",
+        "enforcement_type": "block",
+        "allowed_actions": [],
+        "explanation": "PHI (Protected Health Information) detected in payload sent to UNTRUSTED_EXTERNAL destination. HIPAA violation.",
+        "confidence": 0.95
+      }
+    },
+    {
+      "rule_id": "DG-004",
+      "rule_name": "restricted_external_sharing",
+      "rule_categories": ["data_exfiltration", "access_control"],
+      "rule_sources": [
+        {
+          "document_name": "OWASP Top 10 for LLM Applications",
+          "version": "2025",
+          "section": "LLM02",
+          "article_clause": "Sensitive Information Disclosure"
+        },
+        {
+          "document_name": "NVIDIA Safety & Security Framework",
+          "version": "2025",
+          "section": "2.1",
+          "article_clause": "Confidentiality"
+        }
+      ],
+      "conditions": [
+        {"type": "event_type_in",           "values": ["external_sharing"]},
+        {"type": "classification_level_eq", "level": "RESTRICTED"},
+        {"type": "destination_trust_level", "level": "UNTRUSTED_EXTERNAL"}
+      ],
+      "policy_decision": {
+        "risk_level": "critical",
+        "enforcement_type": "block",
+        "allowed_actions": [],
+        "explanation": "RESTRICTED document detected in external sharing event to UNTRUSTED_EXTERNAL destination. Sharing prohibited.",
+        "confidence": 0.95
+      }
+    }
+  ]
+}
