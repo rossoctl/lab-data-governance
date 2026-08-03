@@ -621,12 +621,15 @@ def test_a_stale_leg_in_another_trace_is_also_found(configured_db: str) -> None:
 
 
 def test_an_unconsumed_leg_is_left_to_the_cursor_arm(configured_db: str) -> None:
-    """A leg with no lineage row is *unconsumed*, not stale. It is still ahead of the
-    cursor, so the normal arm owns it — the staleness join is INNER precisely so the
-    two arms cannot race for the same leg.
+    """A leg with no lineage row that is still AHEAD of the cursor is *unconsumed*,
+    not stale: the normal arm owns it, exclusively.
 
-    Pinned because the tempting "fix" for an unconsumed leg is to outer-join
-    ``lineage_metadata``, which would hand it to both arms at once.
+    The staleness arm does look for missing lineage rows (that is how a leg skipped
+    for an absent entity is recovered — see
+    ``test_a_leg_skipped_for_a_missing_entity_is_recovered_once_it_lands``), but only
+    at or below the cursor. That threshold is what keeps the two arms from racing for
+    the same leg, and it is what this test pins: pass the arm the real cursor and the
+    brand-new leg must still be invisible to it.
     """
     _seed_agent_trace(configured_db)
     cursor = driver.drain(0)
@@ -642,8 +645,8 @@ def test_an_unconsumed_leg_is_left_to_the_cursor_arm(configured_db: str) -> None
     # Ask the driver, not Postgres: restating the predicate here would pass even if
     # _fetch_stale_traces were deleted.
     with db.transaction() as tx:
-        assert driver._fetch_stale_traces(tx, 500) == [], (
-            "an unconsumed leg must not register as stale"
+        assert driver._fetch_stale_traces(tx, cursor, 500) == [], (
+            "an unconsumed leg above the cursor must not register as stale"
         )
 
     # The cursor arm still picks it up, because its seq is above the cursor.
@@ -680,7 +683,9 @@ def test_a_leg_that_LOSES_its_payload_shrinks_the_trace_in_one_pass(
 
     # The predicate must be clear — otherwise every future wake redoes this work.
     with db.transaction() as tx:
-        assert driver._fetch_stale_traces(tx, 500) == [], "the pass did not converge"
+        assert driver._fetch_stale_traces(tx, cursor, 500) == [], (
+            "the pass did not converge"
+        )
 
     rows = _rows(configured_db)
     assert len(rows) < 6, "D9's delete did not remove the rows past the new gap"
@@ -692,3 +697,293 @@ def test_a_leg_that_LOSES_its_payload_shrinks_the_trace_in_one_pass(
         ).fetchone()
     assert status == "partial", "the coverage claim did not follow the shrink"
     assert stopped is not None
+
+
+# --- arm 2's non-payload triggers --------------------------------------------
+#
+# Both tests below are about inputs to the derivation that are NOT the leg's payload.
+# `_rewrite_leg_preserving_seq` cannot express either: one is an `entities` row landing
+# late, the other an `interactions` row being retargeted. A predicate that compares only
+# `payload_hash` sees nothing in either case, so both traces keep a wrong-or-absent
+# lineage answer while `lineage_trace_status` still says `complete`.
+
+
+def test_a_leg_skipped_for_a_missing_entity_is_recovered_once_it_lands(
+    configured_db: str,
+) -> None:
+    """A leg whose producer ENTITY row has not landed yet is skipped without a
+    lineage row (``traversal`` treats an unknown producer as a skip, not a D6 gap)
+    and the cursor advances past it anyway. Nothing then wakes this processor for the
+    entity — ``dg_entity_ready`` exists (migration 0010) but the lineage driver
+    listens only on ``dg_legs_inserted`` — so before the missing-row predicate this
+    leg had no lineage FOREVER, and the trace still claimed ``complete``.
+
+    The user leg is the one that matters: without it the agent's answer is rooted at
+    the agent itself, losing ``user:alice`` as the true origin of the trace's data.
+    """
+    with psycopg.connect(configured_db) as conn:
+        # e_user is deliberately ABSENT — the interaction references it, the entity
+        # row has not arrived. Everything else is present.
+        _entity(conn, eid="e_agent", kind="agent", natural_key="agent:(demo,advisor)")
+        _interaction(
+            conn, ix_id="ix_ua", trace_id=TRACE, caller="e_user", callee="e_agent"
+        )
+        _leg(conn, ix_id="ix_ua", leg_type="request", payload_hash="p1")
+        _leg(conn, ix_id="ix_ua", leg_type="response", payload_hash="p2")
+        conn.commit()
+
+    cursor = driver.drain(0)
+    rows = _rows(configured_db)
+    assert ("ix_ua", "request") not in rows, (
+        "precondition: the request leg's producer (e_user) is missing, so it is skipped"
+    )
+    assert cursor > 0, "precondition: the cursor advanced past the skipped leg"
+
+    # The entity lands. This is an `entities` write, not a legs write.
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="e_user", kind="user", natural_key="user:alice")
+        conn.commit()
+
+    # Arm 1 has nothing to offer — no leg is above the cursor.
+    with db.transaction() as tx:
+        assert driver._fetch_batch(tx, cursor, 500) == [], (
+            "precondition: the cursor arm can no longer reach the skipped leg"
+        )
+
+    driver.drain(cursor)
+
+    rows = _rows(configured_db)
+    assert ("ix_ua", "request") in rows, (
+        "the skipped leg was never re-derived: its lineage is lost permanently"
+    )
+    assert rows[("ix_ua", "response")]["data_sources"] == ["user:alice"], (
+        "the agent's answer must name the user as the origin of its data"
+    )
+
+    # And the sweep converges rather than re-deriving this trace on every wake.
+    with db.transaction() as tx:
+        assert driver._fetch_stale_traces(tx, cursor, 500) == [], (
+            "the pass did not converge"
+        )
+
+
+def test_a_d6_truncated_trace_is_not_flagged_as_missing_rows(
+    configured_db: str,
+) -> None:
+    """The missing-row predicate must not fire on absence D6 already explains.
+
+    A ``partial`` trace has no lineage rows from ``stopped_at_seq`` onward, by design,
+    and those legs sit below the cursor. A predicate that reads every row-less consumed
+    leg as work to do would flag this trace on every wake — and re-deriving cannot
+    create the rows, because the payloads are genuinely absent. So it would never
+    converge: an unbounded re-derive loop, worse than the bug it came from.
+    """
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+
+    # Knock out a mid-trace payload: D6 truncates, and every leg after it loses its row.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE interaction_legs SET payload_hash = NULL "
+            "WHERE interaction_id = 'ix_al1' AND leg_type = 'response'"
+        )
+        conn.commit()
+
+    driver.drain(cursor)
+
+    with psycopg.connect(configured_db) as conn:
+        status, stopped = conn.execute(
+            "SELECT status::text, stopped_at_seq FROM lineage_trace_status "
+            "WHERE trace_id = %s",
+            (TRACE,),
+        ).fetchone()
+    assert status == "partial" and stopped is not None, (
+        "precondition: the trace must be truncated with a recorded cutoff"
+    )
+    assert len(_rows(configured_db)) < 6, (
+        "precondition: legs at and after the cutoff have no lineage row"
+    )
+
+    with db.transaction() as tx:
+        assert driver._fetch_stale_traces(tx, cursor, 500) == [], (
+            "a legitimately-truncated trace is flagged forever and never converges"
+        )
+
+
+def test_a_repaired_payload_lifts_the_cutoff_and_the_trace_completes(
+    configured_db: str,
+) -> None:
+    """The mirror of the test above: absence stops being expected the moment the
+    payload lands, and the cutoff leg is the one that proves it.
+
+    A late payload is the ``partial`` → ``complete`` transition D6/D8 exist to
+    describe. But the cutoff leg has NO lineage row, so the hash-drift predicate cannot
+    see it (there is no stored hash to compare), and its ``seq`` is below the cursor, so
+    arm 1 will not offer it again. Before the missing-row predicate the trace stayed
+    ``partial`` forever with every payload present — a permanent under-report. Note the
+    predicate's bound is ``seq <= stopped_at_seq``: excluding the cutoff leg itself
+    would reintroduce exactly this.
+    """
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+
+    # Lose a mid-trace payload, drain: the trace truncates at that leg.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE interaction_legs SET payload_hash = NULL "
+            "WHERE interaction_id = 'ix_al1' AND leg_type = 'response'"
+        )
+        conn.commit()
+    driver.drain(cursor)
+    assert len(_rows(configured_db)) == 2, "precondition: the trace truncated at seq 3"
+
+    # The payload arrives after all.
+    with psycopg.connect(configured_db) as conn:
+        _payload(conn, "p3")
+        conn.execute(
+            "UPDATE interaction_legs SET payload_hash = 'p3' "
+            "WHERE interaction_id = 'ix_al1' AND leg_type = 'response'"
+        )
+        conn.commit()
+
+    driver.drain(cursor)
+
+    assert len(_rows(configured_db)) == 6, (
+        "the repaired trace is stranded partial with every payload present"
+    )
+    with psycopg.connect(configured_db) as conn:
+        status, stopped = conn.execute(
+            "SELECT status::text, stopped_at_seq FROM lineage_trace_status "
+            "WHERE trace_id = %s",
+            (TRACE,),
+        ).fetchone()
+    assert (status, stopped) == ("complete", None), (
+        "the coverage claim did not follow the repair"
+    )
+
+    with db.transaction() as tx:
+        assert driver._fetch_stale_traces(tx, cursor, 500) == [], (
+            "the pass did not converge"
+        )
+
+
+def test_a_never_arriving_producer_does_not_spin_the_stale_pass(
+    configured_db: str,
+) -> None:
+    """The missing-row predicate must except an unknown producer, not just an absent
+    payload — otherwise it re-derives the same trace on every wake, forever.
+
+    There is no FK on ``interactions.caller_entity_id``, so an interaction can name an
+    entity that never materialises. Such a leg HAS a payload (so the D6 guard does not
+    cover it) and sits below the cursor, but ``traversal`` skips it every single time,
+    so the re-derivation can never produce the row the predicate is asking for. The
+    guard is ``p.natural_key IS NOT NULL``: no resolvable producer, no claim of pending
+    work. Recovery does not need a stored flag — the moment the entity lands the join
+    resolves and the leg is eligible again, which is
+    ``test_a_leg_skipped_for_a_missing_entity_is_recovered_once_it_lands``.
+    """
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="e_agent", kind="agent", natural_key="agent:(demo,advisor)")
+        # e_ghost is never inserted, and nothing will ever insert it.
+        _interaction(
+            conn, ix_id="ix_ghost", trace_id=TRACE, caller="e_ghost", callee="e_agent"
+        )
+        _leg(conn, ix_id="ix_ghost", leg_type="request", payload_hash="p1")
+        conn.commit()
+
+    cursor = driver.drain(0)
+    assert ("ix_ghost", "request") not in _rows(configured_db), (
+        "precondition: the leg is skipped, because its producer cannot be resolved"
+    )
+
+    with db.transaction() as tx:
+        assert driver._fetch_stale_traces(tx, cursor, 500) == [], (
+            "an unresolvable producer is re-reported forever: the re-derive cannot "
+            "create the row, so this is an unbounded work loop"
+        )
+
+
+def test_the_sweep_is_ordered_oldest_offending_leg_first(configured_db: str) -> None:
+    """``LIMIT`` bounds each pass, so the ORDER BY decides who waits. It must be the
+    oldest offending leg, not ``trace_id``.
+
+    Ordering by ``trace_id`` is a fixed lexicographic priority: a trace that keeps
+    failing to clear the predicate would hold a slot forever and starve every stale
+    trace sorting after it. The three guards on the missing-row branch are meant to
+    leave no such trace — and post-fix I could not construct one — but the ordering
+    should not be what makes that assumption load-bearing.
+
+    So this pins the queue property directly rather than staging a starvation, which
+    would only pass vacuously: the trace whose offending leg is OLDEST must come first
+    even when it sorts LAST by ``trace_id``.
+    """
+    later_id = "a" * 32  # sorts first lexicographically, newer leg
+    older_id = "z" * 32  # sorts last lexicographically, older leg
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="e_user", kind="user", natural_key="user:alice")
+        _entity(conn, eid="e_agent", kind="agent", natural_key="agent:(demo,advisor)")
+        # Inserted first, so `interaction_legs_seq` gives this leg the lower seq.
+        _interaction(
+            conn, ix_id="ix_old", trace_id=older_id, caller="e_user", callee="e_agent"
+        )
+        _leg(conn, ix_id="ix_old", leg_type="request", payload_hash="o1")
+        _interaction(
+            conn, ix_id="ix_new", trace_id=later_id, caller="e_user", callee="e_agent"
+        )
+        _leg(conn, ix_id="ix_new", leg_type="request", payload_hash="n1")
+        conn.commit()
+
+    cursor = driver.drain(0)
+
+    # Make BOTH traces stale, so ordering is the only thing separating them.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE lineage_metadata SET data_sources = ARRAY['bogus']")
+        conn.commit()
+
+    with db.transaction() as tx:
+        assert driver._fetch_stale_traces(tx, cursor, 1) == [older_id], (
+            "a one-slot pass took the lexicographically-first trace instead of the "
+            "one that has been waiting longest"
+        )
+        assert driver._fetch_stale_traces(tx, cursor, 2) == [older_id, later_id]
+
+
+def test_a_retargeted_leg_is_rederived_though_its_payload_is_unchanged(
+    configured_db: str,
+) -> None:
+    """``load_trace`` derives from ``interactions.caller_entity_id`` /
+    ``callee_entity_id`` as well as the payload, and P-interactions rewrites those in
+    place under ``ON CONFLICT (id) DO UPDATE`` (``interactions/state.py``). So a
+    re-derive can point a leg at a DIFFERENT entity with every ``payload_hash``
+    byte-identical — which the original #137 predicate, comparing only
+    ``payload_hash``, could not see. Stale lineage naming the wrong entity then
+    survived while the trace claimed ``complete``.
+    """
+    _seed_agent_trace(configured_db)
+    cursor = driver.drain(0)
+    assert _rows(configured_db)[("ix_ua", "request")]["data_sources"] == ["user:alice"]
+
+    # Retarget ix_ua's caller from the user to a second agent. No payload changes.
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="e_other", kind="agent", natural_key="agent:(demo,other)")
+        conn.execute(
+            "UPDATE interactions SET caller_entity_id = 'e_other' WHERE id = 'ix_ua'"
+        )
+        conn.commit()
+
+    hashes_before = {k: v["payload_hash"] for k, v in _rows(configured_db).items()}
+
+    driver.drain(cursor)
+
+    rows = _rows(configured_db)
+    assert {k: v["payload_hash"] for k, v in rows.items()} == hashes_before, (
+        "precondition: no payload changed, so predicate 1 cannot be what fired"
+    )
+    assert rows[("ix_ua", "request")]["data_sources"] == ["agent:(demo,other)"], (
+        "lineage still names user:alice as the source of a leg the user no longer sent"
+    )
+
+    with db.transaction() as tx:
+        assert driver._fetch_stale_traces(tx, cursor, 500) == [], (
+            "the pass did not converge"
+        )
