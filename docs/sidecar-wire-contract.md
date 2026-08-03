@@ -1,4 +1,4 @@
-# Sidecar wire contract — two-span lineage (v1.3)
+# Sidecar wire contract — two-span lineage (v1.4)
 
 The single source of truth for what the AuthBridge lineage plugin emits and what the
 P-interactions `sidecar` algorithm (ADR-0029) consumes. Fixes the attribute names that were left
@@ -80,11 +80,14 @@ follow-up, not current behavior.
   Malformed stamps fall through to the wire parent silently.
 - Forwarded traceparent (outbound only) is rewritten to name the request span as parent — the
   splice. Inbound requests are forwarded with headers untouched EXCEPT the tracestate stamp.
-  **Mode caveat:** in the deployed envoy-sidecar (ext_proc) mode the outbound listener forwards
-  no header mutation except Authorization, so the outbound rewrite is inert on the wire — the
-  mechanical cause of the by-design dangling wire parent on every stored trace. The rewrite is
-  live in proxy-sidecar mode. Making ext_proc outbound emit the SetHeaders diff is a named
-  follow-up (the inbound stamp already does).
+  **v1.4: the rewrite is live on the wire in BOTH modes.** Until v1.3 the deployed
+  envoy-sidecar (ext_proc) mode forwarded no outbound header mutation except Authorization, so
+  the rewrite was inert there — the mechanical cause of the dangling wire parent on every trace
+  stored before 2026-08-03 (multi-pod traces derived as one phantom-rooted tree per pod). The
+  ext_proc listener now emits the traceparent/tracestate diff on all four handler paths, so a
+  callee sidecar's inbound request span is parented on the caller sidecar's outbound request
+  span and the exchange-merge (tool-echo identity) fires across pods. Traces still enter with
+  ONE dangling parent at the trace edge (the un-sidecared driver/UI), by design.
 - **The trace-keyed map is gone (v1.3).** It answered from "the last inbound seen for this trace",
   which is correct only while exactly one inbound of that trace is in flight — a precondition it
   never checked and could not verify. Under same-trace concurrency it produced a real, exported,
@@ -108,7 +111,7 @@ Resource (unchanged): `service.name=authbridge`, `authbridge.component=lineage-t
 | `lineage.role` | both | `request` \| `response` | which half this span is |
 | `lineage.direction` | both | `inbound` \| `outbound` | |
 | `lineage.self.id` | both | `weather-service` | from `self_id` / `self_id_file` |
-| `lineage.peer.addr` | both spans, **inbound only** | `10.244.2.5:47312` | the direct TCP caller's address. Not emitted on outbound — there the proxy only observes the app's own socket, which would mislabel the fact; outbound callee identity comes from `peer.host`. **Currently never produced in the deployed envoy-sidecar (ext_proc) mode**, where the remote address is unavailable to the plugin — anonymous inbound callers derive as `client:(unknown)`; a producer-side follow-up (ADR-0029) |
+| `lineage.peer.addr` | *(removed in v1.4)* | `10.244.2.5:47312` | REMOVED from the producer 2026-08-03. It was inbound-only and never produced in the deployed envoy-sidecar (ext_proc) mode, where the remote address is unavailable to the plugin — so it served nothing live and was dropped rather than kept as proxy-mode-only surface. Anonymous inbound callers derive as `client:(unknown)`, as before. Spans stored before v1.4 from proxy-mode sidecars may carry it; the consumer must tolerate but derives nothing from it. Reintroduction (with an ext_proc source for the address) is a possible follow-up |
 | `lineage.peer.host` | both | `weather-tool-mcp.team1.svc:8000` | Host/authority header when present |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched; `http` = none |
 | `lineage.parent.source` | request | `tracestate` \| `wire` | v1.3: which mechanism chose the request span's parent — the tracestate stamp (exact) or the wire traceparent. Inbound is always `wire`. `map` was a legal value in v1.2 only; stored spans predating v1.3 may still carry it. A fact for auditing attribution; the consumer derives nothing from it |
