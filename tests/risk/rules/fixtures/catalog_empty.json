@@ -1,0 +1,7 @@
+{
+  "policy_id": "fixture-empty",
+  "policy_type": "data_governance",
+  "status": "active",
+  "version": "0.0.1",
+  "rules": []
+}
