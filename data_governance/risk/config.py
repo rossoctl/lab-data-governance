@@ -32,7 +32,7 @@ __all__ = [
     "LEG_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS",
     "CLASSIFICATION_TRIGGER_CHANNEL_NAME",
     "CLASSIFICATION_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS",
-    "TRACE_TRIGGER_CHANNEL_NAME",
+    "INTERACTION_RISK_WRITTEN_CHANNEL_NAME",
     "TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS",
     "FANOUT_BATCH_SIZE",
     "METRICS_REFRESH_INTERVAL_SECONDS",
@@ -107,7 +107,9 @@ CLASSIFICATION_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS = _int_env(
 
 # --- risk.trace_trigger.* ----------------------------------------------------
 
-TRACE_TRIGGER_CHANNEL_NAME = _str_env(
+# Channel the dg_interaction_risk_written trigger (migration 0010) notifies
+# on; the future Trace Risk Processor (#102) listens here.
+INTERACTION_RISK_WRITTEN_CHANNEL_NAME = _str_env(
     "RISK_TRACE_TRIGGER_CHANNEL_NAME", "dg_interaction_risk_written"
 )
 TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS = _int_env(

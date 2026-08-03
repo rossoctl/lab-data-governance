@@ -63,7 +63,7 @@ def test_classification_trigger_defaults():
 
 def test_trace_trigger_defaults():
     cfg = _reload()
-    assert cfg.TRACE_TRIGGER_CHANNEL_NAME == "dg_interaction_risk_written"
+    assert cfg.INTERACTION_RISK_WRITTEN_CHANNEL_NAME == "dg_interaction_risk_written"
     assert cfg.TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS == 10
 
 
