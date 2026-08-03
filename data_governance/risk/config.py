@@ -6,14 +6,15 @@ codebase). Each PRD dotted name (e.g. ``alert.min_risk_level``) maps to a
 ``RISK_``-prefixed upper-snake env var (``RISK_ALERT_MIN_RISK_LEVEL``).
 
 Only the backbone-relevant §10 parameters are defined here: alerting,
-storage retention, the three risk NOTIFY-trigger channels/poll-fallback
-intervals, the fan-out batch size, and the metrics refresh interval. The
+storage retention, the trace-risk NOTIFY-trigger channel/poll-fallback
+interval, the fan-out batch size, and the metrics refresh interval. The
 ``api.*.default_page_size``/``default_limit`` parameters belong to the REST
 API issues (#109/#111/#113), which own the endpoints that consume them.
 
-Also reserves the three ``processor_state.processor_name`` values issue #98
-carves out for the future trigger processors (#99-#102), so those issues
-cannot collide on a name.
+The leg-trigger and classification-trigger config (channel names, poll
+fallbacks, reserved processor names for #99/#100) has been removed: those two
+triggers are being replaced by a single new trigger, not yet designed, so
+there is nothing to configure yet.
 """
 
 from __future__ import annotations
@@ -28,16 +29,10 @@ __all__ = [
     "ALERT_MAX_DAILY_ALERTS",
     "ALERT_VOLUME_WARNING_PCT",
     "STORAGE_RETENTION_DAYS",
-    "LEG_TRIGGER_CHANNEL_NAME",
-    "LEG_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS",
-    "CLASSIFICATION_TRIGGER_CHANNEL_NAME",
-    "CLASSIFICATION_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS",
     "INTERACTION_RISK_WRITTEN_CHANNEL_NAME",
     "TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS",
     "FANOUT_BATCH_SIZE",
     "METRICS_REFRESH_INTERVAL_SECONDS",
-    "PROCESSOR_NAME_LEG_TRIGGER",
-    "PROCESSOR_NAME_CLASSIFICATION_TRIGGER",
     "PROCESSOR_NAME_TRACE_TRIGGER",
 ]
 
@@ -87,24 +82,6 @@ ALERT_VOLUME_WARNING_PCT = _int_env("RISK_ALERT_VOLUME_WARNING_PCT", 90)
 
 STORAGE_RETENTION_DAYS = _int_env("RISK_STORAGE_RETENTION_DAYS", 365)
 
-# --- risk.leg_trigger.* ------------------------------------------------------
-
-LEG_TRIGGER_CHANNEL_NAME = _str_env(
-    "RISK_LEG_TRIGGER_CHANNEL_NAME", "dg_interaction_legs_inserted"
-)
-LEG_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS = _int_env(
-    "RISK_LEG_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS", 10
-)
-
-# --- risk.classification_trigger.* -------------------------------------------
-
-CLASSIFICATION_TRIGGER_CHANNEL_NAME = _str_env(
-    "RISK_CLASSIFICATION_TRIGGER_CHANNEL_NAME", "dg_classifications_inserted"
-)
-CLASSIFICATION_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS = _int_env(
-    "RISK_CLASSIFICATION_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS", 60
-)
-
 # --- risk.trace_trigger.* ----------------------------------------------------
 
 # Channel the dg_interaction_risk_written trigger (migration 0010) notifies
@@ -125,8 +102,6 @@ FANOUT_BATCH_SIZE = _int_env("RISK_FANOUT_BATCH_SIZE", 100)
 METRICS_REFRESH_INTERVAL_SECONDS = _int_env("RISK_METRICS_REFRESH_INTERVAL_SECONDS", 300)
 
 # --- reserved processor_state.processor_name values (issue #98) -------------
-# Carved out now so #99-#102 cannot collide on a processor_name.
+# Carved out now so #102 cannot collide on a processor_name.
 
-PROCESSOR_NAME_LEG_TRIGGER = "risk_interaction_leg_trigger"
-PROCESSOR_NAME_CLASSIFICATION_TRIGGER = "risk_classification_trigger"
 PROCESSOR_NAME_TRACE_TRIGGER = "risk_trace_trigger"

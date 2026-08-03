@@ -1,10 +1,13 @@
 """Tests for ``data_governance.risk.config`` (issue #98, PRD §10).
 
 Covers the configuration parameters relevant to the backbone: alerting,
-storage retention, the three risk NOTIFY-trigger channels/poll fallbacks, the
+storage retention, the trace-risk NOTIFY-trigger channel/poll fallback, the
 fan-out batch size, and the metrics refresh interval. The ``api.*`` pagination
 defaults from §10 belong to the REST API issues (#109/#111/#113) and are out
 of scope here — this module owns no HTTP route.
+
+The leg-trigger and classification-trigger config was removed: those two
+triggers are being replaced by a single new trigger, not yet designed.
 
 Every parameter is a module-level constant read from its own env var at
 import time (plain ``os.environ.get``, matching the rest of the repo — no
@@ -49,18 +52,6 @@ def test_storage_defaults():
     assert cfg.STORAGE_RETENTION_DAYS == 365
 
 
-def test_leg_trigger_defaults():
-    cfg = _reload()
-    assert cfg.LEG_TRIGGER_CHANNEL_NAME == "dg_interaction_legs_inserted"
-    assert cfg.LEG_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS == 10
-
-
-def test_classification_trigger_defaults():
-    cfg = _reload()
-    assert cfg.CLASSIFICATION_TRIGGER_CHANNEL_NAME == "dg_classifications_inserted"
-    assert cfg.CLASSIFICATION_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS == 60
-
-
 def test_trace_trigger_defaults():
     cfg = _reload()
     assert cfg.INTERACTION_RISK_WRITTEN_CHANNEL_NAME == "dg_interaction_risk_written"
@@ -86,10 +77,10 @@ def test_int_params_overridable_via_env(monkeypatch: pytest.MonkeyPatch):
 
 def test_str_params_overridable_via_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RISK_ALERT_MIN_RISK_LEVEL", "high")
-    monkeypatch.setenv("RISK_LEG_TRIGGER_CHANNEL_NAME", "custom_channel")
+    monkeypatch.setenv("RISK_TRACE_TRIGGER_CHANNEL_NAME", "custom_channel")
     cfg = _reload()
     assert cfg.ALERT_MIN_RISK_LEVEL == "high"
-    assert cfg.LEG_TRIGGER_CHANNEL_NAME == "custom_channel"
+    assert cfg.INTERACTION_RISK_WRITTEN_CHANNEL_NAME == "custom_channel"
 
 
 def test_list_param_overridable_via_env(monkeypatch: pytest.MonkeyPatch):
@@ -130,14 +121,6 @@ def test_empty_list_env_yields_empty_list_not_default(
 # --- reserved processor_state names -----------------------------------------
 
 
-def test_reserved_processor_names_are_distinct():
+def test_reserved_trace_trigger_processor_name():
     cfg = _reload()
-    names = {
-        cfg.PROCESSOR_NAME_LEG_TRIGGER,
-        cfg.PROCESSOR_NAME_CLASSIFICATION_TRIGGER,
-        cfg.PROCESSOR_NAME_TRACE_TRIGGER,
-    }
-    assert len(names) == 3
-    assert cfg.PROCESSOR_NAME_LEG_TRIGGER == "risk_interaction_leg_trigger"
-    assert cfg.PROCESSOR_NAME_CLASSIFICATION_TRIGGER == "risk_classification_trigger"
     assert cfg.PROCESSOR_NAME_TRACE_TRIGGER == "risk_trace_trigger"
