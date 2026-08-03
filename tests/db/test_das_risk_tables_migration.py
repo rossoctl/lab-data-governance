@@ -443,18 +443,19 @@ def test_insert_into_unrelated_table_does_not_notify(migrated_dsn: str) -> None:
 # --- migration chain -----------------------------------------------------------
 
 
-def test_head_is_0010(migrated_dsn: str) -> None:
+def test_head_is_0012(migrated_dsn: str) -> None:
     with psycopg.connect(migrated_dsn) as conn:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0010_das_risk_tables"
+    assert version == "0012_das_risk_tables"
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
-    """upgrade -> downgrade(0009) -> upgrade cleanly removes and re-adds the
+    """upgrade -> downgrade(0011) -> upgrade cleanly removes and re-adds the
     three DAS tables + trigger. Downgrading past this revision must not
-    disturb interaction_legs (0009) or anything below it."""
+    disturb interaction_legs (0009, as amended by 0011's dropped
+    original_seq) or anything below it."""
     from alembic import command
 
     from data_governance.db.migrate import _alembic_config
@@ -468,13 +469,13 @@ def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
     assert _columns(pg_dsn, "alerts")
     assert _trigger_exists(pg_dsn, "dg_interaction_risk_notify")
 
-    command.downgrade(cfg, "0009_interaction_legs")
+    command.downgrade(cfg, "0011_drop_leg_original_seq")
     assert not _columns(pg_dsn, "interaction_risk_records")
     assert not _columns(pg_dsn, "trace_risk_records")
     assert not _columns(pg_dsn, "alerts")
     assert not _function_exists(pg_dsn, "dg_notify_interaction_risk")
     assert "seq" in _columns(pg_dsn, "interaction_legs"), (
-        "downgrading past 0010 must not disturb interaction_legs (0009)"
+        "downgrading past 0012 must not disturb interaction_legs"
     )
 
     command.upgrade(cfg, "head")

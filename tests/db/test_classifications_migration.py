@@ -88,20 +88,18 @@ def test_findings_is_jsonb_and_model_version_is_integer(migrated_dsn: str) -> No
 # --- migration chain ---------------------------------------------------------
 
 
-def test_head_is_0010(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on the current head revision (0010 —
-    the DAS backbone tables, issue #98, chained after 0009).
-
-    Was ``test_head_is_0009`` / asserted ``"0009_interaction_legs"`` before
-    migration 0010 (DAS backbone, issue #98) extended the chain; updated here
-    since adding a migration intentionally moves what "head" means, and noted
-    in the #98 PR per the modified-existing-test policy.
-    """
+def test_head_is_0012(migrated_dsn: str) -> None:
+    """Applying the chain to head lands on the current head revision (0012 —
+    the DAS backbone tables, issue #98, chained after 0011 so it applies last,
+    after main's 0010/0011). The head assertion lives here (rather than in
+    each revision's own test) so a new revision moves exactly one line; the
+    classification store this file covers is asserted structurally by the
+    tests above regardless of the head."""
     with psycopg.connect(migrated_dsn) as conn:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0010_das_risk_tables"
+    assert version == "0012_das_risk_tables"
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:

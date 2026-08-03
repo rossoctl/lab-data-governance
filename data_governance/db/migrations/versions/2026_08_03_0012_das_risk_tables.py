@@ -55,8 +55,13 @@ foreign key, so a mid-derive write is never rejected by a dangling reference.
 
 Hand-written ``op.execute`` only, per ADR-0002/0005.
 
-Revision ID: 0010_das_risk_tables
-Revises: 0009_interaction_legs
+Chained after ``0011_drop_leg_original_seq`` (not the ``0009_interaction_legs``
+this revision originally chained from) so it applies last, after the
+``0010``/``0011`` migrations that landed on ``main`` while this one was in
+review. Renumbered from ``0010`` to ``0012`` accordingly — no DDL changed.
+
+Revision ID: 0012_das_risk_tables
+Revises: 0011_drop_leg_original_seq
 Create Date: 2026-07-29
 """
 
@@ -67,8 +72,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "0010_das_risk_tables"
-down_revision: Union[str, Sequence[str], None] = "0009_interaction_legs"
+revision: str = "0012_das_risk_tables"
+down_revision: Union[str, Sequence[str], None] = "0011_drop_leg_original_seq"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
