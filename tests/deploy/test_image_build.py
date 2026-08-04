@@ -466,13 +466,13 @@ def test_build_load_script_tags_both_images(script_text: str) -> None:
     )
 
 
-def test_build_load_script_loads_into_kind_kagenti(script_text: str) -> None:
+def test_build_load_script_loads_into_kind_rossoctl(script_text: str) -> None:
     """The script ``kind load docker-image``s both tags into the cluster
-    named ``kagenti`` (the upstream Kagenti convention).
+    named ``rossoctl`` (the upstream platform convention post-rebrand).
 
     The cluster name may be provided literally on the ``kind load`` line, or
-    expanded from a shell variable whose default is ``kagenti``. Either is
-    acceptable; what we assert is that ``kagenti`` is the default target so
+    expanded from a shell variable whose default is ``rossoctl``. Either is
+    acceptable; what we assert is that ``rossoctl`` is the default target so
     a developer running the script with no env vars hits the right cluster.
     """
     assert "kind load docker-image" in script_text, (
@@ -480,23 +480,23 @@ def test_build_load_script_loads_into_kind_kagenti(script_text: str) -> None:
     )
     # The script must drive `kind load` via a `--name` flag (literal or
     # variable). A bare `kind load docker-image IMG` would target whatever
-    # cluster `kind` defaults to ("kind"), not kagenti.
+    # cluster `kind` defaults to ("kind"), not rossoctl.
     assert re.search(r"--name[\s=]", script_text), (
         "build script must pass --name to `kind load docker-image` so it "
         "targets a specific cluster"
     )
-    # And `kagenti` must be the default cluster name. Accept either a literal
-    # `--name kagenti` (no variable) or a `${KIND_CLUSTER:-kagenti}`-style
+    # And `rossoctl` must be the default cluster name. Accept either a literal
+    # `--name rossoctl` (no variable) or a `${KIND_CLUSTER:-rossoctl}`-style
     # default.
-    has_literal_kagenti = bool(
-        re.search(r"--name[\s=]+[\"']?kagenti[\"']?\b", script_text)
+    has_literal_rossoctl = bool(
+        re.search(r"--name[\s=]+[\"']?rossoctl[\"']?\b", script_text)
     )
-    has_default_kagenti = bool(
-        re.search(r":-\s*kagenti\b", script_text)
+    has_default_rossoctl = bool(
+        re.search(r":-\s*rossoctl\b", script_text)
     )
-    assert has_literal_kagenti or has_default_kagenti, (
-        "build script must default to the `kagenti` Kind cluster "
-        "(literal `--name kagenti` or `${KIND_CLUSTER:-kagenti}`)"
+    assert has_literal_rossoctl or has_default_rossoctl, (
+        "build script must default to the `rossoctl` Kind cluster "
+        "(literal `--name rossoctl` or `${KIND_CLUSTER:-rossoctl}`)"
     )
 
 

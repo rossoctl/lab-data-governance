@@ -11,7 +11,7 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `30-receiver.yaml`            | `Service` + `Deployment` for the OTLP receiver              |
 | `40-ui.yaml`                  | `Service` + `Deployment` for the UI backend                 |
 | `50-networkpolicy.yaml`       | `NetworkPolicy` for receiver, UI, and Postgres ingress      |
-| `60-ui-httproute.yaml`        | `HTTPRoute` + `ReferenceGrant` exposing the UI on the kagenti shared Gateway |
+| `60-ui-httproute.yaml`        | `HTTPRoute` + `ReferenceGrant` exposing the UI on the rossoctl shared Gateway |
 | `70-interactions.yaml`        | `Deployment` for the P-interactions processor (no Service)  |
 | `80-classification.yaml`      | `Deployment` for the P-classification processor (no Service) |
 
@@ -62,9 +62,10 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
   Higher memory limits (3Gi) than the other processors to hold torch + the
   resident model.
 - **NetworkPolicy.** Three policies, one per workload. Receiver and UI
-  ingress is restricted to the upstream Kagenti namespace, matched by
-  the default `kubernetes.io/metadata.name=kagenti` label every
-  namespace gets. Postgres ingress is restricted to the
+  ingress is restricted to the upstream platform namespace, matched by
+  the default `kubernetes.io/metadata.name` label every namespace gets
+  (`rossoctl-system`, with `kagenti-system`/`kagenti` kept for
+  portability). Postgres ingress is restricted to the
   `data-governance` namespace. PROJECT.md §7 frames v1 as
   unauthenticated cluster-internal: the NetworkPolicy IS the v1
   security boundary.
@@ -88,7 +89,7 @@ The `deploy/build-and-load.sh` helper does both steps in one shot:
 It builds the image from `Containerfile` (multi-stage `uv sync --frozen`
 build), tags it as both `data-governance/receiver:latest` and
 `data-governance/ui:latest`, and `kind load docker-image`s both tags into
-the cluster named `kagenti`. It **also** materializes the git-LFS model
+the cluster named `rossoctl`. It **also** materializes the git-LFS model
 weights and builds + loads the separate P-classification image
 `data-governance/classification:latest` from `Containerfile.classification`
 (issue #79 / ADR-0022 — the fat torch + baked-weights image, distinct from
@@ -149,47 +150,60 @@ image from the node's image store.
 Postgres (the StatefulSet) does not need restarting — it only holds
 data, not code from this repo.
 
-## Wire the kagenti collector to our receiver
+## Wire the rossoctl collector to our receiver
 
 The data-governance receiver is reachable at
 `data-governance-receiver.data-governance.svc.cluster.local:4317` (gRPC),
-but the kagenti otel-collector ships without an exporter pointing here.
-That edit lives in the kagenti repo (issue #42's "Cross-repo
+but the rossoctl otel-collector ships without an exporter pointing here.
+That edit lives in the rossoctl repo (issue #42's "Cross-repo
 coordination" section). Until that lands upstream, run the helper script
 after `kubectl apply -f deploy/k8s/`:
 
 ```sh
-./deploy/patch-kagenti-collector.sh
+./deploy/patch-rossoctl-collector.sh
 ```
 
-It additively patches the live `kagenti-system/otel-collector-config`
-ConfigMap — adding an `otlp/data_governance` exporter and wiring it into
-the existing `traces/phoenix` pipeline (which already runs the
-OpenInference transform that the receiver expects) — and rolls
-`deploy/otel-collector`. The script is idempotent: re-running it after
-the patch is in place is a no-op. Re-run it after any cluster recreate or
-upstream re-apply of the kagenti collector ConfigMap.
+It additively patches the live `rossoctl-system/otel-collector-config`
+ConfigMap — adding an `otlp/data_governance` exporter and a **dedicated**
+`traces/data_governance` pipeline (`otlp → batch → otlp/data_governance`)
+that fans the collector's existing OTLP receiver to us — and rolls
+`deploy/otel-collector`. data-governance gets its own isolated pipeline;
+it does **not** piggyback on any other pipeline (e.g. Phoenix's), so its
+span ingestion is independent of the platform's other trace pipelines.
+The existing `traces/default` pipeline is left untouched. The script is
+idempotent: re-running it after the patch is in place is a no-op. Re-run
+it after any cluster recreate or upstream re-apply of the rossoctl
+collector ConfigMap.
+
+The agent-examples deploy (travel_advisor) optionally adds a
+`filter/a2a_noise` processor into this same `traces/data_governance`
+pipeline to drop a2a queue/event-noise spans before we ingest them; this
+script tolerates that (`--revert` removes the whole pipeline regardless).
 
 To remove the patch (e.g. before letting upstream own the integration),
-pass `--revert`:
+pass `--revert` — it removes the `traces/data_governance` pipeline and the
+`otlp/data_governance` exporter, restoring the pre-patch collector state:
 
 ```sh
-./deploy/patch-kagenti-collector.sh --revert
+./deploy/patch-rossoctl-collector.sh --revert
 ```
+
+Override the target namespace with `COLLECTOR_NAMESPACE` if your platform
+collector lives elsewhere (default `rossoctl-system`).
 
 `--revert` is also idempotent — running it when the exporter is already
 absent is a no-op and does not roll the collector.
 
-## UI access via the kagenti shared Gateway
+## UI access via the rossoctl shared Gateway
 
-`60-ui-httproute.yaml` attaches an `HTTPRoute` (in `kagenti-system`,
+`60-ui-httproute.yaml` attaches an `HTTPRoute` (in `rossoctl-system`,
 where the `shared-gateway-access=true` label lives) to the
-`kagenti-system/http` Gateway, exposing the UI at
+`rossoctl-system/http` Gateway, exposing the UI at
 **http://dg.localtest.me:8080/**. The route's `backendRefs` target the
 `data-governance-ui` Service in `data-governance`; a `ReferenceGrant` in
 `data-governance` permits exactly that one cross-namespace edge. This
-mirrors how phoenix, mlflow, kagenti-ui, etc. are exposed on the same
-Gateway.
+mirrors how rossoctl-ui, rossoctl-api, keycloak, etc. are exposed on the
+same Gateway.
 
 The route is reachable because the Kind cluster maps host port 8080 to
 the gateway listener (NodePort 30080 → port 80 inside the cluster). No
@@ -217,12 +231,12 @@ checked manually against a fresh cluster:
 1. `kubectl apply -f deploy/k8s/`
 2. Wait for `data-governance-receiver` and `data-governance-ui` pods to
    reach Ready.
-3. From a pod inside the Kagenti namespace, send an OTLP span to
+3. From a pod inside the platform namespace, send an OTLP span to
    `data-governance-receiver.data-governance.svc:4317` (gRPC) or
    `:4318` (HTTP/protobuf).
 4. Open http://dg.localtest.me:8080/ — the trace's listing root should
    appear in the recent-traces view, with the sent span discoverable
-   via the trace-tree drill-in. (As a fallback if the kagenti shared
+   via the trace-tree drill-in. (As a fallback if the rossoctl shared
    Gateway is not present: `kubectl port-forward
    svc/data-governance-ui 8080:8080 -n data-governance` and open
    `http://localhost:8080/`.)

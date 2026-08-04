@@ -543,19 +543,19 @@ def test_ui_deployment_has_probes(ui_deployment: dict) -> None:
 # ---------------------------------------------------------------------------
 #
 # The UI is exposed at http://dg.localtest.me:8080 via an HTTPRoute attached
-# to the kagenti-system/http Gateway, mirroring how phoenix and other
-# kagenti services are exposed. Because the route lives in kagenti-system
-# (the only namespace labelled shared-gateway-access=true) but targets a
-# Service in data-governance, a ReferenceGrant must permit that single
-# cross-namespace edge.
+# to the rossoctl-system/http Gateway, mirroring how the rossoctl-ui/-api and
+# other platform services are exposed. Because the route lives in
+# rossoctl-system (the only namespace labelled shared-gateway-access=true) but
+# targets a Service in data-governance, a ReferenceGrant must permit that
+# single cross-namespace edge.
 
 
 def test_ui_httproute_exists_and_targets_ui_service(docs: list[dict]) -> None:
     routes = _by_kind(docs, "HTTPRoute", "data-governance-ui")
     assert len(routes) == 1, "expected one HTTPRoute named data-governance-ui"
     route = routes[0]
-    assert route["metadata"]["namespace"] == "kagenti-system", (
-        "HTTPRoute must live in kagenti-system (the shared-gateway-access ns)"
+    assert route["metadata"]["namespace"] == "rossoctl-system", (
+        "HTTPRoute must live in rossoctl-system (the shared-gateway-access ns)"
     )
     hostnames = route["spec"].get("hostnames") or []
     assert "dg.localtest.me" in hostnames, (
@@ -564,10 +564,10 @@ def test_ui_httproute_exists_and_targets_ui_service(docs: list[dict]) -> None:
     parents = route["spec"].get("parentRefs") or []
     assert any(
         p.get("name") == "http"
-        and p.get("namespace") == "kagenti-system"
+        and p.get("namespace") == "rossoctl-system"
         and p.get("kind", "Gateway") == "Gateway"
         for p in parents
-    ), f"HTTPRoute must attach to kagenti-system/http Gateway, got {parents}"
+    ), f"HTTPRoute must attach to rossoctl-system/http Gateway, got {parents}"
     backends = [b for r in route["spec"].get("rules") or [] for b in r.get("backendRefs") or []]
     assert any(
         b.get("name") == "data-governance-ui"
@@ -584,7 +584,7 @@ def test_ui_referencegrant_permits_cross_namespace_route(docs: list[dict]) -> No
         g for g in grants
         if g["metadata"].get("namespace") == "data-governance"
         and any(
-            f.get("kind") == "HTTPRoute" and f.get("namespace") == "kagenti-system"
+            f.get("kind") == "HTTPRoute" and f.get("namespace") == "rossoctl-system"
             for f in g["spec"].get("from") or []
         )
         and any(
@@ -594,7 +594,7 @@ def test_ui_referencegrant_permits_cross_namespace_route(docs: list[dict]) -> No
     ]
     assert matching, (
         "expected a ReferenceGrant in data-governance permitting "
-        "HTTPRoutes from kagenti-system to target the data-governance-ui Service"
+        "HTTPRoutes from rossoctl-system to target the data-governance-ui Service"
     )
 
 
@@ -724,20 +724,22 @@ def _namespace_selector_admits(ns_sel: dict, ns_labels: dict[str, str]) -> bool:
     return True
 
 
-def test_network_policy_admits_kagenti_system_namespace(
+def test_network_policy_admits_rossoctl_system_namespace(
     network_policies: list[dict],
 ) -> None:
-    """Ingress from the kagenti-system namespace must be permitted (issue #42).
+    """Ingress from the rossoctl-system namespace must be permitted (issue #42).
 
-    The kagenti otel-collector lives in the ``kagenti-system`` namespace on
-    every cluster we currently target — there is no namespace literally named
-    ``kagenti``. A v1 NetworkPolicy that only admits ``kubernetes.io/metadata.name=kagenti``
-    silently drops every span the collector tries to export to us. PROJECT.md §7
-    refers to "the Kagenti namespace" but does not pin the literal name, so the
-    policy must admit at least the actually-deployed name (``kagenti-system``)
-    on both the receiver and UI policies.
+    The rossoctl otel-collector lives in the ``rossoctl-system`` namespace on
+    the cluster we currently target (post kagenti->rossoctl rebrand) — there is
+    no namespace literally named ``kagenti``/``rossoctl``. A v1 NetworkPolicy
+    that does not admit ``kubernetes.io/metadata.name=rossoctl-system`` silently
+    drops every span the collector tries to export to us. PROJECT.md §7 refers
+    to "the platform namespace" but does not pin the literal name, so the policy
+    must admit at least the actually-deployed name (``rossoctl-system``) on both
+    the receiver and UI policies. (Historical names ``kagenti-system`` /
+    ``kagenti`` are also kept in the selector for portability.)
     """
-    kagenti_system_labels = {"kubernetes.io/metadata.name": "kagenti-system"}
+    rossoctl_system_labels = {"kubernetes.io/metadata.name": "rossoctl-system"}
     for target, ports_required in (
         ("data-governance-receiver", {4317, 4318}),
         ("data-governance-ui", {8080}),
@@ -748,17 +750,16 @@ def test_network_policy_admits_kagenti_system_namespace(
         for rule in np["spec"].get("ingress") or []:
             for src in rule.get("from") or []:
                 ns_sel = src.get("namespaceSelector") or {}
-                if _namespace_selector_admits(ns_sel, kagenti_system_labels):
+                if _namespace_selector_admits(ns_sel, rossoctl_system_labels):
                     for p in rule.get("ports") or []:
                         admitted_ports.add(p["port"])
                     break
         missing = ports_required - admitted_ports
         assert not missing, (
-            f"{target}: NetworkPolicy must admit ingress from the kagenti-system "
+            f"{target}: NetworkPolicy must admit ingress from the rossoctl-system "
             f"namespace on ports {sorted(ports_required)}; missing {sorted(missing)}. "
-            f"The kagenti otel-collector lives in `kagenti-system`; restricting "
-            f"the policy to a namespace literally named `kagenti` would drop every "
-            f"span the collector exports."
+            f"The rossoctl otel-collector lives in `rossoctl-system`; a policy that "
+            f"does not admit it would drop every span the collector exports."
         )
 
 

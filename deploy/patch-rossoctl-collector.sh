@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
-# Patch the kagenti-system otel-collector ConfigMap so traces fan out to the
-# data-governance receiver (issue #42, cross-repo half).
+# Wire the rossoctl otel-collector to the data-governance receiver via a
+# DEDICATED traces pipeline (issue #42, cross-repo half).
 #
-# The kagenti collector ConfigMap is owned by the kagenti repo. This script
+# The rossoctl collector ConfigMap is owned by the rossoctl repo. This script
 # additively patches the live in-cluster object: it adds an
-# `otlp/data_governance` exporter and wires it into the `traces/phoenix`
-# pipeline (which already runs the OpenInference transform that
-# data-governance is designed to consume). Both edits are idempotent — the
-# script is safe to re-run, and an upstream re-apply of the kagenti
-# ConfigMap simply requires re-running this script to re-add the patch.
+# `otlp/data_governance` exporter and a dedicated `traces/data_governance`
+# pipeline that fans the shared `otlp` receiver into that exporter. It does
+# NOT piggyback on any other pipeline (e.g. Phoenix's) — data-governance gets
+# its own isolated pipeline, so its span ingestion is independent of whatever
+# other trace pipelines the platform ships.
+#
+# The dedicated pipeline is created as:
+#     traces/data_governance:
+#       receivers:  [otlp]              # reuse the collector's existing OTLP receiver
+#       processors: [batch]             # reuse the existing batch processor
+#       exporters:  [otlp/data_governance]
+#
+# The a2a-noise `filter/a2a_noise` processor is NOT added here — the
+# agent-examples deploy (travel_advisor) adds it into this same pipeline when
+# it wants a2a queue/event noise dropped before data-governance ingests. This
+# script tolerates that processor being present: --revert removes the whole
+# `traces/data_governance` pipeline (and the exporter) regardless.
+#
+# Both edits are idempotent — the script is safe to re-run, and an upstream
+# re-apply of the rossoctl ConfigMap simply requires re-running this script to
+# re-add the patch.
 #
 # Run from anywhere; paths are resolved relative to this file.
 #
 # Usage:
-#   ./deploy/patch-kagenti-collector.sh            # apply (default)
-#   ./deploy/patch-kagenti-collector.sh --revert   # remove the patch
+#   ./deploy/patch-rossoctl-collector.sh            # apply (default)
+#   ./deploy/patch-rossoctl-collector.sh --revert   # remove the patch
 #
 # Both modes are idempotent: re-running with the patch already applied (or
 # already absent) is a no-op and does not roll the collector.
 #
 # Environment overrides:
-#   COLLECTOR_NAMESPACE  Namespace of the kagenti collector (default: kagenti-system)
+#   COLLECTOR_NAMESPACE  Namespace of the rossoctl collector (default: rossoctl-system)
 #   COLLECTOR_CONFIGMAP  ConfigMap name (default: otel-collector-config)
 #   COLLECTOR_DEPLOY     Deployment name to roll after patching (default: otel-collector)
 #   RECEIVER_ENDPOINT    Receiver gRPC endpoint to add as exporter target
@@ -35,7 +51,7 @@ for arg in "$@"; do
             MODE="revert"
             ;;
         -h|--help)
-            sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -46,7 +62,7 @@ for arg in "$@"; do
     esac
 done
 
-COLLECTOR_NAMESPACE="${COLLECTOR_NAMESPACE:-kagenti-system}"
+COLLECTOR_NAMESPACE="${COLLECTOR_NAMESPACE:-rossoctl-system}"
 COLLECTOR_CONFIGMAP="${COLLECTOR_CONFIGMAP:-otel-collector-config}"
 COLLECTOR_DEPLOY="${COLLECTOR_DEPLOY:-otel-collector}"
 RECEIVER_ENDPOINT="${RECEIVER_ENDPOINT:-data-governance-receiver.data-governance.svc.cluster.local:4317}"
@@ -66,7 +82,7 @@ fi
 
 if ! kubectl -n "${COLLECTOR_NAMESPACE}" get cm "${COLLECTOR_CONFIGMAP}" >/dev/null 2>&1; then
     echo "error: ConfigMap ${COLLECTOR_NAMESPACE}/${COLLECTOR_CONFIGMAP} not found" >&2
-    echo "       Is the kagenti platform deployed on this cluster?" >&2
+    echo "       Is the rossoctl platform deployed on this cluster (--with-otel)?" >&2
     exit 1
 fi
 
@@ -86,13 +102,15 @@ fi
 
 # Edit the YAML in Python so we preserve structure and stay idempotent.
 #
-# Apply mode: add exporters['otlp/data_governance'] (if missing) and append
-# it to service.pipelines['traces/phoenix'].exporters (if not already
-# listed).
+# Apply mode: add exporters['otlp/data_governance'] (if missing) and create a
+# dedicated service.pipelines['traces/data_governance'] pipeline (if missing)
+# that reuses the existing `otlp` receiver and `batch` processor. The existing
+# `traces/default` pipeline is never touched.
 #
-# Revert mode: remove exporters['otlp/data_governance'] (if present) and
-# remove it from service.pipelines['traces/phoenix'].exporters (if listed).
-# Other exporters and pipelines are left untouched.
+# Revert mode: remove exporters['otlp/data_governance'] (if present) and remove
+# the whole service.pipelines['traces/data_governance'] pipeline (if present).
+# Other exporters, processors, and pipelines are left untouched — this restores
+# the collector to its pre-patch state.
 CHANGE_STATE="$(
     MODE="${MODE}" \
     RECEIVER_ENDPOINT="${RECEIVER_ENDPOINT}" \
@@ -112,16 +130,23 @@ with open(orig_path) as f:
     cfg = yaml.safe_load(f)
 
 EXPORTER_NAME = "otlp/data_governance"
-PIPELINE_NAME = "traces/phoenix"
+PIPELINE_NAME = "traces/data_governance"
 
 exporters = cfg.setdefault("exporters", {})
-pipelines = cfg.get("service", {}).get("pipelines", {})
-if PIPELINE_NAME not in pipelines:
+service = cfg.setdefault("service", {})
+pipelines = service.setdefault("pipelines", {})
+
+# Sanity: the dedicated pipeline reuses the collector's `otlp` receiver. If the
+# collector config is shaped unexpectedly (no otlp receiver at all), fail loudly
+# rather than wiring a pipeline with no input — but only in apply mode; revert
+# must always be able to clean up regardless of receiver shape.
+receivers = cfg.get("receivers", {})
+if mode == "apply" and "otlp" not in receivers:
     sys.stderr.write(
-        f"pipeline '{PIPELINE_NAME}' not found in collector config\n"
+        "receiver 'otlp' not found in collector config; cannot build the "
+        "traces/data_governance pipeline (expected an OTLP receiver)\n"
     )
     sys.exit(2)
-pipeline_exporters = pipelines[PIPELINE_NAME].setdefault("exporters", [])
 
 changed = False
 
@@ -132,15 +157,19 @@ if mode == "apply":
             "tls": {"insecure": True},
         }
         changed = True
-    if EXPORTER_NAME not in pipeline_exporters:
-        pipeline_exporters.append(EXPORTER_NAME)
+    if PIPELINE_NAME not in pipelines:
+        pipelines[PIPELINE_NAME] = {
+            "receivers": ["otlp"],
+            "processors": ["batch"],
+            "exporters": [EXPORTER_NAME],
+        }
         changed = True
 elif mode == "revert":
     if EXPORTER_NAME in exporters:
         del exporters[EXPORTER_NAME]
         changed = True
-    if EXPORTER_NAME in pipeline_exporters:
-        pipeline_exporters.remove(EXPORTER_NAME)
+    if PIPELINE_NAME in pipelines:
+        del pipelines[PIPELINE_NAME]
         changed = True
 else:
     sys.stderr.write(f"unknown MODE: {mode}\n")
@@ -160,17 +189,17 @@ fi
 
 if [[ "${CHANGE_STATE}" == "UNCHANGED" ]]; then
     if [[ "${MODE}" == "apply" ]]; then
-        echo ">> ConfigMap already patched (otlp/data_governance present in traces/phoenix); nothing to do."
+        echo ">> ConfigMap already patched (traces/data_governance pipeline present); nothing to do."
     else
-        echo ">> ConfigMap already reverted (otlp/data_governance absent); nothing to do."
+        echo ">> ConfigMap already reverted (traces/data_governance pipeline absent); nothing to do."
     fi
     exit 0
 fi
 
 if [[ "${MODE}" == "apply" ]]; then
-    echo ">> Applying patched ConfigMap"
+    echo ">> Applying patched ConfigMap (adding traces/data_governance pipeline)"
 else
-    echo ">> Applying reverted ConfigMap (removing otlp/data_governance)"
+    echo ">> Applying reverted ConfigMap (removing traces/data_governance pipeline)"
 fi
 kubectl -n "${COLLECTOR_NAMESPACE}" create configmap "${COLLECTOR_CONFIGMAP}" \
     --from-file=base.yaml="${EDITED}" \
@@ -183,22 +212,23 @@ kubectl -n "${COLLECTOR_NAMESPACE}" rollout status "deploy/${COLLECTOR_DEPLOY}" 
 if [[ "${MODE}" == "apply" ]]; then
     cat <<EOF
 
-Done. The kagenti otel-collector now exports traces/phoenix-pipeline spans
-to ${RECEIVER_ENDPOINT}, in addition to its existing phoenix target.
+Done. The rossoctl otel-collector now runs a dedicated 'traces/data_governance'
+pipeline (otlp -> batch -> otlp/data_governance) that exports to
+${RECEIVER_ENDPOINT}. The existing 'traces/default' pipeline is unchanged.
 
-This patch is NOT persisted in the kagenti repo. If the kagenti collector
+This patch is NOT persisted in the rossoctl repo. If the rossoctl collector
 ConfigMap is re-applied from upstream, re-run this script to re-add the
-exporter. Until the patch lands in the kagenti repo (issue #42 cross-repo
+pipeline. Until the patch lands in the rossoctl repo (issue #42 cross-repo
 half), this script is the durable way to restore the integration after a
-cluster recreate or kagenti upgrade.
+cluster recreate or rossoctl upgrade.
 
 EOF
 else
     cat <<EOF
 
-Done. The otlp/data_governance exporter has been removed from the kagenti
-otel-collector ConfigMap and the collector restarted. Existing phoenix
-and mlflow exporters are unchanged.
+Done. The 'traces/data_governance' pipeline and the 'otlp/data_governance'
+exporter have been removed from the rossoctl otel-collector ConfigMap and the
+collector restarted. The 'traces/default' pipeline is unchanged.
 
 EOF
 fi

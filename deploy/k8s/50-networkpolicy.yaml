@@ -6,17 +6,17 @@
 #   outside an isolated cluster is unsupported.
 #
 # The NetworkPolicy IS the v1 security boundary. Ingress to the receiver
-# is allowed only from the upstream Kagenti namespace, matched by the
+# is allowed only from the upstream platform namespace, matched by the
 # default `kubernetes.io/metadata.name` label every namespace gets, on
 # the two OTLP transport ports (4317 gRPC, 4318 HTTP/protobuf).
 #
-# Both `kagenti` and `kagenti-system` are accepted: PROJECT.md §7 refers
-# to "the Kagenti namespace" without pinning a literal name, and the
-# upstream platform's actual deployment uses `kagenti-system` (where the
-# otel-collector lives) on every cluster we target today. Admitting both
-# names via `matchExpressions` keeps the policy portable across upstream
-# topologies without weakening the boundary — neither name is one a
-# random unrelated workload would land in.
+# `rossoctl-system`, `kagenti-system`, and `kagenti` are all accepted:
+# PROJECT.md §7 refers to "the platform namespace" without pinning a literal
+# name, and the platform's actual deployment uses `rossoctl-system` today
+# (where the otel-collector lives) — historically `kagenti-system`. Admitting
+# all three via `matchExpressions` keeps the policy portable across the
+# rebrand and upstream topologies without weakening the boundary — none is a
+# name a random unrelated workload would land in.
 #
 # Prometheus /metrics scraping is intentionally NOT opened by this policy
 # in v1. The receiver does serve /metrics on port 9090 (issue #36 wired
@@ -45,18 +45,19 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # Kagenti namespace: the OTel collector running there exports OTLP to us.
-    # `In: [kagenti, kagenti-system]` admits both upstream namespace names
-    # (see header comment) using the default `kubernetes.io/metadata.name`
-    # label every namespace carries.
+    # Platform namespace: the OTel collector running there exports OTLP to us.
+    # `In: [rossoctl-system, kagenti-system, kagenti]` admits the current and
+    # historical upstream namespace names (see header comment) using the
+    # default `kubernetes.io/metadata.name` label every namespace carries.
     - from:
         - namespaceSelector:
             matchExpressions:
               - key: kubernetes.io/metadata.name
                 operator: In
                 values:
-                  - kagenti
+                  - rossoctl-system
                   - kagenti-system
+                  - kagenti
       ports:
         - port: 4317
           protocol: TCP
@@ -65,10 +66,10 @@ spec:
 ---
 # UI backend NetworkPolicy.
 #
-# Same security boundary: allow ingress only from the Kagenti namespace
+# Same security boundary: allow ingress only from the platform namespace
 # (the cluster-internal consumer of the UI in v1 is whatever surface
-# Kagenti operators reach the UI from — typically a port-forward or a
-# Kagenti-namespace bastion / portal).
+# platform operators reach the UI from — the shared Gateway lives in
+# `rossoctl-system` and its HTTPRoute proxies to this Service).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -84,16 +85,17 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # Same `kagenti` / `kagenti-system` admission as the receiver policy —
-    # see the receiver-policy header for the rationale.
+    # Same `rossoctl-system` / `kagenti-system` / `kagenti` admission as the
+    # receiver policy — see the receiver-policy header for the rationale.
     - from:
         - namespaceSelector:
             matchExpressions:
               - key: kubernetes.io/metadata.name
                 operator: In
                 values:
-                  - kagenti
+                  - rossoctl-system
                   - kagenti-system
+                  - kagenti
       ports:
         - port: 8080
           protocol: TCP
