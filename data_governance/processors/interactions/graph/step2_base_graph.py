@@ -1,4 +1,4 @@
-"""Step 2 — enrich the execution-flow graph (Step 2.a–2.d). THROWAWAY.
+"""Step 2 — enrich the execution-flow graph (Step 2.a–2.d).
 
 ADR-0026:
   Step 2.a — transport coloring (Teal): `color_transport`.

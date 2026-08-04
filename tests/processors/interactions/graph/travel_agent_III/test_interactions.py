@@ -6,7 +6,7 @@ between the entities, with direction, count, error signal, evidence, and order.
 
 Per ADR-0026 Step 3.b each call site becomes a *pair* of edges — source→target
 (request) and target→source (response) — so the agent and each peer are joined
-in both directions, and the extractor turns every edge into one ProtoInteraction.
+in both directions, and the extractor turns every edge into one Interaction.
 We assert on the directed (caller_key, callee_key) pair counts (entity identity
 is the `natural_key`, the stable ADR-0026 signal).
 

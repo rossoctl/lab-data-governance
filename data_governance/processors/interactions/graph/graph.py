@@ -1,4 +1,4 @@
-"""Graph data structures for the p_interactions graph prototype. THROWAWAY.
+"""Graph data structures for the graph interactions algorithm.
 
 The algorithm builds a single base graph for the whole trace and overlays
 scope semantics by *adding* color to nodes and edges. Coloring is additive: a

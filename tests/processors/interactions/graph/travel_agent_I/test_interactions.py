@@ -6,7 +6,7 @@ agent↔LLM call, with direction, count, error signal, evidence, and order.
 
 Per ADR-0026 Step 3.b the one call site becomes a *pair* of edges —
 source→target (request) and target→source (response) — so the extractor emits
-exactly two ProtoInteractions. We assert on the directed (caller_key, callee_key)
+exactly two Interactions. We assert on the directed (caller_key, callee_key)
 pair counts (entity identity is the `natural_key`, the stable ADR-0026 signal).
 
 GROUND TRUTH — HUMAN-VALIDATED. DO NOT EDIT WITHOUT CONFIRMATION BY A HUMAN. The

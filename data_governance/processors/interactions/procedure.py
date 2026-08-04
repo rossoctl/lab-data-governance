@@ -140,7 +140,7 @@ def _interaction_id(trace_id: str, primary_anchor_span_id: str) -> str:
 
 
 @dataclasses.dataclass
-class ProtoEntity:
+class Entity:
     id: str
     kind: str
     natural_key: str
@@ -154,7 +154,7 @@ class ProtoEntity:
 
 
 @dataclasses.dataclass
-class ProtoEntitySpan:
+class EntitySpan:
     entity_id: str
     trace_id: str
     span_id: str
@@ -162,7 +162,7 @@ class ProtoEntitySpan:
 
 
 @dataclasses.dataclass
-class ProtoInteraction:
+class Interaction:
     id: str
     trace_id: str
     parent_interaction_id: str | None
@@ -182,7 +182,7 @@ class ProtoInteraction:
 
 
 @dataclasses.dataclass
-class ProtoInteractionSpan:
+class InteractionSpan:
     interaction_id: str
     trace_id: str
     span_id: str
@@ -190,7 +190,7 @@ class ProtoInteractionSpan:
 
 
 @dataclasses.dataclass
-class ProtoPayload:
+class Payload:
     content_hash: str
     content_kind: str
     content: Any
@@ -259,29 +259,29 @@ def _extract_llm_messages(span: Span, prefix: str) -> list[dict[str, Any]] | Non
     return [msgs[i] for i in sorted(msgs)]
 
 
-def _payload_for_llm(span: Span) -> tuple[ProtoPayload | None, ProtoPayload | None]:
+def _payload_for_llm(span: Span) -> tuple[Payload | None, Payload | None]:
     req_msgs = _extract_llm_messages(span, "llm.input_messages")
     resp_msgs = _extract_llm_messages(span, "llm.output_messages")
     req = resp = None
     if req_msgs is not None:
         canon = _canonical_bytes({"messages": req_msgs})
-        req = ProtoPayload(_hash_payload(canon), "llm_chat_prompt", {"messages": req_msgs}, len(canon))
+        req = Payload(_hash_payload(canon), "llm_chat_prompt", {"messages": req_msgs}, len(canon))
     if resp_msgs is not None:
         canon = _canonical_bytes({"messages": resp_msgs})
-        resp = ProtoPayload(_hash_payload(canon), "llm_completion", {"messages": resp_msgs}, len(canon))
+        resp = Payload(_hash_payload(canon), "llm_completion", {"messages": resp_msgs}, len(canon))
     return req, resp
 
 
-def _payload_for_tool(span: Span) -> tuple[ProtoPayload | None, ProtoPayload | None]:
+def _payload_for_tool(span: Span) -> tuple[Payload | None, Payload | None]:
     iv = _attr(span, "input.value")
     ov = _attr(span, "output.value")
     req = resp = None
     if iv is not None:
         canon = _canonical_bytes(iv)
-        req = ProtoPayload(_hash_payload(canon), "tool_call_arguments", iv, len(canon))
+        req = Payload(_hash_payload(canon), "tool_call_arguments", iv, len(canon))
     if ov is not None:
         canon = _canonical_bytes(ov)
-        resp = ProtoPayload(_hash_payload(canon), "tool_call_result", ov, len(canon))
+        resp = Payload(_hash_payload(canon), "tool_call_result", ov, len(canon))
     return req, resp
 
 
@@ -328,17 +328,17 @@ class Processor:
         self.children: dict[str | None, list[Span]] = {}
 
         # Entities by natural_key (deduped across the trace).
-        self.entities: dict[str, ProtoEntity] = {}
+        self.entities: dict[str, Entity] = {}
         # entity_spans rows.
-        self.entity_spans: list[ProtoEntitySpan] = []
+        self.entity_spans: list[EntitySpan] = []
         # Track which entities have a discovered_via row already.
         self._entity_first_span: set[str] = set()
 
         # Interactions, keyed by primary_anchor_span_id (so late-parent
         # re-eval can find the existing interaction to mutate).
-        self.interactions_by_anchor: dict[str, ProtoInteraction] = {}
-        self.interaction_spans: list[ProtoInteractionSpan] = []
-        self.payloads: dict[str, ProtoPayload] = {}
+        self.interactions_by_anchor: dict[str, Interaction] = {}
+        self.interaction_spans: list[InteractionSpan] = []
+        self.payloads: dict[str, Payload] = {}
 
         # Service-canonicals seen so far (for external-http rule).
         self.known_canonicals: set[str] = set()
@@ -382,7 +382,7 @@ class Processor:
     # Visibility helpers (default-view query facsimile)
     # ------------------------------------------------------------------
 
-    def _is_active_interaction(self, ix: ProtoInteraction) -> bool:
+    def _is_active_interaction(self, ix: Interaction) -> bool:
         # The production schema has no `retracted_at` (ADR-0012 emit-once-final
         # writes no tombstone), so every emitted interaction is active. Kept as
         # a method so the verbatim classification callers are unchanged.
@@ -720,10 +720,10 @@ class Processor:
 
     def _upsert_entity(
         self, identity: Identity, span: Span, role: str
-    ) -> ProtoEntity:
+    ) -> Entity:
         e = self.entities.get(identity.natural_key)
         if e is None:
-            e = ProtoEntity(
+            e = Entity(
                 id=_entity_id(identity.natural_key),
                 kind=identity.kind,
                 natural_key=identity.natural_key,
@@ -743,12 +743,12 @@ class Processor:
         # entity_spans (only on the active row)
         if e.id not in self._entity_first_span:
             self.entity_spans.append(
-                ProtoEntitySpan(e.id, span.trace_id, span.span_id, "discovered_via")
+                EntitySpan(e.id, span.trace_id, span.span_id, "discovered_via")
             )
             self._entity_first_span.add(e.id)
         elif role == "identified_via":
             self.entity_spans.append(
-                ProtoEntitySpan(e.id, span.trace_id, span.span_id, "identified_via")
+                EntitySpan(e.id, span.trace_id, span.span_id, "identified_via")
             )
         return e
 
@@ -937,7 +937,7 @@ class Processor:
     # Step 5c: attach spans
     # ------------------------------------------------------------------
 
-    def _attach_span(self, ix: ProtoInteraction, span_id: str, role: str) -> None:
+    def _attach_span(self, ix: Interaction, span_id: str, role: str) -> None:
         """Attach a span to an interaction, maintaining the in-memory
         `UNIQUE (trace_id, span_id)` invariant: each span belongs to at most
         one interaction. ANCHOR attaches are emit-once and permanent.
@@ -963,7 +963,7 @@ class Processor:
         self._owners_by_span[span_id] = ix.id
         self._role_by_span[span_id] = role
         self.interaction_spans.append(
-            ProtoInteractionSpan(ix.id, ix.trace_id, span_id, role)
+            InteractionSpan(ix.id, ix.trace_id, span_id, role)
         )
 
     def _detach_span(self, span_id: str) -> None:
@@ -977,7 +977,7 @@ class Processor:
             r for r in self.interaction_spans if r.span_id != span_id
         ]
 
-    def _innermost_owner_for(self, span: Span) -> ProtoInteraction | None:
+    def _innermost_owner_for(self, span: Span) -> Interaction | None:
         """The interaction whose ANCHOR is the nearest ancestor-or-self of
         `span` and whose canonical service contains `span` — i.e. the innermost
         arrived interaction whose territory holds `span`. Pure function of
@@ -1046,7 +1046,7 @@ class Processor:
         #    subtree (where `span` may be a new enclosing parent). Collect the
         #    touched interactions for the aggregate pass.
         subtree_ids = {s.span_id for s in subtree}
-        touched: list[ProtoInteraction] = []
+        touched: list[Interaction] = []
         for asid, ix in self.interactions_by_anchor.items():
             if not self._is_active_interaction(ix):
                 continue
@@ -1068,7 +1068,7 @@ class Processor:
             if self._is_active_interaction(ix):
                 self._update_aggregates(ix)
 
-    def _interaction_by_id(self, ix_id: str) -> ProtoInteraction | None:
+    def _interaction_by_id(self, ix_id: str) -> Interaction | None:
         for ix in self.interactions_by_anchor.values():
             if ix.id == ix_id:
                 return ix
@@ -1089,7 +1089,7 @@ class Processor:
     # Step 7: aggregate updates
     # ------------------------------------------------------------------
 
-    def _update_aggregates(self, ix: ProtoInteraction) -> None:
+    def _update_aggregates(self, ix: Interaction) -> None:
         attached_ids = self._attached_span_ids.get(ix.id, set())
         # Read only this interaction's attached spans (bounded by its territory),
         # via the span_id index — not a scan of the whole arrived trace.
@@ -1127,7 +1127,7 @@ class Processor:
     # Step 8: payload extraction
     # ------------------------------------------------------------------
 
-    def _extract_payloads(self, ix: ProtoInteraction, anchor: Span) -> None:
+    def _extract_payloads(self, ix: Interaction, anchor: Span) -> None:
         req = resp = None
         if ix.anchor_rule == "openinference-llm":
             req, resp = _payload_for_llm(anchor)
@@ -1350,8 +1350,8 @@ class Processor:
     def _materialise(
         self,
         primary_span: Span,
-        caller_entity: ProtoEntity,
-        callee_entity: ProtoEntity,
+        caller_entity: Entity,
+        callee_entity: Entity,
         anchor_span_ids: tuple[str, ...],
         anchor_rule: str,
     ) -> None:
@@ -1376,7 +1376,7 @@ class Processor:
             if self._role_by_span.get(asid) == "anchor":
                 return
 
-        ix = ProtoInteraction(
+        ix = Interaction(
             id=_interaction_id(primary_span.trace_id, primary_span.span_id),
             trace_id=primary_span.trace_id,
             parent_interaction_id=None,

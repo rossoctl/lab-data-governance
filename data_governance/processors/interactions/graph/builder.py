@@ -1,4 +1,4 @@
-"""Graph construction for the p_interactions prototype. THROWAWAY.
+"""Graph construction for the graph interactions algorithm.
 
 Implements the algorithm described in docs/adr/0026-p-interactions-graph-algorithm.md.
 
