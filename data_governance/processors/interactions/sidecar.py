@@ -311,7 +311,8 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
 
     # An outbound anchor's callee identity may come from the callee-side inbound
     # "echo" — the inbound request whose nearest anchor is this outbound (the
-    # splice parents the echo under the outbound request span).
+    # caller sidecar's tracestate stamp parents the echo under the outbound
+    # request span; wire contract v1.5).
     echo_self_of: dict[str, str] = {}
     for sid, s in reqs.items():
         if sid in anchor_ids or _direction(s) != "inbound":

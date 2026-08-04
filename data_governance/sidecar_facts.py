@@ -2,7 +2,7 @@
 
 One HTTP exchange through the AuthBridge sidecar emits TWO spans (request +
 response) joined by ``lineage.exchange.id``; the request span's attributes carry
-the classification facts (``docs/sidecar-wire-contract.md``, v1.3). This module
+the classification facts (``docs/sidecar-wire-contract.md``, v1.5). This module
 is the ONLY sidecar-vocabulary code: a static table over ``(direction,
 protocol[, mcp.method])`` yielding caller/callee entity kinds and
 request/response content kinds. It never reads a body: a bodyless exchange
