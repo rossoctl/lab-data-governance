@@ -242,3 +242,223 @@ def test_dg004_gates_on_restricted_classification_not_a_regulated_source():
     )
     assert "data_sources" not in raw_dg004
     assert all("regulatory_tags" not in item for item in dg004["data_items"])
+
+
+# --- list_rules(): optional filtering ---------------------------------------
+
+
+@pytest.fixture
+def _varied(monkeypatch):
+    """Point the catalog at a fixture with varied risk/enforcement values —
+    all three shipped DG-* rules are critical/block, so they cannot
+    discriminate between filter or sort orders."""
+    monkeypatch.setattr(catalog, "_RULES_SOURCE", _FIXTURES / "catalog_varied.json")
+    catalog.reload()
+    yield
+    catalog.reload()
+
+
+def _ids(rules):
+    return [r["rule_id"] for r in rules]
+
+
+def test_list_rules_unfiltered_returns_file_order(_varied):
+    assert _ids(catalog.list_rules()) == [
+        "FX-MED-ESC",
+        "FX-CRIT-BLOCK",
+        "FX-LOW-ALLOW",
+        "FX-HIGH-BLOCK",
+        "FX-NO-DECISION",
+    ]
+
+
+def test_filter_by_single_risk_level(_varied):
+    assert _ids(catalog.list_rules(risk_level="critical")) == ["FX-CRIT-BLOCK"]
+
+
+def test_filter_by_multiple_risk_levels(_varied):
+    """A collection matches any of the given levels, preserving file order."""
+    result = catalog.list_rules(risk_level=["critical", "low"])
+    assert _ids(result) == ["FX-CRIT-BLOCK", "FX-LOW-ALLOW"]
+
+
+def test_filter_by_single_enforcement(_varied):
+    assert _ids(catalog.list_rules(enforcement="block")) == [
+        "FX-CRIT-BLOCK",
+        "FX-HIGH-BLOCK",
+    ]
+
+
+def test_filter_by_multiple_enforcements(_varied):
+    result = catalog.list_rules(enforcement=["allow", "escalate"])
+    assert _ids(result) == ["FX-MED-ESC", "FX-LOW-ALLOW"]
+
+
+def test_filters_combine_conjunctively(_varied):
+    """Both criteria must hold — high/block matches, high/allow does not."""
+    assert _ids(catalog.list_rules(risk_level="high", enforcement="block")) == [
+        "FX-HIGH-BLOCK"
+    ]
+    assert catalog.list_rules(risk_level="high", enforcement="allow") == []
+
+
+def test_filter_by_category(_varied):
+    assert _ids(catalog.list_rules(category="category_b")) == [
+        "FX-CRIT-BLOCK",
+        "FX-LOW-ALLOW",
+    ]
+
+
+def test_filter_no_match_returns_empty_list(_varied):
+    assert catalog.list_rules(risk_level="nonexistent") == []
+
+
+def test_filter_is_case_sensitive(_varied):
+    """Catalog values are opaque strings from OPA, not normalized user input."""
+    assert catalog.list_rules(risk_level="CRITICAL") == []
+
+
+def test_filter_empty_collection_matches_nothing(_varied):
+    """An empty collection is an explicit "no accepted values", distinct from
+    None meaning "no filter" — otherwise a caller passing a computed-empty
+    list would silently get everything."""
+    assert catalog.list_rules(risk_level=[]) == []
+    assert _ids(catalog.list_rules(risk_level=None)) == _ids(catalog.list_rules())
+
+
+def test_filter_excludes_rules_with_no_policy_decision(_varied):
+    """A rule with no policy_decision has risk_level None, so it cannot match
+    any concrete filter value."""
+    assert "FX-NO-DECISION" not in _ids(catalog.list_rules(risk_level="critical"))
+    assert "FX-NO-DECISION" in _ids(catalog.list_rules())
+
+
+def test_filter_on_shipped_catalog(_reset_cache):
+    """The real file: all three rules are critical/block."""
+    assert len(catalog.list_rules(risk_level="critical")) == 3
+    assert len(catalog.list_rules(enforcement="block")) == 3
+    assert catalog.list_rules(risk_level="low") == []
+
+
+# --- list_rules(): optional sorting -----------------------------------------
+
+
+def test_sort_by_risk_level_is_severity_ordered_not_alphabetical(_varied):
+    """critical > high > medium > low — alphabetical order would put critical
+    after... nothing, but 'high' before 'low' before 'medium', which is
+    meaningless for a severity axis."""
+    result = _ids(catalog.list_rules(sort_by="risk_level"))
+    assert result[:4] == [
+        "FX-CRIT-BLOCK",
+        "FX-HIGH-BLOCK",
+        "FX-MED-ESC",
+        "FX-LOW-ALLOW",
+    ]
+
+
+def test_sort_by_risk_level_descending_reverses_severity(_varied):
+    result = _ids(catalog.list_rules(sort_by="risk_level", descending=True))
+    assert result[-4:] == [
+        "FX-LOW-ALLOW",
+        "FX-MED-ESC",
+        "FX-HIGH-BLOCK",
+        "FX-CRIT-BLOCK",
+    ]
+
+
+def test_sort_by_risk_level_places_unranked_last(_varied):
+    """A rule with no policy_decision sorts after every ranked rule rather
+    than crashing on a None comparison or sorting first."""
+    assert _ids(catalog.list_rules(sort_by="risk_level"))[-1] == "FX-NO-DECISION"
+
+
+def test_sort_by_enforcement_is_alphabetical(_varied):
+    """enforcement_type has no documented severity order, so alphabetical is
+    the honest choice rather than an invented ranking."""
+    result = _ids(catalog.list_rules(sort_by="enforcement"))
+    assert result[:4] == [
+        "FX-LOW-ALLOW",
+        "FX-CRIT-BLOCK",
+        "FX-HIGH-BLOCK",
+        "FX-MED-ESC",
+    ]
+
+
+def test_sort_by_enforcement_is_stable_within_a_tie(_varied):
+    """The two block rules keep their relative file order."""
+    result = _ids(catalog.list_rules(sort_by="enforcement"))
+    assert result.index("FX-CRIT-BLOCK") < result.index("FX-HIGH-BLOCK")
+
+
+def test_sort_by_rule_id_and_rule_name(_varied):
+    assert _ids(catalog.list_rules(sort_by="rule_id"))[0] == "FX-CRIT-BLOCK"
+    assert _ids(catalog.list_rules(sort_by="rule_name"))[0] == "FX-CRIT-BLOCK"
+
+
+def test_sort_rejects_an_unknown_key(_varied):
+    with pytest.raises(ValueError, match="sort_by"):
+        catalog.list_rules(sort_by="confidence")
+
+
+def test_sort_and_filter_compose(_varied):
+    result = _ids(catalog.list_rules(enforcement="block", sort_by="risk_level"))
+    assert result == ["FX-CRIT-BLOCK", "FX-HIGH-BLOCK"]
+
+
+def test_sorting_does_not_mutate_the_memoized_source(_varied):
+    catalog.list_rules(sort_by="risk_level")
+    assert _ids(catalog.list_rules()) == [
+        "FX-MED-ESC",
+        "FX-CRIT-BLOCK",
+        "FX-LOW-ALLOW",
+        "FX-HIGH-BLOCK",
+        "FX-NO-DECISION",
+    ]
+
+
+def test_risk_order_covers_every_documented_level():
+    """Guards against a vocabulary value silently sorting as unranked."""
+    assert set(catalog.RISK_LEVEL_ORDER) == {
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "none",
+        "unknown",
+    }
+
+
+def test_descending_sort_puts_unranked_first(_varied):
+    """``descending`` reverses the whole ordering, so the rule with no
+    ``policy_decision`` leads rather than staying pinned last. Documented
+    because "unranked last" and "reverse everything" pull in opposite
+    directions and a caller paging descending needs to know which wins.
+    """
+    for field in ("risk_level", "enforcement"):
+        result = _ids(catalog.list_rules(sort_by=field, descending=True))
+        assert result[0] == "FX-NO-DECISION", field
+
+
+def test_ties_keep_file_order_even_when_descending(_varied):
+    """Stability applies to the tie, not the reversal: the two block rules
+    stay in file order rather than flipping."""
+    result = _ids(catalog.list_rules(sort_by="enforcement", descending=True))
+    assert result.index("FX-CRIT-BLOCK") < result.index("FX-HIGH-BLOCK")
+
+
+def test_filter_by_event_type(_varied):
+    assert _ids(catalog.list_rules(event_type="data_export")) == ["FX-HIGH-BLOCK"]
+
+
+def test_all_sort_keys_are_accepted(_varied):
+    """Every advertised key actually sorts, so SORT_KEYS cannot drift from
+    what _sort_key handles."""
+    for field in catalog.SORT_KEYS:
+        assert len(catalog.list_rules(sort_by=field)) == 5, field
+
+
+def test_get_rule_and_category_counts_unaffected_by_new_parameters(_varied):
+    """The other public helpers call list_rules() with no arguments, so the
+    unfiltered default must stay their behaviour."""
+    assert catalog.get_rule("FX-LOW-ALLOW")["risk_level"] == "low"
+    assert catalog.category_counts() == {"category_a": 3, "category_b": 2}

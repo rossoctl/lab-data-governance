@@ -1,0 +1,71 @@
+{
+  "policy_id": "fixture-varied",
+  "policy_type": "data_governance",
+  "status": "active",
+  "version": "0.0.1",
+  "rules": [
+    {
+      "rule_id": "FX-MED-ESC",
+      "rule_name": "fixture_medium_escalate",
+      "rule_categories": ["category_a"],
+      "rule_sources": [],
+      "event_type": "external_sharing",
+      "policy_decision": {
+        "risk_level": "medium",
+        "enforcement_type": "escalate",
+        "allowed_actions": [],
+        "explanation": "Medium risk, escalate.",
+        "confidence": 0.5
+      }
+    },
+    {
+      "rule_id": "FX-CRIT-BLOCK",
+      "rule_name": "fixture_critical_block",
+      "rule_categories": ["category_a", "category_b"],
+      "rule_sources": [],
+      "event_type": "external_sharing",
+      "policy_decision": {
+        "risk_level": "critical",
+        "enforcement_type": "block",
+        "allowed_actions": [],
+        "explanation": "Critical risk, block.",
+        "confidence": 0.9
+      }
+    },
+    {
+      "rule_id": "FX-LOW-ALLOW",
+      "rule_name": "fixture_low_allow",
+      "rule_categories": ["category_b"],
+      "rule_sources": [],
+      "event_type": "internal_sharing",
+      "policy_decision": {
+        "risk_level": "low",
+        "enforcement_type": "allow",
+        "allowed_actions": [],
+        "explanation": "Low risk, allow.",
+        "confidence": 0.4
+      }
+    },
+    {
+      "rule_id": "FX-HIGH-BLOCK",
+      "rule_name": "fixture_high_block",
+      "rule_categories": ["category_a"],
+      "rule_sources": [],
+      "event_type": "data_export",
+      "policy_decision": {
+        "risk_level": "high",
+        "enforcement_type": "block",
+        "allowed_actions": [],
+        "explanation": "High risk, block.",
+        "confidence": 0.8
+      }
+    },
+    {
+      "rule_id": "FX-NO-DECISION",
+      "rule_name": "fixture_no_decision",
+      "rule_categories": [],
+      "rule_sources": [],
+      "event_type": "internal_sharing"
+    }
+  ]
+}

@@ -15,6 +15,10 @@ actually emits — specifically, it is a valid instance of the canonical
 ``list_rules``/``get_rule`` flatten each rule to the §6.5 serving shape on
 read; the mapping lives in one place (:func:`_flatten_rule`) rather than
 forcing every caller to know the nested on-disk layout.
+:func:`list_rules` also takes optional, keyword-only filter and sort
+criteria (risk level, enforcement type, category, event type) so a caller
+such as #112's ``GET /risk/rules`` can narrow and order server-side rather
+than fetching everything and post-processing.
 
 A rule states its match criteria structurally, as fields whose *presence*
 is the predicate: ``event_type`` (a singular string), ``data_items``
@@ -43,6 +47,7 @@ from __future__ import annotations
 
 import functools
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +63,33 @@ __all__ = [
     "get_rule",
     "category_counts",
     "reload",
+    "RISK_LEVEL_ORDER",
+    "SORT_KEYS",
 ]
+
+# Severity order for ``sort_by="risk_level"``, most severe first, taken from
+# ``schema/recommended_enum_values.md`` §14. Risk level is the one sortable
+# field with an inherent ranking — sorting it alphabetically would interleave
+# "high"/"low"/"medium" meaninglessly — so the vocabulary's own order is
+# encoded here rather than inferred. Values outside this tuple (including a
+# rule with no ``policy_decision``, whose risk level is ``None``) sort after
+# every ranked value instead of raising on a ``None`` comparison.
+RISK_LEVEL_ORDER: tuple[str, ...] = (
+    "critical",
+    "high",
+    "medium",
+    "low",
+    "none",
+    "unknown",
+)
+
+# Fields ``list_rules`` accepts for ``sort_by``. Restricted to the stable,
+# meaningfully-orderable ones: notably not ``categories`` (a list, so any
+# ordering would be arbitrary) and not ``confidence`` (not part of the §6.5
+# serving shape).
+SORT_KEYS: frozenset[str] = frozenset(
+    {"risk_level", "enforcement", "rule_id", "rule_name", "event_type"}
+)
 
 
 @functools.lru_cache(maxsize=1)
@@ -104,11 +135,92 @@ def _flatten_rule(raw_rule: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_rules() -> list[dict[str, Any]]:
-    """Every rule in the catalog, flattened to the §6.5 serving shape, in the
-    same order as ``rules_source.json`` (deterministic for a list endpoint)."""
+def _accepts(value: Any, criterion: str | Iterable[str] | None) -> bool:
+    """Whether ``value`` satisfies one optional filter criterion.
+
+    ``None`` means "no filter" and accepts everything. A bare string matches
+    exactly; any other iterable matches if ``value`` is among its members —
+    so an *empty* collection accepts nothing. That distinction is deliberate:
+    a caller narrowing a computed set down to zero accepted values should get
+    no rules back, not silently get all of them.
+
+    Matching is case-sensitive and exact. These values originate from OPA and
+    are treated as opaque strings (implementation-notes-v3 §3.3), so there is
+    no normalization or enum coercion here.
+    """
+    if criterion is None:
+        return True
+    if isinstance(criterion, str):
+        return value == criterion
+    return value in set(criterion)
+
+
+def _sort_key(field: str):
+    """Ordering key for one sortable field.
+
+    ``risk_level`` orders by :data:`RISK_LEVEL_ORDER` severity; everything
+    else orders lexicographically. Both put missing/unrecognized values last
+    so a rule lacking a ``policy_decision`` cannot crash the sort on a
+    ``None`` comparison.
+    """
+    if field == "risk_level":
+        ranks = {level: rank for rank, level in enumerate(RISK_LEVEL_ORDER)}
+        return lambda rule: ranks.get(rule.get(field), len(RISK_LEVEL_ORDER))
+    # (0, value) for present values, (1, "") for missing — tuples keep absent
+    # values after every present one under both ascending and reversed order.
+    return lambda rule: (0, rule[field]) if rule.get(field) is not None else (1, "")
+
+
+def list_rules(
+    *,
+    risk_level: str | Iterable[str] | None = None,
+    enforcement: str | Iterable[str] | None = None,
+    category: str | Iterable[str] | None = None,
+    event_type: str | Iterable[str] | None = None,
+    sort_by: str | None = None,
+    descending: bool = False,
+) -> list[dict[str, Any]]:
+    """Rules flattened to the §6.5 serving shape, optionally filtered and sorted.
+
+    With no arguments, returns every rule in ``rules_source.json`` order —
+    the deterministic default a list endpoint needs.
+
+    Filters are keyword-only and **conjunctive**: a rule must satisfy every
+    criterion given. Each accepts either a single value or a collection of
+    accepted values (see :func:`_accepts` for the empty-collection rule).
+    ``category`` matches a rule whose ``categories`` list contains the value,
+    since that field is a list rather than a scalar.
+
+    ``sort_by`` must be one of :data:`SORT_KEYS`; ``risk_level`` sorts by
+    severity (critical first) rather than alphabetically, and ``descending``
+    reverses whichever order applies. Sorting is stable, so rules tied on the
+    sort field keep their relative file order. Unknown keys raise
+    ``ValueError`` rather than silently returning unsorted results, which
+    would be indistinguishable from a working sort on a uniform catalog.
+    """
+    if sort_by is not None and sort_by not in SORT_KEYS:
+        raise ValueError(
+            f"sort_by must be one of {sorted(SORT_KEYS)}, got {sort_by!r}"
+        )
+
     raw_rules = load_rules_source().get("rules") or []
-    return [_flatten_rule(r) for r in raw_rules]
+    rules = [_flatten_rule(r) for r in raw_rules]
+
+    rules = [
+        rule
+        for rule in rules
+        if _accepts(rule["risk_level"], risk_level)
+        and _accepts(rule["enforcement"], enforcement)
+        and _accepts(rule["event_type"], event_type)
+        and (
+            category is None
+            or any(_accepts(c, category) for c in rule["categories"])
+        )
+    ]
+
+    if sort_by is not None:
+        rules.sort(key=_sort_key(sort_by), reverse=descending)
+    return rules
 
 
 def get_rule(rule_id: str) -> dict[str, Any] | None:
