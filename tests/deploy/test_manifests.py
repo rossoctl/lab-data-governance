@@ -645,18 +645,38 @@ def test_network_policy_targets_ui_workload(network_policies: list[dict]) -> Non
     )
 
 
-def test_network_policy_allows_only_kagenti_namespace(network_policies: list[dict]) -> None:
-    """The receiver and UI policies must allow ingress only from the Kagenti namespace.
+# The platform namespaces the receiver/UI policies admit ingress from, post
+# kagenti->rossoctl rebrand: the current deployment name (`rossoctl-system`)
+# plus the historical names kept for portability. Any namespace NOT in this
+# set (e.g. `default`) must be rejected — this is the actual security boundary.
+_EXPECTED_ADMITTED_NAMESPACES = {"rossoctl-system", "kagenti-system", "kagenti"}
+
+
+def test_network_policy_admits_only_expected_namespaces(
+    network_policies: list[dict],
+) -> None:
+    """Receiver and UI policies must admit ONLY the expected platform namespaces.
 
     PROJECT.md §7: "v1 is unauthenticated and intended cluster-internal […] running
     it outside an isolated cluster is unsupported." The NetworkPolicy is the
-    sole security boundary.
+    sole security boundary, so this test pins the exact admit-set rather than
+    merely checking that *some* namespaceSelector is present.
+
+    Prior to the rebrand this test keyed on ``matchLabels`` containing the
+    string ``kagenti``; the rebranded policies express the admit-set as a
+    ``matchExpressions`` ``In`` list, so that check was silently skipped (dead
+    code). We now validate the ``In`` values directly and, crucially, assert an
+    unrelated namespace (``default``) is REJECTED — catching an over-broad or
+    empty selector that the presence-only check would miss.
     """
     for target in ("data-governance-receiver", "data-governance-ui"):
         np = _matching_policy_for(network_policies, target)
         assert np is not None, f"missing policy for {target}"
         rules = np["spec"].get("ingress") or []
         assert rules, f"{target}: NetworkPolicy must have at least one ingress rule"
+
+        # Collect the namespaces admitted by any `from` peer across all rules.
+        admitted: set[str] = set()
         for rule in rules:
             sources = rule.get("from") or []
             assert sources, (
@@ -671,23 +691,35 @@ def test_network_policy_allows_only_kagenti_namespace(network_policies: list[dic
                     f"{target}: each `from` peer must use namespaceSelector "
                     f"(got {src!r})"
                 )
-                # Selector must restrict by label rather than match anything.
-                match_labels = ns_sel.get("matchLabels") or {}
-                match_exprs = ns_sel.get("matchExpressions") or []
-                assert match_labels or match_exprs, (
-                    f"{target}: namespaceSelector must restrict to the Kagenti namespace, "
+                # An empty selector admits every namespace — reject it outright
+                # rather than let it pass the admit-set check below.
+                assert ns_sel.get("matchLabels") or ns_sel.get("matchExpressions"), (
+                    f"{target}: namespaceSelector must restrict by label; an "
                     f"empty selector matches all namespaces"
                 )
-                # The label we agree to match. v1 expects the upstream Kagenti
-                # namespace to carry `kubernetes.io/metadata.name=kagenti` (the
-                # default label every k8s namespace gets) or
-                # `kagenti.io/namespace-role=workload`. Either is a *named*
-                # selector — we just require it to be specific.
-                if match_labels:
-                    assert "kagenti" in str(match_labels).lower(), (
-                        f"{target}: namespaceSelector must reference the kagenti namespace "
-                        f"(got {match_labels!r})"
-                    )
+                for ns in _EXPECTED_ADMITTED_NAMESPACES:
+                    if _namespace_selector_admits(
+                        ns_sel, {"kubernetes.io/metadata.name": ns}
+                    ):
+                        admitted.add(ns)
+
+        # Positive: the whole expected set is admitted.
+        missing = _EXPECTED_ADMITTED_NAMESPACES - admitted
+        assert not missing, (
+            f"{target}: NetworkPolicy must admit ingress from "
+            f"{sorted(_EXPECTED_ADMITTED_NAMESPACES)}; missing {sorted(missing)}"
+        )
+        # Negative: an unrelated namespace must NOT be admitted by any peer —
+        # this is what makes the policy a boundary and not a rubber stamp.
+        for rule in rules:
+            for src in rule.get("from") or []:
+                ns_sel = src.get("namespaceSelector") or {}
+                assert not _namespace_selector_admits(
+                    ns_sel, {"kubernetes.io/metadata.name": "default"}
+                ), (
+                    f"{target}: namespaceSelector must NOT admit the `default` "
+                    f"namespace (got {ns_sel!r} — over-broad selector)"
+                )
 
 
 def _namespace_selector_admits(ns_sel: dict, ns_labels: dict[str, str]) -> bool:

@@ -51,7 +51,9 @@ for arg in "$@"; do
             MODE="revert"
             ;;
         -h|--help)
-            sed -n '2,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            # Print the leading comment block (lines 2-43, ending at the last
+            # comment line before `set -euo pipefail`), stripping the `# ` prefix.
+            sed -n '2,43p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -171,6 +173,23 @@ elif mode == "revert":
     if PIPELINE_NAME in pipelines:
         del pipelines[PIPELINE_NAME]
         changed = True
+    # The agent-examples deploy may have added a `filter/a2a_noise` processor
+    # into our traces/data_governance pipeline. Removing the pipeline above
+    # orphans that processor definition (defined, referenced by nothing). The
+    # OTel Collector tolerates an unreferenced processor, but leaving it means
+    # revert does not fully restore the pre-patch config. Drop the definition
+    # too — but ONLY if no surviving pipeline still references it, so we never
+    # break another pipeline that legitimately uses the same processor.
+    A2A_FILTER = "filter/a2a_noise"
+    processors = cfg.get("processors", {})
+    if A2A_FILTER in processors:
+        still_referenced = any(
+            A2A_FILTER in (p or {}).get("processors", [])
+            for p in pipelines.values()
+        )
+        if not still_referenced:
+            del processors[A2A_FILTER]
+            changed = True
 else:
     sys.stderr.write(f"unknown MODE: {mode}\n")
     sys.exit(2)
@@ -182,11 +201,10 @@ print("CHANGED" if changed else "UNCHANGED")
 PY
 )"
 
-if [[ "${CHANGE_STATE}" != "CHANGED" && "${CHANGE_STATE}" != "UNCHANGED" ]]; then
-    echo "error: edit step produced unexpected output: ${CHANGE_STATE}" >&2
-    exit 1
-fi
-
+# The Python guards (missing otlp receiver, unknown MODE) exit non-zero, which
+# under `set -e` aborts the CHANGE_STATE assignment above with the Python
+# stderr shown — so reaching here means the edit succeeded and CHANGE_STATE is
+# exactly "CHANGED" or "UNCHANGED".
 if [[ "${CHANGE_STATE}" == "UNCHANGED" ]]; then
     if [[ "${MODE}" == "apply" ]]; then
         echo ">> ConfigMap already patched (traces/data_governance pipeline present); nothing to do."
