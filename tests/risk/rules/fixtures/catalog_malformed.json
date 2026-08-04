@@ -9,13 +9,13 @@
       "rule_name": "fixture_missing_policy_decision",
       "rule_categories": ["category_a"],
       "rule_sources": [],
-      "conditions": [{"type": "always_true"}]
+      "event_type": "external_sharing"
     },
     {
       "rule_id": "FX-NO-CATEGORIES",
       "rule_name": "fixture_missing_rule_categories",
       "rule_sources": [],
-      "conditions": [{"type": "always_true"}],
+      "event_type": "external_sharing",
       "policy_decision": {
         "risk_level": "low",
         "enforcement_type": "log",
@@ -29,7 +29,7 @@
       "rule_name": "fixture_duplicate_category",
       "rule_categories": ["data_exfiltration", "data_exfiltration"],
       "rule_sources": [],
-      "conditions": [{"type": "always_true"}],
+      "event_type": "external_sharing",
       "policy_decision": {
         "risk_level": "high",
         "enforcement_type": "block",

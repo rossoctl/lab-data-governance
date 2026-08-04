@@ -9,7 +9,7 @@
       "rule_name": "fixture_rule_one",
       "rule_categories": ["category_a"],
       "rule_sources": [],
-      "conditions": [{"type": "always_true"}],
+      "event_type": "external_sharing",
       "policy_decision": {
         "risk_level": "low",
         "enforcement_type": "log",
@@ -23,7 +23,7 @@
       "rule_name": "fixture_rule_two",
       "rule_categories": ["category_a", "category_b"],
       "rule_sources": [],
-      "conditions": [{"type": "always_true"}],
+      "event_type": "internal_sharing",
       "policy_decision": {
         "risk_level": "medium",
         "enforcement_type": "escalate",

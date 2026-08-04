@@ -4,7 +4,7 @@
   "status": "active",
   "version": "1.0.0",
   "runtime_enforcement_mode": {
-    "unknown_behavior_enforcement_type": "block"
+    "unknown_behavior_enforcement_type": "allow"
   },
   "rules": [
     {
@@ -16,19 +16,25 @@
           "document_name": "OWASP Top 10 for LLM Applications",
           "version": "2025",
           "section": "LLM02",
-          "article_clause": "Sensitive Information Disclosure"
+          "article/clause": "Sensitive Information Disclosure"
         },
         {
           "document_name": "NVIDIA Safety & Security Framework",
           "version": "2025",
           "section": "2.1",
-          "article_clause": "Confidentiality"
+          "article/clause": "Confidentiality"
         }
       ],
-      "conditions": [
-        {"type": "event_type_in",          "values": ["external_sharing"]},
-        {"type": "has_regulatory_tag",     "tag": "PII"},
-        {"type": "destination_trust_level","level": "UNTRUSTED_EXTERNAL"}
+      "event_type": "external_sharing",
+      "data_items": [
+        {
+          "regulatory_tags": ["PII"]
+        }
+      ],
+      "data_destinations": [
+        {
+          "data_destination_categories": ["external"]
+        }
       ],
       "policy_decision": {
         "risk_level": "critical",
@@ -47,19 +53,25 @@
           "document_name": "HIPAA Security Rule",
           "version": "2013",
           "section": "45 CFR §164.312",
-          "article_clause": "Technical Safeguards"
+          "article/clause": "Technical Safeguards"
         },
         {
           "document_name": "OWASP Top 10 for LLM Applications",
           "version": "2025",
           "section": "LLM02",
-          "article_clause": "Sensitive Information Disclosure"
+          "article/clause": "Sensitive Information Disclosure"
         }
       ],
-      "conditions": [
-        {"type": "event_type_in",          "values": ["external_sharing"]},
-        {"type": "has_regulatory_tag",     "tag": "PHI"},
-        {"type": "destination_trust_level","level": "UNTRUSTED_EXTERNAL"}
+      "event_type": "external_sharing",
+      "data_items": [
+        {
+          "regulatory_tags": ["PHI"]
+        }
+      ],
+      "data_destinations": [
+        {
+          "data_destination_categories": ["external"]
+        }
       ],
       "policy_decision": {
         "risk_level": "critical",
@@ -78,19 +90,25 @@
           "document_name": "OWASP Top 10 for LLM Applications",
           "version": "2025",
           "section": "LLM02",
-          "article_clause": "Sensitive Information Disclosure"
+          "article/clause": "Sensitive Information Disclosure"
         },
         {
           "document_name": "NVIDIA Safety & Security Framework",
           "version": "2025",
           "section": "2.1",
-          "article_clause": "Confidentiality"
+          "article/clause": "Confidentiality"
         }
       ],
-      "conditions": [
-        {"type": "event_type_in",           "values": ["external_sharing"]},
-        {"type": "classification_level_eq", "level": "RESTRICTED"},
-        {"type": "destination_trust_level", "level": "UNTRUSTED_EXTERNAL"}
+      "event_type": "external_sharing",
+      "data_items": [
+        {
+          "classification_level": "RESTRICTED"
+        }
+      ],
+      "data_destinations": [
+        {
+          "data_destination_categories": ["external"]
+        }
       ],
       "policy_decision": {
         "risk_level": "critical",

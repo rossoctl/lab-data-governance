@@ -9,10 +9,25 @@ bundled-artifact convention) — no CLI, no caller-supplied path, no env var.
 ``rules_source.json`` is kept in the real policy-engine shape (nested
 ``policy_decision`` object, ``rule_categories``) rather than PRD §6.5's flat
 sketch, so the file stays a faithful copy of what the policy component
-actually emits. ``list_rules``/``get_rule`` flatten each rule to the §6.5
-serving shape on read; the mapping lives in one place
-(:func:`_flatten_rule`) rather than forcing every caller to know the nested
-on-disk layout.
+actually emits — specifically, it is a valid instance of the canonical
+``schema/policy.schema.json`` vendored next to this module, enforced by
+``tests/risk/rules/test_schema_conformance.py``.
+``list_rules``/``get_rule`` flatten each rule to the §6.5 serving shape on
+read; the mapping lives in one place (:func:`_flatten_rule`) rather than
+forcing every caller to know the nested on-disk layout.
+
+A rule states its match criteria structurally, as fields whose *presence*
+is the predicate: ``event_type`` (a singular string), ``data_items``
+(e.g. ``regulatory_tags: ["PII"]`` or ``classification_level:
+"RESTRICTED"``) and ``data_destinations`` (``data_destination_categories:
+["external"]``). Read "this rule concerns a data item tagged PII, and when
+matched the ``policy_decision`` applies". The schema permits no ``conditions``
+array, so there is no predicate-expression language here. Note that
+untrusted-external destinations are expressed through the closed
+``data_destination_categories`` enum rather than the schema's numeric
+``data_destination_trust_level``, because the companion
+``schema/recommended_enum_values.md`` defines trust levels as *names*
+(``UNTRUSTED_EXTERNAL``, ...) and no numeric scale to map them onto.
 
 The load is memoized for the process lifetime (FR-DAS-060's "refreshed when
 the policy bundle version changes" is met at the MVP bar the issue itself
@@ -78,7 +93,9 @@ def _flatten_rule(raw_rule: dict[str, Any]) -> dict[str, Any]:
         "risk_level": decision.get("risk_level"),
         "enforcement": decision.get("enforcement_type"),
         "explanation": decision.get("explanation"),
-        "conditions": list(raw_rule.get("conditions") or []),
+        "event_type": raw_rule.get("event_type"),
+        "data_items": list(raw_rule.get("data_items") or []),
+        "data_destinations": list(raw_rule.get("data_destinations") or []),
         "allowed_actions": list(decision.get("allowed_actions") or []),
         "rule_sources": list(raw_rule.get("rule_sources") or []),
     }

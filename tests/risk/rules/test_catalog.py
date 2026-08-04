@@ -56,7 +56,11 @@ _SIX_FIVE_KEYS = {
     "risk_level",
     "enforcement",
     "explanation",
-    "conditions",
+    # Match criteria are structural fields (schema/policy.schema.json permits
+    # no `conditions` array); a field's presence is the predicate.
+    "event_type",
+    "data_items",
+    "data_destinations",
     "allowed_actions",
     "rule_sources",
 }
@@ -217,9 +221,24 @@ def test_shipped_file_has_exactly_the_expected_rule_ids():
     }
 
 
-def test_dg004_has_no_has_regulated_source_condition():
+def test_dg004_gates_on_restricted_classification_not_a_regulated_source():
+    """DG-004 deliberately drops the demo rule's regulated-source predicate:
+    a RESTRICTED classification level is sufficient on its own.
+
+    The source-side check is now guarded structurally — the rule carries no
+    ``data_sources`` at all — rather than by the absence of a named condition
+    type, since the schema has no ``conditions`` array to inspect.
+    """
     dg004 = catalog.get_rule("DG-004")
     assert dg004 is not None
-    condition_types = {c["type"] for c in dg004["conditions"]}
-    assert "has_regulated_source" not in condition_types
-    assert "classification_level_eq" in condition_types
+
+    levels = [item.get("classification_level") for item in dg004["data_items"]]
+    assert levels == ["RESTRICTED"]
+
+    # No regulated-source gate: no data_sources on the rule, and no
+    # regulatory_tags predicate standing in for one.
+    raw_dg004 = next(
+        r for r in catalog.load_rules_source()["rules"] if r["rule_id"] == "DG-004"
+    )
+    assert "data_sources" not in raw_dg004
+    assert all("regulatory_tags" not in item for item in dg004["data_items"])
