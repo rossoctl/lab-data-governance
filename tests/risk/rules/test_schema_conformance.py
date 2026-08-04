@@ -106,9 +106,9 @@ def test_validator_rejects_a_list_valued_event_type():
 
 
 def test_validator_rejects_an_out_of_enum_destination_category():
-    """``data_destination_categories`` is one of the few genuinely closed
-    string enums in the schema — the field this catalog uses to express
-    untrusted-external, so its enforcement matters."""
+    """``data_destination_categories`` is a closed enum of coarse categories
+    (local/internal/external/...). A trust-level name is not a category, so
+    putting one here must fail — the two axes are separate fields."""
     bad = json.loads(json.dumps(catalog.load_rules_source()))
     bad["rules"][0]["data_destinations"][0]["data_destination_categories"] = [
         "UNTRUSTED_EXTERNAL"
@@ -171,17 +171,50 @@ def test_event_type_is_a_singular_string_on_every_rule():
 # --- the structural predicates survived the translation ---------------------
 
 
-def test_untrusted_external_is_expressed_as_an_external_destination_category():
-    """The schema types ``data_destination_trust_level`` as a number while the
-    enum doc defines trust as a string enum with no numeric scale, so the
-    catalog deliberately uses the closed category enum instead and leaves the
-    numeric field unset."""
+def test_untrusted_external_destinations_carry_the_named_trust_level():
+    """Trust is a category, not a magnitude: ``data_destination_trust_level``
+    is the named string ``UNTRUSTED_EXTERNAL``, alongside the coarser
+    ``external`` category."""
     for raw_rule in catalog.load_rules_source()["rules"]:
         destinations = raw_rule["data_destinations"]
         assert destinations, raw_rule["rule_id"]
         for destination in destinations:
             assert destination["data_destination_categories"] == ["external"]
-            assert "data_destination_trust_level" not in destination
+            assert destination["data_destination_trust_level"] == "UNTRUSTED_EXTERNAL"
+
+
+def test_trust_levels_are_strings_not_numbers():
+    """Guards the schema fix: a numeric trust level must be rejected, since
+    no numeric scale is defined for trust anywhere in the vocabulary."""
+    bad = json.loads(json.dumps(catalog.load_rules_source()))
+    bad["rules"][0]["data_destinations"][0]["data_destination_trust_level"] = 0
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=bad, schema=_load_schema())
+
+
+def test_trust_level_enum_is_closed_to_the_documented_names():
+    bad = json.loads(json.dumps(catalog.load_rules_source()))
+    bad["rules"][0]["data_destinations"][0]["data_destination_trust_level"] = (
+        "SOMEWHAT_TRUSTED"
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance=bad, schema=_load_schema())
+
+
+def test_schema_defines_trust_level_as_a_string_enum():
+    """Both trust-level fields in the schema — destination and agent — resolve
+    to the shared string enum rather than a number."""
+    schema = _load_schema()
+    trust_level = schema["$defs"]["trustLevel"]
+    assert trust_level["type"] == "string"
+    assert "UNTRUSTED_EXTERNAL" in trust_level["enum"]
+
+    for definition, field in (
+        ("dataDestination", "data_destination_trust_level"),
+        ("processingAgent", "agent_trust_level"),
+    ):
+        prop = schema["$defs"][definition]["properties"][field]
+        assert prop == {"$ref": "#/$defs/trustLevel"}, (definition, field)
 
 
 def test_regulatory_tag_predicates_survived_translation():

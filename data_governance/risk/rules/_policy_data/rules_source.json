@@ -33,7 +33,8 @@
       ],
       "data_destinations": [
         {
-          "data_destination_categories": ["external"]
+          "data_destination_categories": ["external"],
+          "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
         }
       ],
       "policy_decision": {
@@ -70,7 +71,8 @@
       ],
       "data_destinations": [
         {
-          "data_destination_categories": ["external"]
+          "data_destination_categories": ["external"],
+          "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
         }
       ],
       "policy_decision": {
@@ -107,7 +109,8 @@
       ],
       "data_destinations": [
         {
-          "data_destination_categories": ["external"]
+          "data_destination_categories": ["external"],
+          "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
         }
       ],
       "policy_decision": {

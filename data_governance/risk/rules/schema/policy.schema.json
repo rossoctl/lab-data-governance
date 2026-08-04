@@ -80,6 +80,21 @@
             "additionalProperties": false
         },
 
+        "trustLevel": {
+            "description": "A named trust level. Trust is a category, not a magnitude — the value set is the one defined in recommended_enum_values.md, and no numeric scale is defined for it, so these are strings rather than numbers.",
+            "type": "string",
+            "enum": [
+                "TRUSTED_INTERNAL",
+                "TRUSTED_INTERNAL_RESTRICTED",
+                "TRUSTED_PARTNER",
+                "TRUSTED_VENDOR",
+                "UNTRUSTED_EXTERNAL",
+                "UNTRUSTED_PUBLIC",
+                "UNKNOWN",
+                "CONDITIONAL_TRUST"
+            ]
+        },
+
         "rule": {
             "type": "object",
             "required": ["rule_name"],
@@ -180,7 +195,7 @@
                         "enum": ["local", "internal", "external", "public", "unknown"]
                     }
                 },
-                "data_destination_trust_level": { "type": "number" }
+                "data_destination_trust_level": { "$ref": "#/$defs/trustLevel" }
             }
         },
 
@@ -295,7 +310,7 @@
             "additionalProperties": false,
             "properties": {
                 "agent_name": { "type": "string" },
-                "agent_trust_level": { "type": "number" }
+                "agent_trust_level": { "$ref": "#/$defs/trustLevel" }
             }
         },
 

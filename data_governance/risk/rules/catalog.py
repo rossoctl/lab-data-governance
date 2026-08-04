@@ -22,12 +22,15 @@ is the predicate: ``event_type`` (a singular string), ``data_items``
 "RESTRICTED"``) and ``data_destinations`` (``data_destination_categories:
 ["external"]``). Read "this rule concerns a data item tagged PII, and when
 matched the ``policy_decision`` applies". The schema permits no ``conditions``
-array, so there is no predicate-expression language here. Note that
-untrusted-external destinations are expressed through the closed
-``data_destination_categories`` enum rather than the schema's numeric
-``data_destination_trust_level``, because the companion
-``schema/recommended_enum_values.md`` defines trust levels as *names*
-(``UNTRUSTED_EXTERNAL``, ...) and no numeric scale to map them onto.
+array, so there is no predicate-expression language here.
+
+Destinations carry two independent axes: ``data_destination_categories`` (a
+coarse ``local``/``internal``/``external``/... bucket) and
+``data_destination_trust_level`` (a named level such as
+``UNTRUSTED_EXTERNAL``). Trust is a category rather than a magnitude, so the
+level is an enum *string* — the vocabulary in
+``schema/recommended_enum_values.md`` defines eight names and no numeric
+scale to map them onto.
 
 The load is memoized for the process lifetime (FR-DAS-060's "refreshed when
 the policy bundle version changes" is met at the MVP bar the issue itself
