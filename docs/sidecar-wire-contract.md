@@ -12,7 +12,7 @@ Principles (agreed 2026-07-21):
 - **Emit on sight.** Two spans per exchange, each emitted as soon as its half is seen. No open span
   held across the wait, no request body buffered for the exchange's lifetime.
 - **One channel, never traceparent (v1.5).** The sidecar parent chain lives entirely in the
-  `kglin` tracestate member: every lineage element — inbound and outbound alike — reads its
+  `dg-parent` tracestate member: every lineage element — inbound and outbound alike — reads its
   parent from the stamp (else the wire parent) and re-stamps the member with its own request
   span id. The forwarded traceparent is never modified; the v1.4 outbound splice is removed.
   Rationale: the sidecar's spans and an app's own spans land in different backends, so
@@ -73,7 +73,7 @@ follow-up, not current behavior.
 - **`lineage.exchange.id` = the request span's span_id**, echoed on both spans. No new identifier
   is minted; the response span simply names its request twin.
 - **The tracestate stamp (v1.2, both directions since v1.5).** Each lineage element re-stamps
-  one W3C `tracestate` member on the request it forwards: `kglin=<its own request span_id>`.
+  one W3C `tracestate` member on the request it forwards: `dg-parent=<its own request span_id>`.
   Inbound stamps toward its own app — the app's propagate-only shim carries tracestate through
   its per-request causal chain (contextvars), so the member surfaces on exactly the outbound
   calls that inbound caused. Outbound re-stamps toward the peer, whose inbound sidecar reads it
@@ -82,18 +82,21 @@ follow-up, not current behavior.
   collapses there (proven live 2026-07-30: 6 concurrent same-trace turns through a mid-chain
   agent paired 1/6 by map, 6/6 by stamp; cross-trace concurrency was and stays 6/6). Foreign
   tracestate members are preserved; the stamp requires a valid wire traceparent (without one
-  the shim roots a fresh trace and drops tracestate anyway).
-- Request span parent: the tracestate stamp (`kglin` — the previous lineage element: the
+  the shim roots a fresh trace and drops tracestate anyway). The key names the consuming
+  data-governance system (W3C convention: the key identifies the entry's owner) and is
+  deliberately platform-neutral; it was `kglin` until 2026-08-04 — the name never lands in
+  stored data, so the rename is wire-only.
+- Request span parent: the tracestate stamp (`dg-parent` — the previous lineage element: the
   caller sidecar's outbound for an inbound, this pod's inbound for an outbound), else the wire
   parent. Same precedence in both directions; there is no third option. Malformed stamps fall
   through to the wire parent silently.
 - **Forwarded traceparent is NEVER rewritten (v1.5).** The only header the sidecar mutates is
-  the `kglin` tracestate member. History: v1.2–v1.4 rewrote the outbound traceparent to name
+  the `dg-parent` tracestate member. History: v1.2–v1.4 rewrote the outbound traceparent to name
   the request span (the splice); the rewrite was inert in the deployed envoy-sidecar
   (ext_proc) mode until v1.4 made the header diff live on all four handler paths (2026-08-03 —
   the mechanical cause of the phantom-rooted per-pod trees stored before that date). v1.5
   moves the cross-pod link to the stamp: a callee sidecar's inbound request span is parented
-  on the caller sidecar's outbound request span via `kglin`, so the exchange-merge (tool-echo
+  on the caller sidecar's outbound request span via `dg-parent`, so the exchange-merge (tool-echo
   identity) still fires across pods, and traceparent is left to whatever chain the app itself
   maintains. Traces still enter with ONE dangling parent at the trace edge (the un-sidecared
   driver/UI), by design.
