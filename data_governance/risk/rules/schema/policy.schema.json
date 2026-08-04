@@ -1,0 +1,327 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://example.org/schemas/policy.schema.json",
+    "title": "Agent Data Governance Policy",
+    "description": "JSON Schema for policy.json: a set of governance rules evaluated against agent data access/sharing events, plus the enum value sets (and default category mappings) referenced by those rules.",
+    "type": "object",
+    "required": ["policy_id", "policy_type", "status", "version", "rules"],
+    "additionalProperties": false,
+    "properties": {
+        "policy_id": { "type": "string" },
+        "policy_type": { "type": "string" },
+        "status": { "type": "string" },
+        "version": { "type": "string" },
+        "runtime_enforcement_mode": {
+            "type": "object",
+            "properties": {
+                "unknown_behavior_enforcement_type": { "type": "string" }
+            },
+            "additionalProperties": true
+        },
+        "rules": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/rule" }
+        },
+
+        "event_type": { "$ref": "#/$defs/enumField" },
+        "enforcement_type": { "$ref": "#/$defs/enumField" },
+        "action_type": { "$ref": "#/$defs/enumField" },
+        "location_type": { "$ref": "#/$defs/enumField" },
+        "processing_entity_type": { "$ref": "#/$defs/enumField" },
+        "entity_type": { "$ref": "#/$defs/enumField" },
+        "regulatory_tags": { "$ref": "#/$defs/enumField" },
+        "data_type": { "$ref": "#/$defs/enumField" },
+        "classification_level": { "$ref": "#/$defs/enumField" },
+        "domain": { "$ref": "#/$defs/enumField" },
+        "category": { "$ref": "#/$defs/enumField" },
+        "risk_level": { "$ref": "#/$defs/enumField" },
+        "trust_level": { "$ref": "#/$defs/enumField" },
+        "transformation type": { "$ref": "#/$defs/enumField" },
+        "data_source_type": { "$ref": "#/$defs/enumField" },
+        "data_destination_type": { "$ref": "#/$defs/enumField" },
+        "data_source_category": { "$ref": "#/$defs/categoryEnumField" },
+        "data_destination_category": { "$ref": "#/$defs/categoryEnumField" }
+    },
+
+    "$defs": {
+        "enumField": {
+            "description": "A named enum definition: an allowed set of string values for a field used elsewhere in the policy.",
+            "type": "object",
+            "required": ["enum"],
+            "properties": {
+                "enum": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            },
+            "additionalProperties": true
+        },
+
+        "categoryEnumField": {
+            "description": "A coarse-grained category enum (local/internal/external/public/unknown) plus a default mapping from the corresponding fine-grained type values to that category.",
+            "type": "object",
+            "required": ["enum", "default_mapping"],
+            "properties": {
+                "enum": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["local", "internal", "external", "public", "unknown"]
+                    }
+                },
+                "default_mapping": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string",
+                        "enum": ["local", "internal", "external", "public", "unknown"]
+                    }
+                }
+            },
+            "additionalProperties": false
+        },
+
+        "rule": {
+            "type": "object",
+            "required": ["rule_name"],
+            "additionalProperties": false,
+            "properties": {
+                "rule_name": { "type": "string" },
+                "rule_id": { "type": "string" },
+                "rule_categories": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "rule_sources": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/ruleSource" }
+                },
+                "event_type": { "type": "string" },
+                "data_sources": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/dataSource" }
+                },
+                "data_items": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/dataItem" }
+                },
+                "data_count": { "type": "integer", "minimum": 0 },
+                "data_destinations": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/dataDestination" }
+                },
+                "data_lineage": { "$ref": "#/$defs/dataLineage" },
+                "requested_actions": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "declared_business_intent": { "type": "string" },
+                "observed_business_intent": { "type": "string" },
+                "observed_business_intent_description": { "type": "string" },
+                "declared_operational_intent": { "type": "string" },
+                "observed_operational_intent": { "type": "string" },
+                "accessing_user": { "$ref": "#/$defs/accessingUser" },
+                "processing_agents": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/processingAgent" }
+                },
+                "scope": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/scopeEntry" }
+                },
+                "policy_decision": { "$ref": "#/$defs/policyDecision" }
+            }
+        },
+
+        "ruleSource": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "document_name": { "type": "string" },
+                "version": { "type": "string" },
+                "section": { "type": "string" },
+                "article/clause": { "type": "string" }
+            }
+        },
+
+        "dataSource": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "data_source_name": { "type": "string" },
+                "data_source_url": { "type": "string" },
+                "data_source_types": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "data_source_categories": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["local", "internal", "external", "public", "unknown"]
+                    }
+                }
+            }
+        },
+
+        "dataDestination": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "data_destination_name": { "type": "string" },
+                "data_destination_url": { "type": "string" },
+                "data_destination_types": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "data_destination_categories": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["local", "internal", "external", "public", "unknown"]
+                    }
+                },
+                "data_destination_trust_level": { "type": "number" }
+            }
+        },
+
+        "entity": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "entity_type": { "type": "string" },
+                "start": { "type": "integer", "minimum": 0 },
+                "end": { "type": "integer", "minimum": 0 },
+                "text": { "type": "string" },
+                "domain": { "type": "string" },
+                "category": { "type": "string" },
+                "regulatory_tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "data_type": { "type": "string" },
+                "classification_level": { "type": "string" },
+                "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                "data_state": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["raw", "transformed", "masked"]
+                    }
+                }
+            }
+        },
+
+        "dataItem": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "text": { "type": "string" },
+                "entities": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/entity" }
+                },
+                "list_of_entities": { "type": "array" },
+                "list_of_domains": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "classification_level": { "type": "string" },
+                "primary_domain": { "type": "string" },
+                "regulatory_tags": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "identity_bundles": { "type": "array" }
+            }
+        },
+
+        "dataLineage": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "source": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "source_name": { "type": "string" },
+                        "source_url": { "type": "string" },
+                        "source_type": { "type": "string" }
+                    }
+                },
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "action_type": { "type": "string" },
+                            "location": { "type": "string" },
+                            "location_type": { "type": "string" }
+                        }
+                    }
+                },
+                "processing_steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "processing_entity": { "type": "string" },
+                            "processing_entity_type": { "type": "string" }
+                        }
+                    }
+                },
+                "transformations": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            }
+        },
+
+        "accessingUser": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "username": { "type": "string" },
+                "user_roles": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            }
+        },
+
+        "processingAgent": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "agent_name": { "type": "string" },
+                "agent_trust_level": { "type": "number" }
+            }
+        },
+
+        "scopeEntry": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "action_type": { "type": "string" },
+                "count": { "type": "integer", "minimum": 0 },
+                "time_span": { "type": "number", "minimum": 0 }
+            }
+        },
+
+        "policyDecision": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "risk_level": { "type": "string" },
+                "enforcement_type": { "type": "string" },
+                "allowed_actions": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "explanation": { "type": "string" },
+                "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+            }
+        }
+    }
+}
