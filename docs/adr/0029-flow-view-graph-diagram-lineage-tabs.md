@@ -166,9 +166,12 @@ migration path.
   `setup.ts` and `ExecutionFlowGraph.test.tsx` describe those Playwright assertions as
   though they exist; they do not. Since ADR-0021's whole premise is that deep links
   restore what is on screen, and the CSS-specificity fix in `af14b78` is by its own
-  admission unverifiable under jsdom, this is the branch's largest test gap and the
-  first follow-up.
+  admission unverifiable under jsdom, this is the branch's largest test gap. It is
+  **not yet tracked by an issue** — filing one is the first follow-up, and this bullet
+  is deliberately the only claim about it until then.
 - **`docs/PROJECT.md`'s "no topology view, no sequence diagrams, no classification
-  overlays" is now false on all three counts** and needs updating.
+  overlays" was false on all three counts** and now carries a note marking it
+  superseded for the UI scope, rather than being rewritten — that paragraph records
+  v1's deliberate scope, which is still what it is a true statement about.
 - **`docs/ui-design.md` does not describe any of this.** It stops at the v1 span tree
   and is silent on the flow view, so it is no longer a complete UI standard.
