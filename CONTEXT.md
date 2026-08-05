@@ -631,12 +631,219 @@ mature. `unknown` (and any kind without a branch) falls back to serializing
 the whole `content` JSONB to a canonical string — best-effort classification
 that also marks the projection-coverage gap.
 
+**Data lineage**:
+Where one **Payload**'s content originated and what it passed through. Carried
+per **Interaction leg** (not per payload — see the key below) as the **Lineage
+metadata** triple, derived by **P-data-lineage** and stored in
+`lineage_metadata`. Answers the two governance questions the spec
+(`docs/data_lineage_alg.md`) poses: "where did the data originate" (its **Data
+source**s) and "what did it pass through" (which **Entities**, with which
+**Transformation**s applied). v1 is **intra-trace** only — lineage within one
+**Trace**; inter-trace lineage (flow through shared persistent storage, one
+trace writing and another reading) is Step II and deferred. See ADR-0028.
+_Avoid_: confusing this with **Span lineage** — the two are unrelated. Span
+lineage is a graph-structure concept (a **Span**'s ancestors ∪ subtree under a
+`seq` horizon, used by `P-interactions` to bound what one span's re-derivation
+may rewrite — ADR-0007/0016). Data lineage is about content provenance. Qualify
+the word every time: "span lineage" or "data lineage", never bare "lineage".
+Served at three grains (ADR-0028 D14): the per-leg triple
+(`GET /api/traces/{tid}/data-lineage`), **Lineage reachability** per **Entity**, and
+a trace-level sources/destinations roll-up
+(`GET /api/traces/{tid}/data-lineage-summary`).
+
+**Lineage reachability** (fanin / fanout):
+Which **Entities** one **Data source**'s content reached from a selected entity
+(`fanout`, downstream / descendants) or came from (`fanin`, upstream / ancestors),
+within one **Trace** — served by
+`GET /api/traces/{tid}/entities/{eid}/data-lineage-graph` with a **required**
+`direction` of `fanin` or `fanout` **and a required `source`** (a **Data source**
+natural key, as listed by the summary read) — ADR-0028 D14; edge rule in D15.
+Arriving at `A` at sequence position `s`, a hop `A → B` is followed iff the trace has
+an **Interaction leg** whose *per-leg* direction runs `A → B`, that leg has a derived
+**Lineage metadata** row, the traced `source` is a **member of that row's
+`data_sources`**, and the leg's `seq` is strictly later than `s` (`fanout`) or earlier
+(`fanin`). The trace supplies the candidate edges, the metadata supplies whether *this
+source's* lineage actually flowed along them, and `seq` supplies which edges are
+eligible and in what order. So the walk ends where **that source's** provenance ends,
+not where the call graph does. The source is held *constant* for the whole walk (it is
+the thing being traced), and the membership test is a **read** of the stored set — no
+matching or inference happens at read time (ADR-0028 D7). Reports the traversed legs as
+well as the reached entities (the route, so the answer can be drawn), each entity's
+fewest `hops` along a *seq-and-source-respecting* path, and a three-valued `state` —
+`derived` / `pending` / `no-adjacent`. Multi-source fanin/fanout is **deferred** by the
+spec ("Given multiple sources - semantics are not clear"), so the read takes exactly
+one; an *unknown* source is a valid empty answer (`no-adjacent`), never a 404, while a
+*missing* one is a 400.
+_Avoid_: reading the parent **Interaction**'s `caller_entity_id → callee_entity_id`
+as the hop direction. A **response** leg runs callee → caller, and an agent's data
+mostly *arrives* as the responses to calls it made (ADR-0025), so the parent's fixed
+direction would drop most real inbound flow. One consequence defeats intuition: a
+leaf tool's `fanout` is **not** empty, because its response delivers data back to its
+caller. Also avoid reading an empty `entities` list as "nothing flowed" — that is what
+`state` and `pending_frontier` (entities the walk could not continue through *yet*,
+because the onward leg has no derived row) exist to disambiguate, the same
+three-valued discipline **Lineage coverage** applies to a trace. Note a derived leg that
+simply *lacks* the traced source is deliberately **not** on `pending_frontier`: that is a
+settled "no", where an undelivered leg is "ask again later", and merging the two would
+send a caller back to poll forever. Also avoid assuming `fanin` is just `fanout` with the
+edges reversed — the reversal alone is a no-op on a trace's (symmetric) request+response
+edge set, and what actually separates upstream from downstream is `seq`. Finally avoid
+reading a large `fanout` as thorough tracing: under the trivial matcher every leg inherits
+every upstream source, so the *source* rule prunes little and these reads inherit matcher
+quality exactly as the triple does. (The `seq` rule prunes regardless of matcher quality,
+being a fact about the trace's own ordering.)
+
+**Lineage metadata**:
+The triple recorded per **Interaction leg** by **P-data-lineage**: (1)
+`data_sources`, the set of **Data source**s the payload's content came from; (2)
+`source_transformations`, a map **Data source** → set of **Transformation**s
+(order within a set is insignificant); (3) `entities`, the **unordered set** of
+**Entities** the data passed through — the spec is explicit that "this is
+unordered. In case an order is needed - it will need to be derived from the trace
+using an API", so ordering is a deferred trace-derived read and not something this
+field supplies (ADR-0028 D10; the field was named `entity_path` until migration
+`0015_lineage_entities_rename`). Keyed
+`(interaction_id, leg_type)` — the **leg**, not the `payload_hash` (ADR-0028
+D5): payloads are content-addressed and deduped, so identical bytes at different
+positions carry completely different lineage, and a hash key would collide those
+distinct facts. `payload_hash` is kept as a *secondary index* for the deferred
+reverse lookup ("where did this content come from / go"). An origin's metadata
+is a real *empty* triple (one source, an empty transformation set, an empty
+entity set), never NULL — absence of the row is what means "not yet derived".
+_Avoid_: reading order out of the persisted/served arrays. `data_sources` and
+`entities` are `TEXT[]` (and JSON arrays) only because neither Postgres nor JSON
+has a set type; **P-data-lineage** writes them sorted purely so a re-derivation is
+byte-identical, which is serialization, not sequence.
+
+**Lineage coverage**:
+Whether a **Trace**'s derived **Data lineage** covers the whole trace, recorded
+per trace in `lineage_trace_status` as `complete` or `partial` plus the
+`stopped_at_seq` a partial one stopped at (ADR-0028 D6/D8). When an **Interaction
+leg**'s payload is absent, lineage is derived only up to that leg in leg-`seq`
+order — a positional prefix — and the trace is `partial`. The flag exists to
+prevent one specific failure: a governance consumer reading a truncated prefix as
+the **complete** set of **Data source**s. So it travels with the lineage
+everywhere the lineage is served (the `data-lineage` API envelope, a warning at
+the top of the **Flow view**). Three values, not two: *absence* of the status row
+means **unknown** — the eventual-consistency window before **P-data-lineage** has
+reached the trace.
+_Avoid_: collapsing **unknown** into `complete` (ADR-0028 D6 "Reading the status" —
+they are opposite claims, and defaulting the absent value is the live trap). Also
+avoid reading `partial` as an error, or as a statement about *why* the payload is
+missing: it is a correct prefix plus a warning, and distinguishing *not captured*
+from *redacted* from *genuinely empty* from *in-flight* is deferred (D6), so one
+flag currently covers all four. Note `partial` truncates the **lineage**, not the
+leg list — every leg is still served, those from the gap on with `lineage: null`.
+Finally, avoid expecting only the paths *through* the gap to be affected — the
+interim rule stops the whole trace.
+
+**Data source**:
+An origin of data in **Data lineage** — recorded as an **Entity**'s **Natural
+key** ("the data source is assigned the entity name", spec rule 1). An
+**Entity** becomes a data source of a payload by any of three routes: structurally
+(it produced the payload with nothing inbound to it — a **Trace** root such as a
+user's prompt, ADR-0028 D3(1)); semantically (the matcher found no relationship
+between its input and its output, so the output is new data, D3(2)); or by
+**declaration** — it is a **Source entity**, so it contributes itself *alongside*
+whatever it inherited (D12). The declared route is the only one that fires under the
+trivial `simple_match`, since that matcher never lets D3(2) trigger.
+_Avoid_: reading a data source as "the entity that stored the data" — that
+reverse map (`payload → persisting entity`) is a separate, deferred output. Also
+avoid treating the declared route as an alternative to inheritance: a source entity
+that matched reports *both* its own contribution and the sources it inherited.
+
+**Source entity**:
+An **Entity** declared to contribute content of its own, and therefore added to a
+payload's **Data source** set on top of what the payload inherited (ADR-0028 D12,
+spec "Entity Taxonomy"). It enters `source_transformations` with an **empty** set —
+its own contribution did not undergo the transformation the *inherited* sources did,
+so stamping one on would be a false claim. The eventual source of the answer is a
+declared per-entity taxonomy table; reading it is **deferred**, so today the answer
+is `Entity.kind` defaults — `tool` ✓, `llm` ✗, `agent` ✗ — in the same one named
+place as the **Accumulating entity** predicate
+(`processors/data_lineage/memory.py`), because the same deferred table supplies
+both. The taxonomy's other two columns have no consumer: `target` is unread, and
+`location` (internal/external) is a placeholder with no v1 semantics.
+_Avoid_: inferring source-hood from a tool's name, description or payload sizes —
+considered and rejected (only one of eight tools in the live corpus even carries
+`tool.description`). The accepted cost is that a pass-through delegation tool
+(`kind='tool'` but carrying no new data) over-reports as a source until the declared
+table lands; over-reporting an origin is the safe direction for a governance tool,
+where the failure it replaces was *under*-reporting an external data ingress. Also
+avoid expecting it to matter in the all-unmatched degrade branch — that branch calls
+`init_lineage` at the entity and **ignores** the flag (spec Example 3).
+
+**Transformation**:
+What a **Semantic matcher** reports connects two related payloads —
+`anonymization`, `summarization`, … A finite but deliberately **open**
+enumeration (`matching.Transformation`, a `StrEnum` so adding a member is
+additive at the persistence and API boundaries); the full list is still being
+finalized with a human. "No transform performed, or none identified" is
+represented as *absent* (`None` / an empty set), never as a member — so an
+unknown transformation cannot masquerade as a kind of transformation.
+
+**Semantic matcher**:
+The black box **Data lineage** is built on: `match(payload_a, payload_b) →
+{matched, transformation, …evidence}`, deciding whether two payloads are related
+and what **Transformation** connects them. Selected by configuration
+(`SEMANTIC_MATCHER`, resolved through `matching.get_matcher`); lineage calls it
+and never learns which matcher ran or how it decided. The default
+`simple_match` is trivial — always matched, no transformation — which makes
+lineage *complete but full of maybes* (every structural edge is treated as real
+flow); better matchers prune the maybes without any change to the lineage
+algorithm. Matching runs at **ingest**, not at query time (ADR-0028 D7): a read
+would otherwise cost a matcher call per payload pair over a trace's whole
+history. Matcher versioning and backfill after a matcher change are deferred.
+
+**Accumulating entity**:
+An **Entity** that retains its prior inbound payloads within a **Trace**, making
+it a partial mixing bowl for **Data lineage**: its output is derived from *all*
+its priors, not just its latest input. ADR-0028 D2 assumes
+transient/session memory is **always present**, so an accumulating entity's
+inbound set grows past one. Since D11 collapsed the algebra to two operations that
+size no longer *selects* an operation — every non-root leg runs `merge` — but it
+still decides how many priors pool and therefore that op's arity, which is why
+lineage needs no separate memory predicate. Working assumption today: an
+`agent` accumulates; an `llm` or `tool` does not. `Entity.kind` is the only
+signal available, so the predicate is driven from it but lives in exactly one
+named place (`processors/data_lineage/memory.py`, beside the **Source entity**
+predicate), since declared per-entity config is where it eventually belongs.
+_Avoid_: reading "accumulating" off the op name — a memoryless entity's leg also
+reads `merge`, over one input. The count is in the derivation's inbound set, not in
+the op.
+Memory granularity is **open**: the memory node is modelled `(entity_id,
+memory_key)` with `memory_key = NULL` meaning unkeyed/blob (the v1 default), so
+keying per session/user/thread later is a change of what the derivation computes
+rather than a redesign of it — every inbound payload already pools per *node*, so
+a keyed policy only has to return a distinct node. The node is a derivation-time
+value and is never persisted, so this says nothing either way about schema
+churn: `lineage_metadata` records the resulting sources, transformations and
+entities, not the memory nodes they were pooled through.
+
+**P-data-lineage**:
+The processor that derives **Data lineage**. A Layer-2 processor, sibling of
+`P-interactions` and **P-classification**; drains the `interaction_legs` stream
+on its own `data_lineage` cursor (woken by the `dg_legs_inserted` NOTIFY, poll as
+the backstop) and writes `lineage_metadata` plus the trace's **Lineage coverage**
+into `lineage_trace_status`. Because lineage is trace-scoped while the shared
+loop's grain is one leg, each arriving leg triggers re-derivation of that leg's
+**whole trace** — the `graph_driver` precedent — made safe by a deterministic key
+plus an upsert, so re-deriving converges rather than duplicating. Because a
+re-derivation can also get *shorter* (a payload goes absent), the derived rows a
+re-derivation no longer covers are **deleted** as well, so the persisted lineage
+of a trace is exactly the derivation's output. `interaction_legs` carries no
+`trace_id`, so the trace is reached by joining through `interactions`. Recovery is
+the established one: truncate `lineage_metadata` and `lineage_trace_status`, reset
+the cursor to 0, re-drain.
+
 **Flow view**:
 The UI surface that renders one **Trace**'s derived **Interaction**/**Entity**
 forest — the request/response **Interaction leg**s as an execution-flow list,
 each with its **Duration** and aggregated `error`, plus the per-**Interaction**
 and per-**Entity** span-evidence drill-in and the Req/Resp **Payload** cells
-carrying the inline **Classification** verdict. Backed entirely by **Interaction
+carrying the inline **Classification** verdict and per-leg **Data lineage**, with
+the trace's **Lineage coverage** warning above the tables when it is `partial`.
+Backed entirely by **Interaction
 retrieval** and `payloads` retrieval; it is the primary consumer that motivated
 pulling those reads behind a typed interface. Trace-scoped and eventually
 consistent, mirroring the derived data it displays.
@@ -679,6 +886,18 @@ present on both the `GET /api/traces` collection rows and the
   moment, chosen by the **Listing root fallback** rule.
 - A **TraceListingEntry** is a derived view of one **Trace**, anchored on its
   current **Listing root**.
+- An **Interaction leg** has at most one **Lineage metadata** row, keyed
+  `(interaction_id, leg_type)`. Its `data_sources` and `entities` name
+  **Entities** by **Natural key** — both are *sets*, neither carries an order; its
+  `source_transformations` maps each **Data source** to a set of
+  **Transformation**s. A leg with no payload gets no row.
+- A payload's **Data lineage** is derived from the payloads inbound to the
+  producing **Entity** — requests inbound to the callee, responses inbound to the
+  caller, from **Interaction legs** of lower `seq` in the same **Trace**. How many
+  of those an entity retains is decided by whether it is an **Accumulating
+  entity**; whether that set is *empty* is what selects `init` / `merge`. A
+  **Source entity** adds itself to the result's `data_sources` on top of what it
+  inherited.
 - The **Retrieval API** is the only sanctioned read path over **Spans**; the UI
   backend composes its REST endpoints from it. The REST layer is
   resource-oriented and namespaced: JSON resources under `/api/`
@@ -717,3 +936,14 @@ present on both the `GET /api/traces` collection rows and the
 - **"Entity"** in classification — the NER taxonomy calls its tags "entity
   types" (`PN`, `SSN`), but **Entity** is the interaction participant. Resolved:
   a **Finding** has a *detected type* (an NER tag); it is not an **Entity**.
+- **"Lineage"** meant two unrelated things. `P-interactions` and ADR-0007/0016
+  use it for a **Span**'s ancestors ∪ subtree under a `seq` horizon — a
+  graph-structure region bounding what one span's re-derivation may rewrite.
+  ADR-0028 uses it for content provenance. Resolved: **Span lineage** vs **Data
+  lineage** — distinct terms, never the bare word. They share no code, no table,
+  and no key; a grep for "lineage" hits both.
+- **"Source"** — a **Data source** is where a payload's content *originated*
+  (an **Entity** natural key in **Lineage metadata**). Unrelated to a `spans`
+  row's `service_name` or to `Entity.kind = service`. Also distinct from the
+  deferred reverse map (`payload → persisting entity`), which is about where
+  content was *stored*, not where it came from.

@@ -5,9 +5,10 @@ import { test, expect, type Page } from '@playwright/test';
  * view's Req/Resp payload cells (issue #80). Unlike the shell smoke specs, this
  * drives the real production bundle end-to-end with the `/api/` responses
  * stubbed via `page.route`: recent-traces → trace detail → Interaction flow →
- * select the interaction → expand the request payload → assert the inlined
- * Classification (sensitivity badge + regulatory tags + identity bundle +
- * Findings) renders, and that a null verdict reads as "not yet classified".
+ * select the interaction → activate the request leg's Classification tab →
+ * assert the inlined Classification (sensitivity badge + regulatory tags +
+ * identity bundle + Findings) renders, and that a null verdict reads as "not yet
+ * classified".
  */
 
 const TID = 'trace-classify-demo';
@@ -42,18 +43,45 @@ const ENTITIES = [
   { id: 'e2', kind: 'tool', natural_key: 'tool:(p,svc)', display_name: 'search', detected_from: 'span' },
 ];
 
+/**
+ * The `GET /api/traces/{tid}/interactions` element, verbatim as
+ * `retrieval.InteractionView` serializes it (data_governance/retrieval/
+ * interactions.py).
+ *
+ * ADR-0025 split the interaction into a parent identity row plus nested
+ * request/response **legs**: timing, payload hash and error are leg facts, so
+ * there is NO top-level `started_at` / `ended_at` / `error` /
+ * `request_payload_hash` / `response_payload_hash` on the wire any more. The UI
+ * reads them exclusively through `legOfType(ix, 'request'|'response')`
+ * (ui/src/lib/flow.ts), so re-adding a top-level hash here would stub a field
+ * nothing reads: the detail panel would render `request_at —` with no leg block
+ * at all, and the `Request: Classification` button these tests click would never
+ * exist. The read-time derivations `duration_seconds` (response − request, null
+ * while the response is in flight) and `any_error` (leg roll-up) are computed by
+ * the API, not by the client, so they are part of the stub too.
+ *
+ * Only the request leg carries a `payload_hash`: the response leg's is null, so
+ * the panel renders exactly one outer leg tab and `Request: …` names its inner
+ * section tabs unambiguously.
+ */
 const INTERACTIONS = [
   {
     id: IID, caller_entity_id: 'e1', callee_entity_id: 'e2',
-    started_at: '2026-05-01T12:00:00Z', ended_at: '2026-05-01T12:00:01Z',
-    error: false, request_payload_hash: REQ_HASH, response_payload_hash: null,
     summary: 'agent calls search', parent_interaction_id: null,
+    legs: [
+      { leg_type: 'request', occurred_at: '2026-05-01T12:00:00Z', payload_hash: REQ_HASH, error: false, seq: 1 },
+      { leg_type: 'response', occurred_at: '2026-05-01T12:00:01Z', payload_hash: null, error: false, seq: 2 },
+    ],
+    duration_seconds: 1, any_error: false,
     span_count: 2, anchor_count: 1,
   },
 ];
 
+// Span evidence for the interaction's `/spans` sub-resource. `leg_type` is on
+// the row since ADR-0025 (`retrieval.SpanEvidenceView`) — an anchor span
+// evidences the request leg here.
 const INTERACTION_EVIDENCE = [
-  { span_id: 'span-xyz', role: 'anchor', parent_id: 'root-span', kind: 'CLIENT', service_name: 'svc' },
+  { span_id: 'span-xyz', role: 'anchor', parent_id: 'root-span', kind: 'CLIENT', service_name: 'svc', leg_type: 'request' },
 ];
 
 /** Stub every `/api/` call the flow view makes; the payload's classification
@@ -75,6 +103,23 @@ async function stubFlowApi(page: Page, classification: unknown) {
     }
     if (url.includes(`/api/traces/${TID}/entities`)) {
       return route.fulfill(json({ entities: ENTITIES }));
+    }
+    // The flow view reads trace-scoped Data lineage once on first paint (ADR-0028,
+    // issue #120). These tests are about Classification, so the leg has no
+    // derived lineage — spelled the way the server does: the leg row is present
+    // with a null `lineage` (the eventual-consistency window) and coverage is
+    // unknown, which must NOT be reported as 'complete'.
+    if (url.includes(`/api/traces/${TID}/data-lineage`)) {
+      return route.fulfill(
+        json({
+          legs: [
+            { interaction_id: IID, leg_type: 'request', payload_hash: REQ_HASH, lineage: null },
+            { interaction_id: IID, leg_type: 'response', payload_hash: null, lineage: null },
+          ],
+          status: null,
+          stopped_at_seq: null,
+        }),
+      );
     }
     if (url.includes(`/api/payloads/${REQ_HASH}`)) {
       return route.fulfill(
@@ -100,15 +145,30 @@ async function stubFlowApi(page: Page, classification: unknown) {
   });
 }
 
-/** Deep-link to the flow tab, select the interaction, and expand its request
- *  payload — the shared drive-through both tests need. */
-async function openRequestPayload(page: Page) {
+/**
+ * Deep-link to the flow tab, select the interaction, and activate the request
+ * leg's **Classification** tab — the shared drive-through both tests need.
+ *
+ * The `Request` outer tab now carries three inner section tabs (Payload /
+ * Classification / Data lineage), so the verdict has its own tab rather than
+ * riding on the payload body's. Clicking Classification is also the end-to-end
+ * proof of the fetch coupling in the real bundle: the verdict is an inlined field
+ * of `GET /api/payloads/{hash}` (ADR-0024), so activating that tab must be enough
+ * to make the stubbed payload response arrive and render.
+ */
+async function openRequestClassification(page: Page) {
   await page.goto(`/ui/traces/${TID}/flow`);
   await page.getByText(/2 \(1 anchor\)/).click();
-  await page.getByRole('button', { name: /Request: reqhash0/i }).click();
+  // The leg tab is active by default (it is the only leg with a payload); pick
+  // its Classification section.
+  await expect(page.getByRole('tab', { name: 'Request', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await page.getByRole('tab', { name: /Request: Classification/i }).click();
 }
 
-test('the flow view renders the payload Classification verdict on expand', async ({ page }) => {
+test('the flow view renders the payload Classification verdict on its tab', async ({ page }) => {
   await stubFlowApi(page, {
     sensitivity_level: 'CONFIDENTIAL',
     regulatory_tags: ['PII'],
@@ -118,7 +178,7 @@ test('the flow view renders the payload Classification verdict on expand', async
     findings: [{ entity_type: 'EMAIL', start: 8, end: 22, text: 'jo@example.com' }],
     model_version: 1,
   });
-  await openRequestPayload(page);
+  await openRequestClassification(page);
 
   // Sensitivity level badge + regulatory tags + identity-bundle indicator.
   await expect(page.getByText('CONFIDENTIAL')).toBeVisible();
@@ -132,7 +192,7 @@ test('the flow view renders the payload Classification verdict on expand', async
 
 test('a null classification renders as "not yet classified", not a PUBLIC verdict', async ({ page }) => {
   await stubFlowApi(page, null);
-  await openRequestPayload(page);
+  await openRequestClassification(page);
 
   await expect(page.getByText(/not yet classified/i)).toBeVisible();
   await expect(page.getByText('PUBLIC')).toHaveCount(0);

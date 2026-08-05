@@ -21,7 +21,7 @@ export function ClassificationView({
   // means "not yet processed", never "processed but clean" — CONTEXT.md).
   if (classification == null) {
     return (
-      <div style={{ color: '#888', fontStyle: 'italic', fontSize: '0.85rem' }}>
+      <div style={{ color: 'var(--dg-color-muted)', fontStyle: 'italic', fontSize: '0.85rem' }}>
         Not yet classified
       </div>
     );
@@ -75,7 +75,7 @@ export function ClassificationView({
 function FindingsTable({ findings }: { findings: Finding[] }) {
   if (findings.length === 0) {
     return (
-      <div style={{ color: '#888', fontSize: '0.85rem', marginTop: '0.25rem' }}>
+      <div style={{ color: 'var(--dg-color-muted)', fontSize: '0.85rem', marginTop: '0.25rem' }}>
         No findings — no sensitive text detected.
       </div>
     );
@@ -100,7 +100,7 @@ function FindingsTable({ findings }: { findings: Finding[] }) {
             <Td dataLabel="Flagged text" className="dg-mono">
               {f.text}
             </Td>
-            <Td dataLabel="Region" className="dg-mono" style={{ color: '#888' }}>
+            <Td dataLabel="Region" className="dg-mono" style={{ color: 'var(--dg-color-muted)' }}>
               {f.start}–{f.end}
             </Td>
           </Tr>
