@@ -20,8 +20,9 @@ import type { Entity, Interaction, InteractionLeg } from '../types';
  * WHAT IT CANNOT: whether any of it LOOKS right — text metrics, whether a label
  * overflows its box, whether the scroll container actually scrolls, whether the
  * dark theme's tokens resolve to a readable contrast. jsdom computes no SVG layout
- * and resolves no `var()`, so those are for a Playwright screenshot run against the
- * real browser bundle.
+ * and resolves no `var()`, so those want a Playwright screenshot run against the real
+ * browser bundle — which **does not exist yet**: `ui/e2e/` holds only smoke and
+ * classification specs, neither of which opens this view. Checked by hand today.
  *
  * So the real coverage lives in `lib/sequenceDiagram.test.ts` — column assignment,
  * per-leg direction, the error tri-state, dropped interactions, isolated entities —

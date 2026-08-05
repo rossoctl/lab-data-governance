@@ -23,8 +23,13 @@ if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
 // without pretending jsdom laid anything out. PF treats a zero size as "not
 // measured yet" and skips the tag's background rect and the node label, so the
 // zeros are not mistaken for real geometry. Everything geometric therefore
-// remains unobservable here by design and is asserted in Playwright against a
-// real browser instead — see ExecutionFlowGraph.test.tsx's note on the split.
+// remains unobservable here by design.
+//
+// IT IS NOT COVERED ANYWHERE ELSE EITHER, and this comment used to claim it was
+// "asserted in Playwright against a real browser". There is no such spec: `ui/e2e/`
+// holds only smoke and classification specs, neither of which opens the graph. So
+// the geometry is verified BY HAND today — see ExecutionFlowGraph.test.tsx's note on
+// the split, and the PR's "Verify by hand" list for what that means in practice.
 if (typeof SVGElement !== 'undefined') {
   const proto = SVGElement.prototype as unknown as { getBBox?: () => DOMRect };
   if (!proto.getBBox) {

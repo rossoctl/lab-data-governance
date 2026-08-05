@@ -68,9 +68,12 @@ interface WireLineageSummary {
  *   - `lib/graph.test.ts` — the node/edge derivation (per-leg direction, seq
  *     labels, error tri-state, every edge case) as pure logic, which is where the
  *     real coverage lives; and
- *   - a Playwright screenshot run against the real browser bundle, which is the
- *     only place arrowheads, seq tags, zoom behaviour and the dark theme can
- *     actually be seen.
+ *   - nothing else. An earlier version of this note named "a Playwright screenshot
+ *     run against the real browser bundle" as the second half of the split. THAT
+ *     SPEC DOES NOT EXIST: `ui/e2e/` holds only smoke and classification specs and
+ *     neither opens this view. Arrowheads, seq tags, zoom behaviour and the dark
+ *     theme are therefore checked BY HAND, and a regression in any of them would
+ *     pass CI. Writing that spec is this branch's largest test gap.
  *
  * DRAGGING IS NOT SIMULATED HERE, and nothing below pretends otherwise — nor is
  * the drag behavior's mere ATTACHMENT assertable, because the `dragNodeRef` it
