@@ -1,4 +1,4 @@
-# Data Governance for Kagenti — Architecture (v2)
+# Data Governance for Rossoctl — Architecture (v2)
 
 ## Introduction
 
@@ -12,8 +12,8 @@ The primary objectives of data governance are:
 
 ## Guiding principles
 
-- Minimal changes to the Kagenti platform itself.
-- Loosely coupled with Kagenti.
+- Minimal changes to the Rossoctl platform itself.
+- Loosely coupled with Rossoctl.
 - Build on existing open source (OpenTelemetry / OpenInference for
   events, Postgres for storage).
 - Store only raw events that are beneficial for later analytics.
@@ -52,9 +52,12 @@ entity inventory. The v1 UI renders raw span trees grouped by
 - **Transport: OTLP, both gRPC and HTTP/protobuf.** The receiver
   opens both standard ports (4317 gRPC, 4318 HTTP). This matches
   what most OTel collector exporters speak out of the box and avoids
-  forcing collector reconfiguration to point at us. Kagenti's OTEL
-  collector adds an exporter targeting one of the endpoints; no
-  other glue in the platform.
+  forcing collector reconfiguration to point at us. Rossoctl's
+  `otel-collector` runs a **dedicated `traces/data_governance`
+  pipeline** (created by `deploy/patch-rossoctl-collector.sh`) whose
+  exporter targets our receiver — a pipeline of our own, not an
+  exporter bolted onto a shared or Phoenix pipeline. That is the only
+  glue in the platform.
 - **OTLP message size pinned at 4 MB.** The receiver accepts the
   OTel collector's default `max_recv_msg_size` (4 MiB on gRPC; the
   matching HTTP body limit). Spans whose serialized batch exceeds
@@ -76,8 +79,9 @@ entity inventory. The v1 UI renders raw span trees grouped by
 ## 2. Storage
 
 - **Postgres.**
-- **No Phoenix dependency.** Ingestion is a parallel OTel sink; raw
-  spans are stored by us, not read from Phoenix.
+- **No Phoenix dependency.** Ingestion is a parallel OTel sink — now
+  literally a separate collector pipeline (§1); raw spans are stored
+  by us, not read from Phoenix.
 
 ## 3. Spans table and parent linkage
 
@@ -749,7 +753,7 @@ v1.x remediation, additive to schema and receiver.
 
 The OTLP receive socket and the UI backend are **unauthenticated**
 in v1. Both are intended to run cluster-internal, with a Kubernetes
-NetworkPolicy restricting access to the Kagenti namespace.
+NetworkPolicy restricting access to the Rossoctl namespace.
 Production exposure (external auth, RBAC, mTLS) is a v2 concern;
 running v1 outside an isolated cluster is unsupported.
 

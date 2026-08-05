@@ -5,8 +5,8 @@
 # The manifests in deploy/k8s/ reference data-governance/receiver:latest and
 # data-governance/ui:latest with imagePullPolicy: IfNotPresent. This script
 # builds ONE image from the repo-root Containerfile, tags it under both names,
-# and `kind load`s both tags into the cluster named `kagenti` (the upstream
-# Kagenti convention).
+# and `kind load`s both tags into the cluster named `rossoctl` (the upstream
+# platform convention; override with KIND_CLUSTER).
 #
 # It ALSO builds the separate P-classification image
 # data-governance/classification:latest (issue #79 / ADR-0022) from
@@ -21,14 +21,14 @@
 #   ./deploy/build-and-load.sh           # uses defaults
 #
 # Environment overrides (mostly for CI / non-default setups):
-#   KIND_CLUSTER     Kind cluster name to load into (default: kagenti)
+#   KIND_CLUSTER     Kind cluster name to load into (default: rossoctl)
 #   IMAGE_REPO       Image repo prefix (default: data-governance)
 #   IMAGE_TAG        Image tag (default: latest)
 #   CONTAINER_TOOL   docker | podman (default: auto-detect, prefers docker)
 
 set -euo pipefail
 
-KIND_CLUSTER="${KIND_CLUSTER:-kagenti}"
+KIND_CLUSTER="${KIND_CLUSTER:-rossoctl}"
 IMAGE_REPO="${IMAGE_REPO:-data-governance}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
