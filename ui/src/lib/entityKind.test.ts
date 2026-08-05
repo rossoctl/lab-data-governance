@@ -1,11 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { KIND_COLOR, colorForKind, kindColorVar } from './entityKind';
+import { KIND_COLOR, colorForKind, kindColorVar, nodeNeutralColorVar } from './entityKind';
 
 /**
- * The kind → colour map is the SINGLE source shared by the flow tables' entity
- * pills and the Execution Flow graph's nodes. These tests pin that contract: the
- * graph must resolve the same colour the pill does, and it must derive the CSS
- * variable from the colour NAME rather than hardcoding a hex value.
+ * The kind → colour map is the single source shared by the flow tables' entity pills
+ * and the Interaction diagram's head boxes. These tests pin that contract: each
+ * consumer must resolve the same colour for a kind, and must derive the CSS variable
+ * from the colour NAME rather than hardcoding a hex value.
+ *
+ * THE GRAPH IS IN THAT LIST FOR ONE OF ITS TWO TABS. Execution Flow paints its nodes
+ * with `kindColorVar` like everything else; the LINEAGE tab paints them with
+ * `nodeNeutralColorVar` — one neutral for every kind — because hue there is already
+ * carrying the data sources plus two directions. Which tab gets which is decided by
+ * `NodeData.kindColoured` in `ExecutionFlowGraph` and asserted in its tests; this file
+ * pins only that the two functions exist and differ, since its job is to stop the
+ * surfaces drifting by accident.
  */
 describe('entityKind', () => {
   it('maps the known kinds to the vanilla .ent-pill palette', () => {
@@ -75,5 +83,43 @@ describe('entityKind', () => {
 
   it('gives the two blue kinds the same colour (agent and llm share it by design)', () => {
     expect(colorForKind('agent')).toBe(colorForKind('llm'));
+  });
+
+  describe('nodeNeutralColorVar (the LINEAGE tab node colour)', () => {
+    it('is the same neutral for every kind, so no node carries a kind hue', () => {
+      // Pinned directly: on the tab that uses this, green and blue (and every other
+      // kind hue) are gone. Asserted as "all kinds resolve to ONE value" rather than
+      // "agent is not blue", because the latter would still pass if agent had merely
+      // been recoloured to some other hue.
+      const kinds = ['user', 'agent', 'tool', 'llm', 'external_service', 'external_client', 'nope'];
+      const vars = new Set(kinds.map(() => nodeNeutralColorVar()));
+      expect(vars.size).toBe(1);
+    });
+
+    it('carries neither the blue nor the green kind variable', () => {
+      // The two hues named in the request, excluded by name so a regression that
+      // reintroduced either would fail here and not merely change a set size.
+      expect(nodeNeutralColorVar()).not.toContain('--pf-v5-global--primary-color--100');
+      expect(nodeNeutralColorVar()).not.toContain('--pf-v5-global--success-color--100');
+    });
+
+    it('is a var() reference with the repo token as fallback, and no raw hex', () => {
+      // Same house rules the kind variables are held to: a reference so the dark
+      // theme applies at paint time, and no hex anywhere in the chain.
+      expect(nodeNeutralColorVar()).toMatch(
+        /^var\(--pf-v5-global--[\w-]+, var\(--dg-color-label\)\)$/,
+      );
+      expect(nodeNeutralColorVar()).not.toMatch(/#[0-9a-f]{3,6}/i);
+      expect(nodeNeutralColorVar()).not.toContain('--pf-v5-c-label');
+    });
+
+    it('leaves the PILL palette alone — the pills keep their kind hues', () => {
+      // The guard on the divergence: adding a neutral must not have reached into the
+      // map the tables, the sequence diagram and the Execution Flow graph still paint
+      // from.
+      expect(kindColorVar('agent')).toContain('--pf-v5-global--primary-color--100');
+      expect(kindColorVar('tool')).toContain('--pf-v5-global--success-color--100');
+      expect(kindColorVar('agent')).not.toBe(nodeNeutralColorVar());
+    });
   });
 });

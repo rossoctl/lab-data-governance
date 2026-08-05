@@ -169,9 +169,10 @@ import {
   type DirectionHighlight,
 } from '../lib/lineageReachability';
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
-import { kindColorVar } from '../lib/entityKind';
+import { kindColorVar, nodeNeutralColorVar } from '../lib/entityKind';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
-import { LineageSourcePicker } from './flow/LineageSourcePicker';
+import { LineageSourceNotices, LineageSourcePicker } from './flow/LineageSourcePicker';
+import { LineageEntityPicker } from './flow/LineageEntityPicker';
 import type { Entity, Interaction, LineageStatus } from '../types';
 
 /**
@@ -263,8 +264,27 @@ interface EdgeLineageFacts {
 
 const NO_EDGE_LINEAGE_FACTS: EdgeLineageFacts = { isUpstream: false, isDownstream: false };
 
-/** What the renderers read off `data`: the derived spec plus its highlight role. */
-type NodeData = GraphNodeSpec & { highlight: HighlightRole; lineage: NodeLineageFacts };
+/**
+ * What the renderers read off `data`: the derived spec plus its highlight role.
+ *
+ * `kindColoured` is what makes the SAME renderer paint the two tabs differently, and it
+ * is a per-node flag rather than a lookup of "which tab am I" because the renderers are
+ * registered on the controller at module scope and cannot see the tab (the same
+ * constraint that puts {@link HighlightRole} on `data` — see its note).
+ *
+ * WHY THE TWO TABS DIVERGE HERE. On **Execution Flow** hue is free: there is no
+ * lineage overlay, so entity kind is the only thing colour could mean, and kind
+ * colouring is genuinely useful (it is also what the `EntityPill` in the tables beside
+ * it shows, so the two agree). On **Lineage** hue is spoken for — the trace's data
+ * sources are the one coloured thing, plus two direction hues and error red — so nodes
+ * go neutral there and kind moves to the label and the tooltip. One renderer, one flag,
+ * both readings honest.
+ */
+type NodeData = GraphNodeSpec & {
+  highlight: HighlightRole;
+  lineage: NodeLineageFacts;
+  kindColoured: boolean;
+};
 /**
  * An edge's `data`: its derived spec, its highlight role, and whether its parent
  * INTERACTION is the flow view's selected one.
@@ -838,14 +858,27 @@ const ZOOM_STEP = 4 / 3;
 const FIT_PADDING = 24;
 
 /**
- * The one custom node renderer: PF's `DefaultNode` with the entity's kind colour
+ * The one custom node renderer: PF's `DefaultNode` with a NEUTRAL stroke/label colour
  * pushed in through the two CSS variables PF's own node styles read.
  *
- * The colour comes from `lib/entityKind.kindColorVar`, which is the SAME map the
- * `EntityPill` in the flow tables uses — the graph does not own a second palette,
- * so a node and its table row can never disagree about what colour an `agent` is.
- * `kindColorVar` returns a `var(--pf-v5-c-label--m-<colour>__content--Color)`
- * reference rather than a literal, so the dark theme's overrides apply here too.
+ * NEUTRAL FOR EVERY KIND, which reverses what this renderer used to do (it painted
+ * each node its entity kind's hue via `kindColorVar`, the same map `EntityPill` uses).
+ * The reversal is recorded rather than quietly applied, because the old arrangement
+ * was deliberate and its reasoning is still visible elsewhere in this file:
+ *
+ * HUE WAS OVERSUBSCRIBED. On this one graph, colour was carrying entity kind, error,
+ * fan-in and fan-out — four meanings — which is why `global.css` had to give the
+ * trace's DATA SOURCES a ring instead of a colour, and why its own header block says
+ * "hue is already carrying entity kind, error and two directions" as the reason a
+ * source hue would be "both ambiguous and invisible". Freeing kind's hue resolves
+ * that: the data sources become the one COLOURED thing on the graph, which is the
+ * fact the Lineage tab exists to show.
+ *
+ * KIND IS NOT LOST, it moves off hue onto channels that were already carrying it:
+ * the node's visible label, its `<title>` and accessible name (see {@link nodeTitle}),
+ * and the kind-coloured `EntityPill` in the flow tables on the same screen. See
+ * `lib/entityKind.nodeNeutralColorVar` for the divergence this creates with those
+ * pills, which is intentional and stated there.
  */
 /**
  * A node's hover/AT text: kind, natural key, and every lineage claim IN WORDS.
@@ -917,7 +950,12 @@ function edgeLineageSuffix(data: EdgeData | undefined): string {
 
 function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof DefaultNode>) {
   const data = element.getData() as NodeData | undefined;
-  const colour = kindColorVar(data?.kind ?? '');
+  // PER TAB (see `NodeData.kindColoured`): Execution Flow paints entity kind, because
+  // nothing else on that tab wants hue; Lineage paints every node neutral so the
+  // trace's data sources can be the one coloured thing. Defaults to NEUTRAL when
+  // `data` is missing — the conservative direction, since a stray kind hue on the
+  // Lineage tab would compete with the source colouring.
+  const colour = data?.kindColoured ? kindColorVar(data.kind) : nodeNeutralColorVar();
   return (
     <g
       // The exact variables PF's own topology-components.css reads for a node's
@@ -1718,16 +1756,64 @@ export interface EntityGraphProps {
    */
   onSelectEntity?: (entityId: string) => void;
   /**
-   * Extra disclosures to render above the surface, alongside the graph's own three
+   * Extra disclosures to render BELOW the surface, alongside the graph's own three
    * notices (dropped interactions / isolated entities / parallel channels).
    *
    * The seam exists because the Lineage tab has notices of its own — unresolvable
    * source keys, a partial roll-up — that are neither facts about the graph nor
    * something this component should know how to word. Rendering them HERE rather
-   * than above the whole component keeps them in one strip with the graph's own, so
+   * than above the whole component keeps them in one block with the graph's own, so
    * a reader meets every caveat about the picture in one place instead of two.
+   *
+   * THEY HAVE NOW MOVED TWICE, and the history is worth keeping because each move
+   * fixed a real defect rather than being a restyle:
+   *   1. Originally STACKED ABOVE the graph. This tab can legitimately have ten
+   *      notices at once (a source roll-up, a coverage caveat, two prompts, two
+   *      per-direction verdicts, three graph disclosures), and stacked inline they
+   *      pushed the drawing area entirely below the fold — the reader scrolled past
+   *      every caveat to reach the thing they qualify.
+   *   2. Then into a fixed-width SIDE RAIL. That kept both on screen, but it spent
+   *      22rem of horizontal room permanently — on a graph whose columns grow
+   *      rightwards with call depth, which is the axis it could least afford.
+   *   3. Now BELOW the surface, by request. The graph gets the full width, and the
+   *      informational text reads as the footnotes it is: consulted after looking at
+   *      the picture, in the same place the legend already sits.
+   * The CONTROLS did not follow them down — see {@link controls} for why a control a
+   * reader has to act on cannot live below the thing it drives.
    */
   notices?: React.ReactNode;
+  /**
+   * Interactive CONTROLS to render ABOVE the surface.
+   *
+   * A SEPARATE SLOT FROM {@link notices}, and the distinction is the whole point of
+   * this prop existing: notices are text a reader READS (and which therefore belongs
+   * below the picture, out of the way), whereas controls are things a reader has to
+   * ACT ON before the picture can answer anything. The Lineage view's two pickers —
+   * the entity and the data source — are the two halves of `fanin(entity, source)`,
+   * and a graph that says "select an entity to trace this source's data" while its
+   * only entity control sits below the fold would be an instruction the reader cannot
+   * follow without hunting for it.
+   *
+   * So the informational text went below the graph and the pickers deliberately did
+   * not. Empty on the Execution Flow tab, which asks the reader for nothing.
+   */
+  controls?: React.ReactNode;
+  /**
+   * The key to the graph's treatments, rendered BELOW the surface.
+   *
+   * A separate slot from {@link notices} because it is a different kind of thing and
+   * now lives in a different place: notices are transient claims about THIS trace
+   * (and go in the side rail), whereas the legend is a standing key to what the
+   * drawing's colours and rings MEAN. Below the graph specifically — a reader
+   * consults a key after looking at the picture and finding a treatment they cannot
+   * read, so it belongs where the eye lands on the way back out, not above the thing
+   * it explains.
+   *
+   * Still in DOCUMENT ORDER after the surface, so a screen reader meets the graph and
+   * then its key; it is deliberately not a floating overlay, which would cover the
+   * drawing it exists to explain.
+   */
+  legend?: React.ReactNode;
   /** `data-testid` on the wrapper, so each tab is addressable as itself. */
   testId?: string;
 }
@@ -1773,6 +1859,8 @@ export function EntityGraph({
   onSelectInteraction,
   onSelectEntity,
   notices,
+  controls,
+  legend,
   testId = 'execution-flow-graph',
 }: EntityGraphProps) {
   // One Visualization instance for the view's lifetime. Created lazily in state
@@ -1976,6 +2064,12 @@ export function EntityGraph({
             ...n,
             highlight: roleOf(n.id, highlight, true),
             lineage: lineageFactsOf(n.id, highlight),
+            // KIND COLOURS ON EXECUTION FLOW, NEUTRAL ON LINEAGE. Keyed on the
+            // presence of a `highlight` because that IS the difference between the two
+            // tabs (the Execution Flow wrapper passes none — see `ExecutionFlowGraph`),
+            // rather than on a new "which tab" prop that would be a second way to say
+            // the same thing and could contradict it.
+            kindColoured: highlight === undefined,
           } satisfies NodeData,
         };
       }),
@@ -2178,76 +2272,12 @@ export function EntityGraph({
   }, [controller]);
 
   return (
-    <div data-testid={testId}>
-      {/* The caller's own disclosures FIRST, above the graph's three: they are
-          about the answer the reader asked for, whereas the graph's are standing
-          caveats about the drawing. A "some of your sources could not be drawn"
-          notice buried under three permanent info boxes is a notice nobody reads. */}
-      {notices}
-      {/* EDGE CASE, disclosed in the UI rather than only in a comment: an
-          interaction whose caller or callee could not be resolved to an entity
-          has no second endpoint, so neither of its legs can be an arrow. Counted
-          once per INTERACTION (the unresolved participant is one defect on the
-          identity row, shared by both legs — see lib/graph's DroppedInteraction),
-          with the lost leg count spelled out separately so the arrow arithmetic
-          still adds up for a reader comparing this to the Flat tab. */}
-      {spec.dropped.length > 0 && (
-        <Alert
-          variant="info"
-          isInline
-          title={`${spec.dropped.length} interaction${spec.dropped.length === 1 ? '' : 's'} not shown as edges`}
-          style={{ marginBottom: '0.5rem' }}
-        >
-          {`These interactions have an unresolved participant (no caller and/or callee entity), so they have no second endpoint to draw an arrow to: ${spec.dropped
-            .map(
-              (d) =>
-                `${d.label} (missing ${d.missing}, ${d.legCount} leg${d.legCount === 1 ? '' : 's'})`,
-            )
-            .join('; ')}. They are still listed in full on the Interaction flow tab.`}
-        </Alert>
-      )}
-      {/* EDGE CASE: entities that no interaction names. They ARE drawn (an
-          entity is a governance fact on its own) with a dashed outline, and
-          counted here so a reader knows the unconnected nodes are real data
-          rather than edges that failed to render. */}
-      {spec.nodes.some((n) => n.isIsolated) && (
-        <Alert
-          variant="info"
-          isInline
-          title={`${spec.nodes.filter((n) => n.isIsolated).length} isolated entit${
-            spec.nodes.filter((n) => n.isIsolated).length === 1 ? 'y' : 'ies'
-          }`}
-          style={{ marginBottom: '0.5rem' }}
-        >
-          {'Drawn with a dashed outline: these entities were derived from the trace but no interaction names them as caller or callee, so they have no edges.'}
-        </Alert>
-      )}
-      {/* EDGE CASE: two entities can interact more than once, and each
-          interaction is its own governance fact — so every leg of each gets its
-          own arrow rather than being collapsed into one with a count, which would
-          lose the per-leg identity the rest of the UI keys on. The notice still
-          matters even though `edgeBendpoints` now fans same-span edges to
-          alternating sides by seq parity: fanning separates two, not necessarily
-          five, so a busy channel can still read as fewer arrows than it holds —
-          and the reader is pointed at the Flat tab where each is its own row.
-          (It used to say these drew exactly on top of one another, which the
-          bendpoints are what fixed.)
-
-          Counted in INTERACTIONS, not edges: under the leg model a single
-          completed interaction always puts two arrows (its request and its
-          response) in the same channel, so counting edges would fire this notice
-          on virtually every trace — noise that is always on carries no
-          information. See lib/graph's parallelGroups. */}
-      {spec.parallelGroups.length > 0 && (
-        <Alert
-          variant="info"
-          isInline
-          title={`${spec.parallelGroups.length} entity pair${spec.parallelGroups.length === 1 ? '' : 's'} with multiple interactions`}
-          style={{ marginBottom: '0.5rem' }}
-        >
-          {'Each leg of each interaction is drawn as its own arrow rather than being merged into one, so the arrow count matches the leg count on the Flat tab.'}
-        </Alert>
-      )}
+    <div data-testid={testId} className="dg-graph-layout">
+      {/* THE CONTROLS, above the surface — the only thing that stayed above it. They
+          are what the reader ACTS on (the Lineage view's entity and source pickers),
+          and an instruction to "select an entity" whose control sat below the fold
+          would be unfollowable. See `EntityGraphProps.controls`. */}
+      {controls}
       <div className="dg-graph-surface">
         <VisualizationProvider controller={controller}>
           <VisualizationSurface />
@@ -2297,6 +2327,96 @@ export function EntityGraph({
             />
           </div>
         </VisualizationProvider>
+      </div>
+      {/* THE LEGEND, immediately below the surface — a key belongs under the picture it
+          decodes, and above the prose so it stays adjacent to the drawing it explains.
+          See `EntityGraphProps.legend`. */}
+      {legend}
+
+      {/* EVERY INFORMATIONAL AND WARNING BALLOON, BELOW THE GRAPH. Was stacked above it
+          (which pushed the drawing off screen), then in a fixed-width side rail (which
+          spent 22rem of the axis the graph grows along) — now here, by request. See
+          `EntityGraphProps.notices` for the full history and why the CONTROLS did not
+          follow the text down.
+
+          `role="complementary"` + a label so an AT reader can jump to the caveats, or
+          skip past them, rather than walking every alert to reach the next thing.
+
+          DOCUMENT ORDER NOW MATCHES VISUAL ORDER, which it deliberately did not in the
+          side-rail arrangement (the rail was first in the DOM and second on screen, so
+          that a screen reader met the caveats before the drawing). That inversion was
+          only defensible while the notices were visually adjacent to the graph. Below it,
+          DOM-first would mean announcing ten alerts before the reader reaches the picture
+          they qualify — so the two orders agree again, and the landmark above is what
+          makes the block reachable without being unavoidable. */}
+      <div className="dg-graph-notices" role="complementary" aria-label="Graph notices">
+        {/* The caller's own disclosures FIRST, above the graph's three: they are
+            about the answer the reader asked for, whereas the graph's are standing
+            caveats about the drawing. A "some of your sources could not be drawn"
+            notice buried under three permanent info boxes is a notice nobody reads. */}
+        {notices}
+        {/* EDGE CASE, disclosed in the UI rather than only in a comment: an
+            interaction whose caller or callee could not be resolved to an entity
+            has no second endpoint, so neither of its legs can be an arrow. Counted
+            once per INTERACTION (the unresolved participant is one defect on the
+            identity row, shared by both legs — see lib/graph's DroppedInteraction),
+            with the lost leg count spelled out separately so the arrow arithmetic
+            still adds up for a reader comparing this to the Flat tab. */}
+        {spec.dropped.length > 0 && (
+          <Alert
+            variant="info"
+            isInline
+            title={`${spec.dropped.length} interaction${spec.dropped.length === 1 ? '' : 's'} not shown as edges`}
+            style={{ marginBottom: '0.5rem' }}
+          >
+            {`These interactions have an unresolved participant (no caller and/or callee entity), so they have no second endpoint to draw an arrow to: ${spec.dropped
+              .map(
+                (d) =>
+                  `${d.label} (missing ${d.missing}, ${d.legCount} leg${d.legCount === 1 ? '' : 's'})`,
+              )
+              .join('; ')}. They are still listed in full on the Interaction flow tab.`}
+          </Alert>
+        )}
+        {/* EDGE CASE: entities that no interaction names. They ARE drawn (an
+            entity is a governance fact on its own) with a dashed outline, and
+            counted here so a reader knows the unconnected nodes are real data
+            rather than edges that failed to render. */}
+        {spec.nodes.some((n) => n.isIsolated) && (
+          <Alert
+            variant="info"
+            isInline
+            title={`${spec.nodes.filter((n) => n.isIsolated).length} isolated entit${
+              spec.nodes.filter((n) => n.isIsolated).length === 1 ? 'y' : 'ies'
+            }`}
+            style={{ marginBottom: '0.5rem' }}
+          >
+            {'Drawn with a dashed outline: these entities were derived from the trace but no interaction names them as caller or callee, so they have no edges.'}
+          </Alert>
+        )}
+        {/* EDGE CASE: two entities can interact more than once, and each
+            interaction is its own governance fact — so every leg of each gets its
+            own arrow rather than being collapsed into one with a count, which would
+            lose the per-leg identity the rest of the UI keys on. The notice still
+            matters even though `edgeBendpoints` now fans same-span edges to
+            alternating sides by seq parity: fanning separates two, not necessarily
+            five, so a busy channel can still read as fewer arrows than it holds —
+            and the reader is pointed at the Flat tab where each is its own row.
+
+            Counted in INTERACTIONS, not edges: under the leg model a single
+            completed interaction always puts two arrows (its request and its
+            response) in the same channel, so counting edges would fire this notice
+            on virtually every trace — noise that is always on carries no
+            information. See lib/graph's parallelGroups. */}
+        {spec.parallelGroups.length > 0 && (
+          <Alert
+            variant="info"
+            isInline
+            title={`${spec.parallelGroups.length} entity pair${spec.parallelGroups.length === 1 ? '' : 's'} with multiple interactions`}
+            style={{ marginBottom: '0.5rem' }}
+          >
+            {'Each leg of each interaction is drawn as its own arrow rather than being merged into one, so the arrow count matches the leg count on the Flat tab.'}
+          </Alert>
+        )}
       </div>
     </div>
   );
@@ -2742,15 +2862,14 @@ export function LineageGraph({
       onSelectInteraction={onSelectInteraction}
       onSelectEntity={onSelectEntity}
       testId="lineage-graph"
-      notices={
-        <>
-          {/* THE LEGEND. A colour with no key is a puzzle, so every treatment the
-              graph can paint is named here — and it is rendered unconditionally,
-              because the source colouring is on from first paint and would otherwise
-              be a red ring with no explanation anywhere on screen. Marked as a
-              `group` with a label rather than a bare div so it is announced as the
-              key it is. */}
-          <div className="dg-lineage-legend" role="group" aria-label="Lineage graph legend">
+      /* THE LEGEND, in its own slot so it renders BELOW the graph rather than above it
+         with the notices. A colour with no key is a puzzle, so every treatment the
+         graph can paint is named here — and it is rendered unconditionally, because
+         the source colouring is on from first paint and would otherwise be a red ring
+         with no explanation anywhere on screen. Marked as a `group` with a label
+         rather than a bare div so it is announced as the key it is. */
+      legend={
+        <div className="dg-lineage-legend" role="group" aria-label="Lineage graph legend">
             <span className="dg-lineage-legend-item">
               <span
                 className="dg-lineage-swatch dg-lineage-swatch--datasource"
@@ -2786,7 +2905,56 @@ export function LineageGraph({
               <span className="dg-lineage-swatch dg-lineage-swatch--frontier" aria-hidden="true" />
               Not derived yet (pending frontier)
             </span>
-          </div>
+        </div>
+      }
+      /* THE TWO CONTROLS, ABOVE THE GRAPH — the two halves of `fanin(entity, source)`.
+         Everything a reader READS moved below the picture; these are what they ACT on,
+         so they stayed. An instruction reading "select an entity to trace this source's
+         data" is unfollowable if its control sits under ten alerts.
+
+         ENTITY ABOVE SOURCE, matching the walk's own signature and the way the question
+         reads aloud: "what happened to THIS entity's data" is the question, "traced from
+         which origin" is the qualifier. See LineageEntityPicker's header.
+
+         The entity picker is why this slot exists at all. Scoping the Entities table to
+         Tree|Flat left the graph node as the only entity control on this view, and an SVG
+         circle is not tabbable — so a keyboard or screen-reader reader could not ask this
+         view's question. Both pickers write through the SAME selection paths the node
+         click and the table row used (`onSelectEntity` → `?eid`, `onChange` → `?src`), so
+         adding a control did not add a second notion of what is selected. */
+      controls={
+        <>
+          <LineageEntityPicker
+            entities={entities}
+            selectedEntityId={selectedEntityId}
+            // Routed to the same `selectEntity` a node click calls. Absent handler → the
+            // control would visibly do nothing, so it is not offered (same honesty rule
+            // as the source picker's `onChange` below).
+            onChange={onSelectEntity ?? (() => {})}
+          />
+          <LineageSourcePicker
+            chosen={sourceChoice}
+            namesByKey={namesByKey}
+            // Not defaulted to a no-op: an absent handler means the parent does not own
+            // a `?src` mirror, in which case offering a control that visibly changes
+            // nothing would be worse than not offering one. `LineageSourcePicker`
+            // requires the callback, so this component supplies one that is honest
+            // about doing nothing only when the parent genuinely passed none.
+            onChange={onLineageSourceChange ?? (() => {})}
+            // Just the dropdown up here. Its two alerts are informational text, so they
+            // render with the rest of the prose below the graph — see
+            // `LineageSourceNotices` in the notices block.
+            showNotices={false}
+          />
+        </>
+      }
+      notices={
+        <>
+          {/* THE SOURCE PICKER'S OWN TWO STATES ("choose a source" / "that source is not
+              one of this trace's"), rendered here rather than under the dropdown because
+              they are prose and all prose is below the picture now. Same component owns
+              the wording, so the control and its explanation cannot drift. */}
+          <LineageSourceNotices chosen={sourceChoice} />
 
           {/* THE SOURCE ROLL-UP, stated in words beside the colouring. Rendered with
               no selection, because that is when the colouring is the only thing on
@@ -2888,29 +3056,6 @@ export function LineageGraph({
                 .join('; ')} matched several in this trace. The marked node is the first match in the entities read — deterministic, but an arbitrary choice among them.`}
             </Alert>
           )}
-
-          {/* THE SOURCE PICKER, and the two states that belong to it: nothing chosen
-              yet (an instruction) and a stale `?src` (a warning).
-
-              PLACED ABOVE THE ENTITY PROMPT, in the order the question is assembled:
-              the walk is `fanin(entity, source)`, and the source is the half a reader
-              is least likely to guess is required — so it is asked for first and its
-              control sits immediately under the roll-up that supplies its options.
-
-              The control is a component rather than inline JSX because it owns real
-              interaction state (menu open/closed) and three of the four choice states'
-              wording; keeping it here would put a `useState` inside a notices prop and
-              mix the states of two different questions in one block. */}
-          <LineageSourcePicker
-            chosen={sourceChoice}
-            namesByKey={namesByKey}
-            // Not defaulted to a no-op: an absent handler means the parent does not own
-            // a `?src` mirror, in which case offering a control that visibly changes
-            // nothing would be worse than not offering one. `LineageSourcePicker`
-            // requires the callback, so this component supplies one that is honest
-            // about doing nothing only when the parent genuinely passed none.
-            onChange={onLineageSourceChange ?? (() => {})}
-          />
 
           {/* NOTHING SELECTED. An instruction, not a verdict — the graph below is
               drawn at full strength for everything except the source marks, and

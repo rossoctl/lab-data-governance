@@ -64,7 +64,15 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** A fully-populated lineage triple; individual tests override slices of it. */
+/**
+ * A fully-populated lineage triple; individual tests override slices of it.
+ *
+ * `source_transformations` is still set here even though the view no longer renders
+ * it: the field is still in the API response and still derived by the backend (only
+ * the Sources table's "Applied" column was removed), so the fixture stays faithful
+ * to the wire shape — and a populated-but-unrendered map is what lets the tests
+ * above prove the column is gone rather than merely untested.
+ */
 function lineage(over: Partial<DataLineage> = {}): DataLineage {
   return {
     data_sources: ['agent-one', 'user'],
@@ -91,16 +99,36 @@ describe('DataLineageView', () => {
     expect(within(sources).getByText('user')).toBeInTheDocument();
   });
 
-  it('lists the transformations applied per data source', () => {
+  // NOTE: there was a test here — "lists the transformations applied per data
+  // source" — asserting that each row carried its own set of purple
+  // transformation Labels. The Sources table's second ("Applied") column was
+  // removed by request, so that assertion has no subject any more and the test
+  // was deleted rather than weakened. `source_transformations` is still in the
+  // API response and still derived by the backend; this view just no longer
+  // presents it, so the loss of coverage is presentational only and the fixture
+  // below deliberately keeps the field populated to prove the view ignores a
+  // present-but-unrendered field instead of requiring an absent one.
+  //
+  // The part of that test that is still true — that both origins appear as rows —
+  // is already asserted by "lists the data sources the payload originated from"
+  // above, so nothing was preserved from it here.
+
+  it('renders rows for every source even though the transformations map is no longer presented', () => {
+    // Guards the removal itself in both directions. The fixture carries a fully
+    // populated `source_transformations`, so this fails if the column ever comes
+    // back (a stray second cell / a purple Label reappearing) AND it fails if the
+    // removal accidentally took the rows with it.
     render(<DataLineageView state={derived()} />);
     const sources = screen.getByLabelText('Data sources');
-    // Each source's own transformation set sits with that source, so the
-    // "what happened to MY data" question is answered per origin.
-    const agentRow = within(sources).getByText('agent-one').closest('tr')!;
-    expect(within(agentRow).getByText('summarization')).toBeInTheDocument();
-    const userRow = within(sources).getByText('user').closest('tr')!;
-    expect(within(userRow).getByText('anonymization')).toBeInTheDocument();
-    expect(within(userRow).getByText('summarization')).toBeInTheDocument();
+    // One cell per row: the Source column is the ONLY column.
+    expect(sources.querySelectorAll('tbody tr')).toHaveLength(2);
+    for (const row of Array.from(sources.querySelectorAll('tbody tr'))) {
+      expect(row.querySelectorAll('td')).toHaveLength(1);
+    }
+    // And none of the transformation names from the fixture map leak into the table.
+    for (const t of ['summarization', 'anonymization']) {
+      expect(within(sources).queryByText(t)).toBeNull();
+    }
   });
 
   it('shows the entities traversed as an unordered set, with no arrow chain', () => {
@@ -179,21 +207,21 @@ describe('DataLineageView', () => {
     expect(screen.getByText(/originates here/i)).toBeInTheDocument();
   });
 
-  it('shows a no-transformations note for a source that had none applied', () => {
-    render(
-      <DataLineageView
-        state={derived({
-          data_sources: ['agent-one'],
-          source_transformations: { 'agent-one': [] },
-          entities: ['agent-one'],
-        })}
-      />,
-    );
-    const agentRow = screen
-      .getByLabelText('Data sources')
-      .querySelector('tbody tr')!;
-    expect(within(agentRow as HTMLElement).getByText(/none/i)).toBeInTheDocument();
-  });
+  // NOTE: there was a test here — "shows a no-transformations note for a source
+  // that had none applied" — asserting the muted "None" that the removed
+  // "Applied" column rendered for a source whose transformation set was empty.
+  // Its entire subject was that column, so it was deleted. The distinction it
+  // protected (an empty set is a real, stated value, never a blank cell) still
+  // lives on for the two remaining absence cases: "states an origin's genuinely
+  // empty triple as a real derived result" above and the "no entities traversed"
+  // assertion in the last test. What is gone is only the per-source flavour of
+  // that rule, which no longer has a cell to be stated in.
+  //
+  // Its one incidental still-true claim — a source with an empty transformation
+  // set is still LISTED as a row — is now covered by the source-listing tests,
+  // most directly "lists a source that carries no entry in the transformations
+  // map" below, which is the stronger version of the same case (no map entry at
+  // all rather than an empty one).
 
   it('marks the long Entity-natural-key cells for the wrap that stops panel clipping', () => {
     // Real sources/entities are long unbreakable tokens
@@ -345,11 +373,21 @@ describe('DataLineageView', () => {
     expect(screen.queryByText(/failed to load lineage/i)).toBeNull();
   });
 
-  it('keeps two sources sharing a display name distinguishable, with their own transformations', async () => {
+  it('keeps two sources sharing a display name distinguishable', async () => {
     // `create_booking` exists on more than one agent, which is exactly why the
     // stored key is qualified. Relabelling both rows `create_booking` must not
-    // make them look like one source, nor swap their transformation sets — the
-    // map is keyed by natural key, not by label.
+    // make them look like one source: a governance reader who cannot tell the two
+    // origins apart draws the wrong conclusion about where the data came from, and
+    // "two agents both own a tool of this name" is the ordinary case, not an edge
+    // one. The natural key is what stays unique (it is also the React key, so a
+    // collapse here would show up as a duplicate-key warning or a dropped row) and
+    // the `title` tooltip is where it stays reachable.
+    //
+    // This test previously ALSO asserted that each row kept its own
+    // `source_transformations` entry — that the relabel had not slid the map
+    // lookup onto the neighbouring source. That column ("Applied") was removed, so
+    // that half is gone; the distinguishability claim it shared a fixture with is
+    // untouched and is the whole point of the test.
     const bookingKey = 'tool:agent:(x,booking-agent):create_booking';
     const otherKey = 'tool:agent:(y,other-agent):create_booking';
     mockEntities([
@@ -370,16 +408,15 @@ describe('DataLineageView', () => {
       expect(within(sources).getAllByText('create_booking')).toHaveLength(2),
     );
 
-    // Both rows are present and told apart by their tooltipped full key.
+    // Two rows, not one — the shared label did not dedupe the origins away.
+    expect(sources.querySelectorAll('tbody tr')).toHaveLength(2);
+
+    // And they are told apart by their tooltipped full key, in source order. The
+    // pairing is asserted as a positional list rather than a set membership check,
+    // because a lookup that slid one row over would still satisfy "both keys are
+    // present somewhere".
     const cells = Array.from(sources.querySelectorAll('tbody td[data-label="Source"]'));
     expect(cells.map((c) => c.getAttribute('title'))).toEqual([bookingKey, otherKey]);
-
-    // Each row still carries ITS OWN transformations — the relabel did not slide
-    // the map lookup onto the neighbouring source.
-    const rows = Array.from(sources.querySelectorAll('tbody tr'));
-    expect(within(rows[0] as HTMLElement).getByText('anonymization')).toBeInTheDocument();
-    expect(within(rows[0] as HTMLElement).queryByText('summarization')).toBeNull();
-    expect(within(rows[1] as HTMLElement).getByText('summarization')).toBeInTheDocument();
 
     // Same for the entity set: two members, not one collapsed label.
     const labels = Array.from(

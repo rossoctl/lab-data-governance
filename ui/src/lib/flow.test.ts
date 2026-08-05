@@ -31,11 +31,26 @@ const entity = (kind: string, natural_key: string): Entity =>
  * a tab that activates but never survives a reload.
  */
 describe('parseLegViewKey', () => {
-  it('accepts every non-default presentation verbatim', () => {
+  it('accepts the one non-default `?legs` value verbatim', () => {
+    // `flat` is the ONLY non-default now: `diagram`, `graph` and `lineage` were
+    // promoted to top-level path segments (TraceDetailPage's ViewKey), so they are no
+    // longer `?legs` values at all.
     expect(parseLegViewKey('flat')).toBe('flat');
-    expect(parseLegViewKey('diagram')).toBe('diagram');
-    expect(parseLegViewKey('graph')).toBe('graph');
-    expect(parseLegViewKey('lineage')).toBe('lineage');
+  });
+
+  it('coerces the PROMOTED presentations to the default, since they are not ?legs any more', () => {
+    // Deliberately pinned rather than left implicit. These three ARE still members of
+    // `LegViewKey` (that type names what FlowTables can render), so a reader could
+    // reasonably expect this function to pass them through — it must not, because they
+    // are addressed by path now.
+    //
+    // A leftover `?legs=graph` URL does NOT end up on the tables in practice:
+    // TraceDetailPage intercepts these three before this function is consulted and
+    // redirects to the new segment (LEGACY_LEGS_TO_VIEW), so the bookmark still lands
+    // on the graph. This coercion is the junk-value backstop behind that redirect.
+    expect(parseLegViewKey('diagram')).toBe('tree');
+    expect(parseLegViewKey('graph')).toBe('tree');
+    expect(parseLegViewKey('lineage')).toBe('tree');
   });
 
   it('reads absent, empty and unrecognised values as the default tree', () => {

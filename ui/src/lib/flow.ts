@@ -42,8 +42,17 @@
  * by the flow view), which is a second reason it is not one of them.
  *
  * Lives here, in the flow view's pure data module, rather than in `FlowTables`:
- * the page owns the `?legs` URL param and the component owns the tab bar, so both
- * need the type and the coercion, and neither is a natural owner of it.
+ * the page owns the URL and the component owns the tab bar, so both need the type and
+ * the coercion, and neither is a natural owner of it.
+ *
+ * NOTE ON THE ORDERING ARGUMENT ABOVE, which is about how these five are PRESENTED and
+ * is now only half this type's business: `diagram`, `graph` and `lineage` were promoted
+ * from `?legs` sub-tabs to top-level views addressed by PATH SEGMENT
+ * (`TraceDetailPage`'s ViewKey), so the tab order the paragraphs above justify is
+ * realised by that page's tab bar, not by the `?legs` bar — which is now Tree|Flat only.
+ * The five values themselves are unchanged: this type still names what `FlowTables` can
+ * render, which is why the promotion was a navigation change and not a rewrite. Only
+ * `tree` and `flat` are valid `?legs` values — see {@link parseLegViewKey}.
  */
 export type LegViewKey = 'tree' | 'flat' | 'diagram' | 'graph' | 'lineage';
 
@@ -52,11 +61,22 @@ export type LegViewKey = 'tree' | 'flat' | 'diagram' | 'graph' | 'lineage';
  * and absent — reads as the default `tree` rather than throwing, matching
  * `parseWindowKey`'s treatment of `?window`. Stated once so the page's URL read
  * and the tab bar's `onSelect` cannot drift about what a valid value is.
+ *
+ * ONLY `tree` AND `flat` ARE `?legs` VALUES NOW. `diagram`, `graph` and `lineage` are
+ * still members of {@link LegViewKey} — that type names the five PRESENTATIONS
+ * `FlowTables` can render, which has not changed — but they are addressed by PATH
+ * SEGMENT rather than by this param since they were promoted to top-level views
+ * (`TraceDetailPage`'s ViewKey).
+ *
+ * So a leftover `?legs=graph` coerces to `tree` HERE, and that is deliberately not how
+ * such a URL is handled: `TraceDetailPage` intercepts the three legacy values before
+ * this function is consulted and redirects them to their new segment
+ * (LEGACY_LEGS_TO_VIEW), so an old bookmark lands on the view it named instead of
+ * falling back to the tables. This coercion is the last line of defence for a value
+ * that is genuinely junk, not the migration path.
  */
 export function parseLegViewKey(raw: string | null | undefined): LegViewKey {
-  return raw === 'flat' || raw === 'diagram' || raw === 'graph' || raw === 'lineage'
-    ? raw
-    : 'tree';
+  return raw === 'flat' ? raw : 'tree';
 }
 
 /**

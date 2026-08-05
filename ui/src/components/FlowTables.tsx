@@ -33,13 +33,17 @@ import type { Entity, Interaction, SpanEvidence } from '../types';
 /**
  * The Execution Flow graph, behind a dynamic import.
  *
- * `@patternfly/react-topology` (plus the d3 / dagre / mobx it drags in) is ~388kB
- * of JS and ~130kB of CSS serving these TWO tabs, so a static import made every
- * reader of the trace list and the span tree pay for a view most never open.
- * `React.lazy` puts it in its own async chunk that is fetched the first time
- * `?legs=graph` or `?legs=lineage` is active — see the Suspense boundary at the
- * render site, and ExecutionFlowGraph.tsx's note on why its stylesheets moved in
- * there too.
+ * `@patternfly/react-topology` (plus the d3 and mobx it drags in) builds to ~286kB
+ * of JS and ~39kB of CSS — 89kB / 4kB gzipped — serving these TWO tabs, so a static
+ * import made every reader of the trace list and the span tree pay for a view most
+ * never open. (Figures measured from `vite build`; an earlier version of this
+ * comment said ~388kB / ~130kB and named dagre, which is not a dependency here at
+ * all — this branch does its own layout. See ADR-0029.)
+ * `React.lazy` puts it in its own async chunk that is fetched the first time the
+ * Execution Flow or Lineage view is active (the `/graph` or `/lineage` path segment
+ * now, `?legs=graph`/`?legs=lineage` before those views were promoted) — see the
+ * Suspense boundary at the render site, and ExecutionFlowGraph.tsx's note on why its
+ * stylesheets moved in there too.
  *
  * `ExecutionFlowGraph` has a default export purely so this needs no
  * `.then(m => ({ default: m.X }))` unwrap.
@@ -93,16 +97,41 @@ export interface FlowTablesProps {
    */
   onSelectionChange?: (sel: FlowSelection | null) => void;
   /**
-   * Which Interactions tab is active, from the URL (`?legs`) — including
-   * `graph` (Execution Flow) and `lineage`. The parent owns every URL param in this view
-   * (same as `initialSelection`), so this is a controlled prop rather than
-   * internal state: this component never reaches for `useSearchParams` itself,
-   * and reload / bookmark / back restore the tab. Defaults to `tree` when
-   * omitted.
+   * Which of the five presentations to render.
+   *
+   * THE VALUE NOW COMES FROM TWO DIFFERENT PLACES IN THE URL, and this component is
+   * deliberately ignorant of which: `tree`/`flat` come from `?legs` (the sub-tab bar
+   * below), while `diagram`/`graph`/`lineage` come from the PATH SEGMENT, because those
+   * three were promoted to top-level views beside Span tree. `TraceDetailPage` resolves
+   * the two into one value (its `effectiveLegView`) and hands it here, so this component
+   * renders what it is told and there is still exactly one notion of "the presentation".
+   *
+   * The parent owns every URL param in this view (same as `initialSelection`), so this
+   * is a controlled prop rather than internal state: this component never reaches for
+   * `useSearchParams` itself, and reload / bookmark / back restore the view. Defaults to
+   * `tree` when omitted.
    */
   legView?: LegViewKey;
-  /** Fired when the Interactions tab changes so the parent can mirror `?legs`. */
+  /**
+   * Fired when the Tree|Flat sub-tab changes so the parent can mirror `?legs`.
+   *
+   * Can only ever emit `tree` or `flat` in practice — the bar offers no others and
+   * `parseLegViewKey` accepts no others — even though the signature admits all five
+   * `LegViewKey`s. Kept at the wider type so the prop matches `legView`'s; the three
+   * promoted views are navigated to by path, not announced through this callback.
+   */
   onLegViewChange?: (key: LegViewKey) => void;
+  /**
+   * Whether to render the Tree|Flat sub-tab bar.
+   *
+   * `true` only on the `flow` view, where those two ARE the choice. The three promoted
+   * views (Interaction diagram / Execution Flow / Lineage) are selected by the
+   * top-level tabs in `TraceDetailPage`, so a bar inside one of them would be a second
+   * control for a decision already made — and one that could disagree with the path.
+   *
+   * Defaults to `true` so an existing caller that renders the tables keeps its bar.
+   */
+  showLegTabs?: boolean;
   /**
    * Which single **data source** the Lineage tab is tracing (`?src`), as an **Entity
    * natural key**, or `null` for "none chosen yet".
@@ -124,18 +153,28 @@ export interface FlowTablesProps {
 }
 
 /**
- * The interaction-flow view: an Entities table plus a presentation of the trace's
- * Interactions, both derived from spans by the in-cluster processor (ADR-0013).
- * Ports the vanilla execution_flow_logic.js — depth indentation via the parent
- * walk, pin dots mirroring the tree's highlight store, and lazy span-evidence
- * fetch + a detail panel on row click.
+ * The interaction-flow view: a presentation of the trace's Interactions — and, on the
+ * Tree|Flat presentations only, an Entities table above it. Both are derived from spans
+ * by the in-cluster processor (ADR-0013). Ports the vanilla execution_flow_logic.js —
+ * depth indentation via the parent walk, pin dots mirroring the tree's highlight store,
+ * and lazy span-evidence fetch + a detail panel on row click.
  *
- * The Interactions section has five peer presentations behind the `?legs` tabs
- * (`LegViewKey`): `tree`, `flat`, `diagram` (the Interaction diagram — a sequence
- * diagram of the flat leg list), `graph` (Execution Flow) and `lineage` (that same
- * graph, highlighting how ONE chosen **data source**'s data reached the selected
- * entity and where it went). The first four read the same two queries, so switching
- * between them costs no fetch.
+ * The Entities table used to render on all five presentations; it is now scoped to the
+ * two table ones, because on the three PICTURE presentations the entities are the thing
+ * being drawn and the table restated them. See the gate at its render site for what that
+ * costs on the Lineage view.
+ *
+ * The Interactions section has five peer presentations (`LegViewKey`): `tree`, `flat`,
+ * `diagram` (the Interaction diagram — a sequence diagram of the flat leg list), `graph`
+ * (Execution Flow) and `lineage` (that same graph, highlighting how ONE chosen **data
+ * source**'s data reached the selected entity and where it went). All five read the same
+ * two queries, so switching between them costs no fetch.
+ *
+ * ONLY `tree` AND `flat` ARE CHOSEN HERE, by the sub-tab bar below. The other three are
+ * top-level views selected by path segment in `TraceDetailPage`, which renders this same
+ * component with `legView` set from the path and `showLegTabs={false}`. So this one
+ * component still owns all five renderings — and therefore one selection, one evidence
+ * fetch, one detail panel — while the navigation to three of them lives a level up.
  *
  * `lineage` DOES cost reads, and the earlier claim here that it "costs no fetch
  * either" is no longer true: it owns the trace's `data-lineage-summary` (which is both
@@ -159,6 +198,7 @@ export function FlowTables({
   onSelectionChange,
   legView = 'tree',
   onLegViewChange,
+  showLegTabs = true,
   lineageSource = null,
   onLineageSourceChange,
 }: FlowTablesProps) {
@@ -436,63 +476,106 @@ export function FlowTables({
           the float instead of being covered. Closed → no class, tables reclaim
           full width. */}
       <div className={selection ? 'dg-detail-gutter' : undefined}>
-        <Title headingLevel="h3" size="md">
-          Entities
-        </Title>
-        <EntitiesTable
-          entities={entities}
-          selectedId={selectedEntityId}
-          pinColor={pinColor}
-          onSelect={selectEntity}
-        />
+        {/* THE ENTITIES TABLE, ON THE TABLES VIEW ONLY.
+            It used to render on all five presentations, on the reasoning that the
+            trace's entities are a fact of the flow VIEW rather than a part of the
+            interactions table the three pictures replace. It is now scoped to
+            Tree|Flat by request: on the three picture views the entities are already
+            the thing being drawn, so the table restated on screen what the nodes and
+            lifelines show.
 
-        <Title headingLevel="h3" size="md" style={{ marginTop: '1rem' }}>
-          Interactions
-        </Title>
-        {/* Five ways to present the same interactions — the default
-            depth-indented parent/child tree, one row per request/response leg
-            ordered by the trace-wide `seq`, that same leg sequence as a UML
-            sequence diagram, the directed Execution Flow graph, or that graph with
-            the selected entity's data sources highlighted. Tabs (not the
-            old checkbox) because these are peer presentations of one dataset,
-            which is what a tab bar says; the active one is a URL param so it
-            survives reload. Kept inside the gutter div so the tab bar shrinks out
-            from under the floating detail panel along with the tables, the diagram
-            and the graph.
+            WHAT THIS COSTS, stated rather than glossed. On the Lineage view the table
+            was the KEYBOARD-accessible way to select an entity — a table row is
+            tabbable, an SVG circle is not — and that view's whole answer is driven by
+            an entity selection. Node clicks still work (`onSelectEntity` is wired on
+            both graphs), so a mouse user loses nothing, but a keyboard or
+            screen-reader user now has no in-view control for it. `?eid` in the URL is
+            the remaining route. See the note at the Lineage render below. */}
+        {legView === 'tree' || legView === 'flat' ? (
+          <>
+            <Title headingLevel="h3" size="md">
+              Entities
+            </Title>
+            <EntitiesTable
+              entities={entities}
+              selectedId={selectedEntityId}
+              pinColor={pinColor}
+              onSelect={selectEntity}
+            />
+          </>
+        ) : null}
 
-            `Interaction diagram` sits between Flat and Execution Flow because it
-            is the Flat list read down the page (it renders that list's rows, in
-            that order, from the same `flatRows` derivation) with the graph's
-            who-called-whom axis laid out horizontally — the two neighbours' shared
-            middle rather than an unrelated sixth thing.
+        {/* THE "Interactions" HEADING, on every presentation EXCEPT the two graphs.
+            It labels the thing below it, which for Tree/Flat is literally a table of
+            interactions and for the Interaction diagram is a sequence of them. On the
+            Execution Flow and Lineage graphs it was removed by request: those views draw
+            entities as nodes and interaction legs as edges, so a bare "Interactions"
+            above the canvas named only half of what is on screen — and both views
+            already carry their own labelling (the top-level tab name, and on Lineage the
+            two pickers immediately below it).
 
-            `Lineage` sits LAST, immediately after Execution Flow, because it IS the
-            Execution Flow picture with one more question asked of it: identical
-            nodes and edges (one component, one `deriveGraph` — see
-            ExecutionFlowGraph's `EntityGraph`), plus a highlight of where ONE chosen
-            data source's data reached the selected entity from and went to. Anywhere
-            earlier would separate it from the view it is a reading of. */}
-        <Tabs
-          activeKey={legView}
-          onSelect={(_e, key) => onLegViewChange?.(parseLegViewKey(String(key)))}
-          aria-label="Interaction list views"
-        >
-          <Tab eventKey="tree" title={<TabTitleText>Tree</TabTitleText>} />
-          <Tab eventKey="flat" title={<TabTitleText>Flat</TabTitleText>} />
-          <Tab eventKey="diagram" title={<TabTitleText>Interaction diagram</TabTitleText>} />
-          <Tab eventKey="graph" title={<TabTitleText>Execution Flow</TabTitleText>} />
-          <Tab eventKey="lineage" title={<TabTitleText>Lineage</TabTitleText>} />
-        </Tabs>
+            Gated rather than deleted so the tables and the diagram keep their section
+            label; a heading that vanished everywhere would leave those three with an
+            unlabelled block. */}
+        {legView !== 'graph' && legView !== 'lineage' ? (
+          <Title headingLevel="h3" size="md" style={{ marginTop: '1rem' }}>
+            Interactions
+          </Title>
+        ) : null}
+        {/* STILL FIVE PRESENTATIONS OF ONE DATASET, but they are no longer all reached
+            from here. This component renders whichever one `legView` names — the
+            depth-indented parent/child tree, one row per request/response leg ordered by
+            the trace-wide `seq`, that leg sequence as a UML sequence diagram, the
+            directed Execution Flow graph, or that graph with a chosen data source's
+            reachability highlighted.
+
+            The last three are now selected by the TOP-LEVEL tabs in `TraceDetailPage`
+            (path segments), so only Tree|Flat are offered by the bar below. The long
+            argument that used to sit here about why `Interaction diagram` belonged
+            between Flat and Execution Flow, and `Lineage` last, has moved with those
+            tabs — ordering them is that page's business now, and restating it here would
+            be a second, driftable copy of the same reasoning.
+
+            Kept inside the gutter div so the tab bar shrinks out from under the floating
+            detail panel along with the tables, the diagram and the graph. */}
+        {/* THE SUB-TAB BAR IS NOW TREE|FLAT ONLY, and only on the flow view.
+            Interaction diagram / Execution Flow / Lineage were three more tabs here
+            until they were promoted to top-level views beside Span tree
+            (`TraceDetailPage`'s ViewKey). What is left is the two renderings of ONE row
+            set — indented by parent, or flat by seq — which is a genuine sub-choice of
+            "the tables" and not a peer of the pictures.
+            Hidden entirely (`showLegTabs`) when this component is rendering one of the
+            promoted views: there the top-level tabs already decide the presentation, and
+            a second bar offering the same choice would be two controls for one thing. */}
+        {showLegTabs && (
+          <Tabs
+            activeKey={legView}
+            onSelect={(_e, key) => onLegViewChange?.(parseLegViewKey(String(key)))}
+            aria-label="Interaction list views"
+          >
+            <Tab eventKey="tree" title={<TabTitleText>Tree</TabTitleText>} />
+            <Tab eventKey="flat" title={<TabTitleText>Flat</TabTitleText>} />
+          </Tabs>
+        )}
         {legView === 'lineage' ? (
           /* The Lineage graph, in the interactions TABLE's place inside the same
              gutter div — the same reasoning as the graph and the diagram: a selected
              row floats the detail panel over the right, and this must shrink out from
              under it rather than be overlapped.
 
-             THE ENTITIES TABLE ABOVE IS LOAD-BEARING HERE, not merely retained: it is
-             the ONLY way to select an entity (the graph's nodes are drag targets, not
-             click targets — see ExecutionFlowGraph's note on why `withSelection` is
-             not applied), so it is the control this tab's whole answer is driven from.
+             THE ENTITIES TABLE IS NO LONGER RENDERED HERE (see the gate above it), which
+             reverses what this comment used to say — it called the table "load-bearing,
+             not merely retained: the ONLY way to select an entity". That was true when
+             the graph's nodes were drag surfaces only; they became click targets when
+             `withSelection` was applied to them, and `onSelectEntity` below routes a node
+             click into the same `selectEntity` the table row called. So the mouse control
+             this view's answer is driven from is now the graph itself.
+
+             THE GAP THAT LEAVES is keyboard access: an SVG circle is not tabbable, so
+             with the table gone there is no keyboard-reachable entity control on this
+             view. `?eid` (a deep link, a reload, a shared URL) still selects one. Worth
+             fixing properly with a focusable node or a compact picker, rather than
+             leaving the reader to discover it.
 
              Fed the ALREADY-DERIVED `entities` / `interactions` / `lineageQ` and the
              existing `selectedEntityId` — no new query and, crucially, no second
@@ -550,13 +633,14 @@ export function FlowTables({
              floating detail panel exactly as the tables do, rather than being
              overlapped by it.
 
-             The `Entities` table above deliberately stays visible: it is a fact
-             of the flow VIEW, not a part of the interactions table this tab
-             replaces, and the graph's nodes ARE those entities — keeping the
-             table gives the reader the kind/natural-key/detected-from columns the
-             nodes can only hint at, and a click target for the ENTITY detail
-             panel the graph still does not offer (its nodes are drag surfaces;
-             its edges select an INTERACTION, which is a different thing).
+             The `Entities` table is NOT rendered on this view (see the gate above it).
+             This comment used to argue the opposite — that the table was a fact of the
+             flow VIEW rather than part of the interactions table this tab replaces, and
+             that it supplied the kind/natural-key/detected-from columns plus the entity
+             click target the graph lacked. The requirement scoped it to Tree|Flat, and
+             the click-target half of that argument had already expired: the nodes are
+             click targets now. The columns genuinely are gone from this view; the node's
+             `<title>` carries its kind and natural key.
 
              The Suspense fallback is the same PF `Spinner` + `aria-label` pairing
              every loading state in this view uses (the `isLoading` return above,
@@ -568,10 +652,20 @@ export function FlowTables({
               // The graph's EDGES are the interaction click target this tab used to
               // lack — one edge is one leg, and clicking it opens the same detail
               // panel a Flat-table row click opens, through the same
-              // `selectInteraction`. The nodes remain drag surfaces rather than click
-              // targets (the Entities table above is still where an entity is
-              // selected), which is why the comment above says the graph offers no
-              // entity click target rather than no click target at all.
+              // `selectInteraction`.
+              //
+              // NO `onSelectEntity` HERE, deliberately, and this is the one place the two
+              // graph views differ in their wiring. The nodes ARE selectable in the
+              // renderer (it is one shared component), but this view has no use for an
+              // entity selection: nothing on it is scoped to one entity, whereas Lineage
+              // traces a chosen source THROUGH a selected entity. `EntityGraph` treats an
+              // absent handler as "node clicks fire PF's event and are simply not acted
+              // on", so leaving it off is the supported way to say that — see its
+              // `onSelectEntity` note. (This comment previously claimed the nodes were
+              // drag surfaces rather than click targets and pointed at the Entities table
+              // as the place an entity is selected; both halves are now out of date —
+              // `withSelection` is applied to nodes, and the table no longer renders on
+              // this view.)
               selectedInteractionId={selectedInteractionId}
               onSelectInteraction={selectInteractionById}
             />

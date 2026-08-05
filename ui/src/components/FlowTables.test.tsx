@@ -2,18 +2,27 @@ import React from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { FlowTables, type LegViewKey } from './FlowTables';
 import { PinStore } from '../lib/pins';
 
 /**
- * The Interactions tab (`legView`) AND the Lineage tab's traced data source
- * (`lineageSource`) are controlled props — TraceDetailPage owns both as the `?legs` and
- * `?src` URL params. This harness stands in for that owner so a test can click the tab
- * and see the table swap, and can pick a source and see the reads fire, exactly as the
- * page does.
+ * The presentation (`legView`) AND the Lineage view's traced data source
+ * (`lineageSource`) are controlled props — TraceDetailPage owns both, the first as a
+ * PATH SEGMENT and the second as the `?src` URL param. This harness stands in for that
+ * owner so a test can see the table swap when the presentation changes, and can pick a
+ * source and see the reads fire, exactly as the page does.
+ *
+ * `initialLegView` seeds the presentation the way the page's route does. It exists
+ * because `Interaction diagram` / `Execution Flow` / `Lineage` are no longer sub-tabs a
+ * test can CLICK: they were promoted to top-level views beside `Span tree`
+ * (`TraceDetailPage`'s ViewKey), addressed by `/traces/{id}/diagram|graph|lineage`, and
+ * this component now only renders whichever one its `legView` prop names. So a case
+ * about one of those three arrives at it the way the page does — by naming it up front —
+ * rather than by a click that no longer has a control to land on. `Tree`/`Flat` are
+ * still real sub-tabs, and the cases about those still click them.
  *
  * `initialSource` seeds `?src` the way a deep link or a reload does. It defaults to
  * `null` — NOT to a source — because that is the honest first-open state: there is no
@@ -23,12 +32,13 @@ import { PinStore } from '../lib/pins';
  */
 function FlowTablesWithLegTabs({
   initialSource = null,
+  initialLegView = 'tree',
   ...props
 }: Omit<
   React.ComponentProps<typeof FlowTables>,
   'legView' | 'onLegViewChange' | 'lineageSource' | 'onLineageSourceChange'
-> & { initialSource?: string | null }) {
-  const [legView, setLegView] = React.useState<LegViewKey>('tree');
+> & { initialSource?: string | null; initialLegView?: LegViewKey }) {
+  const [legView, setLegView] = React.useState<LegViewKey>(initialLegView);
   const [source, setSource] = React.useState<string | null>(initialSource);
   return (
     <FlowTables
@@ -344,55 +354,71 @@ describe('FlowTables', () => {
     expect(within(cell(body[1], 'Callee')).getByText('agent-a')).toBeInTheDocument();
   });
 
-  // --- The Execution Flow graph as the last `?legs` tab. It moved here from the
-  // top-level `/graph` view segment because it presents the SAME two reads these
-  // tables do. The URL-level contract is pinned in TraceDetailPage.test.tsx (which
-  // owns `?legs`); these are the cases only this component can state — that the
-  // tab set really is one row, that the graph replaces the interactions table but
-  // not the Entities table, and that the swap costs no extra fetch.
+  // --- The Execution Flow graph, now a TOP-LEVEL view (`/traces/{id}/graph`) that this
+  // component renders when its `legView` prop says `graph`. It is no longer one of this
+  // component's own sub-tabs, so these cases name the presentation by prop instead of
+  // clicking for it. The URL-level contract (path segment → prop) is pinned in
+  // TraceDetailPage.test.tsx; these are the cases only this component can state — that
+  // the sub-tab row is the two table renderings and nothing more, that the graph
+  // replaces the interactions table but not the Entities table, and that it costs no
+  // extra fetch.
 
-  it('offers Execution Flow in the same tab row as Tree and Flat', async () => {
+  it('offers ONLY Tree and Flat in its own sub-tab row', async () => {
     mockFetch();
     renderWithProviders(
       <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    // One tab row, five tabs, in this ORDER — not a separate control elsewhere.
-    // `Interaction diagram` sits between Flat and Execution Flow deliberately: it
-    // renders the Flat list's own rows as a picture, so it belongs next to the tab
-    // whose order it reproduces rather than after the graph.
-    // `Lineage` sits immediately AFTER Execution Flow, and the adjacency is the
-    // claim: it draws the identical graph (one component, one deriveGraph) and adds
-    // only a highlight, so it is the graph tab's reading rather than a peer of it.
+    // One tab row, TWO tabs. `Interaction diagram`, `Execution Flow` and `Lineage` were
+    // three more tabs in this row until they were promoted to top-level views beside
+    // `Span tree` (`TraceDetailPage`'s ViewKey) and addressed by path segment. What is
+    // left is the two renderings of ONE row set — indented by parent, or flat by seq —
+    // which is a genuine sub-choice of "the tables" rather than a peer of the pictures.
     const row = screen.getByRole('tablist');
-    expect(within(row).getAllByRole('tab').map((t) => t.textContent)).toEqual([
-      'Tree',
-      'Flat',
-      'Interaction diagram',
-      'Execution Flow',
-      'Lineage',
-    ]);
+    expect(within(row).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Tree', 'Flat']);
+    // Asserted as an ABSENCE too, and not merely implied by the list above: the failure
+    // this guards is the three tabs coming BACK, which would give the reader a second
+    // control for a decision the top-level tabs already made — and one that could
+    // disagree with the path in the address bar.
+    expect(screen.queryByRole('tab', { name: 'Interaction diagram' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /Execution Flow/i })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Lineage' })).toBeNull();
   });
 
-  it('swaps the interactions table for the sequence diagram on the Interaction diagram tab', async () => {
-    // The diagram stands in for the interactions TABLE, like the graph — and for
-    // the same reason keeps the Entities table, which is a fact of the flow view
-    // rather than a part of that table. Unlike the graph it is NOT lazily imported
-    // (hand-rolled SVG, no new dependency), so no chunk-load await is needed here.
+  it('swaps the interactions table for the sequence diagram, and drops the Entities table too', async () => {
+    // The diagram stands in for the interactions TABLE, like the graph. It does NOT
+    // keep the Entities table: that table used to render on all five presentations, and
+    // is now scoped to the two TABLE ones (Tree|Flat) — on a picture view the entities
+    // are already the thing being drawn (here, the lifelines), so the table restated on
+    // screen what the drawing shows. Asserted as an absence rather than dropped, because
+    // "which presentations carry the table" is the contract that changed and a silent
+    // return of the table on a picture view is exactly the regression worth catching.
+    // Unlike the graph it is NOT lazily imported (hand-rolled SVG, no new dependency),
+    // so no chunk-load await is needed here.
+    //
+    // Selected by PROP, not by a tab click: the diagram is a top-level view now
+    // (`/traces/{id}/diagram`), so the page names it the way this harness does.
     mockFetch();
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="diagram"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Interaction diagram' }));
 
     expect(await screen.findByTestId('interaction-diagram')).toBeInTheDocument();
     expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Entities')).toBeInTheDocument();
     // One lifeline per participant and one arrow per LEG of the single fixture
-    // interaction — the same two rows the Flat tab lists.
+    // interaction — the same two rows the Flat tab lists. Asserted BEFORE the
+    // Entities-table absence below, so that absence cannot pass for the wrong reason
+    // (an unrendered view has no Entities table either).
     expect(screen.getAllByTestId('dg-seq-lifeline')).toHaveLength(2);
     expect(screen.getAllByTestId('dg-seq-message')).toHaveLength(2);
+    // …and the Entities table is NOT on this picture view.
+    expect(screen.queryByLabelText('Entities')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Entities' })).not.toBeInTheDocument();
   });
 
   it('opens the interaction detail panel when a diagram message is clicked', async () => {
@@ -400,12 +426,18 @@ describe('FlowTables', () => {
     // on either leg selects the parent INTERACTION, since legs have no selection of
     // their own. Asserted here rather than only in the component's own test because
     // this is where the callback is actually wired to `selectInteraction`.
+    //
+    // The diagram is named by prop rather than reached by a tab click, because it is a
+    // top-level view now — see the case above.
     mockFetch();
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="diagram"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Interaction diagram' }));
     await userEvent.click((await screen.findAllByTestId('dg-seq-message'))[1]);
 
     // The same panel a Flat/Tree row click opens, with the interaction's fields.
@@ -413,27 +445,42 @@ describe('FlowTables', () => {
     expect(screen.getByText('interaction_id')).toBeInTheDocument();
   });
 
-  it('swaps the interactions table for the graph, keeping the Entities table', async () => {
-    // The graph stands in for the interactions TABLE only. The Entities table is a
-    // fact of the flow view rather than a part of that table — and the graph's
-    // nodes ARE those entities, so the table stays to carry the columns
-    // (kind / natural key / detected from) and the click target the nodes lack.
+  it('swaps the interactions table for the graph, and the Entities table with it', async () => {
+    // WAS `…keeping the Entities table`, and the inversion IS the new contract rather
+    // than a weakened assertion. The old title's reasoning — the Entities table is a
+    // fact of the flow VIEW rather than a part of the interactions table the graph
+    // replaces, and it carries the columns plus the click target the nodes lack — has
+    // expired on both halves: the table is now scoped to the two TABLE presentations
+    // (Tree|Flat), and the nodes became click targets when `withSelection` was applied
+    // to them. So on this view the graph's nodes ARE the entity presentation, and the
+    // table restating them is what was removed.
+    //
+    // The graph is reached by NAMING it (`initialLegView`), not by clicking a sub-tab:
+    // Execution Flow is a top-level view now (`/traces/{id}/graph`), so the presentation
+    // arrives as a prop exactly as `TraceDetailPage` supplies it from the path.
     mockFetch();
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="graph"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
 
     // The graph is lazily imported (React.lazy + Suspense keeps PF topology out of
-    // the main bundle), so the first render of this tab has to be awaited past the
+    // the main bundle), so the first render of this view has to be awaited past the
     // chunk load — polling the real condition, not sleeping.
     const graph = await screen.findByTestId('execution-flow-graph', undefined, {
       timeout: GRAPH_CHUNK_TIMEOUT,
     });
     expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Interactions (flat)')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Entities')).toBeInTheDocument();
+    // NEITHER table is on this view. `graph` above is a positive fact already in hand
+    // (the surface really did mount), so these two absences cannot be the accident of
+    // an unrendered view.
+    expect(screen.queryByLabelText('Entities')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Entities' })).not.toBeInTheDocument();
 
     // The graph is a third presentation of the tables' OWN two reads, not a new
     // endpoint: it hits the same two query keys, so no third resource is fetched
@@ -450,10 +497,102 @@ describe('FlowTables', () => {
       '/api/traces/T1/interactions',
     ]);
 
-    // Back to Tree restores the table and drops the graph.
+    // Back to Tree restores the table and drops the graph. `Tree` is still a real
+    // sub-tab (this harness leaves `showLegTabs` at its `true` default), and clicking it
+    // is how the reader leaves the graph for the tables — the same `onLegViewChange` the
+    // page turns into a navigation.
     await userEvent.click(screen.getByRole('tab', { name: 'Tree' }));
     await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
     expect(graph).not.toBeInTheDocument();
+    // And the Entities table comes BACK on the table view — the same round trip in one
+    // case, so the gate is pinned as a scoping (picture views vs table views) rather
+    // than as a removal.
+    expect(screen.getByLabelText('Entities')).toBeInTheDocument();
+  });
+
+  it('drops the "Interactions" heading on the two GRAPH views, keeping it elsewhere', async () => {
+    // THE HEADING'S SCOPE, in one place — the sibling of the Entities-table gate below.
+    // A bare "Interactions" over the Execution Flow / Lineage canvas named only half of
+    // what is drawn there (entities are the NODES, interaction legs the EDGES), so it was
+    // removed from those two. It stays on Tree, Flat and the Interaction diagram, which do
+    // present interactions and would otherwise be left with an unlabelled block.
+    //
+    // Both halves in one case because the failure worth guarding is scope drift in either
+    // direction: the heading creeping back over a canvas, or quietly disappearing from the
+    // tables it legitimately labels.
+    mockFetch();
+    const { rerender } = renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="tree" />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Interactions' })).toBeInTheDocument(),
+    );
+
+    // Kept on the other TABLE presentation, and on the diagram.
+    rerender(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="flat" />,
+    );
+    expect(screen.getByRole('heading', { name: 'Interactions' })).toBeInTheDocument();
+    rerender(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="diagram" />,
+    );
+    expect(screen.getByRole('heading', { name: 'Interactions' })).toBeInTheDocument();
+
+    // GONE on both graph views.
+    rerender(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="graph" />,
+    );
+    expect(screen.queryByRole('heading', { name: 'Interactions' })).not.toBeInTheDocument();
+    rerender(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
+    );
+    expect(screen.queryByRole('heading', { name: 'Interactions' })).not.toBeInTheDocument();
+  });
+
+  it('renders the Entities table on BOTH table presentations, and on neither picture one', async () => {
+    // THE GATE ITSELF, in one place. The Entities table used to render on all five
+    // presentations and is now scoped to the two TABLE ones; every other case in this
+    // file sees only one side of that, so this states both halves against one fixture.
+    // Worth its own case because the failure it guards is a silent scope drift — the
+    // table quietly returning to a picture view, or quietly vanishing from Flat — and
+    // either would leave a reader with an entity list that appears or disappears for no
+    // reason they can see.
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+
+    // TREE (the default): both tables, and the entity rows really are in it — a bare
+    // `getByLabelText` would pass on an empty table.
+    await waitFor(() => expect(screen.getByLabelText('Entities')).toBeInTheDocument());
+    expect(within(screen.getByLabelText('Entities')).getByText('agent-a')).toBeInTheDocument();
+    expect(screen.getByLabelText('Interactions')).toBeInTheDocument();
+
+    // FLAT: still both, because Flat is the other rendering of the same row set and not
+    // a different kind of view.
+    await userEvent.click(screen.getByRole('tab', { name: 'Flat' }));
+    expect(await screen.findByLabelText('Interactions (flat)')).toBeInTheDocument();
+    expect(within(screen.getByLabelText('Entities')).getByText('search')).toBeInTheDocument();
+
+    // A PICTURE view for contrast. Named by prop (the promoted views are not reachable
+    // from this component's own tab row), so it needs a second render rather than a
+    // click — the diagram, because it is the one picture view that is not lazy and so
+    // needs no chunk await here.
+    cleanup();
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="diagram"
+      />,
+    );
+    // The picture really is on screen first, so the absence below is about the gate and
+    // not about an unrendered view.
+    expect(await screen.findByTestId('interaction-diagram')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Entities')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Entities' })).not.toBeInTheDocument();
   });
 
   // --- Clicking a graph EDGE opens the interaction detail panel. The end-to-end path
@@ -470,6 +609,11 @@ describe('FlowTables', () => {
   // unhandled error for the whole file. PF binds the edge handler to `onClick` alone,
   // so dispatching exactly that is both sufficient and honest. (Every other click in
   // this file stays on `userEvent` — they are all real HTML controls.)
+  //
+  // Every case below reaches the graph via `initialLegView="graph"` rather than by
+  // clicking an `Execution Flow` sub-tab: that tab no longer exists here, because the
+  // presentation was promoted to a top-level view and now arrives as a prop from the
+  // path. Nothing about what these cases verify changes — only how they get there.
 
   /** The `<g>` PF binds the edge's click handler to. Note PF's hyphenated attribute. */
   const edgeHandler = (id: string) =>
@@ -481,10 +625,13 @@ describe('FlowTables', () => {
     // click opens — same evidence fetch, same fields.
     mockFetch();
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="graph"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
     await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
     await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
 
@@ -516,10 +663,9 @@ describe('FlowTables', () => {
         pins={new PinStore()}
         onPinsChange={() => {}}
         onSelectionChange={onSelectionChange}
+        initialLegView="graph"
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
     await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
     await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
 
@@ -535,10 +681,13 @@ describe('FlowTables', () => {
     // `selectedInteractionId` rather than the graph marking itself locally.
     mockFetch();
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="graph"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
     await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
     await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
     // Nothing selected yet, so no treatment anywhere.
@@ -572,13 +721,18 @@ describe('FlowTables', () => {
     const viaRow = document.querySelector('.dg-detail-panel')!.textContent;
     unmount();
 
-    // Via the GRAPH's edge.
+    // Via the GRAPH's edge. A SECOND render rather than a tab click on the first one,
+    // and that is now forced rather than chosen: the graph is a top-level view, so it is
+    // named by prop and cannot be switched to from inside the flow view's tab row.
     mockFetch();
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="graph"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
     await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
     await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
     fireEvent.click(edgeHandler('i1:request'));
@@ -603,10 +757,9 @@ describe('FlowTables', () => {
         pins={new PinStore()}
         onPinsChange={() => {}}
         onSelectionChange={onSelectionChange}
+        initialLegView="graph"
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
     await screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
     await waitFor(() => expect(document.querySelectorAll('[data-kind="edge"]')).toHaveLength(2));
 
@@ -629,56 +782,113 @@ describe('FlowTables', () => {
     // the detail panel floats fixed over the right of the content, and that class
     // is what reserves the gutter the content shrinks into. Outside it, the graph
     // would be overlapped by the panel on every row selection.
+    //
+    // TWO RENDERS RATHER THAN A CLICK, because the Entities table this used to click is
+    // no longer on a picture view. The claim has two halves — no gutter with nothing
+    // selected, gutter with something selected — and the second half's selection is
+    // seeded through `initialSelection`, which is `?eid` arriving from the page (a deep
+    // link, a reload, a shared URL). The graph's nodes are the other route to a
+    // selection, but a node's `<g>` renders EMPTY in jsdom (PF culls node content on a
+    // zero-size surface — see ExecutionFlowGraph.test.tsx's note), so a node click here
+    // would reach no handler and fail for a reason unrelated to the gutter. Nothing
+    // about the CSS contract asserted below depends on how the selection arrived.
     mockFetch();
-    renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    const { unmount } = renderWithProviders(
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="graph"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
     const graph = await screen.findByTestId('execution-flow-graph', undefined, {
       timeout: GRAPH_CHUNK_TIMEOUT,
     });
     // Nothing selected → the gutter class is off and the graph uses full width.
     expect(graph.closest('.dg-detail-gutter')).toBeNull();
-    // Select an entity (the Entities table is still there while the graph is up),
-    // which floats the panel…
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('agent-a'));
+    unmount();
+
+    // Now with an entity selected from the URL, which floats the panel…
+    mockFetch();
+    renderWithProviders(
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="graph"
+        initialSelection={{ eid: 'e1' }}
+      />,
+    );
+    await screen.findByTestId('execution-flow-graph', undefined, {
+      timeout: GRAPH_CHUNK_TIMEOUT,
+    });
+    // The selection really landed — the panel is open, so the gutter assertion below is
+    // about the layout rule and not about a selection that never happened.
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
-    // …and the graph is now inside the gutter, so it shrinks instead of hiding
-    // behind the panel. Same container the tables use — one rule, not two.
+    // …and the graph is inside the gutter, so it shrinks instead of hiding behind the
+    // panel. `closest` walking from the graph UP to the gutter is the whole assertion:
+    // it says the drawing is a descendant of the container that reserves the panel's
+    // room. (This used to also assert the `Interactions` heading shared that container —
+    // a co-located element to point at, back when the heading existed on this view. It
+    // was removed from both graph views, and it was never what made the layout rule
+    // true.)
     const gutter = screen.getByTestId('execution-flow-graph').closest('.dg-detail-gutter');
     expect(gutter).not.toBeNull();
-    expect(gutter).toContainElement(screen.getByLabelText('Entities'));
   });
 
-  // --- The Lineage tab: the SAME graph with the selected entity's data sources
-  // highlighted. These are the cases only this component can state — that the tab
-  // exists in the right place, that it rides the graph's own lazy chunk, that it is
-  // driven by the EXISTING `?eid` selection rather than a second notion of one, and
-  // that it costs no fetch beyond the three this view already makes. The highlight's
+  // --- The Lineage view: the SAME graph with the selected entity's data sources
+  // highlighted. A TOP-LEVEL view (`/traces/{id}/lineage`) since the promotion, so every
+  // case below names it through `initialLegView="lineage"` rather than clicking a sub-tab
+  // that no longer exists here. These are the cases only this component can state — that
+  // it replaces the interactions table and rides the graph's own lazy chunk, that it is
+  // driven by the EXISTING `?eid` selection rather than a second notion of one, and that
+  // it costs no fetch beyond the three this view already makes. The highlight's
   // own logic is proven in lib/lineageReachability.test.ts (jsdom cannot measure an SVG, so
   // the shape of the answer is not assertable here — see ExecutionFlowGraph.test.tsx's
   // header for the same reasoning).
 
-  it('offers Lineage as the last ?legs tab, riding the graph\'s own lazy chunk', async () => {
+  it('renders Lineage in the interactions table\'s place, riding the graph\'s own lazy chunk', async () => {
+    // WAS "offers Lineage as the last ?legs tab": Lineage is no longer a `?legs` tab at
+    // all, so the placement claim it made — last in this component's tab row — is not a
+    // fact about this component any more. The ORDERING of the promoted views is now
+    // TraceDetailPage's to state. What survives here, unweakened, is everything this
+    // component still decides: it renders behind its OWN lazy Suspense boundary (sharing
+    // one PF-topology chunk with Execution Flow — two `lazy()` calls over one `import()`
+    // specifier), under its own testid, in the interactions table's place.
     mockFetch();
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="lineage"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
 
-    // Its own testid, distinct from the Execution Flow tab's, so the two tabs are
-    // separately addressable even though they are one component underneath.
+    // Its own testid, distinct from Execution Flow's, so the two views are separately
+    // addressable even though they are one component underneath. Awaited past the chunk
+    // load with the graph's own deadline — which IS the lazy-chunk claim: nothing is on
+    // screen until that async module has been fetched and evaluated.
     const lineage = await screen.findByTestId('lineage-graph', undefined, {
       timeout: GRAPH_CHUNK_TIMEOUT,
     });
     expect(lineage).toBeInTheDocument();
-    // It stands in for the interactions TABLE, like the graph and the diagram — and
-    // keeps the Entities table, which here is not merely retained but load-bearing:
-    // it is the ONLY way to select the entity this tab answers about.
+    // It stands in for the interactions TABLE, like the graph and the diagram.
     expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Entities')).toBeInTheDocument();
+    // AND THE ENTITIES TABLE IS GONE FROM THIS VIEW TOO, which reverses what this case
+    // used to assert. It called the table "not merely retained but load-bearing: the
+    // ONLY way to select the entity this view answers about" — true when the graph's
+    // nodes were drag surfaces only, and no longer true now `withSelection` makes them
+    // click targets routed into the same `selectEntity`. The scoping to Tree|Flat is the
+    // new contract, so it is pinned here rather than dropped.
+    //
+    // WHAT IT COSTS is real and worth stating in the test that used to rely on it: a
+    // table row is tabbable and an SVG circle is not, so with the table gone this view
+    // has no KEYBOARD-reachable entity control — `?eid` is the remaining route. That is
+    // a source-level gap (see the note at the Lineage render site), not something this
+    // test can assert away.
+    expect(screen.queryByLabelText('Entities')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Entities' })).not.toBeInTheDocument();
   });
 
   it('instructs the reader to select an entity, claiming nothing, when none is selected', async () => {
@@ -698,17 +908,31 @@ describe('FlowTables', () => {
         pins={new PinStore()}
         onPinsChange={() => {}}
         initialSource={SOURCE_E1}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 
     // WORDING CHANGED faithfully: the prompt names the source, because the answer it
     // promises is source-relative.
-    expect(
-      screen.getByText(/Select an entity to trace this source’s data in and out/i),
-    ).toBeInTheDocument();
+    //
+    // AWAITED, and the wait is not incidental: this prompt is gated on the source being
+    // `'chosen'`, which `resolveSourceChoice` can only report once the SUMMARY read has
+    // landed — and that read is mounted by `LineageGraph` itself, i.e. inside the lazy
+    // chunk, strictly LATER than the entities/interactions reads `FlowTables` fires at
+    // its own mount. `lineage-graph` appears as soon as those two land
+    // (`graphReadState`), so the testid above is reached one or more renders BEFORE the
+    // summary resolves, and at that instant the picker is honestly showing its
+    // `'loading'` alert ("Loading the trace’s data sources") instead. Asserting
+    // synchronously here would be asserting on the pre-summary paint. The sibling
+    // lineage cases below wait for the same reason.
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Select an entity to trace this source’s data in and out/i),
+      ).toBeInTheDocument(),
+    );
     // Nothing is dimmed: "no question asked" must not be painted as "not part of the
     // answer" (see ExecutionFlowGraph's HighlightRole on why `'none'` and `'dimmed'`
     // are different values). Asserted as the ABSENCE of the class — a DOM fact jsdom
@@ -727,9 +951,19 @@ describe('FlowTables', () => {
   });
 
   it('drives the highlight from the EXISTING entity selection, not a second one', async () => {
-    // Requirement: one notion of "selected entity". Clicking the Entities table row
-    // both opens the detail panel (the pre-existing behaviour) and drives this tab's
-    // highlight, because both read the same `selection` state.
+    // Requirement: one notion of "selected entity". The SAME selection both opens the
+    // detail panel (the pre-existing behaviour) and drives this tab's highlight, because
+    // both read one `selection` state.
+    //
+    // THE SELECTION NOW ARRIVES VIA `initialSelection` (`?eid` from the page) rather
+    // than from a click on the Entities table, because that table no longer renders on
+    // the picture views. This is if anything the sharper form of the original claim: the
+    // highlight and the panel are driven by ONE piece of state regardless of how it was
+    // set, and a route that touched neither table proves neither table owns it. (The
+    // graph's nodes are the other route — a node click goes through the very same
+    // `selectEntity` — but a node's `<g>` renders EMPTY in jsdom, so a click on it
+    // reaches no handler; that wiring is asserted at its own seam in
+    // ExecutionFlowGraph.test.tsx.)
     //
     // agent-a (e1) calls search (e2). The served FAN-IN for e2 reaches e1 over the
     // request leg, so selecting `search` must mark e2 selected and light e1 upstream.
@@ -767,23 +1001,25 @@ describe('FlowTables', () => {
         onPinsChange={() => {}}
         // A chosen source is now required before the tab asks anything (`fanin(entity, source)`).
         initialSource={SOURCE_E1}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+        // `search` (e2) is the selected entity, seeded the way `?eid` seeds it.
+        initialSelection={{ eid: 'e2' }}
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
-
-    // Select `search` (e2) in the Entities table — the same click that selects a row
-    // anywhere else in this view.
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
 
     // The instruction is gone (a question has now been asked)…
     await waitFor(() =>
       expect(screen.queryByText(/Select an entity to trace its data in and out/i)).toBeNull(),
     );
-    // …and the same click also opened the entity detail panel, proving both read one
-    // selection rather than each holding their own.
-    expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument();
+    // …and the same selection also opened the entity detail panel, proving both read one
+    // piece of state rather than each holding their own. (Awaited: the panel opens off
+    // the selection's async evidence fetch.)
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument(),
+    );
 
     // The highlight, asserted through the EDGES — the honest observable in jsdom (node
     // content is culled; see the note in the "instructs the reader" case above). The
@@ -837,12 +1073,17 @@ describe('FlowTables', () => {
         onPinsChange={() => {}}
         // A chosen source is required before the tab asks anything (`fanin(entity, source)`).
         initialSource={SOURCE_E1}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+        // The seed entity, via `?eid`. It used to be reached by clicking the Entities
+        // table row, which no longer renders on this picture view — see the Lineage
+        // block's header. What is verified (the WORDING of the pending state) is
+        // untouched; only the route to a selected entity changed.
+        initialSelection={{ eid: 'e2' }}
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
 
     await waitFor(() =>
       expect(screen.getByText(/Upstream lineage not yet computed/i)).toBeInTheDocument(),
@@ -879,12 +1120,15 @@ describe('FlowTables', () => {
         onPinsChange={() => {}}
         // A chosen source is required before the tab asks anything (`fanin(entity, source)`).
         initialSource={SOURCE_E1}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+        // The seed entity, via `?eid` — the Entities table this used to click is not on
+        // the picture views any more. The words asserted below are unchanged.
+        initialSelection={{ eid: 'e2' }}
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
 
     await waitFor(() =>
       expect(screen.getByText(/No upstream entities — derived, not missing/i)).toBeInTheDocument(),
@@ -899,10 +1143,15 @@ describe('FlowTables', () => {
     // under-report a governance reader must never have to discover for themselves.
     mockFetch({ sources: ['agent:(p,a)', 'service:(elsewhere,crm)'] });
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 
     // No selection was made, and the roll-up is already stated.
@@ -942,19 +1191,30 @@ describe('FlowTables', () => {
         pins={new PinStore()}
         onPinsChange={() => {}}
         initialSource={SOURCE_E1}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+        // AN ENTITY *IS* SELECTED, seeded through `?eid` rather than by clicking the
+        // Entities table (gone from the picture views). The claim below — that a
+        // selection still triggers no reachability request when the summary failed — needs
+        // a real selection, not the absence of one, or it would pass trivially. The panel
+        // assertion just below is what proves the seed took effect.
+        initialSelection={{ eid: 'e2' }}
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 
-    // The SOURCES read failed, and that is reported as unknown before any selection.
+    // The SOURCES read failed, and that is reported as unknown.
     await waitFor(() =>
       expect(screen.getByText(/data sources could not be loaded/i)).toBeInTheDocument(),
     );
     expect(screen.getAllByText(/unknown/i).length).toBeGreaterThan(0);
 
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    // The entity selection really did land (its detail panel is open), so the "asked
+    // nothing" assertions below are about the gate and not about a missing selection.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument(),
+    );
 
     // No reachability request was made at all — see the note above.
     const urls = () => (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
@@ -989,12 +1249,15 @@ describe('FlowTables', () => {
         pins={new PinStore()}
         onPinsChange={() => {}}
         initialSource={SOURCE_E1}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+        // The seed entity, via `?eid`: with the Entities table gone from the picture
+        // views, this is how the other half of `fanin(entity, source)` is supplied.
+        initialSelection={{ eid: 'e2' }}
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
 
     await waitFor(() =>
       expect(screen.getByText(/Upstream lineage could not be loaded/i)).toBeInTheDocument(),
@@ -1028,18 +1291,31 @@ describe('FlowTables', () => {
     //     → no request, because an unavoidable 400 on first paint is not a loading
     //     state.
     //
-    // The whole gesture is driven through the real UI — click the tab, pick a source in
-    // the picker, click an entity — so this is also the end-to-end proof that the
-    // control writes the value the reads then carry.
+    // THE SOURCE HALF IS STILL DRIVEN THROUGH THE REAL CONTROL — open the picker, choose
+    // an option — so this remains the end-to-end proof that the control writes the value
+    // the reads then carry. The ENTITY half now arrives through `initialSelection`
+    // (`?eid`), because the Entities table it used to be clicked in does not render on
+    // the picture views. The gate this case is about is unchanged: the two directions
+    // need BOTH halves, and here the entity is supplied first and the source last —
+    // still the order that would have fired a 400 under the old gate.
     mockFetch();
     renderWithProviders(
       // No `initialSource`: the honest first-open state, since nothing may be chosen on
       // the reader's behalf.
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+        // ONE HALF of the question, present from the first paint.
+        initialSelection={{ eid: 'e2' }}
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
+    // The seeded entity really is selected before anything is asserted about the reads.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
 
     const urls = () => (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     // Asserted on the SET of resource URLs touched rather than a call count, for the
@@ -1048,16 +1324,12 @@ describe('FlowTables', () => {
     await waitFor(() =>
       expect(urls().some((u) => u.includes('/data-lineage-summary'))).toBe(true),
     );
-    // NOT yet asked: neither half of the question is supplied.
+    // NOT yet asked, even with an entity in hand: the SOURCE half is still missing, and
+    // that is exactly the request the old gate would have fired and the server would have
+    // refused with a 400.
     expect(urls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
-    // The tab says which half it wants first.
+    // The tab says which half it wants.
     expect(screen.getByText(/Choose a data source to trace/i)).toBeInTheDocument();
-
-    // ONE half: an entity, still no source. Deliberately in this order, because it is
-    // the order that would have fired a 400 under the old gate.
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
-    expect(urls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
 
     // THE OTHER HALF, through the real control: open the picker and choose the source.
     // `fireEvent`, not `userEvent`, on the option — this file's rule for anything inside
@@ -1089,10 +1361,20 @@ describe('FlowTables', () => {
     // broken.
     mockFetch({ sources: [] });
     renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+        // An entity IS selected, seeded through `?eid` — the Entities table this used to
+        // be clicked in is gone from the picture views. It has to be a real selection,
+        // because the tail assertion is "a selected entity still asks nothing when there
+        // is no source", which would pass trivially with nothing selected.
+        initialSelection={{ eid: 'e2' }}
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 
     await waitFor(() =>
@@ -1107,8 +1389,8 @@ describe('FlowTables', () => {
     expect(screen.queryByRole('button', { name: /Tracing data source/i })).toBeNull();
     expect(screen.queryByText(/Choose a data source to trace/i)).toBeNull();
 
-    // Selecting an entity still asks nothing, because there is no source to ask about.
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    // A SELECTED entity still asks nothing, because there is no source to ask about. The
+    // panel proves the selection is real rather than absent.
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
     const urls = () => (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(urls().some((u) => u.includes('/data-lineage-graph'))).toBe(false);
@@ -1125,10 +1407,16 @@ describe('FlowTables', () => {
         pins={new PinStore()}
         onPinsChange={() => {}}
         initialSource={SOURCE_E1}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+        // `?eid` is restored from the same bookmark, which is if anything closer to what
+        // this case describes than the click it replaces: the whole reading of the trace
+        // (view, source, entity) comes back from the URL. It also has to come from there
+        // now — the Entities table is not on this view to click.
+        initialSelection={{ eid: 'e2' }}
       />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 
     // The restored choice is VISIBLE on the closed control — a reader arriving by link
@@ -1139,7 +1427,9 @@ describe('FlowTables', () => {
     // …and no "choose a source" prompt, because one is chosen.
     expect(screen.queryByText(/Choose a data source to trace/i)).toBeNull();
 
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('search'));
+    // The restored entity really is selected, so the read below is the answer to a whole
+    // question rather than a request that never fired.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
     const urls = () => (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     await waitFor(() =>
       expect(
@@ -1153,22 +1443,49 @@ describe('FlowTables', () => {
     // `dg-detail-gutter` is what reserves the space the content shrinks into. This
     // matters MORE here than on the graph tab, because selecting an entity is how the
     // tab is used at all — so the panel is open whenever there is an answer to read.
+    //
+    // TWO RENDERS RATHER THAN A CLICK, for the same reason the Execution Flow gutter case
+    // needs them: the Entities table that used to supply the click is not on this view,
+    // and a node's `<g>` is empty in jsdom so it cannot supply one either. The selected
+    // state is seeded from `?eid` via `initialSelection`, which is how the page supplies
+    // it. The CSS contract asserted is identical.
     mockFetchWithLineage(LINEAGE_LEGS);
-    renderWithProviders(
-      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    const { unmount } = renderWithProviders(
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        // The Lineage presentation arrives as a PROP, not from a sub-tab click: it is a
+        // top-level view now, so the page names it from the path segment.
+        initialLegView="lineage"
+      />,
     );
-    await waitFor(() => expect(screen.getByLabelText('Interactions')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
     const graph = await screen.findByTestId('lineage-graph', undefined, {
       timeout: GRAPH_CHUNK_TIMEOUT,
     });
     expect(graph.closest('.dg-detail-gutter')).toBeNull();
+    unmount();
 
-    await userEvent.click(within(screen.getByLabelText('Entities')).getByText('agent-a'));
+    mockFetchWithLineage(LINEAGE_LEGS);
+    renderWithProviders(
+      <FlowTablesWithLegTabs
+        traceId="T1"
+        pins={new PinStore()}
+        onPinsChange={() => {}}
+        initialLegView="lineage"
+        initialSelection={{ eid: 'e1' }}
+      />,
+    );
+    await screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Entity' })).toBeInTheDocument());
+    // Walking from the graph UP to the gutter IS the assertion: the drawing is a
+    // descendant of the container that reserves the floating panel's room, so it shrinks
+    // rather than hiding behind it. (Two co-located elements have been named here over
+    // time as secondary evidence — the Entities table, then the `Interactions` heading —
+    // and both have since been removed from this view. Neither was what made the layout
+    // rule true.)
     const gutter = screen.getByTestId('lineage-graph').closest('.dg-detail-gutter');
     expect(gutter).not.toBeNull();
-    expect(gutter).toContainElement(screen.getByLabelText('Entities'));
   });
 
   it('flat view links a request row to its response row with a shared connector (id + color)', async () => {
@@ -1558,7 +1875,7 @@ describe('FlowTables', () => {
     });
   }
 
-  it('shows the payload lineage (data sources, per-source transformations, entities) on its tab', async () => {
+  it('shows the payload lineage (data sources, entities traversed) on its tab', async () => {
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
@@ -1573,9 +1890,12 @@ describe('FlowTables', () => {
     const sources = screen.getByLabelText('Data sources');
     expect(within(sources).getByText('agent-a')).toBeInTheDocument();
     expect(within(sources).getByText('user')).toBeInTheDocument();
-    // Per-source transformations sit with their source.
-    const agentRow = within(sources).getByText('agent-a').closest('tr')!;
-    expect(within(agentRow).getByText('summarization')).toBeInTheDocument();
+    // THE PER-SOURCE TRANSFORMATIONS ASSERTION IS GONE, not weakened: `DataLineageView`'s
+    // "Applied" column was removed by request, so there is no longer a place in this
+    // view for `source_transformations` to appear. The field is still derived and still
+    // returned by the API — this view simply no longer presents it, which is that
+    // component's own contract and is pinned in DataLineageView.test.tsx. The SOURCES
+    // themselves are still listed, which is what this case is about.
     // And the entities traversed — membership only; the set is unordered.
     const entities = screen.getByLabelText('Entities traversed');
     expect(within(entities).getByText('user')).toBeInTheDocument();

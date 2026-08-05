@@ -78,3 +78,32 @@ const PF_COLOR_TO_GLOBAL_VAR: Record<EntityKindColor, string> = {
 export function kindColorVar(kind: string): string {
   return `var(${PF_COLOR_TO_GLOBAL_VAR[colorForKind(kind)]}, var(--dg-color-label))`;
 }
+
+/**
+ * The neutral stroke/label colour used by the **Lineage tab's** graph nodes.
+ *
+ * SCOPED TO ONE TAB, not to the whole graph. The Execution Flow tab paints its nodes
+ * with `kindColorVar` above, exactly as it always has — see `NodeData.kindColoured` in
+ * `ExecutionFlowGraph`, which is the flag that switches the one shared node renderer
+ * between the two readings.
+ *
+ * WHY THE LINEAGE TAB GIVES UP KIND HUE. On that tab colour is carrying three other
+ * meanings — the trace's data sources, fan-in, fan-out — plus error red on the edges,
+ * and the one fact a reader opens it to see ("which entities are this trace's
+ * origins") was left to a ring because every hue was already spoken for. Kind is the
+ * least load-bearing of them THERE: it is still stated in the node's label, its
+ * `<title>` and accessible name, and in the kind-coloured `EntityPill` in the tables
+ * on the same screen. So on Lineage kind gives up hue and the data sources take it
+ * (`--dg-lineage-source`, see global.css).
+ *
+ * ON EXECUTION FLOW NOTHING COMPETES, so there is no reason to spend the signal: that
+ * tab has no lineage overlay, kind is the only thing colour could mean, and a node
+ * agreeing with its table row is worth having. Hence one renderer and two readings
+ * rather than one compromise applied to both.
+ *
+ * Returns a `var(…)` reference like its sibling, so the dark theme still applies at
+ * paint time, with `--dg-color-label` as the fallback. No raw hex.
+ */
+export function nodeNeutralColorVar(): string {
+  return `var(${PF_COLOR_TO_GLOBAL_VAR.grey}, var(--dg-color-label))`;
+}

@@ -26,10 +26,12 @@ resolve client-side).
 | `/ui/traces/{id}` | → redirect to `/ui/traces/{id}/spans` (canonical) |
 | `/ui/traces/{id}/spans` | span tree (the default tab) |
 | `/ui/traces/{id}/spans?sel={spanId}` | span tree, that span selected + revealed |
-| `/ui/traces/{id}/flow` | interaction flow |
+| `/ui/traces/{id}/flow` | interaction flow, default presentation `tree` |
 | `/ui/traces/{id}/flow?iid={interactionId}` | flow, that interaction row selected |
 | `/ui/traces/{id}/flow?eid={entityId}` | flow, that entity row selected |
-| anything else | → redirect to `/ui/traces` |
+| `/ui/traces/{id}/flow?legs=<key>` | flow presentation ∈ `tree flat diagram graph lineage` (ADR-0029) |
+| `/ui/traces/{id}/flow?src=<naturalKey>` | `?legs=lineage` only: the data source being traced (ADR-0029) |
+| anything else | → redirect to `/ui/traces` (including `/ui/traces/{id}/graph`, retired by ADR-0029) |
 
 - **Tab = path segment, filter/selection = query param.** The tab is a
   first-class sub-resource of a trace (its own path segment, `/spans` | `/flow`),

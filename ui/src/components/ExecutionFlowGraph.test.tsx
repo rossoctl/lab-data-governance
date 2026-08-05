@@ -316,6 +316,8 @@ function edgeData(id: string): {
 function nodeData(id: string): {
   kind: string;
   highlight: string;
+  /** True on Execution Flow (kind hues), false on Lineage (neutral so sources own hue). */
+  kindColoured: boolean;
   lineage: {
     isDataSource: boolean;
     /** The ONE source being traced — a refinement of `isDataSource`, never a substitute. */
@@ -479,6 +481,25 @@ describe('ExecutionFlowGraph', () => {
 
     expect(screen.getByLabelText(/Loading execution flow graph/i)).toBeInTheDocument();
     expect(screen.queryByTestId('execution-flow-graph')).not.toBeInTheDocument();
+  });
+
+  it('paints nodes by ENTITY KIND on Execution Flow — hue is free on this tab', async () => {
+    // The requirement: Execution Flow keeps the blue/green kind colouring it always
+    // had. Nothing else on this tab wants hue (there is no lineage overlay), and the
+    // `EntityPill` in the tables beside it is kind-coloured too, so the two agree.
+    //
+    // Asserted on the MODEL rather than on a computed stroke: a node's `<g>` renders
+    // empty on jsdom's zero-size surface (see the file header), and jsdom applies no
+    // stylesheet, so a colour assertion would be vacuous. `kindColoured` is the flag
+    // the renderer switches on.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(screen.getByTestId('execution-flow-graph')).toBeInTheDocument());
+    await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+    expect(nodeData('e1').kindColoured).toBe(true);
+    expect(nodeData('e2').kindColoured).toBe(true);
   });
 
   it('renders an empty state — not a blank box — when the trace has no entities', async () => {
@@ -2315,6 +2336,138 @@ describe('LineageGraph', () => {
     expect(legend).toHaveTextContent(/Upstream of selection/i);
     expect(legend).toHaveTextContent(/Downstream of selection/i);
     expect(legend).toHaveTextContent(/Not derived yet/i);
+  });
+
+  it('paints nodes NEUTRAL on Lineage, so the data sources own hue', async () => {
+    // The other half of the per-tab split asserted in the ExecutionFlowGraph block: on
+    // THIS tab hue is spoken for (source colour + two direction hues + error red), so
+    // kind gives it up and moves to the label and the tooltip. The pair of tests is
+    // what makes the divergence deliberate rather than an accident of one tab's props.
+    renderLineage({ selectedEntityId: null });
+    await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+    expect(nodeData('e1').kindColoured).toBe(false);
+    expect(nodeData('e2').kindColoured).toBe(false);
+    // The kind is still CARRIED, just not as hue — it stays on the data for the label
+    // and the `<title>`, so a reader can still find out what an entity is.
+    expect(nodeData('e2').kind).toBe('tool');
+  });
+
+  it('puts the ENTITY picker above the SOURCE picker', async () => {
+    // The two controls assemble one question and this is the order it reads in: "what
+    // happened to THIS entity's data" is the question, "traced from which origin" is the
+    // qualifier — which is also the walk's own signature, `fanin(entity, source)`.
+    //
+    // (This case used to assert "the source picker is above every notice in the rail".
+    // That contract is now covered more strongly by the CONTROLS → graph → legend → text
+    // ordering test below, which pins the controls above the picture rather than merely
+    // above the prose. What was left unpinned was the two pickers' order relative to each
+    // other, so that is what this now guards.)
+    renderLineage({ selectedEntityId: null });
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+
+    const entityToggle = screen.getByRole('button', { name: /Selected entity/i });
+    const sourceToggle = screen.getByRole('button', { name: /Tracing data source/i });
+    // Entity BEFORE source: DOCUMENT_POSITION_FOLLOWING is 4.
+    expect(
+      entityToggle.compareDocumentPosition(sourceToggle) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('orders the view CONTROLS → graph → legend → informational text', async () => {
+    // THE WHOLE LAYOUT CONTRACT IN ONE CASE, because the three parts only mean anything
+    // relative to each other: controls above the picture (a reader must be able to act on
+    // them without hunting), the legend immediately under it (a key belongs beneath the
+    // thing it decodes), and every balloon of prose last (they are footnotes, and stacked
+    // above they pushed the drawing off screen).
+    //
+    // Asserted on DOCUMENT ORDER rather than CSS, because jsdom applies no stylesheet: a
+    // test on `margin-top` or `order` would pass while the elements sat anywhere at all.
+    // Document order is also what actually decides the visual order now — the two-column
+    // grid that used to invert them is gone.
+    renderLineage({
+      selectedEntityId: null,
+      summary: {
+        sources: ['agent:(p,a)'],
+        destinations: [],
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+    });
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+
+    const surface = document.querySelector('.dg-graph-surface')!;
+    const legend = screen.getByRole('group', { name: /Lineage graph legend/i });
+    const notices = document.querySelector('.dg-graph-notices')!;
+    // The source picker's toggle stands in for "the controls" — it is the one that has
+    // been there longest, so the assertion does not depend on the newer entity picker.
+    const sourceToggle = screen.getByRole('button', { name: /Tracing data source/i });
+
+    const follows = (a: Element, b: Element) =>
+      (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+    expect(follows(sourceToggle, surface)).toBe(true); // controls before the graph
+    expect(follows(surface, legend)).toBe(true); // legend after the graph
+    expect(follows(legend, notices)).toBe(true); // prose last
+    // And the legend is NOT inside the prose block — it is a key, not a caveat.
+    expect(notices.contains(legend)).toBe(false);
+  });
+
+  it('puts every warning and informational balloon in the block below the graph', async () => {
+    // The alerts must actually land IN that block: one rendered outside it would drift
+    // back above the drawing and reintroduce the stacking this replaced.
+    renderLineage({
+      selectedEntityId: null,
+      summary: {
+        sources: ['agent:(p,a)'],
+        destinations: [],
+        status: 'complete',
+        stopped_at_seq: null,
+      },
+    });
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+
+    const notices = document.querySelector('.dg-graph-notices');
+    expect(notices).not.toBeNull();
+    // The source roll-up is informational and unconditional in this state.
+    const rollup = await screen.findByText(/the origins the derived lineage attributed/i);
+    expect(notices!.contains(rollup)).toBe(true);
+    // Announced as its own region, so an AT reader can jump to the caveats or skip past
+    // them rather than walking every alert.
+    expect(notices).toHaveAttribute('aria-label', expect.stringMatching(/notice/i));
+  });
+
+  it('offers a KEYBOARD-reachable entity picker, which is why it exists', async () => {
+    // THE ACCESSIBILITY GAP THIS CLOSES. The seed entity used to be selectable only by
+    // clicking a graph node (an SVG circle — not tabbable) once the Entities table was
+    // scoped to the Tree|Flat presentations, so a keyboard or screen-reader reader could
+    // not ask this view's question at all. The picker is a real `button` toggle, so it is
+    // focusable and announced; that is the entire point, hence asserting the ROLE rather
+    // than just that some element rendered.
+    renderLineage({ selectedEntityId: null });
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+
+    const toggle = screen.getByRole('button', { name: /Selected entity/i });
+    expect(toggle).toBeInTheDocument();
+    // Nothing selected yet reads as an invitation, not as a claim about any entity.
+    expect(toggle).toHaveTextContent(/Choose an entity/i);
+  });
+
+  it('routes an entity chosen from the picker through the SAME selection path as a node click', async () => {
+    // The one thing that would make this control a defect rather than a fix: a second
+    // notion of "the selected entity". It must call the same `onSelectEntity` a node click
+    // routes through — which is what keeps the picker, the lit node, the `?eid` URL and
+    // the detail panel from disagreeing about what the reader picked.
+    const onSelectEntity = vi.fn();
+    renderLineage({ selectedEntityId: null, onSelectEntity });
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole('button', { name: /Selected entity/i }));
+    // Options are labelled by display_name; `search` is `e2` (the tool) in this file's
+    // ENTITIES fixture.
+    await userEvent.click(await screen.findByRole('option', { name: /search/i }));
+
+    expect(onSelectEntity).toHaveBeenCalledWith('e2');
   });
 
   it('marks the trace data sources with NOTHING selected', async () => {

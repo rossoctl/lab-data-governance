@@ -75,6 +75,20 @@ export interface LineageSourcePickerProps {
   namesByKey: Map<string, string>;
   /** Fired with the newly chosen source natural key. Never with `null` — see below. */
   onChange: (source: string) => void;
+  /**
+   * Whether to render this control's own two ALERTS ("choose a source" / "that source is
+   * stale") beneath the dropdown.
+   *
+   * The split exists because the graph view now puts CONTROLS above the picture and all
+   * informational text BELOW it. This component owns both, so a caller that wants the
+   * control in one place and its prose in another renders it twice: once with
+   * `showNotices={false}` in the control strip, once with `notices` only in the text
+   * block ({@link LineageSourceNotices}).
+   *
+   * Defaults to `true`, so a caller that wants the original one-piece control-plus-prose
+   * arrangement gets it unchanged.
+   */
+  showNotices?: boolean;
 }
 
 /**
@@ -86,7 +100,12 @@ export interface LineageSourcePickerProps {
  * multi-source union this whole design refuses, and one that reads "none" would be a
  * button whose only effect is to remove the answer the reader came for.
  */
-export function LineageSourcePicker({ chosen, namesByKey, onChange }: LineageSourcePickerProps) {
+export function LineageSourcePicker({
+  chosen,
+  namesByKey,
+  onChange,
+  showNotices = true,
+}: LineageSourcePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   // A generated id, not the literal `dg-lineage-source-label` this used to hardcode.
   // Only one picker is rendered today, so the literal was correct-by-accident; a second
@@ -183,8 +202,28 @@ export function LineageSourcePicker({ chosen, namesByKey, onChange }: LineageSou
         </Select>
       </div>
 
+      {showNotices && <LineageSourceNotices chosen={chosen} />}
+    </>
+  );
+}
+
+/**
+ * This control's two ALERTS, on their own so they can be rendered apart from the
+ * dropdown — see {@link LineageSourcePickerProps.showNotices}.
+ *
+ * They stay in THIS module rather than moving to the graph view, because the wording of
+ * "nothing chosen" and "stale choice" belongs with the control whose states they are: a
+ * second copy in the caller is exactly the drift that lets a control and its explanation
+ * describe different things.
+ */
+export function LineageSourceNotices({ chosen }: { chosen: SourceChoice }) {
+  // Same guard as the picker: with zero sources this component says nothing, because
+  // `LineageGraph`'s roll-up alert already owns that fact in one wording.
+  if (chosen.state === 'no-sources') return null;
+  return (
+    <>
       {/* NOTHING CHOSEN YET — an INSTRUCTION, not an empty result, and distinct from
-          every state `DirectionNotice` words. The graph below is drawn at full strength
+          every state `DirectionNotice` words. The graph is drawn at full strength
           and claims nothing about any source's flow, because no such question has been
           asked. Kept separate from the "select an entity" prompt because they are two
           different missing halves of one question and a reader who has supplied one

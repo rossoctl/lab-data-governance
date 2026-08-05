@@ -24,28 +24,74 @@ import { parseLegViewKey, parseLineageSource, type LegViewKey } from '../lib/flo
 import { HighlightLegend } from '../components/HighlightLegend';
 import type { Span } from '../types';
 
-// The active view is a URL path segment: `spans` (span tree) or `flow`
-// (interaction flow). We keep an internal ViewKey for render branches, mapped
-// from/to the URL word so the URL stays the source of truth. The two maps are
-// inverses; an unknown segment resolves to null and is canonicalised to /spans by
-// the guard below.
+// The active view is a URL path segment. We keep an internal ViewKey for render
+// branches, mapped from/to the URL word so the URL stays the source of truth. The two
+// maps are inverses; an unknown segment resolves to null and is canonicalised to /spans
+// by the guard below.
 //
-// The Execution Flow graph is NOT a third segment here. It used to be
-// (`/graph`), but it is a presentation of the flow view's own two reads rather
-// than a peer dataset of the span tree, so it now lives inside the flow view as
-// `?legs=graph` alongside Tree, Flat, the Interaction diagram and Lineage (see
-// FlowTables' LegViewKey). A
-// consequence worth naming: `/traces/{id}/graph` is now an unknown segment and
-// therefore redirects to `/spans` like any other typo.
-type ViewKey = 'tree' | 'flow';
-const VIEW_TO_URL: Record<ViewKey, string> = { tree: 'spans', flow: 'flow' };
-const URL_TO_VIEW: Record<string, ViewKey> = { spans: 'tree', flow: 'flow' };
+// FIVE PEER VIEWS, which REVERSES an earlier decision recorded here. The Interaction
+// diagram, the Execution Flow graph and the Lineage highlight used to be nested INSIDE
+// the flow view as its `?legs=diagram` / `?legs=graph` / `?legs=lineage` sub-tabs, on
+// the reasoning that they are presentations of the flow view's own two reads rather
+// than peer datasets of the span tree. That reasoning is still true as a statement
+// about the DATA — and it turned out to be the wrong basis for the NAVIGATION: three
+// of the five readings of a trace were two clicks deep and invisible until you found
+// the Interaction flow tab, so the requirement is that they sit beside Span tree and
+// Interaction flow as equals.
+//
+// WHAT STAYED NESTED, and why the nesting did not simply disappear: `Tree` and `Flat`
+// are two renderings of ONE table (the same rows, indented vs flattened), so they
+// remain `?legs` sub-tabs under Interaction flow. Promoting those two as well would put
+// a tab called "Tree" beside one called "Span tree" as if they were peers of comparable
+// weight, which they are not.
+//
+// `/traces/{id}/graph` is a real segment again (it was one historically, then was
+// removed when the graph moved into `?legs`). Old `?legs=` deep links still resolve —
+// see LEGACY_LEGS_TO_VIEW and the redirect effect.
+type ViewKey = 'tree' | 'flow' | 'diagram' | 'graph' | 'lineage';
+const VIEW_TO_URL: Record<ViewKey, string> = {
+  tree: 'spans',
+  flow: 'flow',
+  diagram: 'diagram',
+  graph: 'graph',
+  lineage: 'lineage',
+};
+const URL_TO_VIEW: Record<string, ViewKey> = {
+  spans: 'tree',
+  flow: 'flow',
+  diagram: 'diagram',
+  graph: 'graph',
+  lineage: 'lineage',
+};
 
 /**
- * Trace-detail view: a two-way switcher (Span tree | Interaction flow) over one
- * trace. The active tab, the tree's selected span (`?sel`), the flow's selected
- * interaction/entity (`?iid` / `?eid`), the flow's presentation (`?legs`) and the
- * Lineage tab's traced data source (`?src`) all
+ * Old `?legs=` values that are now their own path segment → the view they became.
+ *
+ * BOOKMARKS AND SHARED LINKS ARE THE POINT. `?legs=graph` and `?legs=lineage` were
+ * URL-visible for their whole life, and this codebase's own rule is that "here is what
+ * I was looking at" has to be a link (see the `?src` note below). Silently landing an
+ * old link on the default tab would break exactly the deep-linking the params exist to
+ * provide.
+ *
+ * `tree` and `flat` are deliberately ABSENT: they are still real `?legs` values under
+ * the flow view, so they must not be redirected anywhere.
+ */
+const LEGACY_LEGS_TO_VIEW: Record<string, ViewKey> = {
+  diagram: 'diagram',
+  graph: 'graph',
+  lineage: 'lineage',
+};
+
+/**
+ * Trace-detail view: a FIVE-way switcher over one trace — Span tree | Interaction flow
+ * | Interaction diagram | Execution Flow | Lineage. The first is the spans; the other
+ * four are readings of the same entities/interactions pair of reads, which is why they
+ * all render through one `FlowTables` (see the ViewKey note above for what moved up here
+ * and why the tables' own Tree|Flat stayed nested).
+ *
+ * The active view (a PATH SEGMENT), the tree's selected span (`?sel`), the flow's
+ * selected interaction/entity (`?iid` / `?eid`), the flow view's own Tree|Flat choice
+ * (`?legs`) and the Lineage view's traced data source (`?src`) all
  * live in the URL, so reload / bookmark / back restore exactly what's on screen.
  * Seeds from the cold-open `useTrace` listing root (deep-link / paste path). The
  * Tree and Flow views share a highlight PinStore — pinning an
@@ -96,11 +142,29 @@ export function TraceDetailPage() {
   // Navigate to a sibling tab, dropping the query (a ?sel from the tree is
   // meaningless in flow, and vice versa). Relative to the current path so the
   // trace id is preserved.
+  // Navigate to a sibling tab. The QUERY IS DROPPED for the span tree (a `?sel` from
+  // the tree is meaningless in the other views, and vice versa) but the four
+  // INTERACTION views — flow, diagram, graph, lineage — are readings of ONE dataset and
+  // share their params, so switching among them carries `?iid` / `?eid` / `?src`.
+  //
+  // This matters concretely: the three promoted views used to be sub-tabs, where
+  // switching between them was a `?legs` write that preserved the rest of the query by
+  // construction. Now they are path segments, so preserving it is a thing this function
+  // has to do on purpose — otherwise moving Execution Flow → Lineage would silently
+  // discard the chosen source and the selected entity, and the reader would arrive at a
+  // bare prompt having just been looking at an answer.
   const goToView = useCallback(
     (v: ViewKey) => {
-      navigate(`../${VIEW_TO_URL[v]}`, { relative: 'path' });
+      const isInteractionView = (k: ViewKey) => k !== 'tree';
+      const keep = isInteractionView(v) && view !== null && isInteractionView(view);
+      const carried = new URLSearchParams(keep ? searchParams : undefined);
+      // `?legs` belongs to the flow view's own sub-tabs; carrying it onto a promoted
+      // view would leave a dead param that the legacy redirect above would then bounce.
+      if (v !== 'flow') carried.delete('legs');
+      const qs = carried.toString();
+      navigate(`../${VIEW_TO_URL[v]}${qs ? `?${qs}` : ''}`, { relative: 'path' });
     },
-    [navigate],
+    [navigate, searchParams, view],
   );
 
   // Ask the tree to reveal a set of spans: navigate to the spans tab with the
@@ -274,6 +338,30 @@ export function TraceDetailPage() {
   // source this page is entitled to choose on the reader's behalf: an unrequested
   // highlight is a claim nobody asked for (see resolveSourceChoice's note). Absent
   // therefore stays absent, and the tab renders an instruction.
+  /**
+   * Which presentation `FlowTables` actually renders.
+   *
+   * TWO SOURCES, ONE ANSWER. For the three promoted views the PATH decides (a
+   * `ViewKey` of `diagram`/`graph`/`lineage` is also a `LegViewKey` of the same name —
+   * they are the same five presentations, which is what made the promotion a
+   * navigation change rather than a rewrite). For the flow view, `?legs` decides
+   * between its surviving Tree|Flat.
+   *
+   * Resolved HERE rather than inside `FlowTables` so that component keeps taking one
+   * `legView` prop and does not have to know that some of its presentations are now
+   * addressed by path and others by query — it renders what it is told.
+   *
+   * Written as an explicit three-way test rather than a lookup map so no cast is
+   * needed: inside the true branch TypeScript has NARROWED `view` to exactly the three
+   * keys that are also `LegViewKey`s, which is what makes the correspondence a checked
+   * fact instead of an asserted one. Everything else — the flow view, the span tree,
+   * and `null` from an unknown segment — falls through to `?legs`. The latter two never
+   * reach `FlowTables` (the tree renders its own view; `null` is redirected by the
+   * guard below), so the fallback only has to be well-formed, not meaningful.
+   */
+  const effectiveLegView: LegViewKey =
+    view === 'diagram' || view === 'graph' || view === 'lineage' ? view : legView;
+
   const lineageSource: string | null = parseLineageSource(searchParams.get('src'));
   const handleLineageSourceChange = useCallback(
     (source: string) => {
@@ -332,6 +420,32 @@ export function TraceDetailPage() {
   // after the state bump that triggered the render.
   void pinVersion;
   const pinViews = pins.getPins();
+
+  // LEGACY DEEP LINKS: `/flow?legs=graph` (and `diagram` / `lineage`) were the URLs
+  // for three views that are now their own path segment. Redirect rather than drop, so
+  // an existing bookmark or shared link still lands on the reading it named — see
+  // LEGACY_LEGS_TO_VIEW.
+  //
+  // Checked BEFORE the unknown-segment guard below and gated on the flow view, because
+  // that is the only place those params were ever written. `?legs=tree` / `?legs=flat`
+  // fall through untouched: they are still live values of the surviving sub-tab bar.
+  //
+  // Every OTHER param is carried across (`?iid`, `?eid`, `?src`), minus `legs` itself —
+  // a link to a Lineage view with a chosen source has to keep the source, or the
+  // redirect would silently answer a different question than the link asked.
+  const legacyLegsView = view === 'flow' ? LEGACY_LEGS_TO_VIEW[searchParams.get('legs') ?? ''] : undefined;
+  if (legacyLegsView) {
+    const carried = new URLSearchParams(searchParams);
+    carried.delete('legs');
+    const qs = carried.toString();
+    return (
+      <Navigate
+        to={`../${VIEW_TO_URL[legacyLegsView]}${qs ? `?${qs}` : ''}`}
+        relative="path"
+        replace
+      />
+    );
+  }
 
   // Unknown view segment → canonical spans tab (after the hooks above, per the
   // Rules of Hooks; their results are simply discarded by this redirect).
@@ -392,12 +506,31 @@ export function TraceDetailPage() {
             </TabTitleText>
           }
         />
-        {/* The Execution Flow graph, the Interaction diagram and the Lineage
-            highlight are all reached from INSIDE this view, as its `?legs=graph` /
-            `?legs=diagram` / `?legs=lineage` tabs — they draw the same
-            entities/interactions these tables list, so they belong beside Tree and
-            Flat rather than up here claiming to be peers of the span tree. */}
+        {/* THE FIVE PEER READINGS OF ONE TRACE. `Interaction flow` is the TABLES (with
+            its own Tree|Flat sub-tabs, the two renderings of one row set); the three
+            after it are the pictures. They were `?legs` sub-tabs of the flow view until
+            the requirement moved them up here — see the ViewKey note for what that
+            reversed and why the tables' own two stayed nested.
+
+            THE ORDER IS THE ARGUMENT, inherited from the sub-tab bar these three came
+            from (it is stated here now rather than there, so there is one copy of it):
+
+            `Interaction diagram` sits immediately after Interaction flow because it is
+            the Flat list read down the page — it renders that list's rows, in that
+            order, from the same `flatRows` derivation — with the graph's who-called-whom
+            axis laid out horizontally. It is the shared middle of its two neighbours
+            rather than an unrelated fifth thing.
+
+            `Lineage` sits LAST, immediately after Execution Flow, because it IS the
+            Execution Flow picture with one more question asked of it: identical nodes
+            and edges (one component, one `deriveGraph` — see ExecutionFlowGraph's
+            `EntityGraph`), plus a highlight of where ONE chosen data source's data
+            reached the selected entity from and went to. Anywhere earlier would separate
+            it from the view it is a reading of. */}
         <Tab eventKey="flow" title={<TabTitleText>Interaction flow</TabTitleText>} />
+        <Tab eventKey="diagram" title={<TabTitleText>Interaction diagram</TabTitleText>} />
+        <Tab eventKey="graph" title={<TabTitleText>Execution Flow</TabTitleText>} />
+        <Tab eventKey="lineage" title={<TabTitleText>Lineage</TabTitleText>} />
       </Tabs>
 
       {isLoading ? (
@@ -434,7 +567,16 @@ export function TraceDetailPage() {
             </Split>
           </div>
 
-          {view === 'flow' && (
+          {/* ALL FOUR INTERACTION VIEWS RENDER THROUGH ONE `FlowTables`, which is the
+              component that owns the interactions/entities reads, the evidence fetch,
+              the pin state and the single notion of "selected interaction/entity". The
+              three promoted views are presentations of exactly that state (which is why
+              they were sub-tabs in the first place), so giving each its own top-level
+              component would mean three more owners of one selection — the duplication
+              the whole flow view is built to avoid.
+              What changed is only where the CHOICE comes from: the path segment for the
+              three promoted views, `?legs` for the flow view's own Tree|Flat. */}
+          {view !== 'tree' && (
             <FlowTables
               traceId={traceId}
               pins={pins}
@@ -443,8 +585,13 @@ export function TraceDetailPage() {
               onRevealSpans={revealInTree}
               initialSelection={flowSelection}
               onSelectionChange={handleFlowSelectionChange}
-              legView={legView}
+              legView={effectiveLegView}
               onLegViewChange={handleLegViewChange}
+              // The sub-tab bar (Tree|Flat) is only meaningful on the flow view; the
+              // three promoted views ARE the presentation, so a bar offering to switch
+              // presentation from inside one of them would be a second control for what
+              // the top-level tabs now decide.
+              showLegTabs={view === 'flow'}
               lineageSource={lineageSource}
               onLineageSourceChange={handleLineageSourceChange}
             />

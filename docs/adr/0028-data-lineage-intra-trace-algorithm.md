@@ -1087,14 +1087,21 @@ it was "no pruning implemented".** The two are testable apart only by checking t
 `fanin != fanout` on a seq-asymmetric trace, which is why that inequality is now a named
 regression test at both the pure and DB-backed layers.
 
-**The UI's refusal stands and is not superseded.** `ui/src/lib/lineageGraph.ts`'s own
-clause 3 (that module's numbering, unrelated to the edge rule's clauses above) declines to
-walk transitively because "a transitive claim the backend never derived would be the UI
-inventing lineage". That reasoning was correct and is exactly what this decision removes
-*for the server*: the backend now derives the multi-hop claim, so it is citable. The
-client-side one-hop roll-up is unchanged, and a UI consuming these endpoints is rendering
-a served answer rather than composing one — which now also means it must pass a `source`,
-since the server no longer has a question to answer without one.
+**The UI's refusal was correct, and this decision is what retires it.** The
+now-deleted `ui/src/lib/lineageGraph.ts` had a clause 3 (that module's numbering,
+unrelated to the edge rule's clauses above) declining to walk transitively, because
+"a transitive claim the backend never derived would be the UI inventing lineage".
+That reasoning was right *while the backend derived nothing*, and it is exactly what
+this decision removes **for the server**: the backend now derives the multi-hop
+claim, so it is citable.
+
+The client-side roll-up is therefore **deleted rather than kept beside the served
+answer** — two competing notions of "the lineage highlight" is the duplication that
+would let two tabs disagree about what is true. Its successor is
+`ui/src/lib/lineageReachability.ts`, which renders a served answer rather than
+composing one and whose module docstring carries this reasoning forward. A UI
+consuming these endpoints must also pass a `source`, since the server no longer has
+a question to answer without one.
 
 ## Outputs
 

@@ -79,11 +79,11 @@ export function DataLineageView({ state }: { state: LineageState }) {
   // Renamed on destructure: `entities` above is the trace's Entity *rows* (the
   // name source), while this is the lineage triple's set of natural KEYS. Two
   // different things, so they do not share an identifier.
-  const {
-    data_sources,
-    source_transformations,
-    entities: lineageEntities,
-  } = state.lineage;
+  // `source_transformations` is deliberately NOT destructured: the per-source
+  // transformation sets used to render as this table's second ("Applied") column and
+  // that column was removed by request. The field is still in the API response and
+  // still derived — this view simply no longer presents it.
+  const { data_sources, entities: lineageEntities } = state.lineage;
 
   return (
     <div>
@@ -99,11 +99,7 @@ export function DataLineageView({ state }: { state: LineageState }) {
           <Title headingLevel="h5" size="md">
             Data sources
           </Title>
-          <SourcesTable
-            dataSources={data_sources}
-            sourceTransformations={source_transformations}
-            namesByKey={namesByKey}
-          />
+          <SourcesTable dataSources={data_sources} namesByKey={namesByKey} />
         </>
       )}
 
@@ -116,23 +112,29 @@ export function DataLineageView({ state }: { state: LineageState }) {
 }
 
 /**
- * The origins, one row each, with the transformations applied to *that* source's
- * contribution (`data_source → set<transformation>`, ADR-0028). The row set is
- * driven off `data_sources`, not the map's keys: the source list is the
- * authority on which origins exist, and a source legitimately carries no map
- * entry (nothing recorded for it) — which must not silently drop the source.
+ * The origins, one row each.
  *
- * The Source column shows the entity's friendly name; the *natural key* remains
- * the lookup key for `sourceTransformations` and the React key, so relabelling
- * cannot slide a row's transformations onto the wrong origin.
+ * ONE COLUMN. This used to carry a second, "Applied", listing the transformations
+ * applied to *that* source's contribution (`data_source → set<transformation>`,
+ * ADR-0028); it was removed by request. The `source_transformations` map is still
+ * derived and still returned by the API — it is simply not presented here, so a reader
+ * who needs it reads the response. Removing the column is therefore a presentation
+ * change, not a narrowing of what the trace claims.
+ *
+ * The row set is driven off `data_sources`: it is the authority on which origins exist,
+ * so the list cannot silently drop one. (That was true when the map existed too — a
+ * source legitimately carried no map entry — and remains the reason the array, not a
+ * key set, is iterated.)
+ *
+ * The Source column shows the entity's friendly name; the *natural key* remains the
+ * React key, because `display_name` is not unique (two agents can both own a
+ * `create_booking`) and two distinct origins must not collapse into one row.
  */
 function SourcesTable({
   dataSources,
-  sourceTransformations,
   namesByKey,
 }: {
   dataSources: string[];
-  sourceTransformations: Record<string, string[]>;
   namesByKey: Map<string, string>;
 }) {
   return (
@@ -140,26 +142,17 @@ function SourcesTable({
       <Thead>
         <Tr>
           <Th>Source</Th>
-          {/* "Transformations" truncates to "Tra…" in the narrow detail panel
-              once a long natural key claims the Source column. "Applied" says
-              the same thing in a width the panel actually has. */}
-          <Th>Applied</Th>
         </Tr>
       </Thead>
       <Tbody>
         {dataSources.map((source) => {
-          // Keyed on the natural key, NOT the label: `display_name` is not
-          // unique (two agents can both own a `create_booking`), so looking the
-          // map up by label could hand one source another's transformations.
-          const transformations = sourceTransformations[source] ?? [];
           const { label, qualified } = lineageLabel(source, namesByKey);
           return (
             <Tr key={source}>
               {/* `dg-lineage-key` grants the long-unbreakable-natural-key wrap
-                  (global.css) — without it this table pushes past the narrow
-                  detail panel and clips its own Transformations column. It is
-                  kept even for a resolved short label, because the fallback path
-                  renders a full key into this same cell. */}
+                  (global.css) — without it a long key pushes this table past the
+                  narrow detail panel. It is kept even for a resolved short label,
+                  because the fallback path renders a full key into this same cell. */}
               <Td
                 dataLabel="Source"
                 className="dg-mono dg-lineage-key"
@@ -173,19 +166,6 @@ function SourcesTable({
               >
                 {label}
               </Td>
-              <Td dataLabel="Applied">
-                {transformations.length === 0 ? (
-                  <span style={{ color: 'var(--dg-color-muted)', fontSize: '0.85rem' }}>None</span>
-                ) : (
-                  <LabelGroup numLabels={99}>
-                    {transformations.map((t) => (
-                      <Label key={t} isCompact color="purple">
-                        {t}
-                      </Label>
-                    ))}
-                  </LabelGroup>
-                )}
-              </Td>
             </Tr>
           );
         })}
@@ -196,7 +176,9 @@ function SourcesTable({
 
 /**
  * The **set** of entities the data passed through — rendered as an unordered
- * `LabelGroup`, the same presentation the transformations sets above use.
+ * `LabelGroup`. (This used to say "the same presentation the transformations sets above
+ * use"; those sets were the Sources table's "Applied" column, which has been removed, so
+ * this is now the only `LabelGroup` in the view.)
  *
  * This deliberately does NOT render an `a → b → c` chain. The spec
  * (`docs/data_lineage_alg.md` "Lineage metadata") defines this element as

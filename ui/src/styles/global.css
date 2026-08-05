@@ -46,11 +46,16 @@
                                   it would say something false about the node in
                                   the one place a reader is scanning for trouble.
                                   (2) It would also be AMBIGUOUS, not merely
-                                  impolite: entity kind already owns node hue
-                                  (lib/entityKind), and the `external_service`
-                                  kind is painted PF's danger red. An error-red
-                                  source ring would be indistinguishable from an
-                                  ordinary external_service node.
+                                  impolite. (This second reason was originally
+                                  "entity kind already owns node hue, and the
+                                  `external_service` kind is painted PF's danger
+                                  red, so an error-red source ring would be
+                                  indistinguishable from it". Graph nodes are now
+                                  NEUTRAL for every kind — see
+                                  nodeNeutralColorVar — so that exact collision is
+                                  gone. The ambiguity with the ERROR vocabulary in
+                                  (1) is not: a red-ringed healthy origin beside a
+                                  red failed edge still misreads.)
                                   Hence a distinct warmer orange-red, and hue is
                                   NOT the only carrier — see
                                   .dg-graph-node--datasource, which adds a halo
@@ -58,6 +63,12 @@
                                   colour-vision deficiency. A legend accompanies
                                   it in the tab (a colour with no key is a
                                   puzzle).
+                                  IT IS NOW THE NODE STROKE, not only a halo: with
+                                  kind hue gone from the graph, a data source is the
+                                  only COLOURED node among grey ones, which is the
+                                  fact the Lineage tab is for. The halo and the 8 3
+                                  dash are kept on top so hue is not the only
+                                  carrier.
                                   ONE token serves BOTH the trace's source set and
                                   the single CHOSEN source the walk is tracing:
                                   they are the same kind of fact (an origin), and
@@ -407,6 +418,52 @@ body {
    The fill is `--dg-surface-panel` (not the app background) so the drawing area
    reads as a distinct canvas in the dark theme, with the same `--dg-border` the
    floating detail panel uses. All tokens, no raw hex. */
+/* THE GRAPH TAB'S SHELL: controls, then the drawing, then its legend, then every
+   warning/informational balloon — one column, in that order.
+
+   THREE ARRANGEMENTS, and the history is the justification for this one:
+     1. Notices STACKED ABOVE the surface. On the Lineage view there can be ten at once
+        (source roll-up, coverage caveat, two prompts, two per-direction verdicts, three
+        graph disclosures, an unresolved-keys warning), which pushed the drawing entirely
+        below the fold: the reader scrolled past every caveat to reach the picture the
+        caveats are about.
+     2. A fixed-width SIDE RAIL beside the graph (a two-column grid). That kept both on
+        screen, but it permanently spent 22rem of HORIZONTAL room — on a graph whose
+        columns grow rightwards with call depth, i.e. the one axis it could least afford.
+     3. BELOW the graph (this). The drawing gets the full width, and the prose reads as
+        the footnotes it is.
+
+   The CONTROLS did not move down with the text. They are what a reader ACTS on, and an
+   instruction to "select an entity" whose picker sat under ten alerts is unfollowable —
+   see `EntityGraphProps.controls`.
+
+   No grid and no `order` any more: DOM order IS visual order, so nothing here has to
+   reconcile the two. (The rail arrangement deliberately inverted them so a screen reader
+   met the caveats before the drawing; that only made sense while the two were side by
+   side. Below the graph, DOM-first would announce ten alerts before the reader reached
+   the picture.) The rail's `--dg-graph-rail-width` token and `.dg-graph-main` wrapper
+   were deleted with it — the graph and its legend no longer need a column of their own
+   when there is only one column. */
+.dg-graph-layout {
+  /* A plain block: each child is full-width and stacks. Declared rather than left
+     implicit so the class still has a stated contract for anyone adding a child. */
+  display: block;
+}
+
+/* THE NOTICE BLOCK, below the graph and its legend.
+
+   No height cap and no internal scroll — both were properties of the rail, where the
+   block had to fit beside a fixed-height canvas. Below the graph the page scroll is the
+   right scroll: a reader who wants the eighth caveat scrolls the page to it, rather than
+   discovering a second scrollbar inside a panel.
+
+   PF renders each `Alert isInline` as a block, so they stack with no extra rules; their
+   existing `marginBottom: 0.5rem` provides the rhythm. The top margin separates the
+   first alert from the legend above it. */
+.dg-graph-notices {
+  margin-top: 0.5rem;
+}
+
 .dg-graph-surface {
   height: calc(100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) - 12rem);
   min-height: 320px;
@@ -493,8 +550,10 @@ body {
 
 /* An isolated entity — derived from the trace, but named by no interaction as
    caller or callee (see lib/graph's isIsolated). Dashed so it reads as "present
-   but unconnected" rather than as a node whose edges failed to draw. The
-   per-kind colour still comes from lib/entityKind, so only the STYLE differs.
+   but unconnected" rather than as a node whose edges failed to draw. Only the STYLE
+   differs — the colour comes from the renderer, and this rule applies on BOTH tabs, so
+   that colour is the entity kind's on Execution Flow and the neutral on Lineage (see
+   NodeData.kindColoured). The dash is the whole of what this rule says either way.
 
    Note the class is `pf-topology__…`, NOT `pf-v5-topology__…` — PF's topology
    package does not carry the `v5` infix its react-core siblings do, so a
@@ -514,12 +573,19 @@ body {
    against every other to spot it — so everything outside the answer drops to a low
    opacity and the answer is simply the only thing left at full strength.
 
-   NOTHING IS ENCODED IN HUE. Node and edge colour is already spoken for: a node's
-   stroke is its entity KIND (lib/entityKind) and a red edge is a failed leg, so
-   reusing colour here would either collide with those meanings or be invisible to a
-   colour-vision-deficient reader. Opacity and stroke WEIGHT (plus, for the selected
+   NOTHING IS ENCODED IN HUE BY *THIS* BLOCK. The source/upstream/downstream block
+   below does use hue; these selection-relative roles (source-of-selection, selected,
+   carrier, dimmed) deliberately do not, so they can land on the same element as a
+   lineage hue without fighting it. Opacity and stroke WEIGHT (plus, for the selected
    node, a dash) carry the whole distinction, which also means it survives a
    greyscale print.
+
+   NOTE ON WHAT CHANGED: node stroke used to be the entity KIND's hue (lib/entityKind)
+   on BOTH tabs, and that was this block's stated reason for refusing colour. On the
+   LINEAGE tab nodes are now neutral for every kind (see `nodeNeutralColorVar`)
+   precisely so the lineage block below can own hue; Execution Flow still paints kind.
+   The refusal here still stands, but on the narrower ground above — not on "kind
+   already owns it", which is no longer true of the tab these rules apply to.
 
    These classes are only ever emitted while a highlight is ACTIVE — the Execution
    Flow tab's elements carry no highlight class at all (see ExecutionFlowGraph's
@@ -592,8 +658,12 @@ body {
 
    THE STACKING TRICK. Three rings on one 40px circle cannot be three strokes —
    SVG gives a shape one stroke. So each fact takes a DIFFERENT visual channel:
-     - kind         → stroke COLOUR (already spoken for, lib/entityKind)
-     - data source  → an outer `filter: drop-shadow` halo, which composes
+     - kind         → NOTHING on THIS tab. Lineage nodes are neutral for every kind
+                      (`nodeNeutralColorVar`), which is what freed stroke COLOUR up
+                      for the data source below; kind lives in the label + title here.
+                      (The Execution Flow tab still paints kind hues — it has no
+                      lineage overlay competing for colour. See NodeData.kindColoured.)
+     - data source  → stroke COLOUR, plus an outer `filter: drop-shadow` halo
      - upstream     → `stroke-dasharray` (dashed = data flowed IN to the selection)
      - downstream   → a second drop-shadow layer in the downstream hue
    Drop-shadows are used because they STACK: two `drop-shadow()` functions in one
@@ -610,9 +680,12 @@ body {
 
 /* A trace DATA SOURCE. Always on while the Lineage tab is open — it answers a
    question about the trace, not about a selection, so it does not wait for a click.
-   The halo sits OUTSIDE the kind-coloured stroke so both are readable: the node
-   keeps saying what kind it is while also saying it is an origin. */
+   THE ONE COLOURED THING ON THE GRAPH: now that nodes are neutral for every kind
+   (`nodeNeutralColorVar`), this rule's `stroke` is what makes a source the only node
+   carrying hue, against a graph of grey ones. The halo is kept on top of it — hue must
+   not be the sole carrier (a deuteranope needs the ring and the dash too). */
 .pf-topology__node.dg-graph-node.dg-graph-node--datasource .pf-topology__node__background {
+  stroke: var(--dg-lineage-source);
   /* One halo layer, not two. The old first layer was `drop-shadow(0 0 0 …)` — zero
      offset AND zero blur — which paints an exact-alpha silhouette of the stroke ring
      directly beneath the visible stroke, fully occluded by it. It contributed nothing;
@@ -657,6 +730,10 @@ body {
    averaged with it: two `filter` declarations do not compose across rules, only within
    one list, which is why this restates both rings instead of adding one. */
 .pf-topology__node.dg-graph-node.dg-graph-node--datasource.dg-graph-node--chosen-source .pf-topology__node__background {
+  /* Restated, not inherited: this rule REPLACES `--datasource`'s filter (two `filter`
+     declarations do not compose across rules), and the stroke is restated with it so the
+     pair can never drift into "the chosen source lost its colour". */
+  stroke: var(--dg-lineage-source);
   filter: drop-shadow(0 0 2px var(--dg-lineage-source))
     drop-shadow(0 0 8px var(--dg-lineage-source));
   stroke-width: 5px;
@@ -700,9 +777,18 @@ body {
    file it with "not part of the answer", which is the precise conflation the
    frontier exists to prevent. A muted dotted ring instead — present, marked,
    visibly provisional. The `--dg-color-muted` grey says "unknown" rather than
-   borrowing either direction's hue, since we do not yet know what flows here. */
+   borrowing either direction's hue, since we do not yet know what flows here.
+
+   IT DOES NOT SET `stroke`, and that is now load-bearing. A frontier node CAN also be
+   one of the trace's data sources (the two are independent — the frontier is about
+   whether the walk could continue THROUGH a node, source-ness is about what the trace
+   attributed content to), and this rule sits AFTER `--datasource` at the same
+   specificity, so a `stroke` here would win the cascade and repaint a source in the
+   muted grey — silently costing it the one hue on the graph. The dotted 1 3 dash and
+   the light weight already carry "provisional" on their own channels, so a neutral
+   frontier node keeps the grey it has by default and a source on the frontier keeps its
+   source colour AND reads as provisional. */
 .pf-topology__node.dg-graph-node.dg-graph-node--frontier .pf-topology__node__background {
-  stroke: var(--dg-color-muted);
   stroke-dasharray: 1 3;
   stroke-width: 3px;
 }
@@ -768,13 +854,20 @@ body {
 /* The tab's LEGEND. A colour with no key is a puzzle, so every treatment above is
    named on screen. Inline flow rather than a floating overlay: it must not cover the
    graph it explains, and it has to be reachable by a screen reader in document
-   order. */
+   order.
+
+   NOW BELOW THE SURFACE, not above it — hence `margin-top` where this rule used to
+   carry `margin-bottom`. A key is consulted after looking at the picture and finding a
+   treatment you cannot read, so it sits where the eye lands on the way back out. It
+   renders through `EntityGraph`'s own `legend` slot (immediately after the surface) rather
+   than in the notice rail, so it stays under the drawing it decodes instead of under
+   the caveats. */
 .dg-lineage-legend {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
   align-items: center;
-  margin-bottom: 0.5rem;
+  margin-top: 0.5rem;
   padding: 0.375rem 0.5rem;
   background: var(--dg-surface-panel);
   border: 1px solid var(--dg-border-subtle);
