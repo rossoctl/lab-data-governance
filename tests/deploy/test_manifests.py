@@ -868,6 +868,8 @@ def test_container_env_placeholder_references_resolve_in_order(
         "data-governance-receiver",
         "data-governance-ui",
         "data-governance-interactions",
+        "data-governance-classification",
+        "data-governance-data-lineage",
     }
     seen_workloads: set[str] = set()
     for kind, name, path, pod_spec in _iter_pod_specs(docs):

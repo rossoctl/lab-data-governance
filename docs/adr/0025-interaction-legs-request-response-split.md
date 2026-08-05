@@ -20,7 +20,9 @@ direction)` single-table shape:
   `caller_entity_id`, `callee_entity_id`, `summary`.
 - **`interaction_legs`** — one row per temporal half, PK `(interaction_id,
   leg_type)` with `leg_type ∈ {request, response}`, holding the leg-dependent
-  fields: `occurred_at`, `payload_hash`, `error`, `seq`, `original_seq`.
+  fields: `occurred_at`, `payload_hash`, `error`, `seq`. (As accepted this also listed
+  `original_seq`; migration `0011_drop_leg_original_seq` removed it — issue #133, and
+  see the note under *Per-leg `seq`* below.)
 
 ## Why two tables instead of `(id, direction)`
 
@@ -36,8 +38,11 @@ direction)` single-table shape:
 - **Per-leg `seq` is the independent-lifecycle mechanism.** A response leg
   finalizing later advances *its own* `seq` without touching the request leg —
   which is the entire point of the split (a stream consumer sees "response
-  landed" as a distinct `seq` event). This is why `seq`/`original_seq` move to
-  the leg. Consequently the parent `interactions` has **no `seq`** and is not
+  landed" as a distinct `seq` event). This is why `seq` moves to
+  the leg. (`original_seq` moved here too, and was later dropped: a leg's `seq` is
+  DB-owned and never mutates on re-derive, so the frozen-vs-mutating comparison the
+  column existed for is inert for legs — migration `0011_drop_leg_original_seq`, issue
+  #133. `entities.original_seq` is unaffected.) Consequently the parent `interactions` has **no `seq`** and is not
   independently cursorable: identity is immutable once decided, so all the
   time-varying, independently-finalizing state — and therefore the cursor —
   lives on `interaction_legs` (`interactions_seq` is retired in favour of

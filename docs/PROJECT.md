@@ -810,6 +810,11 @@ No topology view, no sequence diagrams, no classification overlays —
 those return when the corresponding processors are designed in a
 later increment.
 
+> **Superseded for the UI scope above (ADR-0029).** All three have since
+> landed as top-level trace views: Execution Flow (`/graph`), Interaction
+> diagram (`/diagram`), and the lineage highlight (`/lineage`). The
+> paragraph above records v1's deliberate scope, not the current UI.
+
 ## Open questions
 
 - **Inline-payload storage cost.** v1 stores payloads verbatim

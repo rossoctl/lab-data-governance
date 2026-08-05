@@ -18,7 +18,7 @@ Always commit with `git commit -s` (Developer Certificate of Origin sign-off). T
 
 ### Issue tracker
 
-Issues live in GitHub Issues on `kagenti/lab-data-governance` (the `origin` remote), managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues on `rossoctl/lab-data-governance` (the `origin` remote), managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

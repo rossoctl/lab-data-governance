@@ -150,7 +150,7 @@ strand the held sibling leg; persist one lower and re-deliver the delivered leg 
 you cannot have both "not stranded" and "exactly-once").
 
 **Resolution:** give each leg its **own** DB-owned `seq` (the rejected `nextval`
-alternative above), decoupling leg seq from the in-memory `ProtoInteraction.seq`
+alternative above), decoupling leg seq from the in-memory `procedure.Interaction.seq`
 (which is pure plumbing — `procedure.py` orders/cursors/dedups on `span.seq`, never
 `ix.seq`, and is untouched, ADR-0025). The original replay-determinism objection
 does not apply: re-derive preserves seq once it is dropped from the leg

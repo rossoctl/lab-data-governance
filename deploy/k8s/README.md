@@ -14,6 +14,7 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `60-ui-httproute.yaml`        | `HTTPRoute` + `ReferenceGrant` exposing the UI on the rossoctl shared Gateway |
 | `70-interactions.yaml`        | `Deployment` for the P-interactions processor (no Service)  |
 | `80-classification.yaml`      | `Deployment` for the P-classification processor (no Service) |
+| `90-data-lineage.yaml`        | `Deployment` for the P-data-lineage processor (no Service)  |
 
 ## Topology summary
 
@@ -61,6 +62,25 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
   `processor_state` cursor (the `classification` row), `maxSurge:0` rollout.
   Higher memory limits (3Gi) than the other processors to hold torch + the
   resident model.
+- **P-data-lineage processor Deployment.** **Single replica** running
+  `python -m data_governance.processors.data_lineage` on the **shared** receiver
+  image (`data-governance/receiver:latest`, `command:` override — no new image;
+  ADR-0022's dedicated-image reasoning is specific to classification's torch +
+  baked weights and does not apply here). Init container runs `python -m
+  data_governance.db.migrate` to head (ADR-0002). A DB consumer with **no
+  Service and no container ports** — and, unlike both siblings, no Prometheus
+  `/metrics` surface at all (issue #117 ships no counters). It drains
+  `interaction_legs` by `seq`, woken by migration 0010's `dg_legs_inserted`
+  NOTIFY channel, and writes `lineage_metadata` (migration 0011/0013) plus
+  `lineage_trace_status` (migration 0012), advancing its own `processor_state`
+  cursor (the `data_lineage` row). Single replica for the same no-inter-pod-lock
+  reason, `maxSurge:0` rollout; a brief overlap is safe because each derivation
+  is a deterministic function of committed state written entirely inside the
+  loop's one transaction (ADR-0007), so concurrent derivations of a trace
+  converge — wasted work, not corruption. `SEMANTIC_MATCHER` is pinned to
+  `simple`, the trivial always-match matcher (ADR-0028): lineage is complete but
+  full of maybes, and setting it explicitly makes that visible. Sized like the
+  interactions processor (no model, no inference).
 - **NetworkPolicy.** Three policies, one per workload. Receiver and UI
   ingress is restricted to the upstream platform namespace, matched by
   the default `kubernetes.io/metadata.name` label every namespace gets
@@ -77,8 +97,8 @@ The Deployments here reference `data-governance/receiver:latest` and
 are produced from a single repo-root `Containerfile` (see issue #38) — one
 image, two tags, two entry points. A fresh Kind cluster has neither tag,
 so applying these manifests without first building and loading the image
-results in `ErrImagePull` / `CrashLoopBackOff` on the receiver, UI, and
-interactions-processor pods.
+results in `ErrImagePull` / `CrashLoopBackOff` on the receiver, UI,
+interactions-processor, and data-lineage-processor pods.
 
 The `deploy/build-and-load.sh` helper does both steps in one shot:
 
@@ -133,11 +153,13 @@ git pull --ff-only
 kubectl apply -f deploy/k8s/                                        # usually a no-op; safe to skip if no manifest changes
 kubectl -n data-governance rollout restart \
   deployment/data-governance-receiver deployment/data-governance-ui \
-  deployment/data-governance-interactions deployment/data-governance-classification
+  deployment/data-governance-interactions deployment/data-governance-classification \
+  deployment/data-governance-data-lineage
 kubectl -n data-governance rollout status deployment/data-governance-receiver --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-ui --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-interactions --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-classification --timeout=180s
+kubectl -n data-governance rollout status deployment/data-governance-data-lineage --timeout=120s
 ```
 
 The `rollout restart` is the step that's easy to forget: the manifests
@@ -149,6 +171,29 @@ image from the node's image store.
 
 Postgres (the StatefulSet) does not need restarting — it only holds
 data, not code from this repo.
+
+### When the change includes a migration, restart EVERY reader
+
+Not just the component you changed. Every pod runs the migrate init
+container to head (ADR-0002), so whichever pod starts first drags the
+schema forward under all the others — including pods still running the
+previous image.
+
+That is harmless for an additive migration (a new table or column an old
+reader never selects). It is **not** harmless for a rename or a drop: the
+old code keeps selecting a column that no longer exists and its reads fail
+outright. This happened with migration 0013, which renamed
+`lineage_metadata.entity_path` to `entities` — applying only
+`90-data-lineage.yaml` moved the schema to head while the API pod still
+queried `entity_path`, and every lineage read returned
+`column m.entity_path does not exist` until the other Deployments were
+restarted.
+
+So for a schema change the order above matters: build and load the image
+first, then restart every Deployment in the list, and do not apply a
+single manifest in isolation expecting only that component to be affected.
+If you applied one and reads started failing, restarting the rest is the
+fix (see ADR-0028 D10 for why the rename was accepted in this shape).
 
 ## Wire the rossoctl collector to our receiver
 
