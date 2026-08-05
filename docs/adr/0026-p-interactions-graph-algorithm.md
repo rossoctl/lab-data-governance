@@ -441,8 +441,8 @@ consumers sort by `order` **only** (the CLI by `r.order`, the API by
 > tool, which share an anchor span and `started_at`) keep their input<LLM<output
 > sequence; `span_id` is the final deterministic tiebreak.
 >
-> The reconstructed `EntityEdge.order` surfaces as `ProtoInteraction.order` and the
-> `proto_interactions."order"` column; both the CLI (`key=lambda r: r.order`) and
+> The reconstructed `EntityEdge.order` surfaces as `extractor.Interaction.order` and
+> the `proto_interactions."order"` column; both the CLI (`key=lambda r: r.order`) and
 > the API (`ORDER BY "order"`) sort by `order` **alone** — `started_at` is no
 > longer in the sort key.
 
@@ -968,7 +968,7 @@ The four sub-mandates:
    carried *on the graph data*:
    - `Edge.order` — the intra-turn ordering band stamped by Step 2.c at
      derivation time and read back by Step 3.b (`_server_endpoints`) onto
-     `EntityEdge.order`, surviving to `ProtoInteraction.order` and the SQL column;
+     `EntityEdge.order`, surviving to `extractor.Interaction.order` and the SQL column;
    - `Node.is_inferred` / `EntityNode.inferred` — provenance carried forward as a
      boolean field (never re-derived from labels);
    - `Node.peer_match_key` — the typed identity stamped on an inferred peer in
