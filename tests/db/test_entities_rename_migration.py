@@ -76,29 +76,29 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     walked = {rev.revision for rev in script.walk_revisions()}
-    assert "0013_lineage_entities_rename" in walked
+    assert "0015_lineage_entities_rename" in walked
 
 
-def test_0013_is_applied_in_the_chain(migrated_dsn: str) -> None:
-    """A fresh migrate applies 0013 (it is reachable in the chain).
+def test_0015_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """A fresh migrate applies this revision (it is reachable in the chain).
 
-    This *was* ``test_head_is_0013``. 0013 is no longer the head: merging ``main``
-    brought a second independently-numbered branch (0010_entity_ready_notify →
-    0011_drop_leg_original_seq), and joining the two produced the mergepoint
-    ``0014_merge_lineage_and_leg_seq``, which is now head. 0013 is still applied and
-    what it does is still asserted structurally by the tests above — it simply is not
-    the last revision any more.
+    This revision *is* currently the head, but the assertion here is deliberately
+    only reachability. Per the convention this repo already follows, the head
+    assertion travels with whichever revision is head and lives in exactly ONE
+    place, so a new revision moves one line — that place is
+    ``test_classifications_migration.py::test_head_is_0015``. Keeping this test to
+    reachability means a later revision landing on top does not have to edit this
+    file at all.
 
-    Per the convention this repo already follows, the head assertion travels with
-    whichever revision is head and lives in exactly ONE place, so a new revision
-    moves one line. That place is now
-    ``test_classifications_migration.py::test_head_is_the_merge_revision``."""
+    Renumbered from 0013 to 0015 when the lineage chain was re-parented onto
+    ``main``'s 0011_drop_leg_original_seq to make the chain linear (which also
+    retired the merge revision that had briefly been head)."""
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     walked = {rev.revision for rev in script.walk_revisions()}
-    assert "0013_lineage_entities_rename" in walked
+    assert "0015_lineage_entities_rename" in walked
 
 
 # --- reversibility, with the data intact ------------------------------------
@@ -134,7 +134,7 @@ def test_downgrade_restores_the_old_name_and_upgrade_renames_back(
             ),
         )
 
-    command.downgrade(cfg, "0012_lineage_trace_status")
+    command.downgrade(cfg, "0014_lineage_trace_status")
     cols = _columns(pg_dsn, TABLE)
     assert "entity_path" in cols and "entities" not in cols
     with psycopg.connect(pg_dsn) as conn:

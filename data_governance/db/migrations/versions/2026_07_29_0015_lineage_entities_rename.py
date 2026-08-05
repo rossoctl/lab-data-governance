@@ -46,13 +46,13 @@ Per ADR-0002/0005 the DDL is hand-written ``op.execute(...)`` — no SQLAlchemy 
 models, no autogenerate. Reversible: the downgrade renames back, so a rollback to
 0012 leaves a schema 0012's code can read.
 
-The revision id is terse (``0013_lineage_entities_rename``, not
+The revision id is terse (``0015_lineage_entities_rename``, not
 ``0013_rename_entity_path_to_entities``) because Alembic's ``alembic_version``
 table stores it in a ``VARCHAR(32)``; a longer id fails at write time on the very
 migration that would have widened it.
 
-Revision ID: 0013_lineage_entities_rename
-Revises: 0012_lineage_trace_status
+Revision ID: 0015_lineage_entities_rename
+Revises: 0014_lineage_trace_status
 Create Date: 2026-07-29
 """
 
@@ -63,8 +63,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "0013_lineage_entities_rename"
-down_revision: Union[str, Sequence[str], None] = "0012_lineage_trace_status"
+revision: str = "0015_lineage_entities_rename"
+down_revision: Union[str, Sequence[str], None] = "0014_lineage_trace_status"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

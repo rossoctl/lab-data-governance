@@ -262,7 +262,7 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     walked = {rev.revision for rev in script.walk_revisions()}
-    assert "0011_lineage_metadata" in walked
+    assert "0013_lineage_metadata" in walked
 
 
     # The head-pin assertion lives with whichever revision is head; it moved on to
@@ -283,7 +283,7 @@ def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
     command.upgrade(cfg, "head")
     assert _table_exists(pg_dsn, TABLE)
 
-    command.downgrade(cfg, "0010_legs_notify_trigger")
+    command.downgrade(cfg, "0012_legs_notify_trigger")
     assert not _table_exists(pg_dsn, TABLE)
     assert _table_exists(pg_dsn, "interaction_legs"), (
         "the legs table is 0009's, not this revision's to remove"

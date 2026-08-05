@@ -89,14 +89,14 @@ What this revision deliberately does NOT add:
   derived on read) was open when this revision landed, and absent-payload handling
   was its own ticket (#120). Shipping a column for it here would have fixed the open
   choice by accident. (Since resolved: ADR-0028 **D8** chose the dedicated table,
-  added by ``0012_lineage_trace_status``.)
+  added by ``0014_lineage_trace_status``.)
 - **No reverse ``payload -> persisting entity`` map.** Deferred (ADR-0028's
   "Outputs"); the ``payload_hash`` index is the seam it will use.
 - **No matcher-version column.** Matcher versioning and backfill after a matcher
   change are explicitly deferred (ADR-0028 D7).
 
-Revision ID: 0011_lineage_metadata
-Revises: 0010_legs_notify_trigger
+Revision ID: 0013_lineage_metadata
+Revises: 0012_legs_notify_trigger
 Create Date: 2026-07-28
 """
 
@@ -107,8 +107,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "0011_lineage_metadata"
-down_revision: Union[str, Sequence[str], None] = "0010_legs_notify_trigger"
+revision: str = "0013_lineage_metadata"
+down_revision: Union[str, Sequence[str], None] = "0012_legs_notify_trigger"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

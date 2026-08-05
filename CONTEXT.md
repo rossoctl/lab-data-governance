@@ -702,7 +702,7 @@ The triple recorded per **Interaction leg** by **P-data-lineage**: (1)
 unordered. In case an order is needed - it will need to be derived from the trace
 using an API", so ordering is a deferred trace-derived read and not something this
 field supplies (ADR-0028 D10; the field was named `entity_path` until migration
-`0013_lineage_entities_rename`). Keyed
+`0015_lineage_entities_rename`). Keyed
 `(interaction_id, leg_type)` — the **leg**, not the `payload_hash` (ADR-0028
 D5): payloads are content-addressed and deduped, so identical bytes at different
 positions carry completely different lineage, and a hash key would collide those

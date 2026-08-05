@@ -88,7 +88,7 @@ ADR-0015.
 Per ADR-0002/0005 the DDL is hand-written ``op.execute(...)`` — no SQLAlchemy ORM
 models.
 
-Revision ID: 0010_legs_notify_trigger
+Revision ID: 0012_legs_notify_trigger
 Revises: 0009_interaction_legs
 Create Date: 2026-07-28
 """
@@ -100,8 +100,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "0010_legs_notify_trigger"
-down_revision: Union[str, Sequence[str], None] = "0009_interaction_legs"
+revision: str = "0012_legs_notify_trigger"
+down_revision: Union[str, Sequence[str], None] = "0011_drop_leg_original_seq"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

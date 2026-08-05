@@ -15,8 +15,10 @@ captures the *why* and the settled boundaries.
 > **Renumbered from 0027.** This ADR was originally written as ADR-0027 on the
 > data-lineage branch while ADR-0027 "Leg-readiness notification for governance
 > consumers" (#125) was written independently on `main` — the same
-> both-sides-took-the-next-free-number collision that produced the two alembic
-> heads that merge revision `0014` resolves. The merge left two files numbered
+> both-sides-took-the-next-free-number collision that produced the duplicate
+> `0010`/`0011` alembic revisions — since resolved by re-parenting the lineage
+> chain onto `main`'s `0011_drop_leg_original_seq` and renumbering it `0012`-`0015`,
+> giving a single linear chain. The merge left two files numbered
 > 0027 and no 0028. This one moved because leg-readiness was already merged to
 > `main` and could be cited from there, so keeping its number stable was the
 > lower-risk half. Citations meaning *this* ADR (including every `D<n>`
@@ -405,7 +407,7 @@ ordered, deduplicated tuple named `entity_path`.
 
 **The field is renamed to `entities`** — Python `DataLineage.entities:
 frozenset[str]`, column `lineage_metadata.entities` (migration
-`0013_lineage_entities_rename`), JSON key `entities`, TS `DataLineage.entities`.
+`0015_lineage_entities_rename`), JSON key `entities`, TS `DataLineage.entities`.
 The name had to move with the meaning: *path* promises a sequence a consumer may
 legitimately read hop-by-hop, and a field that no longer carries one must not keep
 advertising it. A stale name on a governance claim is worse than a rename.
@@ -1124,17 +1126,17 @@ FKs, idempotent re-derive):
 - **`lineage_metadata`** — PK `(interaction_id, leg_type)` (D5). Columns: the
   metadata triple (`data_sources`, `source_transformations` map, `entities`),
   `payload_hash` (secondary index, D5), `seq`. One row per interaction leg that
-  received lineage. **Shipped** as migration `0011_lineage_metadata` (issue #117):
+  received lineage. **Shipped** as migration `0013_lineage_metadata` (issue #117):
   the triple is `TEXT[]` /`JSONB` / `TEXT[]` respectively (JSONB for the
   map-to-set, arrays for the two sets — Postgres has no set type), all `NOT NULL`
   — an origin's metadata is a real *empty* triple, and absence of the row is what
   means "not yet derived". The third column shipped as `entity_path` and was
-  renamed to `entities` by migration `0013_lineage_entities_rename` when the spec
+  renamed to `entities` by migration `0015_lineage_entities_rename` when the spec
   redefined it as unordered (D10).
 - **`lineage_trace_status`** — PK `trace_id` (D8). Columns: `status`
   (`lineage_status` ENUM: `complete` | `partial`, `NOT NULL`) and
   `stopped_at_seq` (`BIGINT`, nullable). **Shipped** as migration
-  `0012_lineage_trace_status` (issue #120). A CHECK constraint pairs the two —
+  `0014_lineage_trace_status` (issue #120). A CHECK constraint pairs the two —
   `partial` requires a stop position, `complete` forbids one — so a
   "partial, but I won't say from where" row cannot be stored. Absence of the row
   means *not yet derived*, matching `lineage_metadata`'s convention; `status` is

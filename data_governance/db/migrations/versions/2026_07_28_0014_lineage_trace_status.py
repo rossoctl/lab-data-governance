@@ -72,8 +72,8 @@ What this revision deliberately does NOT add — these stay open in ADR-0028 D6:
   the gap; taint/reachability cutoff (poisoning only the paths through the gap)
   is deferred, and would be per-leg state rather than this trace-level row.
 
-Revision ID: 0012_lineage_trace_status
-Revises: 0011_lineage_metadata
+Revision ID: 0014_lineage_trace_status
+Revises: 0013_lineage_metadata
 Create Date: 2026-07-28
 """
 
@@ -84,8 +84,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "0012_lineage_trace_status"
-down_revision: Union[str, Sequence[str], None] = "0011_lineage_metadata"
+revision: str = "0014_lineage_trace_status"
+down_revision: Union[str, Sequence[str], None] = "0013_lineage_metadata"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

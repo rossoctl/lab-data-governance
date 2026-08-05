@@ -314,7 +314,7 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     walked = {rev.revision for rev in script.walk_revisions()}
-    assert "0010_legs_notify_trigger" in walked
+    assert "0012_legs_notify_trigger" in walked
 
 
 # NOTE: the "applying the chain lands on head" assertion moved on to
