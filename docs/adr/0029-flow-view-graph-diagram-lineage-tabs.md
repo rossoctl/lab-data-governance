@@ -164,11 +164,11 @@ migration path.
   Interaction diagram, Lineage, or the `?legs=` / `?src=` deep links — the only
   lineage reference there is a stubbed route in `classification.spec.ts`. Comments in
   `setup.ts` and `ExecutionFlowGraph.test.tsx` describe those Playwright assertions as
-  though they exist; they do not. Since ADR-0021's whole premise is that deep links
-  restore what is on screen, and the CSS-specificity fix in `af14b78` is by its own
-  admission unverifiable under jsdom, this is the branch's largest test gap. It is
-  **not yet tracked by an issue** — filing one is the first follow-up, and this bullet
-  is deliberately the only claim about it until then.
+  though they exist; they did not — those three comments are corrected in `79f2f41`.
+  Since ADR-0021's whole premise is that deep links restore what is on screen, and the
+  CSS-specificity fix in `af14b78` is by its own admission unverifiable under jsdom,
+  this is the branch's largest test gap. Tracked as **issue #143**, which carries the
+  suggested spec scope.
 - **`docs/PROJECT.md`'s "no topology view, no sequence diagrams, no classification
   overlays" was false on all three counts** and now carries a note marking it
   superseded for the UI scope, rather than being rewritten — that paragraph records
