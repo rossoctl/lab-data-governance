@@ -18,6 +18,14 @@ uv.lock
 !.claude/skills/otel-span-table/**
 skills-lock.json
 
+# Per-developer Claude Code instructions. Claude Code reads `CLAUDE.local.md`
+# alongside the tracked `CLAUDE.md`, so this is the seam for personal working
+# preferences (verbosity, how to be corrected) that should not bind anyone else.
+# Project-wide conventions — commit sign-off, the issue tracker, where domain
+# docs live — belong in tracked `CLAUDE.md` instead, so every contributor and
+# agent gets them from a clone.
+CLAUDE.local.md
+
 # Design-interrogation scratch (the `/grilling` skill's working notes). Local
 # thinking-aloud, not a documented home for decisions: this repo is
 # single-context, so settled reasoning belongs in `CONTEXT.md` (vocabulary) or
