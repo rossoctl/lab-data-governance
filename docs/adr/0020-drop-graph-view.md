@@ -1,8 +1,10 @@
 # Drop the entity/interaction Graph view; its React Flow + dagre deps leave with it
 
 > **Partly superseded by [ADR-0029](0029-flow-view-graph-diagram-lineage-tabs.md).**
-> A topology graph is back — as `?legs=graph` *inside* the flow view, not as a peer
-> view of the span tree, so this ADR's two-way top-level switcher still holds. The
+> A topology graph is back, at `/traces/{id}/graph`, as a **peer view** of the span
+> tree — so this ADR's two-way top-level switcher does **not** hold: it is now a
+> five-way one (Span tree | Interaction flow | Interaction diagram | Execution Flow |
+> Lineage). The
 > **Consequences** section below is stale: graph source exists again (as
 > `ExecutionFlowGraph.tsx`), a topology dep is back (`@patternfly/react-topology`,
 > lazy-loaded rather than sitting in the initial bundle), and a jsdom stub returns

@@ -2,24 +2,27 @@
 status: accepted; partly supersedes ADR-0020
 ---
 
-# Readmit a topology graph — as a presentation *inside* the flow view, with Interaction diagram and Lineage tabs beside it
+# Readmit a topology graph — as a top-level trace view, with Interaction diagram and Lineage beside it
 
 ADR-0020 deleted the trace-detail **Graph** view and its `@xyflow/react` + dagre
 dependencies, and closed by saying that if a topology view were ever wanted again it
 would be "a fresh, deliberate decision (**and a fresh ADR**), not a flag flip". This
 is that ADR.
 
-It readmits a topology graph and adds two neighbours, all three as **sub-tabs of the
-Interaction flow view** rather than as peer views of the span tree. `?legs` now takes
-five values:
+It readmits a topology graph and adds two neighbours, all three as **top-level views
+of a trace**, peers of Span tree and Interaction flow. The trace-detail switcher goes
+from two ways to five, each view owning a **path segment**:
 
-| `?legs` | View | Reads |
+| Path | View | Reads |
 | --- | --- | --- |
-| `tree` (default) | Interaction forest | flow view's own two |
-| `flat` | Flat leg list | flow view's own two |
-| `diagram` | **Interaction diagram** — sequence diagram | flow view's own two |
-| `graph` | **Execution Flow** — topology graph | flow view's own two |
-| `lineage` | **Lineage** — the graph, highlighted | + trace data-lineage |
+| `/spans` (default) | Span tree | trace spans |
+| `/flow` | Interaction flow — tables, `?legs=tree\|flat` | entities + interactions |
+| `/diagram` | **Interaction diagram** — sequence diagram | entities + interactions |
+| `/graph` | **Execution Flow** — topology graph | entities + interactions |
+| `/lineage` | **Lineage** — the graph, highlighted | + trace data-lineage |
+
+`?legs` keeps exactly its two pre-existing values (`tree` | `flat`) — see *Why these
+are top-level views* for why the promotion stopped there.
 
 This supersedes ADR-0020's Consequences section. ADR-0020's *reasoning* is addressed
 below rather than waved past: the redundancy and dependency-cost arguments were
@@ -43,9 +46,9 @@ ADR-0020 rejected a view with two specific properties. Neither holds here.
 - **"Does not earn the dependencies it costs."** This is the load-bearing change.
   ADR-0020's complaint was that the heaviest deps in the UI sat in the *initial
   bundle* for a view nobody used. `@patternfly/react-topology` (with the d3 and mobx
-  it pulls in) is instead **lazy-loaded**: `FlowTables.tsx:47,62` wrap it in two
-  `lazy()` calls over one `import()` specifier, so Rollup emits one chunk that is
-  fetched only when `?legs=graph` or `?legs=lineage` is actually selected.
+  it pulls in) is instead **lazy-loaded**: `FlowTables.tsx` wraps it in two `lazy()`
+  calls over one `import()` specifier, so Rollup emits one chunk that is fetched only
+  when the Execution Flow or Lineage view is actually opened.
 
   Measured on a real `vite build`, that chunk is **286kB of JS (89kB gzipped) and
   39kB of CSS (4kB gzipped)**, and the initial chunk contains *zero* modules from
@@ -65,17 +68,44 @@ ADR-0020 rejected a view with two specific properties. Neither holds here.
   SVG (`InteractionDiagram.tsx:183` records the choice and specifically declines
   react-topology for it).
 
-## Why these are sub-tabs, not peer views
+## Why these are top-level views
 
-`TraceDetailPage`'s `ViewKey` stays a two-way switcher (`spans` | `flow`), so
-ADR-0020's headline consequence — no third top-level view — is *kept*, not reversed.
+**This reverses a decision taken earlier on this same branch, and the reversal is the
+point of this section.** The three new readings first shipped as `?legs` sub-tabs of
+the Interaction flow view, on the argument that they are *presentations of the flow
+view's own two reads* rather than peer datasets of the span tree. That argument is
+still true as a statement about the **data** — and it turned out to be the wrong basis
+for **navigation**.
 
-The reason is dataset identity, not tab-bar economy. The span tree and the flow view
-are peers because they read different things. All three new tabs read the flow view's
-own two resources (`diagram` and `graph` read *exactly* those; `lineage` adds one
-more, the trace's data-lineage, which the flow view already holds). A presentation of
-a dataset belongs beside its other presentations. `/traces/{id}/graph` is accordingly
-**gone** as a route and now redirects to `/spans` like any other unknown segment.
+What went wrong in practice: three of the five ways to read a trace were two clicks
+deep and invisible until you had already found the Interaction flow tab and noticed a
+second tab bar inside it. Dataset identity is a good reason to render two things
+through one component; it is not a reason to hide one of them. So `ViewKey` is a
+five-way switcher (`spans` | `flow` | `diagram` | `graph` | `lineage`) and the three
+new readings sit beside Span tree and Interaction flow as equals.
+
+ADR-0020's headline consequence — "no third top-level view" — is therefore **reversed,
+not kept**. That consequence was downstream of ADR-0020's judgement that the graph did
+not earn its place at all; once the graph *does* earn it (previous section), a rule
+that exists only to keep it out has nothing left to protect.
+
+**What stayed nested, and why the nesting did not simply disappear.** `Tree` and `Flat`
+remain `?legs` sub-tabs under Interaction flow, because they are two renderings of
+**one table** — the same rows, indented vs flattened. Promoting them too would put a
+tab called "Tree" beside one called "Span tree" as if they were peers of comparable
+weight, which they are not. This is why `?legs` still takes exactly `tree` | `flat`
+and did not become a five-value enum.
+
+**`/traces/{id}/graph` is a real path segment again**, having been one historically
+before the graph moved into `?legs`. Old `?legs=` deep links are **redirected, not
+dropped**: `?legs=diagram|graph|lineage` on the flow view resolve to the matching new
+segment, carrying every other param across (`?iid`, `?eid`, `?src`) minus `legs`
+itself — a link to a Lineage view with a chosen source must keep that source or the
+redirect answers a different question than the link asked. `?legs=tree|flat` fall
+through untouched, being live values still. The migration lives in
+`LEGACY_LEGS_TO_VIEW` and is checked *before* the unknown-segment guard;
+`parseLegViewKey`'s coercion of junk to `tree` is the last line of defence, not the
+migration path.
 
 ## Considered alternatives
 
@@ -98,18 +128,23 @@ a dataset belongs beside its other presentations. `/traces/{id}/graph` is accord
 
 ## Consequences
 
-- **`?legs` is a five-value enum** (`lib/flow.ts` `LegViewKey`, coerced by
-  `parseLegViewKey`; unknown and absent both read as `tree`). The Lineage tab adds a
-  second param, `?src` — the natural key of the single data source being traced —
+- **`?legs` stays a two-value enum** (`tree` | `flat`, coerced by `parseLegViewKey`;
+  unknown and absent both read as `tree`). Note that `lib/flow.ts`'s `LegViewKey` type
+  still names all **five** presentations `FlowTables` can render — that type is about
+  what the component draws, not about what the param accepts, and the three promoted
+  readings are addressed by path segment instead. The Lineage view adds a
+  param, `?src` — the natural key of the single data source being traced —
   coerced syntactically by `parseLineageSource`, with the semantic "does this trace
   have that source?" question left to `lineageReachability.resolveSourceChoice`, which
   reports a mismatch as a `'stale'` state rather than silently blanking it. ADR-0028
   D14 requires a `source`, so there is deliberately **no auto-pick** of the first one.
 - **ADR-0021's URL contract table is amended by this change**, not merely flagged: it
-  gains `?legs=<key>` and `?src=<naturalKey>` rows and its catch-all row now names
-  `/traces/{id}/graph` as retired here. That table declares itself the single source of
+  gains a path-segment row per promoted view and a `?src=<naturalKey>` row, and it
+  records the legacy `?legs=` redirect. That table declares itself the single source of
   truth for `/ui/` state, so leaving it stale while this ADR described the real contract
-  would have put the authority and the facts in two different documents.
+  would have put the authority and the facts in two different documents. (An earlier
+  revision of both documents described the sub-tab design this ADR reversed; that is
+  corrected in place rather than left as a second contradictory contract.)
 - **Leg-detail tab state is deliberately not in the URL** — `LegTabs.tsx`'s
   Request/Response and Payload/Classification/Lineage selections are component-local.
   This is a *new* exemption from ADR-0021 and is not covered by that ADR's existing

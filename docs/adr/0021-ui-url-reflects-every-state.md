@@ -29,9 +29,13 @@ resolve client-side).
 | `/ui/traces/{id}/flow` | interaction flow, default presentation `tree` |
 | `/ui/traces/{id}/flow?iid={interactionId}` | flow, that interaction row selected |
 | `/ui/traces/{id}/flow?eid={entityId}` | flow, that entity row selected |
-| `/ui/traces/{id}/flow?legs=<key>` | flow presentation ∈ `tree flat diagram graph lineage` (ADR-0029) |
-| `/ui/traces/{id}/flow?src=<naturalKey>` | `?legs=lineage` only: the data source being traced (ADR-0029) |
-| anything else | → redirect to `/ui/traces` (including `/ui/traces/{id}/graph`, retired by ADR-0029) |
+| `/ui/traces/{id}/flow?legs=<key>` | flow table presentation ∈ `tree flat` (ADR-0029) |
+| `/ui/traces/{id}/diagram` | interaction sequence diagram (ADR-0029) |
+| `/ui/traces/{id}/graph` | Execution Flow topology graph (ADR-0029) |
+| `/ui/traces/{id}/lineage` | Execution Flow graph, lineage-highlighted (ADR-0029) |
+| `/ui/traces/{id}/lineage?src=<naturalKey>` | the data source being traced (ADR-0029) |
+| `/ui/traces/{id}/flow?legs=diagram\|graph\|lineage` | → redirect to the matching segment above, other params carried (ADR-0029) |
+| anything else | → redirect to `/ui/traces` |
 
 - **Tab = path segment, filter/selection = query param.** The tab is a
   first-class sub-resource of a trace (its own path segment, `/spans` | `/flow`),
