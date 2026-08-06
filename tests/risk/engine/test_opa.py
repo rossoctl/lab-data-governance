@@ -1,0 +1,204 @@
+"""Tests for the synchronous OPA client (issue #101).
+
+``data_governance.risk.engine.opa`` calls OPA once per **interaction** (not
+per span — the interaction risk engine's span set feeds *into* the request
+rather than fanning out into per-span calls). Tested against
+``httpx.MockTransport`` — httpx's own test seam — so there is no real OPA
+and no real network, matching this repo's "no mocking of Postgres, but
+Postgres is the only thing we don't mock" posture (OPA is an external HTTP
+dependency, not the DB under test).
+"""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from data_governance.risk.engine.opa import (
+    OpaClient,
+    OpaRequestError,
+    OpaResponseError,
+    OpaTimeoutError,
+)
+
+
+def _client(handler, *, max_retries: int = 2) -> OpaClient:
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(
+        base_url="http://opa-test:8181", transport=transport
+    )
+    return OpaClient(
+        http_client=http_client,
+        decision_path="/v1/data/data_governance/policy_decision",
+        max_retries=max_retries,
+    )
+
+
+def _full_decision_body() -> dict:
+    return {
+        "result": {
+            "risk_level": "high",
+            "enforcement_type": "block",
+            "allowed_actions": ["retry"],
+            "explanation": "PII sent externally",
+            "triggered_rules": ["r1", "r2"],
+            "confidence": 0.87,
+            "policy_version": "3",
+        }
+    }
+
+
+# --- request shape ---------------------------------------------------------
+
+
+def test_request_includes_interaction_id_and_span_ids():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = __import__("json").loads(request.content)
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json=_full_decision_body())
+
+    client = _client(handler)
+    client.evaluate(
+        interaction_id="ix1",
+        span_ids=["s1", "s2"],
+        caller_entity_id="agent:a",
+        callee_entity_id="agent:b",
+    )
+
+    assert "/v1/data/data_governance/policy_decision" in captured["url"]
+    body = captured["json"]["input"]
+    assert body["interaction_id"] == "ix1"
+    assert body["span_ids"] == ["s1", "s2"]
+    assert body["caller_entity_id"] == "agent:a"
+    assert body["callee_entity_id"] == "agent:b"
+
+
+# --- response parsing --------------------------------------------------------
+
+
+def test_parses_full_decision_response():
+    client = _client(lambda r: httpx.Response(200, json=_full_decision_body()))
+    decision = client.evaluate(
+        interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+    )
+    assert decision.risk_level == "high"
+    assert decision.enforcement_type == "block"
+    assert decision.allowed_actions == ["retry"]
+    assert decision.explanation == "PII sent externally"
+    assert decision.triggered_rules == ["r1", "r2"]
+    assert decision.confidence == 0.87
+    assert decision.policy_version == "3"
+
+
+def test_missing_optional_fields_default_sensibly():
+    """Only risk_level is required in the result; every other field is
+    optional and must default without raising."""
+    client = _client(
+        lambda r: httpx.Response(200, json={"result": {"risk_level": "low"}})
+    )
+    decision = client.evaluate(
+        interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+    )
+    assert decision.risk_level == "low"
+    assert decision.enforcement_type is None
+    assert decision.allowed_actions == []
+    assert decision.explanation is None
+    assert decision.triggered_rules == []
+    assert decision.confidence is None
+    assert decision.policy_version is None
+
+
+def test_missing_result_key_raises_response_error():
+    client = _client(lambda r: httpx.Response(200, json={}))
+    with pytest.raises(OpaResponseError):
+        client.evaluate(
+            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+        )
+
+
+def test_missing_risk_level_raises_response_error():
+    client = _client(lambda r: httpx.Response(200, json={"result": {}}))
+    with pytest.raises(OpaResponseError):
+        client.evaluate(
+            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+        )
+
+
+def test_malformed_json_raises_response_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json{{{")
+
+    client = _client(handler)
+    with pytest.raises(OpaResponseError):
+        client.evaluate(
+            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+        )
+
+
+# --- HTTP error handling -----------------------------------------------------
+
+
+def test_non_200_raises_request_error_after_exhausting_retries():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500, text="internal error")
+
+    client = _client(handler, max_retries=2)
+    with pytest.raises(OpaRequestError):
+        client.evaluate(
+            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+        )
+    assert calls["n"] == 3  # initial attempt + 2 retries
+
+
+def test_timeout_raises_opa_timeout_error_after_exhausting_retries():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.TimeoutException("timed out")
+
+    client = _client(handler, max_retries=1)
+    with pytest.raises(OpaTimeoutError):
+        client.evaluate(
+            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+        )
+    assert calls["n"] == 2  # initial attempt + 1 retry
+
+
+def test_retry_then_succeed():
+    """The first call fails, the retry succeeds — the client must not raise
+    and must return the successful decision."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(503, text="unavailable")
+        return httpx.Response(200, json=_full_decision_body())
+
+    client = _client(handler, max_retries=2)
+    decision = client.evaluate(
+        interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+    )
+    assert decision.risk_level == "high"
+    assert calls["n"] == 2
+
+
+def test_no_retries_configured_raises_on_first_failure():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500)
+
+    client = _client(handler, max_retries=0)
+    with pytest.raises(OpaRequestError):
+        client.evaluate(
+            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+        )
+    assert calls["n"] == 1
