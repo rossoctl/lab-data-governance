@@ -6,11 +6,383 @@
   "runtime_enforcement_mode": {
     "unknown_behavior_enforcement_type": "allow"
   },
+  "event_type": {
+    "enum": [
+      "external_sharing",
+      "internal_sharing"
+    ]
+  },
+  "enforcement_type": {
+    "enum": [
+      "allow",
+      "block",
+      "redact",
+      "mask",
+      "escalate",
+      "require_approval"
+    ]
+  },
+  "action_type": {
+    "enum": [
+      "read",
+      "write",
+      "execute",
+      "send"
+    ]
+  },
+  "location_type": {
+    "enum": [
+      "local_file",
+      "database",
+      "box"
+    ]
+  },
+  "processing_entity_type": {
+    "enum": [
+      "tool",
+      "agent",
+      "code"
+    ]
+  },
+  "entity_type": {
+    "enum": [
+      "ADDRESS",
+      "AGE",
+      "AAD",
+      "BNK",
+      "BAN",
+      "BC",
+      "CCA",
+      "DATE",
+      "DOB",
+      "DOD",
+      "DIS",
+      "DLN",
+      "DRUG",
+      "DRUG_DOSE",
+      "EMAIL",
+      "EIN",
+      "EN",
+      "ETHN",
+      "FMETRIC",
+      "GEN",
+      "HICN",
+      "HIP",
+      "HOSP",
+      "IBAN",
+      "ICD10",
+      "IMEI",
+      "ITIN",
+      "IP",
+      "LAB_RESULT_VALUE",
+      "LAB_TEST_NAME",
+      "LPN",
+      "LOC",
+      "MAC",
+      "MS",
+      "MEASUREMENT_NAME",
+      "MEASUREMENT_VALUE",
+      "MEDD",
+      "MRN",
+      "MED",
+      "MAMOUNT",
+      "NDC",
+      "NPI",
+      "NID",
+      "OPID",
+      "ORG",
+      "PPN",
+      "PW",
+      "CVV",
+      "PCED",
+      "PCI",
+      "PCLD",
+      "PCN",
+      "PID",
+      "PN",
+      "PHONE",
+      "POB",
+      "POD",
+      "POE",
+      "RX",
+      "PROC",
+      "PROF",
+      "REL",
+      "RAC",
+      "RSCORE",
+      "RN",
+      "SO",
+      "DNA",
+      "SMH",
+      "SSN",
+      "SPL",
+      "SWIFT",
+      "SYMPTOM",
+      "TAID",
+      "TEST_RESULT_INTERPRETATION",
+      "URL",
+      "CN",
+      "UN",
+      "LMAN"
+    ]
+  },
+  "regulatory_tags": {
+    "enum": [
+      "PI",
+      "PII",
+      "PHI",
+      "PCI",
+      "CREDENTIALS"
+    ]
+  },
+  "data_type": {
+    "enum": [
+      "PID",
+      "OPID",
+      "DATA"
+    ]
+  },
+  "classification_level": {
+    "enum": [
+      "RESTRICTED",
+      "CONFIDENTIAL",
+      "INTERNAL",
+      "PUBLIC"
+    ]
+  },
+  "domain": {
+    "enum": [
+      "person",
+      "finance",
+      "medical"
+    ]
+  },
+  "category": {
+    "enum": [
+      "finance.banking",
+      "finance.crypto",
+      "finance.data",
+      "finance.pci",
+      "finance.tax",
+      "medical.codes",
+      "medical.data",
+      "medical.identifiers",
+      "medical.terms",
+      "person.contact",
+      "person.dates",
+      "person.demographics",
+      "person.device",
+      "person.employment",
+      "person.govID",
+      "person.operationalID",
+      "person.organization",
+      "person.personID",
+      "person.places",
+      "person.security"
+    ]
+  },
+  "risk_level": {
+    "enum": [
+      "critical",
+      "high",
+      "medium",
+      "low",
+      "none"
+    ]
+  },
+  "trust_level": {
+    "enum": [
+      "UNTRUSTED_EXTERNAL"
+    ]
+  },
+  "transformation type": {
+    "enum": [
+      "RAW",
+      "MASKED"
+    ]
+  },
+  "data_source_type": {
+    "enum": [
+      "database",
+      "sql_database",
+      "nosql_database",
+      "graph_database",
+      "vector_database",
+      "data_warehouse",
+      "local_file_system",
+      "network_file_system",
+      "cloud_storage",
+      "object_storage",
+      "rest_api",
+      "graphql_api",
+      "soap_api",
+      "grpc_service",
+      "message_queue",
+      "event_stream",
+      "crm_system",
+      "erp_system",
+      "hr_system",
+      "email_system",
+      "collaboration_tool",
+      "data_lake",
+      "data_stream",
+      "log_file",
+      "configuration_file",
+      "cache",
+      "session_store",
+      "third_party_api",
+      "partner_system",
+      "public_dataset",
+      "user_input",
+      "agent_memory",
+      "model_output",
+      "unknown"
+    ]
+  },
+  "data_destination_type": {
+    "enum": [
+      "internal_database",
+      "internal_api",
+      "internal_storage",
+      "internal_cache",
+      "internal_log",
+      "internal_analytics",
+      "external_llm",
+      "openai_api",
+      "anthropic_api",
+      "google_ai_api",
+      "azure_openai",
+      "bedrock_api",
+      "external_api",
+      "external_storage",
+      "external_analytics",
+      "third_party_service",
+      "partner_system",
+      "email",
+      "slack",
+      "teams",
+      "webhook",
+      "notification_service",
+      "public_endpoint",
+      "public_storage",
+      "search_engine",
+      "social_media",
+      "github",
+      "gitlab",
+      "code_repository",
+      "ci_cd_pipeline",
+      "monitoring_system",
+      "logging_service",
+      "audit_log",
+      "siem_system",
+      "user_display",
+      "agent_output",
+      "model_training",
+      "unknown"
+    ]
+  },
+  "data_source_category": {
+    "enum": [
+      "local",
+      "internal",
+      "external",
+      "public",
+      "unknown"
+    ],
+    "default_mapping": {
+      "local_file_system": "local",
+      "cache": "local",
+      "session_store": "local",
+      "agent_memory": "local",
+      "user_input": "local",
+      "model_output": "local",
+      "configuration_file": "local",
+      "log_file": "local",
+      "database": "internal",
+      "sql_database": "internal",
+      "nosql_database": "internal",
+      "graph_database": "internal",
+      "vector_database": "internal",
+      "data_warehouse": "internal",
+      "network_file_system": "internal",
+      "cloud_storage": "internal",
+      "object_storage": "internal",
+      "rest_api": "internal",
+      "graphql_api": "internal",
+      "soap_api": "internal",
+      "grpc_service": "internal",
+      "message_queue": "internal",
+      "event_stream": "internal",
+      "crm_system": "internal",
+      "erp_system": "internal",
+      "hr_system": "internal",
+      "email_system": "internal",
+      "collaboration_tool": "internal",
+      "data_lake": "internal",
+      "data_stream": "internal",
+      "third_party_api": "external",
+      "partner_system": "external",
+      "public_dataset": "public",
+      "unknown": "unknown"
+    }
+  },
+  "data_destination_category": {
+    "enum": [
+      "local",
+      "internal",
+      "external",
+      "public",
+      "unknown"
+    ],
+    "default_mapping": {
+      "user_display": "local",
+      "agent_output": "local",
+      "internal_cache": "local",
+      "internal_log": "local",
+      "internal_database": "internal",
+      "internal_api": "internal",
+      "internal_storage": "internal",
+      "internal_analytics": "internal",
+      "monitoring_system": "internal",
+      "logging_service": "internal",
+      "audit_log": "internal",
+      "siem_system": "internal",
+      "github": "internal",
+      "gitlab": "internal",
+      "code_repository": "internal",
+      "ci_cd_pipeline": "internal",
+      "model_training": "internal",
+      "external_llm": "external",
+      "openai_api": "external",
+      "anthropic_api": "external",
+      "google_ai_api": "external",
+      "azure_openai": "external",
+      "bedrock_api": "external",
+      "external_api": "external",
+      "external_storage": "external",
+      "external_analytics": "external",
+      "third_party_service": "external",
+      "partner_system": "external",
+      "email": "external",
+      "slack": "external",
+      "teams": "external",
+      "webhook": "external",
+      "notification_service": "external",
+      "public_endpoint": "public",
+      "public_storage": "public",
+      "search_engine": "public",
+      "social_media": "public",
+      "unknown": "unknown"
+    }
+  },
   "rules": [
     {
       "rule_id": "DG-001",
       "rule_name": "pii_to_untrusted_external",
-      "rule_categories": ["data_exfiltration", "pii_protection"],
+      "rule_categories": [
+        "data_exfiltration",
+        "pii_exposure"
+      ],
       "rule_sources": [
         {
           "document_name": "OWASP Top 10 for LLM Applications",
@@ -28,19 +400,25 @@
       "event_type": "external_sharing",
       "data_items": [
         {
-          "regulatory_tags": ["PII"]
+          "regulatory_tags": [
+            "PII"
+          ]
         }
       ],
       "data_destinations": [
         {
-          "data_destination_categories": ["external"],
+          "data_destination_categories": [
+            "external"
+          ],
           "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
         }
       ],
       "policy_decision": {
         "risk_level": "critical",
         "enforcement_type": "block",
-        "allowed_actions": ["redact_pii", "require_approval"],
+        "allowed_actions": [
+          "redact"
+        ],
         "explanation": "PII detected in payload sent to UNTRUSTED_EXTERNAL destination. Data exfiltration risk.",
         "confidence": 0.95
       }
@@ -48,7 +426,11 @@
     {
       "rule_id": "DG-002",
       "rule_name": "phi_to_untrusted_external",
-      "rule_categories": ["data_exfiltration", "phi_protection", "hipaa"],
+      "rule_categories": [
+        "data_exfiltration",
+        "phi_exposure",
+        "hipaa_violation"
+      ],
       "rule_sources": [
         {
           "document_name": "HIPAA Security Rule",
@@ -66,12 +448,16 @@
       "event_type": "external_sharing",
       "data_items": [
         {
-          "regulatory_tags": ["PHI"]
+          "regulatory_tags": [
+            "PHI"
+          ]
         }
       ],
       "data_destinations": [
         {
-          "data_destination_categories": ["external"],
+          "data_destination_categories": [
+            "external"
+          ],
           "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
         }
       ],
@@ -86,7 +472,10 @@
     {
       "rule_id": "DG-004",
       "rule_name": "restricted_external_sharing",
-      "rule_categories": ["data_exfiltration", "access_control"],
+      "rule_categories": [
+        "data_exfiltration",
+        "access_violation"
+      ],
       "rule_sources": [
         {
           "document_name": "OWASP Top 10 for LLM Applications",
@@ -109,7 +498,9 @@
       ],
       "data_destinations": [
         {
-          "data_destination_categories": ["external"],
+          "data_destination_categories": [
+            "external"
+          ],
           "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
         }
       ],

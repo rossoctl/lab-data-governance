@@ -16,6 +16,7 @@ caller-supplied path).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ import pytest
 from data_governance.risk.rules import catalog
 
 _FIXTURES = Path(__file__).parent / "fixtures"
+_SCHEMA = Path(catalog.__file__).parent / "schema" / "policy.schema.json"
 
 
 @pytest.fixture(autouse=True)
@@ -80,13 +82,13 @@ def test_list_rules_flattens_policy_decision_fields():
     dg001 = next(r for r in catalog.list_rules() if r["rule_id"] == "DG-001")
     assert dg001["risk_level"] == "critical"
     assert dg001["enforcement"] == "block"
-    assert dg001["allowed_actions"] == ["redact_pii", "require_approval"]
+    assert dg001["allowed_actions"] == ["redact"]
     assert "PII" in dg001["explanation"]
 
 
 def test_list_rules_flattens_rule_categories():
     dg001 = next(r for r in catalog.list_rules() if r["rule_id"] == "DG-001")
-    assert dg001["categories"] == ["data_exfiltration", "pii_protection"]
+    assert dg001["categories"] == ["data_exfiltration", "pii_exposure"]
 
 
 def test_list_rules_preserves_file_order():
@@ -117,11 +119,11 @@ def test_get_rule_lookup_is_case_sensitive():
 
 def test_category_counts_exact_mapping():
     assert catalog.category_counts() == {
-        "access_control": 1,
+        "access_violation": 1,
         "data_exfiltration": 3,
-        "hipaa": 1,
-        "phi_protection": 1,
-        "pii_protection": 1,
+        "hipaa_violation": 1,
+        "phi_exposure": 1,
+        "pii_exposure": 1,
     }
 
 
@@ -163,18 +165,27 @@ def test_reload_picks_up_a_changed_file(monkeypatch: pytest.MonkeyPatch):
 # --- corner cases -------------------------------------------------------------
 
 
-def test_missing_policy_decision_yields_none_fields(monkeypatch: pytest.MonkeyPatch):
+def test_incomplete_policy_decision_yields_none_ranked_fields(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """FX-NO-DECISION carries a ``policy_decision`` (the schema requires
+    ``explanation``/``confidence``) but omits both ``risk_level`` and
+    ``enforcement_type`` — a shape the schema explicitly permits. Flattening
+    must treat the missing ranked fields as ``None``; ``explanation`` is
+    present (the schema requires it) and passes through unaffected."""
     monkeypatch.setattr(catalog, "_RULES_SOURCE", _FIXTURES / "catalog_malformed.json")
     catalog.reload()
     no_decision = catalog.get_rule("FX-NO-DECISION")
     assert no_decision is not None
     assert no_decision["risk_level"] is None
     assert no_decision["enforcement"] is None
-    assert no_decision["explanation"] is None
+    assert no_decision["explanation"] == "No risk_level/enforcement_type present."
     assert no_decision["allowed_actions"] == []
 
 
-def test_missing_rule_categories_yields_empty_list(monkeypatch: pytest.MonkeyPatch):
+def test_empty_rule_categories_yields_empty_list(monkeypatch: pytest.MonkeyPatch):
+    """FX-NO-CATEGORIES carries ``rule_categories: []`` (empty, not absent —
+    the schema requires the key). Flattening still yields an empty list."""
     monkeypatch.setattr(catalog, "_RULES_SOURCE", _FIXTURES / "catalog_malformed.json")
     catalog.reload()
     no_categories = catalog.get_rule("FX-NO-CATEGORIES")
@@ -206,7 +217,7 @@ def test_mutating_a_returned_rule_does_not_affect_next_call():
     rule["risk_level"] = "mutated"
 
     fresh = catalog.get_rule("DG-001")
-    assert fresh["categories"] == ["data_exfiltration", "pii_protection"]
+    assert fresh["categories"] == ["data_exfiltration", "pii_exposure"]
     assert fresh["risk_level"] == "critical"
 
 
@@ -303,7 +314,7 @@ def test_filters_combine_conjunctively(_varied):
 
 
 def test_filter_by_category(_varied):
-    assert _ids(catalog.list_rules(category="category_b")) == [
+    assert _ids(catalog.list_rules(category="data_leakage")) == [
         "FX-CRIT-BLOCK",
         "FX-LOW-ALLOW",
     ]
@@ -372,15 +383,17 @@ def test_sort_by_risk_level_places_unranked_last(_varied):
     assert _ids(catalog.list_rules(sort_by="risk_level"))[-1] == "FX-NO-DECISION"
 
 
-def test_sort_by_enforcement_is_alphabetical(_varied):
-    """enforcement_type has no documented severity order, so alphabetical is
-    the honest choice rather than an invented ranking."""
+def test_sort_by_enforcement_is_severity_ordered_not_alphabetical(_varied):
+    """block > escalate > allow — alphabetical order would put "allow" first
+    and "escalate" ahead of "block", which is meaningless for a severity
+    axis. Reversed at both ends versus the old alphabetical expectation, so
+    this genuinely discriminates between the two orderings."""
     result = _ids(catalog.list_rules(sort_by="enforcement"))
     assert result[:4] == [
-        "FX-LOW-ALLOW",
         "FX-CRIT-BLOCK",
         "FX-HIGH-BLOCK",
         "FX-MED-ESC",
+        "FX-LOW-ALLOW",
     ]
 
 
@@ -461,4 +474,59 @@ def test_get_rule_and_category_counts_unaffected_by_new_parameters(_varied):
     """The other public helpers call list_rules() with no arguments, so the
     unfiltered default must stay their behaviour."""
     assert catalog.get_rule("FX-LOW-ALLOW")["risk_level"] == "low"
-    assert catalog.category_counts() == {"category_a": 3, "category_b": 2}
+    assert catalog.category_counts() == {"data_leakage": 2, "pii_exposure": 3}
+
+
+# --- ENFORCEMENT_ORDER: the supplied severity ranking ------------------------
+
+
+def test_enforcement_order_matches_the_schema_vocabulary():
+    """:data:`catalog.ENFORCEMENT_ORDER` must contain exactly the schema's
+    ``enforcementTypeValues`` names, minus the empty-string placeholder.
+    Checking against the vendored schema (rather than a second hardcoded
+    list here) means a future re-vendor that renames or adds an enforcement
+    type fails this test instead of silently sorting the new value last
+    forever.
+    """
+    with _SCHEMA.open(encoding="utf-8") as f:
+        schema = json.load(f)
+    schema_values = set(schema["$defs"]["enforcementTypeValues"]["enum"]) - {""}
+    assert set(catalog.ENFORCEMENT_ORDER) == schema_values
+
+
+def test_throttle_is_not_an_enforcement_type():
+    """Pins the removal against an upstream re-sync reintroducing it."""
+    assert "throttle" not in catalog.ENFORCEMENT_ORDER
+
+
+def test_enforcement_order_is_most_severe_first():
+    order = catalog.ENFORCEMENT_ORDER
+    assert order.index("block") < order.index("allow")
+    assert order.index("quarantine") < order.index("warn")
+    assert order.index("require_approval") < order.index("log_only")
+
+
+def test_unranked_enforcement_sorts_last(_varied):
+    """A rule with no policy_decision (so no enforcement_type at all) sorts
+    after every ranked rule rather than crashing on a None comparison or
+    sorting first — the same guarantee ``RISK_LEVEL_ORDER`` already gets
+    from :func:`test_sort_by_risk_level_places_unranked_last`."""
+    assert _ids(catalog.list_rules(sort_by="enforcement"))[-1] == "FX-NO-DECISION"
+
+
+def test_both_ranked_fields_share_the_same_unranked_contract(_varied):
+    """risk_level and enforcement agree on where an unranked/missing value
+    lands, in both ascending and descending order."""
+    for descending in (False, True):
+        risk_order = _ids(
+            catalog.list_rules(sort_by="risk_level", descending=descending)
+        )
+        enforcement_order = _ids(
+            catalog.list_rules(sort_by="enforcement", descending=descending)
+        )
+        expected_position = 0 if descending else -1
+        assert (
+            risk_order[expected_position]
+            == enforcement_order[expected_position]
+            == "FX-NO-DECISION"
+        )

@@ -2,9 +2,15 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://example.org/schemas/policy.schema.json",
     "title": "Agent Data Governance Policy",
-    "description": "JSON Schema for policy.json: a set of governance rules evaluated against agent data access/sharing events, plus the enum value sets (and default category mappings) referenced by those rules.",
+    "description": "JSON Schema for policy.json. All enum values are sourced from: EntityTypesForTokenClassification (8).csv and Entity_Classification_System_Specification.docx (entity_type, category, domain, data_type, classification_level, regulatory_tags), and recommended_enum_values.md (all other enums, including the coarse-grained data_source_category / data_destination_category and their default mappings).",
     "type": "object",
-    "required": ["policy_id", "policy_type", "status", "version", "rules"],
+    "required": [
+        "policy_id", "policy_type", "status", "version", "runtime_enforcement_mode", "rules",
+        "event_type", "enforcement_type", "action_type", "location_type", "processing_entity_type",
+        "entity_type", "regulatory_tags", "data_type", "classification_level", "domain", "category",
+        "risk_level", "trust_level", "transformation type", "data_source_type", "data_destination_type",
+        "data_source_category", "data_destination_category"
+    ],
     "additionalProperties": false,
     "properties": {
         "policy_id": { "type": "string" },
@@ -13,6 +19,7 @@
         "version": { "type": "string" },
         "runtime_enforcement_mode": {
             "type": "object",
+            "required": ["unknown_behavior_enforcement_type"],
             "properties": {
                 "unknown_behavior_enforcement_type": { "type": "string" }
             },
@@ -23,94 +30,402 @@
             "items": { "$ref": "#/$defs/rule" }
         },
 
-        "event_type": { "$ref": "#/$defs/enumField" },
-        "enforcement_type": { "$ref": "#/$defs/enumField" },
-        "action_type": { "$ref": "#/$defs/enumField" },
-        "location_type": { "$ref": "#/$defs/enumField" },
-        "processing_entity_type": { "$ref": "#/$defs/enumField" },
-        "entity_type": { "$ref": "#/$defs/enumField" },
-        "regulatory_tags": { "$ref": "#/$defs/enumField" },
-        "data_type": { "$ref": "#/$defs/enumField" },
-        "classification_level": { "$ref": "#/$defs/enumField" },
-        "domain": { "$ref": "#/$defs/enumField" },
-        "category": { "$ref": "#/$defs/enumField" },
-        "risk_level": { "$ref": "#/$defs/enumField" },
-        "trust_level": { "$ref": "#/$defs/enumField" },
-        "transformation type": { "$ref": "#/$defs/enumField" },
-        "data_source_type": { "$ref": "#/$defs/enumField" },
-        "data_destination_type": { "$ref": "#/$defs/enumField" },
-        "data_source_category": { "$ref": "#/$defs/categoryEnumField" },
-        "data_destination_category": { "$ref": "#/$defs/categoryEnumField" }
+        "event_type": { "$ref": "#/$defs/enumField_eventTypeValues" },
+        "enforcement_type": { "$ref": "#/$defs/enumField_enforcementTypeValues" },
+        "action_type": { "$ref": "#/$defs/enumField_actionTypeValues" },
+        "location_type": { "$ref": "#/$defs/enumField_locationTypeValues" },
+        "processing_entity_type": { "$ref": "#/$defs/enumField_processingEntityTypeValues" },
+        "entity_type": { "$ref": "#/$defs/enumField_entityTypeValues" },
+        "regulatory_tags": { "$ref": "#/$defs/enumField_regulatoryTagsValues" },
+        "data_type": { "$ref": "#/$defs/enumField_dataTypeValues" },
+        "classification_level": { "$ref": "#/$defs/enumField_classificationLevelValues" },
+        "domain": { "$ref": "#/$defs/enumField_domainValues" },
+        "category": { "$ref": "#/$defs/enumField_categoryValues" },
+        "risk_level": { "$ref": "#/$defs/enumField_riskLevelValues" },
+        "trust_level": { "$ref": "#/$defs/enumField_trustLevelValues" },
+        "transformation type": { "$ref": "#/$defs/enumField_transformationTypeValues" },
+        "data_source_type": { "$ref": "#/$defs/enumField_dataSourceTypeValues" },
+        "data_destination_type": { "$ref": "#/$defs/enumField_dataDestinationTypeValues" },
+        "data_source_category": { "$ref": "#/$defs/categoryEnumField_dataSourceCategory" },
+        "data_destination_category": { "$ref": "#/$defs/categoryEnumField_dataDestinationCategory" }
     },
 
     "$defs": {
-        "enumField": {
+        "entityTypeValues": {
+            "type": "string",
+            "description": "Authoritative source: EntityTypesForTokenClassification (8).csv.",
+            "enum": [
+                "",
+                "ADDRESS", "AGE", "AAD", "BNK", "BAN", "BC", "CCA", "DATE", "DOB", "DOD",
+                "DIS", "DLN", "DRUG", "DRUG_DOSE", "EMAIL", "EIN", "EN", "ETHN", "FMETRIC", "GEN",
+                "HICN", "HIP", "HOSP", "IBAN", "ICD10", "IMEI", "ITIN", "IP", "LAB_RESULT_VALUE", "LAB_TEST_NAME",
+                "LPN", "LOC", "MAC", "MS", "MEASUREMENT_NAME", "MEASUREMENT_VALUE", "MEDD", "MRN", "MED", "MAMOUNT",
+                "NDC", "NPI", "NID", "OPID", "ORG", "PPN", "PW", "CVV", "PCED", "PCI",
+                "PCLD", "PCN", "PID", "PN", "PHONE", "POB", "POD", "POE", "RX", "PROC",
+                "PROF", "REL", "RAC", "RSCORE", "RN", "SO", "DNA", "SMH", "SSN", "SPL",
+                "SWIFT", "SYMPTOM", "TAID", "TEST_RESULT_INTERPRETATION", "URL", "CN", "UN", "LMAN"
+            ]
+        },
+        "categoryValues": {
+            "type": "string",
+            "description": "Authoritative source: EntityTypesForTokenClassification (8).csv.",
+            "enum": [
+                "",
+                "finance.banking", "finance.crypto", "finance.data", "finance.pci", "finance.tax",
+                "medical.codes", "medical.data", "medical.identifiers", "medical.terms",
+                "person.contact", "person.dates", "person.demographics", "person.device", "person.employment",
+                "person.govID", "person.operationalID", "person.organization", "person.personID", "person.places", "person.security"
+            ]
+        },
+        "domainValues": {
+            "type": "string",
+            "enum": ["", "person", "finance", "medical"]
+        },
+        "dataTypeValues": {
+            "type": "string",
+            "description": "PID (personID): directly identifies an individual. OPID (operationalID): system/transaction identifiers. DATA (data): non-identifying information.",
+            "enum": ["", "PID", "OPID", "DATA"]
+        },
+        "classificationLevelValues": {
+            "type": "string",
+            "description": "Ordered lowest to highest sensitivity: PUBLIC < INTERNAL < CONFIDENTIAL < RESTRICTED.",
+            "enum": ["", "RESTRICTED", "CONFIDENTIAL", "INTERNAL", "PUBLIC"]
+        },
+        "regulatoryTagsValues": {
+            "type": "string",
+            "enum": ["", "PII", "PHI", "PCI", "CREDENTIALS", "PI"]
+        },
+
+        "eventTypeValues": {
+            "type": "string",
+            "description": "Authoritative source: recommended_enum_values.md.",
+            "enum": [
+                "",
+                "external_sharing", "internal_sharing", "data_export", "data_import", "data_transfer",
+                "data_read", "data_write", "data_update", "data_delete", "data_copy",
+                "data_transformation", "data_aggregation", "data_anonymization", "data_masking", "data_encryption",
+                "agent_query", "agent_generation", "agent_tool_use", "agent_memory_access", "agent_chain_execution",
+                "model_inference", "model_training", "model_fine_tuning",
+                "user_access", "api_access", "unauthorized_access",
+                "policy_violation", "anomaly_detected", "unknown_event"
+            ]
+        },
+        "enforcementTypeValues": {
+            "type": "string",
+            "description": "Authoritative source: recommended_enum_values.md.",
+            "enum": [
+                "",
+                "allow", "block", "redact", "mask", "encrypt", "anonymize",
+                "escalate", "require_approval", "log_only", "warn", 
+                "quarantine", "audit", "notify"
+            ]
+        },
+        "actionTypeValues": {
+            "type": "string",
+            "enum": [
+                "", "read", "write", "update", "delete", "create",
+                "send", "receive", "transfer", "copy", "move", "export", "import",
+                "execute", "invoke", "call", "query",
+                "transform", "aggregate", "filter", "join", "merge",
+                "encrypt", "decrypt", "mask", "redact", "anonymize",
+                "grant_access", "revoke_access", "authenticate", "authorize",
+                "log", "audit", "monitor", "alert"
+            ]
+        },
+        "locationTypeValues": {
+            "type": "string",
+            "description": "Authoritative source: recommended_enum_values.md.",
+            "enum": [
+                "",
+                "local_file", "network_file", "cloud_file", "temp_file",
+                "database", "database_table", "database_view", "database_schema",
+                "object_storage", "block_storage", "file_storage", "blob_storage",
+                "s3_bucket", "azure_blob", "gcs_bucket", "box", "dropbox", "onedrive",
+                "memory", "cache", "buffer", "session_store",
+                "message_queue", "event_stream", "pub_sub",
+                "api_endpoint", "webhook", "rest_endpoint", "graphql_endpoint",
+                "log_file", "audit_log", "system_log",
+                "agent_memory", "model_context", "user_session", "unknown"
+            ]
+        },
+        "processingEntityTypeValues": {
+            "type": "string",
+            "enum": [
+                "", "agent", "ai_agent", "autonomous_agent", "multi_agent_system",
+                "tool", "plugin", "extension", "integration",
+                "code", "script", "function", "lambda", "microservice",
+                "llm", "ml_model", "embedding_model", "classifier",
+                "system", "service", "application", "workflow", "pipeline",
+                "human", "user", "operator", "reviewer",
+                "container", "vm", "serverless_function",
+                "unknown"
+            ]
+        },
+        "riskLevelValues": {
+            "type": "string",
+            "description": "Authoritative source: recommended_enum_values.md.",
+            "enum": [
+                "",
+                "critical", "high", "medium", "low", "none", "unknown"
+            ]
+        },
+        "trustLevelValues": {
+            "type": "string",
+            "enum": [
+                "", "TRUSTED_INTERNAL", "TRUSTED_INTERNAL_RESTRICTED", "TRUSTED_PARTNER", "TRUSTED_VENDOR",
+                "UNTRUSTED_EXTERNAL", "UNTRUSTED_PUBLIC", "UNKNOWN", "CONDITIONAL_TRUST"
+            ]
+        },
+        "transformationTypeValues": {
+            "type": "string",
+            "enum": [
+                "", "RAW", "PROCESSED",
+                "MASKED", "REDACTED", "ENCRYPTED", "HASHED", "TOKENIZED",
+                "ANONYMIZED", "PSEUDONYMIZED", "AGGREGATED", "GENERALIZED", "SUPPRESSED",
+                "VALIDATED", "CLEANED", "NORMALIZED", "ENRICHED",
+                "FORMATTED", "COMPRESSED", "ENCODED",
+                "SYNTHETIC", "UNKNOWN"
+            ]
+        },
+        "dataStateValues": {
+            "type": "string",
+            "description": "Authoritative source: recommended_enum_values.md.",
+            "enum": [
+                "",
+                "raw", "processed", "masked", "encrypted", "in_transit",
+                "at_rest", "in_use", "archived", "deleted", "temporary", "cached"
+            ]
+        },
+        "ruleCategoriesValues": {
+            "type": "string",
+            "description": "Authoritative source: recommended_enum_values.md. 'unknown' and 'fallback' double as both rule_categories values and the special rule names used by policy.json's fallback rules.",
+            "enum": [
+                "",
+                "pii_exfiltration", "pii_exposure", "pii_leakage", "privacy_violation",
+                "phi_exposure", "hipaa_violation", "medical_data_leakage",
+                "pci_violation", "financial_data_leakage", "payment_data_exposure",
+                "hallucination", "data_corruption", "data_integrity_violation", "cascading_error",
+                "unauthorized_access", "privilege_escalation", "access_violation",
+                "data_exfiltration", "data_leakage", "sensitive_data_disclosure",
+                "anomaly_detected", "behavioral_anomaly", "volume_anomaly", "destination_anomaly",
+                "cross_agent_contamination", "session_contamination", "memory_leak",
+                "gdpr_violation", "ccpa_violation", "sox_violation", "regulatory_violation",
+                "compound_risk", "multi_factor_risk",
+                "unknown_behavior", "unknown_destination", "unknown_source", "fallback", "unknown"
+            ]
+        },
+        "policyStatusValues": {
+            "type": "string",
+            "enum": ["draft", "review", "approved", "active", "inactive", "deprecated", "archived"]
+        },
+        "policyTypeValues": {
+            "type": "string",
+            "enum": [
+                "data_protection", "access_control", "data_quality", "compliance", "security",
+                "privacy", "operational", "governance", "risk_management", "incident_response"
+            ]
+        },
+        "dataSourceTypeValues": {
+            "type": "string",
+            "enum": [
+                "database", "sql_database", "nosql_database", "graph_database", "vector_database", "data_warehouse",
+                "local_file_system", "network_file_system", "cloud_storage", "object_storage",
+                "rest_api", "graphql_api", "soap_api", "grpc_service", "message_queue", "event_stream",
+                "crm_system", "erp_system", "hr_system", "email_system", "collaboration_tool",
+                "data_lake", "data_stream", "log_file", "configuration_file", "cache", "session_store",
+                "third_party_api", "partner_system", "public_dataset",
+                "user_input", "agent_memory", "model_output", "unknown"
+            ]
+        },
+        "dataDestinationTypeValues": {
+            "type": "string",
+            "enum": [
+                "internal_database", "internal_api", "internal_storage", "internal_cache", "internal_log", "internal_analytics",
+                "external_llm", "openai_api", "anthropic_api", "google_ai_api", "azure_openai", "bedrock_api",
+                "external_api", "external_storage", "external_analytics", "third_party_service", "partner_system",
+                "email", "slack", "teams", "webhook", "notification_service",
+                "public_endpoint", "public_storage", "search_engine", "social_media",
+                "github", "gitlab", "code_repository", "ci_cd_pipeline",
+                "monitoring_system", "logging_service", "audit_log", "siem_system",
+                "user_display", "agent_output", "model_training", "unknown"
+            ]
+        },
+        "dataCategoryValues": {
+            "type": "string",
+            "enum": ["local", "internal", "external", "public", "unknown"]
+        },
+
+        "enumField_eventTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/eventTypeValues" } } } },
+        "enumField_enforcementTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/enforcementTypeValues" } } } },
+        "enumField_actionTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/actionTypeValues" } } } },
+        "enumField_locationTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/locationTypeValues" } } } },
+        "enumField_processingEntityTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/processingEntityTypeValues" } } } },
+        "enumField_entityTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/entityTypeValues" } } } },
+        "enumField_regulatoryTagsValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/regulatoryTagsValues" } } } },
+        "enumField_dataTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/dataTypeValues" } } } },
+        "enumField_classificationLevelValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/classificationLevelValues" } } } },
+        "enumField_domainValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/domainValues" } } } },
+        "enumField_categoryValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/categoryValues" } } } },
+        "enumField_riskLevelValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/riskLevelValues" } } } },
+        "enumField_trustLevelValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/trustLevelValues" } } } },
+        "enumField_transformationTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/transformationTypeValues" } } } },
+        "enumField_dataSourceTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/dataSourceTypeValues" } } } },
+        "enumField_dataDestinationTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/dataDestinationTypeValues" } } } },
+        "enumField_policyStatusValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/policyStatusValues" } } } },
+        "enumField_policyTypeValues": { "$ref": "#/$defs/enumFieldTemplate", "properties": { "enum": { "type": "array", "items": { "$ref": "#/$defs/policyTypeValues" } } } },
+
+        "enumFieldTemplate": {
             "description": "A named enum definition: an allowed set of string values for a field used elsewhere in the policy.",
             "type": "object",
             "required": ["enum"],
-            "properties": {
-                "enum": {
-                    "type": "array",
-                    "items": { "type": "string" }
-                }
-            },
             "additionalProperties": true
         },
 
-        "categoryEnumField": {
-            "description": "A coarse-grained category enum (local/internal/external/public/unknown) plus a default mapping from the corresponding fine-grained type values to that category.",
+        "categoryEnumField_dataSourceCategory": {
+            "description": "The coarse-grained data_source_category enum plus its default mapping from every data_source_type value to a category. Source: recommended_enum_values.md section 3a.",
             "type": "object",
             "required": ["enum", "default_mapping"],
+            "additionalProperties": false,
             "properties": {
                 "enum": {
                     "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["local", "internal", "external", "public", "unknown"]
-                    }
+                    "items": { "$ref": "#/$defs/dataCategoryValues" }
                 },
                 "default_mapping": {
                     "type": "object",
-                    "additionalProperties": {
-                        "type": "string",
-                        "enum": ["local", "internal", "external", "public", "unknown"]
-                    }
+                    "required": [
+                        "database", "sql_database", "nosql_database", "graph_database", "vector_database",
+                        "data_warehouse", "local_file_system", "network_file_system", "cloud_storage",
+                        "object_storage", "rest_api", "graphql_api", "soap_api", "grpc_service",
+                        "message_queue", "event_stream", "crm_system", "erp_system", "hr_system",
+                        "email_system", "collaboration_tool", "data_lake", "data_stream", "log_file",
+                        "configuration_file", "cache", "session_store", "third_party_api", "partner_system",
+                        "public_dataset", "user_input", "agent_memory", "model_output", "unknown"
+                    ],
+                    "properties": {
+                        "database": { "$ref": "#/$defs/dataCategoryValues" },
+                        "sql_database": { "$ref": "#/$defs/dataCategoryValues" },
+                        "nosql_database": { "$ref": "#/$defs/dataCategoryValues" },
+                        "graph_database": { "$ref": "#/$defs/dataCategoryValues" },
+                        "vector_database": { "$ref": "#/$defs/dataCategoryValues" },
+                        "data_warehouse": { "$ref": "#/$defs/dataCategoryValues" },
+                        "local_file_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "network_file_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "cloud_storage": { "$ref": "#/$defs/dataCategoryValues" },
+                        "object_storage": { "$ref": "#/$defs/dataCategoryValues" },
+                        "rest_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "graphql_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "soap_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "grpc_service": { "$ref": "#/$defs/dataCategoryValues" },
+                        "message_queue": { "$ref": "#/$defs/dataCategoryValues" },
+                        "event_stream": { "$ref": "#/$defs/dataCategoryValues" },
+                        "crm_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "erp_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "hr_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "email_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "collaboration_tool": { "$ref": "#/$defs/dataCategoryValues" },
+                        "data_lake": { "$ref": "#/$defs/dataCategoryValues" },
+                        "data_stream": { "$ref": "#/$defs/dataCategoryValues" },
+                        "log_file": { "$ref": "#/$defs/dataCategoryValues" },
+                        "configuration_file": { "$ref": "#/$defs/dataCategoryValues" },
+                        "cache": { "$ref": "#/$defs/dataCategoryValues" },
+                        "session_store": { "$ref": "#/$defs/dataCategoryValues" },
+                        "third_party_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "partner_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "public_dataset": { "$ref": "#/$defs/dataCategoryValues" },
+                        "user_input": { "$ref": "#/$defs/dataCategoryValues" },
+                        "agent_memory": { "$ref": "#/$defs/dataCategoryValues" },
+                        "model_output": { "$ref": "#/$defs/dataCategoryValues" },
+                        "unknown": { "$ref": "#/$defs/dataCategoryValues" }
+                    },
+                    "additionalProperties": false
                 }
-            },
-            "additionalProperties": false
+            }
         },
 
-        "trustLevel": {
-            "description": "A named trust level. Trust is a category, not a magnitude — the value set is the one defined in recommended_enum_values.md, and no numeric scale is defined for it, so these are strings rather than numbers.",
-            "type": "string",
-            "enum": [
-                "TRUSTED_INTERNAL",
-                "TRUSTED_INTERNAL_RESTRICTED",
-                "TRUSTED_PARTNER",
-                "TRUSTED_VENDOR",
-                "UNTRUSTED_EXTERNAL",
-                "UNTRUSTED_PUBLIC",
-                "UNKNOWN",
-                "CONDITIONAL_TRUST"
-            ]
+        "categoryEnumField_dataDestinationCategory": {
+            "description": "The coarse-grained data_destination_category enum plus its default mapping from every data_destination_type value to a category. Source: recommended_enum_values.md section 4a.",
+            "type": "object",
+            "required": ["enum", "default_mapping"],
+            "additionalProperties": false,
+            "properties": {
+                "enum": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/dataCategoryValues" }
+                },
+                "default_mapping": {
+                    "type": "object",
+                    "required": [
+                        "user_display", "agent_output", "internal_cache", "internal_log", "internal_database",
+                        "internal_api", "internal_storage", "internal_analytics", "monitoring_system",
+                        "logging_service", "audit_log", "siem_system", "github", "gitlab", "code_repository",
+                        "ci_cd_pipeline", "model_training", "external_llm", "openai_api", "anthropic_api",
+                        "google_ai_api", "azure_openai", "bedrock_api", "external_api", "external_storage",
+                        "external_analytics", "third_party_service", "partner_system", "email", "slack",
+                        "teams", "webhook", "notification_service", "public_endpoint", "public_storage",
+                        "search_engine", "social_media", "unknown"
+                    ],
+                    "properties": {
+                        "user_display": { "$ref": "#/$defs/dataCategoryValues" },
+                        "agent_output": { "$ref": "#/$defs/dataCategoryValues" },
+                        "internal_cache": { "$ref": "#/$defs/dataCategoryValues" },
+                        "internal_log": { "$ref": "#/$defs/dataCategoryValues" },
+                        "internal_database": { "$ref": "#/$defs/dataCategoryValues" },
+                        "internal_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "internal_storage": { "$ref": "#/$defs/dataCategoryValues" },
+                        "internal_analytics": { "$ref": "#/$defs/dataCategoryValues" },
+                        "monitoring_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "logging_service": { "$ref": "#/$defs/dataCategoryValues" },
+                        "audit_log": { "$ref": "#/$defs/dataCategoryValues" },
+                        "siem_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "github": { "$ref": "#/$defs/dataCategoryValues" },
+                        "gitlab": { "$ref": "#/$defs/dataCategoryValues" },
+                        "code_repository": { "$ref": "#/$defs/dataCategoryValues" },
+                        "ci_cd_pipeline": { "$ref": "#/$defs/dataCategoryValues" },
+                        "model_training": { "$ref": "#/$defs/dataCategoryValues" },
+                        "external_llm": { "$ref": "#/$defs/dataCategoryValues" },
+                        "openai_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "anthropic_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "google_ai_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "azure_openai": { "$ref": "#/$defs/dataCategoryValues" },
+                        "bedrock_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "external_api": { "$ref": "#/$defs/dataCategoryValues" },
+                        "external_storage": { "$ref": "#/$defs/dataCategoryValues" },
+                        "external_analytics": { "$ref": "#/$defs/dataCategoryValues" },
+                        "third_party_service": { "$ref": "#/$defs/dataCategoryValues" },
+                        "partner_system": { "$ref": "#/$defs/dataCategoryValues" },
+                        "email": { "$ref": "#/$defs/dataCategoryValues" },
+                        "slack": { "$ref": "#/$defs/dataCategoryValues" },
+                        "teams": { "$ref": "#/$defs/dataCategoryValues" },
+                        "webhook": { "$ref": "#/$defs/dataCategoryValues" },
+                        "notification_service": { "$ref": "#/$defs/dataCategoryValues" },
+                        "public_endpoint": { "$ref": "#/$defs/dataCategoryValues" },
+                        "public_storage": { "$ref": "#/$defs/dataCategoryValues" },
+                        "search_engine": { "$ref": "#/$defs/dataCategoryValues" },
+                        "social_media": { "$ref": "#/$defs/dataCategoryValues" },
+                        "unknown": { "$ref": "#/$defs/dataCategoryValues" }
+                    },
+                    "additionalProperties": false
+                }
+            }
         },
 
         "rule": {
             "type": "object",
-            "required": ["rule_name"],
+            "required": ["rule_name", "rule_id", "rule_categories", "rule_sources", "policy_decision"],
             "additionalProperties": false,
             "properties": {
                 "rule_name": { "type": "string" },
                 "rule_id": { "type": "string" },
                 "rule_categories": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": { "$ref": "#/$defs/ruleCategoriesValues" }
                 },
                 "rule_sources": {
                     "type": "array",
                     "items": { "$ref": "#/$defs/ruleSource" }
                 },
-                "event_type": { "type": "string" },
+                "event_type": { "$ref": "#/$defs/eventTypeValues" },
                 "data_sources": {
                     "type": "array",
                     "items": { "$ref": "#/$defs/dataSource" }
@@ -127,7 +442,7 @@
                 "data_lineage": { "$ref": "#/$defs/dataLineage" },
                 "requested_actions": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": { "$ref": "#/$defs/actionTypeValues" }
                 },
                 "declared_business_intent": { "type": "string" },
                 "observed_business_intent": { "type": "string" },
@@ -149,6 +464,7 @@
 
         "ruleSource": {
             "type": "object",
+            "required": ["document_name"],
             "additionalProperties": false,
             "properties": {
                 "document_name": { "type": "string" },
@@ -160,74 +476,69 @@
 
         "dataSource": {
             "type": "object",
+            "required": [ ],
             "additionalProperties": false,
             "properties": {
                 "data_source_name": { "type": "string" },
                 "data_source_url": { "type": "string" },
                 "data_source_types": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": { "$ref": "#/$defs/dataSourceTypeValues" }
                 },
                 "data_source_categories": {
                     "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["local", "internal", "external", "public", "unknown"]
-                    }
+                    "items": { "$ref": "#/$defs/dataCategoryValues" }
                 }
             }
         },
 
         "dataDestination": {
             "type": "object",
+            "required": [ ],
             "additionalProperties": false,
             "properties": {
                 "data_destination_name": { "type": "string" },
                 "data_destination_url": { "type": "string" },
                 "data_destination_types": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": { "$ref": "#/$defs/dataDestinationTypeValues" }
                 },
                 "data_destination_categories": {
                     "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["local", "internal", "external", "public", "unknown"]
-                    }
+                    "items": { "$ref": "#/$defs/dataCategoryValues" }
                 },
-                "data_destination_trust_level": { "$ref": "#/$defs/trustLevel" }
+                "data_destination_trust_level": { "$ref": "#/$defs/trustLevelValues" }
             }
         },
 
         "entity": {
             "type": "object",
+            "required": [ ],
             "additionalProperties": false,
             "properties": {
-                "entity_type": { "type": "string" },
+                "entity_type": { "$ref": "#/$defs/entityTypeValues" },
                 "start": { "type": "integer", "minimum": 0 },
                 "end": { "type": "integer", "minimum": 0 },
                 "text": { "type": "string" },
-                "domain": { "type": "string" },
-                "category": { "type": "string" },
+                "domain": { "$ref": "#/$defs/domainValues" },
+                "category": { "$ref": "#/$defs/categoryValues" },
                 "regulatory_tags": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": { "$ref": "#/$defs/regulatoryTagsValues" }
                 },
-                "data_type": { "type": "string" },
-                "classification_level": { "type": "string" },
+                "data_type": { "$ref": "#/$defs/dataTypeValues" },
+                "classification_level": { "$ref": "#/$defs/classificationLevelValues" },
                 "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                 "data_state": {
                     "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["raw", "transformed", "masked"]
-                    }
+                    "items": { "$ref": "#/$defs/dataStateValues" }
                 }
             }
         },
 
         "dataItem": {
             "type": "object",
+            "required": [ ],
             "additionalProperties": false,
             "properties": {
                 "text": { "type": "string" },
@@ -235,27 +546,35 @@
                     "type": "array",
                     "items": { "$ref": "#/$defs/entity" }
                 },
-                "list_of_entities": { "type": "array" },
+                "list_of_entities": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/entityTypeValues" }
+                },
                 "list_of_domains": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": { "$ref": "#/$defs/domainValues" }
                 },
-                "classification_level": { "type": "string" },
-                "primary_domain": { "type": "string" },
+                "classification_level": { "$ref": "#/$defs/classificationLevelValues" },
+                "primary_domain": { "$ref": "#/$defs/domainValues" },
                 "regulatory_tags": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": { "$ref": "#/$defs/regulatoryTagsValues" }
                 },
-                "identity_bundles": { "type": "array" }
+                "identity_bundles": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
             }
         },
 
         "dataLineage": {
             "type": "object",
+            "required": [ ],
             "additionalProperties": false,
             "properties": {
                 "source": {
                     "type": "object",
+                    "required": ["source_url", "source_type"],
                     "additionalProperties": false,
                     "properties": {
                         "source_name": { "type": "string" },
@@ -267,11 +586,12 @@
                     "type": "array",
                     "items": {
                         "type": "object",
+                        "required": ["action_type"],
                         "additionalProperties": false,
                         "properties": {
-                            "action_type": { "type": "string" },
+                            "action_type": { "$ref": "#/$defs/actionTypeValues" },
                             "location": { "type": "string" },
-                            "location_type": { "type": "string" }
+                            "location_type": { "$ref": "#/$defs/locationTypeValues" }
                         }
                     }
                 },
@@ -279,22 +599,24 @@
                     "type": "array",
                     "items": {
                         "type": "object",
+                        "required": ["processing_entity"],
                         "additionalProperties": false,
                         "properties": {
                             "processing_entity": { "type": "string" },
-                            "processing_entity_type": { "type": "string" }
+                            "processing_entity_type": { "$ref": "#/$defs/processingEntityTypeValues" }
                         }
                     }
                 },
                 "transformations": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": { "$ref": "#/$defs/transformationTypeValues" }
                 }
             }
         },
 
         "accessingUser": {
             "type": "object",
+            "required": ["username", "user_roles"],
             "additionalProperties": false,
             "properties": {
                 "username": { "type": "string" },
@@ -307,18 +629,20 @@
 
         "processingAgent": {
             "type": "object",
+            "required": ["agent_name"],
             "additionalProperties": false,
             "properties": {
                 "agent_name": { "type": "string" },
-                "agent_trust_level": { "$ref": "#/$defs/trustLevel" }
+                "agent_trust_level": { "$ref": "#/$defs/trustLevelValues" }
             }
         },
 
         "scopeEntry": {
             "type": "object",
+            "required": ["action_type", "count", "time_span"],
             "additionalProperties": false,
             "properties": {
-                "action_type": { "type": "string" },
+                "action_type": { "$ref": "#/$defs/actionTypeValues" },
                 "count": { "type": "integer", "minimum": 0 },
                 "time_span": { "type": "number", "minimum": 0 }
             }
@@ -326,13 +650,14 @@
 
         "policyDecision": {
             "type": "object",
+            "required": ["explanation", "confidence"],
             "additionalProperties": false,
             "properties": {
-                "risk_level": { "type": "string" },
-                "enforcement_type": { "type": "string" },
+                "risk_level": { "$ref": "#/$defs/riskLevelValues" },
+                "enforcement_type": { "$ref": "#/$defs/enforcementTypeValues" },
                 "allowed_actions": {
                     "type": "array",
-                    "items": { "type": "string" }
+                    "items": { "$ref": "#/$defs/actionTypeValues" }
                 },
                 "explanation": { "type": "string" },
                 "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }

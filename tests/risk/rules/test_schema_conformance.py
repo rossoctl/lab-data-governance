@@ -53,8 +53,22 @@ def test_policy_schema_is_itself_a_valid_2020_12_schema():
     Draft202012Validator.check_schema(_load_schema())
 
 
-def test_recommended_enum_values_doc_is_vendored():
-    assert (_SCHEMA_DIR / "recommended_enum_values.md").is_file()
+def test_schema_requires_all_enum_definition_blocks():
+    """The schema's ``required`` list grew from 5 to 24 fields when the enum
+    vocabularies moved from ``recommended_enum_values.md`` (now deleted) into
+    the schema itself. Pinned so a partial re-vendor — e.g. copying the
+    ``$defs`` but not the top-level ``required`` list — fails loudly here
+    instead of surfacing as 18 confusing "is a required property" errors on
+    the shipped catalog."""
+    required = set(_load_schema()["required"])
+    assert required == {
+        "policy_id", "policy_type", "status", "version", "runtime_enforcement_mode",
+        "rules", "event_type", "enforcement_type", "action_type", "location_type",
+        "processing_entity_type", "entity_type", "regulatory_tags", "data_type",
+        "classification_level", "domain", "category", "risk_level", "trust_level",
+        "transformation type", "data_source_type", "data_destination_type",
+        "data_source_category", "data_destination_category",
+    }
 
 
 # --- the shipped catalog validates ------------------------------------------
@@ -133,14 +147,22 @@ def test_unknown_behavior_enforcement_type_is_allow():
 
 @pytest.mark.parametrize(
     "fixture_name",
-    ["catalog_minimal.json", "catalog_malformed.json", "catalog_empty.json"],
+    [
+        "catalog_minimal.json",
+        "catalog_malformed.json",
+        "catalog_empty.json",
+        "catalog_varied.json",
+    ],
 )
 def test_fixtures_are_schema_valid(fixture_name: str):
-    """The fixtures exercise loader edge cases, not schema violations — a
-    "malformed" fixture is malformed for :mod:`catalog`'s purposes (missing
-    ``policy_decision``, absent ``rule_categories``, a duplicated category),
-    all of which the schema permits since only ``rule_name`` is required.
-    Keeping them valid stops a fixture from teaching a shape the schema forbids.
+    """The fixtures exercise loader edge cases, not schema violations. A
+    "malformed" fixture is malformed for :mod:`catalog`'s purposes — a
+    ``policy_decision`` missing its ranked fields, an empty (not absent)
+    ``rule_categories``, a duplicated category — all of which the schema
+    permits: ``policyDecision.required`` is only ``["explanation",
+    "confidence"]``, and an empty list satisfies ``rule_categories``' type.
+    Keeping every fixture valid stops a fixture from teaching a shape the
+    schema forbids.
     """
     with (Path(__file__).parent / "fixtures" / fixture_name).open(
         encoding="utf-8"
@@ -203,9 +225,19 @@ def test_trust_level_enum_is_closed_to_the_documented_names():
 
 def test_schema_defines_trust_level_as_a_string_enum():
     """Both trust-level fields in the schema — destination and agent — resolve
-    to the shared string enum rather than a number."""
+    to the shared string enum rather than a number.
+
+    This is a deliberate divergence from the vendored source: the upstream
+    schema defines ``$defs/trustLevelValues`` as a closed string enum of the
+    8 trust names, but (inconsistently) still typed
+    ``data_destination_trust_level``/``agent_trust_level`` as
+    ``{"type": "number"}`` and its own reference instance wrote ``0`` for
+    both. Both fields are repointed at the schema's own ``trustLevelValues``
+    here rather than left as the inconsistency, per the standing instruction
+    that trust levels are enum strings, not numbers.
+    """
     schema = _load_schema()
-    trust_level = schema["$defs"]["trustLevel"]
+    trust_level = schema["$defs"]["trustLevelValues"]
     assert trust_level["type"] == "string"
     assert "UNTRUSTED_EXTERNAL" in trust_level["enum"]
 
@@ -214,7 +246,7 @@ def test_schema_defines_trust_level_as_a_string_enum():
         ("processingAgent", "agent_trust_level"),
     ):
         prop = schema["$defs"][definition]["properties"][field]
-        assert prop == {"$ref": "#/$defs/trustLevel"}, (definition, field)
+        assert prop == {"$ref": "#/$defs/trustLevelValues"}, (definition, field)
 
 
 def test_regulatory_tag_predicates_survived_translation():
@@ -232,3 +264,31 @@ def test_regulatory_tag_predicates_survived_translation():
 def test_every_rule_still_targets_external_sharing():
     for rule in catalog.list_rules():
         assert rule["event_type"] == "external_sharing"
+
+
+# --- catalog.py's severity orderings stay in sync with the schema's own ----
+# --- vocabularies, rather than silently drifting from a hardcoded list -----
+
+
+def test_risk_order_matches_the_schema_vocabulary():
+    """:data:`catalog.RISK_LEVEL_ORDER` must contain exactly the schema's
+    ``riskLevelValues`` names, minus the empty-string placeholder. Checking
+    against the vendored schema (rather than a second hardcoded list here)
+    means a future re-vendor that renames or adds a risk level fails this
+    test instead of silently sorting the new value last forever.
+    """
+    schema_values = set(_load_schema()["$defs"]["riskLevelValues"]["enum"]) - {""}
+    assert set(catalog.RISK_LEVEL_ORDER) == schema_values
+
+
+def test_rule_categories_are_drawn_from_the_closed_vocabulary():
+    """Every category on every shipped rule is a member of the schema's
+    ``ruleCategoriesValues`` enum. A hand-added category that isn't in the
+    vocabulary would otherwise only surface as one of many errors in
+    ``test_shipped_rules_source_has_no_validation_errors_at_all`` — this
+    isolates the failure to the actual offending category.
+    """
+    allowed = set(_load_schema()["$defs"]["ruleCategoriesValues"]["enum"])
+    for raw_rule in catalog.load_rules_source()["rules"]:
+        for category in raw_rule.get("rule_categories", []):
+            assert category in allowed, (raw_rule["rule_id"], category)

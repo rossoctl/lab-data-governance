@@ -32,9 +32,9 @@ Destinations carry two independent axes: ``data_destination_categories`` (a
 coarse ``local``/``internal``/``external``/... bucket) and
 ``data_destination_trust_level`` (a named level such as
 ``UNTRUSTED_EXTERNAL``). Trust is a category rather than a magnitude, so the
-level is an enum *string* — the vocabulary in
-``schema/recommended_enum_values.md`` defines eight names and no numeric
-scale to map them onto.
+level is an enum *string* — ``schema/policy.schema.json``'s
+``$defs/trustLevelValues`` defines eight names and no numeric scale to map
+them onto.
 
 The load is memoized for the process lifetime (FR-DAS-060's "refreshed when
 the policy bundle version changes" is met at the MVP bar the issue itself
@@ -64,16 +64,19 @@ __all__ = [
     "category_counts",
     "reload",
     "RISK_LEVEL_ORDER",
+    "ENFORCEMENT_ORDER",
     "SORT_KEYS",
 ]
 
-# Severity order for ``sort_by="risk_level"``, most severe first, taken from
-# ``schema/recommended_enum_values.md`` §14. Risk level is the one sortable
-# field with an inherent ranking — sorting it alphabetically would interleave
-# "high"/"low"/"medium" meaninglessly — so the vocabulary's own order is
-# encoded here rather than inferred. Values outside this tuple (including a
-# rule with no ``policy_decision``, whose risk level is ``None``) sort after
-# every ranked value instead of raising on a ``None`` comparison.
+# Severity order for ``sort_by="risk_level"``, most severe first. Risk level
+# is a sortable field with an inherent ranking — sorting it alphabetically
+# would interleave "high"/"low"/"medium" meaninglessly — so the ranking is
+# encoded here rather than inferred. Confirmed against
+# ``schema/policy.schema.json``'s ``$defs/riskLevelValues`` by
+# :func:`test_risk_order_matches_the_schema_vocabulary`. Values outside this
+# tuple (including a rule with no ``policy_decision``, whose risk level is
+# ``None``) sort after every ranked value instead of raising on a ``None``
+# comparison.
 RISK_LEVEL_ORDER: tuple[str, ...] = (
     "critical",
     "high",
@@ -83,6 +86,29 @@ RISK_LEVEL_ORDER: tuple[str, ...] = (
     "unknown",
 )
 
+# Severity order for ``sort_by="enforcement"``, most severe first. Unlike
+# ``RISK_LEVEL_ORDER``, this ranking is not derivable from the schema's own
+# ``$defs/enforcementTypeValues`` listing order (which is not meaningfully
+# ordered) — it was supplied explicitly and is pinned here verbatim.
+# ``throttle`` was part of an earlier vocabulary revision and has since been
+# dropped upstream; it does not appear in ``enforcementTypeValues`` and is
+# deliberately absent here too.
+ENFORCEMENT_ORDER: tuple[str, ...] = (
+    "block",
+    "quarantine",
+    "require_approval",
+    "redact",
+    "mask",
+    "anonymize",
+    "encrypt",
+    "escalate",
+    "notify",
+    "warn",
+    "log_only",
+    "audit",
+    "allow",
+)
+
 # Fields ``list_rules`` accepts for ``sort_by``. Restricted to the stable,
 # meaningfully-orderable ones: notably not ``categories`` (a list, so any
 # ordering would be arbitrary) and not ``confidence`` (not part of the §6.5
@@ -90,6 +116,14 @@ RISK_LEVEL_ORDER: tuple[str, ...] = (
 SORT_KEYS: frozenset[str] = frozenset(
     {"risk_level", "enforcement", "rule_id", "rule_name", "event_type"}
 )
+
+# Sortable fields with a severity ranking, rather than a lexicographic one.
+# Both tuples put unranked/missing values last via the same
+# ``ranks.get(value, len(order))`` fallback (see :func:`_sort_key`).
+_RANKED_FIELDS: dict[str, tuple[str, ...]] = {
+    "risk_level": RISK_LEVEL_ORDER,
+    "enforcement": ENFORCEMENT_ORDER,
+}
 
 
 @functools.lru_cache(maxsize=1)
@@ -158,14 +192,16 @@ def _accepts(value: Any, criterion: str | Iterable[str] | None) -> bool:
 def _sort_key(field: str):
     """Ordering key for one sortable field.
 
-    ``risk_level`` orders by :data:`RISK_LEVEL_ORDER` severity; everything
-    else orders lexicographically. Both put missing/unrecognized values last
-    so a rule lacking a ``policy_decision`` cannot crash the sort on a
-    ``None`` comparison.
+    ``risk_level`` and ``enforcement`` order by their :data:`_RANKED_FIELDS`
+    severity tuple; everything else orders lexicographically. Both styles
+    put missing/unrecognized values last so a rule lacking a
+    ``policy_decision`` (or one whose ``policy_decision`` omits the ranked
+    field) cannot crash the sort on a ``None`` comparison.
     """
-    if field == "risk_level":
-        ranks = {level: rank for rank, level in enumerate(RISK_LEVEL_ORDER)}
-        return lambda rule: ranks.get(rule.get(field), len(RISK_LEVEL_ORDER))
+    if field in _RANKED_FIELDS:
+        order = _RANKED_FIELDS[field]
+        ranks = {value: rank for rank, value in enumerate(order)}
+        return lambda rule: ranks.get(rule.get(field), len(order))
     # (0, value) for present values, (1, "") for missing — tuples keep absent
     # values after every present one under both ascending and reversed order.
     return lambda rule: (0, rule[field]) if rule.get(field) is not None else (1, "")
@@ -191,12 +227,15 @@ def list_rules(
     ``category`` matches a rule whose ``categories`` list contains the value,
     since that field is a list rather than a scalar.
 
-    ``sort_by`` must be one of :data:`SORT_KEYS`; ``risk_level`` sorts by
-    severity (critical first) rather than alphabetically, and ``descending``
-    reverses whichever order applies. Sorting is stable, so rules tied on the
-    sort field keep their relative file order. Unknown keys raise
-    ``ValueError`` rather than silently returning unsorted results, which
-    would be indistinguishable from a working sort on a uniform catalog.
+    ``sort_by`` must be one of :data:`SORT_KEYS`; ``risk_level`` and
+    ``enforcement`` sort by severity (most severe first, per
+    :data:`RISK_LEVEL_ORDER` / :data:`ENFORCEMENT_ORDER`) rather than
+    alphabetically, and the remaining keys sort lexicographically.
+    ``descending`` reverses whichever order applies. Sorting is stable, so
+    rules tied on the sort field keep their relative file order. Unknown
+    keys raise ``ValueError`` rather than silently returning unsorted
+    results, which would be indistinguishable from a working sort on a
+    uniform catalog.
     """
     if sort_by is not None and sort_by not in SORT_KEYS:
         raise ValueError(
