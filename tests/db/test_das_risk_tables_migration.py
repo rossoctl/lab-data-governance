@@ -443,12 +443,16 @@ def test_insert_into_unrelated_table_does_not_notify(migrated_dsn: str) -> None:
 # --- migration chain -----------------------------------------------------------
 
 
-def test_head_is_0012(migrated_dsn: str) -> None:
+def test_head_is_0013(migrated_dsn: str) -> None:
+    """The migration chain head has since advanced to 0013 (issue #101,
+    interaction_policy_decisions, chained after this revision). Updated here
+    for the same reason this pin exists in tests/db/test_latest_migration.py
+    — the current head landed one revision past this migration."""
     with psycopg.connect(migrated_dsn) as conn:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0012_das_risk_tables"
+    assert version == "0013_policy_decisions"
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
