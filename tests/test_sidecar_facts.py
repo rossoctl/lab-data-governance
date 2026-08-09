@@ -57,7 +57,18 @@ def test_classify_mcp_method_overrides_content_kinds_only():
     discovery methods re-label content kinds; entity kinds are untouched."""
     lifecycle = ("mcp_lifecycle_request", "mcp_lifecycle_result")
     discovery = ("tool_discovery_request", "tool_discovery_result")
-    for method in ("initialize", "ping", "notifications/initialized", "logging/setLevel"):
+    for method in (
+        "initialize",
+        "ping",
+        "notifications/initialized",
+        "logging/setLevel",
+        # mcp-parser synthetic events for transport machinery (SSE GET open,
+        # session DELETE) — claimed as protocol=mcp since the parser's
+        # $transport framing; without the override an MCP session derives
+        # three tools/call-kind roots instead of one.
+        "$transport/stream",
+        "$transport/terminate",
+    ):
         k = classify_attrs(_attrs("outbound", "mcp", **{"mcp.method": method}))
         assert _content_kinds(k) == lifecycle, method
         assert (k.caller_kind, k.callee_kind) == ("agent", "tool"), method

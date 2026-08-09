@@ -58,7 +58,12 @@ _KIND_TABLE: dict[tuple[str, str], tuple[str, str, str | None, str | None]] = {
 _MCP_LIFECYCLE = ("mcp_lifecycle_request", "mcp_lifecycle_result")
 _TOOL_DISCOVERY = ("tool_discovery_request", "tool_discovery_result")
 _MCP_LIFECYCLE_METHODS = frozenset({"initialize", "ping"})
-_MCP_LIFECYCLE_PREFIXES = ("notifications/", "logging/")
+# "$transport/" covers the mcp-parser's synthetic events for exchanges that are
+# transport machinery rather than JSON-RPC calls: "$transport/stream" (SSE GET
+# open) and "$transport/terminate" (session DELETE). Without this prefix they
+# fall through to tool_call_arguments and an MCP session derives three
+# tools/call-kind roots instead of one (live wiki trace 78733049…, 2026-08-09).
+_MCP_LIFECYCLE_PREFIXES = ("notifications/", "logging/", "$transport/")
 _TOOL_DISCOVERY_METHODS = frozenset(
     {"tools/list", "resources/list", "prompts/list", "resources/templates/list"}
 )
