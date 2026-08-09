@@ -26,3 +26,10 @@ classification/output/
 # The built assets are generated, never committed — keep only the .gitkeep.
 /data_governance/api/ui/*
 !/data_governance/api/ui/.gitkeep
+
+# Local working notes for the two-span lineage branch — kept out of the PR
+# deliberately; only the wire contract (docs/sidecar-wire-contract.md) ships.
+/docs/CUTOVER-two-span.md
+/docs/REVIEWER-QUICKSTART.md
+/docs/reading-the-sidecar-algorithm.md
+/docs/adr/0029-sidecar-two-span-interactions-algorithm.md
