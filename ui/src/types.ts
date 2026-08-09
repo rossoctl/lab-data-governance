@@ -54,6 +54,9 @@ export interface SpanEvidence {
   role: string;
   parent_id: string | null;
   kind: string | null;
+  /** The span's own name. Present on interaction evidence, absent on entity
+   *  evidence (that sub-resource serves the five original fields). */
+  name?: string | null;
   service_name: string | null;
 }
 

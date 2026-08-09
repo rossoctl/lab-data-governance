@@ -427,6 +427,15 @@ export function FlowTables({
       fields: [
         ['summary', ix.summary ?? '—'],
         ['interaction_id', ix.id],
+        ['trace_id', ix.trace_id],
+        ...(ix.kinds
+          ? ([[
+              'kind',
+              [ix.kinds.protocol, ix.kinds.mcp_method, ix.kinds.request_content_kind]
+                .filter(Boolean)
+                .join(' · '),
+            ]] as Array<[string, string]>)
+          : []),
         ...(ix.destination
           ? ([[
               'destination',
@@ -906,6 +915,7 @@ export function FlowTables({
                 <Tr>
                   <Th>Role</Th>
                   <Th>Span</Th>
+                  <Th>Name</Th>
                   <Th>Parent</Th>
                   <Th>Kind</Th>
                   <Th>Service</Th>
@@ -918,6 +928,7 @@ export function FlowTables({
                     <Td dataLabel="Span">
                       <SpanLink spanId={ev.span_id} onNavigate={onNavigateToSpan} />
                     </Td>
+                    <Td dataLabel="Name">{ev.name ?? '—'}</Td>
                     <Td dataLabel="Parent">
                       <SpanLink spanId={ev.parent_id} onNavigate={onNavigateToSpan} />
                     </Td>
