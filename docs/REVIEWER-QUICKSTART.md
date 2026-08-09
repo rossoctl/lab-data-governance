@@ -19,7 +19,7 @@ writing the ADR-0025 legs schema. Apps are **not modified**: a deploy-time,
 propagate-only OTel shim makes `traceparent` flow through the app, exporting
 nothing.
 
-The wire is fixed by [`sidecar-wire-contract.md`](sidecar-wire-contract.md) (v1.1) —
+The wire is fixed by [`sidecar-wire-contract.md`](sidecar-wire-contract.md) (v1.5) —
 that document is the law this branch implements.
 
 ## 1 · Deploy data-governance (~4 min)
@@ -123,6 +123,11 @@ what distinguishes real correlation from a lucky single-request path.
   observation worth confirming on the producer side.
 - **A request leg with no response leg** means the call is *in flight*; duration is
   computed on read and is null until the response lands. Not missing data.
+- **Driving a turn from the kagenti chat UI shows "No response from agent"** while
+  the DG tree fills correctly. Platform bug, not lineage: the kagenti backend never
+  polls `tasks/get`, so the answer lands in DG payloads but not in the chat window.
+  A ~10-line upstream fix is pending as a kagenti PR; until then drive turns with
+  the harness above.
 - **Two legs can share one payload row.** Payloads are content-addressed, so an
   agent relaying a body verbatim collapses both legs onto one row with one
   `content_kind`. Read kinds from the interactions API, never by counting payload

@@ -25,6 +25,16 @@ The developed security mechanisms will be fully integrated into Kagenti. This de
 Proof of Value:
 The operational success and security efficacy of this integration will be actively demonstrated alongside 1 to 2 "Client 0" internal early adopters.
 
+## Two-span lineage quickstart
+
+To see the sidecar-based lineage pipeline end to end — one agent turn captured by
+the AuthBridge lineage sidecar, derived with `INTERACTIONS_ALGORITHM=sidecar`, and
+rendered in the DG UI — start at
+[`docs/REVIEWER-QUICKSTART.md`](docs/REVIEWER-QUICKSTART.md) (~15 minutes). The
+producer side (sidecar plugin + app adapter kit) lives in the sibling
+`kagenti-extensions` repo under `authbridge/demos/lineage-adapter/`; the wire
+between the two is [`docs/sidecar-wire-contract.md`](docs/sidecar-wire-contract.md).
+
 ## Repo layout
 
 ```
