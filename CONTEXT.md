@@ -696,7 +696,8 @@ present on both the `GET /api/traces` collection rows and the
   backend composes its REST endpoints from it. The REST layer is
   resource-oriented and namespaced: JSON resources under `/api/`
   (`/api/traces`, `/api/traces/{tid}`, `/api/traces/{tid}/spans[/{sid}[/children]]`,
-  the interaction/entity sub-resources, `/api/payloads/{hash}`); HTML pages
+  the interaction/entity sub-resources, the cross-trace interaction feed
+  `/api/interactions?since_seq&limit`, `/api/payloads/{hash}`); HTML pages
   and JS assets under `/ui/`. The single `GET /spans` pass-through was retired
   in favour of these — the library `get_spans` (and its `root_only` /
   `parent_id` parameters) is unchanged; only the HTTP surface was reshaped.

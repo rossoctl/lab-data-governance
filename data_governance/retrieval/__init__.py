@@ -9,9 +9,10 @@ derivation stays behind the interface (ADR-0005):
   ``GetSpansResult``). See ADR-0001 (listing roots) and ADR-0006 (full row).
 - :mod:`.interactions` — the derived **Interaction** / **Entity** forest for one
   trace (``get_interactions`` / ``get_entities`` and the span-evidence
-  sub-reads ``get_interaction_spans`` / ``get_entity_spans``). Trace-scoped and
-  eventually consistent; returns empty typed results before the interactions
-  migration has run (never an error).
+  sub-reads ``get_interaction_spans`` / ``get_entity_spans``), plus the
+  cross-trace cursor feed over the same interactions
+  (``get_interactions_feed``). Eventually consistent; returns empty typed
+  results before the interactions migration has run (never an error).
 - :mod:`.payloads` — a content-addressed **Payload** read that inlines the
   **Classification** verdict (``get_payload``). Write-once, cross-trace.
 
@@ -24,12 +25,15 @@ that reach-in rather than laundering it through the package root.
 from __future__ import annotations
 
 from data_governance.retrieval.interactions import (
+    DestinationView,
     EntitySpanEvidenceView,
     EntityView,
     GetEntitiesResult,
     GetEntitySpansResult,
     GetInteractionSpansResult,
+    GetInteractionsFeedResult,
     GetInteractionsResult,
+    HttpView,
     InteractionKindsView,
     InteractionLegView,
     InteractionView,
@@ -38,6 +42,7 @@ from data_governance.retrieval.interactions import (
     get_entity_spans,
     get_interaction_spans,
     get_interactions,
+    get_interactions_feed,
 )
 from data_governance.retrieval.payloads import (
     ClassificationView,
@@ -58,12 +63,15 @@ __all__ = [
     "TraceCounts",
     "get_spans",
     # interactions / entities forest
+    "DestinationView",
     "EntitySpanEvidenceView",
     "EntityView",
     "GetEntitiesResult",
     "GetEntitySpansResult",
     "GetInteractionSpansResult",
+    "GetInteractionsFeedResult",
     "GetInteractionsResult",
+    "HttpView",
     "InteractionKindsView",
     "InteractionLegView",
     "InteractionView",
@@ -72,6 +80,7 @@ __all__ = [
     "get_entity_spans",
     "get_interaction_spans",
     "get_interactions",
+    "get_interactions_feed",
     # payloads
     "ClassificationView",
     "PayloadView",

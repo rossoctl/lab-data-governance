@@ -54,6 +54,18 @@ export interface InteractionDestination {
 }
 
 /**
+ * The interaction's HTTP event, re-derived server-side from the span pair:
+ * `method` off the request span, `status_code` / `outcome` off the response
+ * span. `null` when the anchor carries no sidecar facts or none of the three
+ * facts exists; individual fields are null while the response is in flight.
+ */
+export interface InteractionHttp {
+  method: string | null;
+  status_code: number | null;
+  outcome: string | null;
+}
+
+/**
  * A derived interaction (ADR-0025) for one trace: a parent identity row plus
  * one or two request/response `legs`. The leg-dependent fields (timing,
  * payload, error) live on the legs; the accessors below project them back for
@@ -62,6 +74,7 @@ export interface InteractionDestination {
  */
 export interface Interaction {
   id: string;
+  trace_id: string;
   caller_entity_id: string | null;
   callee_entity_id: string | null;
   summary: string | null;
@@ -73,6 +86,25 @@ export interface Interaction {
   anchor_count: number;
   kinds: InteractionKinds | null;
   destination: InteractionDestination | null;
+  http: InteractionHttp | null;
+  /** Validated JWT subject of the caller; null when the call carried none. */
+  principal_sub: string | null;
+  /** a2a session id; null on every other protocol. */
+  session_id: string | null;
+}
+
+/**
+ * One-line rendering of the HTTP event for the detail panel — `POST → 200 (ok)`
+ * — skipping whichever of the three facts is absent. Null when there is nothing
+ * to show, so the panel omits the row rather than printing an empty one.
+ */
+export function httpSummary(http: InteractionHttp | null): string | null {
+  if (!http) return null;
+  const head = [http.method, http.status_code == null ? null : `→ ${http.status_code}`]
+    .filter(Boolean)
+    .join(' ');
+  const tail = http.outcome ? `(${http.outcome})` : '';
+  return [head, tail].filter(Boolean).join(' ') || null;
 }
 
 /** MCP protocol plumbing (lifecycle / tool discovery) — the rows the flow view

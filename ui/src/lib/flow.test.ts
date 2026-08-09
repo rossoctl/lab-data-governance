@@ -3,6 +3,7 @@ import {
   toolSubtype,
   computeInteractionDepths,
   durationMs,
+  httpSummary,
   roleMeta,
   isInfrastructure,
 } from './flow';
@@ -105,5 +106,24 @@ describe('durationMs', () => {
     );
     expect(durationMs(null, '2026-05-01T12:00:05.000Z')).toBeNull();
     expect(durationMs('2026-05-01T12:00:00.000Z', null)).toBeNull();
+  });
+});
+
+describe('httpSummary', () => {
+  it('composes the one-line http event, skipping absent facts', () => {
+    expect(httpSummary({ method: 'POST', status_code: 200, outcome: 'ok' })).toBe(
+      'POST → 200 (ok)',
+    );
+    // Response still in flight: the method alone is worth showing.
+    expect(httpSummary({ method: 'POST', status_code: null, outcome: null })).toBe('POST');
+    // A listener that supplied no method still yields the response half.
+    expect(httpSummary({ method: null, status_code: 403, outcome: 'denied' })).toBe(
+      '→ 403 (denied)',
+    );
+  });
+
+  it('is null when there is no http event to show', () => {
+    expect(httpSummary(null)).toBeNull();
+    expect(httpSummary({ method: null, status_code: null, outcome: null })).toBeNull();
   });
 });

@@ -22,11 +22,13 @@ former single ``GET /spans`` pass-through):
 - ``GET /api/traces/{tid}/spans/{sid}/children`` — direct children, keyset-paginated
 
 The P-interactions execution-flow resources (``.../interactions``,
-``.../entities``, their ``/spans`` sub-resources) and ``GET /api/payloads/{hash}``
+``.../entities``, their ``/spans`` sub-resources), the cross-trace interaction
+feed ``GET /api/interactions?since_seq&limit`` and ``GET /api/payloads/{hash}``
 live under the same ``/api/`` namespace. Every handler is a thin adapter over
 the retrieval library: the span reads call ``get_spans``; the flow reads call
-**Interaction retrieval** (``get_interactions`` / ``get_entities`` /
-``get_interaction_spans`` / ``get_entity_spans``) and ``get_payload``. All the
+**Interaction retrieval** (``get_interactions`` / ``get_interactions_feed`` /
+``get_entities`` / ``get_interaction_spans`` / ``get_entity_spans``) and
+``get_payload``. All the
 read logic — nested legs, computed duration, error roll-up, chronological
 ordering, the nullable-classification and not-yet-migrated shapes — lives behind
 those seams; the handler only parses ids, dispatches to a worker thread, and
@@ -361,10 +363,6 @@ async def _spa_index(_request: Request) -> Response:
         )
 
 
-# Row-mapper for the span-evidence the /spans sub-resources return. Shared by
-# the interaction- and entity-scoped handlers: both join their link table to
-# ``spans`` for the same provenance shape (ADR-0013), selecting
-# ``s.span_id, <link>.role, s.parent_id, s.kind, s.service_name`` in order.
 async def _interactions_handler(request: Request) -> Response:
     """``GET /api/traces/{tid}/interactions`` — derived interactions.
 
@@ -384,6 +382,38 @@ async def _interactions_handler(request: Request) -> Response:
         return JSONResponse({"error": str(exc)}, status_code=500)
     return _json_ok(
         {"interactions": [dataclasses.asdict(ix) for ix in result.interactions]}
+    )
+
+
+async def _interactions_feed_handler(request: Request) -> Response:
+    """``GET /api/interactions?since_seq=<int>&limit=<int>`` — the cross-trace
+    interaction feed.
+
+    Thin adapter over :func:`retrieval.get_interactions_feed`: the same
+    interaction shape the per-trace resource serves, cursored on the
+    ``interaction_legs`` seq stream (ADR-0007) so a downstream governance
+    service can consume interactions without knowing trace ids. Returns
+    ``{"interactions": [...], "next_seq": <int>}``; the caller passes
+    ``next_seq`` back as ``since_seq``. Bad cursor/limit is a 400.
+    """
+    params = request.query_params
+    try:
+        since_seq = _parse_int(params.get("since_seq"), "since_seq") or 0
+        limit = _parse_int(params.get("limit"), "limit")
+        # Omitted limit means "the library's default", not None.
+        kwargs = {} if limit is None else {"limit": limit}
+        result = await asyncio.to_thread(
+            retrieval.get_interactions_feed, since_seq, **kwargs
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return _json_ok(
+        {
+            "interactions": [dataclasses.asdict(ix) for ix in result.interactions],
+            "next_seq": result.next_seq,
+        }
     )
 
 
@@ -514,6 +544,13 @@ def build_app() -> Starlette:
         Route(
             "/api/traces/{tid:str}/interactions",
             endpoint=_interactions_handler,
+            methods=["GET"],
+        ),
+        # Cross-trace interaction feed — the stream shape of the same resource,
+        # for consumers that cursor rather than browse a trace.
+        Route(
+            "/api/interactions",
+            endpoint=_interactions_feed_handler,
             methods=["GET"],
         ),
         Route(

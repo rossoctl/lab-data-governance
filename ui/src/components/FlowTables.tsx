@@ -16,6 +16,7 @@ import { useInteractions, useEntities, usePayload } from '../api/hooks';
 import { fetchJson } from '../api/client';
 import {
   computeInteractionDepths,
+  httpSummary,
   isInfrastructure,
   legOfType,
   requestOccurredAt,
@@ -418,6 +419,7 @@ export function FlowTables({
     // is the API's computed value (null = response in flight).
     const reqLeg = legOfType(ix, 'request');
     const respLeg = legOfType(ix, 'response');
+    const http = httpSummary(ix.http);
     setSelection({
       kind: 'interaction',
       id: ix.id,
@@ -432,6 +434,9 @@ export function FlowTables({
                 (ix.destination.internal == null ? '' : ix.destination.internal ? ' (internal)' : ' (external)'),
             ]] as Array<[string, string]>)
           : []),
+        ...(http ? ([['http', http]] as Array<[string, string]>) : []),
+        ...(ix.principal_sub ? ([['user', ix.principal_sub]] as Array<[string, string]>) : []),
+        ...(ix.session_id ? ([['session', ix.session_id]] as Array<[string, string]>) : []),
         ['anchor span(s)', evidence.filter((e) => e.role === 'anchor').map((e) => e.span_id).join(', ') || '—'],
         ['evidence spans', String(evidence.length)],
         ['request_at', reqLeg?.occurred_at ?? '—'],
