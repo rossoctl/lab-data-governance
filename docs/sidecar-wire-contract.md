@@ -1,4 +1,4 @@
-# Sidecar wire contract — two-span lineage (v1.5.1)
+# Sidecar wire contract — two-span lineage (v1.5.2)
 
 The single source of truth for what the AuthBridge lineage plugin emits and what the
 P-interactions `sidecar` algorithm (ADR-0029) consumes. Fixes the attribute names that were left
@@ -125,12 +125,12 @@ Resource (unchanged): `service.name=authbridge`, `authbridge.component=lineage-t
 | `lineage.direction` | both | `inbound` \| `outbound` | |
 | `lineage.self.id` | both | `weather-service` | from `self_id` / `self_id_file` |
 | `lineage.peer.addr` | *(removed in v1.4)* | `10.244.2.5:47312` | REMOVED from the producer 2026-08-03. It was inbound-only and never produced in the deployed envoy-sidecar (ext_proc) mode, where the remote address is unavailable to the plugin — so it served nothing live and was dropped rather than kept as proxy-mode-only surface. Anonymous inbound callers derive as `client:(unknown)`, as before. Spans stored before v1.4 from proxy-mode sidecars may carry it; the consumer must tolerate but derives nothing from it. Reintroduction (with an ext_proc source for the address) is a possible follow-up |
-| `lineage.peer.host` | both | `weather-tool-mcp.team1.svc:8000` | Host/authority header when present |
+| `lineage.peer.host` | both | `weather-tool-mcp.team1.svc:8000` | Host/authority header when present. Outbound it names the service being called; inbound the address this workload was reached on. v1.5.2 (2026-08-09): the ext_proc listener now reads it inbound as well — it previously built the authority on outbound only, so inbound spans from an envoy-sidecar carried a path with no host and the consumer composed no URL for them. Spans stored before v1.5.2 keep that shape |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched; `http` = none |
 | `lineage.parent.source` | request | `tracestate` \| `wire` | v1.3: which mechanism chose the request span's parent — the tracestate stamp (exact) or the wire traceparent. v1.5: both directions are stamp-first, so inbound spans carry `tracestate` too (any inbound whose caller has a sidecar); spans stored before v1.5 have inbound always `wire`. `map` was a legal value in v1.2 only; stored spans predating v1.3 may still carry it. A fact for auditing attribution; the consumer derives nothing from it |
 | `http.method` | request | `POST` | standard OTel key, emitted when the listener supplies the method. As of the 2026-08-02 upstream merge all three listeners do (reverse/forward proxy from `r.Method`, ext_proc from `:method`); spans stored before that merge lack it |
 | `url.path` | request | `/mcp` | standard OTel key |
-| `url.scheme` | request | `http` | standard OTel key; added v1.5.1 (2026-08-09) so a consumer can compose a full destination URL (`scheme://peer.host + url.path`). From the listener's observed scheme (ext_proc `:scheme` pseudo-header / `r.URL.Scheme` in the proxies); emitted only when non-empty. Spans stored before v1.5.1 lack it — the consumer treats it as optional and composes no URL without it (no guessing) |
+| `url.scheme` | request | `http` | standard OTel key; added v1.5.1 (2026-08-09) so a consumer can compose a full destination URL (`scheme://peer.host + url.path`); inbound spans only compose one from v1.5.2 onwards (see `lineage.peer.host`). From the listener's observed scheme (ext_proc `:scheme` pseudo-header / `r.URL.Scheme` in the proxies); emitted only when non-empty. Spans stored before v1.5.1 lack it — the consumer treats it as optional and composes no URL without it (no guessing) |
 | `a2a.method`, `a2a.session_id` | request (a2a) | `message/send` | parsed facts |
 | `mcp.method`, `mcp.tool` | request (mcp) | `tools/call`, `get_weather` | tool name only for `tools/call` |
 | `inference.model` | request (inference) | `qwen2.5:7b` | from parsed request body |
