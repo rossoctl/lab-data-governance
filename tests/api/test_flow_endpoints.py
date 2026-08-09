@@ -151,6 +151,8 @@ def test_interactions_kinds_null_for_non_sidecar_anchor(seeded, api_server):
     (ix,) = resp.json()["interactions"]
     assert "kinds" in ix
     assert ix["kinds"] is None
+    # Destination follows the same rule: no lineage facts, no derivation.
+    assert ix["destination"] is None
 
 
 def test_interactions_kinds_rederived_from_sidecar_anchor(
@@ -178,6 +180,64 @@ def test_interactions_kinds_rederived_from_sidecar_anchor(
         "mcp_method": "tools/list",
         "request_content_kind": "tool_discovery_request",
         "response_content_kind": "tool_discovery_result",
+    }
+
+
+def test_interactions_destination_composed_from_anchor(
+    seeded, api_server, configured_db
+):
+    """An anchor carrying the location facts (wire contract v1.5.1) yields the
+    read-time destination: composed URL, host/path echoes, and the
+    consumer-side internal flag for a cluster-local authority."""
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE spans SET attributes = %s::jsonb "
+            "WHERE trace_id = %s AND span_id = 's-anchor'",
+            (
+                '{"lineage.role": "request", "lineage.direction": "outbound", '
+                '"lineage.protocol": "mcp", "lineage.exchange.id": "s-anchor", '
+                '"lineage.self.id": "svc-a", '
+                '"lineage.peer.host": "weather-tool-mcp.team1.svc.cluster.local:8000", '
+                '"url.path": "/mcp", "url.scheme": "http"}',
+                _TID,
+            ),
+        )
+        conn.commit()
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert ix["destination"] == {
+        "url": "http://weather-tool-mcp.team1.svc.cluster.local:8000/mcp",
+        "host": "weather-tool-mcp.team1.svc.cluster.local:8000",
+        "path": "/mcp",
+        "internal": True,
+    }
+
+
+def test_interactions_destination_no_scheme_no_url(
+    seeded, api_server, configured_db
+):
+    """Spans stored before v1.5.1 carry no url.scheme: host/path still surface
+    but the URL is never guessed. An external authority flags internal=False."""
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE spans SET attributes = %s::jsonb "
+            "WHERE trace_id = %s AND span_id = 's-anchor'",
+            (
+                '{"lineage.role": "request", "lineage.direction": "outbound", '
+                '"lineage.protocol": "http", "lineage.exchange.id": "s-anchor", '
+                '"lineage.self.id": "svc-a", '
+                '"lineage.peer.host": "api.example.com:443", "url.path": "/v1/x"}',
+                _TID,
+            ),
+        )
+        conn.commit()
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert ix["destination"] == {
+        "url": None,
+        "host": "api.example.com:443",
+        "path": "/v1/x",
+        "internal": False,
     }
 
 

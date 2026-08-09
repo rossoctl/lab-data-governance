@@ -36,6 +36,7 @@ from data_governance import db
 from data_governance.sidecar_facts import classify_attrs
 
 __all__ = [
+    "DestinationView",
     "EntityView",
     "GetEntitiesResult",
     "GetEntitySpansResult",
@@ -96,6 +97,24 @@ class InteractionKindsView:
 
 
 @dataclass(frozen=True)
+class DestinationView:
+    """Where an **Interaction**'s exchange was addressed, re-derived at read
+    time from the anchor span's stored location facts (``lineage.peer.host``,
+    ``url.path``, ``url.scheme`` — wire contract v1.5.1).
+
+    ``url`` is composed (``scheme://host + path``) only when the scheme fact is
+    present — spans stored before v1.5.1 lack it, and an absent fact yields an
+    absent URL, never a guessed one. ``internal`` is consumer-side vocabulary
+    (the producer emits facts only): True for cluster-local authorities.
+    """
+
+    url: str | None
+    host: str | None
+    path: str | None
+    internal: bool | None
+
+
+@dataclass(frozen=True)
 class InteractionView:
     """One derived **Interaction** — the parent identity row plus its nested
     legs and read-time derivations.
@@ -117,6 +136,7 @@ class InteractionView:
     span_count: int
     anchor_count: int
     kinds: InteractionKindsView | None
+    destination: DestinationView | None
 
 
 @dataclass(frozen=True)
@@ -244,6 +264,39 @@ def _kinds_from_anchor_attrs(attrs: dict[str, Any] | None) -> InteractionKindsVi
     )
 
 
+def _host_is_internal(host: str) -> bool:
+    """Whether an authority names a cluster-local destination. Consumer-side
+    vocabulary (the wire carries facts only): k8s service DNS suffixes, bare
+    service names (an in-cluster Host header is typically the short service
+    name), and the container-host gateway the platform's LLM sits behind."""
+    hostname = host.rsplit(":", 1)[0]
+    if "." not in hostname:
+        return True
+    return (
+        hostname.endswith((".svc", ".svc.cluster.local", ".cluster.local"))
+        or hostname == "host.containers.internal"
+    )
+
+
+def _destination_from_anchor_attrs(attrs: dict[str, Any]) -> DestinationView | None:
+    """Compose the destination from an anchor span's location facts, or None
+    when it carries neither a host nor a path. Only called for anchors that
+    passed the lineage-facts guard. The URL requires the scheme fact
+    (``url.scheme``, v1.5.1) — never guessed for older spans."""
+    host = str(attrs.get("lineage.peer.host") or "") or None
+    path = str(attrs.get("url.path") or "") or None
+    if host is None and path is None:
+        return None
+    scheme = str(attrs.get("url.scheme") or "") or None
+    url = f"{scheme}://{host}{path or ''}" if scheme and host else None
+    return DestinationView(
+        url=url,
+        host=host,
+        path=path,
+        internal=_host_is_internal(host) if host is not None else None,
+    )
+
+
 def _derived_tables_exist(tx: db.Transaction) -> bool:
     """Whether the interactions migration has run on this DB.
 
@@ -334,11 +387,17 @@ def get_interactions(trace_id: str) -> GetInteractionsResult:
             (trace_id,),
         )
         kinds_of: dict[str, InteractionKindsView] = {}
+        dest_of: dict[str, DestinationView] = {}
         for iid, attrs in anchor_rows:
             if iid not in kinds_of:
                 kv = _kinds_from_anchor_attrs(attrs)
                 if kv is not None:
                     kinds_of[iid] = kv
+                    # Destination facts come from the same winning anchor, so
+                    # kinds and destination always describe one span.
+                    dv = _destination_from_anchor_attrs(attrs or {})
+                    if dv is not None:
+                        dest_of[iid] = dv
 
         views = [
             InteractionView(
@@ -353,6 +412,7 @@ def get_interactions(trace_id: str) -> GetInteractionsResult:
                 span_count=counts.get(r[0], (0, 0))[0],
                 anchor_count=counts.get(r[0], (0, 0))[1],
                 kinds=kinds_of.get(r[0]),
+                destination=dest_of.get(r[0]),
             )
             for r in interactions
         ]

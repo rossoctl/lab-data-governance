@@ -40,6 +40,20 @@ export interface InteractionKinds {
 }
 
 /**
+ * Where the interaction's exchange was addressed, re-derived server-side from
+ * the anchor span's location facts; `null` when the anchor carries none.
+ * `url` is composed only when the scheme fact exists (wire contract v1.5.1) —
+ * older spans render host + path without a URL. `internal` marks
+ * cluster-local authorities (consumer-side vocabulary).
+ */
+export interface InteractionDestination {
+  url: string | null;
+  host: string | null;
+  path: string | null;
+  internal: boolean | null;
+}
+
+/**
  * A derived interaction (ADR-0025) for one trace: a parent identity row plus
  * one or two request/response `legs`. The leg-dependent fields (timing,
  * payload, error) live on the legs; the accessors below project them back for
@@ -58,6 +72,7 @@ export interface Interaction {
   span_count: number;
   anchor_count: number;
   kinds: InteractionKinds | null;
+  destination: InteractionDestination | null;
 }
 
 /** MCP protocol plumbing (lifecycle / tool discovery) — the rows the flow view

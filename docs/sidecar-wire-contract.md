@@ -1,4 +1,4 @@
-# Sidecar wire contract — two-span lineage (v1.5)
+# Sidecar wire contract — two-span lineage (v1.5.1)
 
 The single source of truth for what the AuthBridge lineage plugin emits and what the
 P-interactions `sidecar` algorithm (ADR-0029) consumes. Fixes the attribute names that were left
@@ -130,6 +130,7 @@ Resource (unchanged): `service.name=authbridge`, `authbridge.component=lineage-t
 | `lineage.parent.source` | request | `tracestate` \| `wire` | v1.3: which mechanism chose the request span's parent — the tracestate stamp (exact) or the wire traceparent. v1.5: both directions are stamp-first, so inbound spans carry `tracestate` too (any inbound whose caller has a sidecar); spans stored before v1.5 have inbound always `wire`. `map` was a legal value in v1.2 only; stored spans predating v1.3 may still carry it. A fact for auditing attribution; the consumer derives nothing from it |
 | `http.method` | request | `POST` | standard OTel key, emitted when the listener supplies the method. As of the 2026-08-02 upstream merge all three listeners do (reverse/forward proxy from `r.Method`, ext_proc from `:method`); spans stored before that merge lack it |
 | `url.path` | request | `/mcp` | standard OTel key |
+| `url.scheme` | request | `http` | standard OTel key; added v1.5.1 (2026-08-09) so a consumer can compose a full destination URL (`scheme://peer.host + url.path`). From the listener's observed scheme (ext_proc `:scheme` pseudo-header / `r.URL.Scheme` in the proxies); emitted only when non-empty. Spans stored before v1.5.1 lack it — the consumer treats it as optional and composes no URL without it (no guessing) |
 | `a2a.method`, `a2a.session_id` | request (a2a) | `message/send` | parsed facts |
 | `mcp.method`, `mcp.tool` | request (mcp) | `tools/call`, `get_weather` | tool name only for `tools/call` |
 | `inference.model` | request (inference) | `qwen2.5:7b` | from parsed request body |

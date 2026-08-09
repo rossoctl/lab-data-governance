@@ -425,6 +425,13 @@ export function FlowTables({
       fields: [
         ['summary', ix.summary ?? '—'],
         ['interaction_id', ix.id],
+        ...(ix.destination
+          ? ([[
+              'destination',
+              (ix.destination.url ?? `${ix.destination.host ?? ''}${ix.destination.path ?? ''}`) +
+                (ix.destination.internal == null ? '' : ix.destination.internal ? ' (internal)' : ' (external)'),
+            ]] as Array<[string, string]>)
+          : []),
         ['anchor span(s)', evidence.filter((e) => e.role === 'anchor').map((e) => e.span_id).join(', ') || '—'],
         ['evidence spans', String(evidence.length)],
         ['request_at', reqLeg?.occurred_at ?? '—'],
