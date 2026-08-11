@@ -151,16 +151,7 @@ def _get_or_refresh_decision(
 ) -> aggregate.PolicyDecision:
     """Reuse the cached decision when the evidence fingerprint is unchanged;
     otherwise call OPA and persist a new decision version."""
-    placeholder_decision = aggregate.PolicyDecision(
-        risk_level=None,
-        enforcement_type=None,
-        allowed_actions=[],
-        explanation=None,
-        triggered_rules=[],
-        confidence=None,
-        policy_version=None,
-    )
-    fingerprint = aggregate.fingerprint(legs, classifications, placeholder_decision)
+    fingerprint = aggregate.fingerprint(legs, classifications)
 
     row = tx.fetch_one(_LATEST_DECISION_SQL, (interaction_id,))
     if row is not None:

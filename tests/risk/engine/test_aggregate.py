@@ -16,7 +16,7 @@ import pytest
 
 from data_governance.processors.classification.verdict import Verdict
 from data_governance.risk.engine import aggregate
-from data_governance.risk.engine.aggregate import LegEvidence, PolicyDecision
+from data_governance.risk.engine.aggregate import LegEvidence
 
 
 def _leg(leg_type: str, *, payload_hash: str | None = "h1") -> LegEvidence:
@@ -35,20 +35,6 @@ def _verdict(**overrides) -> Verdict:
     )
     defaults.update(overrides)
     return Verdict(**defaults)
-
-
-def _decision(**overrides) -> PolicyDecision:
-    defaults = dict(
-        risk_level="low",
-        enforcement_type=None,
-        allowed_actions=[],
-        explanation=None,
-        triggered_rules=[],
-        confidence=None,
-        policy_version=None,
-    )
-    defaults.update(overrides)
-    return PolicyDecision(**defaults)
 
 
 # --- severity_max --------------------------------------------------------------
@@ -205,51 +191,24 @@ def test_quantize_confidence_accepts_boundary_values():
 def test_fingerprint_is_stable_for_identical_evidence():
     legs = [_leg("request"), _leg("response")]
     classifications = {"request": _verdict()}
-    decision = _decision(risk_level="high", triggered_rules=["r1", "r2"])
-    fp1 = aggregate.fingerprint(legs, classifications, decision)
-    fp2 = aggregate.fingerprint(legs, classifications, decision)
+    fp1 = aggregate.fingerprint(legs, classifications)
+    fp2 = aggregate.fingerprint(legs, classifications)
     assert fp1 == fp2
-
-
-def test_fingerprint_is_stable_under_triggered_rules_reordering():
-    legs = [_leg("request")]
-    classifications = {}
-    d1 = _decision(triggered_rules=["r1", "r2"])
-    d2 = _decision(triggered_rules=["r2", "r1"])
-    assert aggregate.fingerprint(legs, classifications, d1) == aggregate.fingerprint(
-        legs, classifications, d2
-    )
-
-
-def test_fingerprint_changes_when_risk_level_changes():
-    legs = [_leg("request")]
-    classifications = {}
-    d1 = _decision(risk_level="low")
-    d2 = _decision(risk_level="high")
-    assert aggregate.fingerprint(legs, classifications, d1) != aggregate.fingerprint(
-        legs, classifications, d2
-    )
 
 
 def test_fingerprint_changes_when_legs_evidenced_changes():
     classifications = {}
-    decision = _decision()
-    fp_request_only = aggregate.fingerprint([_leg("request")], classifications, decision)
-    fp_both = aggregate.fingerprint(
-        [_leg("request"), _leg("response")], classifications, decision
-    )
+    fp_request_only = aggregate.fingerprint([_leg("request")], classifications)
+    fp_both = aggregate.fingerprint([_leg("request"), _leg("response")], classifications)
     assert fp_request_only != fp_both
 
 
 def test_fingerprint_changes_when_classification_summary_changes():
     legs = [_leg("request")]
-    decision = _decision()
-    fp1 = aggregate.fingerprint(legs, {"request": _verdict()}, decision)
-    fp2 = aggregate.fingerprint(
-        legs, {"request": _verdict(sensitivity_level="PUBLIC")}, decision
-    )
+    fp1 = aggregate.fingerprint(legs, {"request": _verdict()})
+    fp2 = aggregate.fingerprint(legs, {"request": _verdict(sensitivity_level="PUBLIC")})
     assert fp1 != fp2
 
 
 def test_fingerprint_returns_a_string():
-    assert isinstance(aggregate.fingerprint([], {}, _decision()), str)
+    assert isinstance(aggregate.fingerprint([], {}), str)

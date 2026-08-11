@@ -147,38 +147,25 @@ def quantize_confidence(value: float | None) -> Decimal | None:
 def _normalize_for_fingerprint(
     legs: list[LegEvidence],
     classifications: dict[str, Verdict | object],
-    decision: PolicyDecision,
 ) -> dict[str, Any]:
     return {
         "legs_evidenced": legs_evidenced(legs),
         "classification_summary": classification_summary(classifications),
-        "risk_level": decision.risk_level,
-        "enforcement_type": decision.enforcement_type,
-        "allowed_actions": sorted(decision.allowed_actions),
-        "explanation": decision.explanation,
-        "triggered_rules": sorted(decision.triggered_rules),
-        "confidence": decision.confidence,
-        "policy_version": decision.policy_version,
     }
 
 
 def fingerprint(
     legs: list[LegEvidence],
     classifications: dict[str, Verdict | object],
-    decision: PolicyDecision,
 ) -> str:
-    """A canonical fingerprint string over the evidence + decision that fed
-    one interaction risk computation.
+    """A canonical fingerprint string over the evidence that feeds one
+    interaction risk computation.
 
-    Used to detect whether evidence actually changed since the last computed
-    version (FR-DAS-014 idempotency): compare this against the fingerprint
-    re-derived from the latest stored record, not raw field-by-field
-    comparison (DB round-trips return ``Decimal``/``list``/``dict`` types
-    that mismatch freshly-computed Python values). Order-insensitive
-    collections (``allowed_actions``, ``triggered_rules``) are sorted so
-    set-equal evidence never spuriously changes the fingerprint;
-    ``legs_evidenced`` is not re-sorted since it is already canonical
-    (request-then-response).
+    Used to detect whether evidence actually changed since the last OPA call
+    (FR-DAS-014 idempotency): compare this against the fingerprint stored
+    alongside the latest policy decision, not raw field-by-field comparison
+    (DB round-trips return ``Decimal``/``list``/``dict`` types that mismatch
+    freshly-computed Python values).
     """
-    normalized = _normalize_for_fingerprint(legs, classifications, decision)
+    normalized = _normalize_for_fingerprint(legs, classifications)
     return json.dumps(normalized, sort_keys=True, default=str)
