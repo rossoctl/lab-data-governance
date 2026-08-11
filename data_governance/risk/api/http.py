@@ -99,9 +99,12 @@ def decode_cursor(token: str, *, expect_sort: str) -> int:
         raise ApiError("bad request", "cursor is malformed") from exc
     if not isinstance(payload, dict) or "i" not in payload or "s" not in payload:
         raise ApiError("bad request", "cursor is malformed")
+    index = payload["i"]
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        raise ApiError("bad request", "cursor is malformed")
     if payload["s"] != expect_sort:
         raise ApiError("bad request", "cursor does not match the requested sort")
-    return payload["i"]
+    return index
 
 
 @dataclass

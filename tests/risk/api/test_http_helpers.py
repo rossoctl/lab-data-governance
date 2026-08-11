@@ -226,6 +226,34 @@ def test_cursor_sort_fingerprint_mismatch_raises_400():
     assert exc_info.value.status_code == 400
 
 
+def _encode_raw_cursor(payload: dict) -> str:
+    import base64
+    import json
+
+    return base64.urlsafe_b64encode(json.dumps(payload).encode("ascii")).decode("ascii")
+
+
+def test_cursor_non_integer_index_raises_400():
+    token = _encode_raw_cursor({"i": "5", "s": "rule_id_asc"})
+    with pytest.raises(http.ApiError) as exc_info:
+        http.decode_cursor(token, expect_sort="rule_id_asc")
+    assert exc_info.value.status_code == 400
+
+
+def test_cursor_negative_index_raises_400():
+    token = _encode_raw_cursor({"i": -1, "s": "rule_id_asc"})
+    with pytest.raises(http.ApiError) as exc_info:
+        http.decode_cursor(token, expect_sort="rule_id_asc")
+    assert exc_info.value.status_code == 400
+
+
+def test_cursor_zero_index_is_valid():
+    """`i=0` is a legitimate first-page index, not a malformed cursor —
+    only negative or non-integer values are rejected."""
+    token = _encode_raw_cursor({"i": 0, "s": "rule_id_asc"})
+    assert http.decode_cursor(token, expect_sort="rule_id_asc") == 0
+
+
 # ---------------------------------------------------------------------------
 # paginate
 # ---------------------------------------------------------------------------

@@ -56,4 +56,5 @@ def categories_rule_catalog(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def empty_catalog(monkeypatch: pytest.MonkeyPatch):
+    """Zero rules, for empty-catalog edge cases (shared with #107's tests)."""
     _use_fixture(monkeypatch, _RULES_FIXTURES / "catalog_empty.json")
