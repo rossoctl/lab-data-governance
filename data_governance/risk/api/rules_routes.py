@@ -17,11 +17,13 @@ from data_governance.risk.api import http
 from data_governance.risk.rules import catalog
 
 # D5: HTTP `sort` values, deliberately narrower than catalog.SORT_KEYS — only
-# these two are exposed. risk_level_desc -> descending=False because
-# RISK_LEVEL_ORDER is already most-severe-first (see plan finding #1).
+# these are exposed. risk_level_desc/enforcement_desc -> descending=False
+# because RISK_LEVEL_ORDER/ENFORCEMENT_ORDER are already most-severe-first
+# (see plan finding #1).
 _SORT_MAP = {
     "rule_id_asc": ("rule_id", False),
     "risk_level_desc": ("risk_level", False),
+    "enforcement_desc": ("enforcement", False),
 }
 _DEFAULT_SORT = "rule_id_asc"
 

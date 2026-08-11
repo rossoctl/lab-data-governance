@@ -187,6 +187,20 @@ def test_sort_risk_level_desc_is_most_severe_first(client, varied_catalog):
     ]
 
 
+def test_sort_enforcement_desc_is_most_severe_first(client, varied_catalog):
+    """Same inversion guard as risk_level_desc (plan finding #1) —
+    ENFORCEMENT_ORDER is already most-severe-first, so enforcement_desc must
+    map to descending=False in the route handler."""
+    body = client.get("/risk/rules?sort=enforcement_desc").json()
+    assert _ids(body) == [
+        "FX-CRIT-BLOCK",
+        "FX-HIGH-BLOCK",
+        "FX-MED-ESC",
+        "FX-LOW-ALLOW",
+        "FX-NO-DECISION",
+    ]
+
+
 def test_sort_unknown_value_is_400(client):
     resp = client.get("/risk/rules?sort=bogus")
     assert resp.status_code == 400
@@ -312,6 +326,18 @@ def test_paging_under_risk_level_desc_is_also_gapless(client, paging_catalog):
     expected = [
         r["rule_id"]
         for r in catalog.list_rules(sort_by="risk_level", descending=False)
+    ]
+    assert walked == expected
+    assert len(walked) == len(set(walked))
+
+
+def test_paging_under_enforcement_desc_is_also_gapless(client, paging_catalog):
+    """Walk crosses the PG-002/PG-004/PG-005 three-way block tie without gap
+    or dup."""
+    walked = _walk_all(client, limit=2, sort="enforcement_desc")
+    expected = [
+        r["rule_id"]
+        for r in catalog.list_rules(sort_by="enforcement", descending=False)
     ]
     assert walked == expected
     assert len(walked) == len(set(walked))
