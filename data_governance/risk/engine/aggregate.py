@@ -36,6 +36,7 @@ __all__ = [
     "classification_summary",
     "quantize_confidence",
     "fingerprint",
+    "build_opa_input",
 ]
 
 # Sentinels for the two non-classified states a leg's classification slot can
@@ -142,6 +143,98 @@ def quantize_confidence(value: float | None) -> Decimal | None:
     if not 0 <= value <= 1:
         raise ValueError(f"confidence must be within [0, 1], got {value!r}")
     return Decimal(str(value)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+
+
+# leg_type -> the closest opa_input.schema.json actionTypeValues member. A
+# leg's temporal half is directed (a request is sent, a response is
+# received), so this maps one-to-one rather than needing a lookup table keyed
+# on anything richer.
+_LEG_TYPE_TO_ACTION: Final[dict[str, str]] = {"request": "send", "response": "receive"}
+
+# Finding.identifier_type -> opa_input.schema.json's dataTypeValues. DAS's
+# classifier (logic.py's _base_classification) emits a third value, "NON_ID",
+# for a tag the model detected but the entity-metadata CSV doesn't recognize —
+# the schema's dataTypeValues enum has no member for that (only
+# PID/OPID/DATA), so it is deliberately left unmapped: omitting data_type is
+# honest here, sending an invalid enum value is not.
+_IDENTIFIER_TYPE_TO_DATA_TYPE: Final[dict[str, str]] = {
+    "PID": "PID",
+    "OPID": "OPID",
+    "DATA": "DATA",
+}
+
+
+def _finding_to_entity(finding: dict[str, Any]) -> dict[str, Any]:
+    entity = {
+        "entity_type": finding.get("entity_type"),
+        "start": finding.get("start"),
+        "end": finding.get("end"),
+        "text": finding.get("text"),
+        "domain": finding.get("domain"),
+        "category": finding.get("category"),
+        "regulatory_tags": finding.get("regulatory_tags", []),
+        "data_type": _IDENTIFIER_TYPE_TO_DATA_TYPE.get(finding.get("identifier_type")),
+        "classification_level": finding.get("sensitivity_level"),
+    }
+    return {key: value for key, value in entity.items() if value is not None}
+
+
+def _verdict_to_data_item(verdict: Verdict) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "entities": [_finding_to_entity(f) for f in verdict.findings],
+        "list_of_entities": [f.get("entity_type") for f in verdict.findings],
+        "classification_level": verdict.sensitivity_level,
+        "regulatory_tags": verdict.regulatory_tags,
+    }
+    if verdict.primary_domain is not None:
+        item["primary_domain"] = verdict.primary_domain
+        item["list_of_domains"] = [verdict.primary_domain]
+    if verdict.contains_identity_bundle:
+        item["identity_bundles"] = ["identity_bundle"]
+    return item
+
+
+def build_opa_input(
+    *,
+    legs: list[LegEvidence],
+    span_ids: list[str],
+    classifications: dict[str, Verdict | object],
+    caller_entity_id: str | None,
+    callee_entity_id: str | None,
+) -> dict[str, Any]:
+    """Build the OPA runtime evaluation input for one interaction, conforming
+    to ``opa_input.schema.json`` (which shares ``policy.schema.json``'s
+    ``$defs`` so the two stay in sync).
+
+    Every field this module has no DAS source data for yet (``event_type``,
+    ``data_sources``, ``data_destinations``, ``data_lineage``, ``scope``, the
+    five intent strings, ``accessing_user``) is omitted entirely — the schema
+    requires nothing, and an omitted field reads honestly as "unknown" where
+    a defaulted-null or empty value would read as a confident (but wrong)
+    declaration to a policy author. ``span_ids`` has no corresponding
+    top-level field in the schema; it identifies the OTEL evidence behind
+    this payload but carries no rule-relevant content of its own.
+    """
+    data_items = [
+        _verdict_to_data_item(verdict)
+        for verdict in classifications.values()
+        if isinstance(verdict, Verdict)
+    ]
+    payload: dict[str, Any] = {
+        "data_items": data_items,
+        "data_count": len(data_items),
+        "requested_actions": [
+            _LEG_TYPE_TO_ACTION[leg_type] for leg_type in legs_evidenced(legs)
+        ],
+    }
+    processing_agents = [
+        {"agent_name": entity_id}
+        for entity_id in (caller_entity_id, callee_entity_id)
+        if entity_id is not None
+    ]
+    if processing_agents:
+        payload["processing_agents"] = processing_agents
+    return payload
 
 
 def _normalize_for_fingerprint(

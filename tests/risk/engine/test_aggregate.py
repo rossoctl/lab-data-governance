@@ -10,17 +10,56 @@ quantization to ``NUMERIC(4,3)``, and the idempotency fingerprint.
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
+from pathlib import Path
 
+import jsonschema
 import pytest
+from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
 
 from data_governance.processors.classification.verdict import Verdict
 from data_governance.risk.engine import aggregate
 from data_governance.risk.engine.aggregate import LegEvidence
+from data_governance.risk.rules import catalog
+
+_SCHEMA_DIR = Path(catalog.__file__).parent / "schema"
+
+
+def _load_json(path: Path) -> dict:
+    with path.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _opa_input_validator() -> Draft202012Validator:
+    policy_schema = _load_json(_SCHEMA_DIR / "policy.schema.json")
+    opa_input_schema = _load_json(_SCHEMA_DIR / "opa_input.schema.json")
+    registry = Registry().with_resource(
+        "policy.schema.json", Resource.from_contents(policy_schema)
+    )
+    return Draft202012Validator(opa_input_schema, registry=registry)
 
 
 def _leg(leg_type: str, *, payload_hash: str | None = "h1") -> LegEvidence:
     return LegEvidence(leg_type=leg_type, payload_hash=payload_hash)
+
+
+def _finding(**overrides) -> dict:
+    defaults = dict(
+        entity_type="SSN",
+        start=0,
+        end=11,
+        text="123-45-6789",
+        domain="finance",
+        category="finance.data",
+        regulatory_tags=["PII"],
+        identifier_type="PID",
+        sensitivity_level="RESTRICTED",
+        is_personalized=False,
+    )
+    defaults.update(overrides)
+    return defaults
 
 
 def _verdict(**overrides) -> Verdict:
@@ -30,7 +69,7 @@ def _verdict(**overrides) -> Verdict:
         contains_identity_bundle=False,
         is_personalized=False,
         primary_domain="finance",
-        findings=[{"entity_type": "SSN"}, {"entity_type": "NAME"}],
+        findings=[_finding(), _finding(entity_type="PN", identifier_type="NON_ID")],
         model_version=1,
     )
     defaults.update(overrides)
@@ -212,3 +251,247 @@ def test_fingerprint_changes_when_classification_summary_changes():
 
 def test_fingerprint_returns_a_string():
     assert isinstance(aggregate.fingerprint([], {}), str)
+
+
+# --- build_opa_input ----------------------------------------------------------------
+#
+# Maps DAS's own evidence shapes onto ``opa_input.schema.json`` (which shares
+# ``policy.schema.json``'s $defs so the two schemas stay in sync). Every case
+# below validates the produced dict against the real vendored schema rather
+# than asserting field-by-field only, so a mapping that "looks right" but
+# violates an enum/additionalProperties rule fails here rather than only at
+# a real OPA call.
+
+
+def test_build_opa_input_validates_against_the_schema():
+    legs = [_leg("request"), _leg("response", payload_hash="h2")]
+    classifications = {"request": _verdict(), "response": aggregate.PENDING}
+    payload = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=["s1", "s2"],
+        classifications=classifications,
+        caller_entity_id="agent:a",
+        callee_entity_id="agent:b",
+    )
+    _opa_input_validator().validate(payload)
+
+
+def test_build_opa_input_with_no_evidence_validates_against_the_schema():
+    payload = aggregate.build_opa_input(
+        legs=[],
+        span_ids=[],
+        classifications={},
+        caller_entity_id=None,
+        callee_entity_id=None,
+    )
+    _opa_input_validator().validate(payload)
+
+
+def test_build_opa_input_rejects_stray_top_level_keys():
+    """Guards ``additionalProperties: false`` actually being enforced — proves
+    a validator that silently accepted anything wouldn't make the positive
+    cases above meaningful."""
+    payload = aggregate.build_opa_input(
+        legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
+    )
+    payload["not_a_real_field"] = "x"
+    with pytest.raises(jsonschema.ValidationError):
+        _opa_input_validator().validate(payload)
+
+
+def test_build_opa_input_data_items_carry_one_entity_per_finding():
+    legs = [_leg("request")]
+    classifications = {"request": _verdict()}
+    payload = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=[],
+        classifications=classifications,
+        caller_entity_id=None,
+        callee_entity_id=None,
+    )
+    assert len(payload["data_items"]) == 1
+    entities = payload["data_items"][0]["entities"]
+    assert [e["entity_type"] for e in entities] == ["SSN", "PN"]
+    assert entities[0]["start"] == 0
+    assert entities[0]["end"] == 11
+    assert entities[0]["text"] == "123-45-6789"
+    assert entities[0]["domain"] == "finance"
+    assert entities[0]["category"] == "finance.data"
+    assert entities[0]["regulatory_tags"] == ["PII"]
+
+
+def test_build_opa_input_non_id_identifier_type_omits_data_type():
+    """DAS's classifier emits ``identifier_type: "NON_ID"`` for an unrecognized
+    tag (logic.py's conservative fallback), but the schema's ``dataTypeValues``
+    enum only has PID/OPID/DATA — no member for NON_ID. Sending an invalid
+    enum value would fail schema validation, so it must be omitted rather than
+    passed through or defaulted."""
+    legs = [_leg("request")]
+    classifications = {
+        "request": _verdict(findings=[_finding(identifier_type="NON_ID")])
+    }
+    payload = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=[],
+        classifications=classifications,
+        caller_entity_id=None,
+        callee_entity_id=None,
+    )
+    entity = payload["data_items"][0]["entities"][0]
+    assert "data_type" not in entity
+    _opa_input_validator().validate(payload)
+
+
+def test_build_opa_input_data_item_carries_the_leg_verdict_summary():
+    legs = [_leg("request")]
+    classifications = {"request": _verdict()}
+    payload = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=[],
+        classifications=classifications,
+        caller_entity_id=None,
+        callee_entity_id=None,
+    )
+    item = payload["data_items"][0]
+    assert item["classification_level"] == "RESTRICTED"
+    assert item["primary_domain"] == "finance"
+    assert item["regulatory_tags"] == ["PII"]
+
+
+def test_build_opa_input_identity_bundle_leg_lists_a_bundle_name():
+    legs = [_leg("request")]
+    classifications = {
+        "request": _verdict(contains_identity_bundle=True, sensitivity_level="RESTRICTED")
+    }
+    payload = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=[],
+        classifications=classifications,
+        caller_entity_id=None,
+        callee_entity_id=None,
+    )
+    assert payload["data_items"][0]["identity_bundles"] == ["identity_bundle"]
+
+
+def test_build_opa_input_pending_leg_produces_no_data_item():
+    legs = [_leg("request")]
+    classifications = {"request": aggregate.PENDING}
+    payload = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=[],
+        classifications=classifications,
+        caller_entity_id=None,
+        callee_entity_id=None,
+    )
+    assert payload["data_items"] == []
+    assert payload["data_count"] == 0
+
+
+def test_build_opa_input_no_payload_leg_produces_no_data_item():
+    legs = [_leg("response", payload_hash=None)]
+    classifications = {"response": aggregate.NO_PAYLOAD}
+    payload = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=[],
+        classifications=classifications,
+        caller_entity_id=None,
+        callee_entity_id=None,
+    )
+    assert payload["data_items"] == []
+    assert payload["data_count"] == 0
+
+
+def test_build_opa_input_data_count_matches_data_items_length():
+    legs = [_leg("request"), _leg("response", payload_hash="h2")]
+    classifications = {"request": _verdict(), "response": _verdict(sensitivity_level="PUBLIC")}
+    payload = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=[],
+        classifications=classifications,
+        caller_entity_id=None,
+        callee_entity_id=None,
+    )
+    assert payload["data_count"] == 2 == len(payload["data_items"])
+
+
+def test_build_opa_input_requested_actions_reflect_legs_evidenced():
+    legs = [_leg("response", payload_hash=None), _leg("request")]
+    classifications = {"request": aggregate.PENDING, "response": aggregate.NO_PAYLOAD}
+    payload = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=[],
+        classifications=classifications,
+        caller_entity_id=None,
+        callee_entity_id=None,
+    )
+    assert payload["requested_actions"] == ["send", "receive"]
+
+
+def test_build_opa_input_no_legs_means_no_requested_actions():
+    payload = aggregate.build_opa_input(
+        legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
+    )
+    assert payload["requested_actions"] == []
+
+
+def test_build_opa_input_processing_agents_from_caller_and_callee():
+    payload = aggregate.build_opa_input(
+        legs=[],
+        span_ids=[],
+        classifications={},
+        caller_entity_id="agent:a",
+        callee_entity_id="agent:b",
+    )
+    assert payload["processing_agents"] == [
+        {"agent_name": "agent:a"},
+        {"agent_name": "agent:b"},
+    ]
+
+
+def test_build_opa_input_omits_processing_agents_entirely_when_both_entity_ids_are_none():
+    """Neither entity id is known — no ``processing_agents`` key at all, not
+    an empty list, matching the rest of this module's "absent means absent"
+    convention (e.g. classification_summary's missing-leg behaviour)."""
+    payload = aggregate.build_opa_input(
+        legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
+    )
+    assert "processing_agents" not in payload
+
+
+def test_build_opa_input_includes_only_the_known_entity_id_when_one_is_none():
+    payload = aggregate.build_opa_input(
+        legs=[],
+        span_ids=[],
+        classifications={},
+        caller_entity_id="agent:a",
+        callee_entity_id=None,
+    )
+    assert payload["processing_agents"] == [{"agent_name": "agent:a"}]
+
+
+def test_build_opa_input_never_carries_unmapped_fields():
+    """No DAS source data feeds event_type/data_sources/data_destinations/
+    data_lineage/scope/the intent strings/accessing_user yet — they must be
+    absent rather than null, so a partially-known payload never reads as a
+    confident (but wrong) empty declaration to a policy author."""
+    payload = aggregate.build_opa_input(
+        legs=[_leg("request")],
+        span_ids=["s1"],
+        classifications={"request": _verdict()},
+        caller_entity_id="agent:a",
+        callee_entity_id="agent:b",
+    )
+    for absent_key in (
+        "event_type",
+        "data_sources",
+        "data_destinations",
+        "data_lineage",
+        "scope",
+        "declared_business_intent",
+        "observed_business_intent",
+        "observed_business_intent_description",
+        "declared_operational_intent",
+        "observed_operational_intent",
+        "accessing_user",
+    ):
+        assert absent_key not in payload

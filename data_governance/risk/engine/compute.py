@@ -159,11 +159,16 @@ def _get_or_refresh_decision(
         if stored.evidence_fingerprint == fingerprint:
             return stored.decision
 
+    opa_input = aggregate.build_opa_input(
+        legs=legs,
+        span_ids=span_ids,
+        classifications=classifications,
+        caller_entity_id=caller_entity_id,
+        callee_entity_id=callee_entity_id,
+    )
     opa_decision = opa_client.evaluate(
         interaction_id=interaction_id,
-        span_ids=span_ids,
-        caller_entity_id=caller_entity_id or "",
-        callee_entity_id=callee_entity_id or "",
+        opa_input=opa_input,
     )
     decision = aggregate.PolicyDecision(
         risk_level=opa_decision.risk_level,

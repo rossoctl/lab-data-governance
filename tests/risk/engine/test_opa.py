@@ -7,6 +7,13 @@ rather than fanning out into per-span calls). Tested against
 and no real network, matching this repo's "no mocking of Postgres, but
 Postgres is the only thing we don't mock" posture (OPA is an external HTTP
 dependency, not the DB under test).
+
+The request body's ``input`` is whatever :func:`aggregate.build_opa_input`
+produced (schema-conformant, tested exhaustively in ``test_aggregate.py``) —
+``evaluate`` itself only adds the ``interaction_id`` routing key alongside it
+and is not responsible for the mapping's correctness, so these tests treat
+the ``opa_input`` dict as an opaque payload and focus on request/response/
+retry mechanics.
 """
 
 from __future__ import annotations
@@ -50,10 +57,20 @@ def _full_decision_body() -> dict:
     }
 
 
+def _opa_input(**overrides) -> dict:
+    defaults = {
+        "data_items": [],
+        "data_count": 0,
+        "requested_actions": [],
+    }
+    defaults.update(overrides)
+    return defaults
+
+
 # --- request shape ---------------------------------------------------------
 
 
-def test_request_includes_interaction_id_and_span_ids():
+def test_request_includes_interaction_id_alongside_the_opa_input():
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -62,19 +79,21 @@ def test_request_includes_interaction_id_and_span_ids():
         return httpx.Response(200, json=_full_decision_body())
 
     client = _client(handler)
-    client.evaluate(
-        interaction_id="ix1",
-        span_ids=["s1", "s2"],
-        caller_entity_id="agent:a",
-        callee_entity_id="agent:b",
-    )
+    opa_input = _opa_input(data_count=2, requested_actions=["send"])
+    client.evaluate(interaction_id="ix1", opa_input=opa_input)
 
     assert "/v1/data/data_governance/policy_decision" in captured["url"]
     body = captured["json"]["input"]
     assert body["interaction_id"] == "ix1"
-    assert body["span_ids"] == ["s1", "s2"]
-    assert body["caller_entity_id"] == "agent:a"
-    assert body["callee_entity_id"] == "agent:b"
+    assert body["data_count"] == 2
+    assert body["requested_actions"] == ["send"]
+
+
+def test_request_does_not_mutate_the_passed_in_opa_input():
+    opa_input = _opa_input()
+    client = _client(lambda r: httpx.Response(200, json=_full_decision_body()))
+    client.evaluate(interaction_id="ix1", opa_input=opa_input)
+    assert opa_input == _opa_input()
 
 
 # --- response parsing --------------------------------------------------------
@@ -82,9 +101,7 @@ def test_request_includes_interaction_id_and_span_ids():
 
 def test_parses_full_decision_response():
     client = _client(lambda r: httpx.Response(200, json=_full_decision_body()))
-    decision = client.evaluate(
-        interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-    )
+    decision = client.evaluate(interaction_id="ix1", opa_input=_opa_input())
     assert decision.risk_level == "high"
     assert decision.enforcement_type == "block"
     assert decision.allowed_actions == ["retry"]
@@ -100,9 +117,7 @@ def test_missing_optional_fields_default_sensibly():
     client = _client(
         lambda r: httpx.Response(200, json={"result": {"risk_level": "low"}})
     )
-    decision = client.evaluate(
-        interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-    )
+    decision = client.evaluate(interaction_id="ix1", opa_input=_opa_input())
     assert decision.risk_level == "low"
     assert decision.enforcement_type is None
     assert decision.allowed_actions == []
@@ -115,17 +130,13 @@ def test_missing_optional_fields_default_sensibly():
 def test_missing_result_key_raises_response_error():
     client = _client(lambda r: httpx.Response(200, json={}))
     with pytest.raises(OpaResponseError):
-        client.evaluate(
-            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-        )
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
 
 
 def test_missing_risk_level_raises_response_error():
     client = _client(lambda r: httpx.Response(200, json={"result": {}}))
     with pytest.raises(OpaResponseError):
-        client.evaluate(
-            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-        )
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
 
 
 def test_malformed_json_raises_response_error():
@@ -134,9 +145,7 @@ def test_malformed_json_raises_response_error():
 
     client = _client(handler)
     with pytest.raises(OpaResponseError):
-        client.evaluate(
-            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-        )
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
 
 
 # --- HTTP error handling -----------------------------------------------------
@@ -151,9 +160,7 @@ def test_non_200_raises_request_error_after_exhausting_retries():
 
     client = _client(handler, max_retries=2)
     with pytest.raises(OpaRequestError):
-        client.evaluate(
-            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-        )
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
     assert calls["n"] == 3  # initial attempt + 2 retries
 
 
@@ -166,9 +173,7 @@ def test_timeout_raises_opa_timeout_error_after_exhausting_retries():
 
     client = _client(handler, max_retries=1)
     with pytest.raises(OpaTimeoutError):
-        client.evaluate(
-            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-        )
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
     assert calls["n"] == 2  # initial attempt + 1 retry
 
 
@@ -184,9 +189,7 @@ def test_retry_then_succeed():
         return httpx.Response(200, json=_full_decision_body())
 
     client = _client(handler, max_retries=2)
-    decision = client.evaluate(
-        interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-    )
+    decision = client.evaluate(interaction_id="ix1", opa_input=_opa_input())
     assert decision.risk_level == "high"
     assert calls["n"] == 2
 
@@ -200,9 +203,7 @@ def test_no_retries_configured_raises_on_first_failure():
 
     client = _client(handler, max_retries=0)
     with pytest.raises(OpaRequestError):
-        client.evaluate(
-            interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-        )
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
     assert calls["n"] == 1
 
 
@@ -245,9 +246,7 @@ def test_create_opa_client_uses_config_defaults(monkeypatch: pytest.MonkeyPatch)
         ),
     )
     client = create_opa_client()
-    decision = client.evaluate(
-        interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
-    )
+    decision = client.evaluate(interaction_id="ix1", opa_input=_opa_input())
     assert decision.risk_level == "low"
     assert calls["n"] == 1
 

@@ -104,11 +104,17 @@ class OpaClient:
         self,
         *,
         interaction_id: str,
-        span_ids: list[str],
-        caller_entity_id: str,
-        callee_entity_id: str,
+        opa_input: dict[str, Any],
     ) -> OpaDecision:
         """Call OPA once for this interaction and return the parsed decision.
+
+        *opa_input* is the schema-conformant payload built by
+        :func:`data_governance.risk.engine.aggregate.build_opa_input` — this
+        method adds only the ``interaction_id`` routing key alongside it
+        (OPA needs to know which interaction it is evaluating, but that is
+        not part of ``opa_input.schema.json`` itself, which describes the
+        event being evaluated, not routing metadata) and never mutates the
+        dict it was given.
 
         Retries up to ``max_retries`` additional times (so ``max_retries=2``
         means at most 3 attempts total) on a timeout, connection error, or
@@ -119,9 +125,7 @@ class OpaClient:
         payload = {
             "input": {
                 "interaction_id": interaction_id,
-                "span_ids": span_ids,
-                "caller_entity_id": caller_entity_id,
-                "callee_entity_id": callee_entity_id,
+                **opa_input,
             }
         }
 
