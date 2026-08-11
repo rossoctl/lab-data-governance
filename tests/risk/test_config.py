@@ -124,3 +124,35 @@ def test_empty_list_env_yields_empty_list_not_default(
 def test_reserved_trace_trigger_processor_name():
     cfg = _reload()
     assert cfg.PROCESSOR_NAME_TRACE_TRIGGER == "risk_trace_trigger"
+
+
+# --- opa.* (issue #101) -------------------------------------------------------
+
+
+def test_opa_defaults():
+    cfg = _reload()
+    assert cfg.OPA_BASE_URL == "http://opa:8181"
+    assert cfg.OPA_DECISION_PATH == "/v1/data/data_governance/policy_decision"
+    assert cfg.OPA_TIMEOUT_SECONDS == 5
+    assert cfg.OPA_MAX_RETRIES == 2
+
+
+def test_opa_params_overridable_via_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("RISK_OPA_BASE_URL", "http://opa.internal:9999")
+    monkeypatch.setenv("RISK_OPA_DECISION_PATH", "/v1/data/custom/decision")
+    monkeypatch.setenv("RISK_OPA_TIMEOUT_SECONDS", "15")
+    monkeypatch.setenv("RISK_OPA_MAX_RETRIES", "5")
+    cfg = _reload()
+    assert cfg.OPA_BASE_URL == "http://opa.internal:9999"
+    assert cfg.OPA_DECISION_PATH == "/v1/data/custom/decision"
+    assert cfg.OPA_TIMEOUT_SECONDS == 15
+    assert cfg.OPA_MAX_RETRIES == 5
+
+
+def test_opa_malformed_int_env_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setenv("RISK_OPA_TIMEOUT_SECONDS", "not-a-number")
+    cfg = _reload()
+    assert cfg.OPA_TIMEOUT_SECONDS == 5
+    assert "RISK_OPA_TIMEOUT_SECONDS" in capsys.readouterr().err

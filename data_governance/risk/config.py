@@ -35,6 +35,10 @@ __all__ = [
     "FANOUT_BATCH_SIZE",
     "METRICS_REFRESH_INTERVAL_SECONDS",
     "PROCESSOR_NAME_TRACE_TRIGGER",
+    "OPA_BASE_URL",
+    "OPA_DECISION_PATH",
+    "OPA_TIMEOUT_SECONDS",
+    "OPA_MAX_RETRIES",
     "API_RISK_RULES_DEFAULT_LIMIT",
     "API_RISK_RULES_MAX_LIMIT",
 ]
@@ -108,6 +112,17 @@ METRICS_REFRESH_INTERVAL_SECONDS = _int_env("RISK_METRICS_REFRESH_INTERVAL_SECON
 # Carved out now so #102 cannot collide on a processor_name.
 
 PROCESSOR_NAME_TRACE_TRIGGER = "risk_trace_trigger"
+
+# --- opa.* (issue #101) -------------------------------------------------------
+# No OPA deploy manifest exists in deploy/k8s/ yet, so OPA_BASE_URL's default
+# is a placeholder host, not a verified deployment address.
+
+OPA_BASE_URL = _str_env("RISK_OPA_BASE_URL", "http://opa:8181")
+OPA_DECISION_PATH = _str_env(
+    "RISK_OPA_DECISION_PATH", "/v1/data/data_governance/policy_decision"
+)
+OPA_TIMEOUT_SECONDS = _int_env("RISK_OPA_TIMEOUT_SECONDS", 5)
+OPA_MAX_RETRIES = _int_env("RISK_OPA_MAX_RETRIES", 2)
 
 # --- api.risk_rules.* (issue #113) ------------------------------------------
 

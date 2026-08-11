@@ -1,0 +1,44 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://example.org/schemas/opa_input.schema.json",
+    "title": "OPA Runtime Evaluation Input",
+    "description": "JSON Schema for the runtime input sent to OPA to evaluate rules defined in policy.schema.json. Shaped like a rule object from policy.schema.json, but excludes rule metadata (rule_name, rule_id, rule_categories, rule_sources) and the policy_decision output, since those describe the policy rule itself and its verdict rather than the event being evaluated. All referenced value/object definitions are shared with policy.schema.json via $ref so the two schemas stay in sync.",
+    "type": "object",
+    "required": [ ],
+    "additionalProperties": false,
+    "properties": {
+        "event_type": { "$ref": "policy.schema.json#/$defs/eventTypeValues" },
+        "data_sources": {
+            "type": "array",
+            "items": { "$ref": "policy.schema.json#/$defs/dataSource" }
+        },
+        "data_items": {
+            "type": "array",
+            "items": { "$ref": "policy.schema.json#/$defs/dataItem" }
+        },
+        "data_count": { "type": "integer", "minimum": 0 },
+        "data_destinations": {
+            "type": "array",
+            "items": { "$ref": "policy.schema.json#/$defs/dataDestination" }
+        },
+        "data_lineage": { "$ref": "policy.schema.json#/$defs/dataLineage" },
+        "requested_actions": {
+            "type": "array",
+            "items": { "$ref": "policy.schema.json#/$defs/actionTypeValues" }
+        },
+        "declared_business_intent": { "type": "string" },
+        "observed_business_intent": { "type": "string" },
+        "observed_business_intent_description": { "type": "string" },
+        "declared_operational_intent": { "type": "string" },
+        "observed_operational_intent": { "type": "string" },
+        "accessing_user": { "$ref": "policy.schema.json#/$defs/accessingUser" },
+        "processing_agents": {
+            "type": "array",
+            "items": { "$ref": "policy.schema.json#/$defs/processingAgent" }
+        },
+        "scope": {
+            "type": "array",
+            "items": { "$ref": "policy.schema.json#/$defs/scopeEntry" }
+        }
+    }
+}
