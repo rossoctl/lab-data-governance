@@ -14,11 +14,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from data_governance.risk import config as risk_config
 from data_governance.risk.engine.opa import (
     OpaClient,
     OpaRequestError,
     OpaResponseError,
     OpaTimeoutError,
+    create_opa_client,
 )
 
 
@@ -202,3 +204,59 @@ def test_no_retries_configured_raises_on_first_failure():
             interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
         )
     assert calls["n"] == 1
+
+
+# --- create_opa_client factory --------------------------------------------------
+
+
+def test_create_opa_client_returns_an_opa_client():
+    client = create_opa_client()
+    assert isinstance(client, OpaClient)
+
+
+def test_create_opa_client_uses_config_defaults(monkeypatch: pytest.MonkeyPatch):
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        assert request.url.path == risk_config.OPA_DECISION_PATH
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "risk_level": "low",
+                    "enforcement_type": None,
+                    "allowed_actions": [],
+                    "explanation": None,
+                    "triggered_rules": [],
+                    "confidence": None,
+                    "policy_version": None,
+                }
+            },
+        )
+
+    real_client_cls = httpx.Client
+    monkeypatch.setattr(
+        "data_governance.risk.engine.opa.httpx.Client",
+        lambda **kwargs: real_client_cls(
+            base_url=kwargs["base_url"],
+            timeout=kwargs["timeout"],
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    client = create_opa_client()
+    decision = client.evaluate(
+        interaction_id="ix1", span_ids=[], caller_entity_id="a", callee_entity_id="b"
+    )
+    assert decision.risk_level == "low"
+    assert calls["n"] == 1
+
+
+def test_create_opa_client_honors_max_retries_override():
+    client = create_opa_client(max_retries=0)
+    assert client._max_retries == 0
+
+
+def test_create_opa_client_honors_decision_path_override():
+    client = create_opa_client(decision_path="/v1/data/custom/path")
+    assert client._decision_path == "/v1/data/custom/path"

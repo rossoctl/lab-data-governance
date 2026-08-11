@@ -22,6 +22,8 @@ from typing import Any
 
 import httpx
 
+from data_governance.risk import config
+
 
 class OpaError(Exception):
     """Base class for every error this client raises."""
@@ -157,3 +159,28 @@ class OpaClient:
         raise OpaRequestError(
             f"OPA request failed after {attempts} attempt(s)"
         ) from last_request_error
+
+
+def create_opa_client(
+    *,
+    base_url: str | None = None,
+    decision_path: str | None = None,
+    timeout_seconds: float | None = None,
+    max_retries: int | None = None,
+) -> OpaClient:
+    """Build an :class:`OpaClient` wired to a real ``httpx.Client``, reading
+    defaults from :mod:`data_governance.risk.config`. This is what
+    production callers of ``compute_interaction_risk`` use; tests that need
+    control over the transport construct an :class:`OpaClient` directly.
+    """
+    http_client = httpx.Client(
+        base_url=base_url if base_url is not None else config.OPA_BASE_URL,
+        timeout=(
+            timeout_seconds if timeout_seconds is not None else config.OPA_TIMEOUT_SECONDS
+        ),
+    )
+    return OpaClient(
+        http_client=http_client,
+        decision_path=decision_path if decision_path is not None else config.OPA_DECISION_PATH,
+        max_retries=max_retries if max_retries is not None else config.OPA_MAX_RETRIES,
+    )
