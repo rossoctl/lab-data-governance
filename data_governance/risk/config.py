@@ -8,8 +8,9 @@ codebase). Each PRD dotted name (e.g. ``alert.min_risk_level``) maps to a
 Only the backbone-relevant §10 parameters are defined here: alerting,
 storage retention, the trace-risk NOTIFY-trigger channel/poll-fallback
 interval, the fan-out batch size, and the metrics refresh interval. The
-``api.*.default_page_size``/``default_limit`` parameters belong to the REST
-API issues (#109/#111/#113), which own the endpoints that consume them.
+remaining ``api.*.default_limit`` parameters belong to whichever issue
+implements the endpoint that consumes them; issue #113 (rule catalog) owns
+``API_RISK_RULES_DEFAULT_LIMIT``/``API_RISK_RULES_MAX_LIMIT`` below.
 
 The leg-trigger and classification-trigger config (channel names, poll
 fallbacks, reserved processor names for #99/#100) has been removed: those two
@@ -34,6 +35,8 @@ __all__ = [
     "FANOUT_BATCH_SIZE",
     "METRICS_REFRESH_INTERVAL_SECONDS",
     "PROCESSOR_NAME_TRACE_TRIGGER",
+    "API_RISK_RULES_DEFAULT_LIMIT",
+    "API_RISK_RULES_MAX_LIMIT",
 ]
 
 
@@ -105,3 +108,8 @@ METRICS_REFRESH_INTERVAL_SECONDS = _int_env("RISK_METRICS_REFRESH_INTERVAL_SECON
 # Carved out now so #102 cannot collide on a processor_name.
 
 PROCESSOR_NAME_TRACE_TRIGGER = "risk_trace_trigger"
+
+# --- api.risk_rules.* (issue #113) ------------------------------------------
+
+API_RISK_RULES_DEFAULT_LIMIT = _int_env("RISK_API_RISK_RULES_DEFAULT_LIMIT", 50)
+API_RISK_RULES_MAX_LIMIT = _int_env("RISK_API_RISK_RULES_MAX_LIMIT", 200)
