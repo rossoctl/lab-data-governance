@@ -55,6 +55,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from data_governance import db, retrieval
+from data_governance.risk.api import rules_routes
 
 __all__ = ["SpansApiServer", "build_app"]
 
@@ -537,6 +538,10 @@ def build_app() -> Starlette:
             methods=["GET"],
         ),
         Route("/", endpoint=_root_redirect_handler, methods=["GET"]),
+        # DAS rule catalog (issue #113). rules_routes.routes() already orders
+        # /risk/rules/categories before the /risk/rules/{rule_id} catch-all,
+        # mirroring the /ui/assets-before-catch-all convention above.
+        *rules_routes.routes(),
     ]
     return Starlette(routes=routes)
 
