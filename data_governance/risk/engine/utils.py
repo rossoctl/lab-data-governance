@@ -222,7 +222,6 @@ def build_opa_input(
     ]
     payload: dict[str, Any] = {
         "data_items": data_items,
-        "data_count": len(data_items),
         "requested_actions": [
             _LEG_TYPE_TO_ACTION[leg_type] for leg_type in legs_evidenced(legs)
         ],

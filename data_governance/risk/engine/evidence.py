@@ -1,17 +1,17 @@
 """Evidence gathering — the DB-reading I/O shell for the interaction risk
 computation engine (issue #101).
 
-Reads everything :mod:`data_governance.risk.engine.aggregate`'s pure
+Reads everything :mod:`data_governance.risk.engine.utils`'s pure
 functions need for one interaction: its identity row, its legs (in ``seq``
 order — the same cursor order ``leg_ready/driver.py`` drains in), the span
 set evidencing it, and — per leg with a payload — the joined classification
 verdict from ``payload_classifications`` (keyed by ``content_hash``, mirroring
 the existing ``leg_ready/driver.py`` join on ``payload_hash``).
 
-Deliberately returns :class:`aggregate.LegEvidence` / reuses
-:class:`aggregate.PENDING` / :class:`aggregate.NO_PAYLOAD` rather than
+Deliberately returns :class:`utils.LegEvidence` / reuses
+:class:`utils.PENDING` / :class:`utils.NO_PAYLOAD` rather than
 inventing a parallel shape — this module's whole job is to produce exactly
-what ``aggregate.py`` already consumes.
+what ``utils.py`` already consumes.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import dataclasses
 
 from data_governance import db
 from data_governance.processors.classification.verdict import Verdict
-from data_governance.risk.engine import aggregate
+from data_governance.risk.engine import utils
 
 __all__ = ["Evidence", "InteractionNotFoundError", "gather_evidence"]
 
@@ -32,13 +32,13 @@ class InteractionNotFoundError(Exception):
 @dataclasses.dataclass(frozen=True)
 class Evidence:
     """Everything gathered for one interaction, ready to feed
-    :mod:`aggregate`'s pure functions."""
+    :mod:`utils`'s pure functions."""
 
     interaction_id: str
     trace_id: str
     caller_entity_id: str | None
     callee_entity_id: str | None
-    legs: list[aggregate.LegEvidence]
+    legs: list[utils.LegEvidence]
     span_ids: list[str]
     classifications: dict[str, Verdict | object]
 
@@ -62,10 +62,10 @@ _CLASSIFICATION_SQL = (
 )
 
 
-def _fetch_legs(tx: db.Transaction, interaction_id: str) -> list[aggregate.LegEvidence]:
+def _fetch_legs(tx: db.Transaction, interaction_id: str) -> list[utils.LegEvidence]:
     rows = tx.fetch_all(_LEGS_SQL, (interaction_id,))
     return [
-        aggregate.LegEvidence(leg_type=r[0], payload_hash=r[1]) for r in rows
+        utils.LegEvidence(leg_type=r[0], payload_hash=r[1]) for r in rows
     ]
 
 
@@ -90,16 +90,16 @@ def _fetch_classification(tx: db.Transaction, content_hash: str) -> Verdict | No
 
 
 def _gather_classifications(
-    tx: db.Transaction, legs: list[aggregate.LegEvidence]
+    tx: db.Transaction, legs: list[utils.LegEvidence]
 ) -> dict[str, Verdict | object]:
     classifications: dict[str, Verdict | object] = {}
     for leg in legs:
         if leg.payload_hash is None:
-            classifications[leg.leg_type] = aggregate.NO_PAYLOAD
+            classifications[leg.leg_type] = utils.NO_PAYLOAD
             continue
         verdict = _fetch_classification(tx, leg.payload_hash)
         classifications[leg.leg_type] = (
-            verdict if verdict is not None else aggregate.PENDING
+            verdict if verdict is not None else utils.PENDING
         )
     return classifications
 

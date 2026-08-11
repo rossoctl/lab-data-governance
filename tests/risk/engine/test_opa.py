@@ -8,8 +8,8 @@ and no real network, matching this repo's "no mocking of Postgres, but
 Postgres is the only thing we don't mock" posture (OPA is an external HTTP
 dependency, not the DB under test).
 
-The request body's ``input`` is whatever :func:`aggregate.build_opa_input`
-produced (schema-conformant, tested exhaustively in ``test_aggregate.py``) —
+The request body's ``input`` is whatever :func:`utils.build_opa_input`
+produced (schema-conformant, tested exhaustively in ``test_utils.py``) —
 ``evaluate`` itself only adds the ``interaction_id`` routing key alongside it
 and is not responsible for the mapping's correctness, so these tests treat
 the ``opa_input`` dict as an opaque payload and focus on request/response/
@@ -60,7 +60,6 @@ def _full_decision_body() -> dict:
 def _opa_input(**overrides) -> dict:
     defaults = {
         "data_items": [],
-        "data_count": 0,
         "requested_actions": [],
     }
     defaults.update(overrides)
@@ -79,13 +78,12 @@ def test_request_includes_interaction_id_alongside_the_opa_input():
         return httpx.Response(200, json=_full_decision_body())
 
     client = _client(handler)
-    opa_input = _opa_input(data_count=2, requested_actions=["send"])
+    opa_input = _opa_input(requested_actions=["send"])
     client.evaluate(interaction_id="ix1", opa_input=opa_input)
 
     assert "/v1/data/data_governance/policy_decision" in captured["url"]
     body = captured["json"]["input"]
     assert body["interaction_id"] == "ix1"
-    assert body["data_count"] == 2
     assert body["requested_actions"] == ["send"]
 
 

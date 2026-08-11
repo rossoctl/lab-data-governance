@@ -47,7 +47,7 @@ class OpaResponseError(OpaError):
 @dataclasses.dataclass(frozen=True)
 class OpaDecision:
     """One parsed OPA policy decision. Mirrors
-    :class:`data_governance.risk.engine.aggregate.PolicyDecision`'s fields —
+    :class:`data_governance.risk.engine.utils.PolicyDecision`'s fields —
     this is the raw parsed form; ``compute.py`` maps it into that dataclass
     (or persists it directly, they are field-for-field identical) rather than
     the two modules importing from each other."""
@@ -109,7 +109,7 @@ class OpaClient:
         """Call OPA once for this interaction and return the parsed decision.
 
         *opa_input* is the schema-conformant payload built by
-        :func:`data_governance.risk.engine.aggregate.build_opa_input` — this
+        :func:`data_governance.risk.engine.utils.build_opa_input` — this
         method adds only the ``interaction_id`` routing key alongside it
         (OPA needs to know which interaction it is evaluating, but that is
         not part of ``opa_input.schema.json`` itself, which describes the

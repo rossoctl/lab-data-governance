@@ -28,7 +28,7 @@ from decimal import Decimal
 import psycopg
 
 from data_governance import db
-from data_governance.risk.engine import aggregate
+from data_governance.risk.engine import utils
 from data_governance.risk.engine.evidence import gather_evidence
 from data_governance.risk.engine.opa import OpaClient
 
@@ -87,7 +87,7 @@ SELECT %(interaction_id)s, %(trace_id)s, %(parent_interaction_id)s,
 @dataclasses.dataclass(frozen=True)
 class _StoredDecision:
     version: int
-    decision: aggregate.PolicyDecision
+    decision: utils.PolicyDecision
     evidence_fingerprint: str
 
 
@@ -105,7 +105,7 @@ def _row_to_stored_decision(row: tuple) -> _StoredDecision:
     ) = row
     return _StoredDecision(
         version=version,
-        decision=aggregate.PolicyDecision(
+        decision=utils.PolicyDecision(
             risk_level=risk_level,
             enforcement_type=enforcement_type,
             allowed_actions=list(allowed_actions or []),
@@ -119,7 +119,7 @@ def _row_to_stored_decision(row: tuple) -> _StoredDecision:
 
 
 def _decision_params(
-    *, interaction_id: str, decision: aggregate.PolicyDecision, evidence_fingerprint: str
+    *, interaction_id: str, decision: utils.PolicyDecision, evidence_fingerprint: str
 ) -> dict:
     return {
         "interaction_id": interaction_id,
@@ -129,7 +129,7 @@ def _decision_params(
         "explanation": decision.explanation,
         "triggered_rules": decision.triggered_rules,
         "confidence": (
-            str(aggregate.quantize_confidence(decision.confidence))
+            str(utils.quantize_confidence(decision.confidence))
             if decision.confidence is not None
             else None
         ),
@@ -143,15 +143,15 @@ def _get_or_refresh_decision(
     *,
     interaction_id: str,
     opa_client: OpaClient,
-    legs: list[aggregate.LegEvidence],
+    legs: list[utils.LegEvidence],
     span_ids: list[str],
     classifications: dict,
     caller_entity_id: str | None,
     callee_entity_id: str | None,
-) -> aggregate.PolicyDecision:
+) -> utils.PolicyDecision:
     """Reuse the cached decision when the evidence fingerprint is unchanged;
     otherwise call OPA and persist a new decision version."""
-    fingerprint = aggregate.fingerprint(legs, classifications)
+    fingerprint = utils.fingerprint(legs, classifications)
 
     row = tx.fetch_one(_LATEST_DECISION_SQL, (interaction_id,))
     if row is not None:
@@ -159,7 +159,7 @@ def _get_or_refresh_decision(
         if stored.evidence_fingerprint == fingerprint:
             return stored.decision
 
-    opa_input = aggregate.build_opa_input(
+    opa_input = utils.build_opa_input(
         legs=legs,
         span_ids=span_ids,
         classifications=classifications,
@@ -170,7 +170,7 @@ def _get_or_refresh_decision(
         interaction_id=interaction_id,
         opa_input=opa_input,
     )
-    decision = aggregate.PolicyDecision(
+    decision = utils.PolicyDecision(
         risk_level=opa_decision.risk_level,
         enforcement_type=opa_decision.enforcement_type,
         allowed_actions=opa_decision.allowed_actions,
@@ -225,15 +225,15 @@ def _record_params(
     parent_interaction_id: str | None,
     caller_entity_id: str | None,
     callee_entity_id: str | None,
-    legs: list[aggregate.LegEvidence],
+    legs: list[utils.LegEvidence],
     classifications: dict,
-    decision: aggregate.PolicyDecision,
+    decision: utils.PolicyDecision,
 ) -> tuple[dict, dict]:
     """Build the params dict for both the insert and the idempotency
     comparison, returned together so callers can't drift them apart."""
-    legs_evidenced = aggregate.legs_evidenced(legs)
-    classification_summary = aggregate.classification_summary(classifications)
-    confidence = aggregate.quantize_confidence(decision.confidence)
+    legs_evidenced = utils.legs_evidenced(legs)
+    classification_summary = utils.classification_summary(classifications)
+    confidence = utils.quantize_confidence(decision.confidence)
     normalized = {
         "risk_level": decision.risk_level,
         "enforcement_type": decision.enforcement_type,

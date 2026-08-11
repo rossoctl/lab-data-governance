@@ -1,7 +1,7 @@
 """Tests for evidence gathering (issue #101).
 
 ``data_governance.risk.engine.evidence`` is the DB-reading I/O shell that
-feeds :mod:`data_governance.risk.engine.aggregate`'s pure functions: given one
+feeds :mod:`data_governance.risk.engine.utils`'s pure functions: given one
 ``interaction_id``, read its identity row, its legs (in ``seq`` order), the
 span set evidencing it, and — per leg with a payload — the joined
 classification verdict from ``payload_classifications`` (keyed by
@@ -19,7 +19,7 @@ from __future__ import annotations
 import psycopg
 import pytest
 
-from data_governance.risk.engine import aggregate
+from data_governance.risk.engine import utils
 from data_governance.risk.engine.evidence import (
     InteractionNotFoundError,
     gather_evidence,
@@ -157,15 +157,15 @@ def test_legs_read_in_seq_order(configured_db: str):
     assert evidence.legs[1].payload_hash == "reqhash"
 
 
-def test_leg_evidence_is_aggregate_leg_evidence_type(configured_db: str):
-    """evidence.py must hand aggregate.py the type it already expects."""
+def test_leg_evidence_is_utils_leg_evidence_type(configured_db: str):
+    """evidence.py must hand utils.py the type it already expects."""
     with psycopg.connect(configured_db) as conn:
         _insert_interaction(conn)
         _insert_leg(conn, leg_type="request", payload_hash="reqhash")
         conn.commit()
 
     evidence = gather_evidence(_IX_ID)
-    assert isinstance(evidence.legs[0], aggregate.LegEvidence)
+    assert isinstance(evidence.legs[0], utils.LegEvidence)
 
 
 # --- spans ---------------------------------------------------------------------
@@ -214,7 +214,7 @@ def test_leg_with_no_payload_has_no_payload_marker(configured_db: str):
         conn.commit()
 
     evidence = gather_evidence(_IX_ID)
-    assert evidence.classifications["request"] is aggregate.NO_PAYLOAD
+    assert evidence.classifications["request"] is utils.NO_PAYLOAD
 
 
 def test_leg_with_unclassified_payload_is_pending(configured_db: str):
@@ -224,7 +224,7 @@ def test_leg_with_unclassified_payload_is_pending(configured_db: str):
         conn.commit()
 
     evidence = gather_evidence(_IX_ID)
-    assert evidence.classifications["request"] is aggregate.PENDING
+    assert evidence.classifications["request"] is utils.PENDING
 
 
 def test_leg_with_classified_payload_joins_verdict(configured_db: str):
@@ -273,6 +273,6 @@ def test_mixed_legs_classification_summary(configured_db: str):
         conn.commit()
 
     evidence = gather_evidence(_IX_ID)
-    assert evidence.classifications["request"] is not aggregate.PENDING
+    assert evidence.classifications["request"] is not utils.PENDING
     assert evidence.classifications["request"].sensitivity_level == "RESTRICTED"
-    assert evidence.classifications["response"] is aggregate.PENDING
+    assert evidence.classifications["response"] is utils.PENDING

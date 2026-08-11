@@ -11,7 +11,7 @@ evidence would plausibly return. Each case asserts the persisted
 ``triggered_rule_ids`` match what was fed in — proving the full pipeline
 (evidence -> decision -> aggregate -> write) carries policy severity through
 end to end, not just that each module works in isolation (that's
-``test_aggregate.py`` / ``test_evidence.py`` / ``test_compute.py``'s job).
+``test_utils.py`` / ``test_evidence.py`` / ``test_compute.py``'s job).
 
 AC-DAS-001 (risk level reflects the evaluated policy severity) and
 AC-DAS-011 (an interaction with more than one policy-relevant signal
@@ -201,8 +201,8 @@ def test_dual_severity_resolves_to_most_severe(configured_db: str):
 
     # The decision OPA would return for evidence carrying both a medium-severity
     # PII-tag rule and a high-severity identity-bundle rule: the engine trusts
-    # OPA's own severity_max resolution (mirrored in aggregate.severity_max,
-    # exercised directly in test_aggregate.py) and both rule ids surface.
+    # OPA's own severity_max resolution (mirrored in utils.severity_max,
+    # exercised directly in test_utils.py) and both rule ids surface.
     opa = _FakeOpaClient(
         OpaDecision(
             risk_level="high",
@@ -222,17 +222,17 @@ def test_dual_severity_resolves_to_most_severe(configured_db: str):
     assert set(triggered_rule_ids) == {"rule-pii-tag-medium", "rule-identity-bundle-high"}
 
 
-def test_dual_severity_aggregate_severity_max_matches_engine_persistence(configured_db: str):
-    """Cross-check against aggregate.severity_max directly: the more severe
+def test_dual_severity_utils_severity_max_matches_engine_persistence(configured_db: str):
+    """Cross-check against utils.severity_max directly: the more severe
     of ("medium", "high") is "high" per RISK_LEVEL_ORDER, and that is exactly
     what the persisted record carries for the dual-severity scenario above —
     proving the engine's persisted outcome is consistent with the pure
     severity-ranking function it is built on, not just internally self
     consistent."""
-    from data_governance.risk.engine import aggregate
+    from data_governance.risk.engine import utils
 
     assert (
-        aggregate.severity_max("medium", "high", order=aggregate.RISK_LEVEL_ORDER)
+        utils.severity_max("medium", "high", order=utils.RISK_LEVEL_ORDER)
         == "high"
     )
 

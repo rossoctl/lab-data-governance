@@ -1,6 +1,6 @@
 """Tests for the pure interaction-risk aggregation functions (issue #101).
 
-``data_governance.risk.engine.aggregate`` holds the risk semantics as plain
+``data_governance.risk.engine.utils`` holds the risk semantics as plain
 functions over plain dataclasses — no Postgres, no HTTP. Everything here is
 in-process and deterministic: severity-max ranking (reusing
 ``catalog.RISK_LEVEL_ORDER``/``ENFORCEMENT_ORDER``), ``legs_evidenced``
@@ -20,8 +20,8 @@ from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
 from data_governance.processors.classification.verdict import Verdict
-from data_governance.risk.engine import aggregate
-from data_governance.risk.engine.aggregate import LegEvidence
+from data_governance.risk.engine import utils
+from data_governance.risk.engine.utils import LegEvidence
 from data_governance.risk.rules import catalog
 
 _SCHEMA_DIR = Path(catalog.__file__).parent / "schema"
@@ -80,18 +80,18 @@ def _verdict(**overrides) -> Verdict:
 
 
 def test_severity_max_picks_more_severe_of_two_risk_levels():
-    assert aggregate.severity_max("high", "low", order=aggregate.RISK_LEVEL_ORDER) == "high"
-    assert aggregate.severity_max("low", "critical", order=aggregate.RISK_LEVEL_ORDER) == "critical"
+    assert utils.severity_max("high", "low", order=utils.RISK_LEVEL_ORDER) == "high"
+    assert utils.severity_max("low", "critical", order=utils.RISK_LEVEL_ORDER) == "critical"
 
 
 def test_severity_max_is_order_independent():
-    a = aggregate.severity_max("medium", "high", order=aggregate.RISK_LEVEL_ORDER)
-    b = aggregate.severity_max("high", "medium", order=aggregate.RISK_LEVEL_ORDER)
+    a = utils.severity_max("medium", "high", order=utils.RISK_LEVEL_ORDER)
+    b = utils.severity_max("high", "medium", order=utils.RISK_LEVEL_ORDER)
     assert a == b == "high"
 
 
 def test_severity_max_equal_values_returns_that_value():
-    assert aggregate.severity_max("high", "high", order=aggregate.RISK_LEVEL_ORDER) == "high"
+    assert utils.severity_max("high", "high", order=utils.RISK_LEVEL_ORDER) == "high"
 
 
 def test_severity_max_unranked_value_sorts_after_every_ranked_value():
@@ -99,23 +99,23 @@ def test_severity_max_unranked_value_sorts_after_every_ranked_value():
     must never raise — it sorts as least severe, per the catalog's existing
     ``ranks.get(value, len(order))`` convention."""
     assert (
-        aggregate.severity_max("low", "totally-unknown", order=aggregate.RISK_LEVEL_ORDER)
+        utils.severity_max("low", "totally-unknown", order=utils.RISK_LEVEL_ORDER)
         == "low"
     )
     assert (
-        aggregate.severity_max("totally-unknown", "totally-unknown", order=aggregate.RISK_LEVEL_ORDER)
+        utils.severity_max("totally-unknown", "totally-unknown", order=utils.RISK_LEVEL_ORDER)
         == "totally-unknown"
     )
 
 
 def test_severity_max_none_is_treated_as_unranked():
-    assert aggregate.severity_max("low", None, order=aggregate.RISK_LEVEL_ORDER) == "low"
-    assert aggregate.severity_max(None, None, order=aggregate.RISK_LEVEL_ORDER) is None
+    assert utils.severity_max("low", None, order=utils.RISK_LEVEL_ORDER) == "low"
+    assert utils.severity_max(None, None, order=utils.RISK_LEVEL_ORDER) is None
 
 
 def test_severity_max_works_for_enforcement_order_too():
     assert (
-        aggregate.severity_max("warn", "block", order=aggregate.ENFORCEMENT_ORDER) == "block"
+        utils.severity_max("warn", "block", order=utils.ENFORCEMENT_ORDER) == "block"
     )
 
 
@@ -123,19 +123,19 @@ def test_severity_max_works_for_enforcement_order_too():
 
 
 def test_legs_evidenced_empty_when_no_legs():
-    assert aggregate.legs_evidenced([]) == []
+    assert utils.legs_evidenced([]) == []
 
 
 def test_legs_evidenced_request_only():
-    assert aggregate.legs_evidenced([_leg("request")]) == ["request"]
+    assert utils.legs_evidenced([_leg("request")]) == ["request"]
 
 
 def test_legs_evidenced_response_only():
-    assert aggregate.legs_evidenced([_leg("response")]) == ["response"]
+    assert utils.legs_evidenced([_leg("response")]) == ["response"]
 
 
 def test_legs_evidenced_both_in_request_then_response_order_regardless_of_input_order():
-    assert aggregate.legs_evidenced([_leg("response"), _leg("request")]) == [
+    assert utils.legs_evidenced([_leg("response"), _leg("request")]) == [
         "request",
         "response",
     ]
@@ -145,11 +145,11 @@ def test_legs_evidenced_both_in_request_then_response_order_regardless_of_input_
 
 
 def test_classification_summary_empty_when_no_legs():
-    assert aggregate.classification_summary({}) == {}
+    assert utils.classification_summary({}) == {}
 
 
 def test_classification_summary_classified_leg_has_full_verdict_fields():
-    summary = aggregate.classification_summary({"request": _verdict()})
+    summary = utils.classification_summary({"request": _verdict()})
     assert summary == {
         "request": {
             "sensitivity_level": "RESTRICTED",
@@ -167,25 +167,25 @@ def test_classification_summary_leg_with_payload_but_no_classification_yet_is_pe
     """A leg that has a payload_hash but no matching payload_classifications
     row yet reads as pending, with no verdict fields — never defaulted to
     'none' (explicit issue requirement)."""
-    summary = aggregate.classification_summary({"request": aggregate.PENDING})
+    summary = utils.classification_summary({"request": utils.PENDING})
     assert summary == {"request": {"classification_pending": True}}
 
 
 def test_classification_summary_leg_with_no_payload_is_null_payload():
-    summary = aggregate.classification_summary({"response": aggregate.NO_PAYLOAD})
+    summary = utils.classification_summary({"response": utils.NO_PAYLOAD})
     assert summary == {"response": {"payload": None}}
 
 
 def test_classification_summary_missing_leg_key_is_absent_entirely():
     """A leg that doesn't exist for this interaction must not appear as a key
     at all — not null, not pending, just absent."""
-    summary = aggregate.classification_summary({"request": _verdict()})
+    summary = utils.classification_summary({"request": _verdict()})
     assert "response" not in summary
 
 
 def test_classification_summary_both_legs_mixed_states():
-    summary = aggregate.classification_summary(
-        {"request": _verdict(sensitivity_level="PUBLIC", findings=[]), "response": aggregate.PENDING}
+    summary = utils.classification_summary(
+        {"request": _verdict(sensitivity_level="PUBLIC", findings=[]), "response": utils.PENDING}
     )
     assert summary["request"]["finding_count"] == 0
     assert summary["request"]["sensitivity_level"] == "PUBLIC"
@@ -206,22 +206,22 @@ def test_classification_summary_both_legs_mixed_states():
     ],
 )
 def test_quantize_confidence_rounds_half_up_to_three_places(raw, expected):
-    assert aggregate.quantize_confidence(raw) == expected
+    assert utils.quantize_confidence(raw) == expected
 
 
 def test_quantize_confidence_none_stays_none():
-    assert aggregate.quantize_confidence(None) is None
+    assert utils.quantize_confidence(None) is None
 
 
 @pytest.mark.parametrize("raw", [-0.001, 1.001, -1, 2])
 def test_quantize_confidence_rejects_out_of_range(raw):
     with pytest.raises(ValueError):
-        aggregate.quantize_confidence(raw)
+        utils.quantize_confidence(raw)
 
 
 def test_quantize_confidence_accepts_boundary_values():
-    assert aggregate.quantize_confidence(0.0) == Decimal("0.000")
-    assert aggregate.quantize_confidence(1.0) == Decimal("1.000")
+    assert utils.quantize_confidence(0.0) == Decimal("0.000")
+    assert utils.quantize_confidence(1.0) == Decimal("1.000")
 
 
 # --- fingerprint -------------------------------------------------------------------
@@ -230,27 +230,27 @@ def test_quantize_confidence_accepts_boundary_values():
 def test_fingerprint_is_stable_for_identical_evidence():
     legs = [_leg("request"), _leg("response")]
     classifications = {"request": _verdict()}
-    fp1 = aggregate.fingerprint(legs, classifications)
-    fp2 = aggregate.fingerprint(legs, classifications)
+    fp1 = utils.fingerprint(legs, classifications)
+    fp2 = utils.fingerprint(legs, classifications)
     assert fp1 == fp2
 
 
 def test_fingerprint_changes_when_legs_evidenced_changes():
     classifications = {}
-    fp_request_only = aggregate.fingerprint([_leg("request")], classifications)
-    fp_both = aggregate.fingerprint([_leg("request"), _leg("response")], classifications)
+    fp_request_only = utils.fingerprint([_leg("request")], classifications)
+    fp_both = utils.fingerprint([_leg("request"), _leg("response")], classifications)
     assert fp_request_only != fp_both
 
 
 def test_fingerprint_changes_when_classification_summary_changes():
     legs = [_leg("request")]
-    fp1 = aggregate.fingerprint(legs, {"request": _verdict()})
-    fp2 = aggregate.fingerprint(legs, {"request": _verdict(sensitivity_level="PUBLIC")})
+    fp1 = utils.fingerprint(legs, {"request": _verdict()})
+    fp2 = utils.fingerprint(legs, {"request": _verdict(sensitivity_level="PUBLIC")})
     assert fp1 != fp2
 
 
 def test_fingerprint_returns_a_string():
-    assert isinstance(aggregate.fingerprint([], {}), str)
+    assert isinstance(utils.fingerprint([], {}), str)
 
 
 # --- build_opa_input ----------------------------------------------------------------
@@ -265,8 +265,8 @@ def test_fingerprint_returns_a_string():
 
 def test_build_opa_input_validates_against_the_schema():
     legs = [_leg("request"), _leg("response", payload_hash="h2")]
-    classifications = {"request": _verdict(), "response": aggregate.PENDING}
-    payload = aggregate.build_opa_input(
+    classifications = {"request": _verdict(), "response": utils.PENDING}
+    payload = utils.build_opa_input(
         legs=legs,
         span_ids=["s1", "s2"],
         classifications=classifications,
@@ -277,7 +277,7 @@ def test_build_opa_input_validates_against_the_schema():
 
 
 def test_build_opa_input_with_no_evidence_validates_against_the_schema():
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=[],
         span_ids=[],
         classifications={},
@@ -291,7 +291,7 @@ def test_build_opa_input_rejects_stray_top_level_keys():
     """Guards ``additionalProperties: false`` actually being enforced — proves
     a validator that silently accepted anything wouldn't make the positive
     cases above meaningful."""
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
     )
     payload["not_a_real_field"] = "x"
@@ -302,7 +302,7 @@ def test_build_opa_input_rejects_stray_top_level_keys():
 def test_build_opa_input_data_items_carry_one_entity_per_finding():
     legs = [_leg("request")]
     classifications = {"request": _verdict()}
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=legs,
         span_ids=[],
         classifications=classifications,
@@ -330,7 +330,7 @@ def test_build_opa_input_non_id_identifier_type_omits_data_type():
     classifications = {
         "request": _verdict(findings=[_finding(identifier_type="NON_ID")])
     }
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=legs,
         span_ids=[],
         classifications=classifications,
@@ -345,7 +345,7 @@ def test_build_opa_input_non_id_identifier_type_omits_data_type():
 def test_build_opa_input_data_item_carries_the_leg_verdict_summary():
     legs = [_leg("request")]
     classifications = {"request": _verdict()}
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=legs,
         span_ids=[],
         classifications=classifications,
@@ -363,7 +363,7 @@ def test_build_opa_input_identity_bundle_leg_lists_a_bundle_name():
     classifications = {
         "request": _verdict(contains_identity_bundle=True, sensitivity_level="RESTRICTED")
     }
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=legs,
         span_ids=[],
         classifications=classifications,
@@ -375,8 +375,8 @@ def test_build_opa_input_identity_bundle_leg_lists_a_bundle_name():
 
 def test_build_opa_input_pending_leg_produces_no_data_item():
     legs = [_leg("request")]
-    classifications = {"request": aggregate.PENDING}
-    payload = aggregate.build_opa_input(
+    classifications = {"request": utils.PENDING}
+    payload = utils.build_opa_input(
         legs=legs,
         span_ids=[],
         classifications=classifications,
@@ -384,13 +384,12 @@ def test_build_opa_input_pending_leg_produces_no_data_item():
         callee_entity_id=None,
     )
     assert payload["data_items"] == []
-    assert payload["data_count"] == 0
 
 
 def test_build_opa_input_no_payload_leg_produces_no_data_item():
     legs = [_leg("response", payload_hash=None)]
-    classifications = {"response": aggregate.NO_PAYLOAD}
-    payload = aggregate.build_opa_input(
+    classifications = {"response": utils.NO_PAYLOAD}
+    payload = utils.build_opa_input(
         legs=legs,
         span_ids=[],
         classifications=classifications,
@@ -398,26 +397,12 @@ def test_build_opa_input_no_payload_leg_produces_no_data_item():
         callee_entity_id=None,
     )
     assert payload["data_items"] == []
-    assert payload["data_count"] == 0
-
-
-def test_build_opa_input_data_count_matches_data_items_length():
-    legs = [_leg("request"), _leg("response", payload_hash="h2")]
-    classifications = {"request": _verdict(), "response": _verdict(sensitivity_level="PUBLIC")}
-    payload = aggregate.build_opa_input(
-        legs=legs,
-        span_ids=[],
-        classifications=classifications,
-        caller_entity_id=None,
-        callee_entity_id=None,
-    )
-    assert payload["data_count"] == 2 == len(payload["data_items"])
 
 
 def test_build_opa_input_requested_actions_reflect_legs_evidenced():
     legs = [_leg("response", payload_hash=None), _leg("request")]
-    classifications = {"request": aggregate.PENDING, "response": aggregate.NO_PAYLOAD}
-    payload = aggregate.build_opa_input(
+    classifications = {"request": utils.PENDING, "response": utils.NO_PAYLOAD}
+    payload = utils.build_opa_input(
         legs=legs,
         span_ids=[],
         classifications=classifications,
@@ -428,14 +413,14 @@ def test_build_opa_input_requested_actions_reflect_legs_evidenced():
 
 
 def test_build_opa_input_no_legs_means_no_requested_actions():
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
     )
     assert payload["requested_actions"] == []
 
 
 def test_build_opa_input_processing_agents_from_caller_and_callee():
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=[],
         span_ids=[],
         classifications={},
@@ -452,14 +437,14 @@ def test_build_opa_input_omits_processing_agents_entirely_when_both_entity_ids_a
     """Neither entity id is known — no ``processing_agents`` key at all, not
     an empty list, matching the rest of this module's "absent means absent"
     convention (e.g. classification_summary's missing-leg behaviour)."""
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
     )
     assert "processing_agents" not in payload
 
 
 def test_build_opa_input_includes_only_the_known_entity_id_when_one_is_none():
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=[],
         span_ids=[],
         classifications={},
@@ -474,7 +459,7 @@ def test_build_opa_input_never_carries_unmapped_fields():
     data_lineage/scope/the intent strings/accessing_user yet — they must be
     absent rather than null, so a partially-known payload never reads as a
     confident (but wrong) empty declaration to a policy author."""
-    payload = aggregate.build_opa_input(
+    payload = utils.build_opa_input(
         legs=[_leg("request")],
         span_ids=["s1"],
         classifications={"request": _verdict()},
@@ -484,6 +469,7 @@ def test_build_opa_input_never_carries_unmapped_fields():
     for absent_key in (
         "event_type",
         "data_sources",
+        "data_count",
         "data_destinations",
         "data_lineage",
         "scope",
