@@ -247,7 +247,7 @@ _SECOND: list[tuple[str, str | None, str, dict]] = [
     (_E1, _T2_GHOST, "SERVER", {
         "lineage.role": "request", "lineage.direction": "inbound",
         "lineage.protocol": "a2a", "lineage.exchange.id": _E1,
-        "lineage.self.id": "svc-b", "lineage.peer.addr": "10.244.9.9:5000",
+        "lineage.self.id": "svc-b",
         "lineage.principal.sub": "bob", "a2a.method": "message/send",
         "input.value": "hello from another trace",
     }),

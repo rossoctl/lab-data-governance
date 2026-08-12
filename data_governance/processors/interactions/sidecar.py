@@ -96,14 +96,6 @@ def _require_self_id(span: Span) -> str:
     return str(self_id)
 
 
-def _peer_ip(span: Span) -> str:
-    """The direct TCP caller's ip with the port stripped — the stable fold key
-    for an anonymous inbound client. ``lineage.peer.addr`` is inbound-only
-    (contract: never emitted on outbound), which is exactly where this is read."""
-    addr = str(_attr(span, "lineage.peer.addr") or _UNKNOWN)
-    return addr.rsplit(":", 1)[0] if ":" in addr else addr
-
-
 # ---------------------------------------------------------------------------
 # Row construction (pure)
 # ---------------------------------------------------------------------------
@@ -203,13 +195,14 @@ def _callee(kinds: Kinds, req: Span, echo_self_id: str | None) -> _Entity:
 
 
 def _caller(kinds: Kinds, req: Span) -> _Entity:
-    """Caller identity from facts. Inbound: user:<principal.sub> or the anonymous
-    client folded by peer ip. Outbound: this pod's self.id."""
+    """Caller identity from facts. Inbound: user:<principal.sub>, or the
+    anonymous client:(unknown) — the wire carries no caller address (contract
+    v1.4 removed ``lineage.peer.addr``). Outbound: this pod's self.id."""
     if _direction(req) == "inbound":
         sub = _attr(req, "lineage.principal.sub")
         if sub:
             return _Entity("user", str(sub))
-        return _Entity("client", _peer_ip(req))
+        return _Entity("client", _UNKNOWN)
     return _Entity("agent", _require_self_id(req))
 
 

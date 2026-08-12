@@ -15,8 +15,7 @@
       "lineage.protocol": "a2a",
       "lineage.exchange.id": "a1a1a1a1a1a1a1a1",
       "lineage.self.id": "weather-service",
-      "lineage.peer.addr": "10.244.2.5:47312",
-      "lineage.principal.sub": "alice",
+           "lineage.principal.sub": "alice",
       "a2a.method": "message/send",
       "input.value": "what is the weather in Tokyo?"
     }
@@ -157,8 +156,7 @@
       "lineage.protocol": "mcp",
       "lineage.exchange.id": "d1d1d1d1d1d1d1d1",
       "lineage.self.id": "weather-tool",
-      "lineage.peer.addr": "10.244.2.5:51900",
-      "mcp.method": "tools/call",
+           "mcp.method": "tools/call",
       "mcp.tool": "get_weather",
       "input.value": {
         "city": "Tokyo"

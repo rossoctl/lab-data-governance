@@ -43,7 +43,7 @@ GOLDEN: list[tuple[str, str | None, str, dict[str, Any]]] = [
     (A1, GHOST, "SERVER", {
         "lineage.role": "request", "lineage.direction": "inbound",
         "lineage.protocol": "a2a", "lineage.exchange.id": A1,
-        "lineage.self.id": "weather-service", "lineage.peer.addr": "10.244.2.5:47312",
+        "lineage.self.id": "weather-service",
         "lineage.principal.sub": "alice", "a2a.method": "message/send",
         "input.value": "what is the weather in Tokyo?",
     }),
@@ -83,7 +83,7 @@ GOLDEN: list[tuple[str, str | None, str, dict[str, Any]]] = [
     (D1, B3, "SERVER", {
         "lineage.role": "request", "lineage.direction": "inbound",
         "lineage.protocol": "mcp", "lineage.exchange.id": D1,
-        "lineage.self.id": "weather-tool", "lineage.peer.addr": "10.244.2.5:51900",
+        "lineage.self.id": "weather-tool",
         "mcp.method": "tools/call", "mcp.tool": "get_weather",
         "input.value": {"city": "Tokyo"},
     }),
