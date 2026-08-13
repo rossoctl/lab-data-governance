@@ -10,19 +10,19 @@ interaction's current legs/classifications/spans, and only calls OPA
 the interaction's latest stored decision's fingerprint. When it matches, the
 cached decision is reused with no OPA call.
 
-Append-only/versioned, mirroring ``interaction_risk_records`` (0012)'s
+Append-only/versioned, mirroring ``interaction_risk_records`` (0016)'s
 discipline rather than a keyed-per-interaction "latest row" shape: a
 decision can change for the same interaction (FR-DAS-012 condition 3, "new
 or updated OPA decision"), and that change must be detectable by comparing
 against a specific prior version rather than being silently overwritten.
 ``UNIQUE (interaction_id, version)`` enforces the same immutable-snapshot
-invariant as 0012's risk records.
+invariant as 0016's risk records.
 
 FK-free per the 0004 derived-table convention. ``risk_level`` /
 ``enforcement_type`` stay TEXT, not ENUM — they are OPA-sourced and churn
-with policy (ADR-0014), same reasoning as 0012's risk-record columns.
+with policy (ADR-0014), same reasoning as 0016's risk-record columns.
 ``confidence`` is ``NUMERIC(4,3)`` — a bounded [0, 1] probability to three
-decimal places — not ``DOUBLE PRECISION``, same reasoning as 0012's
+decimal places — not ``DOUBLE PRECISION``, same reasoning as 0016's
 ``overall_confidence``.
 
 No NOTIFY trigger is added here. A ``dg_interaction_policy_decided`` channel
@@ -36,19 +36,23 @@ risk-record recompute.
 
 Hand-written ``op.execute`` only, per ADR-0002/0005.
 
-Chained after ``0012_das_risk_tables``.
+Chained after ``0016_das_risk_tables``. Renumbered from ``0013`` to ``0017``
+(and ``0012_das_risk_tables`` from ``0012`` to ``0016``) when merging
+``main`` into this branch, to resolve the two-heads collision with main's
+lineage chain — see ``0016``'s docstring. No DDL changed.
 
-Revision ID: 0013_policy_decisions
-Revises: 0012_das_risk_tables
+Revision ID: 0017_policy_decisions
+Revises: 0016_das_risk_tables
 Create Date: 2026-08-06
 
 Note on the revision id: ``alembic_version.version_num`` is
 ``VARCHAR(32)`` (set by alembic's own bootstrap migration/tooling, not this
 repo). ``"0013_interaction_policy_decisions"`` (33 chars) overflows that
 column — confirmed by running this migration against the real chain, not a
-guess — so the id is shortened to ``0013_policy_decisions`` (21 chars). The
-table name itself stays the fully descriptive
-``interaction_policy_decisions``; only the revision slug is abbreviated.
+guess — so the id is shortened to ``0013_policy_decisions`` (21 chars), and
+that same shortening carries over to the ``0017`` renumbering. The table
+name itself stays the fully descriptive ``interaction_policy_decisions``;
+only the revision slug is abbreviated.
 """
 
 from __future__ import annotations
@@ -58,8 +62,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "0013_policy_decisions"
-down_revision: Union[str, Sequence[str], None] = "0012_das_risk_tables"
+revision: str = "0017_policy_decisions"
+down_revision: Union[str, Sequence[str], None] = "0016_das_risk_tables"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

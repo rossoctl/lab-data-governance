@@ -18,6 +18,44 @@ uv.lock
 !.claude/skills/otel-span-table/**
 skills-lock.json
 
+# Per-developer Claude Code instructions. Claude Code reads `CLAUDE.local.md`
+# alongside the tracked `CLAUDE.md`, so this is the seam for personal working
+# preferences (verbosity, how to be corrected) that should not bind anyone else.
+# Project-wide conventions — commit sign-off, the issue tracker, where domain
+# docs live — belong in tracked `CLAUDE.md` instead, so every contributor and
+# agent gets them from a clone.
+CLAUDE.local.md
+
+# Design-interrogation scratch (the `/grilling` skill's working notes). Local
+# thinking-aloud, not a documented home for decisions: this repo is
+# single-context, so settled reasoning belongs in `CONTEXT.md` (vocabulary) or
+# `docs/adr/` (decisions) — see `docs/agents/domain.md`. Keeping a third
+# location tracked would put design rationale in a place nothing references and
+# no convention covers. Fold anything worth keeping into an ADR before the file
+# goes stale; rejected alternatives and surfaced assumptions are the parts most
+# often worth promoting.
+.grill/
+
+# Agent-workflow notes installed locally by the engineering skills (issue-tracker
+# conventions, triage labels, how to consume the domain docs). Local tooling
+# configuration rather than project documentation — the same reasoning as
+# `.agents/` and `.claude/skills/` above.
+#
+# NOTE: tracked `CLAUDE.md` cites `docs/agents/issue-tracker.md`,
+# `triage-labels.md` and `domain.md`, so those three pointers dangle in a fresh
+# clone. Deliberate: they tell an agent which conventions apply, and the files
+# are reinstalled by the skill setup. If that trade stops being worth it, either
+# inline the conventions into `CLAUDE.md` or track this directory — don't just
+# drop the references.
+docs/agents/
+
+# Node/Playwright artifacts. The UI's own deps live under `ui/` (see the Vite
+# section below); these are the root-level equivalents left behind when a
+# browser install or an e2e run is driven from the repo root rather than `ui/`.
+node_modules/
+test-results/
+playwright-report/
+
 # Pipeline runtime output
 classification/output/
 

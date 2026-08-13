@@ -231,18 +231,24 @@ def test_optional_columns_default_to_empty_array_not_null(migrated_dsn: str) -> 
 # --- migration chain -----------------------------------------------------------
 
 
-def test_head_is_0013(migrated_dsn: str) -> None:
-    with psycopg.connect(migrated_dsn) as conn:
-        (version,) = conn.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
-    assert version == "0013_policy_decisions"
+def test_0017_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """This revision (renumbered from 0013 to 0017 — see its own docstring)
+    is the current head, but the assertion here is deliberately only
+    reachability. The head assertion lives solely in
+    ``test_latest_migration.py`` — the one canonical place — so a new
+    revision landing on top only has to edit that file, not this one."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked = {rev.revision for rev in script.walk_revisions()}
+    assert "0017_policy_decisions" in walked
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
-    """upgrade -> downgrade(0012) -> upgrade cleanly removes and re-adds
+    """upgrade -> downgrade(0016) -> upgrade cleanly removes and re-adds
     interaction_policy_decisions. Downgrading past this revision must not
-    disturb interaction_risk_records (0012) or anything below it."""
+    disturb interaction_risk_records (0016) or anything below it."""
     from alembic import command
 
     from data_governance.db.migrate import _alembic_config
@@ -253,7 +259,7 @@ def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
     command.upgrade(cfg, "head")
     assert _columns(pg_dsn, "interaction_policy_decisions")
 
-    command.downgrade(cfg, "0012_das_risk_tables")
+    command.downgrade(cfg, "0016_das_risk_tables")
     assert not _columns(pg_dsn, "interaction_policy_decisions")
     assert _columns(pg_dsn, "interaction_risk_records"), (
         "downgrading past 0013 must not disturb interaction_risk_records"

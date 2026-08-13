@@ -1,5 +1,17 @@
 # Drop the entity/interaction Graph view; its React Flow + dagre deps leave with it
 
+> **Partly superseded by [ADR-0029](0029-flow-view-graph-diagram-lineage-tabs.md).**
+> A topology graph is back, at `/traces/{id}/graph`, as a **peer view** of the span
+> tree — so this ADR's two-way top-level switcher does **not** hold: it is now a
+> five-way one (Span tree | Interaction flow | Interaction diagram | Execution Flow |
+> Lineage). The
+> **Consequences** section below is stale: graph source exists again (as
+> `ExecutionFlowGraph.tsx`), a topology dep is back (`@patternfly/react-topology`,
+> lazy-loaded rather than sitting in the initial bundle), and a jsdom stub returns
+> (`getBBox`, not `ResizeObserver`). The **Why** section is not retracted — ADR-0029
+> takes up its redundancy and dependency-cost arguments directly and states what
+> changed underneath them (ADR-0025's legs, ADR-0028's derived lineage).
+
 The trace-detail view shipped in ADR-0019 as a **three-way switcher**: Span
 tree, Interaction flow, and a **Graph** view — a read-only `@xyflow/react` +
 dagre canvas drawing entities as nodes and interactions as edges. This ADR

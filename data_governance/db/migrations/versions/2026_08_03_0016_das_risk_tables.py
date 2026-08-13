@@ -60,8 +60,15 @@ this revision originally chained from) so it applies last, after the
 ``0010``/``0011`` migrations that landed on ``main`` while this one was in
 review. Renumbered from ``0010`` to ``0012`` accordingly — no DDL changed.
 
-Revision ID: 0012_das_risk_tables
-Revises: 0011_drop_leg_original_seq
+Renumbered again, from ``0012`` to ``0016``, when merging ``main`` into this
+branch: main's lineage chain (0012-0015) landed independently and also
+claimed ``0012``, producing two heads. This revision re-parents onto the
+resulting head, ``0015_lineage_entities_rename``, per the same
+renumbering-is-safe-pre-shipping reasoning ``0015`` documents for its own
+renumber. No DDL changed.
+
+Revision ID: 0016_das_risk_tables
+Revises: 0015_lineage_entities_rename
 Create Date: 2026-07-29
 """
 
@@ -72,8 +79,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "0012_das_risk_tables"
-down_revision: Union[str, Sequence[str], None] = "0011_drop_leg_original_seq"
+revision: str = "0016_das_risk_tables"
+down_revision: Union[str, Sequence[str], None] = "0015_lineage_entities_rename"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

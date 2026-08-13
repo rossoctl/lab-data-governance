@@ -443,16 +443,20 @@ def test_insert_into_unrelated_table_does_not_notify(migrated_dsn: str) -> None:
 # --- migration chain -----------------------------------------------------------
 
 
-def test_head_is_0013(migrated_dsn: str) -> None:
-    """The migration chain head has since advanced to 0013 (issue #101,
-    interaction_policy_decisions, chained after this revision). Updated here
-    for the same reason this pin exists in tests/db/test_latest_migration.py
-    — the current head landed one revision past this migration."""
-    with psycopg.connect(migrated_dsn) as conn:
-        (version,) = conn.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
-    assert version == "0013_policy_decisions"
+def test_0016_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """A fresh migrate applies this revision (it is reachable in the chain).
+
+    This revision (renumbered from 0012 to 0016 — see its own docstring) is
+    not head; interaction_policy_decisions (0017) chains after it. The head
+    assertion lives solely in ``test_latest_migration.py`` — the one
+    canonical place — so a new revision landing on top only has to edit that
+    file, not this one."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked = {rev.revision for rev in script.walk_revisions()}
+    assert "0016_das_risk_tables" in walked
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:

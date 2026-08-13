@@ -88,6 +88,37 @@ def test_findings_is_jsonb_and_model_version_is_integer(migrated_dsn: str) -> No
 # --- migration chain ---------------------------------------------------------
 
 
+def test_0008_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """A fresh migrate applies 0008 (it is in the chain). What this revision adds
+    is asserted structurally by the tests above; this pins that the revision is
+    reachable. The head-revision assertion lives with whichever revision is
+    currently head (see ``test_latest_migration.py::test_head_is_0017``) — the
+    same reason 0007's test stopped asserting head once 0008 landed."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked = {rev.revision for rev in script.walk_revisions()}
+    assert "0008_payload_classifications" in walked
+
+
+def test_0015_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """A fresh migrate applies 0015 (it is in the chain).
+
+    This revision was `main`'s head at the time it was written (see the
+    docstring on ``test_latest_migration.py::test_head_is_0017`` for how the
+    subsequent merge with the risk-computation branch moved head past this
+    revision to 0017). The head-revision assertion now lives solely in
+    ``test_latest_migration.py`` — the one canonical place — so a new
+    revision landing on top only has to edit that file, not this one."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked = {rev.revision for rev in script.walk_revisions()}
+    assert "0015_lineage_entities_rename" in walked
+
+
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
     """upgrade -> downgrade(0007) -> upgrade cleanly removes and re-adds the
     payload_classifications table. Downgrade stops one revision below this one —

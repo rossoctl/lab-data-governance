@@ -3,9 +3,153 @@
    src/App applies it on mount. These few rules cover the app-shell background
    and the monospace treatment the trace/span views rely on. */
 
+/* ---------------------------------------------------------------------------
+   The dg palette + layout metrics: the single source for the hex values and
+   sizes that used to be restated inline across the flow/tree/detail components.
+   Declared on :root so both CSS rules here and inline `var(--dg-…)` styles in
+   the TSX resolve to the same value — change a color once, everywhere follows.
+
+   The values are the vanilla shell's, kept EXACTLY as they were (same pixels);
+   PatternFly's own tokens are close but not identical, so adopting them would
+   have shifted the rendered colors, which this palette deliberately does not do.
+
+   Palette:
+   - --dg-color-muted    #888     secondary/deemphasised text (service names,
+                                  counts, "not yet …" notes, the panel's ×)
+   - --dg-color-error    #f85149  error text (ERROR status, failed-read notes)
+   - --dg-color-ok       #6acf6a  ok status text
+   - --dg-color-label    #c9c9c9  highlight-legend set labels
+   - --dg-surface-app    #151515  app-shell background
+   - --dg-surface-panel  #1b1b1b  floating-panel / legend background
+   - --dg-border         #444     floating-panel border
+   - --dg-border-subtle  #2c2c2c  legend border, detail-panel card border
+                                  (dimmer than --dg-border)
+   - --dg-surface-card   #202020  a hair above --dg-surface-panel: the detail
+                                  panel's section cards, which need to read as
+                                  raised off the panel without a fill strong
+                                  enough to look boxy in the PF dark theme.
+                                  Deliberately between --dg-surface-panel (#1b1b1b)
+                                  and --dg-border-subtle (#2c2c2c).
+   - --dg-tree-guide     #555     the interactions tree's │/└─ guide glyphs
+   - --dg-row-selected   #3a4a66  span-tree selected-row background
+   - --dg-row-highlight            flow-table selected-row tint
+   - --dg-lineage-source #ff6b4a  the Lineage tab's DATA SOURCE nodes (ADR-0028
+                                  D14 `list sources`). A DEDICATED token, and
+                                  deliberately NOT --dg-color-error, even though
+                                  both are reddish and the ask was "e.g. in red".
+                                  Two independent reasons:
+                                  (1) In a governance UI "is a data source" must
+                                  not look like "failed". --dg-color-error is
+                                  already the ERROR vocabulary — failed legs
+                                  (.dg-graph-edge--error), ERROR status, failed-
+                                  read notes — so painting a healthy origin with
+                                  it would say something false about the node in
+                                  the one place a reader is scanning for trouble.
+                                  (2) It would also be AMBIGUOUS, not merely
+                                  impolite. (This second reason was originally
+                                  "entity kind already owns node hue, and the
+                                  `external_service` kind is painted PF's danger
+                                  red, so an error-red source ring would be
+                                  indistinguishable from it". Graph nodes are now
+                                  NEUTRAL for every kind — see
+                                  nodeNeutralColorVar — so that exact collision is
+                                  gone. The ambiguity with the ERROR vocabulary in
+                                  (1) is not: a red-ringed healthy origin beside a
+                                  red failed edge still misreads.)
+                                  Hence a distinct warmer orange-red, and hue is
+                                  NOT the only carrier — see
+                                  .dg-graph-node--datasource, which adds a halo
+                                  ring and a badge so the meaning survives a
+                                  colour-vision deficiency. A legend accompanies
+                                  it in the tab (a colour with no key is a
+                                  puzzle).
+                                  IT IS NOW THE NODE STROKE, not only a halo: with
+                                  kind hue gone from the graph, a data source is the
+                                  only COLOURED node among grey ones, which is the
+                                  fact the Lineage tab is for. The halo and the 8 3
+                                  dash are kept on top so hue is not the only
+                                  carrier.
+                                  ONE token serves BOTH the trace's source set and
+                                  the single CHOSEN source the walk is tracing:
+                                  they are the same kind of fact (an origin), and
+                                  the refinement is geometry — a double halo and a
+                                  heavier stroke, see
+                                  .dg-graph-node--chosen-source. A fourth hue was
+                                  rejected for the reason this whole block gives:
+                                  hue on this graph is already carrying entity
+                                  kind, error and two directions, and one more
+                                  would be both ambiguous and invisible to a
+                                  colour-vision-deficient reader.
+   - --dg-lineage-upstream  #7aa2f7  fan-in: where the selection's data CAME FROM
+   - --dg-lineage-downstream #b48ead fan-out: where it WENT
+                                  Two tokens because upstream and downstream are
+                                  OPPOSITE claims about who gave data to whom, and
+                                  a reader who cannot tell them apart has been told
+                                  nothing useful. They are not a light/dark pair of
+                                  one hue: an entity is routinely BOTH (agent →
+                                  tool → agent is every tool call), so the two
+                                  treatments have to remain legible when they land
+                                  on the same node — which is why the node carries
+                                  them as two separate ring layers rather than one
+                                  blended colour. Direction is additionally carried
+                                  by dash pattern on the edges, again so hue is not
+                                  load-bearing alone.
+
+   Layout: the floating detail panel's width is used TWICE — by the panel itself
+   and by the right gutter the tables reserve so they shrink out from under the
+   float. Both read these two vars, so the panel and its gutter cannot drift.
+   --------------------------------------------------------------------------- */
+:root {
+  --dg-color-muted: #888;
+  --dg-color-error: #f85149;
+  --dg-color-ok: #6acf6a;
+  --dg-color-label: #c9c9c9;
+  --dg-surface-app: #151515;
+  --dg-surface-panel: #1b1b1b;
+  --dg-border: #444;
+  --dg-border-subtle: #2c2c2c;
+  --dg-surface-card: #202020;
+  --dg-tree-guide: #555;
+  --dg-row-selected: #3a4a66;
+  --dg-row-highlight: rgba(56, 139, 253, 0.28);
+  /* Translucent BLACK overlays, not palette colours — a drop shadow and a chip's
+     hairline scrim. Tokenised so they are governed like everything else rather than
+     restated inline, but kept separate from the palette above because they darken
+     whatever is behind them instead of naming a colour of their own. */
+  --dg-shadow-float: rgba(0, 0, 0, 0.5);
+  --dg-scrim-chip: rgba(0, 0, 0, 0.35);
+  --dg-lineage-source: #ff6b4a;
+  --dg-lineage-upstream: #7aa2f7;
+  --dg-lineage-downstream: #b48ead;
+
+  /* Floating detail-panel geometry (flow view). The panel is
+     `width: var(--dg-detail-panel-width)` with a
+     `min-width: var(--dg-detail-panel-min)` floor at
+     `right: var(--dg-detail-panel-gap)`; the tables' gutter is derived from the
+     same three below, so the two agree by construction.
+
+     The 420px floor (was 320px) was set by LegTabs' inner tab row: at 320px the
+     three section labels `Payload | Classification | Data lineage` do not fit on
+     one line, so PF falls back to its horizontal scroll buttons and hides
+     `Data lineage` behind a forward arrow. 420px fits all three.
+
+     The 520px floor (was 420px) gives the panel's THIRD card — the 5-column
+     span-evidence table (Role / Span / Parent / Kind / Service) — room to
+     breathe. It is NOT on its own what stops `Service` truncating to `Ser…`:
+     see `.dg-span-evidence` below for the actual cause and fix. Measured, the
+     table's intrinsic width overflowed its card by the SAME ~51px at 420px and
+     at 520px, so more pixels alone never cleared the clip.
+
+     Raise it here only — the gutter's `max()` below derives from this var, so
+     the tables follow automatically. */
+  --dg-detail-panel-width: 30%;
+  --dg-detail-panel-min: 520px;
+  --dg-detail-panel-gap: 1rem;
+}
+
 html.pf-v5-theme-dark,
 body {
-  background: #151515;
+  background: var(--dg-surface-app);
 }
 
 body {
@@ -68,7 +212,184 @@ body {
    (`.pf-v5-c-table tr:where(.pf-v5-c-table__tr).pf-m-clickable`, specificity
    0-2-1), which otherwise paints its own dark background over ours. */
 .pf-v5-c-table tr.pf-v5-c-table__tr[data-dg-selected='active'] {
-  background: rgba(56, 139, 253, 0.28);
+  background: var(--dg-row-highlight);
+}
+
+/* The flow view's floating detail panel and the right gutter its tables
+   reserve. These two rules are the single source of the panel geometry: the
+   gutter's `padding-right` is DERIVED from the panel's own width/min/gap vars
+   (same `max()`, plus a gap on each side) instead of restating `30%`/`320px` a
+   second time, so widening the panel widens its gutter automatically.
+
+   The panel floats fixed over the page rather than occupying a layout column,
+   so the tables use the full width when nothing is selected; the gutter class is
+   applied only while the panel is open, and the tables then shrink out from
+   under the float instead of being covered. */
+.dg-detail-panel {
+  position: fixed;
+  /* Sit just below the app masthead rather than the viewport top so the panel
+     doesn't tuck under the header. Tracks the real header height via
+     PatternFly's CSS var, with a sensible fallback. */
+  top: calc(var(--pf-v5-c-page__header--MinHeight, 4.75rem) + var(--dg-detail-panel-gap));
+  right: var(--dg-detail-panel-gap);
+  width: var(--dg-detail-panel-width);
+  min-width: var(--dg-detail-panel-min);
+  /* Leave the same gap above and below (hence 2x) so the panel never runs off
+     the bottom of the viewport. */
+  max-height: calc(
+    100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) -
+      (var(--dg-detail-panel-gap) * 2)
+  );
+  overflow-y: auto;
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px var(--dg-shadow-float);
+  padding: 1rem;
+  z-index: 100;
+}
+
+.dg-detail-gutter {
+  padding-right: max(var(--dg-detail-panel-width), var(--dg-detail-panel-min));
+  margin-right: calc(var(--dg-detail-panel-gap) * 2);
+}
+
+/* The detail panel's three sections — the caption + fields, the per-leg tab set,
+   and the span evidence — as separate cards. Stated ONCE here and applied three
+   times in FlowDetailPanel rather than as three copies of an inline style
+   object: the grouping is one design decision, so it gets one definition.
+   Before this, the three regions were separated only by margins and read as a
+   single undifferentiated column.
+
+   Deliberately subtle: the panel is already a dark floating overlay with its own
+   `--dg-border`, so the cards use the dimmer `--dg-border-subtle` and the barely
+   raised `--dg-surface-card` fill. Heavy borders would stack three boxes inside
+   a box and fight the PF dark theme; the goal is legible grouping, not chrome.
+   The slight horizontal inset (`margin: … 0.125rem`) is what makes the cards
+   read as sitting *on* the panel rather than as extra panel edges. */
+.dg-detail-card {
+  /* The card's horizontal padding, named because the PF tabs/table bleed below
+     cancels it out and the two must not drift. */
+  --dg-detail-card-pad: 0.625rem;
+  border: 1px solid var(--dg-border-subtle);
+  border-radius: 3px;
+  background: var(--dg-surface-card);
+  padding: 0.5rem var(--dg-detail-card-pad);
+  margin: 0 0.125rem 0.5rem;
+  /* The Payload pane's JSON CodeBlock and the lineage keys are the widest things
+     in here. `min-width: 0` lets this block shrink below its content's intrinsic
+     width so those children's own wrap/scroll rules apply inside the card
+     instead of pushing its border past the panel edge (which would give the
+     scrolling panel a horizontal scrollbar). */
+  min-width: 0;
+}
+
+/* Last card carries no bottom margin — the panel's own 1rem padding is the
+   spacing there, and doubling them leaves a dead band under the span table. */
+.dg-detail-card:last-child {
+  margin-bottom: 0;
+}
+
+/* The three regions each already lead with their own spacing (the caption row's
+   margin, LegTabs' `marginTop`, the `Spans` heading's `marginTop`), which inside
+   a bordered card reads as a gap between the border and the content. The card
+   supplies the padding now, so collapse the first/last child's own margins. */
+.dg-detail-card > :first-child {
+  margin-top: 0;
+}
+
+.dg-detail-card > :last-child {
+  margin-bottom: 0;
+}
+
+/* PF's `Tabs` paints a full-width bottom border under its tab list, and the PF
+   compact `Table` paints one under its header row and each body row. Against the
+   card border those land ~0.6rem inside a nearly identical line and read as a
+   doubled edge. Bleeding each set of tabs and the table back out to the card's
+   padding edge makes the PF rule *be* the section divider instead of competing
+   with the card border.
+
+   `--dg-detail-card-pad` is the one statement of the card's horizontal padding,
+   so the bleed cannot drift from the padding it is cancelling.
+
+   The bleed must be applied on a DIRECT child of the card (`> `), not on any
+   descendant `.pf-v5-c-tabs`: LegTabs wraps its two tab levels in a plain div, so
+   an unscoped descendant selector widened the inner `Tabs` past that wrapper and
+   overflowed it by exactly the bleed amount. `.dg-legtabs` is that wrapper, and
+   it bleeds as a whole — both its tab levels then line up on the same edge. */
+.dg-detail-card > .pf-v5-c-tabs,
+.dg-detail-card > .pf-v5-c-table,
+.dg-detail-card > .dg-legtabs {
+  margin-left: calc(var(--dg-detail-card-pad) * -1);
+  margin-right: calc(var(--dg-detail-card-pad) * -1);
+  width: calc(100% + (var(--dg-detail-card-pad) * 2));
+}
+
+/* Inside the bled-out LegTabs wrapper the panes must come back IN to the card's
+   text column — only the tab rows themselves are meant to reach the edge. */
+.dg-detail-card > .dg-legtabs > :not(.pf-v5-c-tabs),
+.dg-detail-card > .dg-legtabs > * > :not(.pf-v5-c-tabs) {
+  padding-left: var(--dg-detail-card-pad);
+  padding-right: var(--dg-detail-card-pad);
+}
+
+/* The span-evidence table's `Service` header truncating to `Ser…` / `Servi`
+   (FlowDetailPanel's third card). ROOT CAUSE, measured rather than guessed:
+
+   1. `SpanLink` renders each span id inside a PF `Button variant="link"`, and
+      `.pf-v5-c-button` sets `white-space: nowrap`. The id is a 16-hex-char
+      monospace token plus an ellipsis — one unbreakable 150px word.
+   2. Two such columns (Span + Parent = ~300px) plus Role and Kind give the table
+      an intrinsic minimum of ~533px, ~51px WIDER than the card's ~482px content
+      box. A table cannot be squeezed below its cells' minimum content width, so
+      it simply overflows.
+   3. PF then clips the overflowing header, because `table.css` applies the
+      truncate treatment to EVERY thead unconditionally:
+        `.pf-v5-c-table > thead { --…cell--Overflow: hidden;
+                                  --…cell--TextOverflow: ellipsis;
+                                  --…cell--WhiteSpace: nowrap; }`
+      `Service` is the last column, so it is the one the card's edge cuts.
+
+   This is why raising `--dg-detail-panel-min` alone could never fix it: the
+   overflow was the same ~51px at 420px and at 520px, because the table's floor
+   is set by its content, not by the container. It is also NOT the
+   `pf-m-grid-md` responsive breakpoint — that is a `max-width: 768px` VIEWPORT
+   media query, and the clip reproduces at 1000/1280/1600px viewports where
+   grid-md is inactive and the header is still `display: table-cell`.
+
+   The fix removes the cause rather than the symptom: let the span-id links wrap
+   so the two widest columns are no longer unbreakable. The table then fits the
+   card (480px), the columns proportion naturally (Span/Parent shrink to ~119px,
+   Service GROWS to ~89px), the header is whole, and the panel loses the
+   horizontal scrollbar the overflow used to give it.
+
+   Preferred over PF's `Table gridBreakPoint=''` (that only disables the stacked
+   mode, which was never what clipped this) and over a `Th` `width`/`modifier`
+   (those fix the header by capping the data cells, i.e. they move the truncation
+   onto the span ids — which `SpanLink` already truncates once at 16 chars and
+   should not truncate twice). */
+.dg-span-evidence .pf-v5-c-button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Data-lineage keys (DataLineageView): an **Entity** natural key is a long
+   unbreakable token (`tool:agent:(proj,svc):name`,
+   `llm:host.example.com/model`), and the lineage block lives inside the flow
+   view's ~30%-wide floating detail panel. Left alone, those keys push their
+   container past the panel edge and the content is clipped off-screen — PF
+   labels additionally force `nowrap` + ellipsis on the inner
+   `.pf-v5-c-label__text`, which an inline style on the outer element cannot
+   reach. So the break is granted explicitly, on the label's inner text node as
+   well as on the plain table cell. */
+.dg-lineage-key,
+.dg-lineage-key .pf-v5-c-label__text {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: normal;
+  /* PF caps the label text at 100% of the label; the wrap above needs the cap
+     lifted or a single long token still overflows before it can break. */
+  max-width: none;
 }
 
 /* Span-evidence role glyphs (see RoleIcon / roleMeta). Visual weight tracks
@@ -82,4 +403,790 @@ body {
 
 .dg-role-icon--minus {
   opacity: 0.45;
+}
+
+/* ---------------------------------------------------------------------------
+   Execution Flow graph (ExecutionFlowGraph / lib/graph).
+
+   PF topology renders into an SVG that fills its container, so the container —
+   not the SVG — is what must have a height; without one the surface collapses to
+   zero and the graph is invisible. The height is viewport-relative so the graph
+   uses the space the tables would have, minus the masthead and the breadcrumb/
+   tab chrome above it, and it tracks the real header height through the same
+   PatternFly var `.dg-detail-panel` reads rather than restating a pixel guess.
+
+   The fill is `--dg-surface-panel` (not the app background) so the drawing area
+   reads as a distinct canvas in the dark theme, with the same `--dg-border` the
+   floating detail panel uses. All tokens, no raw hex. */
+/* THE GRAPH TAB'S SHELL: controls, then the drawing, then its legend, then every
+   warning/informational balloon — one column, in that order.
+
+   THREE ARRANGEMENTS, and the history is the justification for this one:
+     1. Notices STACKED ABOVE the surface. On the Lineage view there can be ten at once
+        (source roll-up, coverage caveat, two prompts, two per-direction verdicts, three
+        graph disclosures, an unresolved-keys warning), which pushed the drawing entirely
+        below the fold: the reader scrolled past every caveat to reach the picture the
+        caveats are about.
+     2. A fixed-width SIDE RAIL beside the graph (a two-column grid). That kept both on
+        screen, but it permanently spent 22rem of HORIZONTAL room — on a graph whose
+        columns grow rightwards with call depth, i.e. the one axis it could least afford.
+     3. BELOW the graph (this). The drawing gets the full width, and the prose reads as
+        the footnotes it is.
+
+   The CONTROLS did not move down with the text. They are what a reader ACTS on, and an
+   instruction to "select an entity" whose picker sat under ten alerts is unfollowable —
+   see `EntityGraphProps.controls`.
+
+   No grid and no `order` any more: DOM order IS visual order, so nothing here has to
+   reconcile the two. (The rail arrangement deliberately inverted them so a screen reader
+   met the caveats before the drawing; that only made sense while the two were side by
+   side. Below the graph, DOM-first would announce ten alerts before the reader reached
+   the picture.) The rail's `--dg-graph-rail-width` token and `.dg-graph-main` wrapper
+   were deleted with it — the graph and its legend no longer need a column of their own
+   when there is only one column. */
+.dg-graph-layout {
+  /* A plain block: each child is full-width and stacks. Declared rather than left
+     implicit so the class still has a stated contract for anyone adding a child. */
+  display: block;
+}
+
+/* THE NOTICE BLOCK, below the graph and its legend.
+
+   No height cap and no internal scroll — both were properties of the rail, where the
+   block had to fit beside a fixed-height canvas. Below the graph the page scroll is the
+   right scroll: a reader who wants the eighth caveat scrolls the page to it, rather than
+   discovering a second scrollbar inside a panel.
+
+   PF renders each `Alert isInline` as a block, so they stack with no extra rules; their
+   existing `marginBottom: 0.5rem` provides the rhythm. The top margin separates the
+   first alert from the legend above it. */
+.dg-graph-notices {
+  margin-top: 0.5rem;
+}
+
+.dg-graph-surface {
+  height: calc(100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) - 12rem);
+  min-height: 320px;
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border);
+  border-radius: 4px;
+  /* The surface owns its own pan/zoom; nothing should escape its rounded box. */
+  overflow: hidden;
+  /* The positioning context for `.dg-graph-controls`, which floats over the
+     drawing area rather than taking layout height from it (the surface's height
+     is already viewport-derived above, so a control bar in flow would push the
+     SVG shorter by its own height on every render). */
+  position: relative;
+}
+
+/* The zoom control bar, floated over the bottom-left of the drawing area.
+   Bottom-LEFT specifically: the nodes are laid out on a layered grid that grows
+   RIGHTWARDS with call depth and DOWNWARDS with chronology (see
+   ExecutionFlowGraph's COLUMN_STEP_X / ROW_STEP_Y), so its mass is to the right,
+   and the floating detail panel occupies the right as well — leaving this the
+   corner least likely to sit on top of a node. (It was the same corner under the
+   earlier diagonal staircase and the `rankdir: LR` Dagre layout before it.)
+   Inside the surface's `overflow: hidden` box, so it is clipped with the canvas
+   rather than overhanging it.
+
+   `width: max-content` keeps the container exactly as wide as the four buttons:
+   PF's Toolbar is a block element and would otherwise span the full surface
+   width, turning the whole bottom strip into a transparent overlay that
+   swallowed pan/zoom drags aimed at the graph behind it. */
+.dg-graph-controls {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.5rem;
+  width: max-content;
+  /* Above the SVG, which establishes no stacking context of its own. */
+  z-index: 1;
+  /* The buttons are PF tertiary buttons over a dark canvas; the panel fill and
+     the standard border give them a readable plate to sit on instead of letting
+     edges run visibly under the glyphs. All tokens, no raw hex. */
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border);
+  border-radius: 4px;
+  padding: 0.125rem;
+}
+
+/* The per-edge `seq` tag (PF's DefaultConnectorTag). Muted rather than
+   full-contrast: the tag is an ordinal reference a reader looks up when they need
+   it, not the primary content of the arrow, and at two tags per interaction a
+   bright treatment turns a busy trace into noise. */
+/* EVERY RULE IN THIS BLOCK IS PREFIXED WITH ITS CO-LOCATED PF CLASS, and it is not
+   decoration — without it none of them render.
+
+   PF ships `.pf-topology__edge__tag > text { fill; stroke; stroke-width }` at
+   specificity (0,1,1). A bare `.dg-graph-edge-tag text` is ALSO (0,1,1), so the two
+   tie — and a tie is broken by source order, which we lose: PF's topology stylesheets
+   are imported inside ExecutionFlowGraph.tsx so they ride the lazy chunk, and that
+   chunk's CSS is injected AFTER index.css. Verified in the built output, not inferred.
+   Naming the PF class (which sits on the same element) makes ours (0,2,1) and settles
+   it on specificity, where source order cannot reach.
+
+   The same applies to the node-background and edge-link rules further down, for the
+   same reason. See also ExecutionFlowGraph.tsx's import-order note, which used to claim
+   the `.dg-*` graph rules were order-independent — true when there were three of them,
+   and the thing that let this class of bug through once there were twenty.
+
+   `> text` rather than ` text` mirrors PF's own child combinator, so the two selectors
+   match exactly the same element and neither can drift onto a descendant the other
+   misses. */
+.pf-topology__edge__tag.dg-graph-edge-tag > text {
+  fill: var(--dg-color-label);
+  /* PF also paints a 0.5px `stroke` in its tag-text colour (white in dark theme), so
+     overriding `fill` alone leaves every tag outlined in white and the colour barely
+     reads. The outline exists to lift PF's tag off a busy background; our tags sit on
+     the tag's own filled background rect, so there is nothing to lift away from. */
+  stroke: none;
+}
+
+/* An error leg's tag matches its arrow, so the colour reads as one signal about
+   one leg rather than two unrelated marks. Same `--dg-color-error` the edge
+   stroke uses (set in ExecutionFlowGraph's DirectedEdge). */
+.pf-topology__edge__tag.dg-graph-edge-tag--error > text {
+  fill: var(--dg-color-error);
+}
+
+/* An isolated entity — derived from the trace, but named by no interaction as
+   caller or callee (see lib/graph's isIsolated). Dashed so it reads as "present
+   but unconnected" rather than as a node whose edges failed to draw. Only the STYLE
+   differs — the colour comes from the renderer, and this rule applies on BOTH tabs, so
+   that colour is the entity kind's on Execution Flow and the neutral on Lineage (see
+   NodeData.kindColoured). The dash is the whole of what this rule says either way.
+
+   Note the class is `pf-topology__…`, NOT `pf-v5-topology__…` — PF's topology
+   package does not carry the `v5` infix its react-core siblings do, so a
+   v5-prefixed selector here matches nothing and fails silently. */
+.pf-topology__node.dg-graph-node.dg-graph-node--isolated .pf-topology__node__background {
+  stroke-dasharray: 4 3;
+}
+
+/* ---------------------------------------------------------------------------
+   Lineage highlight (the `?legs=lineage` tab — ExecutionFlowGraph's LineageGraph
+   over lib/lineageReachability's derivation; the `lib/lineageGraph` this used to name
+   was deleted when the client-side roll-up was replaced by the served reachability
+   reads).
+
+   THE DE-EMPHASIS IS THE MECHANISM, not the brightening. In a graph of any density
+   "slightly brighter" is not findable — the reader has to compare every node
+   against every other to spot it — so everything outside the answer drops to a low
+   opacity and the answer is simply the only thing left at full strength.
+
+   NOTHING IS ENCODED IN HUE BY *THIS* BLOCK. The source/upstream/downstream block
+   below does use hue; these selection-relative roles (source-of-selection, selected,
+   carrier, dimmed) deliberately do not, so they can land on the same element as a
+   lineage hue without fighting it. Opacity and stroke WEIGHT (plus, for the selected
+   node, a dash) carry the whole distinction, which also means it survives a
+   greyscale print.
+
+   NOTE ON WHAT CHANGED: node stroke used to be the entity KIND's hue (lib/entityKind)
+   on BOTH tabs, and that was this block's stated reason for refusing colour. On the
+   LINEAGE tab nodes are now neutral for every kind (see `nodeNeutralColorVar`)
+   precisely so the lineage block below can own hue; Execution Flow still paints kind.
+   The refusal here still stands, but on the narrower ground above — not on "kind
+   already owns it", which is no longer true of the tab these rules apply to.
+
+   These classes are only ever emitted while a highlight is ACTIVE — the Execution
+   Flow tab's elements carry no highlight class at all (see ExecutionFlowGraph's
+   HighlightRole), so "no question asked" can never be painted as "not part of the
+   answer".
+
+   Note the class is `pf-topology__…`, NOT `pf-v5-topology__…`, for the same reason
+   the isolated rule above spells it that way — PF's topology package carries no
+   `v5` infix and a v5-prefixed selector matches nothing, silently. */
+
+/* Everything outside the answer. `opacity` on the whole `<g>` rather than a
+   per-shape stroke change, so the node's label fades WITH its circle: a full-
+   contrast label over a ghosted circle is the worst of both, still drawing the eye
+   to the thing being de-emphasised. 0.25 is dim enough to recede and high enough to
+   keep the graph's shape legible — the reader still needs the context to read the
+   answer against. */
+.dg-graph-node--dimmed,
+.dg-graph-edge--dimmed,
+.dg-graph-edge-tag--dimmed {
+  opacity: 0.25;
+}
+
+/* A SOURCE of the selected entity's data. Full opacity (it is what is left when the
+   rest recedes) plus a heavier outline, so the highlight also survives at a zoom
+   level where opacity differences compress. */
+.pf-topology__node.dg-graph-node.dg-graph-node--source .pf-topology__node__background {
+  stroke-width: 4px;
+}
+
+/* THE SELECTED entity — the node the reader asked ABOUT, not one of the answers.
+   Distinguished from a source by a DASH pattern rather than by another weight or
+   another colour: the two states have to be told apart at a glance even when the
+   selected node is also one of its own sources (a self-call, or data it contributed
+   earlier coming back — a real cycle the server derives, see
+   lib/lineageReachability's THE THREE AXES), in which case both classes apply to one
+   node and a weight-vs-weight distinction would simply be lost.
+
+   Deliberately NOT the same dash as `--isolated` above: the two can co-occur (an
+   isolated entity can be selected) and the longer dash reads as deliberate emphasis
+   rather than as the "present but unconnected" hint. */
+.pf-topology__node.dg-graph-node.dg-graph-node--selected .pf-topology__node__background {
+  stroke-width: 4px;
+  stroke-dasharray: 8 3;
+}
+
+/* A CARRIER: the interaction leg that actually delivered the data. Thicker so the
+   route between the lit nodes reads as a path rather than as an incidental line —
+   this is what makes the answer a story instead of a set. Applied to the link only
+   (not the arrowhead), which keeps its own size from PF's endTerminalSize. */
+.pf-topology__edge.dg-graph-edge--carrier .pf-topology__edge__link {
+  stroke-width: 3px;
+}
+
+/* ---------------------------------------------------------------------------
+   LINEAGE REACHABILITY (the Lineage tab only) — ADR-0028 D14/D15.
+
+   Three facts that CO-OCCUR on one node, which is why they are three independent
+   classes rather than more values of one role enum:
+     - `--datasource`  the trace's data sources (always on, no selection needed)
+     - `--upstream`    fan-in: where the selection's data came FROM
+     - `--downstream`  fan-out: where it WENT
+
+   All three genuinely land together. A source is very often upstream of whatever
+   you clicked; and an entity is routinely BOTH upstream and downstream, because
+   `agent → tool → agent` is the ordinary shape of every tool call (D15's cycle
+   note) — the tool's request leg puts it downstream, its response leg upstream.
+   Verified against a live trace: fan-in and fan-out of one leaf tool each returned
+   the same ten entities. A single-valued role would have to pick a winner and
+   silently discard the other two claims.
+
+   THE STACKING TRICK. Three rings on one 40px circle cannot be three strokes —
+   SVG gives a shape one stroke. So each fact takes a DIFFERENT visual channel:
+     - kind         → NOTHING on THIS tab. Lineage nodes are neutral for every kind
+                      (`nodeNeutralColorVar`), which is what freed stroke COLOUR up
+                      for the data source below; kind lives in the label + title here.
+                      (The Execution Flow tab still paints kind hues — it has no
+                      lineage overlay competing for colour. See NodeData.kindColoured.)
+     - data source  → stroke COLOUR, plus an outer `filter: drop-shadow` halo
+     - upstream     → `stroke-dasharray` (dashed = data flowed IN to the selection)
+     - downstream   → a second drop-shadow layer in the downstream hue
+   Drop-shadows are used because they STACK: two `drop-shadow()` functions in one
+   filter list both paint, so source+downstream shows both haloes concentrically.
+   `outline` was rejected — it does not follow an SVG circle's geometry — and a
+   second `<circle>` element was rejected because it would mean changing the node
+   renderer's DOM for a purely decorative layer.
+
+   HUE IS NEVER THE ONLY CARRIER (colour-vision deficiency). The data-source node
+   also gets a visible ring via the halo's tight spread AND a textual badge in the
+   node's `<title>`/aria label from the renderer; upstream/downstream additionally
+   differ by dash pattern on both node and edge. A reader who sees no colour
+   difference still gets ring-vs-no-ring and dashed-vs-solid. */
+
+/* A trace DATA SOURCE. Always on while the Lineage tab is open — it answers a
+   question about the trace, not about a selection, so it does not wait for a click.
+   THE ONE COLOURED THING ON THE GRAPH: now that nodes are neutral for every kind
+   (`nodeNeutralColorVar`), this rule's `stroke` is what makes a source the only node
+   carrying hue, against a graph of grey ones. The halo is kept on top of it — hue must
+   not be the sole carrier (a deuteranope needs the ring and the dash too). */
+.pf-topology__node.dg-graph-node.dg-graph-node--datasource .pf-topology__node__background {
+  stroke: var(--dg-lineage-source);
+  /* One halo layer, not two. The old first layer was `drop-shadow(0 0 0 …)` — zero
+     offset AND zero blur — which paints an exact-alpha silhouette of the stroke ring
+     directly beneath the visible stroke, fully occluded by it. It contributed nothing;
+     only the blurred layer ever rendered. */
+  filter: drop-shadow(0 0 3px var(--dg-lineage-source));
+  stroke-width: 3px;
+  /* A LONG DASH, so hue is genuinely not the only carrier of "this is an origin".
+     The block at the top of this file claims a reader who sees no colour difference
+     still gets ring-vs-no-ring — true for --upstream (dash), --frontier (dotted),
+     --selected and --isolated, but it was FALSE for this one specific pair:
+     `--datasource` and `--downstream` were both "solid ring + one halo", differing only
+     in hue, 1px of stroke and 1px of blur. A deuteranope saw two haloed nodes and no
+     reliable way to say which was an origin and which was fan-out — the two claims a
+     lineage answer most needs kept apart.
+
+     8 3 is deliberately distinct from every other dash in use here: --upstream's 5 3,
+     --selected's 8 3 on a *node* (different element state, never co-occurring hue),
+     --frontier's 1 3 dots, --isolated's 4 3. Long-on/short-off reads as a deliberate
+     ring rather than as the "unresolved" texture the dotted patterns carry. */
+  stroke-dasharray: 8 3;
+}
+
+/* THE CHOSEN SOURCE — the ONE source whose data the current answer traces
+   (`fanin(entity, source)`). A REFINEMENT of `--datasource`, which is why the
+   selector requires BOTH classes: the trace's whole source set keeps its ring, and
+   this says which of them is the subject of the highlight on screen. Colouring only
+   the chosen one was rejected outright — it would silently shrink the trace's source
+   set the moment anybody picked one, turning a standing fact into a function of the
+   reader's current question.
+
+   NOT HUE. It reuses `--dg-lineage-source`, deliberately: a fourth colour would both
+   collide with the three already in play here and be exactly the hue-only encoding the
+   rest of this sheet refuses. The distinction is GEOMETRY — a wider, brighter DOUBLE
+   halo (a visible gap between two rings, from the 0-spread inner ring at 2px offset and
+   the outer at 8px) plus the heaviest stroke on the graph. A colour-vision-deficient
+   reader sees one ring vs two; a greyscale print keeps both. The node's `<title>` and
+   accessible name additionally say "the data source being traced" in words
+   (`nodeTitle`), so the fact is never carried by the picture alone.
+
+   Placed AFTER `--datasource` so the more specific pair (0,3,0 vs 0,2,0 — it also wins
+   on specificity, so order is belt-and-braces) replaces its filter rather than being
+   averaged with it: two `filter` declarations do not compose across rules, only within
+   one list, which is why this restates both rings instead of adding one. */
+.pf-topology__node.dg-graph-node.dg-graph-node--datasource.dg-graph-node--chosen-source .pf-topology__node__background {
+  /* Restated, not inherited: this rule REPLACES `--datasource`'s filter (two `filter`
+     declarations do not compose across rules), and the stroke is restated with it so the
+     pair can never drift into "the chosen source lost its colour". */
+  stroke: var(--dg-lineage-source);
+  filter: drop-shadow(0 0 2px var(--dg-lineage-source))
+    drop-shadow(0 0 8px var(--dg-lineage-source));
+  stroke-width: 5px;
+}
+
+/* UPSTREAM of the selection (fan-in) — where its data came from. Dashed, reading as
+   "flowed in from here". A SHORT dash, distinct from `--selected`'s long 8 3 so the
+   selected node is still tellable apart when it is also upstream of itself (a real
+   cycle the server derives, not an edge case). */
+.pf-topology__node.dg-graph-node.dg-graph-node--upstream .pf-topology__node__background {
+  stroke-dasharray: 3 2;
+  stroke-width: 4px;
+}
+
+/* DOWNSTREAM of the selection (fan-out) — where its data went. A halo like the
+   source's but in its own hue, so a node that is BOTH a source and downstream shows
+   two concentric haloes rather than one overwriting the other. Solid stroke, the
+   deliberate opposite of upstream's dash. */
+.pf-topology__node.dg-graph-node.dg-graph-node--downstream .pf-topology__node__background {
+  filter: drop-shadow(0 0 4px var(--dg-lineage-downstream));
+  stroke-width: 4px;
+}
+
+/* BOTH directions on one node — data that went out and came back. The most
+   governance-relevant shape in the picture, so it is given its own rule rather than
+   being left to whichever of the two above happens to win the cascade (they set the
+   same properties, so source order alone would decide and the reader would see only
+   one of two true facts). Both haloes, and the upstream dash retained. */
+.pf-topology__node.dg-graph-node.dg-graph-node--upstream.dg-graph-node--downstream .pf-topology__node__background {
+  filter: drop-shadow(0 0 4px var(--dg-lineage-downstream))
+    drop-shadow(0 0 7px var(--dg-lineage-upstream));
+  stroke-dasharray: 3 2;
+  stroke-width: 4px;
+}
+
+/* A node on the PENDING FRONTIER: the walk reached it but could not continue
+   THROUGH it, because the onward leg has no derived lineage row yet. "We don't know
+   yet", which must never look like "there is nothing" (D15).
+
+   Deliberately NOT any of the three above and deliberately NOT dimmed: dimming would
+   file it with "not part of the answer", which is the precise conflation the
+   frontier exists to prevent. A muted dotted ring instead — present, marked,
+   visibly provisional. The `--dg-color-muted` grey says "unknown" rather than
+   borrowing either direction's hue, since we do not yet know what flows here.
+
+   IT DOES NOT SET `stroke`, and that is now load-bearing. A frontier node CAN also be
+   one of the trace's data sources (the two are independent — the frontier is about
+   whether the walk could continue THROUGH a node, source-ness is about what the trace
+   attributed content to), and this rule sits AFTER `--datasource` at the same
+   specificity, so a `stroke` here would win the cascade and repaint a source in the
+   muted grey — silently costing it the one hue on the graph. The dotted 1 3 dash and
+   the light weight already carry "provisional" on their own channels, so a neutral
+   frontier node keeps the grey it has by default and a source on the frontier keeps its
+   source colour AND reads as provisional. */
+.pf-topology__node.dg-graph-node.dg-graph-node--frontier .pf-topology__node__background {
+  stroke-dasharray: 1 3;
+  stroke-width: 3px;
+}
+
+/* The traversed legs — THE ROUTE, which is the reason the endpoint returns legs at
+   all. Direction is carried by DASH as well as hue, so the two routes stay tellable
+   apart without colour: fan-in dashed (data arriving), fan-out solid (data leaving).
+   Weight is raised on both so a lit route reads as a path against the dimmed rest. */
+.pf-topology__edge.dg-graph-edge--upstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-upstream);
+  stroke-width: 3px;
+  stroke-dasharray: 6 3;
+}
+
+.pf-topology__edge.dg-graph-edge--downstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-downstream);
+  stroke-width: 3px;
+}
+
+/* A leg traversed by BOTH walks — the two legs of one tool call, or a genuine cycle.
+   Given the upstream hue with the downstream dash so it is visibly neither plain
+   case, rather than letting cascade order silently pick one. */
+.pf-topology__edge.dg-graph-edge--upstream.dg-graph-edge--downstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-upstream);
+  stroke-width: 4px;
+  stroke-dasharray: 6 3;
+}
+
+/* DIRECTION HUE SURVIVES HOVER. PF paints
+   `.pf-topology__edge.pf-m-hover .pf-topology__edge__link { stroke: var(--edge--hover--stroke) }`
+   at (0,3,0) — in dark theme a neutral grey — which ties the direction rules above and
+   wins on source order (PF's sheet is in the later-injected lazy chunk). The effect was
+   that pointing at a route to inspect it repainted it grey and threw away the one thing
+   the reader was inspecting: whether it runs upstream or downstream.
+
+   Restated at (0,4,0) so hover changes nothing about direction. Hover still reads,
+   because PF also thickens the edge's own background stroke and hoists the edge to
+   TOP_LAYER — neither of which these rules touch, so the affordance survives without
+   the colour being the thing that carries it. */
+.pf-topology__edge.pf-m-hover.dg-graph-edge--upstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-upstream);
+}
+
+.pf-topology__edge.pf-m-hover.dg-graph-edge--downstream .pf-topology__edge__link {
+  stroke: var(--dg-lineage-downstream);
+}
+
+.pf-topology__edge.pf-m-hover.dg-graph-edge--upstream.dg-graph-edge--downstream
+  .pf-topology__edge__link {
+  stroke: var(--dg-lineage-upstream);
+}
+
+/* Edge tags follow their edge's direction hue, so the seq number stays attached to
+   the route it labels. */
+.pf-topology__edge__tag.dg-graph-edge-tag--upstream > text {
+  fill: var(--dg-lineage-upstream);
+}
+
+.pf-topology__edge__tag.dg-graph-edge-tag--downstream > text {
+  fill: var(--dg-lineage-downstream);
+}
+
+/* The tab's LEGEND. A colour with no key is a puzzle, so every treatment above is
+   named on screen. Inline flow rather than a floating overlay: it must not cover the
+   graph it explains, and it has to be reachable by a screen reader in document
+   order.
+
+   NOW BELOW THE SURFACE, not above it — hence `margin-top` where this rule used to
+   carry `margin-bottom`. A key is consulted after looking at the picture and finding a
+   treatment you cannot read, so it sits where the eye lands on the way back out. It
+   renders through `EntityGraph`'s own `legend` slot (immediately after the surface) rather
+   than in the notice rail, so it stays under the drawing it decodes instead of under
+   the caveats. */
+.dg-lineage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border-subtle);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  color: var(--dg-color-label);
+}
+
+.dg-lineage-legend-item {
+  display: inline-flex;
+  gap: 0.375rem;
+  align-items: center;
+  white-space: nowrap;
+}
+
+/* The swatch repeats the node treatment in miniature. `border` carries the ring so
+   the shape matches what the graph draws, and each variant below adds the same
+   halo/dash the node gets — so the key is the treatment itself, not a colour chip
+   that merely claims to stand for it. */
+.dg-lineage-swatch {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  border: 2px solid var(--dg-color-muted);
+}
+
+/* Dashed to match the node's own ring — the swatch has to SHOW the treatment, not
+   merely stand for it, and the node's dash is what keeps "origin" distinguishable from
+   "downstream" without relying on hue (see --dg-graph-node--datasource). Without the
+   dash here the legend would be the one place the two are told apart by colour alone,
+   which is exactly backwards: the legend is what a reader consults *because* they
+   could not tell the colours apart. */
+.dg-lineage-swatch--datasource {
+  border-color: var(--dg-lineage-source);
+  border-style: dashed;
+  box-shadow: 0 0 3px var(--dg-lineage-source);
+}
+
+/* The chosen source's key: the same hue, TWO rings — `box-shadow`'s spread-then-gap
+   layering is the flat-DOM equivalent of the node's stacked drop-shadows, so the
+   swatch shows the treatment itself rather than a chip that merely stands for it
+   (this block's own rule). The legend text says "double ring" as well, because a
+   0.75rem swatch is small enough that the gap is easy to miss. */
+.dg-lineage-swatch--chosen-source {
+  border-color: var(--dg-lineage-source);
+  box-shadow:
+    0 0 0 1px var(--dg-lineage-source),
+    0 0 0 3px var(--dg-surface-panel),
+    0 0 0 4px var(--dg-lineage-source);
+}
+
+.dg-lineage-swatch--upstream {
+  border-color: var(--dg-lineage-upstream);
+  border-style: dashed;
+}
+
+.dg-lineage-swatch--downstream {
+  border-color: var(--dg-lineage-downstream);
+  box-shadow: 0 0 4px var(--dg-lineage-downstream);
+}
+
+.dg-lineage-swatch--frontier {
+  border-color: var(--dg-color-muted);
+  border-style: dotted;
+}
+
+/* ---------------------------------------------------------------------------
+   The Lineage tab's DATA SOURCE picker (LineageSourcePicker) — which single source
+   the reachability walk is tracing.
+
+   A LABELLED ROW, not a bare dropdown, and the visible label is the requirement
+   rather than decoration: the chosen source is the SUBJECT of every highlight below
+   it, so a reader looking at a lit graph must be able to read which source's flow it
+   is without opening a menu. An `aria-label` alone would leave a sighted reader
+   guessing.
+
+   Inline flow directly above the legend and the graph, matching `.dg-lineage-legend`
+   — it must not float over the picture it qualifies, and it has to sit in document
+   order for a screen reader. Fixed height regardless of how many sources the trace
+   rolled up, which is the reason a `Select` was chosen over a per-source toggle group
+   (see the component's header). */
+.dg-lineage-source-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.dg-lineage-source-picker-label {
+  color: var(--dg-color-label);
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* The toggle carries a qualified natural key, which is long by design
+   (`tool:agent:(travel_advisor,travel-advisor):search_destinations`). A floor wide
+   enough to read a friendly `display_name` without the control jittering as the
+   choice changes, and a ceiling so one long label cannot push the graph's own
+   controls off the row. PF truncates the toggle text itself; the full key stays
+   reachable as the `title`. */
+.dg-lineage-source-toggle {
+  min-width: 16rem;
+  max-width: 28rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Edge selection (both graph tabs — ExecutionFlowGraph's DirectedEdge, wrapped in
+   PF's `withSelection`). One edge is one **Interaction leg**, and clicking it opens
+   the SAME floating detail panel a Flat-table row click opens.
+
+   A SEPARATE AXIS FROM THE LINEAGE HIGHLIGHT ABOVE, not a sixth highlight role.
+   Selection answers "whose detail panel is open", the highlight answers "what is
+   part of the lineage answer" — a reader can have both at once, so the two carry
+   independent classes and both can land on one arrow. They are composed below rather
+   than left to collide.
+
+   BOTH LEGS of the selected interaction are marked, because the selection IS the
+   interaction — legs have no selection of their own (`FlatLegsTable`), and lighting
+   only the clicked arrow would say otherwise. Same rule as
+   `.dg-seq-row--selected` in the sequence diagram.
+
+   NOT HUE AT ALL, which is the accessibility requirement AND a hard constraint here:
+   stroke colour on this graph is already spoken for twice over — `--dg-color-error`
+   marks a failed leg and `--dg-tree-guide` is every other one — so a third meaning in
+   the same channel would be either ambiguous or invisible. WEIGHT, a DASH and opacity
+   carry the whole signal below, so it survives greyscale, a colour-vision deficiency,
+   and the dimming of an active highlight.
+
+   PF'S OWN `.pf-m-selected` IS DELIBERATELY NOT USED, and that is worth stating here
+   because its stylesheet is loaded and the rule is sitting right there. `DefaultEdge`
+   would apply it from its `selected` prop, but PF's notion of selected is per-ELEMENT
+   and click-only: it marks the one arrow that was clicked (not its sibling leg) and it
+   is empty for a selection restored from a `?iid` URL. Both are wrong for a
+   per-interaction treatment that has to survive a reload, so `DirectedEdge` drops the
+   prop and these rules key on our own class instead. See its note for the detail.
+
+   Note the class is `pf-topology__…`, NOT `pf-v5-topology__…`, for the same reason
+   the rules above spell it that way — PF's topology package carries no `v5` infix
+   and a v5-prefixed selector matches nothing, silently. */
+
+/* THE SELECTED interaction's legs. Heavier than a `--carrier` (3px) so the two are
+   distinguishable when one arrow is both, plus a dash — the same
+   distinguish-by-pattern-not-by-weight trick `.dg-graph-node--selected` uses against
+   `--source`, and for the identical reason: a weight-vs-weight distinction is simply
+   lost when both classes apply to one element.
+
+   Deliberately NOT the same dash as PF's own `.pf-m-dashed` link modifier, which
+   already means SELF-CALL on this graph (see the model builder's `edgeStyle`). A
+   selected self-call carries both, and the longer dash reads as emphasis over the
+   top of the shorter one rather than replacing its meaning. */
+.pf-topology__edge.dg-graph-edge--selected .pf-topology__edge__link {
+  stroke-width: 4px;
+  stroke-dasharray: 10 4;
+}
+
+/* SELECTION BEATS DIMMING. The composition rule, stated explicitly because the
+   alternative is a silent failure: with an entity selected for lineage, every arrow
+   outside the answer is at `opacity: 0.25`, so clicking one of THOSE arrows would
+   otherwise open a detail panel while the arrow the reader just clicked stayed
+   ghosted — the panel would be the only feedback that anything was picked, which is
+   precisely the gap this whole treatment exists to close.
+
+   So a selected edge returns to full opacity even while dimmed. It does NOT lose its
+   `--dimmed` class: the class still states the lineage fact (this leg did not carry
+   the selected entity's data), and only the OPACITY is overridden, so the two
+   readings coexist rather than one erasing the other. The heavier dashed stroke
+   above is what then distinguishes it from a `--carrier` at the same full opacity.
+
+   The specificity is what makes this work without an `!important`: `0,2,0` (two
+   classes) against the dimming rule's `0,1,0`, so it wins on specificity regardless
+   of source order — and it is written as a compound selector on ONE element rather
+   than as a descendant, because both classes land on the same `<g>`. */
+.dg-graph-edge--dimmed.dg-graph-edge--selected,
+.dg-graph-edge-tag--dimmed.dg-graph-edge-tag--selected {
+  opacity: 1;
+}
+
+/* The seq tag of a selected leg, brought back to full-contrast label colour. The tag
+   is muted by default (`.dg-graph-edge-tag`) because an ordinal is a reference
+   rather than content — but for the ONE interaction the reader has open, the number
+   is how they cross-reference the arrow against the Flat tab's rows and the panel's
+   own fields, so it stops being incidental. */
+.pf-topology__edge__tag.dg-graph-edge-tag--selected > text {
+  fill: var(--dg-color-label);
+  font-weight: 600;
+}
+
+/* Keyboard focus on an edge. The wrapper `<g>` is a focusable
+   `role="button"` (see DirectedEdge), and an SVG group takes no default focus ring in
+   any browser, so it is stated — same rule and same reason as `.dg-seq-row`'s.
+
+   Stated on the WRAPPER, which is the element that actually receives focus, and using
+   `outline` rather than a stroke change so it cannot be confused with the selected
+   treatment above (focus and selection are different states and a reader tabbing
+   through must be able to see which arrow is focused without it looking selected). */
+.dg-graph-edge-focus:focus-visible {
+  outline: 2px solid var(--dg-color-label);
+  /* Negative offset keeps the ring inside the element's own box, so a focused arrow
+     near the surface's rounded `overflow: hidden` edge is not clipped. */
+  outline-offset: -2px;
+}
+
+/* An error leg keeps its red when selected. `--error` and `--selected` are
+   independent axes (see the classes in DirectedEdge), so the selected treatment must
+   not silently repaint a failed leg as a healthy one — the weight and the dash above
+   already carry "selected" without touching the colour. Restated here because the
+   rule above would otherwise win on source order for a leg that is both. */
+.pf-topology__edge__tag.dg-graph-edge-tag--error.dg-graph-edge-tag--selected > text {
+  fill: var(--dg-color-error);
+}
+
+/* ---------------------------------------------------------------------------
+   Interaction diagram (InteractionDiagram / lib/sequenceDiagram): the
+   UML-style sequence diagram of the flat leg sequence.
+
+   Only the things that are genuinely PRESENTATION live here. Every coordinate
+   is computed in the component from the lifeline/message counts (see its
+   metrics block), because a sequence diagram's geometry is dictated by its
+   column and row assignment, not by a stylesheet — and because per-instance
+   colours (a lifeline's kind tint, a leg's error red) have to be attributes on
+   the element, not rules keyed on a class this file cannot know about.
+   --------------------------------------------------------------------------- */
+
+/* The scroll container. `overflow: auto` — NOT a `width: 100%` SVG — so a wide
+   trace SCROLLS rather than being shrunk to illegibility or silently clipped:
+   the arrows are the content, and a 12-participant diagram squeezed into the
+   panel width would have its seq tags collide into a smear. The fill and border
+   match `.dg-graph-surface` so the two visual tabs read as the same kind of
+   canvas. All tokens, no raw hex. */
+.dg-seq-scroll {
+  overflow: auto;
+  max-height: calc(100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) - 12rem);
+  min-height: 200px;
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border);
+  border-radius: 4px;
+}
+
+/* The SVG sits at its natural (viewBox) size inside the scroller; `display:
+   block` kills the inline-element baseline gap that would otherwise show as a
+   few stray pixels of container below it. */
+.dg-seq-svg {
+  display: block;
+}
+
+/* The vertical lifeline. Dashed — the UML convention, and it also keeps the
+   line from competing with the solid message arrows that cross it. The STROKE
+   colour is set per-element from lib/entityKind (the kind tint), so only the
+   dash and the weight are stated here. */
+.dg-seq-lifeline {
+  stroke-dasharray: 3 4;
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+/* The participant head box. The stroke and fill are the kind colour, set
+   per-element; the low fill opacity is what turns that saturated reference into
+   a tint the dark theme can carry text on top of. */
+.dg-seq-head {
+  fill-opacity: 0.16;
+  stroke-width: 1.5;
+}
+
+.dg-seq-head-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  fill: var(--dg-color-label);
+}
+
+/* The per-message `seq` tag. Muted rather than full-contrast for the same
+   reason `.dg-graph-edge-tag` is: the ordinal is a reference a reader looks up
+   when they need it, not the primary content of the arrow, and at two tags per
+   interaction a bright treatment turns a busy trace into noise. */
+.dg-seq-tag {
+  font-size: 0.7rem;
+  fill: var(--dg-color-label);
+  /* The tag sits over the row's hit strip; letting it swallow the pointer would
+     put a dead spot in the middle of the click target. */
+  pointer-events: none;
+}
+
+/* An error leg's tag matches its arrow, so the colour reads as one signal about
+   one leg rather than two unrelated marks. Same `--dg-color-error` the arrow
+   stroke uses (set in InteractionDiagram's MessageRow). */
+.dg-seq-tag--error {
+  fill: var(--dg-color-error);
+}
+
+/* The full-width invisible hit strip behind each message. `pointer-events: all`
+   because a transparent fill is not hit-testable by default — without it a
+   reader would have to click the 1.5px arrow itself. */
+.dg-seq-row-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.dg-seq-row {
+  cursor: pointer;
+}
+
+.dg-seq-row:hover .dg-seq-row-hit {
+  fill: var(--dg-row-highlight);
+  fill-opacity: 0.4;
+}
+
+/* The selected interaction's messages — BOTH legs, since the selection is the
+   interaction and lighting only the clicked leg would imply legs are separately
+   selectable. Same `--dg-row-highlight` tint the flow tables' selected row
+   uses, so "selected" looks the same whichever tab a reader is on. */
+.dg-seq-row--selected .dg-seq-row-hit {
+  fill: var(--dg-row-highlight);
+}
+
+/* Keyboard focus. The rows are focusable `<g role="button">` elements, and an
+   SVG group takes no default focus ring in every browser, so it is stated. */
+.dg-seq-row:focus-visible {
+  outline: 2px solid var(--dg-color-label);
+  outline-offset: -2px;
 }

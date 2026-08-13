@@ -1,0 +1,37 @@
+"""P-data-lineage — the intra-trace **data lineage** processor (issue #117).
+
+Answers two questions about every interaction leg's payload: **where did it
+originate** (its data sources), and **what did it pass through** (entities and the
+transformations applied). Derived at ingest and persisted to ``lineage_metadata``,
+so a governance read is a lookup rather than a recompute (ADR-0028 D7).
+
+The layering, innermost first — each layer is testable without the one outside it:
+
+- :mod:`.operations` — the two-op algebra (``init_lineage`` / ``merge_lineage``) from
+  ``docs/data_lineage_alg.md``. Pure: metadata in, metadata out, matcher injected.
+  One generic ``merge_lineage`` covers "a single or multiple payloads" (ADR-0028
+  D11).
+- :mod:`.memory` — **the** kind-driven entity predicates: accumulating (ADR-0028 D2)
+  and data-source (D12), plus the ``(entity_id, memory_key)`` memory node. The
+  single named place; nothing else tests ``kind == "agent"`` or ``kind == "tool"``.
+- :mod:`.traversal` — two-way op selection (D4/D11), structural inbound routing
+  (D1), and D6's absent-payload prefix cutoff with the trace's
+  ``complete``/``partial`` coverage, over one trace's legs in leg-``seq`` order.
+  Pure.
+- :mod:`.driver` — the DB adapter over the shared cursor loop: drains the
+  ``interaction_legs`` stream, re-derives the arriving leg's whole trace, upserts
+  the rows and the trace status, and deletes the rows the derivation no longer
+  covers (a re-derivation can get shorter — D6).
+
+Matching is a black box reached only through
+:func:`data_governance.matching.get_matcher` (ADR-0028: lineage does not know how
+matching decides), so lineage quality improves with the matcher and lineage is
+computable today with the trivial default.
+
+**Naming.** "Lineage" already means **span** lineage elsewhere in this package (a
+span's ancestors ∪ subtree under a ``seq`` horizon — ``interactions/state.py``,
+ADR-0007/0016). This is **data lineage**, an unrelated concept: span lineage is
+about graph structure, data lineage about where content came from.
+"""
+
+from __future__ import annotations

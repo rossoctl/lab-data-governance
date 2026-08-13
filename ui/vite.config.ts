@@ -66,5 +66,21 @@ export default defineConfig({
     // Vitest's discovery so `npm run test:unit` covers only src/.
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['e2e/**', 'node_modules/**'],
+    server: {
+      deps: {
+        // @patternfly/react-topology's published ESM imports `.css` files
+        // directly (via @patternfly/react-styles). Vitest EXTERNALISES
+        // node_modules by default and hands those imports to Node's ESM loader,
+        // which has no CSS handler — so the graph view's test file died on
+        // `Unknown file extension ".css"`.
+        //
+        // Inlining routes the package through Vite's own transform pipeline,
+        // where this config's `css: false` turns those imports into no-ops (the
+        // browser build already handled them, which is why `npm run build` never
+        // saw this). Scoped to the two packages actually involved rather than
+        // blanket-inlining node_modules.
+        inline: ['@patternfly/react-topology', '@patternfly/react-styles'],
+      },
+    },
   },
 });
