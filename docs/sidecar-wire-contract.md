@@ -1,4 +1,4 @@
-# Sidecar wire contract — two-span lineage (v1.5.2)
+# Sidecar wire contract — two-span lineage (v1.5.3)
 
 The single source of truth for what the AuthBridge lineage plugin emits and what the
 P-interactions `sidecar` algorithm (ADR-0029) consumes. Fixes the attribute names that were left
@@ -56,10 +56,13 @@ Exchange duration = response.end − request.start (computed downstream). The re
 emitted at stream end **even when no response was produced** (client disconnect, upstream reset,
 plugin denial) — it then carries `lineage.outcome` (`ok` | `denied` | `error` | `abandoned`) and
 whatever status exists, so the row completes as failed instead of dangling. A lone request span
-therefore means one of exactly two things: the sidecar itself died mid-exchange, or the plugin
-recovered a panic while emitting the response span (WARN logged) — rendered as in-flight, never
-a wrong pairing. A response span whose `lineage.outcome` is somehow absent derives with
-`error=NULL` (honest unknown), never `false`.
+therefore means one of three things: the sidecar died mid-exchange, the plugin recovered a panic
+while emitting the response span (WARN logged), or the response span was emitted but never
+delivered — the two halves are enqueued an exchange apart into a batching exporter, so the
+response can be lost after the request has already flushed, and unlike the first two that takes
+whatever is queued rather than one exchange. Rendered as in-flight, never a wrong pairing. A
+response span whose `lineage.outcome` is somehow absent derives with `error=NULL` (honest
+unknown), never `false`.
 
 **Scope limit on `denied`:** the lineage plugin runs after the gate plugins, and the pipeline
 short-circuits on a request-phase denial — an exchange a gate rejects **before** the request span
@@ -125,12 +128,12 @@ Resource (unchanged): `service.name=authbridge`, `authbridge.component=lineage-t
 | `lineage.direction` | both | `inbound` \| `outbound` | |
 | `lineage.self.id` | both | `weather-service` | from `self_id` / `self_id_file` |
 | `lineage.peer.addr` | *(removed in v1.4)* | — | REMOVED 2026-08-03, pre-release. It was inbound-only and never produced in the deployed envoy-sidecar (ext_proc) mode, where the remote address is unavailable to the plugin. The name is retired: the producer must not emit it and the consumer reads nothing from it — anonymous inbound callers derive as `client:(unknown)`. Reintroduction (with an ext_proc source for the address) is a possible follow-up |
-| `lineage.peer.host` | both | `weather-tool-mcp.team1.svc:8000` | Host/authority header when present. Outbound it names the service being called; inbound the address this workload was reached on. v1.5.2 (2026-08-09): the ext_proc listener now reads it inbound as well — it previously built the authority on outbound only, so inbound spans from an envoy-sidecar carried a path with no host and the consumer composed no URL for them. Spans stored before v1.5.2 keep that shape |
+| `lineage.peer.host` | both | `weather-tool-mcp.team1.svc:8000` | Host/authority header when present. Outbound it names the service being called; inbound the address this workload was reached on. Read on both directions since v1.5.2 (2026-08-09) |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched; `http` = none |
-| `lineage.parent.source` | request | `tracestate` \| `wire` | v1.3: which mechanism chose the request span's parent — the tracestate stamp (exact) or the wire traceparent. v1.5: both directions are stamp-first, so inbound spans carry `tracestate` too (any inbound whose caller has a sidecar); spans stored before v1.5 have inbound always `wire`. `map` was a legal value in v1.2 only; stored spans predating v1.3 may still carry it. A fact for auditing attribution; the consumer derives nothing from it |
-| `http.method` | request | `POST` | standard OTel key, emitted when the listener supplies the method. As of the 2026-08-02 upstream merge all three listeners do (reverse/forward proxy from `r.Method`, ext_proc from `:method`); spans stored before that merge lack it |
+| `lineage.parent.source` | request | `tracestate` \| `wire` | v1.3: which mechanism chose the request span's parent — the tracestate stamp (exact) or the wire traceparent. Both directions are stamp-first since v1.5, so inbound spans carry `tracestate` too (any inbound whose caller has a sidecar). A fact for auditing attribution; the consumer derives nothing from it |
+| `http.method` | request | `POST` | standard OTel key, emitted when the listener supplies the method — all three listeners do (reverse/forward proxy from `r.Method`, ext_proc from `:method`) |
 | `url.path` | request | `/mcp` | standard OTel key |
-| `url.scheme` | request | `http` | standard OTel key; added v1.5.1 (2026-08-09) so a consumer can compose a full destination URL (`scheme://peer.host + url.path`); inbound spans only compose one from v1.5.2 onwards (see `lineage.peer.host`). From the listener's observed scheme (ext_proc `:scheme` pseudo-header / `r.URL.Scheme` in the proxies); emitted only when non-empty. Spans stored before v1.5.1 lack it — the consumer treats it as optional and composes no URL without it (no guessing) |
+| `url.scheme` | request | `http` | standard OTel key; added v1.5.1 (2026-08-09) so a consumer can compose a full destination URL (`scheme://peer.host + url.path`). From the listener's observed scheme (ext_proc `:scheme` pseudo-header / `r.URL.Scheme` in the proxies); emitted only when non-empty — the consumer treats it as optional and composes no URL without it (no guessing) |
 | `a2a.method`, `a2a.session_id` | request (a2a) | `message/send` | parsed facts |
 | `mcp.method`, `mcp.tool` | request (mcp) | `tools/call`, `get_weather` | tool name only for `tools/call` |
 | `inference.model` | request (inference) | `qwen2.5:7b` | from parsed request body |
@@ -152,7 +155,7 @@ inference.model / url.path; response = same + ` response`.
 | `lineage.source.id`/`target.id`, `trust.source_id`/`target_id` | `self.id` + `peer.*` + `direction`; caller/callee computed downstream |
 | `enduser.id`, `trust.principal_id` | `lineage.principal.*` |
 | `source=sidecar` | resource `service.name=authbridge` already says it |
-| `openinference.span.kind` | not emitted; if the Phoenix pipeline needs it, a collector transform adds it (meaning belongs in infra) — verify collector filter before rollout |
+| `openinference.span.kind` | not a producer attribute; display meaning belongs in infra. Where a display backend needs it, a collector transform derives it from `lineage.protocol` |
 | anonymous-inbound "emit but omit hop.kind" suppression | gone; every inbound emitted uniformly; consumer folds anonymous callers |
 | `is_principal` config reclassification | consumer-side config if ever needed |
 
@@ -160,7 +163,14 @@ inference.model / url.path; response = same + ` response`.
 
 - Interaction id = `uuid5(NS_INTERACTION, f"{trace_id}/{exchange.id}")`. Request half fills
   caller/callee/request_payload_hash/started_at; response half fills response_payload_hash/
-  ended_at/error. Whichever arrives first creates the row (idempotent upsert; in-flight visible).
+  ended_at/error.
+- **Whole-trace reconcile, not per-half upsert.** Every arriving span re-derives its entire trace
+  from all stored spans of that trace: idempotent, order-independent, authoritative — rows no
+  longer justified by the current span set are deleted (trace-scoped; `entities` is global and
+  never deleted). A half arriving alone still produces its row, so in-flight stays visible; but the
+  mechanism must be a reconcile, because the wanted set can **shrink** — an inbound request is a
+  real interaction until its outbound ancestor arrives, then it demotes to the callee-side echo and
+  its row is removed. A per-half upsert cannot express that. See ADR-0029.
 - Anchors: role=request AND (direction=outbound, OR direction=inbound with no stored ancestor —
   entry detection must tolerate a *dangling* wire parent, since driver/UI root spans are never
   exported; "parent_id IS NULL" alone is insufficient).
@@ -179,8 +189,12 @@ Removed: `is_principal`; `emit_body_hash` (drop unless a consumer is found).
 
 ## Open items
 
-1. Verify the kagenti collector's phoenix/lineage filters against the new attribute set (does
-   Phoenix filter on `openinference.span.kind`? If yes, add the transform).
-2. Naming taste: `lineage.self.id`/`lineage.peer.*`/`lineage.principal.*` — flag objections now;
-   renames are cheap while the seam is open, expensive after.
-3. Response-span name suffix (` response`) — cosmetic, Phoenix legibility only.
+1. Response-span name suffix (` response`) — cosmetic, Phoenix legibility only.
+
+## Decided
+
+- **Attribute naming (2026-08-13).** `lineage.*` stays. The `kglin` → `dg-parent` rename applied to
+  a W3C tracestate member — a shared channel every intermediary must preserve, where a branded key
+  becomes other people's problem. Span attributes are our own telemetry; no third party implements
+  against them. `lineage` also names the domain rather than a product, as `kglin` did. Not to be
+  re-litigated.
