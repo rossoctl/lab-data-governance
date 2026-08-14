@@ -15,6 +15,22 @@ derivation stays behind the interface (ADR-0005):
   results before the interactions migration has run (never an error).
 - :mod:`.payloads` — a content-addressed **Payload** read that inlines the
   **Classification** verdict (``get_payload``). Write-once, cross-trace.
+- :mod:`.lineage` — the trace-scoped **Data lineage** read
+  (``get_data_lineage``): the persisted per-**Interaction leg** metadata triple
+  plus the trace's ``complete``/``partial`` coverage (ADR-0028 D6/D8), a pure
+  lookup (ADR-0028 D7). Nullable per leg in the eventual-consistency window,
+  ``status=None`` (*unknown*, never ``complete`` — ADR-0028 D6) before the trace
+  has been derived, and empty before the lineage migration has run — never an
+  error.
+- :mod:`.lineage_graph` — the other two **Data lineage** grains (ADR-0028 D14):
+  ``get_lineage_graph`` walks **one data source's** lineage upstream (``fanin``) or
+  downstream (``fanout``) from an **Entity**, and ``get_lineage_summary`` serves a
+  trace's ``list sources`` / ``list destinations``. Unlike :mod:`.lineage` these
+  *derive* — a hop is a leg the trace has whose stored ``data_sources`` contains the
+  seeded source and whose ``seq`` runs the right way in time, so the walk ends where
+  that source's provenance ends — but they still run no matcher (D7) and never cross a
+  trace boundary (D14). Both ``direction`` and ``source`` are required; multi-source
+  fanin/fanout is deferred by the spec.
 
 Only the public surface is re-exported here. Consumers of the private
 row-mapping helpers (``spans._COLUMNS`` / ``spans._row_to_span`` — the
@@ -43,6 +59,24 @@ from data_governance.retrieval.interactions import (
     get_interaction_spans,
     get_interactions,
     get_interactions_feed,
+)
+from data_governance.retrieval.lineage import (
+    DataLineageLegView,
+    DataLineageView,
+    GetDataLineageResult,
+    get_data_lineage,
+)
+from data_governance.retrieval.lineage_graph import (
+    FANIN,
+    FANOUT,
+    GetLineageGraphResult,
+    GetLineageSummaryResult,
+    LineageGraphEntityView,
+    LineageGraphLegView,
+    MissingSource,
+    UnknownDirection,
+    get_lineage_graph,
+    get_lineage_summary,
 )
 from data_governance.retrieval.payloads import (
     ClassificationView,
@@ -85,4 +119,20 @@ __all__ = [
     "ClassificationView",
     "PayloadView",
     "get_payload",
+    # data lineage
+    "DataLineageLegView",
+    "DataLineageView",
+    "GetDataLineageResult",
+    "get_data_lineage",
+    # data lineage graph / summary (ADR-0028 D14)
+    "FANIN",
+    "FANOUT",
+    "GetLineageGraphResult",
+    "GetLineageSummaryResult",
+    "LineageGraphEntityView",
+    "LineageGraphLegView",
+    "MissingSource",
+    "UnknownDirection",
+    "get_lineage_graph",
+    "get_lineage_summary",
 ]

@@ -7,7 +7,7 @@ import {
   forwardRef,
   useImperativeHandle,
 } from 'react';
-import { Label, Button, Checkbox } from '@patternfly/react-core';
+import { Label, Button } from '@patternfly/react-core';
 import { fetchJson } from '../api/client';
 import {
   buildParentIndex,
@@ -46,14 +46,6 @@ export interface SpanTreeProps {
   onSelect: (span: Span) => void;
   /** Re-render trigger when pins change elsewhere (legend/flow). */
   onPinsChange: () => void;
-  /**
-   * Client-side service filter: the selected `service_name`s, or null for all.
-   * The page owns the URL mirror (ADR-0021 `?svc=`, comma-separated; absent =
-   * all) and passes the parsed list down.
-   */
-  serviceFilter?: string[] | null;
-  /** Fired when a service checkbox toggles; null = all services selected. */
-  onServiceFilterChange?: (services: string[] | null) => void;
 }
 
 /**
@@ -64,7 +56,7 @@ export interface SpanTreeProps {
  * mark spans belonging to pinned highlight sets.
  */
 export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanTree(
-  { traceId, root, pins, onSelect, serviceFilter = null, onServiceFilterChange },
+  { traceId, root, pins, onSelect },
   ref,
 ) {
   // All spans loaded so far, keyed by (trace_id|span_id).
@@ -89,53 +81,6 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
     () => descendantErrorAncestors(spans as TreeSpan[], buildParentIndex(spans as TreeSpan[])),
     [spans],
   );
-
-  // Distinct service names among the spans loaded so far — the checkbox options
-  // (the option list grows as more of the tree pages in).
-  const services = useMemo(
-    () =>
-      Array.from(
-        new Set(spans.map((s) => s.service_name).filter((s): s is string => s != null)),
-      ).sort(),
-    [spans],
-  );
-  // null = all selected (no ?svc param).
-  const selectedServices = useMemo(
-    () => (serviceFilter === null ? null : new Set(serviceFilter)),
-    [serviceFilter],
-  );
-  const toggleService = (svc: string, checked: boolean) => {
-    const next = new Set(selectedServices ?? services);
-    if (checked) next.add(svc);
-    else next.delete(svc);
-    // All present services selected collapses back to null (the param-less
-    // default), so re-checking the last box yields a clean URL.
-    onServiceFilterChange?.(services.every((s) => next.has(s)) ? null : Array.from(next).sort());
-  };
-
-  // Spans the service filter removes from the tree — a deselected service
-  // prunes its whole SUBTREE, so descendants of other (still-selected)
-  // services vanish too. That must never be silent: the count renders next to
-  // the checkboxes, mirroring the flow view's "N hidden" affordance.
-  const hiddenByServiceFilter = useMemo(() => {
-    if (selectedServices === null) return 0;
-    const byKey = new Map(spans.map((s) => [spanKey(s.trace_id, s.span_id), s]));
-    const hiddenMemo = new Map<string, boolean>();
-    const isHidden = (s: Span): boolean => {
-      const k = spanKey(s.trace_id, s.span_id);
-      const memo = hiddenMemo.get(k);
-      if (memo !== undefined) return memo;
-      hiddenMemo.set(k, false); // cycle guard: a revisit on the walk counts as visible
-      let hidden = s.service_name != null && !selectedServices.has(s.service_name);
-      if (!hidden && s.parent_id) {
-        const parent = byKey.get(spanKey(s.trace_id, s.parent_id));
-        if (parent) hidden = isHidden(parent);
-      }
-      hiddenMemo.set(k, hidden);
-      return hidden;
-    };
-    return spans.filter(isHidden).length;
-  }, [spans, selectedServices]);
 
   // Fetch one page of a parent's children (keyset-paginated by seq, ADR-0001)
   // and append it. `cursor` is the max seq of the children already loaded, so
@@ -356,12 +301,6 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
     depth: number,
     ancestors: ReadonlySet<string>,
   ): React.ReactNode => {
-    // Service filter: a deselected service's span renders neither its row nor
-    // its subtree (the branch is pruned, not just the row). Spans with no
-    // service_name are never filtered — they have no checkbox to re-enable them.
-    if (selectedServices && span.service_name != null && !selectedServices.has(span.service_name)) {
-      return null;
-    }
     const k = spanKey(span.trace_id, span.span_id);
     // Cycle guard: if this span is already on the path from the root (a
     // self-loop or A→B→A parent_id, which orphan/malformed lineage can
@@ -371,7 +310,7 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
         <li key={k} style={{ listStyle: 'none', margin: 0 }}>
           <div
             data-testid="span-row"
-            style={{ paddingLeft: depth * 20 + 4, color: '#888', fontStyle: 'italic' }}
+            style={{ paddingLeft: depth * 20 + 4, color: 'var(--dg-color-muted)', fontStyle: 'italic' }}
           >
             ↻ {span.name || '(unnamed)'} (cycle)
           </div>
@@ -410,7 +349,7 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
             paddingLeft: depth * 20 + 4,
             cursor: 'pointer',
             borderLeft: stripe ? `3px solid ${stripe}` : '3px solid transparent',
-            background: selectedKey === k ? '#3a4a66' : undefined,
+            background: selectedKey === k ? 'var(--dg-row-selected)' : undefined,
           }}
         >
           <Button
@@ -429,7 +368,7 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
           </span>
           <span style={{ fontWeight: 600 }}>{span.name || '(unnamed)'}</span>
           {span.service_name && (
-            <span style={{ color: '#888', fontSize: '0.85em' }}>{span.service_name}</span>
+            <span style={{ color: 'var(--dg-color-muted)', fontSize: '0.85em' }}>{span.service_name}</span>
           )}
           {span.error === true && (
             <Label color="red" isCompact>
@@ -468,41 +407,5 @@ export const SpanTree = forwardRef<SpanTreeHandle, SpanTreeProps>(function SpanT
     );
   };
 
-  return (
-    <>
-      {/* Service filter row — only worth screen space once ≥2 services have
-          loaded (the app-framework-span firehose case); a lone service has
-          nothing to narrow. Sits above the tree so it stays reachable even
-          when the current selection filters out every row. */}
-      {services.length > 1 && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: '0 1rem',
-            marginBottom: '0.5rem',
-          }}
-        >
-          <span style={{ color: '#888', fontSize: '0.85em' }}>Services:</span>
-          {services.map((svc) => (
-            <Checkbox
-              key={svc}
-              id={`svc-${svc}`}
-              label={svc}
-              isChecked={selectedServices === null || selectedServices.has(svc)}
-              onChange={(_e, checked) => toggleService(svc, checked)}
-            />
-          ))}
-          {hiddenByServiceFilter > 0 && (
-            <span data-testid="svc-filter-hidden-count" style={{ color: '#888', fontSize: '0.85em' }}>
-              {hiddenByServiceFilter} span{hiddenByServiceFilter === 1 ? '' : 's'} hidden
-              (deselecting a service hides its whole subtree)
-            </span>
-          )}
-        </div>
-      )}
-      <ul style={{ margin: 0, padding: 0 }}>{renderNode(root, 0, new Set())}</ul>
-    </>
-  );
+  return <ul style={{ margin: 0, padding: 0 }}>{renderNode(root, 0, new Set())}</ul>;
 });

@@ -3,9 +3,10 @@ import {
   toolSubtype,
   computeInteractionDepths,
   durationMs,
-  httpSummary,
   roleMeta,
-  isInfrastructure,
+  legDirection,
+  parseLegViewKey,
+  parseLineageSource,
 } from './flow';
 import type { Entity, Interaction } from './flow';
 
@@ -15,6 +16,125 @@ import type { Entity, Interaction } from './flow';
 
 const entity = (kind: string, natural_key: string): Entity =>
   ({ id: 'e', kind, natural_key, display_name: natural_key, detected_from: '' });
+
+/**
+ * The per-leg direction rule (ADR-0025), shared by the Flat table's
+ * Caller/Callee columns and the Execution Flow graph's edge direction. Tested here
+ * rather than only through either consumer because it is the single statement of
+ * the rule both depend on: when it was written twice, a response row could read
+ * `A → B` in the table while the graph drew `B → A` for the same leg.
+ */
+/**
+ * The `?legs` coercion. Tested here, at the single definition, rather than only
+ * through TraceDetailPage's URL round-trips: the page's read and the tab bar's
+ * `onSelect` both call this, so a value one accepts and the other does not would be
+ * a tab that activates but never survives a reload.
+ */
+describe('parseLegViewKey', () => {
+  it('accepts the one non-default `?legs` value verbatim', () => {
+    // `flat` is the ONLY non-default now: `diagram`, `graph` and `lineage` were
+    // promoted to top-level path segments (TraceDetailPage's ViewKey), so they are no
+    // longer `?legs` values at all.
+    expect(parseLegViewKey('flat')).toBe('flat');
+  });
+
+  it('coerces the PROMOTED presentations to the default, since they are not ?legs any more', () => {
+    // Deliberately pinned rather than left implicit. These three ARE still members of
+    // `LegViewKey` (that type names what FlowTables can render), so a reader could
+    // reasonably expect this function to pass them through — it must not, because they
+    // are addressed by path now.
+    //
+    // A leftover `?legs=graph` URL does NOT end up on the tables in practice:
+    // TraceDetailPage intercepts these three before this function is consulted and
+    // redirects to the new segment (LEGACY_LEGS_TO_VIEW), so the bookmark still lands
+    // on the graph. This coercion is the junk-value backstop behind that redirect.
+    expect(parseLegViewKey('diagram')).toBe('tree');
+    expect(parseLegViewKey('graph')).toBe('tree');
+    expect(parseLegViewKey('lineage')).toBe('tree');
+  });
+
+  it('reads absent, empty and unrecognised values as the default tree', () => {
+    // Coerces rather than throwing, matching parseWindowKey's treatment of
+    // `?window`. `diagra`/`Diagram` and `lineag`/`Lineage` specifically: adding a
+    // value to the union must not make a typo or the wrong case resolve to anything.
+    expect(parseLegViewKey(null)).toBe('tree');
+    expect(parseLegViewKey(undefined)).toBe('tree');
+    expect(parseLegViewKey('')).toBe('tree');
+    expect(parseLegViewKey('tree')).toBe('tree');
+    expect(parseLegViewKey('diagra')).toBe('tree');
+    expect(parseLegViewKey('Diagram')).toBe('tree');
+    expect(parseLegViewKey('lineag')).toBe('tree');
+    expect(parseLegViewKey('Lineage')).toBe('tree');
+    // Not the neighbouring word either: `lineage` is a tab, `data-lineage` is the
+    // resource it reads, and the two must not be interchangeable in a URL.
+    expect(parseLegViewKey('data-lineage')).toBe('tree');
+  });
+});
+
+/**
+ * The `?src` coercion — the Lineage tab's traced data source.
+ *
+ * Tested at the single definition for the same reason `parseLegViewKey` is: the page
+ * reads the param and the tab's picker writes it, so a value one accepts and the other
+ * does not would be a choice that applies and then vanishes on reload.
+ *
+ * Note what is deliberately NOT tested here, because it is not this function's job: a
+ * source that no longer exists in the TRACE. This function has no access to the trace's
+ * roll-up, so the semantic check lives in `lineageReachability.resolveSourceChoice`
+ * (which reports it as its own `'stale'` state). Splitting them is what keeps a bad
+ * `?src` behaving like a bad `?legs` — coerced, never thrown, never sent to the server.
+ */
+describe('parseLineageSource', () => {
+  it('passes a natural key through verbatim, including its punctuation', () => {
+    // A qualified key carries colons, parentheses and commas by design; none of them
+    // may be normalised away, because the key IS the source's identity on the wire.
+    expect(parseLineageSource('agent:(prod,travel-advisor)')).toBe('agent:(prod,travel-advisor)');
+    expect(
+      parseLineageSource('tool:agent:(travel_advisor,travel-advisor):search_destinations'),
+    ).toBe('tool:agent:(travel_advisor,travel-advisor):search_destinations');
+  });
+
+  it('reads absent, empty and whitespace-only values as no choice at all', () => {
+    // `?src=` must not become a request for a source NAMED empty string: the parameter
+    // is required by the server, so an empty one is a 400 rather than a wildcard.
+    expect(parseLineageSource(null)).toBeNull();
+    expect(parseLineageSource(undefined)).toBeNull();
+    expect(parseLineageSource('')).toBeNull();
+    expect(parseLineageSource('   ')).toBeNull();
+  });
+
+  it('trims surrounding whitespace a hand-edited or wrapped URL can introduce', () => {
+    expect(parseLineageSource('  agent:(p,a)  ')).toBe('agent:(p,a)');
+  });
+});
+
+describe('legDirection', () => {
+  const ix = { caller_entity_id: 'A', callee_entity_id: 'B' };
+
+  it('leaves a request leg as caller → callee', () => {
+    expect(legDirection(ix, { leg_type: 'request' })).toEqual({ from: 'A', to: 'B' });
+  });
+
+  it('SWAPS a response leg to callee → caller', () => {
+    // The response travels back to whoever asked; this swap is the whole reason
+    // one interaction draws two opposite arrows.
+    expect(legDirection(ix, { leg_type: 'response' })).toEqual({ from: 'B', to: 'A' });
+  });
+
+  it('passes null ids straight through, on either leg', () => {
+    // An unresolved participant stays unresolved whichever end of the leg it is
+    // on; the callers decide what to do (blank cell / dropped edge).
+    const half = { caller_entity_id: 'A', callee_entity_id: null };
+    expect(legDirection(half, { leg_type: 'request' })).toEqual({ from: 'A', to: null });
+    expect(legDirection(half, { leg_type: 'response' })).toEqual({ from: null, to: 'A' });
+  });
+
+  it('is a no-op for a self-call, so both its legs are self-edges', () => {
+    const self = { caller_entity_id: 'A', callee_entity_id: 'A' };
+    expect(legDirection(self, { leg_type: 'request' })).toEqual({ from: 'A', to: 'A' });
+    expect(legDirection(self, { leg_type: 'response' })).toEqual({ from: 'A', to: 'A' });
+  });
+});
 
 describe('toolSubtype', () => {
   it('reads deployed vs in-framework from the natural-key shape', () => {
@@ -58,28 +178,6 @@ describe('computeInteractionDepths', () => {
   });
 });
 
-describe('isInfrastructure', () => {
-  const withKind = (request_content_kind: string): Pick<Interaction, 'kinds'> => ({
-    kinds: {
-      protocol: 'mcp',
-      mcp_method: null,
-      request_content_kind,
-      response_content_kind: 'x',
-    },
-  });
-
-  it('flags the server classifier\'s MCP plumbing kinds (lifecycle + discovery)', () => {
-    expect(isInfrastructure(withKind('mcp_lifecycle_request'))).toBe(true);
-    expect(isInfrastructure(withKind('tool_discovery_request'))).toBe(true);
-  });
-
-  it('never flags real work or rows without kinds (missing anchor)', () => {
-    expect(isInfrastructure(withKind('tool_call_request'))).toBe(false);
-    expect(isInfrastructure(withKind('agent_request'))).toBe(false);
-    expect(isInfrastructure({ kinds: null })).toBe(false);
-  });
-});
-
 describe('roleMeta', () => {
   it('gives the key glyph to both creating-evidence roles (anchor + discovered_via)', () => {
     expect(roleMeta('anchor')).toEqual({ label: 'anchor', icon: 'key' });
@@ -106,24 +204,5 @@ describe('durationMs', () => {
     );
     expect(durationMs(null, '2026-05-01T12:00:05.000Z')).toBeNull();
     expect(durationMs('2026-05-01T12:00:00.000Z', null)).toBeNull();
-  });
-});
-
-describe('httpSummary', () => {
-  it('composes the one-line http event, skipping absent facts', () => {
-    expect(httpSummary({ method: 'POST', status_code: 200, outcome: 'ok' })).toBe(
-      'POST → 200 (ok)',
-    );
-    // Response still in flight: the method alone is worth showing.
-    expect(httpSummary({ method: 'POST', status_code: null, outcome: null })).toBe('POST');
-    // A listener that supplied no method still yields the response half.
-    expect(httpSummary({ method: null, status_code: 403, outcome: 'denied' })).toBe(
-      '→ 403 (denied)',
-    );
-  });
-
-  it('is null when there is no http event to show', () => {
-    expect(httpSummary(null)).toBeNull();
-    expect(httpSummary({ method: null, status_code: null, outcome: null })).toBeNull();
   });
 });

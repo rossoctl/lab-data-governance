@@ -102,7 +102,7 @@ export function SpanDetailPanel({ span, onRefresh }: SpanDetailPanelProps) {
         <PanelHeader title="Details" onRefresh={onRefresh} canRefresh={false} />
         {/* The header already carries the caption→content gap (marginBottom),
             so the placeholder needs no extra top margin of its own. */}
-        <div style={{ color: '#888', fontStyle: 'italic' }}>
+        <div style={{ color: 'var(--dg-color-muted)', fontStyle: 'italic' }}>
           Select a span to view its details.
         </div>
       </div>

@@ -88,18 +88,47 @@ def test_findings_is_jsonb_and_model_version_is_integer(migrated_dsn: str) -> No
 # --- migration chain ---------------------------------------------------------
 
 
-def test_head_is_0011(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on the current head revision (0011 —
-    dropping the dead-weight leg ``original_seq``, issue #133, chained after
-    0010). The head assertion lives here (rather than in each revision's own
-    test) so a new revision moves exactly one line; the classification store this
-    file covers is asserted structurally by the tests above regardless of the
-    head."""
+def test_0008_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """A fresh migrate applies 0008 (it is in the chain). What this revision adds
+    is asserted structurally by the tests above; this pins that the revision is
+    reachable. The head-revision assertion lives with whichever revision is
+    currently head (see ``test_head_is_0015`` below) — the same reason 0007's test
+    stopped asserting head once 0008 landed."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked = {rev.revision for rev in script.walk_revisions()}
+    assert "0008_payload_classifications" in walked
+
+
+def test_head_is_0015(migrated_dsn: str) -> None:
+    """Applying the chain to head lands on the current head revision
+    (`0015_lineage_entities_rename`).
+
+    The chain is LINEAR. `main`'s branch keeps its shipped numbers
+    (0010_entity_ready_notify → 0011_drop_leg_original_seq) and the lineage chain
+    is re-parented onto 0011 and renumbered 0012-0015. That is what removes the
+    duplicate 0010/0011 numbering the two branches produced when both numbered
+    from 0009 — and, because a linear chain has exactly one head, it also removes
+    the need for the merge revision that previously sat here (deleted; it existed
+    only to collapse two heads into one).
+
+    Renumbering is safe ONLY because these revisions had not been applied to any
+    durable database — no `alembic_version` anywhere was stamped with the old ids.
+    Renumbering an already-applied revision erases the id a live database points
+    at, leaving alembic unable to locate its position; that would require
+    hand-stamping production. Do not renumber once shipped.
+
+    The head assertion lives here (rather than in each revision's own test) so a
+    new revision moves exactly one line — the convention this file inherited from
+    `main`. The classification store this file covers is asserted structurally by
+    the tests above regardless of the head."""
     with psycopg.connect(migrated_dsn) as conn:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0011_drop_leg_original_seq"
+    assert version == "0015_lineage_entities_rename"
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:

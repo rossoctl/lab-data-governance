@@ -8,6 +8,104 @@
  * - `durationMs`: the (ended - started) ms formula shared with the span panel.
  */
 
+/**
+ * How the flow view's Interactions section presents this trace's interactions:
+ * the default parent/child `tree` (depth-indented interactions), `flat` (one row
+ * per request/response leg, ordered by the trace-wide leg `seq`), `diagram` (a
+ * UML-style sequence diagram of that same flat leg sequence — lifelines across
+ * the top, one arrow per leg down the page), `graph` (the Execution Flow — the
+ * same interactions drawn as a directed who-called-whom graph), or `lineage` (that
+ * SAME graph with the selected entity's **Data lineage** sources highlighted).
+ * Mirrored to/from the URL as `?legs=flat` / `?legs=diagram` / `?legs=graph` /
+ * `?legs=lineage`; `tree` is the default and writes no param, so canonical URLs
+ * stay clean.
+ *
+ * `graph` joined this set (rather than staying the top-level `/graph` view
+ * segment it was) because all of them are presentations of the SAME two reads the
+ * flow view already holds: the tables answer "what happened, in order", the graph
+ * answers "who talked to whom". A top-level tab claimed it was a peer of the span
+ * tree — a different dataset — which it never was.
+ *
+ * `diagram` sits between `flat` and `graph` for the same reason, and in that
+ * ORDER deliberately: it is the flat leg list read down the page (so it belongs
+ * next to `flat`, whose row order it reproduces exactly), with the who-called-whom
+ * axis of the graph laid out horizontally. It is the two neighbours' shared
+ * middle, not a fourth unrelated dataset.
+ *
+ * `lineage` sits LAST, immediately after `graph`, and the adjacency is the point:
+ * it draws the identical node/edge set (one `deriveGraph`, one component — see
+ * `lib/lineageReachability` and `ExecutionFlowGraph`) and adds exactly one thing, a
+ * highlight of where the selected entity's data came from. Ordering it after
+ * `graph` says "same picture, one more question asked of it"; putting it anywhere
+ * earlier would separate it from the view it is a reading of. It also reads one
+ * MORE resource than its four neighbours (the trace's data-lineage, already held
+ * by the flow view), which is a second reason it is not one of them.
+ *
+ * Lives here, in the flow view's pure data module, rather than in `FlowTables`:
+ * the page owns the URL and the component owns the tab bar, so both need the type and
+ * the coercion, and neither is a natural owner of it.
+ *
+ * NOTE ON THE ORDERING ARGUMENT ABOVE, which is about how these five are PRESENTED and
+ * is now only half this type's business: `diagram`, `graph` and `lineage` were promoted
+ * from `?legs` sub-tabs to top-level views addressed by PATH SEGMENT
+ * (`TraceDetailPage`'s ViewKey), so the tab order the paragraphs above justify is
+ * realised by that page's tab bar, not by the `?legs` bar — which is now Tree|Flat only.
+ * The five values themselves are unchanged: this type still names what `FlowTables` can
+ * render, which is why the promotion was a navigation change and not a rewrite. Only
+ * `tree` and `flat` are valid `?legs` values — see {@link parseLegViewKey}.
+ */
+export type LegViewKey = 'tree' | 'flat' | 'diagram' | 'graph' | 'lineage';
+
+/**
+ * Coerce an arbitrary `?legs` value to a `LegViewKey`. Anything unrecognised —
+ * and absent — reads as the default `tree` rather than throwing, matching
+ * `parseWindowKey`'s treatment of `?window`. Stated once so the page's URL read
+ * and the tab bar's `onSelect` cannot drift about what a valid value is.
+ *
+ * ONLY `tree` AND `flat` ARE `?legs` VALUES NOW. `diagram`, `graph` and `lineage` are
+ * still members of {@link LegViewKey} — that type names the five PRESENTATIONS
+ * `FlowTables` can render, which has not changed — but they are addressed by PATH
+ * SEGMENT rather than by this param since they were promoted to top-level views
+ * (`TraceDetailPage`'s ViewKey).
+ *
+ * So a leftover `?legs=graph` coerces to `tree` HERE, and that is deliberately not how
+ * such a URL is handled: `TraceDetailPage` intercepts the three legacy values before
+ * this function is consulted and redirects them to their new segment
+ * (LEGACY_LEGS_TO_VIEW), so an old bookmark lands on the view it named instead of
+ * falling back to the tables. This coercion is the last line of defence for a value
+ * that is genuinely junk, not the migration path.
+ */
+export function parseLegViewKey(raw: string | null | undefined): LegViewKey {
+  return raw === 'flat' ? raw : 'tree';
+}
+
+/**
+ * Coerce the Lineage tab's `?src` param — the **Entity natural key** of the single
+ * data source being traced — to `string | null`.
+ *
+ * WHY THIS EXISTS BESIDE {@link parseLegViewKey} RATHER THAN INSIDE THE PAGE. Same
+ * reason: the page reads the param and a component's control writes it, so the two
+ * need one shared notion of "a valid value" or they drift. It is a sibling of that
+ * function on purpose, so the pattern for adding a flow-view URL param is one thing
+ * and not two.
+ *
+ * WHY IT IS NOT AN ENUM COERCION LIKE `?legs` IS. A natural key is open-ended data
+ * (`tool:agent:(travel_advisor,travel-advisor):search_destinations`), so there is no
+ * closed set to validate against HERE — the only authority on which sources exist is
+ * the trace's own `data-lineage-summary`, which this module cannot read. So this
+ * function does exactly the syntactic half (absent or blank → `null`, so `?src=`
+ * cannot become a request for a source named empty string), and the SEMANTIC half —
+ * "is this a source THIS trace has?" — belongs to
+ * `lineageReachability.resolveSourceChoice`, which has the roll-up in hand and
+ * reports a mismatch as its own `'stale'` state rather than silently blanking it.
+ * That split is what makes a bad `?src` behave like a bad `?legs`: coerced, never
+ * thrown, and never sent to the server.
+ */
+export function parseLineageSource(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
+}
+
 /** A derived entity (ADR-0013): cross-trace-stable, no trace_id column. */
 export interface Entity {
   id: string;
@@ -27,45 +125,6 @@ export interface InteractionLeg {
 }
 
 /**
- * Per-interaction classification kinds, re-derived server-side from the anchor
- * (request) span's attributes by the sanctioned classifier; `null` when the
- * anchor span carries no sidecar lineage facts. Content kinds are null for
- * plain-http interactions (no semantic body kind).
- */
-export interface InteractionKinds {
-  protocol: string;
-  mcp_method: string | null;
-  request_content_kind: string | null;
-  response_content_kind: string | null;
-}
-
-/**
- * Where the interaction's exchange was addressed, re-derived server-side from
- * the anchor span's location facts; `null` when the anchor carries none.
- * `url` is composed only when the scheme fact exists (wire contract v1.5.1) —
- * older spans render host + path without a URL. `internal` marks
- * cluster-local authorities (consumer-side vocabulary).
- */
-export interface InteractionDestination {
-  url: string | null;
-  host: string | null;
-  path: string | null;
-  internal: boolean | null;
-}
-
-/**
- * The interaction's HTTP event, re-derived server-side from the span pair:
- * `method` off the request span, `status_code` / `outcome` off the response
- * span. `null` when the anchor carries no sidecar facts or none of the three
- * facts exists; individual fields are null while the response is in flight.
- */
-export interface InteractionHttp {
-  method: string | null;
-  status_code: number | null;
-  outcome: string | null;
-}
-
-/**
  * A derived interaction (ADR-0025) for one trace: a parent identity row plus
  * one or two request/response `legs`. The leg-dependent fields (timing,
  * payload, error) live on the legs; the accessors below project them back for
@@ -74,7 +133,6 @@ export interface InteractionHttp {
  */
 export interface Interaction {
   id: string;
-  trace_id: string;
   caller_entity_id: string | null;
   callee_entity_id: string | null;
   summary: string | null;
@@ -84,35 +142,6 @@ export interface Interaction {
   any_error: boolean | null;
   span_count: number;
   anchor_count: number;
-  kinds: InteractionKinds | null;
-  destination: InteractionDestination | null;
-  http: InteractionHttp | null;
-  /** Validated JWT subject of the caller; null when the call carried none. */
-  principal_sub: string | null;
-  /** a2a session id; null on every other protocol. */
-  session_id: string | null;
-}
-
-/**
- * One-line rendering of the HTTP event for the detail panel — `POST → 200 (ok)`
- * — skipping whichever of the three facts is absent. Null when there is nothing
- * to show, so the panel omits the row rather than printing an empty one.
- */
-export function httpSummary(http: InteractionHttp | null): string | null {
-  if (!http) return null;
-  const head = [http.method, http.status_code == null ? null : `→ ${http.status_code}`]
-    .filter(Boolean)
-    .join(' ');
-  const tail = http.outcome ? `(${http.outcome})` : '';
-  return [head, tail].filter(Boolean).join(' ') || null;
-}
-
-/** MCP protocol plumbing (lifecycle / tool discovery) — the rows the flow view
- *  hides by default. The vocabulary comes from the server's sanctioned
- *  classifier (which stamps `kinds` on each interaction row). */
-export function isInfrastructure(ix: Pick<Interaction, 'kinds'>): boolean {
-  const k = ix.kinds?.request_content_kind;
-  return k === 'mcp_lifecycle_request' || k === 'tool_discovery_request';
 }
 
 /** The request (or response) leg of an interaction, if present. */
@@ -135,6 +164,104 @@ export function requestOccurredAt(ix: Pick<Interaction, 'legs'>): string | null 
 /** The interaction's end = its response leg's `occurred_at`, if any. */
 export function responseOccurredAt(ix: Pick<Interaction, 'legs'>): string | null {
   return legOfType(ix, 'response')?.occurred_at ?? null;
+}
+
+/**
+ * The canonical **Interaction leg** key, `(interaction_id, leg_type)` — the
+ * grain at which a **Data lineage** fact is unique (ADR-0028 D5). Single-sourced
+ * here so the hook that builds the lookup map and the view that reads it can't
+ * drift on the separator. Deliberately NOT keyed on `payload_hash`: payloads are
+ * content-addressed and deduped, so identical bytes at two positions would
+ * collide two completely different lineages into one entry.
+ */
+export function legLineageKey(
+  interactionId: string,
+  legType: 'request' | 'response',
+): string {
+  return `${interactionId}:${legType}`;
+}
+
+/** One flat-view row: a single leg, plus the interaction it belongs to. */
+export interface FlatRow {
+  ix: Interaction;
+  leg: InteractionLeg;
+}
+
+/**
+ * The flat view's rows: one entry per leg across all interactions, ordered by
+ * the trace-wide leg `seq`, ignoring the parent/child tree. Each carries its
+ * parent interaction so a click still opens that interaction's detail panel
+ * (legs have no selection of their own).
+ */
+export function flatLegRows(interactions: readonly Interaction[]): FlatRow[] {
+  return interactions
+    .flatMap((ix) => (ix.legs ?? []).map((leg) => ({ ix, leg })))
+    .sort((a, b) => a.leg.seq - b.leg.seq);
+}
+
+/**
+ * Which way a single **leg** flows between its interaction's two participants
+ * (ADR-0025).
+ *
+ * An interaction names a fixed `caller_entity_id` → `callee_entity_id` pair, but
+ * that is the direction of the *call*, not of each leg: the request travels
+ * caller → callee and the response travels back callee → caller. So a completed
+ * interaction is TWO opposite-direction movements, not one.
+ *
+ * Stated once, here, because two views need the identical rule and must never
+ * disagree: the Flat table's Caller/Callee columns and the Execution Flow
+ * graph's edge direction. When this was written twice, a response row could read
+ * `A → B` in the table while the graph drew `B → A` for the same leg — and
+ * neither would be obviously wrong on its own.
+ *
+ * Returns the interaction's ids un-swapped for a request leg and swapped for a
+ * response leg. Null ids pass straight through (an unresolved participant stays
+ * unresolved whichever end of the leg it is on); callers decide what to do with
+ * them — the table renders a blank cell, the graph drops the edge and reports it.
+ */
+export function legDirection(
+  ix: Pick<Interaction, 'caller_entity_id' | 'callee_entity_id'>,
+  leg: Pick<InteractionLeg, 'leg_type'>,
+): { from: string | null; to: string | null } {
+  const isResponse = leg.leg_type === 'response';
+  return {
+    from: isResponse ? ix.callee_entity_id : ix.caller_entity_id,
+    to: isResponse ? ix.caller_entity_id : ix.callee_entity_id,
+  };
+}
+
+/**
+ * Request↔response pairing for the flat view's connector column, as one entry
+ * per row of `flatLegRows`.
+ *
+ * A request leg and its response leg share the same `ix.id` (that is the pairing
+ * key), but they sort by `seq` so they are frequently NOT adjacent — other
+ * interactions' legs interleave between them. We map `ix.id` → the row indices of
+ * its request and response, then derive each interaction's [top, bottom] index
+ * span. A row then knows, for every interaction whose span covers it, whether it
+ * is that span's top edge (request → half-line down + ▾), its bottom edge
+ * (response → half-line up + ▴), or an in-between pass-through (full vertical
+ * line). Single-leg interactions (response in flight) have only one index, so
+ * their span is a single row with no partner and thus no line is drawn.
+ */
+export function flatConnectorRoles(
+  rows: readonly FlatRow[],
+): Array<Array<{ id: string; role: 'top' | 'bottom' | 'through' }>> {
+  const spans = new Map<string, { top: number; bottom: number }>();
+  rows.forEach(({ ix }, i) => {
+    const s = spans.get(ix.id);
+    if (!s) spans.set(ix.id, { top: i, bottom: i });
+    else s.bottom = i; // later index (legs already sorted by seq)
+  });
+  // Per row, the drawing role for each interaction whose span covers it.
+  return rows.map((_row, i) =>
+    [...spans.entries()]
+      .filter(([, s]) => s.top !== s.bottom && i >= s.top && i <= s.bottom)
+      .map(([id, s]) => ({
+        id,
+        role: i === s.top ? ('top' as const) : i === s.bottom ? ('bottom' as const) : ('through' as const),
+      })),
+  );
 }
 
 export type ToolSubtype = 'in-framework' | 'deployed';
