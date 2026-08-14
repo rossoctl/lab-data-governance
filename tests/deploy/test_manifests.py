@@ -393,7 +393,7 @@ def test_interactions_deployment_selects_the_sidecar_algorithm(
     interactions_deployment: dict,
 ) -> None:
     """This deployment ingests the two-span AuthBridge source, so the env pins
-    INTERACTIONS_ALGORITHM=sidecar explicitly (ADR-0029) — the code default
+    INTERACTIONS_ALGORITHM=sidecar explicitly (ADR-0030) — the code default
     stays "streaming"."""
     pod_spec = interactions_deployment["spec"]["template"]["spec"]
     main = pod_spec["containers"][0]

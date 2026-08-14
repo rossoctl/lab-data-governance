@@ -1,5 +1,5 @@
 """Trace-level derivation from two-span AuthBridge sidecar lineage — the
-``sidecar`` interactions algorithm (ADR-0029).
+``sidecar`` interactions algorithm (ADR-0030).
 
 One HTTP exchange through the sidecar emits TWO spans (request + response),
 joined by ``lineage.exchange.id`` (= the request span's own span id). This
@@ -19,7 +19,7 @@ shuffled) converges to the same tables. Because the reconcile is
 whole-trace-authoritative — an inbound request is only an anchor until an
 outbound ancestor arrives, so the wanted set can *shrink* — it owns its own
 write path with trace-scoped deletes rather than sharing :func:`state.flush`,
-whose anchors are emit-once and never deleted (ADR-0029 records the trade).
+whose anchors are emit-once and never deleted (ADR-0030 records the trade).
 """
 
 from __future__ import annotations

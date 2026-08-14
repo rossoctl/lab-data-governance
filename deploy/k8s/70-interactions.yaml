@@ -127,7 +127,7 @@ spec:
             # Which interaction-derivation algorithm drives the drain loop
             # (data_governance/processors/interactions/__main__.py). All write
             # the same production interactions tables; only one runs at a time.
-            # "sidecar" (ADR-0029) is the two-span AuthBridge derivation this
+            # "sidecar" (ADR-0030) is the two-span AuthBridge derivation this
             # deployment ingests; "streaming" (the code default, ADR-0007) and
             # "graph" (ADR-0026) remain selectable.
             - name: INTERACTIONS_ALGORITHM

@@ -15,7 +15,7 @@ time so they share the ``interactions`` cursor):
 - ``graph`` — the batch graph algorithm, re-derived per span (:func:`graph_driver.run`,
   ADR-0026).
 - ``sidecar`` — the two-span AuthBridge sidecar derivation, whole-trace
-  reconcile per span (:func:`sidecar_driver.run`, ADR-0029).
+  reconcile per span (:func:`sidecar_driver.run`, ADR-0030).
 
 Before processing any spans the entry point runs the schema-version check
 (issue #10, ADR-0002): it reads ``alembic_version.version_num`` and refuses to

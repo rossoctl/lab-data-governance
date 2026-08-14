@@ -1,7 +1,7 @@
 # Sidecar wire contract — two-span lineage (v1.5.3)
 
 The single source of truth for what the AuthBridge lineage plugin emits and what the
-P-interactions `sidecar` algorithm (ADR-0029) consumes. Fixes the attribute names that were left
+P-interactions `sidecar` algorithm (ADR-0030) consumes. Fixes the attribute names that were left
 "pending confirmation". Producer: `kagenti-extensions-snp/authbridge/authlib/plugins/lineage/`.
 Consumer: `data_governance/processors/interactions/sidecar.py` (vocabulary:
 `data_governance/sidecar_facts.py`).
@@ -170,7 +170,7 @@ inference.model / url.path; response = same + ` response`.
   never deleted). A half arriving alone still produces its row, so in-flight stays visible; but the
   mechanism must be a reconcile, because the wanted set can **shrink** — an inbound request is a
   real interaction until its outbound ancestor arrives, then it demotes to the callee-side echo and
-  its row is removed. A per-half upsert cannot express that. See ADR-0029.
+  its row is removed. A per-half upsert cannot express that. See ADR-0030.
 - Anchors: role=request AND (direction=outbound, OR direction=inbound with no stored ancestor —
   entry detection must tolerate a *dangling* wire parent, since driver/UI root spans are never
   exported; "parent_id IS NULL" alone is insufficient).

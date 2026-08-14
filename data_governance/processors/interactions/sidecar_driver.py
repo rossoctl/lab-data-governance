@@ -1,4 +1,4 @@
-"""Sidecar-algorithm driver over the shared cursor loop (ADR-0029).
+"""Sidecar-algorithm driver over the shared cursor loop (ADR-0030).
 
 The two-span AuthBridge sidecar derivation (:mod:`.sidecar`), selected by
 ``INTERACTIONS_ALGORITHM=sidecar``. It writes the same production tables as the

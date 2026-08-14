@@ -287,7 +287,7 @@ from a single span. This varies by which P-interactions algorithm wrote the legs
   caller→callee (see "Interaction leg" — orientation is on the parent, not the
   leg); only the leg's timing/payload/error/`seq` are per-leg.
 
-- **Sidecar algorithm — fully observed legs (Case-Y, ADR-0029).** The
+- **Sidecar algorithm — fully observed legs (Case-Y, ADR-0030).** The
   AuthBridge sidecar source emits a request span and a response span as two
   distinct `(trace_id, span_id)` rows arriving at different times, sharing an
   exchange id (= the request span's own span id). Each leg's
@@ -304,7 +304,7 @@ algorithm's derived ones. The split into legs is a **boundary projection**: the
 verified `--scramble`-gated streaming algorithm holds one interaction
 internally and is unchanged (ADR-0025); the graph algorithm owns its per-leg
 projection in `graph_adapter`; the sidecar algorithm owns its own write path
-(`sidecar._write`, ADR-0029 — its whole-trace reconcile needs trace-scoped
+(`sidecar._write`, ADR-0030 — its whole-trace reconcile needs trace-scoped
 deletes `state.flush` deliberately forbids).
 _Avoid_: assuming every `response` leg was observed from its own span — the
 streaming algorithm's derived legs share the request span.
@@ -451,7 +451,7 @@ The processor that reads stored **Spans** and derives **Entities**,
 `P-` prefix, mirroring how `P-otel-receiver` is the `otlp_receiver` module).
 One of three selectable derivations drives it (`INTERACTIONS_ALGORITHM`, one
 at a time, shared cursor): `streaming` (ADR-0007, the code default), `graph`
-(ADR-0026), or `sidecar` (ADR-0029 — the two-span AuthBridge wire-fact
+(ADR-0026), or `sidecar` (ADR-0030 — the two-span AuthBridge wire-fact
 reconcile; the deployed choice here). Runs after `P-otel-receiver`;
 semantically aware where the receiver is not. Out of scope for v1 ingestion; introduced
 as a later increment (v2-shaped — it crosses PROJECT.md §4's "no payload

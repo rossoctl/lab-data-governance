@@ -66,8 +66,8 @@ classification/output/
 !/data_governance/api/ui/.gitkeep
 
 # Local working notes for the two-span lineage branch — kept out of the PR
-# deliberately; only the wire contract (docs/sidecar-wire-contract.md) ships.
+# deliberately; the wire contract (docs/sidecar-wire-contract.md) and
+# ADR-0030 ship, these do not.
 /docs/CUTOVER-two-span.md
 /docs/REVIEWER-QUICKSTART.md
 /docs/reading-the-sidecar-algorithm.md
-/docs/adr/0029-sidecar-two-span-interactions-algorithm.md
