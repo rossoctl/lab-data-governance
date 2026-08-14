@@ -85,6 +85,18 @@ kubectl -n "${COLLECTOR_NAMESPACE}" get cm "${COLLECTOR_CONFIGMAP}" \
     -o jsonpath='{.data.base\.yaml}' > "${ORIG}"
 [[ -s "${ORIG}" ]] || { echo "error: ConfigMap key 'base.yaml' is empty or missing" >&2; exit 1; }
 
+# APOSTROPHES BELOW ARE LOAD-BEARING — keep this heredoc free of them.
+#
+# macOS still ships bash 3.2 as /bin/bash, which `#!/usr/bin/env bash` resolves
+# to on a stock Mac. Its parser scans a `$( … )` command substitution for
+# balanced quotes and counts the ones inside a heredoc body too (fixed in
+# bash 4). An odd number of apostrophes anywhere in the Python below — including
+# in a comment — makes the whole script fail to parse with a misleading
+# "unexpected EOF while looking for matching" pointing at the end of the file.
+# `shellcheck` does not catch it, because it parses as modern bash.
+#
+# This is not hypothetical: the sibling `patch-rossoctl-collector.sh` has
+# exactly one stray apostrophe in a Python comment and cannot run on macOS at all.
 CHANGE_STATE="$(
     MODE="${MODE}" \
     DISPLAY_PIPELINE="${DISPLAY_PIPELINE}" \
@@ -104,7 +116,7 @@ with open(os.environ["ORIG_PATH"]) as f:
 PROCESSOR_NAME = "transform/lineage_display"
 
 # One statement per protocol the contract defines. Kept as a literal list rather
-# than generated, so the mapping is greppable from the contract's vocabulary.
+# than generated, so the mapping is greppable from the wire contract vocabulary.
 STATEMENTS = [
     'set(attributes["openinference.span.kind"], "AGENT") where attributes["lineage.protocol"] == "a2a"',
     'set(attributes["openinference.span.kind"], "TOOL") where attributes["lineage.protocol"] == "mcp"',
@@ -118,11 +130,12 @@ pipeline = pipelines.get(pipeline_name)
 
 if pipeline is None:
     # Fail loudly in apply mode rather than inventing a display pipeline: which
-    # one renders traces is the platform's decision, not ours. Revert still has
+    # one renders traces is a platform decision, not ours. Revert still has
     # to be able to clean up, so it only warns.
+    available = ", ".join(sorted(pipelines)) or "(none)"
     msg = (
         f"display pipeline {pipeline_name!r} not found in the collector config. "
-        f"Available: {', '.join(sorted(pipelines)) or '(none)'}. "
+        f"Available: {available}. "
         "Set DISPLAY_PIPELINE to the one that exports to your trace UI.\n"
     )
     if mode == "apply":
