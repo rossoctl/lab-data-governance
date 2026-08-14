@@ -160,6 +160,12 @@ export function FlowDetailPanel({
               <Th>Span</Th>
               <Th>Parent</Th>
               <Th>Kind</Th>
+              {/* Interaction evidence carries the span's own name (issue #155);
+                  entity evidence does not — the server left that view
+                  un-widened — so the column renders as an em dash there rather
+                  than being conditionally removed, which would make the two
+                  evidence tables different shapes for no reader benefit. */}
+              <Th>Name</Th>
               <Th>Service</Th>
             </Tr>
           </Thead>
@@ -174,6 +180,7 @@ export function FlowDetailPanel({
                   <SpanLink spanId={ev.parent_id} onNavigate={onNavigateToSpan} />
                 </Td>
                 <Td dataLabel="Kind">{ev.kind ?? '—'}</Td>
+                <Td dataLabel="Name">{ev.name ?? '—'}</Td>
                 <Td dataLabel="Service">{ev.service_name ?? '—'}</Td>
               </Tr>
             ))}

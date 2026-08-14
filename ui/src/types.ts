@@ -54,6 +54,13 @@ export interface SpanEvidence {
   role: string;
   parent_id: string | null;
   kind: string | null;
+  /**
+   * The span's own name (issue #155), so a reader can identify evidence by
+   * something other than an id. **Interaction** evidence only — entity evidence
+   * was deliberately left un-widened server-side (`EntitySpanEvidenceView`), so
+   * this is absent there.
+   */
+  name?: string | null;
   service_name: string | null;
 }
 

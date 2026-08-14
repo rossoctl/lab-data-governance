@@ -1,5 +1,6 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Button,
   Title,
   Spinner,
   EmptyState,
@@ -16,6 +17,8 @@ import {
   computeInteractionDepths,
   flatConnectorRoles,
   flatLegRows,
+  httpSummary,
+  isInfrastructure,
   legOfType,
   parseLegViewKey,
   type LegViewKey,
@@ -133,6 +136,19 @@ export interface FlowTablesProps {
    */
   showLegTabs?: boolean;
   /**
+   * Whether infrastructure interactions (MCP lifecycle / tool discovery) are shown.
+   *
+   * Hidden is the DEFAULT, and the non-default state is what the URL encodes
+   * (`?showInfra=1`, ADR-0021: defaults are omitted, not written) — same
+   * convention as `?hideOrphans` on the trace list. A controlled prop for the
+   * same reason `legView` and `lineageSource` are: `TraceDetailPage` owns every
+   * URL param in this view, so this component never reaches for
+   * `useSearchParams` and reload / bookmark / back restore the choice.
+   */
+  showInfra?: boolean;
+  /** Fired when the infrastructure affordance is toggled, so the parent can mirror `?showInfra`. */
+  onShowInfraChange?: (show: boolean) => void;
+  /**
    * Which single **data source** the Lineage tab is tracing (`?src`), as an **Entity
    * natural key**, or `null` for "none chosen yet".
    *
@@ -199,6 +215,8 @@ export function FlowTables({
   legView = 'tree',
   onLegViewChange,
   showLegTabs = true,
+  showInfra = false,
+  onShowInfraChange,
   lineageSource = null,
   onLineageSourceChange,
 }: FlowTablesProps) {
@@ -234,8 +252,49 @@ export function FlowTables({
     entities.forEach((e) => m.set(e.id, e));
     return m;
   }, [entities]);
+  // INFRASTRUCTURE FILTER. MCP plumbing — lifecycle handshakes and tool
+  // discovery, per the server's sanctioned `kinds` — is hidden by default: on a
+  // real trace it is most of the rows and none of the signal (19 interactions
+  // where a reader wants a handful). `showInfra` (URL `?showInfra=1`) reveals it.
+  //
+  // Filtering runs on INTERACTIONS, before the per-leg flatMap below, so the
+  // Flat view drops both legs of a hidden interaction together and its surviving
+  // connector brackets stay intact. A hidden row whose descendant is visible is
+  // KEPT — otherwise the tree would render a child with no parent. Lifecycle
+  // hops are leaves, so that should not arise; it is guarded rather than assumed.
+  // `infraTotal` is how many rows the filter WOULD hide, computed whether or not
+  // it is currently hiding them — the affordance names that count in both states
+  // ("2 hidden — show" / "Hide 2"), so it cannot be derived from the filtered list.
+  const { displayedInteractions, infraTotal } = useMemo(() => {
+    const byId = new Map(interactions.map((ix) => [ix.id, ix]));
+    // Infrastructure rows that a visible row parents through, and so must stay.
+    const keepAsAncestor = new Set<string>();
+    for (const ix of interactions) {
+      if (isInfrastructure(ix)) continue;
+      // `seen` makes the ancestry walk cycle-safe.
+      const seen = new Set<string>();
+      let pid = ix.parent_interaction_id;
+      while (pid && !seen.has(pid)) {
+        seen.add(pid);
+        const parent = byId.get(pid);
+        if (!parent) break;
+        if (isInfrastructure(parent)) keepAsAncestor.add(parent.id);
+        pid = parent.parent_interaction_id;
+      }
+    }
+
+    const hide = (ix: Interaction) => isInfrastructure(ix) && !keepAsAncestor.has(ix.id);
+    return {
+      displayedInteractions: showInfra ? interactions : interactions.filter((ix) => !hide(ix)),
+      infraTotal: interactions.filter(hide).length,
+    };
+  }, [interactions, showInfra]);
+
+  // Depths come from the FULL list, not the displayed one: a visible row's
+  // indentation must not shift because a sibling was hidden. `computeInteractionDepths`
+  // over the filtered list would re-root orphaned subtrees at depth 0.
   const depthById = useMemo(() => computeInteractionDepths(interactions), [interactions]);
-  const flatRows = useMemo(() => flatLegRows(interactions), [interactions]);
+  const flatRows = useMemo(() => flatLegRows(displayedInteractions), [displayedInteractions]);
   const flatConnectors = useMemo(() => flatConnectorRoles(flatRows), [flatRows]);
   // Read the pin colors directly on render (NOT via useMemo keyed on `pins`):
   // `pins` is a stable mutable store reference, so a memo keyed on it would
@@ -267,6 +326,10 @@ export function FlowTables({
       fields: [
         ['summary', ix.summary ?? '—'],
         ['interaction_id', ix.id],
+        // The trace is the page's, not the row's — read it off the prop rather
+        // than off `ix`, so no other constructor of an Interaction has to carry
+        // a field only this panel prints.
+        ['trace_id', traceId],
         ['anchor span(s)', evidence.filter((e) => e.role === 'anchor').map((e) => e.span_id).join(', ') || '—'],
         ['evidence spans', String(evidence.length)],
         ['request_at', reqLeg?.occurred_at ?? '—'],
@@ -274,6 +337,38 @@ export function FlowTables({
         ...(ix.duration_seconds != null
           ? ([['duration', `${(ix.duration_seconds * 1000).toFixed(0)} ms`]] as Array<[string, string]>)
           : []),
+        // The sidecar read-time derivations (issue #155, ADR-0030). Each row is
+        // omitted rather than printed empty when its fact is absent — an
+        // interaction with no sidecar facts shows the rows above and no more.
+        ...(ix.kinds
+          ? ([
+              [
+                'kind',
+                [ix.kinds.protocol, ix.kinds.mcp_method, ix.kinds.request_content_kind]
+                  .filter(Boolean)
+                  .join(' · '),
+              ],
+            ] as Array<[string, string]>)
+          : []),
+        ...(ix.destination
+          ? ([
+              [
+                'destination',
+                (ix.destination.url ??
+                  `${ix.destination.host ?? ''}${ix.destination.path ?? ''}`) +
+                  (ix.destination.internal == null
+                    ? ''
+                    : ix.destination.internal
+                      ? ' (internal)'
+                      : ' (external)'),
+              ],
+            ] as Array<[string, string]>)
+          : []),
+        ...(httpSummary(ix.http)
+          ? ([['http', httpSummary(ix.http) as string]] as Array<[string, string]>)
+          : []),
+        ...(ix.principal_sub ? ([['user', ix.principal_sub]] as Array<[string, string]>) : []),
+        ...(ix.session_id ? ([['session', ix.session_id]] as Array<[string, string]>) : []),
       ],
       evidence,
       pinKey: `interaction:${ix.id}`,
@@ -557,6 +652,24 @@ export function FlowTables({
             <Tab eventKey="flat" title={<TabTitleText>Flat</TabTitleText>} />
           </Tabs>
         )}
+        {/* The infrastructure affordance. Present only when the trace HAS
+            infrastructure rows — on a trace with none, a control that reveals
+            nothing is noise. Sits above the row views rather than inside one,
+            because it governs all three of Tree / Flat / Interaction diagram,
+            which render the same row set. It names the count, so the reader
+            knows what the default is keeping from them. */}
+        {infraTotal > 0 && legView !== 'graph' && legView !== 'lineage' && (
+          <Button
+            variant="link"
+            isInline
+            style={{ marginTop: '0.25rem' }}
+            onClick={() => onShowInfraChange?.(!showInfra)}
+          >
+            {showInfra
+              ? `Hide ${infraTotal} infrastructure interaction${infraTotal === 1 ? '' : 's'}`
+              : `${infraTotal} infrastructure interaction${infraTotal === 1 ? '' : 's'} hidden — show`}
+          </Button>
+        )}
         {legView === 'lineage' ? (
           /* The Lineage graph, in the interactions TABLE's place inside the same
              gutter div — the same reasoning as the graph and the diagram: a selected
@@ -687,7 +800,7 @@ export function FlowTables({
              the Flat tab's rows are the same list in the same order. */
           <InteractionDiagram
             entities={entities}
-            interactions={interactions}
+            interactions={displayedInteractions}
             selectedId={selectedInteractionId}
             onSelect={selectInteraction}
           />
@@ -702,7 +815,7 @@ export function FlowTables({
           />
         ) : (
           <InteractionsTable
-            interactions={interactions}
+            interactions={displayedInteractions}
             entById={entById}
             depthById={depthById}
             selectedId={selectedInteractionId}
