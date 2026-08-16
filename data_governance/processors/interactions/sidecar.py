@@ -264,6 +264,18 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
                     f"span {s.span_id} (trace {trace_id}): lineage request span "
                     f"with lineage.direction={_direction(s)!r}, want inbound|outbound"
                 )
+            # The contract fixes the exchange id AS the request span's own id,
+            # and everything downstream leans on that identity: it keys
+            # parent_of, anchors the ancestor walk, and lands in
+            # interaction_spans.span_id. A producer that drifted here would not
+            # fail — it would silently derive a graph anchored on span ids that
+            # do not exist. Die loudly instead ("no mechanism may guess").
+            if xid != s.span_id:
+                raise ValueError(
+                    f"span {s.span_id} (trace {trace_id}): lineage request span "
+                    f"with lineage.exchange.id={xid!r} != its own span_id — the "
+                    f"contract fixes these as identical"
+                )
             reqs[xid] = s
         elif role == "response":
             resps[xid] = s
@@ -366,8 +378,15 @@ def _upsert_entity(tx: db.Transaction, ent: _Entity, seq: int) -> str:
     tx.execute(
         "INSERT INTO entities (id, kind, natural_key, display_name, project_name, "
         "detected_from, seq, original_seq) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+        # seq = LEAST(...), not EXCLUDED.seq: this algorithm re-derives the whole
+        # trace on every arriving span, so taking the new seq would rewrite every
+        # entity in the trace to the newest span's seq on every drain — and the
+        # entity_ready stream (ADR-0027) reads ``entities WHERE seq > cursor``,
+        # so an already-delivered entity would keep reappearing ahead of the
+        # cursor. LEAST keeps the first-detection seq, which is also what
+        # original_seq records.
         "ON CONFLICT (natural_key) DO UPDATE SET display_name = EXCLUDED.display_name, "
-        "detected_from = EXCLUDED.detected_from, seq = EXCLUDED.seq",
+        "detected_from = EXCLUDED.detected_from, seq = LEAST(entities.seq, EXCLUDED.seq)",
         (eid, ent.kind, ent.natural_key, ent.ident, None, "sidecar lineage span", seq, seq),
     )
     return eid
