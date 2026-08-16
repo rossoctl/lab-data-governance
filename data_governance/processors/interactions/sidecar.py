@@ -378,15 +378,16 @@ def _upsert_entity(tx: db.Transaction, ent: _Entity, seq: int) -> str:
     tx.execute(
         "INSERT INTO entities (id, kind, natural_key, display_name, project_name, "
         "detected_from, seq, original_seq) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
-        # seq = LEAST(...), not EXCLUDED.seq: this algorithm re-derives the whole
-        # trace on every arriving span, so taking the new seq would rewrite every
-        # entity in the trace to the newest span's seq on every drain — and the
-        # entity_ready stream (ADR-0027) reads ``entities WHERE seq > cursor``,
-        # so an already-delivered entity would keep reappearing ahead of the
-        # cursor. LEAST keeps the first-detection seq, which is also what
-        # original_seq records.
+        # seq is deliberately NOT in the update list: this algorithm re-derives
+        # the whole trace on every arriving span, and the entity_ready stream
+        # (ADR-0027) reads ``entities WHERE seq > cursor``. Taking the new seq
+        # (EXCLUDED.seq) would rewrite every entity to the newest span's seq on
+        # each drain, so a delivered entity kept reappearing ahead of the
+        # cursor; lowering it (LEAST) could instead drop a not-yet-read entity
+        # BELOW the cursor. Leaving seq exactly as inserted keeps first
+        # detection monotone and delivered exactly once.
         "ON CONFLICT (natural_key) DO UPDATE SET display_name = EXCLUDED.display_name, "
-        "detected_from = EXCLUDED.detected_from, seq = LEAST(entities.seq, EXCLUDED.seq)",
+        "detected_from = EXCLUDED.detected_from",
         (eid, ent.kind, ent.natural_key, ent.ident, None, "sidecar lineage span", seq, seq),
     )
     return eid
