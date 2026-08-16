@@ -345,7 +345,7 @@ def _host_is_internal(host: str) -> bool:
         return True
     return (
         hostname.endswith((".svc", ".svc.cluster.local", ".cluster.local"))
-        or hostname == "host.containers.internal"
+        or hostname in ("host.containers.internal", "host.docker.internal")
     )
 
 
