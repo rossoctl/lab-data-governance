@@ -158,6 +158,23 @@ def test_inbound_destination_is_self_and_principal_maps_to_user() -> None:
     assert payload["accessing_user"] == {"username": "alice", "user_roles": []}
 
 
+def test_inbound_clusterip_reached_address_is_still_internal() -> None:
+    """The live false-positive this pins: an inbound exchange whose
+    `peer.host` is the raw ClusterIP the workload was reached on
+    (10.96.x.x:8080) must NOT classify external — the destination of an
+    inbound exchange is the workload itself, in-cluster by construction."""
+    anchor = utils.AnchorFacts(
+        direction="inbound", peer_host="10.96.47.165:8080",
+        self_id="a2a-contact-extractor",
+    )
+    payload = utils.build_opa_input(**_BASE, anchor=anchor, internal_patterns=_PATTERNS)
+    (dest,) = payload["data_destinations"]
+    assert dest["data_destination_name"] == "a2a-contact-extractor"
+    assert dest["data_destination_categories"] == ["internal"]
+    assert "data_destination_trust_level" not in dest
+    assert payload["event_type"] == "internal_sharing"
+
+
 def test_absent_anchor_omits_every_new_field() -> None:
     payload = utils.build_opa_input(**_BASE, anchor=None)
     for key in ("data_destinations", "event_type", "accessing_user"):

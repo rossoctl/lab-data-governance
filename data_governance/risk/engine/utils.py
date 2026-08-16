@@ -298,7 +298,16 @@ def _destination(anchor: AnchorFacts, internal_patterns: list[str]) -> dict[str,
         name = anchor.self_id or anchor.peer_host
     if name is None:
         return None
-    category = _category(anchor.peer_host or name, internal_patterns)
+    if anchor.direction == "inbound":
+        # An inbound exchange's destination is the sidecar'd workload itself,
+        # which is in-cluster by construction — a structural fact, not a
+        # whitelist question. (The whitelist would misread it: inbound
+        # `peer.host` is the address the workload was REACHED on, often a
+        # raw ClusterIP, which no hostname pattern can recognise — observed
+        # live as DG-001 false-positives on ordinary in-cluster a2a calls.)
+        category = "internal"
+    else:
+        category = _category(anchor.peer_host or name, internal_patterns)
     destination: dict[str, Any] = {
         "data_destination_name": name,
         "data_destination_categories": [category],
