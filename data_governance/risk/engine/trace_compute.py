@@ -54,17 +54,30 @@ __all__ = ["compute_trace_risk"]
 
 _MAX_ATTEMPTS = 2
 
-# "Current" = the latest version per interaction_id within this trace_id.
-# DISTINCT ON (interaction_id) ... ORDER BY interaction_id, version DESC picks
-# exactly that row per interaction, mirroring the *_latest_idx query shape
-# used everywhere else in this package for "latest version for this key."
+# "Current" = the latest version per interaction_id within this trace_id,
+# for interactions that still EXIST. DISTINCT ON (interaction_id) ... ORDER BY
+# interaction_id, version DESC picks exactly that row per interaction,
+# mirroring the *_latest_idx query shape used everywhere else in this package
+# for "latest version for this key."
+#
+# The INNER JOIN against `interactions` is load-bearing (observed live): the
+# sidecar lineage derivation rewrites a trace's interactions wholesale as
+# spans arrive, and an exchange can be re-keyed mid-derivation — leaving
+# immutable risk records for interaction ids that no longer exist. Those
+# ghost records must not contribute to the rollup (they would inflate
+# interaction_count and could freeze a stale risk level into every future
+# trace version). Re-reading the live lineage table at aggregation time is
+# the DAS discipline (FR-DAS-004: read live, never cache) — the records
+# themselves stay append-only and untouched.
 _CURRENT_INTERACTION_RISK_SQL = """
-SELECT DISTINCT ON (interaction_id)
-    interaction_risk_id, risk_level, enforcement_type, policy_event_count,
-    triggered_rule_ids, caller_entity_id, callee_entity_id, overall_confidence
-FROM interaction_risk_records
-WHERE trace_id = %s
-ORDER BY interaction_id, version DESC
+SELECT DISTINCT ON (r.interaction_id)
+    r.interaction_risk_id, r.risk_level, r.enforcement_type,
+    r.policy_event_count, r.triggered_rule_ids, r.caller_entity_id,
+    r.callee_entity_id, r.overall_confidence
+FROM interaction_risk_records r
+JOIN interactions i ON i.id = r.interaction_id
+WHERE r.trace_id = %s
+ORDER BY r.interaction_id, r.version DESC
 """
 
 _LATEST_TRACE_RECORD_SQL = (

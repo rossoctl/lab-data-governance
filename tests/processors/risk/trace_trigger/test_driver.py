@@ -58,10 +58,22 @@ def _insert_risk_record(
     enforcement_type: str | None = None,
     policy_event_count: int = 1,
     triggered_rule_ids: list[str] | None = None,
+    with_interaction: bool = True,
 ) -> tuple[str, int]:
     """Insert an interaction risk record the way the interaction engine does
-    (DEFAULT-allocated seq); return ``(interaction_risk_id, seq)``."""
+    (DEFAULT-allocated seq); return ``(interaction_risk_id, seq)``.
+
+    Also upserts the ``interactions`` row (unless *with_interaction* is
+    False — the ghost-record case): the rollup counts only records whose
+    interaction still exists."""
     with psycopg.connect(dsn) as conn:
+        if with_interaction:
+            conn.execute(
+                "INSERT INTO interactions (id, trace_id, caller_entity_id, "
+                "callee_entity_id, summary) VALUES (%s, %s, 'caller', 'callee', 's') "
+                "ON CONFLICT (id) DO NOTHING",
+                (interaction_id, trace_id),
+            )
         row = conn.execute(
             "INSERT INTO interaction_risk_records ("
             "  interaction_id, trace_id, caller_entity_id, callee_entity_id,"
@@ -230,6 +242,34 @@ def test_exactly_once_across_restart(configured_db: str) -> None:
     assert driver.drain(first_cursor) == s2
     records = _trace_records(configured_db, "t-a")
     assert records[-1][1] == "high" and records[-1][3] == 2
+
+
+def test_ghost_interaction_records_do_not_contribute(configured_db: str) -> None:
+    """Observed live: the sidecar lineage derivation rewrites a trace's
+    interactions wholesale, so an exchange can be re-keyed mid-derivation,
+    leaving immutable risk records for interaction ids that no longer exist.
+    Those ghost records must not count toward the rollup — otherwise a
+    stale (possibly critical) level freezes into every future trace
+    version. The gather re-reads the live `interactions` table (FR-DAS-004
+    discipline)."""
+    live_id, _ = _insert_risk_record(
+        configured_db, interaction_id="i-live", trace_id="t-ghost", risk_level="low"
+    )
+    _insert_risk_record(
+        configured_db,
+        interaction_id="i-ghost",
+        trace_id="t-ghost",
+        risk_level="critical",
+        enforcement_type="block",
+        with_interaction=False,
+    )
+
+    driver.drain(0)
+
+    current = _trace_records(configured_db, "t-ghost")[-1]
+    assert current[1] == "low", "the ghost's critical must not poison the rollup"
+    assert current[3] == 1, "interaction_count counts only live interactions"
+    assert [str(u) for u in current[5]] == [live_id]
 
 
 # --- failure atomicity: recompute failure holds the cursor --------------------
