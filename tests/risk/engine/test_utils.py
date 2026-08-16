@@ -555,65 +555,77 @@ def test_matches_internal_whitelist_rejects_attacker_controlled_suffix():
     )
 
 
-# --- build_opa_input: destination_url classification -------------------------
+# --- build_opa_input: destination classification -----------------------------
+# #178 introduced this whitelist behind a placeholder ``destination_url``
+# parameter, "until issue #163's evidence-gathering wiring lands". It has now
+# landed: the destination arrives as ``AnchorFacts`` read from the anchor
+# span, so these cases are re-expressed against that real evidence path. The
+# classification semantics under test are unchanged from #178.
 
 
-def test_build_opa_input_destination_url_matching_whitelist_is_internal(monkeypatch):
-    monkeypatch.setattr(
-        "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS",
-        ["*.corp.internal"],
-    )
-    payload = utils.build_opa_input(
+def _anchor_payload(**anchor_kwargs):
+    return utils.build_opa_input(
         legs=[],
         span_ids=[],
         classifications={},
         caller_entity_id=None,
         callee_entity_id=None,
-        destination_url="https://svc.corp.internal/x",
+        anchor=utils.AnchorFacts(direction="outbound", **anchor_kwargs),
     )
-    assert payload["data_destinations"] == [{"data_destination_categories": ["internal"]}]
-    _opa_input_validator().validate(payload)
 
 
-def test_build_opa_input_destination_url_not_matching_whitelist_is_external(monkeypatch):
+def test_build_opa_input_destination_matching_whitelist_is_internal(monkeypatch):
     monkeypatch.setattr(
         "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS",
         ["*.corp.internal"],
     )
-    payload = utils.build_opa_input(
-        legs=[],
-        span_ids=[],
-        classifications={},
-        caller_entity_id=None,
-        callee_entity_id=None,
-        destination_url="https://evil.example.com",
+    payload = _anchor_payload(
+        peer_host="svc.corp.internal", url_scheme="https", url_path="/x"
     )
-    assert payload["data_destinations"] == [{"data_destination_categories": ["external"]}]
+    assert payload["data_destinations"] == [
+        {
+            "data_destination_name": "svc.corp.internal",
+            "data_destination_categories": ["internal"],
+            "data_destination_url": "https://svc.corp.internal/x",
+        }
+    ]
+    assert payload["event_type"] == "internal_sharing"
     _opa_input_validator().validate(payload)
 
 
-def test_build_opa_input_destination_url_with_empty_whitelist_defaults_external(
+def test_build_opa_input_destination_not_matching_whitelist_is_external(monkeypatch):
+    monkeypatch.setattr(
+        "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS",
+        ["*.corp.internal"],
+    )
+    payload = _anchor_payload(peer_host="evil.example.com")
+    assert payload["data_destinations"] == [
+        {
+            "data_destination_name": "evil.example.com",
+            "data_destination_categories": ["external"],
+            "data_destination_trust_level": "UNTRUSTED_EXTERNAL",
+        }
+    ]
+    assert payload["event_type"] == "external_sharing"
+    _opa_input_validator().validate(payload)
+
+
+def test_build_opa_input_destination_with_empty_whitelist_defaults_external(
     monkeypatch,
 ):
     monkeypatch.setattr(
         "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS", []
     )
-    payload = utils.build_opa_input(
-        legs=[],
-        span_ids=[],
-        classifications={},
-        caller_entity_id=None,
-        callee_entity_id=None,
-        destination_url="https://svc.corp.internal",
-    )
-    assert payload["data_destinations"] == [{"data_destination_categories": ["external"]}]
+    payload = _anchor_payload(peer_host="svc.corp.internal")
+    assert payload["data_destinations"][0]["data_destination_categories"] == ["external"]
 
 
-def test_build_opa_input_no_destination_url_omits_data_destinations():
-    """Matches this module's existing "absent means absent" convention: no
-    destination URL known yet (the common case until issue #163's
-    evidence-gathering wiring lands) must not fabricate a category."""
+def test_build_opa_input_no_anchor_omits_data_destinations():
+    """Matches this module's existing "absent means absent" convention: an
+    interaction whose anchor span carries no wire facts (or has no anchor at
+    all) must not fabricate a category."""
     payload = utils.build_opa_input(
         legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
     )
     assert "data_destinations" not in payload
+    assert "event_type" not in payload

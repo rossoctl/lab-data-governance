@@ -148,10 +148,11 @@ def _get_or_refresh_decision(
     classifications: dict,
     caller_entity_id: str | None,
     callee_entity_id: str | None,
+    anchor: utils.AnchorFacts | None,
 ) -> utils.PolicyDecision:
     """Reuse the cached decision when the evidence fingerprint is unchanged;
     otherwise call OPA and persist a new decision version."""
-    fingerprint = utils.fingerprint(legs, classifications)
+    fingerprint = utils.fingerprint(legs, classifications, anchor)
 
     row = tx.fetch_one(_LATEST_DECISION_SQL, (interaction_id,))
     if row is not None:
@@ -165,6 +166,7 @@ def _get_or_refresh_decision(
         classifications=classifications,
         caller_entity_id=caller_entity_id,
         callee_entity_id=callee_entity_id,
+        anchor=anchor,
     )
     opa_decision = opa_client.evaluate(
         interaction_id=interaction_id,
@@ -281,12 +283,13 @@ def _attempt(interaction_id: str, opa_client: OpaClient) -> None:
             classifications=evidence.classifications,
             caller_entity_id=evidence.caller_entity_id,
             callee_entity_id=evidence.callee_entity_id,
+            anchor=evidence.anchor,
         )
 
         params, normalized = _record_params(
             interaction_id=evidence.interaction_id,
             trace_id=evidence.trace_id,
-            parent_interaction_id=None,
+            parent_interaction_id=evidence.parent_interaction_id,
             caller_entity_id=evidence.caller_entity_id,
             callee_entity_id=evidence.callee_entity_id,
             legs=evidence.legs,

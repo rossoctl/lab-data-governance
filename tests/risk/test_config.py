@@ -162,3 +162,30 @@ def test_opa_malformed_int_env_falls_back_to_default(
     cfg = _reload()
     assert cfg.OPA_TIMEOUT_SECONDS == 5
     assert "RISK_OPA_TIMEOUT_SECONDS" in capsys.readouterr().err
+
+
+# --- risk.evidence.* (issue #163 / #178) --------------------------------------
+# The whitelist itself is #178's; these assert the config plumbing around it,
+# which #178 shipped untested at this layer.
+
+
+def test_internal_url_whitelist_patterns_default_is_empty():
+    """Empty by default — #178's deliberate "everything is external unless
+    named" posture. A real deployment must set it (see
+    deploy/k8s/85-leg-ready.yaml)."""
+    cfg = _reload()
+    assert cfg.INTERNAL_URL_WHITELIST_PATTERNS == []
+
+
+def test_internal_url_whitelist_patterns_override(monkeypatch):
+    monkeypatch.setenv(
+        "RISK_INTERNAL_URL_WHITELIST_PATTERNS", " *.corp.example.com , localhost "
+    )
+    cfg = _reload()
+    assert cfg.INTERNAL_URL_WHITELIST_PATTERNS == ["*.corp.example.com", "localhost"]
+
+
+def test_internal_url_whitelist_patterns_explicit_empty_means_no_whitelist(monkeypatch):
+    monkeypatch.setenv("RISK_INTERNAL_URL_WHITELIST_PATTERNS", "")
+    cfg = _reload()
+    assert cfg.INTERNAL_URL_WHITELIST_PATTERNS == []
