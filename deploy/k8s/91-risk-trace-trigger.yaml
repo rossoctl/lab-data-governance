@@ -1,0 +1,120 @@
+# Trace-risk-trigger processor Deployment (issues #102/#164) — a DB consumer,
+# NOT an inbound API.
+#
+# Like the interactions/classification processors (70/80), this workload
+# exposes NO Service and declares NO container ports: it has no inbound
+# traffic. It drains `interaction_risk_records` by `seq` (migration 0018),
+# wakes on the `dg_interaction_risk_written` LISTEN channel (migration 0016)
+# plus the poll backstop, and writes `trace_risk_records`, advancing the
+# durable `risk_trace_trigger` cursor in `processor_state`
+# (data_governance/processors/risk/trace_trigger/driver.py).
+#
+# Same image as the receiver — one repo-root Containerfile, one image;
+# deployments differ only by `command:` (issue #38). No new image build.
+#
+# Single replica (like 70-interactions): the driver drains against ONE shared
+# `processor_state` cursor with no inter-pod lock. The per-record trace
+# recompute is idempotent (identical rollup ⇒ no write), so a brief
+# involuntary overlap of two pods only duplicates work, never corrupts state —
+# but two replicas is not a supported topology.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-governance-risk-trace-trigger
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-risk-trace-trigger
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 1
+  strategy:
+    # Single-cursor drainer: don't create a second pod during a rollout (see
+    # 70-interactions.yaml's header note — idempotency, not the rollout
+    # strategy, is what makes the involuntary-overlap window safe).
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-risk-trace-trigger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-governance-risk-trace-trigger
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      initContainers:
+        # ADR-0002: each pod runs `python -m data_governance.db.migrate` to
+        # head before the processor container starts. Alembic's version table
+        # makes this idempotent across pods.
+        - name: migrate
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.db.migrate"]
+          # ``DATABASE_URL`` must come AFTER the POSTGRES_* entries it
+          # references (k8s only substitutes $(VAR) against names defined
+          # earlier in the same env list — issue #40; pinned by
+          # test_container_env_placeholder_references_resolve_in_order).
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"
+      containers:
+        # The processor container runs the trace-trigger entry point. It does
+        # NOT run Alembic itself — the init container is the schema-ordering
+        # gate; the entry point performs the defence-in-depth schema-version
+        # check on startup (issue #10) and exits non-zero on mismatch.
+        - name: risk-trace-trigger
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.processors.risk.trace_trigger"]
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          # No ports / no Service: the processor has no inbound API. Its
+          # Prometheus /metrics surface (9095 in-pod) is intentionally
+          # undeclared and unexposed, like the sibling processors (v1 has no
+          # monitoring peer). No probes: no HTTP serving surface to probe;
+          # Kubernetes restarts the pod on process exit.
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "256Mi"
+            limits:
+              memory: "512Mi"

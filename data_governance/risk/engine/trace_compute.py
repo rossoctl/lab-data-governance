@@ -192,33 +192,47 @@ def _record_params(trace_id: str, aggregate: TraceRiskAggregate) -> tuple[dict, 
     return params, normalized
 
 
-def _attempt(trace_id: str) -> None:
-    with db.transaction() as tx:
-        current_records = _fetch_current_records(tx, trace_id)
-        aggregate = aggregate_trace_risk(current_records)
-        params, normalized = _record_params(trace_id, aggregate)
+def _attempt_in(tx: db.Transaction, trace_id: str) -> None:
+    current_records = _fetch_current_records(tx, trace_id)
+    aggregate = aggregate_trace_risk(current_records)
+    params, normalized = _record_params(trace_id, aggregate)
 
-        latest_row = tx.fetch_one(_LATEST_TRACE_RECORD_SQL, (trace_id,))
-        if _normalized_latest_record(latest_row) == normalized:
-            return
+    latest_row = tx.fetch_one(_LATEST_TRACE_RECORD_SQL, (trace_id,))
+    if _normalized_latest_record(latest_row) == normalized:
+        return
 
-        tx.execute(_INSERT_TRACE_RECORD_SQL, params)
+    tx.execute(_INSERT_TRACE_RECORD_SQL, params)
 
 
-def compute_trace_risk(trace_id: str) -> None:
+def compute_trace_risk(trace_id: str, *, tx: db.Transaction | None = None) -> None:
     """Compute and persist the current trace risk record for *trace_id*.
 
     Idempotent: if the freshly-computed record is identical to the latest
-    stored version, nothing is written and no NOTIFY fires. Retries once on
-    a ``UNIQUE (trace_id, version)`` collision from a racing concurrent
-    recompute — the retry re-gathers current records and re-checks
-    idempotency, so a retry that lost the race to a winner whose write
-    already matches simply becomes a no-op.
+    stored version, nothing is written and no NOTIFY fires.
+
+    When *tx* is provided the whole gather/aggregate/write runs inside the
+    caller's transaction — the trace-trigger processor (#102/#164) passes its
+    per-item transaction here so the write commits atomically with the
+    stream's cursor advance (ADR-0007: an engine failure rolls the cursor
+    back and the item is re-delivered, never silently skipped). No retry in
+    this mode: a ``UNIQUE (trace_id, version)`` collision propagates, the
+    caller's transaction rolls back, and the stream re-delivers the item —
+    the re-delivery IS the retry, and it re-checks idempotency on arrival.
+
+    When *tx* is ``None`` the call owns its transaction and retries once on
+    that collision from a racing concurrent recompute — the retry re-gathers
+    current records and re-checks idempotency, so a retry that lost the race
+    to a winner whose write already matches simply becomes a no-op.
     """
+    if tx is not None:
+        _attempt_in(tx, trace_id)
+        return
+
     last_error: psycopg.errors.UniqueViolation | None = None
     for _attempt_number in range(_MAX_ATTEMPTS):
         try:
-            _attempt(trace_id)
+            with db.transaction() as own_tx:
+                _attempt_in(own_tx, trace_id)
             return
         except psycopg.errors.UniqueViolation as exc:
             last_error = exc
