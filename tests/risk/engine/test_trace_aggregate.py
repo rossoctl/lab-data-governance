@@ -103,6 +103,45 @@ def test_unranked_risk_level_never_raises_and_sorts_last():
     assert result.trace_risk_level == "low"
 
 
+# --- aggregate_trace_risk: mode selection --------------------------------------
+
+
+def test_explicit_severity_max_risk_level_mode_matches_default():
+    records = [_record(risk_level="low"), _record(risk_level="critical")]
+    result = trace_aggregate.aggregate_trace_risk(
+        records, risk_level_mode="severity_max"
+    )
+    assert result.trace_risk_level == "critical"
+
+
+def test_explicit_severity_max_enforcement_type_mode_matches_default():
+    records = [_record(enforcement_type="warn"), _record(enforcement_type="block")]
+    result = trace_aggregate.aggregate_trace_risk(
+        records, enforcement_type_mode="severity_max"
+    )
+    assert result.trace_enforcement_type == "block"
+
+
+def test_unknown_risk_level_mode_raises_value_error():
+    try:
+        trace_aggregate.aggregate_trace_risk([_record()], risk_level_mode="bogus")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "bogus" in str(exc)
+        assert "severity_max" in str(exc)
+
+
+def test_unknown_enforcement_type_mode_raises_value_error():
+    try:
+        trace_aggregate.aggregate_trace_risk(
+            [_record()], enforcement_type_mode="bogus"
+        )
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "bogus" in str(exc)
+        assert "severity_max" in str(exc)
+
+
 # --- interaction_count / policy_event_count -----------------------------------
 
 

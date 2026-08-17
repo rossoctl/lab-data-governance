@@ -35,6 +35,8 @@ __all__ = [
     "FANOUT_BATCH_SIZE",
     "METRICS_REFRESH_INTERVAL_SECONDS",
     "PROCESSOR_NAME_TRACE_TRIGGER",
+    "TRACE_AGGREGATION_RISK_LEVEL_MODE",
+    "TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE",
     "OPA_BASE_URL",
     "OPA_DECISION_PATH",
     "OPA_TIMEOUT_SECONDS",
@@ -112,6 +114,24 @@ METRICS_REFRESH_INTERVAL_SECONDS = _int_env("RISK_METRICS_REFRESH_INTERVAL_SECON
 # Carved out now so #102 cannot collide on a processor_name.
 
 PROCESSOR_NAME_TRACE_TRIGGER = "risk_trace_trigger"
+
+# --- risk.trace_aggregation.* (issue #102) -----------------------------------
+# How interaction-level risk/enforcement values are rolled up into a trace
+# risk record (FR-DAS-021). Named "trace_aggregation" (not just "aggregation")
+# because this is specifically the trace-level rollup — other aggregations
+# (e.g. entity-level, in a future ARC issue) would get their own
+# ``*_AGGREGATION_*`` pair rather than sharing these. "severity_max" (highest
+# risk_level / strictest enforcement_type across the trace's current
+# interaction risk records) is the only mode implemented today; additional
+# modes (e.g. weighted compounding) are a documented future extension, not
+# built here.
+
+TRACE_AGGREGATION_RISK_LEVEL_MODE = _str_env(
+    "RISK_TRACE_AGGREGATION_RISK_LEVEL_MODE", "severity_max"
+)
+TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE = _str_env(
+    "RISK_TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE", "severity_max"
+)
 
 # --- opa.* (issue #101) -------------------------------------------------------
 # No OPA deploy manifest exists in deploy/k8s/ yet, so OPA_BASE_URL's default

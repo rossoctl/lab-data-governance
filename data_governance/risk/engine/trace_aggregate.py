@@ -7,9 +7,18 @@ keeping the semantics pure makes the aggregation matrix (severity rollup,
 entity/rule id union, confidence averaging, empty-trace corner cases)
 testable with no DB.
 
-Severity rollup reuses :func:`data_governance.risk.engine.utils.severity_max`
-over :data:`RISK_LEVEL_ORDER`/``ENFORCEMENT_ORDER` — the same
-most-severe-first ranking #101 uses, not a re-derived ordering.
+The rollup mode for ``trace_risk_level``/``trace_enforcement_type`` is
+config-driven —
+:data:`data_governance.risk.config.TRACE_AGGREGATION_RISK_LEVEL_MODE`/
+``TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE`` — rather than hardcoded, so a
+future compounding strategy can replace ``severity_max`` without changing
+:func:`aggregate_trace_risk`'s signature. ``"severity_max"`` (highest
+value across the trace's current interaction risk records, via
+:func:`data_governance.risk.engine.utils.severity_max` over
+:data:`RISK_LEVEL_ORDER`/``ENFORCEMENT_ORDER`) is the only mode implemented
+today, for both params. An unrecognized mode raises :class:`ValueError`
+rather than silently falling back, so a config typo fails loudly instead of
+quietly picking the default.
 
 Two aggregation rules are not spelled out by FR-DAS-021 (which only pins
 ``trace_risk_level``, ``trace_enforcement_type``, ``interaction_count``,
@@ -32,7 +41,9 @@ from __future__ import annotations
 import dataclasses
 import functools
 from decimal import Decimal
+from typing import Callable
 
+from data_governance.risk import config
 from data_governance.risk.engine.utils import (
     ENFORCEMENT_ORDER,
     RISK_LEVEL_ORDER,
@@ -47,6 +58,37 @@ __all__ = [
     "TraceRiskAggregate",
     "aggregate_trace_risk",
 ]
+
+# Mode name -> reducer over a value order tuple. Each reducer takes the
+# records' values for one field (risk_level or enforcement_type) plus that
+# field's severity order, and folds them into a single rolled-up value.
+# "severity_max" is the only mode either config var can name today; adding a
+# new compounding strategy is a matter of adding another entry here.
+_RiskLevelReducer = Callable[[list[str], tuple[str, ...]], str]
+_EnforcementTypeReducer = Callable[[list[str | None], tuple[str, ...]], str | None]
+
+
+def _severity_max_reduce_risk_level(values: list[str], order: tuple[str, ...]) -> str:
+    return functools.reduce(
+        lambda a, b: severity_max(a, b, order=order), values, "none"
+    )
+
+
+def _severity_max_reduce_enforcement_type(
+    values: list[str | None], order: tuple[str, ...]
+) -> str | None:
+    return functools.reduce(
+        lambda a, b: severity_max(a, b, order=order), values, None
+    )
+
+
+_RISK_LEVEL_MODES: dict[str, _RiskLevelReducer] = {
+    "severity_max": _severity_max_reduce_risk_level,
+}
+
+_ENFORCEMENT_TYPE_MODES: dict[str, _EnforcementTypeReducer] = {
+    "severity_max": _severity_max_reduce_enforcement_type,
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,25 +123,45 @@ class TraceRiskAggregate:
 
 def aggregate_trace_risk(
     records: list[CurrentInteractionRisk],
+    *,
+    risk_level_mode: str = config.TRACE_AGGREGATION_RISK_LEVEL_MODE,
+    enforcement_type_mode: str = config.TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE,
 ) -> TraceRiskAggregate:
     """FR-DAS-021: roll up a trace's current interaction risk records.
 
-    ``trace_risk_level``/``trace_enforcement_type`` are the highest/strictest
-    values across *records* (via :func:`severity_max`, so an unranked or
-    missing value never raises). An empty *records* list (a trace with no
-    interaction risk yet) rolls up to ``risk_level="none"``/no enforcement —
-    the least-severe value, not an error.
+    ``trace_risk_level``/``trace_enforcement_type`` are computed by
+    *risk_level_mode*/*enforcement_type_mode* (default: the
+    ``RISK_TRACE_AGGREGATION_RISK_LEVEL_MODE``/
+    ``RISK_TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE`` config values). Today
+    the only implemented mode for either param is ``"severity_max"`` — the
+    highest/strictest value across *records*, via :func:`severity_max`, so an
+    unranked or missing value never raises. An empty *records* list (a trace
+    with no interaction risk yet) rolls up to ``risk_level="none"``/no
+    enforcement — the least-severe value, not an error.
+
+    Raises :class:`ValueError` if either mode name is not recognized.
     """
+    try:
+        risk_level_reducer = _RISK_LEVEL_MODES[risk_level_mode]
+    except KeyError:
+        raise ValueError(
+            f"unknown trace risk_level aggregation mode: {risk_level_mode!r} "
+            f"(known modes: {sorted(_RISK_LEVEL_MODES)})"
+        ) from None
+    try:
+        enforcement_type_reducer = _ENFORCEMENT_TYPE_MODES[enforcement_type_mode]
+    except KeyError:
+        raise ValueError(
+            f"unknown trace enforcement_type aggregation mode: "
+            f"{enforcement_type_mode!r} (known modes: {sorted(_ENFORCEMENT_TYPE_MODES)})"
+        ) from None
+
     interaction_count = len(records)
-    trace_risk_level = functools.reduce(
-        lambda a, b: severity_max(a, b, order=RISK_LEVEL_ORDER),
-        (r.risk_level for r in records),
-        "none",
+    trace_risk_level = risk_level_reducer(
+        [r.risk_level for r in records], RISK_LEVEL_ORDER
     )
-    trace_enforcement_type = functools.reduce(
-        lambda a, b: severity_max(a, b, order=ENFORCEMENT_ORDER),
-        (r.enforcement_type for r in records),
-        None,
+    trace_enforcement_type = enforcement_type_reducer(
+        [r.enforcement_type for r in records], ENFORCEMENT_ORDER
     )
     policy_event_count = sum(r.policy_event_count for r in records)
     all_entity_ids = sorted(

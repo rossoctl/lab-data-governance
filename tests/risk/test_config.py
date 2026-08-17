@@ -64,6 +64,12 @@ def test_fanout_and_metrics_defaults():
     assert cfg.METRICS_REFRESH_INTERVAL_SECONDS == 300
 
 
+def test_trace_aggregation_mode_defaults():
+    cfg = _reload()
+    assert cfg.TRACE_AGGREGATION_RISK_LEVEL_MODE == "severity_max"
+    assert cfg.TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE == "severity_max"
+
+
 # --- overridability --------------------------------------------------------
 
 
