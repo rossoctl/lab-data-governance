@@ -233,8 +233,8 @@ def test_optional_columns_default_to_empty_array_not_null(migrated_dsn: str) -> 
 
 def test_0017_is_applied_in_the_chain(migrated_dsn: str) -> None:
     """This revision (renumbered from 0013 to 0017 — see its own docstring)
-    is the current head, but the assertion here is deliberately only
-    reachability. The head assertion lives solely in
+    was head until 0018 chained on top of it, but the assertion here is
+    deliberately only reachability. The head assertion lives solely in
     ``test_latest_migration.py`` — the one canonical place — so a new
     revision landing on top only has to edit that file, not this one."""
     from alembic.config import Config
