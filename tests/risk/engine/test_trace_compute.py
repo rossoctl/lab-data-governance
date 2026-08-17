@@ -100,7 +100,8 @@ def _latest_trace_row(dsn: str, trace_id: str = _TID) -> tuple | None:
             "SELECT version, trace_risk_level, trace_enforcement_type, "
             "interaction_count, policy_event_count, all_entity_ids, "
             "triggered_rule_ids, overall_confidence, "
-            "contributing_interaction_risk_ids "
+            "contributing_interaction_risk_ids, "
+            "risk_compounding_mode, enforcement_aggregation_mode "
             "FROM trace_risk_records WHERE trace_id = %s "
             "ORDER BY version DESC LIMIT 1",
             (trace_id,),
@@ -134,6 +135,19 @@ def test_first_compute_writes_version_1(seeded: str):
     assert trace_risk_level == "high"
     assert interaction_count == 1
     assert policy_event_count == 1
+
+
+def test_written_record_persists_the_aggregation_modes_used(seeded: str):
+    with psycopg.connect(seeded) as conn:
+        _insert_risk_record(conn, interaction_id="ix-tx-1", risk_level="high")
+        conn.commit()
+
+    compute_trace_risk(_TID)
+
+    row = _latest_trace_row(seeded)
+    risk_compounding_mode, enforcement_aggregation_mode = row[9], row[10]
+    assert risk_compounding_mode == "severity_max"
+    assert enforcement_aggregation_mode == "severity_max"
 
 
 def test_no_is_complete_equivalent_field_is_ever_written(seeded: str):
@@ -256,6 +270,35 @@ def test_unchanged_current_records_write_nothing_on_recompute(seeded: str):
 
     compute_trace_risk(_TID)
     assert _all_trace_versions(seeded) == [1]
+
+
+def test_legacy_null_mode_row_bumps_once_then_stabilizes(seeded: str):
+    """A trace_risk_records row written before the mode columns existed has
+    risk_compounding_mode/enforcement_aggregation_mode = NULL. Since the
+    idempotency comparison includes both columns, the freshly computed
+    "severity_max" differs from that stored NULL — the trace picks up exactly
+    one extra version the next time it is recomputed, and stabilizes after
+    that (a one-time, self-correcting bump, not a repeat-forever mismatch)."""
+    with psycopg.connect(seeded) as conn:
+        _insert_risk_record(conn, interaction_id="ix-tx-1", risk_level="high")
+        conn.execute(
+            "INSERT INTO trace_risk_records ("
+            "trace_id, version, computed_at, trace_risk_level, "
+            "interaction_count, policy_event_count"
+            ") VALUES (%s, 1, now(), 'high', 1, 1)",
+            (_TID,),
+        )
+        conn.commit()
+    assert _all_trace_versions(seeded) == [1]
+
+    compute_trace_risk(_TID)
+    assert _all_trace_versions(seeded) == [1, 2]
+    row = _latest_trace_row(seeded)
+    assert row[9] == "severity_max"
+    assert row[10] == "severity_max"
+
+    compute_trace_risk(_TID)
+    assert _all_trace_versions(seeded) == [1, 2]
 
 
 # --- new interaction risk -> new version ------------------------------------------

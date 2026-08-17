@@ -142,6 +142,22 @@ def test_unknown_enforcement_type_mode_raises_value_error():
         assert "severity_max" in str(exc)
 
 
+def test_result_carries_the_default_modes_used():
+    result = trace_aggregate.aggregate_trace_risk([_record()])
+    assert result.risk_level_mode == "severity_max"
+    assert result.enforcement_type_mode == "severity_max"
+
+
+def test_result_carries_explicitly_passed_modes():
+    result = trace_aggregate.aggregate_trace_risk(
+        [_record()],
+        risk_level_mode="severity_max",
+        enforcement_type_mode="severity_max",
+    )
+    assert result.risk_level_mode == "severity_max"
+    assert result.enforcement_type_mode == "severity_max"
+
+
 # --- interaction_count / policy_event_count -----------------------------------
 
 

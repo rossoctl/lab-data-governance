@@ -26,6 +26,15 @@ silently double-writing. On that collision this module retries once.
 FR-DAS-022: no ``is_complete``/``status`` field is ever written — a trace is
 an open-ended forest with no defined "done" point, so a trace risk record is
 always just the best current estimate.
+
+Each written record also persists which rollup mode produced it —
+``aggregate.risk_level_mode``/``enforcement_type_mode`` (see
+``trace_aggregate.py``) go into ``risk_compounding_mode``/
+``enforcement_aggregation_mode`` respectively. Both are included in the
+idempotency comparison, so a trace's very first recompute after this modes
+column landed writes one extra version (stored ``NULL`` vs. the newly
+computed ``"severity_max"``) — a one-time, self-correcting bump, not an
+infinite-recompute risk, since the next recompute then matches.
 """
 
 from __future__ import annotations
@@ -61,7 +70,8 @@ ORDER BY interaction_id, version DESC
 _LATEST_TRACE_RECORD_SQL = (
     "SELECT version, trace_risk_level, trace_enforcement_type, "
     "interaction_count, policy_event_count, all_entity_ids, "
-    "triggered_rule_ids, overall_confidence, contributing_interaction_risk_ids "
+    "triggered_rule_ids, overall_confidence, contributing_interaction_risk_ids, "
+    "risk_compounding_mode, enforcement_aggregation_mode "
     "FROM trace_risk_records WHERE trace_id = %s "
     "ORDER BY version DESC LIMIT 1"
 )
@@ -70,14 +80,16 @@ _INSERT_TRACE_RECORD_SQL = """
 INSERT INTO trace_risk_records (
     trace_id, version, computed_at, trace_risk_level, trace_enforcement_type,
     interaction_count, policy_event_count, all_entity_ids, triggered_rule_ids,
-    overall_confidence, contributing_interaction_risk_ids
+    overall_confidence, contributing_interaction_risk_ids,
+    risk_compounding_mode, enforcement_aggregation_mode
 )
 SELECT %(trace_id)s,
        COALESCE(MAX(version), 0) + 1,
        now(), %(trace_risk_level)s, %(trace_enforcement_type)s,
        %(interaction_count)s, %(policy_event_count)s, %(all_entity_ids)s,
        %(triggered_rule_ids)s, %(overall_confidence)s,
-       %(contributing_interaction_risk_ids)s
+       %(contributing_interaction_risk_ids)s,
+       %(risk_compounding_mode)s, %(enforcement_aggregation_mode)s
   FROM trace_risk_records WHERE trace_id = %(trace_id)s
 """
 
@@ -121,6 +133,8 @@ def _normalized_latest_record(row: tuple | None) -> dict | None:
         triggered_rule_ids,
         overall_confidence,
         contributing_interaction_risk_ids,
+        risk_compounding_mode,
+        enforcement_aggregation_mode,
     ) = row
     return {
         "trace_risk_level": trace_risk_level,
@@ -135,6 +149,8 @@ def _normalized_latest_record(row: tuple | None) -> dict | None:
         "contributing_interaction_risk_ids": [
             str(rid) for rid in (contributing_interaction_risk_ids or [])
         ],
+        "risk_compounding_mode": risk_compounding_mode,
+        "enforcement_aggregation_mode": enforcement_aggregation_mode,
     }
 
 
@@ -155,6 +171,8 @@ def _record_params(trace_id: str, aggregate: TraceRiskAggregate) -> tuple[dict, 
         "contributing_interaction_risk_ids": list(
             aggregate.contributing_interaction_risk_ids
         ),
+        "risk_compounding_mode": aggregate.risk_level_mode,
+        "enforcement_aggregation_mode": aggregate.enforcement_type_mode,
     }
     params = {
         "trace_id": trace_id,
@@ -168,6 +186,8 @@ def _record_params(trace_id: str, aggregate: TraceRiskAggregate) -> tuple[dict, 
             str(overall_confidence) if overall_confidence is not None else None
         ),
         "contributing_interaction_risk_ids": aggregate.contributing_interaction_risk_ids,
+        "risk_compounding_mode": aggregate.risk_level_mode,
+        "enforcement_aggregation_mode": aggregate.enforcement_type_mode,
     }
     return params, normalized
 

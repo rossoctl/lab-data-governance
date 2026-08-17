@@ -18,7 +18,10 @@ value across the trace's current interaction risk records, via
 :data:`RISK_LEVEL_ORDER`/``ENFORCEMENT_ORDER`) is the only mode implemented
 today, for both params. An unrecognized mode raises :class:`ValueError`
 rather than silently falling back, so a config typo fails loudly instead of
-quietly picking the default.
+quietly picking the default. The resolved mode names are carried on
+:class:`TraceRiskAggregate` so the write path can persist which mode
+produced a given record (``trace_risk_records.risk_compounding_mode`` /
+``enforcement_aggregation_mode``).
 
 Two aggregation rules are not spelled out by FR-DAS-021 (which only pins
 ``trace_risk_level``, ``trace_enforcement_type``, ``interaction_count``,
@@ -109,7 +112,13 @@ class CurrentInteractionRisk:
 @dataclasses.dataclass(frozen=True)
 class TraceRiskAggregate:
     """The computed FR-DAS-021 rollup for one trace, ready to be written as a
-    ``trace_risk_records`` row."""
+    ``trace_risk_records`` row.
+
+    ``risk_level_mode``/``enforcement_type_mode`` record which mode actually
+    produced ``trace_risk_level``/``trace_enforcement_type`` (the resolved
+    param values, not just the config defaults), so the write path can
+    persist them alongside the rest of the record.
+    """
 
     trace_risk_level: str
     trace_enforcement_type: str | None
@@ -119,6 +128,8 @@ class TraceRiskAggregate:
     triggered_rule_ids: list[str]
     overall_confidence: Decimal | None
     contributing_interaction_risk_ids: list[str]
+    risk_level_mode: str
+    enforcement_type_mode: str
 
 
 def aggregate_trace_risk(
@@ -192,4 +203,6 @@ def aggregate_trace_risk(
         triggered_rule_ids=triggered_rule_ids,
         overall_confidence=overall_confidence,
         contributing_interaction_risk_ids=contributing_interaction_risk_ids,
+        risk_level_mode=risk_level_mode,
+        enforcement_type_mode=enforcement_type_mode,
     )
