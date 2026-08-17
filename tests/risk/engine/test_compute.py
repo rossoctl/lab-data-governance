@@ -15,6 +15,8 @@ whatever :class:`OpaClient`-shaped object it is given).
 
 from __future__ import annotations
 
+import threading
+
 import psycopg
 import pytest
 
@@ -260,6 +262,59 @@ def test_notify_fires_on_insert_not_on_skipped_write(seeded: str):
         compute_interaction_risk(_IX_ID, opa_client=opa)
         notifications = list(listen_conn.notifies(timeout=0.5))
         assert notifications == []
+
+
+# --- retry on UNIQUE (interaction_id, version) collision -----------------------
+
+
+def test_racing_computes_collide_and_the_retry_recovers(seeded: str, monkeypatch):
+    """Two concurrent ``compute_interaction_risk(_IX_ID, ...)`` calls both see
+    no cached policy decision (fresh interaction), both call OPA, and both
+    race to insert the first ``interaction_policy_decisions`` version. A
+    barrier holds both threads right before that insert so they submit
+    concurrently: one wins, the other's insert hits
+    ``interaction_policy_decisions_version_uq``, is caught by
+    ``compute_interaction_risk``'s retry loop, and retries — the retry
+    re-gathers evidence, finds the winner's decision already cached (matching
+    fingerprint), reuses it, and writes (or, if the winner already wrote it,
+    no-ops on) the risk record. Final state: no unhandled exception, exactly
+    one decision version, exactly one risk record version."""
+    barrier = threading.Barrier(2)
+    real_execute = psycopg.Cursor.execute
+
+    def _gated_execute(self, sql, params=None, *args, **kwargs):
+        if isinstance(sql, str) and "INSERT INTO interaction_policy_decisions" in sql:
+            barrier.wait(timeout=20)
+        return real_execute(self, sql, params, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg.Cursor, "execute", _gated_execute)
+
+    errors: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            # Each thread gets its own fake OPA client — `_FakeOpaClient`
+            # isn't thread-safe, and both racing computes are expected to
+            # produce the identical decision anyway.
+            opa = _FakeOpaClient([_decision(risk_level="high")])
+            compute_interaction_risk(_IX_ID, opa_client=opa)
+        except BaseException as exc:  # noqa: BLE001 - surfaced to the main thread below
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_run)
+    t2 = threading.Thread(target=_run)
+    t1.start()
+    t2.start()
+    t1.join(timeout=30)
+    t2.join(timeout=30)
+
+    assert not t1.is_alive() and not t2.is_alive()
+    assert errors == []
+    assert _policy_decision_versions(seeded) == [1]
+    assert _all_risk_versions(seeded) == [1]
+    row = _latest_risk_row(seeded)
+    assert row is not None
+    assert row[1] == "high"
 
 
 # --- corner cases ---------------------------------------------------------------
