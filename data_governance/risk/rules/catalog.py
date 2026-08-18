@@ -7,11 +7,15 @@ relative to ``__file__`` (mirroring ``processors/classification/config.py``'s
 bundled-artifact convention) — no CLI, no caller-supplied path, no env var.
 
 ``rules_source.json`` is kept in the real policy-engine shape (nested
-``policy_decision`` object, ``rule_categories``) rather than PRD §6.5's flat
-sketch, so the file stays a faithful copy of what the policy component
+``rule_decision`` object per rule, ``rule_categories``) rather than PRD §6.5's
+flat sketch, so the file stays a faithful copy of what the policy component
 actually emits — specifically, it is a valid instance of the canonical
 ``schema/policy.schema.json`` vendored next to this module, enforced by
-``tests/risk/rules/test_schema_conformance.py``.
+``tests/risk/rules/test_schema_conformance.py``. The file also carries a
+top-level ``policy_decision`` block (rule-combining mode and the same
+decision fields) that this module does not read — see
+``data_governance.risk.rules.rego`` (issue #173) for the Rego compiler that
+does.
 ``list_rules``/``get_rule`` flatten each rule to the §6.5 serving shape on
 read; the mapping lives in one place (:func:`_flatten_rule`) rather than
 forcing every caller to know the nested on-disk layout.
@@ -25,7 +29,7 @@ is the predicate: ``event_type`` (a singular string), ``data_items``
 (e.g. ``regulatory_tags: ["PII"]`` or ``classification_level:
 "RESTRICTED"``) and ``data_destinations`` (``data_destination_categories:
 ["external"]``). Read "this rule concerns a data item tagged PII, and when
-matched the ``policy_decision`` applies". The schema permits no ``conditions``
+matched the ``rule_decision`` applies". The schema permits no ``conditions``
 array, so there is no predicate-expression language here.
 
 Destinations carry two independent axes: ``data_destination_categories`` (a
@@ -74,7 +78,7 @@ __all__ = [
 # encoded here rather than inferred. Confirmed against
 # ``schema/policy.schema.json``'s ``$defs/riskLevelValues`` by
 # :func:`test_risk_order_matches_the_schema_vocabulary`. Values outside this
-# tuple (including a rule with no ``policy_decision``, whose risk level is
+# tuple (including a rule with no ``rule_decision``, whose risk level is
 # ``None``) sort after every ranked value instead of raising on a ``None``
 # comparison.
 RISK_LEVEL_ORDER: tuple[str, ...] = (
@@ -153,7 +157,7 @@ def bundle_version() -> str:
 
 def _flatten_rule(raw_rule: dict[str, Any]) -> dict[str, Any]:
     """Map one nested on-disk rule entry to the flat PRD §6.5 serving shape."""
-    decision = raw_rule.get("policy_decision") or {}
+    decision = raw_rule.get("rule_decision") or {}
     return {
         "rule_id": raw_rule.get("rule_id"),
         "rule_name": raw_rule.get("rule_name"),
@@ -195,7 +199,7 @@ def _sort_key(field: str):
     ``risk_level`` and ``enforcement`` order by their :data:`_RANKED_FIELDS`
     severity tuple; everything else orders lexicographically. Both styles
     put missing/unrecognized values last so a rule lacking a
-    ``policy_decision`` (or one whose ``policy_decision`` omits the ranked
+    ``rule_decision`` (or one whose ``rule_decision`` omits the ranked
     field) cannot crash the sort on a ``None`` comparison.
     """
     if field in _RANKED_FIELDS:

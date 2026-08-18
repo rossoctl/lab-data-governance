@@ -29,6 +29,7 @@
             "type": "array",
             "items": { "$ref": "#/$defs/rule" }
         },
+        "policy_decision": { "$ref": "#/$defs/policyDecision" },
 
         "event_type": { "$ref": "#/$defs/enumField_eventTypeValues" },
         "enforcement_type": { "$ref": "#/$defs/enumField_enforcementTypeValues" },
@@ -168,6 +169,11 @@
                 "",
                 "critical", "high", "medium", "low", "none", "unknown"
             ]
+        },
+        "ruleCombiningModeValues": {
+            "type": "string",
+            "description": "How the policy combines the decisions of every rule that fires on one event into a single policy_decision. 'first_fires' takes the decision of the first rule (in catalog order) that fires; 'most_restrictive' takes the most severe risk_level/enforcement_type across every firing rule, ranked by data_governance.risk.rules.catalog.RISK_LEVEL_ORDER/ENFORCEMENT_ORDER.",
+            "enum": ["first_fires", "most_restrictive"]
         },
         "trustLevelValues": {
             "type": "string",
@@ -412,7 +418,7 @@
 
         "rule": {
             "type": "object",
-            "required": ["rule_name", "rule_id", "rule_categories", "rule_sources", "policy_decision"],
+            "required": ["rule_name", "rule_id", "rule_categories", "rule_sources", "rule_decision"],
             "additionalProperties": false,
             "properties": {
                 "rule_name": { "type": "string" },
@@ -458,7 +464,7 @@
                     "type": "array",
                     "items": { "$ref": "#/$defs/scopeEntry" }
                 },
-                "policy_decision": { "$ref": "#/$defs/policyDecision" }
+                "rule_decision": { "$ref": "#/$defs/ruleDecision" }
             }
         },
 
@@ -648,7 +654,7 @@
             }
         },
 
-        "policyDecision": {
+        "ruleDecision": {
             "type": "object",
             "required": ["explanation", "confidence"],
             "additionalProperties": false,
@@ -661,6 +667,28 @@
                 },
                 "explanation": { "type": "string" },
                 "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+            }
+        },
+
+        "policyDecision": {
+            "description": "The policy-level decision produced by compiling this policy's rules to Rego and combining every firing rule's rule_decision per rule_combining_mode (data_governance/risk/rules/rego.py). Same field set as ruleDecision plus triggered_rules and rule_combining_mode.",
+            "type": "object",
+            "required": ["explanation", "confidence"],
+            "additionalProperties": false,
+            "properties": {
+                "risk_level": { "$ref": "#/$defs/riskLevelValues" },
+                "enforcement_type": { "$ref": "#/$defs/enforcementTypeValues" },
+                "allowed_actions": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/actionTypeValues" }
+                },
+                "explanation": { "type": "string" },
+                "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                "triggered_rules": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "rule_combining_mode": { "$ref": "#/$defs/ruleCombiningModeValues" }
             }
         }
     }

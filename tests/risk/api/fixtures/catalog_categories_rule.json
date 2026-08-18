@@ -384,7 +384,7 @@
       ],
       "rule_sources": [],
       "event_type": "external_sharing",
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "high",
         "enforcement_type": "block",
         "allowed_actions": [],
@@ -400,7 +400,7 @@
       ],
       "rule_sources": [],
       "event_type": "external_sharing",
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "low",
         "enforcement_type": "allow",
         "allowed_actions": [],

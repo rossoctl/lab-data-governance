@@ -157,9 +157,9 @@ def test_unknown_behavior_enforcement_type_is_allow():
 def test_fixtures_are_schema_valid(fixture_name: str):
     """The fixtures exercise loader edge cases, not schema violations. A
     "malformed" fixture is malformed for :mod:`catalog`'s purposes — a
-    ``policy_decision`` missing its ranked fields, an empty (not absent)
+    ``rule_decision`` missing its ranked fields, an empty (not absent)
     ``rule_categories``, a duplicated category — all of which the schema
-    permits: ``policyDecision.required`` is only ``["explanation",
+    permits: ``ruleDecision.required`` is only ``["explanation",
     "confidence"]``, and an empty list satisfies ``rule_categories``' type.
     Keeping every fixture valid stops a fixture from teaching a shape the
     schema forbids.
