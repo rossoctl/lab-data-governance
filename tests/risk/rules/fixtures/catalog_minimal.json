@@ -375,6 +375,22 @@
       "unknown": "unknown"
     }
   },
+  "trust_level_category": {
+    "enum": [
+      "TRUSTED",
+      "UNTRUSTED"
+    ],
+    "default_mapping": {
+      "TRUSTED_INTERNAL": "TRUSTED",
+      "TRUSTED_INTERNAL_RESTRICTED": "TRUSTED",
+      "TRUSTED_PARTNER": "TRUSTED",
+      "TRUSTED_VENDOR": "TRUSTED",
+      "UNTRUSTED_EXTERNAL": "UNTRUSTED",
+      "UNTRUSTED_PUBLIC": "UNTRUSTED",
+      "UNKNOWN": "UNTRUSTED",
+      "CONDITIONAL_TRUST": "UNTRUSTED"
+    }
+  },
   "rules": [
     {
       "rule_id": "FX-001",

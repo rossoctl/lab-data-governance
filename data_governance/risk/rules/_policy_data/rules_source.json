@@ -375,6 +375,22 @@
       "unknown": "unknown"
     }
   },
+  "trust_level_category": {
+    "enum": [
+      "TRUSTED",
+      "UNTRUSTED"
+    ],
+    "default_mapping": {
+      "TRUSTED_INTERNAL": "TRUSTED",
+      "TRUSTED_INTERNAL_RESTRICTED": "TRUSTED",
+      "TRUSTED_PARTNER": "TRUSTED",
+      "TRUSTED_VENDOR": "TRUSTED",
+      "UNTRUSTED_EXTERNAL": "UNTRUSTED",
+      "UNTRUSTED_PUBLIC": "UNTRUSTED",
+      "UNKNOWN": "UNTRUSTED",
+      "CONDITIONAL_TRUST": "UNTRUSTED"
+    }
+  },
   "policy_decision": {
     "explanation": "Policy-level decision: combines every firing rule's rule_decision per rule_combining_mode, or falls back to the default rule when nothing fires.",
     "confidence": 1.0,

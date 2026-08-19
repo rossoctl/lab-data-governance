@@ -67,7 +67,7 @@ def test_schema_requires_all_enum_definition_blocks():
         "processing_entity_type", "entity_type", "regulatory_tags", "data_type",
         "classification_level", "domain", "category", "risk_level", "trust_level",
         "transformation type", "data_source_type", "data_destination_type",
-        "data_source_category", "data_destination_category",
+        "data_source_category", "data_destination_category", "trust_level_category",
     }
 
 
