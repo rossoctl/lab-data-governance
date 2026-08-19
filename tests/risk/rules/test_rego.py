@@ -36,7 +36,7 @@ _DECISION = {
 def _policy(rules: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
     """A minimal policy envelope: just the fields ``compile_policy`` itself
     reads (``runtime_enforcement_mode``, ``rules``), plus whatever the
-    caller overrides (e.g. a top-level ``policy_decision`` block)."""
+    caller overrides."""
     policy: dict[str, Any] = {
         "runtime_enforcement_mode": {"unknown_behavior_enforcement_type": "allow"},
         "rules": rules,
@@ -290,27 +290,15 @@ def test_first_fires_mode_emits_the_catalog_order_lookup():
     assert "ordered_ids" in rego
 
 
-def test_policy_level_rule_combining_mode_overrides_the_default_mode():
-    """The policy JSON's own top-level policy_decision.rule_combining_mode
-    wins over whatever default_mode the caller passes — the compiler-level
-    default is a fallback for policies that declare none, not an override."""
-    policy = _policy(
-        [_rule("R-1")], policy_decision={"rule_combining_mode": "first_fires"}
-    )
-    rego = _compile(policy, default_mode="most_restrictive")
-    assert '"rule_combining_mode": "first_fires"' in rego
-    assert '"rule_combining_mode": "most_restrictive"' not in rego
-
-
 def test_default_mode_none_falls_back_to_most_restrictive():
     rego = _compile(_policy([_rule("R-1")]), default_mode=None)
     assert '"rule_combining_mode": "most_restrictive"' in rego
 
 
 def test_unrecognized_combining_mode_raises_value_error():
-    policy = _policy([_rule("R-1")], policy_decision={"rule_combining_mode": "bogus"})
+    policy = _policy([_rule("R-1")])
     with pytest.raises(ValueError, match="rule_combining_mode"):
-        _compile(policy)
+        _compile(policy, default_mode="bogus")
 
 
 def test_rule_decisions_lookup_table_keys_every_rule_by_id():

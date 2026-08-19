@@ -11,11 +11,11 @@ bundled-artifact convention) — no CLI, no caller-supplied path, no env var.
 flat sketch, so the file stays a faithful copy of what the policy component
 actually emits — specifically, it is a valid instance of the canonical
 ``schema/policy.schema.json`` vendored next to this module, enforced by
-``tests/risk/rules/test_schema_conformance.py``. The file also carries a
-top-level ``policy_decision`` block (rule-combining mode and the same
-decision fields) that this module does not read — see
+``tests/risk/rules/test_schema_conformance.py``. The shape of OPA's
+*returned* decision — ``schema/opa_output.schema.json`` — is a separate,
+compiler-only concern this module has nothing to do with; see
 ``data_governance.risk.rules.rego`` (issue #173) for the Rego compiler that
-does.
+produces it.
 ``list_rules``/``get_rule`` flatten each rule to the §6.5 serving shape on
 read; the mapping lives in one place (:func:`_flatten_rule`) rather than
 forcing every caller to know the nested on-disk layout.

@@ -391,11 +391,6 @@
       "CONDITIONAL_TRUST": "UNTRUSTED"
     }
   },
-  "policy_decision": {
-    "explanation": "Policy-level decision: combines every firing rule's rule_decision per rule_combining_mode, or falls back to the default rule when nothing fires.",
-    "confidence": 1.0,
-    "rule_combining_mode": "most_restrictive"
-  },
   "rules": [
     {
       "rule_id": "DG-001",

@@ -131,7 +131,7 @@ def test_no_matching_rule_falls_back_to_allow(opa_client, opa_base_url):
 # --- combining mode: syntax + semantics on a controlled two-rule policy -
 
 
-def _two_rule_policy(mode: str) -> dict[str, Any]:
+def _two_rule_policy() -> dict[str, Any]:
     """A hand-built two-rule policy where the *lower-severity* rule fires
     first in catalog order — the only way to distinguish first_fires from
     most_restrictive by outcome, since a real most-restrictive win would
@@ -157,15 +157,15 @@ def _two_rule_policy(mode: str) -> dict[str, Any]:
             "confidence": 0.9,
         },
     )
-    return _policy(
-        [low, high], policy_decision={"rule_combining_mode": mode}
-    )
+    return _policy([low, high])
 
 
 def test_most_restrictive_picks_the_more_severe_of_two_firing_rules(
     opa_client, opa_base_url
 ):
-    rego = compile_policy(_two_rule_policy("most_restrictive"), validate=False)
+    rego = compile_policy(
+        _two_rule_policy(), validate=False, default_mode="most_restrictive"
+    )
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
@@ -178,7 +178,9 @@ def test_most_restrictive_picks_the_more_severe_of_two_firing_rules(
 def test_first_fires_picks_the_catalog_order_winner_regardless_of_severity(
     opa_client, opa_base_url
 ):
-    rego = compile_policy(_two_rule_policy("first_fires"), validate=False)
+    rego = compile_policy(
+        _two_rule_policy(), validate=False, default_mode="first_fires"
+    )
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 

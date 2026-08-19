@@ -18,11 +18,12 @@ not mean "match anything," it means "this rule does not constrain that
 axis."
 
 ``policy_decision`` is then built from whichever rules fired, per the
-policy's ``rule_combining_mode`` (default from
-:data:`data_governance.risk.config.POLICY_RULE_COMBINING_MODE` when the
-policy JSON's top-level ``policy_decision`` block omits it), falling back to
-``runtime_enforcement_mode.unknown_behavior_enforcement_type`` when nothing
-fires. The combining semantics mirror
+combining mode passed in as ``default_mode`` (callers pass
+:data:`data_governance.risk.config.POLICY_RULE_COMBINING_MODE`), falling back
+to ``runtime_enforcement_mode.unknown_behavior_enforcement_type`` when
+nothing fires. The shape of the returned ``policy_decision`` value is
+``schema/opa_output.schema.json``, not part of the input policy schema. The
+combining semantics mirror
 :func:`data_governance.risk.rules.combining.combine` — that module is the
 Python oracle this Rego is tested against, not a second implementation
 callers should pick between.
@@ -241,7 +242,7 @@ def _combining_block(policy: dict[str, Any], *, default_mode: str) -> str:
     """The ``default policy_decision`` fallback plus the per-rule-id lookup
     tables and the ``policy_decision`` rule that combines whichever rules
     fired, per *mode*."""
-    mode = policy.get("policy_decision", {}).get("rule_combining_mode", default_mode)
+    mode = default_mode
     if mode not in _VALID_MODES:
         raise ValueError(f"rule_combining_mode must be one of {_VALID_MODES}, got {mode!r}")
 
@@ -322,12 +323,11 @@ def compile_policy(
     loading it, when the schema check just ran) may pass ``validate=False``
     to skip re-checking it.
 
-    *default_mode* is the combining mode used when the policy's top-level
-    ``policy_decision`` block declares none — callers pass
+    *default_mode* is the combining mode to compile in — callers pass
     :data:`data_governance.risk.config.POLICY_RULE_COMBINING_MODE` here (not
     defaulted internally, so this module has no config-module dependency of
-    its own). When *default_mode* is also ``None``, ``"most_restrictive"``
-    is used.
+    its own). When *default_mode* is ``None``, ``"most_restrictive"`` is
+    used.
 
     Raises ``NotImplementedError`` if any rule carries ``data_lineage`` or
     ``scope`` (see the module docstring), and ``ValueError`` for an
