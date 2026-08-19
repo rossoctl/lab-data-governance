@@ -18,15 +18,26 @@ not mean "match anything," it means "this rule does not constrain that
 axis."
 
 ``policy_decision`` is then built from whichever rules fired, per the
-combining mode passed in as ``default_mode`` (callers pass
-:data:`data_governance.risk.config.POLICY_RULE_COMBINING_MODE`), falling back
-to ``runtime_enforcement_mode.unknown_behavior_enforcement_type`` when
-nothing fires. The shape of the returned ``policy_decision`` value is
-``schema/opa_output.schema.json``, not part of the input policy schema. The
-combining semantics mirror
-:func:`data_governance.risk.rules.combining.combine` — that module is the
-Python oracle this Rego is tested against, not a second implementation
-callers should pick between.
+policy's own top-level ``rule_combining_mode`` (a required field on
+``schema/policy.schema.json`` — the combining mode is a property of the
+authored policy, not a deployment-level config parameter), falling back to
+``runtime_enforcement_mode.unknown_behavior_enforcement_type`` when nothing
+fires. The shape of the returned ``policy_decision`` value is
+``schema/opa_output.schema.json`` — the fallback and combined decisions both
+emit exactly that key set (no ``rule_id``/``rule_name``). The combining
+semantics mirror :func:`data_governance.risk.rules.combining.combine` — that
+module is the Python oracle this Rego is tested against, not a second
+implementation callers should pick between.
+
+Under ``most_restrictive``, the combined decision is built **per field**
+rather than by picking one winning rule: ``risk_level`` comes from whichever
+firing rule ranks most severe on :data:`RISK_LEVEL_ORDER`; ``enforcement_type``,
+``allowed_actions``, and ``confidence`` all come together from whichever
+firing rule ranks most severe on :data:`ENFORCEMENT_ORDER` (so those three
+stay one rule's consistent judgment); ``explanation`` concatenates the two
+winners' explanations with ``"; "``, deduplicated to one when the same rule
+wins both axes. A rule that fires but wins neither axis contributes nothing
+beyond its id in ``triggered_rules``.
 
 Every string emitted into the generated Rego source goes through
 ``json.dumps`` (which doubles as a safe Rego string literal — both languages
@@ -222,31 +233,30 @@ def _rank_object(order: tuple[str, ...]) -> str:
     return f"{{{pairs}}}"
 
 
-def _fallback_decision(policy: dict[str, Any]) -> dict[str, Any]:
+def _fallback_decision(policy: dict[str, Any], *, mode: str) -> dict[str, Any]:
     unknown_enforcement = policy["runtime_enforcement_mode"][
         "unknown_behavior_enforcement_type"
     ]
     return {
-        "rule_id": "0000",
-        "rule_name": "fallback rule",
         "risk_level": "none",
         "enforcement_type": unknown_enforcement,
         "allowed_actions": [],
         "explanation": "No rules fired, falling back to default rule",
         "confidence": 1.0,
-        "triggered_rules": [],
+        "triggered_rules": ["0000"],
+        "rule_combining_mode": mode,
     }
 
 
-def _combining_block(policy: dict[str, Any], *, default_mode: str) -> str:
+def _combining_block(policy: dict[str, Any]) -> str:
     """The ``default policy_decision`` fallback plus the per-rule-id lookup
     tables and the ``policy_decision`` rule that combines whichever rules
-    fired, per *mode*."""
-    mode = default_mode
+    fired, per the policy's own ``rule_combining_mode``."""
+    mode = policy["rule_combining_mode"]
     if mode not in _VALID_MODES:
         raise ValueError(f"rule_combining_mode must be one of {_VALID_MODES}, got {mode!r}")
 
-    fallback = _fallback_decision(policy)
+    fallback = _fallback_decision(policy, mode=mode)
     rules = policy["rules"]
 
     # rule_id -> rule_decision, so the combining rule can look up each
@@ -287,20 +297,34 @@ def _combining_block(policy: dict[str, Any], *, default_mode: str) -> str:
         )
     else:
         lines.append(
+            "_UNRANKED := 9999\n"
+            "\n"
+            "_risk_rank(id) := _risk_level_rank[_rule_decisions[id].risk_level]\n"
+            "_risk_rank(id) := _UNRANKED if { not _risk_level_rank[_rule_decisions[id].risk_level] }\n"
+            "\n"
+            "_enf_rank(id) := _enforcement_rank[_rule_decisions[id].enforcement_type]\n"
+            "_enf_rank(id) := _UNRANKED if { not _enforcement_rank[_rule_decisions[id].enforcement_type] }\n"
+            "\n"
             "policy_decision := decision if {\n"
             "    count(triggered_rules) > 0\n"
-            "    ranked := [[\n"
-            "        _risk_level_rank[_rule_decisions[id].risk_level],\n"
-            "        _enforcement_rank[_rule_decisions[id].enforcement_type],\n"
-            "        id,\n"
-            "    ] |\n"
-            "        some id in triggered_rules\n"
-            "    ]\n"
-            "    winner_id := sort(ranked)[0][2]\n"
-            "    decision := object.union(_rule_decisions[winner_id], {\n"
-            '        "triggered_rules": sort([id | some id in triggered_rules]),\n'
+            "    ids := sort([id | some id in triggered_rules])\n"
+            "\n"
+            "    risk_winner := sort([[_risk_rank(id), id] | some id in ids])[0][1]\n"
+            "    enf_winner := sort([[_enf_rank(id), id] | some id in ids])[0][1]\n"
+            "\n"
+            "    same := [risk_winner | risk_winner == enf_winner]\n"
+            "    chosen := array.concat(same, [id | some id in [risk_winner, enf_winner]; risk_winner != enf_winner])\n"
+            '    explanation := concat("; ", [_rule_decisions[id].explanation | some id in chosen])\n'
+            "\n"
+            "    decision := {\n"
+            '        "risk_level": object.get(_rule_decisions[risk_winner], "risk_level", null),\n'
+            '        "enforcement_type": object.get(_rule_decisions[enf_winner], "enforcement_type", null),\n'
+            '        "allowed_actions": object.get(_rule_decisions[enf_winner], "allowed_actions", []),\n'
+            '        "explanation": explanation,\n'
+            '        "confidence": object.get(_rule_decisions[enf_winner], "confidence", null),\n'
+            '        "triggered_rules": ids,\n'
             '        "rule_combining_mode": "most_restrictive",\n'
-            "    })\n"
+            "    }\n"
             "}\n"
         )
 
@@ -311,7 +335,6 @@ def compile_policy(
     policy: dict[str, Any],
     *,
     validate: bool = True,
-    default_mode: str | None = None,
 ) -> str:
     """Compile *policy* (a ``schema/policy.schema.json``-conformant dict)
     into a Rego module.
@@ -323,11 +346,12 @@ def compile_policy(
     loading it, when the schema check just ran) may pass ``validate=False``
     to skip re-checking it.
 
-    *default_mode* is the combining mode to compile in — callers pass
-    :data:`data_governance.risk.config.POLICY_RULE_COMBINING_MODE` here (not
-    defaulted internally, so this module has no config-module dependency of
-    its own). When *default_mode* is ``None``, ``"most_restrictive"`` is
-    used.
+    The combining mode compiled in is read from *policy*'s own top-level
+    ``rule_combining_mode`` — a required field on the schema, mirroring
+    ``runtime_enforcement_mode``. There is no config-module fallback and no
+    implicit default: a policy missing the field raises ``KeyError`` here
+    (and, under ``validate=True``, is already rejected earlier by the schema
+    check).
 
     Raises ``NotImplementedError`` if any rule carries ``data_lineage`` or
     ``scope`` (see the module docstring), and ``ValueError`` for an
@@ -338,10 +362,8 @@ def compile_policy(
             schema = json.load(f)
         jsonschema.validate(instance=policy, schema=schema)
 
-    mode = default_mode if default_mode is not None else "most_restrictive"
-
     rule_blocks = "\n\n".join(_rule_block(rule) for rule in policy["rules"])
-    combining = _combining_block(policy, default_mode=mode)
+    combining = _combining_block(policy)
 
     parts = [f"package {_PACKAGE}", ""]
     if rule_blocks:

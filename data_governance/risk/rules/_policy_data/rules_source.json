@@ -6,6 +6,7 @@
   "runtime_enforcement_mode": {
     "unknown_behavior_enforcement_type": "allow"
   },
+  "rule_combining_mode": "most_restrictive",
   "event_type": {
     "enum": [
       "external_sharing",

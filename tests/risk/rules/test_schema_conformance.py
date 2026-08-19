@@ -54,20 +54,22 @@ def test_policy_schema_is_itself_a_valid_2020_12_schema():
 
 
 def test_schema_requires_all_enum_definition_blocks():
-    """The schema's ``required`` list grew from 5 to 24 fields when the enum
+    """The schema's ``required`` list grew from 5 to 25 fields when the enum
     vocabularies moved from ``recommended_enum_values.md`` (now deleted) into
-    the schema itself. Pinned so a partial re-vendor — e.g. copying the
-    ``$defs`` but not the top-level ``required`` list — fails loudly here
-    instead of surfacing as 18 confusing "is a required property" errors on
-    the shipped catalog."""
+    the schema itself, then to 26 when ``rule_combining_mode`` (issue #173)
+    became a required top-level property. Pinned so a partial re-vendor —
+    e.g. copying the ``$defs`` but not the top-level ``required`` list —
+    fails loudly here instead of surfacing as confusing "is a required
+    property" errors on the shipped catalog."""
     required = set(_load_schema()["required"])
     assert required == {
         "policy_id", "policy_type", "status", "version", "runtime_enforcement_mode",
-        "rules", "event_type", "enforcement_type", "action_type", "location_type",
-        "processing_entity_type", "entity_type", "regulatory_tags", "data_type",
-        "classification_level", "domain", "category", "risk_level", "trust_level",
-        "transformation type", "data_source_type", "data_destination_type",
-        "data_source_category", "data_destination_category", "trust_level_category",
+        "rule_combining_mode", "rules", "event_type", "enforcement_type",
+        "action_type", "location_type", "processing_entity_type", "entity_type",
+        "regulatory_tags", "data_type", "classification_level", "domain",
+        "category", "risk_level", "trust_level", "transformation type",
+        "data_source_type", "data_destination_type", "data_source_category",
+        "data_destination_category", "trust_level_category",
     }
 
 

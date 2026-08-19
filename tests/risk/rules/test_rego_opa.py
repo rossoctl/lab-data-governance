@@ -15,6 +15,12 @@ Python oracle (``test_combining.py``) cannot on their own:
 3. The response round-trips through
    :func:`data_governance.risk.engine.opa._parse_decision` unchanged —
    pinning the compiler -> OPA -> parser contract end to end.
+4. The raw ``policy_decision`` value OPA returns validates against
+   ``schema/opa_output.schema.json`` — the schema conformance tests at the
+   bottom of this file check the actual OPA response, not the emitted Rego
+   source or the Python oracle's dict shape, so a violation like an
+   unexpected ``rule_id``/``rule_name`` key (which ``_parse_decision``
+   would silently ignore) is caught here.
 
 Deselected by default (``pytest.ini_options.addopts = "-ra -m 'not opa'"``);
 run explicitly with ``-m opa`` (podman/docker must be up — see
@@ -23,16 +29,23 @@ run explicitly with ``-m opa`` (podman/docker must be up — see
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
 
 from data_governance.risk.config import OPA_DECISION_PATH
 from data_governance.risk.engine.opa import OpaClient
+from data_governance.risk.rules import catalog
 from data_governance.risk.rules.rego import compile_policy
 
 pytestmark = pytest.mark.opa
+
+_SCHEMA_DIR = Path(catalog.__file__).parent / "schema"
 
 _DECISION = {
     "risk_level": "high",
@@ -43,9 +56,24 @@ _DECISION = {
 }
 
 
+def _load_json(path: Path) -> dict:
+    with path.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _opa_output_validator() -> Draft202012Validator:
+    policy_schema = _load_json(_SCHEMA_DIR / "policy.schema.json")
+    opa_output_schema = _load_json(_SCHEMA_DIR / "opa_output.schema.json")
+    registry = Registry().with_resource(
+        "policy.schema.json", Resource.from_contents(policy_schema)
+    )
+    return Draft202012Validator(opa_output_schema, registry=registry)
+
+
 def _policy(rules: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
     policy: dict[str, Any] = {
         "runtime_enforcement_mode": {"unknown_behavior_enforcement_type": "allow"},
+        "rule_combining_mode": "most_restrictive",
         "rules": rules,
     }
     policy.update(kwargs)
@@ -85,12 +113,7 @@ def _evaluate(opa_base_url: str, opa_input: dict[str, Any]):
 
 
 def test_pii_to_untrusted_external_fires_the_block_rule(opa_client, opa_base_url):
-    from data_governance.risk.rules import catalog
-    from data_governance.risk.config import POLICY_RULE_COMBINING_MODE
-
-    rego = compile_policy(
-        catalog.load_rules_source(), default_mode=POLICY_RULE_COMBINING_MODE
-    )
+    rego = compile_policy(catalog.load_rules_source())
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
@@ -113,19 +136,14 @@ def test_pii_to_untrusted_external_fires_the_block_rule(opa_client, opa_base_url
 
 
 def test_no_matching_rule_falls_back_to_allow(opa_client, opa_base_url):
-    from data_governance.risk.rules import catalog
-    from data_governance.risk.config import POLICY_RULE_COMBINING_MODE
-
-    rego = compile_policy(
-        catalog.load_rules_source(), default_mode=POLICY_RULE_COMBINING_MODE
-    )
+    rego = compile_policy(catalog.load_rules_source())
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
     decision = _evaluate(opa_base_url, {"event_type": "internal_view"})
     assert decision.risk_level == "none"
     assert decision.enforcement_type == "allow"
-    assert decision.triggered_rules == []
+    assert decision.triggered_rules == ["0000"]
 
 
 # --- combining mode: syntax + semantics on a controlled two-rule policy -
@@ -163,9 +181,9 @@ def _two_rule_policy() -> dict[str, Any]:
 def test_most_restrictive_picks_the_more_severe_of_two_firing_rules(
     opa_client, opa_base_url
 ):
-    rego = compile_policy(
-        _two_rule_policy(), validate=False, default_mode="most_restrictive"
-    )
+    policy = _two_rule_policy()
+    policy["rule_combining_mode"] = "most_restrictive"
+    rego = compile_policy(policy, validate=False)
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
@@ -175,12 +193,58 @@ def test_most_restrictive_picks_the_more_severe_of_two_firing_rules(
     assert sorted(decision.triggered_rules) == ["HIGH-1", "LOW-1"]
 
 
+def _crossed_axis_policy() -> dict[str, Any]:
+    """One rule carries the worse risk_level, a different rule the worse
+    enforcement_type — the case that actually distinguishes per-field
+    most_restrictive from single-winner selection: with a composite-key
+    ranking, one of the two axes would be silently discarded."""
+    worse_risk = _rule(
+        "WORSE-RISK-1",
+        event_type="x",
+        rule_decision={
+            "risk_level": "critical",
+            "enforcement_type": "warn",
+            "allowed_actions": ["mask"],
+            "explanation": "risk axis winner",
+            "confidence": 0.4,
+        },
+    )
+    worse_enforcement = _rule(
+        "WORSE-ENF-1",
+        event_type="x",
+        rule_decision={
+            "risk_level": "low",
+            "enforcement_type": "block",
+            "allowed_actions": ["redact"],
+            "explanation": "enforcement axis winner",
+            "confidence": 0.9,
+        },
+    )
+    return _policy(
+        [worse_risk, worse_enforcement], rule_combining_mode="most_restrictive"
+    )
+
+
+def test_most_restrictive_combines_independent_axis_winners(opa_client, opa_base_url):
+    rego = compile_policy(_crossed_axis_policy(), validate=False)
+    put_response = _put_policy(opa_client, rego)
+    assert put_response.status_code == 200, put_response.text
+
+    decision = _evaluate(opa_base_url, {"event_type": "x"})
+    assert decision.risk_level == "critical"
+    assert decision.enforcement_type == "block"
+    assert decision.allowed_actions == ["redact"]
+    assert decision.confidence == 0.9
+    assert decision.explanation == "risk axis winner; enforcement axis winner"
+    assert sorted(decision.triggered_rules) == ["WORSE-ENF-1", "WORSE-RISK-1"]
+
+
 def test_first_fires_picks_the_catalog_order_winner_regardless_of_severity(
     opa_client, opa_base_url
 ):
-    rego = compile_policy(
-        _two_rule_policy(), validate=False, default_mode="first_fires"
-    )
+    policy = _two_rule_policy()
+    policy["rule_combining_mode"] = "first_fires"
+    rego = compile_policy(policy, validate=False)
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
@@ -242,3 +306,38 @@ def test_opa_response_parses_through_the_real_opa_client_unchanged(
     assert decision.explanation == "explained"
     assert decision.confidence == 0.8
     assert decision.triggered_rules == ["R-1"]
+
+
+# --- opa_output.schema.json conformance -------------------------------------
+#
+# Requirement: the policy_decision OPA returns must validate against
+# opa_output.schema.json. Nothing else in this suite checks the raw OPA
+# response against that schema — test_rego.py and test_combining.py assert
+# against the emitted Rego source / the Python oracle's dict shape, and
+# OpaClient._parse_decision only reads the fields it knows about, so a
+# schema violation (e.g. an unexpected rule_id/rule_name key) would pass
+# silently through every other test in this file.
+
+
+def _raw_policy_decision(opa_client: httpx.Client, opa_input: dict[str, Any]) -> dict:
+    response = opa_client.post(OPA_DECISION_PATH, json={"input": opa_input})
+    response.raise_for_status()
+    return response.json()["result"]
+
+
+def test_fallback_decision_conforms_to_opa_output_schema(opa_client):
+    rego = compile_policy(catalog.load_rules_source())
+    put_response = _put_policy(opa_client, rego)
+    assert put_response.status_code == 200, put_response.text
+
+    result = _raw_policy_decision(opa_client, {"event_type": "internal_view"})
+    _opa_output_validator().validate(result)
+
+
+def test_most_restrictive_combined_decision_conforms_to_opa_output_schema(opa_client):
+    rego = compile_policy(_crossed_axis_policy(), validate=False)
+    put_response = _put_policy(opa_client, rego)
+    assert put_response.status_code == 200, put_response.text
+
+    result = _raw_policy_decision(opa_client, {"event_type": "x"})
+    _opa_output_validator().validate(result)

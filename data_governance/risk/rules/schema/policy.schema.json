@@ -5,7 +5,7 @@
     "description": "JSON Schema for policy.json. All enum values are sourced from: EntityTypesForTokenClassification (8).csv and Entity_Classification_System_Specification.docx (entity_type, category, domain, data_type, classification_level, regulatory_tags), and recommended_enum_values.md (all other enums, including the coarse-grained data_source_category / data_destination_category / trust_level_category and their default mappings).",
     "type": "object",
     "required": [
-        "policy_id", "policy_type", "status", "version", "runtime_enforcement_mode", "rules",
+        "policy_id", "policy_type", "status", "version", "runtime_enforcement_mode", "rule_combining_mode", "rules",
         "event_type", "enforcement_type", "action_type", "location_type", "processing_entity_type",
         "entity_type", "regulatory_tags", "data_type", "classification_level", "domain", "category",
         "risk_level", "trust_level", "transformation type", "data_source_type", "data_destination_type",
@@ -25,6 +25,7 @@
             },
             "additionalProperties": true
         },
+        "rule_combining_mode": { "$ref": "#/$defs/ruleCombiningModeValues" },
         "rules": {
             "type": "array",
             "items": { "$ref": "#/$defs/rule" }
@@ -172,7 +173,7 @@
         },
         "ruleCombiningModeValues": {
             "type": "string",
-            "description": "How the policy combines the decisions of every rule that fires on one event into a single policy_decision. 'first_fires' takes the decision of the first rule (in catalog order) that fires; 'most_restrictive' takes the most severe risk_level/enforcement_type across every firing rule, ranked by data_governance.risk.rules.catalog.RISK_LEVEL_ORDER/ENFORCEMENT_ORDER.",
+            "description": "How the policy combines the decisions of every rule that fires on one event into a single policy_decision. 'first_fires' takes the decision of the first rule (in catalog order) that fires, verbatim. 'most_restrictive' combines per field rather than picking one winning rule: risk_level is taken from whichever firing rule ranks most severe on data_governance.risk.rules.catalog.RISK_LEVEL_ORDER; enforcement_type, allowed_actions, and confidence are all taken together from whichever firing rule ranks most severe on ENFORCEMENT_ORDER (so those three stay one rule's consistent judgment); explanation concatenates the risk-level winner's and enforcement-type winner's explanations with '; ', deduplicated to one when the same rule wins both axes. Rules that fired but won neither axis contribute nothing to the combined decision beyond their id in triggered_rules.",
             "enum": ["first_fires", "most_restrictive"]
         },
         "trustLevelValues": {

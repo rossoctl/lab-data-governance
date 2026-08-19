@@ -17,9 +17,8 @@ changes, regenerate the golden file:
     uv run python3 -c "
     from data_governance.risk.rules import catalog
     from data_governance.risk.rules.rego import compile_policy
-    from data_governance.risk.config import POLICY_RULE_COMBINING_MODE
     policy = catalog.load_rules_source()
-    rego = compile_policy(policy, default_mode=POLICY_RULE_COMBINING_MODE)
+    rego = compile_policy(policy)
     open('tests/risk/rules/fixtures/rules_source.rego', 'w').write(rego)
     "
 
@@ -32,7 +31,6 @@ from pathlib import Path
 
 import pytest
 
-from data_governance.risk.config import POLICY_RULE_COMBINING_MODE
 from data_governance.risk.rules import catalog
 from data_governance.risk.rules.rego import compile_policy
 
@@ -48,7 +46,7 @@ def _fresh_catalog():
 
 def test_shipped_catalog_compiles_byte_for_byte_to_the_golden_file():
     policy = catalog.load_rules_source()
-    rego = compile_policy(policy, default_mode=POLICY_RULE_COMBINING_MODE)
+    rego = compile_policy(policy)
     expected = _GOLDEN.read_text(encoding="utf-8")
     assert rego == expected, (
         "Compiled Rego drifted from the golden file. If this is an "

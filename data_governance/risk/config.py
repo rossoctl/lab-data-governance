@@ -43,7 +43,6 @@ __all__ = [
     "OPA_MAX_RETRIES",
     "API_RISK_RULES_DEFAULT_LIMIT",
     "API_RISK_RULES_MAX_LIMIT",
-    "POLICY_RULE_COMBINING_MODE",
 ]
 
 
@@ -149,15 +148,3 @@ OPA_MAX_RETRIES = _int_env("RISK_OPA_MAX_RETRIES", 2)
 
 API_RISK_RULES_DEFAULT_LIMIT = _int_env("RISK_API_RISK_RULES_DEFAULT_LIMIT", 50)
 API_RISK_RULES_MAX_LIMIT = _int_env("RISK_API_RISK_RULES_MAX_LIMIT", 200)
-
-# --- policy.rule_combining_mode (issue #173) ---------------------------------
-# Fallback combining mode for the JSON->Rego compiler
-# (data_governance.risk.rules.rego) when the policy JSON's top-level
-# policy_decision block declares no rule_combining_mode of its own. One of
-# schema/policy.schema.json's $defs/ruleCombiningModeValues ("first_fires" /
-# "most_restrictive") — not validated here, since this module has no schema
-# dependency; rego.py validates the effective mode at compile time.
-
-POLICY_RULE_COMBINING_MODE = _str_env(
-    "RISK_POLICY_RULE_COMBINING_MODE", "most_restrictive"
-)

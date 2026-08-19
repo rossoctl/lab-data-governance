@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import functools
 
-from data_governance.risk.config import POLICY_RULE_COMBINING_MODE
 from data_governance.risk.rules import catalog
 from data_governance.risk.rules.rego import compile_policy
 
@@ -30,7 +29,7 @@ def compile_bundle() -> str:
     catalog file changes on disk so the next call recompiles from the fresh
     JSON rather than serving a stale bundle."""
     policy = catalog.load_rules_source()
-    return compile_policy(policy, default_mode=POLICY_RULE_COMBINING_MODE)
+    return compile_policy(policy)
 
 
 def reload() -> None:

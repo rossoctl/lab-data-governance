@@ -12,10 +12,18 @@ Two modes, both drawn from ``schema/policy.schema.json``'s
 
 - ``"first_fires"`` — the decision of the first rule (in catalog order) that
   fires.
-- ``"most_restrictive"`` — the most severe ``risk_level``/``enforcement_type``
-  across every firing rule, ranked by
-  :data:`data_governance.risk.rules.catalog.RISK_LEVEL_ORDER`/
-  ``ENFORCEMENT_ORDER``.
+- ``"most_restrictive"`` — combines per field rather than picking one winning
+  rule: ``risk_level`` comes from whichever firing rule ranks most severe on
+  :data:`data_governance.risk.rules.catalog.RISK_LEVEL_ORDER`;
+  ``enforcement_type``, ``allowed_actions``, and ``confidence`` all come
+  together from whichever firing rule ranks most severe on ``ENFORCEMENT_ORDER``
+  (so those three stay one rule's consistent judgment); ``explanation``
+  concatenates the risk-level winner's and enforcement-type winner's
+  explanations with ``"; "``, deduplicated to one when the same rule wins
+  both axes. A rule that fires but wins neither axis contributes nothing to
+  the combined decision beyond its id in ``triggered_rules``. Ties (same
+  rank on an axis) break on rule id, lowest first — deterministic, not
+  arbitrary.
 
 Both modes report ``triggered_rules`` as every firing rule's id, regardless
 of which one's fields end up in the combined decision.
@@ -25,7 +33,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from data_governance.risk.engine.utils import severity_max
 from data_governance.risk.rules.catalog import ENFORCEMENT_ORDER, RISK_LEVEL_ORDER
 
 __all__ = ["combine"]
@@ -66,47 +73,68 @@ def combine(
 
     if mode == "first_fires":
         _rule_id, winner = firing_decisions[0]
-    else:
-        winner = _most_restrictive(firing_decisions)
+        return {
+            "risk_level": winner.get("risk_level"),
+            "enforcement_type": winner.get("enforcement_type"),
+            "allowed_actions": list(winner.get("allowed_actions") or []),
+            "explanation": winner.get("explanation"),
+            "confidence": winner.get("confidence"),
+            "triggered_rules": triggered_rules,
+            "rule_combining_mode": mode,
+        }
 
+    risk_winner, enf_winner, explanation = _most_restrictive(firing_decisions)
     return {
-        "risk_level": winner.get("risk_level"),
-        "enforcement_type": winner.get("enforcement_type"),
-        "allowed_actions": list(winner.get("allowed_actions") or []),
-        "explanation": winner.get("explanation"),
-        "confidence": winner.get("confidence"),
+        "risk_level": risk_winner.get("risk_level"),
+        "enforcement_type": enf_winner.get("enforcement_type"),
+        "allowed_actions": list(enf_winner.get("allowed_actions") or []),
+        "explanation": explanation,
+        "confidence": enf_winner.get("confidence"),
         "triggered_rules": triggered_rules,
         "rule_combining_mode": mode,
     }
 
 
-def _most_restrictive(firing_decisions: list[dict[str, Any]]) -> dict[str, Any]:
-    """The single firing decision whose ``risk_level``/``enforcement_type``
-    is the most severe, per :data:`RISK_LEVEL_ORDER`/``ENFORCEMENT_ORDER``.
+def _rank(order: tuple[str, ...], value: Any) -> int:
+    ranks = {v: r for r, v in enumerate(order)}
+    return ranks.get(value, len(order))
 
-    ``risk_level`` is the primary axis; ``enforcement_type`` breaks a tie on
-    ``risk_level`` (two rules at the same risk level can still specify
-    different enforcement severity, e.g. ``block`` vs ``escalate``). A value
-    absent from its order tuple (including ``None``) ranks least severe,
-    mirroring :func:`severity_max`'s own unranked-last convention — so a
-    decision missing both fields never wins a tie against one that has them.
+
+def _most_restrictive(
+    firing_decisions: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """The risk-axis winner, the enforcement-axis winner, and their merged
+    explanation.
+
+    Each axis picks the firing decision ranking most severe on its own
+    order (:data:`RISK_LEVEL_ORDER` / ``ENFORCEMENT_ORDER``) independently —
+    the two winners need not be the same rule. A value absent from its order
+    tuple (including ``None``) ranks least severe, via :func:`_rank`'s
+    ``len(order)`` fallback. Ties break on rule id, lowest first, for a
+    deterministic pick rather than an arbitrary one — matching the Rego
+    compiler's ``sort([[rank, id], ...])[0]`` construct
+    (:mod:`data_governance.risk.rules.rego`).
+
+    The merged explanation is the risk winner's and enforcement winner's
+    explanations joined with ``"; "``, deduplicated to one when the same
+    rule wins both axes — rules that fired but won neither axis contribute
+    nothing.
     """
-    winner = firing_decisions[0][1]
-    for _rule_id, decision in firing_decisions[1:]:
-        most_severe_risk = severity_max(
-            winner.get("risk_level"), decision.get("risk_level"), order=RISK_LEVEL_ORDER
+    ranked_by_risk = sorted(
+        firing_decisions,
+        key=lambda item: (_rank(RISK_LEVEL_ORDER, item[1].get("risk_level")), item[0]),
+    )
+    ranked_by_enforcement = sorted(
+        firing_decisions,
+        key=lambda item: (_rank(ENFORCEMENT_ORDER, item[1].get("enforcement_type")), item[0]),
+    )
+    risk_winner_id, risk_winner = ranked_by_risk[0]
+    enf_winner_id, enf_winner = ranked_by_enforcement[0]
+
+    if risk_winner_id == enf_winner_id:
+        explanation = risk_winner.get("explanation") or ""
+    else:
+        explanation = "; ".join(
+            winner.get("explanation") or "" for winner in (risk_winner, enf_winner)
         )
-        if most_severe_risk != winner.get("risk_level"):
-            winner = decision
-            continue
-        if most_severe_risk != decision.get("risk_level"):
-            continue
-        # Tied on risk_level: break the tie on enforcement_type.
-        most_severe_enforcement = severity_max(
-            winner.get("enforcement_type"),
-            decision.get("enforcement_type"),
-            order=ENFORCEMENT_ORDER,
-        )
-        if most_severe_enforcement != winner.get("enforcement_type"):
-            winner = decision
-    return winner
+    return risk_winner, enf_winner, explanation

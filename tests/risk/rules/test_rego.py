@@ -35,10 +35,14 @@ _DECISION = {
 
 def _policy(rules: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
     """A minimal policy envelope: just the fields ``compile_policy`` itself
-    reads (``runtime_enforcement_mode``, ``rules``), plus whatever the
-    caller overrides."""
+    reads (``runtime_enforcement_mode``, ``rule_combining_mode``, ``rules``),
+    plus whatever the caller overrides. ``rule_combining_mode`` defaults to
+    ``"most_restrictive"`` here purely as this helper's convenience default
+    for tests that don't care which mode compiles — ``compile_policy`` itself
+    has no such default and requires the policy to supply it."""
     policy: dict[str, Any] = {
         "runtime_enforcement_mode": {"unknown_behavior_enforcement_type": "allow"},
+        "rule_combining_mode": "most_restrictive",
         "rules": rules,
     }
     policy.update(kwargs)
@@ -238,10 +242,21 @@ def test_data_lineage_and_scope_raise_not_implemented(field: str):
 # --- fallback rule -------------------------------------------------------
 
 
-def test_fallback_rule_id_and_risk_level():
+def test_fallback_risk_level():
     rego = _compile(_policy([_rule("R-1")]))
-    assert '"rule_id": "0000"' in rego
     assert '"risk_level": "none"' in rego
+
+
+def test_fallback_does_not_emit_rule_id_or_rule_name():
+    """opa_output.schema.json (additionalProperties: false) does not permit
+    rule_id/rule_name on policy_decision — the default block must not emit
+    either key. Nothing else in this suite pins this."""
+    rego = _compile(_policy([_rule("R-1")]))
+    default_line = next(
+        line for line in rego.splitlines() if line.startswith("default policy_decision")
+    )
+    assert '"rule_id"' not in default_line
+    assert '"rule_name"' not in default_line
 
 
 def test_fallback_enforcement_type_reads_unknown_behavior_enforcement_type():
@@ -250,7 +265,7 @@ def test_fallback_enforcement_type_reads_unknown_behavior_enforcement_type():
         runtime_enforcement_mode={"unknown_behavior_enforcement_type": "escalate"},
     )
     rego = _compile(policy)
-    assert 'default policy_decision := {"rule_id": "0000"' in rego
+    assert 'default policy_decision := {"risk_level": "none"' in rego
     assert '"enforcement_type": "escalate"' in rego
 
 
@@ -260,45 +275,49 @@ def test_fallback_explanation_and_confidence():
     assert '"confidence": 1.0' in rego
 
 
-def test_fallback_triggered_rules_is_empty():
+def test_fallback_triggered_rules_is_the_fallback_rule_id():
     rego = _compile(_policy([_rule("R-1")]))
-    assert 'default policy_decision := {' in rego
-    # The default block's own triggered_rules is empty; the *combined*
-    # non-default rule below fills it in dynamically. Assert the literal
-    # empty list appears in the default block specifically.
     default_line = next(
         line for line in rego.splitlines() if line.startswith("default policy_decision")
     )
-    assert '"triggered_rules": []' in default_line
+    assert '"triggered_rules": ["0000"]' in default_line
 
 
 # --- combining block, per mode -----------------------------------------------
 
 
-def test_most_restrictive_mode_emits_the_rank_lookup_and_sort_by_severity():
-    rego = _compile(_policy([_rule("R-1")]), default_mode="most_restrictive")
+def test_most_restrictive_mode_emits_the_per_axis_rank_lookup():
+    rego = _compile(_policy([_rule("R-1")], rule_combining_mode="most_restrictive"))
     assert "_risk_level_rank" in rego
     assert "_enforcement_rank" in rego
+    assert "_risk_rank(id)" in rego
+    assert "_enf_rank(id)" in rego
+    assert "_UNRANKED" in rego
     assert '"rule_combining_mode": "most_restrictive"' in rego
-    assert "sort(ranked)" in rego
 
 
 def test_first_fires_mode_emits_the_catalog_order_lookup():
-    rego = _compile(_policy([_rule("R-1")]), default_mode="first_fires")
+    rego = _compile(_policy([_rule("R-1")], rule_combining_mode="first_fires"))
     assert "_rule_order" in rego
     assert '"rule_combining_mode": "first_fires"' in rego
     assert "ordered_ids" in rego
 
 
-def test_default_mode_none_falls_back_to_most_restrictive():
-    rego = _compile(_policy([_rule("R-1")]), default_mode=None)
-    assert '"rule_combining_mode": "most_restrictive"' in rego
+def test_policy_missing_rule_combining_mode_raises_key_error():
+    """There is no implicit default any more: a policy with no
+    rule_combining_mode is a caller bug, not a case to silently paper over
+    with a fallback value — schema validation (validate=True) already
+    rejects it earlier; validate=False callers hit this KeyError instead."""
+    policy = _policy([_rule("R-1")])
+    del policy["rule_combining_mode"]
+    with pytest.raises(KeyError):
+        _compile(policy)
 
 
 def test_unrecognized_combining_mode_raises_value_error():
-    policy = _policy([_rule("R-1")])
+    policy = _policy([_rule("R-1")], rule_combining_mode="bogus")
     with pytest.raises(ValueError, match="rule_combining_mode"):
-        _compile(policy, default_mode="bogus")
+        _compile(policy)
 
 
 def test_rule_decisions_lookup_table_keys_every_rule_by_id():

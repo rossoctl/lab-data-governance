@@ -32,20 +32,34 @@ _rule_order := {"DG-001": 0, "DG-002": 1, "DG-004": 2}
 _risk_level_rank := {"critical": 0, "high": 1, "medium": 2, "low": 3, "none": 4, "unknown": 5}
 _enforcement_rank := {"block": 0, "quarantine": 1, "require_approval": 2, "redact": 3, "mask": 4, "anonymize": 5, "encrypt": 6, "escalate": 7, "notify": 8, "warn": 9, "log_only": 10, "audit": 11, "allow": 12}
 
-default policy_decision := {"rule_id": "0000", "rule_name": "fallback rule", "risk_level": "none", "enforcement_type": "allow", "allowed_actions": [], "explanation": "No rules fired, falling back to default rule", "confidence": 1.0, "triggered_rules": []}
+default policy_decision := {"risk_level": "none", "enforcement_type": "allow", "allowed_actions": [], "explanation": "No rules fired, falling back to default rule", "confidence": 1.0, "triggered_rules": ["0000"], "rule_combining_mode": "most_restrictive"}
+
+_UNRANKED := 9999
+
+_risk_rank(id) := _risk_level_rank[_rule_decisions[id].risk_level]
+_risk_rank(id) := _UNRANKED if { not _risk_level_rank[_rule_decisions[id].risk_level] }
+
+_enf_rank(id) := _enforcement_rank[_rule_decisions[id].enforcement_type]
+_enf_rank(id) := _UNRANKED if { not _enforcement_rank[_rule_decisions[id].enforcement_type] }
 
 policy_decision := decision if {
     count(triggered_rules) > 0
-    ranked := [[
-        _risk_level_rank[_rule_decisions[id].risk_level],
-        _enforcement_rank[_rule_decisions[id].enforcement_type],
-        id,
-    ] |
-        some id in triggered_rules
-    ]
-    winner_id := sort(ranked)[0][2]
-    decision := object.union(_rule_decisions[winner_id], {
-        "triggered_rules": sort([id | some id in triggered_rules]),
+    ids := sort([id | some id in triggered_rules])
+
+    risk_winner := sort([[_risk_rank(id), id] | some id in ids])[0][1]
+    enf_winner := sort([[_enf_rank(id), id] | some id in ids])[0][1]
+
+    same := [risk_winner | risk_winner == enf_winner]
+    chosen := array.concat(same, [id | some id in [risk_winner, enf_winner]; risk_winner != enf_winner])
+    explanation := concat("; ", [_rule_decisions[id].explanation | some id in chosen])
+
+    decision := {
+        "risk_level": object.get(_rule_decisions[risk_winner], "risk_level", null),
+        "enforcement_type": object.get(_rule_decisions[enf_winner], "enforcement_type", null),
+        "allowed_actions": object.get(_rule_decisions[enf_winner], "allowed_actions", []),
+        "explanation": explanation,
+        "confidence": object.get(_rule_decisions[enf_winner], "confidence", null),
+        "triggered_rules": ids,
         "rule_combining_mode": "most_restrictive",
-    })
+    }
 }

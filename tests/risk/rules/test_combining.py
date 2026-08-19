@@ -4,9 +4,20 @@
 policy-level rule-combining semantics; ``tests/risk/rules/test_rego_opa.py``
 checks that the Rego :mod:`data_governance.risk.rules.rego` compiles agrees
 with it on the same inputs. This file covers the oracle itself in isolation
-— modes crossed with firing sets (empty, single, ties, unranked values,
-``first_fires`` ordering) — so a disagreement surfaced by the OPA tests can
-be traced to either side rather than debugged from scratch there.
+— modes crossed with firing sets (empty, single, unranked values,
+``first_fires`` ordering, and ``most_restrictive``'s independent per-field
+axes) — so a disagreement surfaced by the OPA tests can be traced to either
+side rather than debugged from scratch there.
+
+``most_restrictive`` picks two winners independently — the firing decision
+ranking most severe on ``RISK_LEVEL_ORDER`` (supplies ``risk_level``) and the
+one ranking most severe on ``ENFORCEMENT_ORDER`` (supplies
+``enforcement_type``, ``allowed_actions``, and ``confidence`` together, so
+those three stay one rule's consistent judgment). ``explanation`` is the two
+winners' explanations joined with ``"; "``, deduplicated to one when the same
+rule wins both axes; a rule that fires but wins neither axis contributes
+nothing beyond its id in ``triggered_rules``. Ties on either axis break on
+rule id, lowest first — deterministic, not arbitrary.
 """
 
 from __future__ import annotations
@@ -104,6 +115,8 @@ def test_most_restrictive_picks_the_more_severe_risk_level_regardless_of_order()
         "explanation": "critical",
     }
     result = combine([("LOW-1", low), ("CRIT-1", critical)], mode="most_restrictive")
+    # CRIT-1 also has the worse enforcement_type, so it wins both axes and
+    # the explanation is not duplicated.
     assert result["explanation"] == "critical"
     assert result["risk_level"] == "critical"
 
@@ -114,27 +127,43 @@ def test_most_restrictive_picks_the_more_severe_risk_level_regardless_of_order()
     assert result_reversed["explanation"] == "critical"
 
 
-def test_most_restrictive_breaks_a_risk_level_tie_on_enforcement_type():
+def test_most_restrictive_enforcement_type_is_independent_of_risk_level():
     """Two rules at the same risk_level but different enforcement severity:
-    the more severe enforcement_type (per ENFORCEMENT_ORDER) wins the tie."""
+    enforcement_type, allowed_actions, and confidence all come from whichever
+    ranks most severe on ENFORCEMENT_ORDER, independent of the risk_level
+    axis."""
     block = {
         "risk_level": "high",
         "enforcement_type": "block",
+        "allowed_actions": ["redact"],
+        "confidence": 0.8,
         "explanation": "block",
     }
-    warn = {"risk_level": "high", "enforcement_type": "warn", "explanation": "warn"}
+    warn = {
+        "risk_level": "high",
+        "enforcement_type": "warn",
+        "allowed_actions": ["mask"],
+        "confidence": 0.5,
+        "explanation": "warn",
+    }
     result = combine([("WARN-1", warn), ("BLOCK-1", block)], mode="most_restrictive")
-    assert result["explanation"] == "block"
     assert result["enforcement_type"] == "block"
+    assert result["allowed_actions"] == ["redact"]
+    assert result["confidence"] == 0.8
+    # Both rules tie on risk_level ("high"): the risk winner breaks the tie
+    # on rule id (BLOCK-1 < WARN-1), so both axes land on the same rule and
+    # the explanation is not duplicated.
+    assert result["explanation"] == "block"
 
 
-def test_most_restrictive_fully_tied_decision_keeps_the_first_in_the_list():
-    """Two rules tied on both risk_level and enforcement_type: the earlier
-    one in *firing_decisions* order wins (severity_max returns ``a`` on a
-    tie), a deterministic but otherwise arbitrary tie-break."""
+def test_most_restrictive_fully_tied_decision_breaks_tie_on_lowest_rule_id():
+    """Two rules tied on both risk_level and enforcement_type: the lower
+    rule id wins each axis — a deterministic, not arbitrary, tie-break
+    matching the Rego compiler's own ``sort([[rank, id], ...])[0]``
+    construct."""
     first = {"risk_level": "high", "enforcement_type": "block", "explanation": "first"}
     second = {"risk_level": "high", "enforcement_type": "block", "explanation": "second"}
-    result = combine([("A-1", first), ("B-1", second)], mode="most_restrictive")
+    result = combine([("B-1", second), ("A-1", first)], mode="most_restrictive")
     assert result["explanation"] == "first"
 
 
@@ -145,7 +174,7 @@ def test_most_restrictive_reports_every_triggered_rule_sorted():
     assert result["triggered_rules"] == ["A-1", "Z-1"]
 
 
-def test_most_restrictive_across_three_rules_picks_the_single_most_severe():
+def test_most_restrictive_across_three_rules_picks_the_most_severe_per_axis():
     low = {"risk_level": "low", "enforcement_type": "warn", "explanation": "low"}
     medium = {
         "risk_level": "medium",
@@ -161,7 +190,11 @@ def test_most_restrictive_across_three_rules_picks_the_single_most_severe():
         [("LOW-1", low), ("CRIT-1", critical), ("MED-1", medium)],
         mode="most_restrictive",
     )
+    # CRIT-1 wins both axes (worst risk_level and worst enforcement_type):
+    # its explanation is not duplicated, and MED-1/LOW-1 contribute nothing.
     assert result["explanation"] == "critical"
+    assert result["risk_level"] == "critical"
+    assert result["enforcement_type"] == "block"
 
 
 # --- unranked values never crash the comparison ------------------------------
@@ -169,9 +202,8 @@ def test_most_restrictive_across_three_rules_picks_the_single_most_severe():
 
 def test_most_restrictive_treats_an_unranked_risk_level_as_least_severe():
     """A risk_level not present in RISK_LEVEL_ORDER (e.g. a stray value from
-    a data bug) ranks after every recognized value, mirroring
-    ``severity_max``'s own unranked-last convention — it does not raise and
-    does not win against a recognized value."""
+    a data bug) ranks after every recognized value — it does not raise and
+    does not win the risk_level axis against a recognized value."""
     unranked = {
         "risk_level": "not_a_real_level",
         "enforcement_type": "warn",
@@ -185,14 +217,15 @@ def test_most_restrictive_treats_an_unranked_risk_level_as_least_severe():
     result = combine(
         [("UNRANKED-1", unranked), ("LOW-1", recognized)], mode="most_restrictive"
     )
+    assert result["risk_level"] == "low"
     assert result["explanation"] == "recognized"
 
 
 def test_most_restrictive_treats_a_none_risk_level_as_least_severe():
     """A rule_decision missing risk_level entirely (``.get`` returns
-    ``None``) ranks least severe too — same unranked-last convention,
-    exercised via the ``None`` case specifically since it's the shape a
-    genuinely incomplete rule_decision produces."""
+    ``None``) ranks least severe too — exercised via the ``None`` case
+    specifically since it's the shape a genuinely incomplete rule_decision
+    produces."""
     missing = {"enforcement_type": "warn", "explanation": "missing"}
     recognized = {
         "risk_level": "low",
@@ -202,24 +235,128 @@ def test_most_restrictive_treats_a_none_risk_level_as_least_severe():
     result = combine(
         [("MISSING-1", missing), ("LOW-1", recognized)], mode="most_restrictive"
     )
+    assert result["risk_level"] == "low"
     assert result["explanation"] == "recognized"
 
 
-def test_most_restrictive_both_axes_unranked_keeps_the_first():
+def test_most_restrictive_both_axes_unranked_breaks_tie_on_lowest_rule_id():
     """Two decisions missing both risk_level and enforcement_type: neither
-    axis can break the tie, so the first in the list wins — same
-    deterministic first-wins tie-break as the fully-tied-ranked case."""
+    axis can rank them apart, so the lower rule id wins both axes —
+    deterministic, not arbitrary."""
     first = {"explanation": "first"}
     second = {"explanation": "second"}
-    result = combine([("A-1", first), ("B-1", second)], mode="most_restrictive")
+    result = combine([("B-1", second), ("A-1", first)], mode="most_restrictive")
     assert result["explanation"] == "first"
 
 
-def test_most_restrictive_risk_level_tied_unranked_breaks_tie_on_enforcement():
-    """Two decisions both missing risk_level (tied, unranked) but with
-    different enforcement_type: the tie-break still runs on the
-    enforcement axis, per ENFORCEMENT_ORDER — ``notify`` outranks ``warn``."""
+def test_most_restrictive_risk_level_tied_unranked_enforcement_axis_independent():
+    """Two decisions both missing risk_level (tied, unranked): the
+    enforcement axis still picks its own independent winner per
+    ENFORCEMENT_ORDER — ``notify`` outranks ``warn`` — regardless of the
+    risk_level tie."""
     warn = {"enforcement_type": "warn", "explanation": "warn"}
     notify = {"enforcement_type": "notify", "explanation": "notify"}
     result = combine([("A-1", warn), ("B-1", notify)], mode="most_restrictive")
-    assert result["explanation"] == "notify"
+    assert result["enforcement_type"] == "notify"
+    # risk_level axis ties (both unranked) and breaks on rule id (A-1 <
+    # B-1); enforcement axis independently picks B-1 ("notify"). Different
+    # winners on each axis -> merged explanation.
+    assert result["explanation"] == "warn; notify"
+
+
+# --- new coverage: per-field provenance and explanation merging -------------
+
+
+def test_most_restrictive_allowed_actions_come_from_the_enforcement_winner():
+    risk_winner = {
+        "risk_level": "critical",
+        "enforcement_type": "warn",
+        "allowed_actions": ["mask"],
+        "explanation": "risk",
+    }
+    enf_winner = {
+        "risk_level": "low",
+        "enforcement_type": "block",
+        "allowed_actions": ["redact"],
+        "explanation": "enf",
+    }
+    result = combine(
+        [("RISK-1", risk_winner), ("ENF-1", enf_winner)], mode="most_restrictive"
+    )
+    assert result["allowed_actions"] == ["redact"]
+
+
+def test_most_restrictive_confidence_comes_from_the_enforcement_winner():
+    risk_winner = {
+        "risk_level": "critical",
+        "enforcement_type": "warn",
+        "confidence": 0.4,
+        "explanation": "risk",
+    }
+    enf_winner = {
+        "risk_level": "low",
+        "enforcement_type": "block",
+        "confidence": 0.9,
+        "explanation": "enf",
+    }
+    result = combine(
+        [("RISK-1", risk_winner), ("ENF-1", enf_winner)], mode="most_restrictive"
+    )
+    assert result["confidence"] == 0.9
+
+
+def test_most_restrictive_explanations_merge_in_risk_then_enforcement_order():
+    risk_winner = {
+        "risk_level": "critical",
+        "enforcement_type": "warn",
+        "explanation": "risk explains",
+    }
+    enf_winner = {
+        "risk_level": "low",
+        "enforcement_type": "block",
+        "explanation": "enf explains",
+    }
+    result = combine(
+        [("ENF-1", enf_winner), ("RISK-1", risk_winner)], mode="most_restrictive"
+    )
+    assert result["explanation"] == "risk explains; enf explains"
+
+
+def test_most_restrictive_rule_winning_neither_axis_contributes_no_explanation():
+    risk_winner = {
+        "risk_level": "critical",
+        "enforcement_type": "allow",
+        "explanation": "risk",
+    }
+    enf_winner = {
+        "risk_level": "low",
+        "enforcement_type": "block",
+        "explanation": "enf",
+    }
+    neither = {
+        "risk_level": "medium",
+        "enforcement_type": "warn",
+        "explanation": "neither",
+    }
+    result = combine(
+        [("RISK-1", risk_winner), ("ENF-1", enf_winner), ("NEITHER-1", neither)],
+        mode="most_restrictive",
+    )
+    assert result["explanation"] == "risk; enf"
+    assert "neither" not in result["explanation"]
+    assert result["triggered_rules"] == ["ENF-1", "NEITHER-1", "RISK-1"]
+
+
+def test_most_restrictive_same_rule_winning_both_axes_deduplicates_explanation():
+    both = {
+        "risk_level": "critical",
+        "enforcement_type": "block",
+        "explanation": "both",
+    }
+    loser = {
+        "risk_level": "low",
+        "enforcement_type": "allow",
+        "explanation": "loser",
+    }
+    result = combine([("BOTH-1", both), ("LOSER-1", loser)], mode="most_restrictive")
+    assert result["explanation"] == "both"
