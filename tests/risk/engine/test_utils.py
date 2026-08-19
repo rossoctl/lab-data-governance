@@ -481,3 +481,139 @@ def test_build_opa_input_never_carries_unmapped_fields():
         "accessing_user",
     ):
         assert absent_key not in payload
+
+
+# --- destination URL whitelist classification (issue #163) ------------------
+#
+# MVP-only: wildcard hostname matching against a configured whitelist, no URL
+# parsing beyond a plain hostname/wildcard comparison. See
+# ``matches_internal_whitelist``'s and ``build_opa_input``'s docstrings for
+# the caveat — this will be treated more holistically in a future version.
+
+
+def test_matches_internal_whitelist_exact_hostname_match():
+    assert utils.matches_internal_whitelist(
+        "https://svc.corp.internal/path", patterns=["svc.corp.internal"]
+    )
+
+
+def test_matches_internal_whitelist_wildcard_subdomain_match():
+    assert utils.matches_internal_whitelist(
+        "https://foo.corp.internal", patterns=["*.corp.internal"]
+    )
+    assert utils.matches_internal_whitelist(
+        "https://bar.baz.corp.internal", patterns=["*.corp.internal"]
+    )
+
+
+def test_matches_internal_whitelist_no_match_returns_false():
+    assert not utils.matches_internal_whitelist(
+        "https://evil.example.com", patterns=["*.corp.internal"]
+    )
+
+
+def test_matches_internal_whitelist_empty_patterns_always_false():
+    assert not utils.matches_internal_whitelist(
+        "https://svc.corp.internal", patterns=[]
+    )
+
+
+def test_matches_internal_whitelist_checks_every_pattern():
+    assert utils.matches_internal_whitelist(
+        "https://svc.other.internal",
+        patterns=["*.corp.internal", "*.other.internal"],
+    )
+
+
+def test_matches_internal_whitelist_wildcard_does_not_match_bare_domain():
+    """``*.corp.internal`` must not match ``corp.internal`` itself — the
+    wildcard stands for exactly one or more subdomain labels, not zero."""
+    assert not utils.matches_internal_whitelist(
+        "https://corp.internal", patterns=["*.corp.internal"]
+    )
+
+
+def test_matches_internal_whitelist_url_without_scheme():
+    assert utils.matches_internal_whitelist(
+        "svc.corp.internal/path", patterns=["*.corp.internal"]
+    )
+
+
+def test_matches_internal_whitelist_is_case_insensitive():
+    assert utils.matches_internal_whitelist(
+        "https://SVC.CORP.INTERNAL", patterns=["*.corp.internal"]
+    )
+
+
+def test_matches_internal_whitelist_rejects_attacker_controlled_suffix():
+    """``fnmatch`` anchors the full hostname — a pattern must match end to
+    end, so a hostname that merely *contains* the whitelisted suffix
+    somewhere in the middle (an attacker-registered domain like
+    ``evil.svc.corp.internal.attacker.com``) must not match."""
+    assert not utils.matches_internal_whitelist(
+        "https://evil.svc.corp.internal.attacker.com", patterns=["*.corp.internal"]
+    )
+
+
+# --- build_opa_input: destination_url classification -------------------------
+
+
+def test_build_opa_input_destination_url_matching_whitelist_is_internal(monkeypatch):
+    monkeypatch.setattr(
+        "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS",
+        ["*.corp.internal"],
+    )
+    payload = utils.build_opa_input(
+        legs=[],
+        span_ids=[],
+        classifications={},
+        caller_entity_id=None,
+        callee_entity_id=None,
+        destination_url="https://svc.corp.internal/x",
+    )
+    assert payload["data_destinations"] == [{"data_destination_categories": ["internal"]}]
+    _opa_input_validator().validate(payload)
+
+
+def test_build_opa_input_destination_url_not_matching_whitelist_is_external(monkeypatch):
+    monkeypatch.setattr(
+        "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS",
+        ["*.corp.internal"],
+    )
+    payload = utils.build_opa_input(
+        legs=[],
+        span_ids=[],
+        classifications={},
+        caller_entity_id=None,
+        callee_entity_id=None,
+        destination_url="https://evil.example.com",
+    )
+    assert payload["data_destinations"] == [{"data_destination_categories": ["external"]}]
+    _opa_input_validator().validate(payload)
+
+
+def test_build_opa_input_destination_url_with_empty_whitelist_defaults_external(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS", []
+    )
+    payload = utils.build_opa_input(
+        legs=[],
+        span_ids=[],
+        classifications={},
+        caller_entity_id=None,
+        callee_entity_id=None,
+        destination_url="https://svc.corp.internal",
+    )
+    assert payload["data_destinations"] == [{"data_destination_categories": ["external"]}]
+
+
+def test_build_opa_input_no_destination_url_omits_data_destinations():
+    """Matches this module's existing "absent means absent" convention: no
+    destination URL known yet (the common case until issue #163's
+    evidence-gathering wiring lands) must not fabricate a category."""
+    payload = utils.build_opa_input(
+        legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
+    )
+    assert "data_destinations" not in payload

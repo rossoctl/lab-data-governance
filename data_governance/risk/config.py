@@ -43,6 +43,7 @@ __all__ = [
     "OPA_MAX_RETRIES",
     "API_RISK_RULES_DEFAULT_LIMIT",
     "API_RISK_RULES_MAX_LIMIT",
+    "INTERNAL_URL_WHITELIST_PATTERNS",
 ]
 
 
@@ -148,3 +149,14 @@ OPA_MAX_RETRIES = _int_env("RISK_OPA_MAX_RETRIES", 2)
 
 API_RISK_RULES_DEFAULT_LIMIT = _int_env("RISK_API_RISK_RULES_DEFAULT_LIMIT", 50)
 API_RISK_RULES_MAX_LIMIT = _int_env("RISK_API_RISK_RULES_MAX_LIMIT", 200)
+
+# --- risk.internal_url_whitelist.* (issue #163) -------------------------------
+# Wildcard hostname patterns (e.g. "*.corp.internal") identifying destinations
+# that are "internal" for data_destination_categories purposes
+# (engine/utils.py:build_opa_input). Default empty: with no patterns
+# configured, every destination classifies as "external" — the safer default
+# when internal-ness can't be determined. This is deliberately simple
+# (wildcard hostname matching only, no URL parsing, no path/scheme awareness)
+# for MVP; see build_opa_input's docstring for the caveat.
+
+INTERNAL_URL_WHITELIST_PATTERNS = _list_env("RISK_INTERNAL_URL_WHITELIST_PATTERNS", [])
