@@ -64,6 +64,18 @@ def _insert_risk_record(
     callee_entity_id: str = _ENT_B,
     overall_confidence: float | None = None,
 ) -> str:
+    # The rollup counts only records whose interaction still exists (the
+    # ghost-record filter added with the #102 driver), so a risk record's
+    # interaction row must exist for the record to contribute — upsert it
+    # here so every test's records are live by default. Ghost-record
+    # behaviour is tested explicitly in
+    # tests/processors/risk/trace_trigger/test_driver.py.
+    conn.execute(
+        "INSERT INTO interactions (id, trace_id, caller_entity_id, "
+        "callee_entity_id, summary) VALUES (%s, %s, %s, %s, 'did a thing') "
+        "ON CONFLICT (id) DO NOTHING",
+        (interaction_id, trace_id, caller_entity_id, callee_entity_id),
+    )
     row = conn.execute(
         "INSERT INTO interaction_risk_records ("
         "interaction_id, trace_id, caller_entity_id, callee_entity_id, "
