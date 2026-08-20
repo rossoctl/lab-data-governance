@@ -104,6 +104,19 @@ spec:
             # lineage consumer with no risk engine (and no OPA dependency).
             - name: RISK_OPA_BASE_URL
               value: "http://opa:8181"
+            # Which destinations count as internal (#178's wildcard hostname
+            # whitelist). Its code default is EMPTY on purpose — absent
+            # configuration, every destination is external — so this list is
+            # load-bearing, not decorative: without it every ordinary
+            # in-cluster call with a dotted hostname classifies external and
+            # trips the external-sharing rules. Covers in-cluster service
+            # DNS, the kind cluster's localtest.me ingress hosts, and the
+            # podman/docker host gateways the local LLM runs behind.
+            # (Cluster-DNS short names with no dot at all — `opa`, `ollama` —
+            # need no pattern: no glob can express "has no dot", so the
+            # engine treats them as structurally internal.)
+            - name: RISK_INTERNAL_URL_WHITELIST_PATTERNS
+              value: "*.svc,*.svc.cluster.local,*.localtest.me,localhost,*.localhost,127.0.0.1,host.containers.internal,host.docker.internal"
           # No ports / no Service (metrics on 9094 stay in-pod); no probes —
           # no HTTP serving surface, k8s restarts on process exit.
           resources:

@@ -48,6 +48,22 @@ def test_opa_base_url_points_at_the_opa_service(deployment: dict) -> None:
     assert env["RISK_OPA_BASE_URL"] == "http://opa:8181"
 
 
+def test_internal_whitelist_is_set_in_the_manifest(deployment: dict) -> None:
+    """#163/#178: unlike RISK_OPA_BASE_URL this does NOT equal the code
+    default — #178 ships an empty whitelist so that absent configuration
+    means "everything is external". Without this env the engine would call
+    every dotted in-cluster hostname external and fire the external-sharing
+    rules on ordinary internal traffic, so the manifest must carry it.
+    """
+    (container,) = deployment["spec"]["template"]["spec"]["containers"]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    patterns = env["RISK_INTERNAL_URL_WHITELIST_PATTERNS"].split(",")
+    assert "*.svc" in patterns and "*.svc.cluster.local" in patterns, (
+        "in-cluster service DNS must be whitelisted"
+    )
+    assert "*.localtest.me" in patterns, "the kind cluster's ingress hosts"
+
+
 def test_no_ports_declared(deployment: dict) -> None:
     (container,) = deployment["spec"]["template"]["spec"]["containers"]
     assert "ports" not in container
