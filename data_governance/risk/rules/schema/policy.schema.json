@@ -2,14 +2,14 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://example.org/schemas/policy.schema.json",
     "title": "Agent Data Governance Policy",
-    "description": "JSON Schema for policy.json. All enum values are sourced from: EntityTypesForTokenClassification (8).csv and Entity_Classification_System_Specification.docx (entity_type, category, domain, data_type, classification_level, regulatory_tags), and recommended_enum_values.md (all other enums, including the coarse-grained data_source_category / data_destination_category and their default mappings).",
+    "description": "JSON Schema for policy.json. All enum values are sourced from: EntityTypesForTokenClassification (8).csv and Entity_Classification_System_Specification.docx (entity_type, category, domain, data_type, classification_level, regulatory_tags), and recommended_enum_values.md (all other enums, including the coarse-grained data_source_category / data_destination_category / trust_level_category and their default mappings).",
     "type": "object",
     "required": [
-        "policy_id", "policy_type", "status", "version", "runtime_enforcement_mode", "rules",
+        "policy_id", "policy_type", "status", "version", "runtime_enforcement_mode", "rule_combining_mode", "rules",
         "event_type", "enforcement_type", "action_type", "location_type", "processing_entity_type",
         "entity_type", "regulatory_tags", "data_type", "classification_level", "domain", "category",
         "risk_level", "trust_level", "transformation type", "data_source_type", "data_destination_type",
-        "data_source_category", "data_destination_category"
+        "data_source_category", "data_destination_category", "trust_level_category"
     ],
     "additionalProperties": false,
     "properties": {
@@ -25,6 +25,7 @@
             },
             "additionalProperties": true
         },
+        "rule_combining_mode": { "$ref": "#/$defs/ruleCombiningModeValues" },
         "rules": {
             "type": "array",
             "items": { "$ref": "#/$defs/rule" }
@@ -47,7 +48,8 @@
         "data_source_type": { "$ref": "#/$defs/enumField_dataSourceTypeValues" },
         "data_destination_type": { "$ref": "#/$defs/enumField_dataDestinationTypeValues" },
         "data_source_category": { "$ref": "#/$defs/categoryEnumField_dataSourceCategory" },
-        "data_destination_category": { "$ref": "#/$defs/categoryEnumField_dataDestinationCategory" }
+        "data_destination_category": { "$ref": "#/$defs/categoryEnumField_dataDestinationCategory" },
+        "trust_level_category": { "$ref": "#/$defs/categoryEnumField_trustLevelCategory" }
     },
 
     "$defs": {
@@ -169,12 +171,22 @@
                 "critical", "high", "medium", "low", "none", "unknown"
             ]
         },
+        "ruleCombiningModeValues": {
+            "type": "string",
+            "description": "How the policy combines the decisions of every rule that fires on one event into a single policy_decision. 'first_fires' takes the decision of the first rule (in catalog order) that fires, verbatim. 'most_restrictive' combines per field rather than picking one winning rule: risk_level is taken from whichever firing rule ranks most severe on data_governance.risk.rules.catalog.RISK_LEVEL_ORDER; enforcement_type, allowed_actions, and confidence are all taken together from whichever firing rule ranks most severe on ENFORCEMENT_ORDER (so those three stay one rule's consistent judgment); explanation concatenates the risk-level winner's and enforcement-type winner's explanations with '; ', deduplicated to one when the same rule wins both axes. Rules that fired but won neither axis contribute nothing to the combined decision beyond their id in triggered_rules.",
+            "enum": ["first_fires", "most_restrictive"]
+        },
         "trustLevelValues": {
             "type": "string",
             "enum": [
                 "", "TRUSTED_INTERNAL", "TRUSTED_INTERNAL_RESTRICTED", "TRUSTED_PARTNER", "TRUSTED_VENDOR",
                 "UNTRUSTED_EXTERNAL", "UNTRUSTED_PUBLIC", "UNKNOWN", "CONDITIONAL_TRUST"
             ]
+        },
+        "trustLevelCategoryValues": {
+            "type": "string",
+            "description": "The coarse-grained trust_level_category two members every trustLevelValues member maps to by default (categoryEnumField_trustLevelCategory.default_mapping): every 'TRUSTED*' level -> TRUSTED; every 'UNTRUSTED*' level plus UNKNOWN and CONDITIONAL_TRUST -> UNTRUSTED.",
+            "enum": ["TRUSTED", "UNTRUSTED"]
         },
         "transformationTypeValues": {
             "type": "string",
@@ -410,9 +422,40 @@
             }
         },
 
+        "categoryEnumField_trustLevelCategory": {
+            "description": "The coarse-grained trust_level_category enum plus its default mapping from every trustLevelValues value to a category: every 'TRUSTED*' level maps to TRUSTED; every 'UNTRUSTED*' level, plus UNKNOWN and CONDITIONAL_TRUST, maps to UNTRUSTED.",
+            "type": "object",
+            "required": ["enum", "default_mapping"],
+            "additionalProperties": false,
+            "properties": {
+                "enum": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/trustLevelCategoryValues" }
+                },
+                "default_mapping": {
+                    "type": "object",
+                    "required": [
+                        "TRUSTED_INTERNAL", "TRUSTED_INTERNAL_RESTRICTED", "TRUSTED_PARTNER", "TRUSTED_VENDOR",
+                        "UNTRUSTED_EXTERNAL", "UNTRUSTED_PUBLIC", "UNKNOWN", "CONDITIONAL_TRUST"
+                    ],
+                    "properties": {
+                        "TRUSTED_INTERNAL": { "$ref": "#/$defs/trustLevelCategoryValues" },
+                        "TRUSTED_INTERNAL_RESTRICTED": { "$ref": "#/$defs/trustLevelCategoryValues" },
+                        "TRUSTED_PARTNER": { "$ref": "#/$defs/trustLevelCategoryValues" },
+                        "TRUSTED_VENDOR": { "$ref": "#/$defs/trustLevelCategoryValues" },
+                        "UNTRUSTED_EXTERNAL": { "$ref": "#/$defs/trustLevelCategoryValues" },
+                        "UNTRUSTED_PUBLIC": { "$ref": "#/$defs/trustLevelCategoryValues" },
+                        "UNKNOWN": { "$ref": "#/$defs/trustLevelCategoryValues" },
+                        "CONDITIONAL_TRUST": { "$ref": "#/$defs/trustLevelCategoryValues" }
+                    },
+                    "additionalProperties": false
+                }
+            }
+        },
+
         "rule": {
             "type": "object",
-            "required": ["rule_name", "rule_id", "rule_categories", "rule_sources", "policy_decision"],
+            "required": ["rule_name", "rule_id", "rule_categories", "rule_sources", "rule_decision"],
             "additionalProperties": false,
             "properties": {
                 "rule_name": { "type": "string" },
@@ -458,7 +501,7 @@
                     "type": "array",
                     "items": { "$ref": "#/$defs/scopeEntry" }
                 },
-                "policy_decision": { "$ref": "#/$defs/policyDecision" }
+                "rule_decision": { "$ref": "#/$defs/ruleDecision" }
             }
         },
 
@@ -507,7 +550,8 @@
                     "type": "array",
                     "items": { "$ref": "#/$defs/dataCategoryValues" }
                 },
-                "data_destination_trust_level": { "$ref": "#/$defs/trustLevelValues" }
+                "data_destination_trust_level": { "$ref": "#/$defs/trustLevelValues" },
+                "data_destination_trust_level_category": { "$ref": "#/$defs/trustLevelCategoryValues" }
             }
         },
 
@@ -633,7 +677,8 @@
             "additionalProperties": false,
             "properties": {
                 "agent_name": { "type": "string" },
-                "agent_trust_level": { "$ref": "#/$defs/trustLevelValues" }
+                "agent_trust_level": { "$ref": "#/$defs/trustLevelValues" },
+                "agent_trust_level_category": { "$ref": "#/$defs/trustLevelCategoryValues" }
             }
         },
 
@@ -648,7 +693,7 @@
             }
         },
 
-        "policyDecision": {
+        "ruleDecision": {
             "type": "object",
             "required": ["explanation", "confidence"],
             "additionalProperties": false,

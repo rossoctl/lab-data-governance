@@ -6,6 +6,7 @@
   "runtime_enforcement_mode": {
     "unknown_behavior_enforcement_type": "allow"
   },
+  "rule_combining_mode": "most_restrictive",
   "event_type": {
     "enum": [
       "external_sharing",
@@ -375,6 +376,22 @@
       "unknown": "unknown"
     }
   },
+  "trust_level_category": {
+    "enum": [
+      "TRUSTED",
+      "UNTRUSTED"
+    ],
+    "default_mapping": {
+      "TRUSTED_INTERNAL": "TRUSTED",
+      "TRUSTED_INTERNAL_RESTRICTED": "TRUSTED",
+      "TRUSTED_PARTNER": "TRUSTED",
+      "TRUSTED_VENDOR": "TRUSTED",
+      "UNTRUSTED_EXTERNAL": "UNTRUSTED",
+      "UNTRUSTED_PUBLIC": "UNTRUSTED",
+      "UNKNOWN": "UNTRUSTED",
+      "CONDITIONAL_TRUST": "UNTRUSTED"
+    }
+  },
   "rules": [
     {
       "rule_id": "PG-001",
@@ -384,7 +401,7 @@
       ],
       "rule_sources": [],
       "event_type": "external_sharing",
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "medium",
         "enforcement_type": "escalate",
         "allowed_actions": [],
@@ -400,7 +417,7 @@
       ],
       "rule_sources": [],
       "event_type": "external_sharing",
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "critical",
         "enforcement_type": "block",
         "allowed_actions": [],
@@ -416,7 +433,7 @@
       ],
       "rule_sources": [],
       "event_type": "external_sharing",
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "low",
         "enforcement_type": "allow",
         "allowed_actions": [],
@@ -432,7 +449,7 @@
       ],
       "rule_sources": [],
       "event_type": "external_sharing",
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "high",
         "enforcement_type": "block",
         "allowed_actions": [],
@@ -448,7 +465,7 @@
       ],
       "rule_sources": [],
       "event_type": "external_sharing",
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "critical",
         "enforcement_type": "block",
         "allowed_actions": [],
@@ -464,7 +481,7 @@
       ],
       "rule_sources": [],
       "event_type": "external_sharing",
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "none",
         "enforcement_type": "log_only",
         "allowed_actions": [],
@@ -480,7 +497,7 @@
       ],
       "rule_sources": [],
       "event_type": "external_sharing",
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "medium",
         "enforcement_type": "warn",
         "allowed_actions": [],

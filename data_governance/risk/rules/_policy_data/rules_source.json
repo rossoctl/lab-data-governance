@@ -6,6 +6,7 @@
   "runtime_enforcement_mode": {
     "unknown_behavior_enforcement_type": "allow"
   },
+  "rule_combining_mode": "most_restrictive",
   "event_type": {
     "enum": [
       "external_sharing",
@@ -375,6 +376,22 @@
       "unknown": "unknown"
     }
   },
+  "trust_level_category": {
+    "enum": [
+      "TRUSTED",
+      "UNTRUSTED"
+    ],
+    "default_mapping": {
+      "TRUSTED_INTERNAL": "TRUSTED",
+      "TRUSTED_INTERNAL_RESTRICTED": "TRUSTED",
+      "TRUSTED_PARTNER": "TRUSTED",
+      "TRUSTED_VENDOR": "TRUSTED",
+      "UNTRUSTED_EXTERNAL": "UNTRUSTED",
+      "UNTRUSTED_PUBLIC": "UNTRUSTED",
+      "UNKNOWN": "UNTRUSTED",
+      "CONDITIONAL_TRUST": "UNTRUSTED"
+    }
+  },
   "rules": [
     {
       "rule_id": "DG-001",
@@ -413,7 +430,7 @@
           "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
         }
       ],
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "critical",
         "enforcement_type": "block",
         "allowed_actions": [
@@ -461,7 +478,7 @@
           "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
         }
       ],
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "critical",
         "enforcement_type": "block",
         "allowed_actions": [],
@@ -504,7 +521,7 @@
           "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
         }
       ],
-      "policy_decision": {
+      "rule_decision": {
         "risk_level": "critical",
         "enforcement_type": "block",
         "allowed_actions": [],

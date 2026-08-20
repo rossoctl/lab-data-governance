@@ -78,7 +78,7 @@ def test_list_rules_every_entry_has_six_five_shape():
         assert set(rule.keys()) == _SIX_FIVE_KEYS
 
 
-def test_list_rules_flattens_policy_decision_fields():
+def test_list_rules_flattens_rule_decision_fields():
     dg001 = next(r for r in catalog.list_rules() if r["rule_id"] == "DG-001")
     assert dg001["risk_level"] == "critical"
     assert dg001["enforcement"] == "block"
@@ -165,10 +165,10 @@ def test_reload_picks_up_a_changed_file(monkeypatch: pytest.MonkeyPatch):
 # --- corner cases -------------------------------------------------------------
 
 
-def test_incomplete_policy_decision_yields_none_ranked_fields(
+def test_incomplete_rule_decision_yields_none_ranked_fields(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """FX-NO-DECISION carries a ``policy_decision`` (the schema requires
+    """FX-NO-DECISION carries a ``rule_decision`` (the schema requires
     ``explanation``/``confidence``) but omits both ``risk_level`` and
     ``enforcement_type`` — a shape the schema explicitly permits. Flattening
     must treat the missing ranked fields as ``None``; ``explanation`` is
@@ -337,8 +337,8 @@ def test_filter_empty_collection_matches_nothing(_varied):
     assert _ids(catalog.list_rules(risk_level=None)) == _ids(catalog.list_rules())
 
 
-def test_filter_excludes_rules_with_no_policy_decision(_varied):
-    """A rule with no policy_decision has risk_level None, so it cannot match
+def test_filter_excludes_rules_with_no_rule_decision(_varied):
+    """A rule with no rule_decision has risk_level None, so it cannot match
     any concrete filter value."""
     assert "FX-NO-DECISION" not in _ids(catalog.list_rules(risk_level="critical"))
     assert "FX-NO-DECISION" in _ids(catalog.list_rules())
@@ -378,7 +378,7 @@ def test_sort_by_risk_level_descending_reverses_severity(_varied):
 
 
 def test_sort_by_risk_level_places_unranked_last(_varied):
-    """A rule with no policy_decision sorts after every ranked rule rather
+    """A rule with no rule_decision sorts after every ranked rule rather
     than crashing on a None comparison or sorting first."""
     assert _ids(catalog.list_rules(sort_by="risk_level"))[-1] == "FX-NO-DECISION"
 
@@ -443,7 +443,7 @@ def test_risk_order_covers_every_documented_level():
 
 def test_descending_sort_puts_unranked_first(_varied):
     """``descending`` reverses the whole ordering, so the rule with no
-    ``policy_decision`` leads rather than staying pinned last. Documented
+    ``rule_decision`` leads rather than staying pinned last. Documented
     because "unranked last" and "reverse everything" pull in opposite
     directions and a caller paging descending needs to know which wins.
     """
@@ -507,7 +507,7 @@ def test_enforcement_order_is_most_severe_first():
 
 
 def test_unranked_enforcement_sorts_last(_varied):
-    """A rule with no policy_decision (so no enforcement_type at all) sorts
+    """A rule with no rule_decision (so no enforcement_type at all) sorts
     after every ranked rule rather than crashing on a None comparison or
     sorting first — the same guarantee ``RISK_LEVEL_ORDER`` already gets
     from :func:`test_sort_by_risk_level_places_unranked_last`."""
