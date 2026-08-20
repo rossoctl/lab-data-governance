@@ -571,7 +571,12 @@ def test_build_opa_input_destination_url_matching_whitelist_is_internal(monkeypa
         callee_entity_id=None,
         destination_url="https://svc.corp.internal/x",
     )
-    assert payload["data_destinations"] == [{"data_destination_categories": ["internal"]}]
+    assert payload["data_destinations"] == [
+        {
+            "data_destination_categories": ["internal"],
+            "data_destination_trust_level": "UNKNOWN",
+        }
+    ]
     _opa_input_validator().validate(payload)
 
 
@@ -588,7 +593,12 @@ def test_build_opa_input_destination_url_not_matching_whitelist_is_external(monk
         callee_entity_id=None,
         destination_url="https://evil.example.com",
     )
-    assert payload["data_destinations"] == [{"data_destination_categories": ["external"]}]
+    assert payload["data_destinations"] == [
+        {
+            "data_destination_categories": ["external"],
+            "data_destination_trust_level": "UNTRUSTED_EXTERNAL",
+        }
+    ]
     _opa_input_validator().validate(payload)
 
 
@@ -606,7 +616,12 @@ def test_build_opa_input_destination_url_with_empty_whitelist_defaults_external(
         callee_entity_id=None,
         destination_url="https://svc.corp.internal",
     )
-    assert payload["data_destinations"] == [{"data_destination_categories": ["external"]}]
+    assert payload["data_destinations"] == [
+        {
+            "data_destination_categories": ["external"],
+            "data_destination_trust_level": "UNTRUSTED_EXTERNAL",
+        }
+    ]
 
 
 def test_build_opa_input_no_destination_url_omits_data_destinations():
@@ -617,3 +632,69 @@ def test_build_opa_input_no_destination_url_omits_data_destinations():
         legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
     )
     assert "data_destinations" not in payload
+
+
+# --- build_opa_input: trust level derived from category when unprovided -----
+#
+# There is no source of an explicit data_destination_trust_level yet, so
+# whenever a category is derived from destination_url, a trust level is
+# derived alongside it from that category: external -> UNTRUSTED_EXTERNAL,
+# public -> UNTRUSTED_PUBLIC, anything else -> UNKNOWN. The whitelist
+# classification above only ever yields "internal"/"external" categories, so
+# the "public" case is exercised directly against the helper, not through
+# build_opa_input's URL-driven path.
+
+
+def test_build_opa_input_external_category_derives_untrusted_external_trust_level(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS", []
+    )
+    payload = utils.build_opa_input(
+        legs=[],
+        span_ids=[],
+        classifications={},
+        caller_entity_id=None,
+        callee_entity_id=None,
+        destination_url="https://evil.example.com",
+    )
+    assert (
+        payload["data_destinations"][0]["data_destination_trust_level"]
+        == "UNTRUSTED_EXTERNAL"
+    )
+
+
+def test_build_opa_input_internal_category_derives_unknown_trust_level(monkeypatch):
+    """"internal" is not "external" or "public", so it falls into the
+    anything-else -> UNKNOWN branch of the mapping, even though intuitively
+    an internal destination should be trusted — this MVP whitelist has no
+    richer category to draw a TRUSTED_* level from yet."""
+    monkeypatch.setattr(
+        "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS",
+        ["*.corp.internal"],
+    )
+    payload = utils.build_opa_input(
+        legs=[],
+        span_ids=[],
+        classifications={},
+        caller_entity_id=None,
+        callee_entity_id=None,
+        destination_url="https://svc.corp.internal",
+    )
+    assert (
+        payload["data_destinations"][0]["data_destination_trust_level"] == "UNKNOWN"
+    )
+
+
+def test_trust_level_for_category_maps_public_to_untrusted_public():
+    assert utils._trust_level_for_category("public") == "UNTRUSTED_PUBLIC"
+
+
+def test_trust_level_for_category_maps_external_to_untrusted_external():
+    assert utils._trust_level_for_category("external") == "UNTRUSTED_EXTERNAL"
+
+
+@pytest.mark.parametrize("category", ["internal", "local", "totally-unknown"])
+def test_trust_level_for_category_maps_anything_else_to_unknown(category):
+    assert utils._trust_level_for_category(category) == "UNKNOWN"

@@ -191,6 +191,19 @@ def matches_internal_whitelist(url: str, *, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(hostname, pattern.lower()) for pattern in patterns)
 
 
+_CATEGORY_TO_TRUST_LEVEL: Final[dict[str, str]] = {
+    "external": "UNTRUSTED_EXTERNAL",
+    "public": "UNTRUSTED_PUBLIC",
+}
+
+
+def _trust_level_for_category(category: str) -> str:
+    """The trust level implied by *category* when none was explicitly
+    provided: ``"external"`` -> ``UNTRUSTED_EXTERNAL``, ``"public"`` ->
+    ``UNTRUSTED_PUBLIC``, anything else -> ``UNKNOWN``."""
+    return _CATEGORY_TO_TRUST_LEVEL.get(category, "UNKNOWN")
+
+
 def _finding_to_entity(finding: dict[str, Any]) -> dict[str, Any]:
     entity = {
         "entity_type": finding.get("entity_type"),
@@ -256,6 +269,13 @@ def build_opa_input(
     in a future version. ``destination_url`` omitted (``None``, the default
     until #163 lands) means no ``data_destinations`` key at all, matching
     this function's existing "absent means unknown" convention.
+
+    There is no source of an explicit ``data_destination_trust_level`` yet
+    either, so whenever a category is derived above, a trust level is
+    derived alongside it from that same category: ``"external"`` ->
+    ``"UNTRUSTED_EXTERNAL"``, ``"public"`` -> ``"UNTRUSTED_PUBLIC"``, and
+    anything else (including ``"internal"``, which this MVP whitelist never
+    distinguishes further) -> ``"UNKNOWN"``.
     """
     data_items = [
         _verdict_to_data_item(verdict)
@@ -283,7 +303,12 @@ def build_opa_input(
             )
             else "external"
         )
-        payload["data_destinations"] = [{"data_destination_categories": [category]}]
+        payload["data_destinations"] = [
+            {
+                "data_destination_categories": [category],
+                "data_destination_trust_level": _trust_level_for_category(category),
+            }
+        ]
     return payload
 
 
