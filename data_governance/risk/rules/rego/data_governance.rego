@@ -20,8 +20,10 @@
 #     equals the destination's).
 # A criterion the rule does not state is not checked; a criterion the input
 # cannot satisfy (including a wholly absent input field — honest absence)
-# fails the match. Today's engine input carries no data_destinations, so
-# every rule falls through to the fallback until #163 lands — by design.
+# fails the match. (Before #163 the engine input carried no
+# data_destinations at all, so every rule fell through to the fallback; #163
+# supplies them from the anchor span's wire facts, categorised by #178's
+# hostname whitelist.)
 #
 # The decision ALWAYS exists (§4.1 / the client raises OpaResponseError on a
 # result without risk_level): when no rule matches, the fallback decision is
