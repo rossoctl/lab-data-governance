@@ -26,8 +26,10 @@ dependencies = [
     # JSON policy -> Rego compiler (issue #173) validates the input policy
     # JSON against schema/policy.schema.json before compiling — was dev-only
     # (catalog conformance tests); now a runtime dependency. referencing
-    # resolves the schema's cross-file $ref into opa_input.schema.json; it
-    # was previously only a transitive dependency of jsonschema.
+    # resolves opa_output.schema.json's cross-file $ref into
+    # policy.schema.json (used by the opa-marked test suite; compile_policy's
+    # own validation path stays self-contained); it was previously only a
+    # transitive dependency of jsonschema.
     "jsonschema>=4.0",
     "referencing>=0.30",
 ]
