@@ -256,6 +256,77 @@ def test_first_fires_picks_the_catalog_order_winner_regardless_of_severity(
     assert sorted(decision.triggered_rules) == ["HIGH-1", "LOW-1"]
 
 
+# --- multiple entries of the same list field bind independent variables ----
+#
+# _rule_var (rego.py) must derive a distinct Rego variable per entry index,
+# not just per rule id + field-type suffix — otherwise two data_items[]
+# entries on one rule reuse the identical `some`-bound variable name, which
+# Rego requires to resolve to the same value on every use within one rule
+# body. In practice OPA's compiler rejects the resulting module outright
+# ("var ... declared above") rather than silently misinterpreting it — this
+# was confirmed by reverting the fix and observing the PUT below return 400
+# — but only a real OPA compile catches that; the structural tests in
+# test_rego.py only check for substrings and would not notice either the
+# rejection or a hypothetical silent misbinding.
+
+
+def _two_item_policy() -> dict[str, Any]:
+    """One rule with two ``data_items[]`` entries requiring different
+    classification levels — satisfiable only by two distinct input items,
+    never by one item alone."""
+    rule = _rule(
+        "TWO-ITEM-1",
+        event_type="x",
+        data_items=[
+            {"classification_level": "RESTRICTED"},
+            {"classification_level": "CONFIDENTIAL"},
+        ],
+    )
+    return _policy([rule])
+
+
+def test_rule_with_two_data_items_entries_requires_two_distinct_items(
+    opa_client, opa_base_url
+):
+    rego = compile_policy(_two_item_policy(), validate=False)
+    put_response = _put_policy(opa_client, rego)
+    assert put_response.status_code == 200, put_response.text
+
+    # Two distinct items, one per entry: fires.
+    decision = _evaluate(
+        opa_base_url,
+        {
+            "event_type": "x",
+            "data_items": [
+                {"classification_level": "RESTRICTED"},
+                {"classification_level": "CONFIDENTIAL"},
+            ],
+        },
+    )
+    assert decision.triggered_rules == ["TWO-ITEM-1"]
+
+
+def test_rule_with_two_data_items_entries_does_not_fire_for_a_single_matching_item(
+    opa_client, opa_base_url
+):
+    """The bug this guards against: reusing one variable name for both
+    entries would let a single item satisfying only one classification level
+    be treated as though it simultaneously satisfied both — this input has
+    only a RESTRICTED item, no CONFIDENTIAL one, so the rule must not fire."""
+    rego = compile_policy(_two_item_policy(), validate=False)
+    put_response = _put_policy(opa_client, rego)
+    assert put_response.status_code == 200, put_response.text
+
+    decision = _evaluate(
+        opa_base_url,
+        {
+            "event_type": "x",
+            "data_items": [{"classification_level": "RESTRICTED"}],
+        },
+    )
+    assert decision.triggered_rules == ["0000"]
+
+
 # --- a syntax error is caught by the PUT, not silently accepted --------
 
 

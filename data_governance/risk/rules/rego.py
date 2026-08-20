@@ -81,11 +81,22 @@ def _lit(value: Any) -> str:
     return json.dumps(value)
 
 
-def _rule_var(rule_id: str, suffix: str) -> str:
-    """A Rego-safe local variable name derived from a rule id, which may
-    contain characters (``-``) that are not valid in a Rego identifier."""
+def _rule_var(rule_id: str, suffix: str, index: int) -> str:
+    """A Rego-safe local variable name derived from a rule id, a fixed
+    per-field-type suffix, and *index* — a rule's position within that
+    field's list on this rule (e.g. the second ``data_items[]`` entry).
+
+    Rego requires every use of the same ``some``-bound variable within one
+    rule body to resolve to the same value, so two entries of the same field
+    type on one rule must get distinct variable names: without *index*, a
+    rule with two ``data_items[]`` entries would emit ``some _R_1_item in
+    input.data_items`` twice under the identical name, which Rego reads as
+    "one single item satisfies both entries simultaneously" rather than the
+    intended "some item satisfies entry 1 and some (possibly different) item
+    satisfies entry 2."
+    """
     safe = "".join(c if c.isalnum() else "_" for c in rule_id)
-    return f"_{safe}_{suffix}"
+    return f"_{safe}_{suffix}_{index}"
 
 
 def _scalar_clause(field: str, value: Any) -> str:
@@ -104,10 +115,10 @@ def _set_subset_clause(input_field: str, required: list[Any]) -> str:
     )
 
 
-def _data_item_clause(rule_id: str, item: dict[str, Any]) -> str:
+def _data_item_clause(rule_id: str, item: dict[str, Any], index: int) -> str:
     """One ``data_items[]`` entry: matched if *some* input data item
     satisfies every field the rule specifies on this entry."""
-    var = _rule_var(rule_id, "item")
+    var = _rule_var(rule_id, "item", index)
     lines = [f"some {var} in input.data_items"]
     if "classification_level" in item:
         lines.append(f"{var}.classification_level == {_lit(item['classification_level'])}")
@@ -122,10 +133,12 @@ def _data_item_clause(rule_id: str, item: dict[str, Any]) -> str:
     return "\n    ".join(lines)
 
 
-def _data_destination_clause(rule_id: str, destination: dict[str, Any]) -> str:
+def _data_destination_clause(
+    rule_id: str, destination: dict[str, Any], index: int
+) -> str:
     """One ``data_destinations[]`` entry: matched if *some* input
     destination satisfies every field the rule specifies on this entry."""
-    var = _rule_var(rule_id, "dest")
+    var = _rule_var(rule_id, "dest", index)
     lines = [f"some {var} in input.data_destinations"]
     if "data_destination_categories" in destination:
         cats = _lit(destination["data_destination_categories"])
@@ -138,9 +151,9 @@ def _data_destination_clause(rule_id: str, destination: dict[str, Any]) -> str:
     return "\n    ".join(lines)
 
 
-def _data_source_clause(rule_id: str, source: dict[str, Any]) -> str:
+def _data_source_clause(rule_id: str, source: dict[str, Any], index: int) -> str:
     """Mirror of :func:`_data_destination_clause` for ``data_sources[]``."""
-    var = _rule_var(rule_id, "src")
+    var = _rule_var(rule_id, "src", index)
     lines = [f"some {var} in input.data_sources"]
     if "data_source_categories" in source:
         cats = _lit(source["data_source_categories"])
@@ -148,8 +161,8 @@ def _data_source_clause(rule_id: str, source: dict[str, Any]) -> str:
     return "\n    ".join(lines)
 
 
-def _processing_agent_clause(rule_id: str, agent: dict[str, Any]) -> str:
-    var = _rule_var(rule_id, "agent")
+def _processing_agent_clause(rule_id: str, agent: dict[str, Any], index: int) -> str:
+    var = _rule_var(rule_id, "agent", index)
     lines = [f"some {var} in input.processing_agents"]
     if "agent_name" in agent:
         lines.append(f"{var}.agent_name == {_lit(agent['agent_name'])}")
@@ -195,17 +208,17 @@ def _rule_predicate_clauses(rule: dict[str, Any]) -> list[str]:
 
     rule_id = rule["rule_id"]
 
-    for item in rule.get("data_items", []):
-        clauses.append(_data_item_clause(rule_id, item))
+    for index, item in enumerate(rule.get("data_items", [])):
+        clauses.append(_data_item_clause(rule_id, item, index))
 
-    for destination in rule.get("data_destinations", []):
-        clauses.append(_data_destination_clause(rule_id, destination))
+    for index, destination in enumerate(rule.get("data_destinations", [])):
+        clauses.append(_data_destination_clause(rule_id, destination, index))
 
-    for source in rule.get("data_sources", []):
-        clauses.append(_data_source_clause(rule_id, source))
+    for index, source in enumerate(rule.get("data_sources", [])):
+        clauses.append(_data_source_clause(rule_id, source, index))
 
-    for agent in rule.get("processing_agents", []):
-        clauses.append(_processing_agent_clause(rule_id, agent))
+    for index, agent in enumerate(rule.get("processing_agents", [])):
+        clauses.append(_processing_agent_clause(rule_id, agent, index))
 
     return clauses
 
