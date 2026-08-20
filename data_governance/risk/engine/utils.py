@@ -30,6 +30,7 @@ from data_governance.risk.rules.catalog import ENFORCEMENT_ORDER, RISK_LEVEL_ORD
 __all__ = [
     "RISK_LEVEL_ORDER",
     "ENFORCEMENT_ORDER",
+    "AnchorFacts",
     "LegEvidence",
     "PolicyDecision",
     "PENDING",
@@ -50,6 +51,40 @@ PENDING: Final = object()
 NO_PAYLOAD: Final = object()
 
 _LEG_ORDER: Final[tuple[str, ...]] = ("request", "response")
+
+
+@dataclasses.dataclass(frozen=True)
+class AnchorFacts:
+    """The wire facts of one interaction's anchor (request) span, as the
+    sidecar producer emitted them (docs/sidecar-wire-contract.md) — raw
+    attribute values, no interpretation. Every field is optional: a fact the
+    span does not carry stays ``None`` and is omitted downstream (honest
+    absence). An interaction whose anchor is not a sidecar span (or that has
+    no anchor at all) is represented by ``None`` in place of this object.
+
+    ``peer_host`` names the destination host: outbound it is the service
+    being called; inbound it is the address this workload was reached on.
+    ``self_id`` is the sidecar's own workload identity — for an inbound
+    exchange, the destination workload. ``principal_sub`` is the validated
+    inbound caller identity, when a JWT was validated.
+    """
+
+    direction: str | None = None  # lineage.direction: inbound | outbound
+    peer_host: str | None = None  # lineage.peer.host (may carry :port)
+    self_id: str | None = None  # lineage.self.id
+    url_scheme: str | None = None  # url.scheme (emitted only when observed)
+    url_path: str | None = None  # url.path
+    principal_sub: str | None = None  # lineage.principal.sub
+
+
+def _facts_dict(anchor: AnchorFacts) -> dict[str, str]:
+    """The anchor's non-None facts as a plain dict — the canonical form both
+    the fingerprint and this module's own emptiness checks share."""
+    return {
+        key: value
+        for key, value in dataclasses.asdict(anchor).items()
+        if value is not None
+    }
 
 
 @dataclasses.dataclass(frozen=True)
@@ -221,6 +256,71 @@ def _verdict_to_data_item(verdict: Verdict) -> dict[str, Any]:
     return item
 
 
+def _category(host: str, internal_patterns: list[str]) -> str:
+    """Categorise a destination host as ``internal`` or ``external``.
+
+    A host with no dot at all is a cluster-DNS short name (``records-tool``,
+    ``opa``, ``ollama``) and is internal by construction — such a name cannot
+    resolve outside the cluster's search domains, so this is a structural
+    fact rather than a whitelist question, and no glob pattern can express
+    "has no dot" anyway. Every other host is put to #178's wildcard hostname
+    whitelist: internal iff it matches a pattern, external otherwise
+    (including when the whitelist is empty — #178's safer default, which is
+    why a real deployment must set ``RISK_INTERNAL_URL_WHITELIST_PATTERNS``;
+    see ``deploy/k8s/85-leg-ready.yaml``).
+    """
+    hostname = _hostname(host)
+    if hostname and "." not in hostname:
+        return "internal"
+    return (
+        "internal"
+        if matches_internal_whitelist(hostname, patterns=internal_patterns)
+        else "external"
+    )
+
+
+def _destination(anchor: AnchorFacts, internal_patterns: list[str]) -> dict[str, Any] | None:
+    """The interaction's ``data_destinations`` entry, from the anchor facts.
+
+    The destination of an exchange is its callee: outbound, the peer host the
+    sidecar called; inbound, the sidecar's own workload (named by its
+    ``self_id``, categorised by the address it was reached on when present).
+    Category comes from :func:`_category`; an external destination is
+    additionally stamped ``UNTRUSTED_EXTERNAL`` — the MVP trust model has
+    exactly that one trust fact, so internal destinations carry NO trust
+    level rather than a guessed ``TRUSTED_*`` value. A full URL is composed
+    only when the producer emitted a scheme (the contract's own no-guessing
+    rule). Returns ``None`` when the facts name no destination at all.
+    """
+    if anchor.direction == "outbound":
+        name = anchor.peer_host
+    else:
+        name = anchor.self_id or anchor.peer_host
+    if name is None:
+        return None
+    if anchor.direction == "inbound":
+        # An inbound exchange's destination is the sidecar'd workload itself,
+        # which is in-cluster by construction — a structural fact, not a
+        # whitelist question. (The whitelist would misread it: inbound
+        # `peer.host` is the address the workload was REACHED on, often a
+        # raw ClusterIP, which no hostname pattern can recognise — observed
+        # live as DG-001 false-positives on ordinary in-cluster a2a calls.)
+        category = "internal"
+    else:
+        category = _category(anchor.peer_host or name, internal_patterns)
+    destination: dict[str, Any] = {
+        "data_destination_name": name,
+        "data_destination_categories": [category],
+    }
+    if anchor.url_scheme and anchor.peer_host:
+        destination["data_destination_url"] = (
+            f"{anchor.url_scheme}://{anchor.peer_host}{anchor.url_path or ''}"
+        )
+    if category == "external":
+        destination["data_destination_trust_level"] = "UNTRUSTED_EXTERNAL"
+    return destination
+
+
 def build_opa_input(
     *,
     legs: list[LegEvidence],
@@ -228,35 +328,43 @@ def build_opa_input(
     classifications: dict[str, Verdict | object],
     caller_entity_id: str | None,
     callee_entity_id: str | None,
-    destination_url: str | None = None,
+    anchor: AnchorFacts | None = None,
+    internal_patterns: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the OPA runtime evaluation input for one interaction, conforming
     to ``opa_input.schema.json`` (which shares ``policy.schema.json``'s
     ``$defs`` so the two stay in sync).
 
-    Every field this module has no DAS source data for yet (``event_type``,
-    ``data_sources``, ``data_lineage``, ``scope``, the five intent strings,
-    ``accessing_user``) is omitted entirely — the schema requires nothing,
-    and an omitted field reads honestly as "unknown" where a defaulted-null
-    or empty value would read as a confident (but wrong) declaration to a
-    policy author. ``span_ids`` has no corresponding top-level field in the
-    schema; it identifies the OTEL evidence behind this payload but carries
-    no rule-relevant content of its own.
+    *anchor* carries the interaction's request-span wire facts (issue #163),
+    the evidence source #178 anticipated when it added a placeholder
+    ``destination_url`` parameter "until issue #163's evidence-gathering
+    wiring lands". From the anchor this maps ``data_destinations``
+    (name/url/category, plus ``UNTRUSTED_EXTERNAL`` trust on external),
+    ``event_type`` (``external_sharing`` vs ``internal_sharing``, decided by
+    the destination's category), and ``accessing_user`` (the validated
+    inbound principal; ``user_roles`` is ``[]`` because the schema requires
+    the key and no roles fact exists — an empty list reads as "no roles
+    known", which is the honest value).
 
-    ``destination_url``, once issue #163 wires it in from the interaction
-    record, is classified against :data:`data_governance.risk.config
-    .INTERNAL_URL_WHITELIST_PATTERNS` (wildcard hostname patterns, e.g.
-    ``"*.corp.internal"``) via :func:`matches_internal_whitelist` and emitted
-    as ``data_destinations[0].data_destination_categories`` — ``["internal"]``
-    on a match, ``["external"]`` otherwise (including when the whitelist is
-    empty, the default). Rego never sees a URL, only this already-computed
-    category. **MVP-only**: a single wildcard-hostname whitelist collapses
-    every destination to one of two categories; this will be treated more
-    holistically (richer categories, trust levels, per-destination config)
-    in a future version. ``destination_url`` omitted (``None``, the default
-    until #163 lands) means no ``data_destinations`` key at all, matching
-    this function's existing "absent means unknown" convention.
+    Category comes from #178's wildcard hostname whitelist
+    (:func:`matches_internal_whitelist` over *internal_patterns*, defaulting
+    to the configured ``RISK_INTERNAL_URL_WHITELIST_PATTERNS``); Rego never
+    sees a URL, only the computed category. **MVP-only**, per #178: a single
+    wildcard-hostname whitelist collapses every destination to one of two
+    categories, and this will be treated more holistically (richer
+    categories, trust levels, per-destination config) in a future version.
+
+    Every field this module has no source data for (``data_sources``,
+    ``data_lineage``, ``scope``, the five intent strings — and each of the
+    above when its facts are absent) is omitted entirely — the schema
+    requires nothing, and an omitted field reads honestly as "unknown" where
+    a defaulted-null or empty value would read as a confident (but wrong)
+    declaration to a policy author. ``span_ids`` has no corresponding
+    top-level field in the schema; it identifies the OTEL evidence behind
+    this payload but carries no rule-relevant content of its own.
     """
+    if internal_patterns is None:
+        internal_patterns = INTERNAL_URL_WHITELIST_PATTERNS
     data_items = [
         _verdict_to_data_item(verdict)
         for verdict in classifications.values()
@@ -275,34 +383,55 @@ def build_opa_input(
     ]
     if processing_agents:
         payload["processing_agents"] = processing_agents
-    if destination_url is not None:
-        category = (
-            "internal"
-            if matches_internal_whitelist(
-                destination_url, patterns=INTERNAL_URL_WHITELIST_PATTERNS
+    if anchor is not None:
+        destination = _destination(anchor, internal_patterns)
+        if destination is not None:
+            payload["data_destinations"] = [destination]
+            payload["event_type"] = (
+                "external_sharing"
+                if "external" in destination["data_destination_categories"]
+                else "internal_sharing"
             )
-            else "external"
-        )
-        payload["data_destinations"] = [{"data_destination_categories": [category]}]
+        if anchor.principal_sub is not None:
+            payload["accessing_user"] = {
+                "username": anchor.principal_sub,
+                "user_roles": [],
+            }
     return payload
 
 
 def _normalize_for_fingerprint(
     legs: list[LegEvidence],
     classifications: dict[str, Verdict | object],
+    anchor: AnchorFacts | None = None,
 ) -> dict[str, Any]:
-    return {
+    normalized: dict[str, Any] = {
         "legs_evidenced": legs_evidenced(legs),
         "classification_summary": classification_summary(classifications),
     }
+    # The anchor's RAW facts join the fingerprint (issue #163): a changed
+    # destination/principal must re-trigger OPA, or the cached decision would
+    # keep answering for evidence it never saw. Raw facts, not the derived
+    # categories — the whitelist is configuration, not evidence, and a config
+    # change re-evaluating every cached decision is the same
+    # policy-changed-with-unchanged-evidence gap PR #160 already records as
+    # deferred (FR-DAS-012 condition 3). Keyed only when any fact exists, so
+    # pre-existing fingerprints of anchor-less evidence stay valid.
+    if anchor is not None:
+        facts = _facts_dict(anchor)
+        if facts:
+            normalized["anchor_facts"] = facts
+    return normalized
 
 
 def fingerprint(
     legs: list[LegEvidence],
     classifications: dict[str, Verdict | object],
+    anchor: AnchorFacts | None = None,
 ) -> str:
     """A canonical fingerprint string over the evidence that feeds one
-    interaction risk computation.
+    interaction risk computation — the legs, their classifications, and the
+    anchor span's wire facts (issue #163).
 
     Used to detect whether evidence actually changed since the last OPA call
     (FR-DAS-014 idempotency): compare this against the fingerprint stored
@@ -310,5 +439,5 @@ def fingerprint(
     (DB round-trips return ``Decimal``/``list``/``dict`` types that mismatch
     freshly-computed Python values).
     """
-    normalized = _normalize_for_fingerprint(legs, classifications)
+    normalized = _normalize_for_fingerprint(legs, classifications, anchor)
     return json.dumps(normalized, sort_keys=True, default=str)
