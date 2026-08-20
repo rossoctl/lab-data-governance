@@ -17,11 +17,14 @@ len(order))`` fallback).
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import json
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 from data_governance.processors.classification.verdict import Verdict
+from data_governance.risk.config import INTERNAL_URL_WHITELIST_PATTERNS
 from data_governance.risk.rules.catalog import ENFORCEMENT_ORDER, RISK_LEVEL_ORDER
 
 __all__ = [
@@ -35,6 +38,7 @@ __all__ = [
     "legs_evidenced",
     "classification_summary",
     "quantize_confidence",
+    "matches_internal_whitelist",
     "fingerprint",
     "build_opa_input",
 ]
@@ -164,6 +168,29 @@ _IDENTIFIER_TYPE_TO_DATA_TYPE: Final[dict[str, str]] = {
 }
 
 
+def _hostname(url: str) -> str:
+    """Best-effort hostname extraction, tolerating a URL with no scheme
+    (``urlsplit`` parses a bare ``host/path`` string's leading segment as
+    ``path``, not ``netloc``, unless a scheme-like prefix is present)."""
+    parsed = urlsplit(url if "//" in url else f"//{url}")
+    return (parsed.hostname or "").lower()
+
+
+def matches_internal_whitelist(url: str, *, patterns: list[str]) -> bool:
+    """Whether *url*'s hostname matches any wildcard hostname *pattern*
+    (e.g. ``"*.corp.internal"``), case-insensitively.
+
+    MVP-only: plain ``fnmatch`` glob matching against the hostname, no
+    awareness of scheme/port/path, IP literals, or normalization beyond
+    lowercasing. An empty *patterns* list never matches anything — the
+    caller's default-external behaviour, not a special case here. This will
+    be replaced by more holistic destination classification in a future
+    version (see ``build_opa_input``'s docstring).
+    """
+    hostname = _hostname(url)
+    return any(fnmatch.fnmatch(hostname, pattern.lower()) for pattern in patterns)
+
+
 def _finding_to_entity(finding: dict[str, Any]) -> dict[str, Any]:
     entity = {
         "entity_type": finding.get("entity_type"),
@@ -201,19 +228,34 @@ def build_opa_input(
     classifications: dict[str, Verdict | object],
     caller_entity_id: str | None,
     callee_entity_id: str | None,
+    destination_url: str | None = None,
 ) -> dict[str, Any]:
     """Build the OPA runtime evaluation input for one interaction, conforming
     to ``opa_input.schema.json`` (which shares ``policy.schema.json``'s
     ``$defs`` so the two stay in sync).
 
     Every field this module has no DAS source data for yet (``event_type``,
-    ``data_sources``, ``data_destinations``, ``data_lineage``, ``scope``, the
-    five intent strings, ``accessing_user``) is omitted entirely — the schema
-    requires nothing, and an omitted field reads honestly as "unknown" where
-    a defaulted-null or empty value would read as a confident (but wrong)
-    declaration to a policy author. ``span_ids`` has no corresponding
-    top-level field in the schema; it identifies the OTEL evidence behind
-    this payload but carries no rule-relevant content of its own.
+    ``data_sources``, ``data_lineage``, ``scope``, the five intent strings,
+    ``accessing_user``) is omitted entirely — the schema requires nothing,
+    and an omitted field reads honestly as "unknown" where a defaulted-null
+    or empty value would read as a confident (but wrong) declaration to a
+    policy author. ``span_ids`` has no corresponding top-level field in the
+    schema; it identifies the OTEL evidence behind this payload but carries
+    no rule-relevant content of its own.
+
+    ``destination_url``, once issue #163 wires it in from the interaction
+    record, is classified against :data:`data_governance.risk.config
+    .INTERNAL_URL_WHITELIST_PATTERNS` (wildcard hostname patterns, e.g.
+    ``"*.corp.internal"``) via :func:`matches_internal_whitelist` and emitted
+    as ``data_destinations[0].data_destination_categories`` — ``["internal"]``
+    on a match, ``["external"]`` otherwise (including when the whitelist is
+    empty, the default). Rego never sees a URL, only this already-computed
+    category. **MVP-only**: a single wildcard-hostname whitelist collapses
+    every destination to one of two categories; this will be treated more
+    holistically (richer categories, trust levels, per-destination config)
+    in a future version. ``destination_url`` omitted (``None``, the default
+    until #163 lands) means no ``data_destinations`` key at all, matching
+    this function's existing "absent means unknown" convention.
     """
     data_items = [
         _verdict_to_data_item(verdict)
@@ -233,6 +275,15 @@ def build_opa_input(
     ]
     if processing_agents:
         payload["processing_agents"] = processing_agents
+    if destination_url is not None:
+        category = (
+            "internal"
+            if matches_internal_whitelist(
+                destination_url, patterns=INTERNAL_URL_WHITELIST_PATTERNS
+            )
+            else "external"
+        )
+        payload["data_destinations"] = [{"data_destination_categories": [category]}]
     return payload
 
 
