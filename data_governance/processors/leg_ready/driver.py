@@ -51,6 +51,7 @@ Run as ``python -m data_governance.processors.leg_ready``.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import threading
 from collections.abc import Callable
 
@@ -59,6 +60,8 @@ from data_governance.processors import _driver
 from data_governance.processors import readiness_cursor as rc
 
 from . import metrics
+
+log = logging.getLogger(__name__)
 
 # The durable ``processor_state`` cursor row for this stream. Distinct from
 # "interactions" / "classification" / "entity_ready" so the Layer-2 consumers keep
@@ -80,10 +83,37 @@ POLL_SECONDS = 5.0
 # transaction).
 _DRAIN_BATCH = 500
 
-# A downstream governance consumer seam: ``(Leg) -> None``. The risk/lineage/PDP
-# consumers are future work (ADR-0027), so this is where they will plug in; ``None``
-# (the default) means delivery is just the metric increment.
-Observer = Callable[["Leg"], None]
+# The downstream governance consumer seam (issue #158). An observer is called
+# OUTSIDE any transaction with each ready leg — its compute (for the risk
+# consumer: evidence gathering and the OPA HTTP round-trip) must never hold a
+# pooled connection open. It returns either ``None`` (nothing to write — the
+# leg is delivered and the cursor advances) or a ``LegWrite`` closure, which
+# the drain then runs INSIDE the leg's delivery transaction so the observer's
+# write commits atomically with the cursor advance (ADR-0007: if the write
+# fails, the cursor advance rolls back with it and the leg is re-delivered —
+# never silently skipped past).
+#
+# Failure semantics an observer can choose per leg:
+#   - raise :class:`LegDeferred` -> transient hold. The drain stops at this
+#     leg with the cursor UNCHANGED and retries on the next wake (poll
+#     backstop ≈ POLL_SECONDS). Head-of-line blocking by design: an outage
+#     downstream (e.g. OPA unreachable) must delay legs, not lose them.
+#   - return ``None`` after logging -> deliberate skip. The cursor advances;
+#     the leg will not be re-delivered. For permanently-unprocessable legs
+#     only, so a poison leg cannot wedge the stream forever.
+#   - raise anything else -> a real fault; it propagates out of the drain
+#     (and out of ``run``), surfacing as a crash rather than being absorbed.
+LegWrite = Callable[[db.Transaction], None]
+Observer = Callable[["Leg"], "LegWrite | None"]
+
+
+class LegDeferred(Exception):
+    """Raised by an observer to hold the stream at the current leg.
+
+    Signals a *transient* per-leg failure (downstream dependency
+    unreachable): the drain logs it, leaves the cursor where it is, and ends
+    the current drain — the next wake re-delivers the same leg. Chain the
+    underlying error as ``__cause__``."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -104,21 +134,21 @@ class Leg:
     ready: bool
 
 
-def process_leg(tx: db.Transaction, leg: Leg, observer: Observer | None = None) -> None:
-    """Deliver one ready **Interaction leg** to the downstream governance consumer,
-    within *tx*.
+def process_leg(tx: db.Transaction, leg: Leg, write: LegWrite | None = None) -> None:
+    """Deliver one ready **Interaction leg** within *tx*: run the observer's
+    prepared *write* (issue #158 — the write half of the observer's two-phase
+    delivery; ``None`` when there is nothing to write) and increment the
+    delivery counter.
 
-    No real downstream yet (ADR-0027 — risk/lineage/PDP are future work), so
-    delivery is: hand the leg to the injected *observer* (the downstream seam) if
-    present, and increment the delivery counter. The caller (:func:`drain`) owns the
-    transaction boundary and advances the cursor in the same *tx*, so delivery and
-    the cursor advance commit atomically (ADR-0007): a crash before commit rolls back
-    the cursor advance, so the restart re-delivers this exact leg rather than skipping
-    it. Reference the module-global counter so a test's ``make_registry()`` rebind is
-    picked up.
+    The caller (:func:`drain`) owns the transaction boundary and advances the
+    cursor in the same *tx*, so the write and the cursor advance commit
+    atomically (ADR-0007): a crash before commit rolls back the cursor
+    advance, so the restart re-delivers this exact leg rather than skipping
+    it. Reference the module-global counter so a test's ``make_registry()``
+    rebind is picked up.
     """
-    if observer is not None:
-        observer(leg)
+    if write is not None:
+        write(tx)
     metrics.legs_observed_total.inc()
 
 
@@ -151,33 +181,49 @@ def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[Leg]:
     ]
 
 
-def _spec(observer: Observer | None = None) -> _driver.StreamSpec[Leg]:
+def _spec() -> _driver.StreamSpec[Leg]:
     """Build the leg-ready stream spec. Rebuilt per call so a monkeypatched
     ``POLL_SECONDS`` is picked up. ``process_item`` / ``item_seq`` are supplied for
     shape completeness, but this stream's advance is driven by the bespoke
     :func:`drain` (contiguous-prefix), NOT ``_driver.drain`` — see the module
-    docstring."""
+    docstring. The observer is not bound here: the two-phase seam (issue #158)
+    needs the observer's compute to run OUTSIDE the per-leg transaction, so the
+    bespoke drain drives it directly."""
     return _driver.StreamSpec(
         notify_channel=NOTIFY_CHANNEL,
         processor_name=PROCESSOR_NAME,
         fetch_batch=_fetch_batch,
-        process_item=lambda tx, leg: process_leg(tx, leg, observer=observer),
+        process_item=lambda tx, leg: process_leg(tx, leg, None),
         item_seq=lambda leg: leg.seq,
         poll_seconds=POLL_SECONDS,
         batch_size=_DRAIN_BATCH,
     )
 
 
-def _drain_spec(spec: _driver.StreamSpec[Leg], cursor: int) -> int:
+def _drain_spec(
+    spec: _driver.StreamSpec[Leg],
+    cursor: int,
+    observer: Observer | None = None,
+) -> int:
     """Bespoke contiguous-prefix drain over the leg-readiness stream.
 
     Fetches legs with ``seq > cursor`` (readiness computed in the fetch SQL), feeds
     the batch through :func:`readiness_cursor.contiguous_prefix`, delivers the
-    leading unbroken run of ready legs (each in its own transaction, advancing the
-    durable cursor atomically), and returns the new cursor. Stops as soon as a batch
-    does not fully deliver — a held (unready) leg is the head-of-line block, so
-    fetching further would only re-see legs behind the block. Loops to the next batch
-    only when the whole batch was delivered (a full ready run that may continue).
+    leading unbroken run of ready legs, and returns the new cursor. Stops as soon as
+    a batch does not fully deliver — a held (unready) leg is the head-of-line block,
+    so fetching further would only re-see legs behind the block. Loops to the next
+    batch only when the whole batch was delivered (a full ready run that may
+    continue).
+
+    Per delivered leg, the two-phase observer contract (issue #158): the observer
+    runs first, OUTSIDE any transaction — its compute may include a synchronous
+    OPA HTTP round-trip, which must not hold a pooled connection — and returns the
+    write to perform (or ``None``). Then one transaction runs that write
+    (:func:`process_leg`) AND advances the durable cursor, so the observer's write
+    commits atomically with the advance. An observer raising :class:`LegDeferred`
+    holds the stream: the drain logs it and returns with the cursor unchanged, so
+    the same leg is re-delivered on the next wake (transient-failure retry without
+    losing the leg). Any other observer error propagates.
     """
     while True:
         with db.transaction() as tx:
@@ -199,8 +245,19 @@ def _drain_spec(spec: _driver.StreamSpec[Leg], cursor: int) -> int:
         by_seq = {leg.seq: leg for leg in batch}
         for item in result.delivered:
             leg = by_seq[item.seq]
+            # Phase 1 — observer compute, no transaction held.
+            try:
+                write = observer(leg) if observer is not None else None
+            except LegDeferred as exc:
+                log.warning(
+                    "leg seq=%d interaction_id=%s deferred by observer (%s); "
+                    "holding cursor at %d, retrying on next wake",
+                    leg.seq, leg.interaction_id, exc.__cause__ or exc, cursor,
+                )
+                return cursor
+            # Phase 2 — the observer's write + the cursor advance, one txn.
             with db.transaction() as tx:
-                spec.process_item(tx, leg)
+                process_leg(tx, leg, write)
                 _driver.advance_cursor(tx, spec.processor_name, leg.seq)
             cursor = leg.seq
 
@@ -221,11 +278,12 @@ def read_cursor(tx: db.Transaction) -> int:
 def drain(cursor: int, observer: Observer | None = None) -> int:
     """Deliver every ready leg in the leading contiguous-prefix run past *cursor*,
     one transaction per leg. Returns the new cursor (the seq of the last delivered
-    leg, or *cursor* if none / the head is unready).
+    leg, or *cursor* if none / the head is unready / the observer deferred).
 
-    *observer* is the downstream governance seam (ADR-0027); ``None`` keeps delivery
-    to the metric increment."""
-    return _drain_spec(_spec(observer=observer), cursor)
+    *observer* is the downstream governance seam (ADR-0027, two-phase since issue
+    #158 — see :data:`Observer`); ``None`` keeps delivery to the metric
+    increment."""
+    return _drain_spec(_spec(), cursor, observer=observer)
 
 
 def run(
@@ -244,7 +302,10 @@ def run(
     to poll-only if the LISTEN connection is unavailable — a missing/severed notify
     only costs latency (ADR-0015).
 
-    *observer* is the downstream governance consumer seam (risk/lineage/PDP — future
-    work); ``None`` keeps delivery to the metric increment."""
-    spec = _spec(observer=observer)
-    _driver.run(spec, stop_event, dsn, drain_fn=_drain_spec)
+    *observer* is the downstream governance consumer seam (two-phase since issue
+    #158 — see :data:`Observer`); ``None`` keeps delivery to the metric
+    increment."""
+    def _drain_with_observer(spec: _driver.StreamSpec[Leg], cursor: int) -> int:
+        return _drain_spec(spec, cursor, observer=observer)
+
+    _driver.run(_spec(), stop_event, dsn, drain_fn=_drain_with_observer)
