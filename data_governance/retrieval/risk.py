@@ -9,10 +9,12 @@ risk computations (issue #101's ``risk/engine/compute.py`` and #102's
 
 This slice (issue #109) covers both the interaction-risk half
 (:func:`list_interaction_risk`, :func:`get_interaction_risk`,
-:func:`get_interaction_risk_history`) and the trace-risk half
+:func:`get_interaction_risk_history`), the trace-risk half
 (:func:`list_trace_risk`, :func:`get_trace_risk`,
-:func:`get_trace_risk_history`). The trace forest read
-(``get_trace_risk_detail``) lands in the same issue's later commits.
+:func:`get_trace_risk_history`), and the trace forest read
+(:func:`get_trace_risk_detail`), which joins the risk tables against the
+derived flow forest (:mod:`.interactions`'s ``interactions`` /
+``interaction_legs`` / ``interaction_spans``, migrations 0004/0009).
 
 Both tables are insert-only and versioned (a recompute never mutates a row —
 it inserts a new ``version``), so every read here reduces to "latest version
@@ -47,6 +49,8 @@ encoding behaviour for a risk-endpoint-specific reason.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -66,6 +70,10 @@ __all__ = [
     "list_trace_risk",
     "get_trace_risk",
     "get_trace_risk_history",
+    "ForestLegView",
+    "ForestInteractionView",
+    "TraceRiskDetail",
+    "get_trace_risk_detail",
 ]
 
 SORT_COMPUTED_AT_DESC = "computed_at_desc"
@@ -782,3 +790,182 @@ def get_trace_risk_history(
         next_key = {"version": views[-1].version}
 
     return TraceRiskPage(items=views, next_key=next_key)
+
+
+# ---------------------------------------------------------------------------
+# get_trace_risk_detail — the trace forest
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ForestLegView:
+    """One request/response leg of a forest interaction.
+
+    Unlike :class:`.interactions.InteractionLegView`, ``occurred_at`` stays a
+    ``datetime`` (or ``None``) rather than an ISO string — the forest
+    assembly sorts on it directly (see :func:`get_trace_risk_detail`).
+    """
+
+    leg_type: str
+    occurred_at: dt.datetime | None
+    payload_hash: str | None
+    error: bool | None
+
+
+@dataclass(frozen=True)
+class ForestInteractionView:
+    """One interaction of a trace forest, with its legs, current risk record
+    (``None`` if not yet computed — eventual consistency, not an error), and
+    span COUNTS rather than span rows (a deliberate deviation from issue
+    #109's literal "+ evidencing spans" — see the module/PR notes)."""
+
+    interaction_id: str
+    trace_id: str
+    parent_interaction_id: str | None
+    caller_entity_id: str
+    callee_entity_id: str
+    summary: str
+    legs: list[ForestLegView]
+    risk: InteractionRiskView | None
+    span_count: int
+    anchor_count: int
+
+
+@dataclass(frozen=True)
+class TraceRiskDetail:
+    trace_risk: TraceRiskView
+    interactions: list[ForestInteractionView]
+
+
+@contextmanager
+def _repeatable_read() -> Iterator[db.Transaction]:
+    """Open a single REPEATABLE READ transaction.
+
+    The forest read issues several statements (trace risk record, forest
+    interactions, legs, span counts, per-interaction risk) that must observe
+    the same snapshot — otherwise ``trace_risk.interaction_count`` could
+    disagree with the forest actually returned because a concurrent write
+    landed mid-read. Mirrors ``retrieval/spans.py``'s helper of the same name.
+    """
+    with db.transaction() as tx:
+        tx.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        yield tx
+
+
+def get_trace_risk_detail(trace_id: str) -> TraceRiskDetail | None:
+    """The trace risk record plus every interaction of that trace.
+
+    Returns ``None`` (404 at the HTTP layer) when there is no trace risk
+    record for ``trace_id`` — including when interactions exist but the
+    record does not, and before migration 0016 has run. Issues exactly 6
+    queries (after the short-circuiting record lookup, the forest queries
+    still run bounded-by-count, not per-interaction), so wall-clock and query
+    count are independent of trace size (AC-DAS-012).
+
+    ``trace_risk.interaction_count`` (a snapshot taken at ``computed_at``)
+    and ``len(interactions)`` (read now) are surfaced without reconciliation
+    — the two can legitimately disagree, and FR-DAS-084 forbids a
+    completeness/warning field that would paper over that.
+    """
+    with _repeatable_read() as tx:
+        if not _trace_risk_table_exists(tx):
+            return None
+
+        trace_risk_row = tx.fetch_one(
+            f"SELECT {_TRACE_SELECT_COLS} FROM trace_risk_records "
+            f"WHERE trace_id = %s ORDER BY version DESC LIMIT 1",
+            (trace_id,),
+        )
+        if trace_risk_row is None:
+            return None
+        trace_risk = _row_to_trace_view(trace_risk_row)
+
+        interaction_rows = tx.fetch_all(
+            "SELECT id, trace_id, parent_interaction_id, caller_entity_id, "
+            "callee_entity_id, summary FROM interactions WHERE trace_id = %s",
+            (trace_id,),
+        )
+
+        leg_rows = tx.fetch_all(
+            "SELECT l.interaction_id, l.leg_type, l.occurred_at, "
+            "l.payload_hash, l.error FROM interaction_legs l "
+            "JOIN interactions i ON i.id = l.interaction_id "
+            "WHERE i.trace_id = %s ORDER BY l.interaction_id, l.leg_type",
+            (trace_id,),
+        )
+
+        span_count_rows = tx.fetch_all(
+            "SELECT interaction_id, COUNT(*), "
+            "COUNT(*) FILTER (WHERE role = 'anchor') "
+            "FROM interaction_spans WHERE trace_id = %s GROUP BY interaction_id",
+            (trace_id,),
+        )
+
+        risk_rows = tx.fetch_all(
+            f"SELECT DISTINCT ON (interaction_id) {_SELECT_COLS} "
+            f"FROM interaction_risk_records WHERE trace_id = %s "
+            f"ORDER BY interaction_id, version DESC",
+            (trace_id,),
+        )
+
+    legs_by_interaction: dict[str, list[ForestLegView]] = {}
+    for interaction_id, leg_type, occurred_at, payload_hash, error in leg_rows:
+        legs_by_interaction.setdefault(interaction_id, []).append(
+            ForestLegView(
+                leg_type=leg_type,
+                occurred_at=occurred_at,
+                payload_hash=payload_hash,
+                error=error,
+            )
+        )
+
+    span_counts_by_interaction: dict[str, tuple[int, int]] = {
+        interaction_id: (total, anchors)
+        for interaction_id, total, anchors in span_count_rows
+    }
+
+    risk_by_interaction: dict[str, InteractionRiskView] = {}
+    for row in risk_rows:
+        view = _row_to_view(row)
+        risk_by_interaction[view.interaction_id] = view
+
+    interactions: list[ForestInteractionView] = []
+    for (
+        interaction_id,
+        ix_trace_id,
+        parent_interaction_id,
+        caller_entity_id,
+        callee_entity_id,
+        summary,
+    ) in interaction_rows:
+        span_count, anchor_count = span_counts_by_interaction.get(
+            interaction_id, (0, 0)
+        )
+        interactions.append(
+            ForestInteractionView(
+                interaction_id=interaction_id,
+                trace_id=ix_trace_id,
+                parent_interaction_id=parent_interaction_id,
+                caller_entity_id=caller_entity_id,
+                callee_entity_id=callee_entity_id,
+                summary=summary,
+                legs=legs_by_interaction.get(interaction_id, []),
+                risk=risk_by_interaction.get(interaction_id),
+                span_count=span_count,
+                anchor_count=anchor_count,
+            )
+        )
+
+    def _sort_key(ix: ForestInteractionView) -> tuple[bool, dt.datetime]:
+        request_occurred_at = next(
+            (leg.occurred_at for leg in ix.legs if leg.leg_type == "request"),
+            None,
+        )
+        return (
+            request_occurred_at is None,
+            request_occurred_at or dt.datetime.min.replace(tzinfo=dt.timezone.utc),
+        )
+
+    interactions.sort(key=_sort_key)
+
+    return TraceRiskDetail(trace_risk=trace_risk, interactions=interactions)

@@ -33,8 +33,9 @@ derivation stays behind the interface (ADR-0005):
 - :mod:`.risk` — the DAS risk pipeline's read path over ``interaction_risk_records``
   / ``trace_risk_records`` (issue #109): ``list_interaction_risk`` / ``get_interaction_risk``
   / ``get_interaction_risk_history`` and their trace-grain counterparts
-  ``list_trace_risk`` / ``get_trace_risk`` / ``get_trace_risk_history``, with the
-  forest read landing in the same issue's later slices. Both tables are write-once
+  ``list_trace_risk`` / ``get_trace_risk`` / ``get_trace_risk_history``, plus the
+  trace forest read ``get_trace_risk_detail`` (the trace risk record joined against
+  the :mod:`.interactions` derived forest). Both risk tables are write-once
   and versioned, so every read reduces to latest-version-per-key, filtered strictly
   after that reduction (AC-DAS-016). Pagination is DB-level keyset, not the bounded
   in-memory ``http.paginate`` — see the module docstring for why an offset cursor is
@@ -89,13 +90,17 @@ from data_governance.retrieval.payloads import (
 from data_governance.retrieval.risk import (
     SORT_COMPUTED_AT_DESC,
     SORT_RISK_LEVEL_DESC,
+    ForestInteractionView,
+    ForestLegView,
     InteractionRiskPage,
     InteractionRiskView,
+    TraceRiskDetail,
     TraceRiskPage,
     TraceRiskView,
     get_interaction_risk,
     get_interaction_risk_history,
     get_trace_risk,
+    get_trace_risk_detail,
     get_trace_risk_history,
     list_interaction_risk,
     list_trace_risk,
@@ -150,13 +155,17 @@ __all__ = [
     # DAS risk pipeline reads (issue #109)
     "SORT_COMPUTED_AT_DESC",
     "SORT_RISK_LEVEL_DESC",
+    "ForestInteractionView",
+    "ForestLegView",
     "InteractionRiskPage",
     "InteractionRiskView",
+    "TraceRiskDetail",
     "TraceRiskPage",
     "TraceRiskView",
     "get_interaction_risk",
     "get_interaction_risk_history",
     "get_trace_risk",
+    "get_trace_risk_detail",
     "get_trace_risk_history",
     "list_interaction_risk",
     "list_trace_risk",
