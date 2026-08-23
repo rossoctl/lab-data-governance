@@ -30,6 +30,13 @@ derivation stays behind the interface (ADR-0005):
   that source's provenance ends — but they still run no matcher (D7) and never cross a
   trace boundary (D14). Both ``direction`` and ``source`` are required; multi-source
   fanin/fanout is deferred by the spec.
+- :mod:`.risk` — the DAS risk pipeline's read path over ``interaction_risk_records``
+  / ``trace_risk_records`` (issue #109): ``list_interaction_risk`` / ``get_interaction_risk``
+  / ``get_interaction_risk_history`` for now, with the trace-risk and forest reads
+  landing in the same issue's later slices. Both tables are write-once and versioned,
+  so every read reduces to latest-version-per-key, filtered strictly after that
+  reduction (AC-DAS-016). Pagination is DB-level keyset, not the bounded in-memory
+  ``http.paginate`` — see the module docstring for why an offset cursor is wrong here.
 
 Only the public surface is re-exported here. Consumers of the private
 row-mapping helpers (``spans._COLUMNS`` / ``spans._row_to_span`` — the
@@ -76,6 +83,15 @@ from data_governance.retrieval.payloads import (
     ClassificationView,
     PayloadView,
     get_payload,
+)
+from data_governance.retrieval.risk import (
+    SORT_COMPUTED_AT_DESC,
+    SORT_RISK_LEVEL_DESC,
+    InteractionRiskPage,
+    InteractionRiskView,
+    get_interaction_risk,
+    get_interaction_risk_history,
+    list_interaction_risk,
 )
 from data_governance.retrieval.spans import (
     GetSpansResult,
@@ -124,4 +140,12 @@ __all__ = [
     "UnknownDirection",
     "get_lineage_graph",
     "get_lineage_summary",
+    # DAS risk pipeline reads (issue #109)
+    "SORT_COMPUTED_AT_DESC",
+    "SORT_RISK_LEVEL_DESC",
+    "InteractionRiskPage",
+    "InteractionRiskView",
+    "get_interaction_risk",
+    "get_interaction_risk_history",
+    "list_interaction_risk",
 ]

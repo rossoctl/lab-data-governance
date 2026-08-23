@@ -158,10 +158,10 @@ def decode_keyset_cursor(
 def parse_iso_datetime(value: str | None, name: str) -> dt.datetime | None:
     """Parse an ISO-8601 datetime; reject naive (no Z, no explicit offset).
 
-    Local copy of ``data_governance/api/__init__.py::_parse_iso_datetime``
-    (per-module, not imported: the risk API must never import
-    ``data_governance.api`` — see ``test_risk_api_does_not_import_the_ui_api_module``).
-    Raises ``ApiError`` (FR-DAS-081) rather than that copy's bare ``ValueError``,
+    Local copy of the UI API package's own ``_parse_iso_datetime`` helper
+    (per-module, not imported: the risk API must never import that package —
+    see ``test_risk_api_does_not_import_the_ui_api_module``). Raises
+    ``ApiError`` (FR-DAS-081) rather than that copy's bare ``ValueError``,
     since every risk API 400 must carry the error/detail/timestamp triple.
     """
     if value is None or value == "":
