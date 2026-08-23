@@ -7,10 +7,12 @@ derived flow forest, this reads the DAS risk pipeline's write-once, versioned
 risk computations (issue #101's ``risk/engine/compute.py`` and #102's
 ``trace_compute.py``).
 
-This slice (issue #109) is the interaction-risk half: :func:`list_interaction_risk`,
-:func:`get_interaction_risk`, :func:`get_interaction_risk_history`. The
-trace-risk half and the trace forest read land in the same issue's later
-commits.
+This slice (issue #109) covers both the interaction-risk half
+(:func:`list_interaction_risk`, :func:`get_interaction_risk`,
+:func:`get_interaction_risk_history`) and the trace-risk half
+(:func:`list_trace_risk`, :func:`get_trace_risk`,
+:func:`get_trace_risk_history`). The trace forest read
+(``get_trace_risk_detail``) lands in the same issue's later commits.
 
 Both tables are insert-only and versioned (a recompute never mutates a row —
 it inserts a new ``version``), so every read here reduces to "latest version
@@ -59,6 +61,11 @@ __all__ = [
     "list_interaction_risk",
     "get_interaction_risk",
     "get_interaction_risk_history",
+    "TraceRiskView",
+    "TraceRiskPage",
+    "list_trace_risk",
+    "get_trace_risk",
+    "get_trace_risk_history",
 ]
 
 SORT_COMPUTED_AT_DESC = "computed_at_desc"
@@ -101,6 +108,34 @@ class InteractionRiskView:
 @dataclass(frozen=True)
 class InteractionRiskPage:
     items: list[InteractionRiskView] = field(default_factory=list)
+    next_key: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class TraceRiskView:
+    """One row of ``trace_risk_records`` — the current or a historical
+    version, as read (no derivation beyond the type conversions below).
+    """
+
+    trace_risk_id: str
+    trace_id: str
+    version: int
+    computed_at: dt.datetime
+    trace_risk_level: str
+    trace_enforcement_type: str | None
+    risk_compounding_mode: str | None
+    enforcement_aggregation_mode: str | None
+    interaction_count: int
+    policy_event_count: int
+    all_entity_ids: list[str]
+    triggered_rule_ids: list[str]
+    overall_confidence: float | None
+    contributing_interaction_risk_ids: list[str]
+
+
+@dataclass(frozen=True)
+class TraceRiskPage:
+    items: list[TraceRiskView] = field(default_factory=list)
     next_key: dict[str, Any] | None = None
 
 
@@ -153,6 +188,51 @@ def _row_to_view(row: tuple[Any, ...]) -> InteractionRiskView:
     )
 
 
+_TRACE_COLUMNS = (
+    "trace_risk_id",
+    "trace_id",
+    "version",
+    "computed_at",
+    "trace_risk_level",
+    "trace_enforcement_type",
+    "risk_compounding_mode",
+    "enforcement_aggregation_mode",
+    "interaction_count",
+    "policy_event_count",
+    "all_entity_ids",
+    "triggered_rule_ids",
+    "overall_confidence",
+    "contributing_interaction_risk_ids",
+)
+_TRACE_SELECT_COLS = ", ".join(_TRACE_COLUMNS)
+
+
+def _row_to_trace_view(row: tuple[Any, ...]) -> TraceRiskView:
+    r = dict(zip(_TRACE_COLUMNS, row))
+    return TraceRiskView(
+        trace_risk_id=str(r["trace_risk_id"]),
+        trace_id=r["trace_id"],
+        version=r["version"],
+        computed_at=r["computed_at"],
+        trace_risk_level=r["trace_risk_level"],
+        trace_enforcement_type=r["trace_enforcement_type"],
+        risk_compounding_mode=r["risk_compounding_mode"],
+        enforcement_aggregation_mode=r["enforcement_aggregation_mode"],
+        interaction_count=r["interaction_count"],
+        policy_event_count=r["policy_event_count"],
+        all_entity_ids=list(r["all_entity_ids"] or []),
+        triggered_rule_ids=list(r["triggered_rule_ids"] or []),
+        overall_confidence=(
+            float(r["overall_confidence"])
+            if r["overall_confidence"] is not None
+            else None
+        ),
+        contributing_interaction_risk_ids=[
+            str(v) for v in (r["contributing_interaction_risk_ids"] or [])
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Migration-presence guard
 # ---------------------------------------------------------------------------
@@ -170,6 +250,22 @@ def _risk_tables_exist(tx: db.Transaction) -> bool:
         tx.fetch_one(
             "SELECT 1 FROM information_schema.tables "
             "WHERE table_name = 'interaction_risk_records'"
+        )
+        is not None
+    )
+
+
+def _trace_risk_table_exists(tx: db.Transaction) -> bool:
+    """Whether ``trace_risk_records`` specifically exists.
+
+    Both tables arrive in migration 0016, but a test (or an operator dropping
+    one table for debugging) can leave them independently present/absent — a
+    trace-grain read must not rely on the interaction table's presence.
+    """
+    return (
+        tx.fetch_one(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'trace_risk_records'"
         )
         is not None
     )
@@ -448,3 +544,241 @@ def get_interaction_risk_history(
         next_key = {"version": views[-1].version}
 
     return InteractionRiskPage(items=views, next_key=next_key)
+
+
+# ---------------------------------------------------------------------------
+# list_trace_risk
+# ---------------------------------------------------------------------------
+
+
+def list_trace_risk(
+    *,
+    entity_id: str | None = None,
+    risk_level: list[str] | None = None,
+    enforcement_type: str | None = None,
+    rule_id: str | None = None,
+    time_from: dt.datetime | None = None,
+    time_to: dt.datetime | None = None,
+    cursor: dict[str, Any] | None = None,
+    limit: int = 50,
+    sort: str = SORT_COMPUTED_AT_DESC,
+) -> TraceRiskPage:
+    """List the latest version of each trace's risk record.
+
+    Filters apply AFTER the latest-per-``trace_id`` reduction (AC-DAS-016),
+    same convention as :func:`list_interaction_risk`. No ``trace_id`` param
+    (filtering to one trace is :func:`get_trace_risk`) and no
+    ``regulatory_tag`` (``trace_risk_records`` has no ``classification_summary``
+    column).
+
+    ``cursor`` is a decoded keyset dict; ``None`` starts from the first page.
+    Returns empty (``next_key=None``) before migration 0016 has run.
+    """
+    with db.transaction() as tx:
+        if not _trace_risk_table_exists(tx):
+            return TraceRiskPage()
+
+        sql, params = _build_trace_list_query(
+            entity_id=entity_id,
+            risk_level=risk_level,
+            enforcement_type=enforcement_type,
+            rule_id=rule_id,
+            time_from=time_from,
+            time_to=time_to,
+            cursor=cursor,
+            limit=limit,
+            sort=sort,
+        )
+        rows = tx.fetch_all(sql, params)
+
+    return _paginate_trace_rows(rows, limit=limit, sort=sort)
+
+
+def _paginate_trace_rows(
+    rows: list[tuple[Any, ...]], *, limit: int, sort: str
+) -> TraceRiskPage:
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+    views = [_row_to_trace_view(r) for r in page_rows]
+
+    next_key = None
+    if has_more and views:
+        next_key = _trace_cursor_key_for(views[-1], sort=sort)
+
+    return TraceRiskPage(items=views, next_key=next_key)
+
+
+def _trace_cursor_key_for(view: TraceRiskView, *, sort: str) -> dict[str, Any]:
+    if sort == SORT_RISK_LEVEL_DESC:
+        return {
+            "risk_rank": _risk_rank(view.trace_risk_level),
+            "computed_at": view.computed_at.isoformat(),
+            "trace_id": view.trace_id,
+        }
+    return {
+        "computed_at": view.computed_at.isoformat(),
+        "trace_id": view.trace_id,
+    }
+
+
+def _build_trace_list_query(
+    *,
+    entity_id: str | None,
+    risk_level: list[str] | None,
+    enforcement_type: str | None,
+    rule_id: str | None,
+    time_from: dt.datetime | None,
+    time_to: dt.datetime | None,
+    cursor: dict[str, Any] | None,
+    limit: int,
+    sort: str,
+) -> tuple[str, list[Any]]:
+    # Stage 1: latest-per-trace_id reduction. No push-down filters here —
+    # unlike interaction_risk's trace_id, none of this endpoint's filters are
+    # version-invariant at trace grain.
+    current_cte = (
+        f"SELECT DISTINCT ON (trace_id) {_TRACE_SELECT_COLS} "
+        f"FROM trace_risk_records ORDER BY trace_id, version DESC"
+    )
+
+    # Stage 2: rank + filters over the reduced set.
+    filter_conditions: list[str] = []
+    filter_params: list[Any] = []
+
+    if entity_id is not None:
+        filter_conditions.append("%s = ANY(all_entity_ids)")
+        filter_params.append(entity_id)
+
+    if risk_level is not None:
+        filter_conditions.append("trace_risk_level = ANY(%s)")
+        filter_params.append(list(risk_level))
+
+    if enforcement_type is not None:
+        filter_conditions.append("trace_enforcement_type = %s")
+        filter_params.append(enforcement_type)
+
+    if rule_id is not None:
+        filter_conditions.append("%s = ANY(triggered_rule_ids)")
+        filter_params.append(rule_id)
+
+    if time_from is not None:
+        filter_conditions.append("computed_at >= %s")
+        filter_params.append(time_from)
+
+    if time_to is not None:
+        filter_conditions.append("computed_at <= %s")
+        filter_params.append(time_to)
+
+    if cursor is not None:
+        cursor_sql, cursor_params = _trace_cursor_predicate(cursor, sort=sort)
+        filter_conditions.append(cursor_sql)
+        filter_params.extend(cursor_params)
+
+    filter_where = (
+        " WHERE " + " AND ".join(filter_conditions) if filter_conditions else ""
+    )
+
+    order_sql = _trace_order_by_sql(sort)
+
+    sql = (
+        f"WITH current AS ({current_cte}), "
+        f"ranked AS (SELECT *, COALESCE(array_position(%s::text[], trace_risk_level), %s) "
+        f"AS risk_rank FROM current) "
+        f"SELECT {_TRACE_SELECT_COLS} FROM ranked{filter_where} "
+        f"ORDER BY {order_sql} LIMIT %s"
+    )
+    params = (
+        [list(RISK_LEVEL_ORDER), _RISK_RANK_UNKNOWN]
+        + filter_params
+        + [limit + 1]
+    )
+    return sql, params
+
+
+def _trace_order_by_sql(sort: str) -> str:
+    if sort == SORT_RISK_LEVEL_DESC:
+        return "risk_rank ASC, computed_at DESC, trace_id ASC"
+    return "computed_at DESC, trace_id ASC"
+
+
+def _trace_cursor_predicate(
+    cursor: dict[str, Any], *, sort: str
+) -> tuple[str, list[Any]]:
+    if sort == SORT_RISK_LEVEL_DESC:
+        return (
+            "(risk_rank > %s OR (risk_rank = %s AND computed_at < %s) "
+            "OR (risk_rank = %s AND computed_at = %s AND trace_id > %s))",
+            [
+                cursor["risk_rank"],
+                cursor["risk_rank"],
+                cursor["computed_at"],
+                cursor["risk_rank"],
+                cursor["computed_at"],
+                cursor["trace_id"],
+            ],
+        )
+    return (
+        "(computed_at < %s OR (computed_at = %s AND trace_id > %s))",
+        [cursor["computed_at"], cursor["computed_at"], cursor["trace_id"]],
+    )
+
+
+# ---------------------------------------------------------------------------
+# get_trace_risk
+# ---------------------------------------------------------------------------
+
+
+def get_trace_risk(trace_id: str) -> TraceRiskView | None:
+    """The latest version of one trace's risk record, or ``None`` if absent
+    (unknown id, or migration 0016 hasn't run)."""
+    with db.transaction() as tx:
+        if not _trace_risk_table_exists(tx):
+            return None
+        row = tx.fetch_one(
+            f"SELECT {_TRACE_SELECT_COLS} FROM trace_risk_records "
+            f"WHERE trace_id = %s ORDER BY version DESC LIMIT 1",
+            (trace_id,),
+        )
+    return _row_to_trace_view(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# get_trace_risk_history
+# ---------------------------------------------------------------------------
+
+
+def get_trace_risk_history(
+    trace_id: str,
+    *,
+    cursor: dict[str, Any] | None = None,
+    limit: int = 50,
+) -> TraceRiskPage:
+    """All versions of one trace's risk record, ascending by version
+    (AC-DAS-017). Empty page for an unknown id or before migration 0016."""
+    with db.transaction() as tx:
+        if not _trace_risk_table_exists(tx):
+            return TraceRiskPage()
+
+        conditions = ["trace_id = %s"]
+        params: list[Any] = [trace_id]
+        if cursor is not None:
+            conditions.append("version > %s")
+            params.append(cursor["version"])
+        where = " WHERE " + " AND ".join(conditions)
+
+        sql = (
+            f"SELECT {_TRACE_SELECT_COLS} FROM trace_risk_records{where} "
+            f"ORDER BY version ASC LIMIT %s"
+        )
+        params.append(limit + 1)
+        rows = tx.fetch_all(sql, params)
+
+    has_more = len(rows) > limit
+    page_rows = rows[:limit]
+    views = [_row_to_trace_view(r) for r in page_rows]
+
+    next_key = None
+    if has_more and views:
+        next_key = {"version": views[-1].version}
+
+    return TraceRiskPage(items=views, next_key=next_key)

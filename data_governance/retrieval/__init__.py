@@ -32,11 +32,13 @@ derivation stays behind the interface (ADR-0005):
   fanin/fanout is deferred by the spec.
 - :mod:`.risk` — the DAS risk pipeline's read path over ``interaction_risk_records``
   / ``trace_risk_records`` (issue #109): ``list_interaction_risk`` / ``get_interaction_risk``
-  / ``get_interaction_risk_history`` for now, with the trace-risk and forest reads
-  landing in the same issue's later slices. Both tables are write-once and versioned,
-  so every read reduces to latest-version-per-key, filtered strictly after that
-  reduction (AC-DAS-016). Pagination is DB-level keyset, not the bounded in-memory
-  ``http.paginate`` — see the module docstring for why an offset cursor is wrong here.
+  / ``get_interaction_risk_history`` and their trace-grain counterparts
+  ``list_trace_risk`` / ``get_trace_risk`` / ``get_trace_risk_history``, with the
+  forest read landing in the same issue's later slices. Both tables are write-once
+  and versioned, so every read reduces to latest-version-per-key, filtered strictly
+  after that reduction (AC-DAS-016). Pagination is DB-level keyset, not the bounded
+  in-memory ``http.paginate`` — see the module docstring for why an offset cursor is
+  wrong here.
 
 Only the public surface is re-exported here. Consumers of the private
 row-mapping helpers (``spans._COLUMNS`` / ``spans._row_to_span`` — the
@@ -89,9 +91,14 @@ from data_governance.retrieval.risk import (
     SORT_RISK_LEVEL_DESC,
     InteractionRiskPage,
     InteractionRiskView,
+    TraceRiskPage,
+    TraceRiskView,
     get_interaction_risk,
     get_interaction_risk_history,
+    get_trace_risk,
+    get_trace_risk_history,
     list_interaction_risk,
+    list_trace_risk,
 )
 from data_governance.retrieval.spans import (
     GetSpansResult,
@@ -145,7 +152,12 @@ __all__ = [
     "SORT_RISK_LEVEL_DESC",
     "InteractionRiskPage",
     "InteractionRiskView",
+    "TraceRiskPage",
+    "TraceRiskView",
     "get_interaction_risk",
     "get_interaction_risk_history",
+    "get_trace_risk",
+    "get_trace_risk_history",
     "list_interaction_risk",
+    "list_trace_risk",
 ]
