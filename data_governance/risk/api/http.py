@@ -119,3 +119,64 @@ def paginate(rows: list, *, cursor: str | None, limit: int, sort: str) -> Page:
     end = start + len(items)
     next_cursor = encode_cursor(end, sort) if end < len(rows) else None
     return Page(items=items, next_cursor=next_cursor)
+
+
+# ---------------------------------------------------------------------------
+# DB-level keyset cursor (issue #109) — distinct from the index-offset
+# `encode_cursor`/`decode_cursor`/`paginate` above, which materialize the
+# full result set (fine for #113's bounded in-memory rule catalog, wrong for
+# a growing, insert-only-and-versioned table: an offset cursor skips/dups
+# rows across a live recompute — see retrieval/spans.py's issue #30 note).
+# The cursor carries the actual sort-key values of the last row seen, so a
+# caller resumes "after this row" rather than "at this numeric offset."
+# ---------------------------------------------------------------------------
+
+
+def encode_keyset_cursor(key: dict[str, Any], sort: str) -> str:
+    payload = json.dumps({"k": key, "s": sort}, default=_json_default).encode("ascii")
+    return base64.urlsafe_b64encode(payload).decode("ascii")
+
+
+def decode_keyset_cursor(
+    token: str, *, expect_sort: str, expect_fields: tuple[str, ...]
+) -> dict[str, Any]:
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("ascii"))
+        payload = json.loads(raw)
+    except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
+        raise ApiError("bad request", "cursor is malformed") from exc
+    if not isinstance(payload, dict) or "k" not in payload or "s" not in payload:
+        raise ApiError("bad request", "cursor is malformed")
+    key = payload["k"]
+    if not isinstance(key, dict):
+        raise ApiError("bad request", "cursor is malformed")
+    if payload["s"] != expect_sort or set(key.keys()) != set(expect_fields):
+        raise ApiError("bad request", "cursor does not match the requested sort")
+    return key
+
+
+def parse_iso_datetime(value: str | None, name: str) -> dt.datetime | None:
+    """Parse an ISO-8601 datetime; reject naive (no Z, no explicit offset).
+
+    Local copy of ``data_governance/api/__init__.py::_parse_iso_datetime``
+    (per-module, not imported: the risk API must never import
+    ``data_governance.api`` — see ``test_risk_api_does_not_import_the_ui_api_module``).
+    Raises ``ApiError`` (FR-DAS-081) rather than that copy's bare ``ValueError``,
+    since every risk API 400 must carry the error/detail/timestamp triple.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        raise ApiError(
+            "bad request",
+            f"'{name}' must be ISO-8601 with Z or explicit offset, got {value!r}",
+        ) from None
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        raise ApiError(
+            "bad request",
+            f"'{name}' must be ISO-8601 with Z or explicit offset; "
+            f"naive datetimes are rejected",
+        )
+    return parsed
