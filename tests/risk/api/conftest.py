@@ -1,17 +1,22 @@
-"""Shared fixtures for `/risk/rules*` route tests (issue #113).
+"""Shared fixtures for `/risk/*` route tests (issues #109/#113).
 
-No Postgres anywhere here — these routes read only the in-memory rule
-catalog, so this deliberately does NOT reuse `tests/api/conftest.py`'s
-`api_server`/`configured_db` fixtures (those spin a Postgres testcontainer).
+`/risk/rules*` (issue #113) reads only the in-memory rule catalog, no
+Postgres needed. `/risk/interactions*`/`/risk/traces*` (issue #109) read the
+DAS risk tables and the P-interactions forest, so this module also carries
+its **own** local copy of `configured_db` (the repo's documented convention:
+each test subtree keeps its own copy rather than importing
+`tests/api/conftest.py`'s) for tests that need a migrated Postgres.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
+from data_governance import db
 from data_governance.api import build_app
 from data_governance.risk.rules import catalog
 
@@ -58,3 +63,33 @@ def categories_rule_catalog(monkeypatch: pytest.MonkeyPatch):
 def empty_catalog(monkeypatch: pytest.MonkeyPatch):
     """Zero rules, for empty-catalog edge cases (shared with #107's tests)."""
     _use_fixture(monkeypatch, _RULES_FIXTURES / "catalog_empty.json")
+
+
+@pytest.fixture()
+def configured_db(migrated_dsn: str) -> Iterator[str]:
+    """Local copy of `tests/api/conftest.py`'s fixture of the same name — the
+    repo's documented per-subtree convention, not an oversight."""
+    db.close_pool()
+    db.configure(migrated_dsn)
+    try:
+        yield migrated_dsn
+    finally:
+        db.close_pool()
+
+
+# FR-DAS-084: no `total`/`is_complete`/`complete`/`completeness` field
+# anywhere in a `/risk/*` response, at any nesting depth. Shared by
+# test_risk_routes.py and test_risk_trace_detail.py rather than duplicated —
+# the trace-detail file needs the recursion to reach through its
+# `interactions` list.
+FORBIDDEN_KEYS = {"total", "is_complete", "complete", "completeness"}
+
+
+def assert_no_forbidden_keys(value) -> None:
+    if isinstance(value, dict):
+        assert not (set(value.keys()) & FORBIDDEN_KEYS), value.keys()
+        for v in value.values():
+            assert_no_forbidden_keys(v)
+    elif isinstance(value, list):
+        for item in value:
+            assert_no_forbidden_keys(item)

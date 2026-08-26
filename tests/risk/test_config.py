@@ -162,3 +162,68 @@ def test_opa_malformed_int_env_falls_back_to_default(
     cfg = _reload()
     assert cfg.OPA_TIMEOUT_SECONDS == 5
     assert "RISK_OPA_TIMEOUT_SECONDS" in capsys.readouterr().err
+
+
+# --- api.risk_interactions.* / api.risk_traces.* (issue #109) -----------------
+# The per-request-read behavior these constants exist to support (AC-DAS-038)
+# is exercised against the live routes in tests/risk/api/test_risk_routes.py;
+# this module only pins the env-backed default/override contract every other
+# constant here gets, per this file's own module docstring.
+
+
+def test_risk_interactions_and_traces_defaults():
+    cfg = _reload()
+    assert cfg.API_RISK_INTERACTIONS_DEFAULT_LIMIT == 50
+    assert cfg.API_RISK_INTERACTIONS_MAX_LIMIT == 500
+    assert cfg.API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT == 50
+    assert cfg.API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT == 500
+    assert cfg.API_RISK_TRACES_DEFAULT_LIMIT == 50
+    assert cfg.API_RISK_TRACES_MAX_LIMIT == 200
+    assert cfg.API_RISK_TRACES_HISTORY_DEFAULT_LIMIT == 50
+    assert cfg.API_RISK_TRACES_HISTORY_MAX_LIMIT == 200
+
+
+def test_risk_interactions_and_traces_overridable_via_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("RISK_API_RISK_INTERACTIONS_DEFAULT_LIMIT", "10")
+    monkeypatch.setenv("RISK_API_RISK_INTERACTIONS_MAX_LIMIT", "100")
+    monkeypatch.setenv("RISK_API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT", "11")
+    monkeypatch.setenv("RISK_API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT", "101")
+    monkeypatch.setenv("RISK_API_RISK_TRACES_DEFAULT_LIMIT", "12")
+    monkeypatch.setenv("RISK_API_RISK_TRACES_MAX_LIMIT", "102")
+    monkeypatch.setenv("RISK_API_RISK_TRACES_HISTORY_DEFAULT_LIMIT", "13")
+    monkeypatch.setenv("RISK_API_RISK_TRACES_HISTORY_MAX_LIMIT", "103")
+    cfg = _reload()
+    assert cfg.API_RISK_INTERACTIONS_DEFAULT_LIMIT == 10
+    assert cfg.API_RISK_INTERACTIONS_MAX_LIMIT == 100
+    assert cfg.API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT == 11
+    assert cfg.API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT == 101
+    assert cfg.API_RISK_TRACES_DEFAULT_LIMIT == 12
+    assert cfg.API_RISK_TRACES_MAX_LIMIT == 102
+    assert cfg.API_RISK_TRACES_HISTORY_DEFAULT_LIMIT == 13
+    assert cfg.API_RISK_TRACES_HISTORY_MAX_LIMIT == 103
+
+
+def test_risk_interactions_default_limit_malformed_falls_back(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setenv("RISK_API_RISK_INTERACTIONS_DEFAULT_LIMIT", "not-a-number")
+    cfg = _reload()
+    assert cfg.API_RISK_INTERACTIONS_DEFAULT_LIMIT == 50
+    assert "RISK_API_RISK_INTERACTIONS_DEFAULT_LIMIT" in capsys.readouterr().err
+
+
+def test_new_risk_api_constants_are_all_exported():
+    cfg = _reload()
+    for name in (
+        "API_RISK_INTERACTIONS_DEFAULT_LIMIT",
+        "API_RISK_INTERACTIONS_MAX_LIMIT",
+        "API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT",
+        "API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT",
+        "API_RISK_TRACES_DEFAULT_LIMIT",
+        "API_RISK_TRACES_MAX_LIMIT",
+        "API_RISK_TRACES_HISTORY_DEFAULT_LIMIT",
+        "API_RISK_TRACES_HISTORY_MAX_LIMIT",
+    ):
+        assert name in cfg.__all__

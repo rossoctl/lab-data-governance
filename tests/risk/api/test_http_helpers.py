@@ -313,3 +313,129 @@ def _json_body(resp) -> dict:
     import json
 
     return json.loads(resp.body)
+
+
+# ---------------------------------------------------------------------------
+# encode_keyset_cursor / decode_keyset_cursor (issue #109)
+# ---------------------------------------------------------------------------
+
+
+def test_keyset_cursor_round_trips():
+    token = http.encode_keyset_cursor({"computed_at": "2026-01-01T00:00:00+00:00", "id": "a"}, "computed_at_desc")
+    key = http.decode_keyset_cursor(
+        token, expect_sort="computed_at_desc", expect_fields=("computed_at", "id")
+    )
+    assert key == {"computed_at": "2026-01-01T00:00:00+00:00", "id": "a"}
+
+
+def test_keyset_cursor_is_opaque():
+    token = http.encode_keyset_cursor({"version": 3}, "version_asc")
+    assert token != "3"
+    assert "version" not in token
+
+
+def test_keyset_cursor_malformed_base64_raises_400():
+    with pytest.raises(http.ApiError) as exc_info:
+        http.decode_keyset_cursor(
+            "not-valid-base64!!!", expect_sort="version_asc", expect_fields=("version",)
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "cursor is malformed"
+
+
+def test_keyset_cursor_valid_base64_but_wrong_json_raises():
+    import base64
+
+    token = base64.urlsafe_b64encode(b"not json").decode("ascii")
+    with pytest.raises(http.ApiError) as exc_info:
+        http.decode_keyset_cursor(
+            token, expect_sort="version_asc", expect_fields=("version",)
+        )
+    assert exc_info.value.detail == "cursor is malformed"
+
+
+def test_keyset_cursor_sort_mismatch_raises_400():
+    token = http.encode_keyset_cursor({"version": 3}, "version_asc")
+    with pytest.raises(http.ApiError) as exc_info:
+        http.decode_keyset_cursor(
+            token, expect_sort="computed_at_desc", expect_fields=("version",)
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "cursor does not match the requested sort"
+
+
+def test_keyset_cursor_field_mismatch_raises_400():
+    """A cursor minted for /risk/interactions replayed against /risk/traces
+    (or history vs. list) must be rejected even if `sort` happens to match —
+    the field set is a second fingerprint axis."""
+    token = http.encode_keyset_cursor(
+        {"computed_at": "2026-01-01T00:00:00+00:00", "id": "a"}, "computed_at_desc"
+    )
+    with pytest.raises(http.ApiError) as exc_info:
+        http.decode_keyset_cursor(
+            token, expect_sort="computed_at_desc", expect_fields=("version",)
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "cursor does not match the requested sort"
+
+
+def test_keyset_cursor_missing_key_field_raises_400():
+    token = http.encode_keyset_cursor({"computed_at": "x"}, "computed_at_desc")
+    with pytest.raises(http.ApiError) as exc_info:
+        http.decode_keyset_cursor(
+            token, expect_sort="computed_at_desc", expect_fields=("computed_at", "id")
+        )
+    assert exc_info.value.status_code == 400
+
+
+def test_keyset_cursor_not_a_dict_payload_raises_400():
+    token = _encode_raw_cursor({"k": "not-a-dict", "s": "version_asc"})
+    with pytest.raises(http.ApiError) as exc_info:
+        http.decode_keyset_cursor(
+            token, expect_sort="version_asc", expect_fields=("version",)
+        )
+    assert exc_info.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# parse_iso_datetime (issue #109) — local copy of api/__init__._parse_iso_datetime,
+# raising http.ApiError (400) instead of ValueError, per FR-DAS-081.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_iso_datetime_none_returns_none():
+    assert http.parse_iso_datetime(None, "time_from") is None
+
+
+def test_parse_iso_datetime_empty_string_returns_none():
+    assert http.parse_iso_datetime("", "time_from") is None
+
+
+def test_parse_iso_datetime_accepts_z_suffix():
+    parsed = http.parse_iso_datetime("2026-01-01T00:00:00Z", "time_from")
+    assert parsed == dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+
+
+def test_parse_iso_datetime_accepts_explicit_offset():
+    parsed = http.parse_iso_datetime("2026-01-01T00:00:00+02:00", "time_from")
+    assert parsed.utcoffset() == dt.timedelta(hours=2)
+
+
+def test_parse_iso_datetime_rejects_naive_datetime():
+    with pytest.raises(http.ApiError) as exc_info:
+        http.parse_iso_datetime("2026-01-01T00:00:00", "time_from")
+    assert exc_info.value.status_code == 400
+    assert "time_from" in exc_info.value.detail
+
+
+def test_parse_iso_datetime_rejects_malformed_string():
+    with pytest.raises(http.ApiError) as exc_info:
+        http.parse_iso_datetime("not-a-date", "time_from")
+    assert exc_info.value.status_code == 400
+    assert "time_from" in exc_info.value.detail
+
+
+def test_parse_iso_datetime_names_the_field_in_error():
+    with pytest.raises(http.ApiError) as exc_info:
+        http.parse_iso_datetime("garbage", "time_to")
+    assert "time_to" in exc_info.value.detail

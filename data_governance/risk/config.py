@@ -10,7 +10,9 @@ storage retention, the trace-risk NOTIFY-trigger channel/poll-fallback
 interval, the fan-out batch size, and the metrics refresh interval. The
 remaining ``api.*.default_limit`` parameters belong to whichever issue
 implements the endpoint that consumes them; issue #113 (rule catalog) owns
-``API_RISK_RULES_DEFAULT_LIMIT``/``API_RISK_RULES_MAX_LIMIT`` below.
+``API_RISK_RULES_DEFAULT_LIMIT``/``API_RISK_RULES_MAX_LIMIT``, and issue
+#109 (interaction/trace risk reads) owns the
+``API_RISK_INTERACTIONS_*``/``API_RISK_TRACES_*`` pairs below.
 
 The leg-trigger and classification-trigger config (channel names, poll
 fallbacks, reserved processor names for #99/#100) has been removed: those two
@@ -43,6 +45,14 @@ __all__ = [
     "OPA_MAX_RETRIES",
     "API_RISK_RULES_DEFAULT_LIMIT",
     "API_RISK_RULES_MAX_LIMIT",
+    "API_RISK_INTERACTIONS_DEFAULT_LIMIT",
+    "API_RISK_INTERACTIONS_MAX_LIMIT",
+    "API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT",
+    "API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT",
+    "API_RISK_TRACES_DEFAULT_LIMIT",
+    "API_RISK_TRACES_MAX_LIMIT",
+    "API_RISK_TRACES_HISTORY_DEFAULT_LIMIT",
+    "API_RISK_TRACES_HISTORY_MAX_LIMIT",
     "INTERNAL_URL_WHITELIST_PATTERNS",
 ]
 
@@ -149,6 +159,32 @@ OPA_MAX_RETRIES = _int_env("RISK_OPA_MAX_RETRIES", 2)
 
 API_RISK_RULES_DEFAULT_LIMIT = _int_env("RISK_API_RISK_RULES_DEFAULT_LIMIT", 50)
 API_RISK_RULES_MAX_LIMIT = _int_env("RISK_API_RISK_RULES_MAX_LIMIT", 200)
+
+# --- api.risk_interactions.* / api.risk_traces.* (issue #109) ---------------
+# Pagination defaults/maximums for /risk/interactions* and /risk/traces*.
+# Traces get a lower max than interactions (200 vs 500, matching rules'
+# convention) since a trace-grain page fans out into a heavier per-row read.
+
+API_RISK_INTERACTIONS_DEFAULT_LIMIT = _int_env(
+    "RISK_API_RISK_INTERACTIONS_DEFAULT_LIMIT", 50
+)
+API_RISK_INTERACTIONS_MAX_LIMIT = _int_env(
+    "RISK_API_RISK_INTERACTIONS_MAX_LIMIT", 500
+)
+API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT = _int_env(
+    "RISK_API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT", 50
+)
+API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT = _int_env(
+    "RISK_API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT", 500
+)
+API_RISK_TRACES_DEFAULT_LIMIT = _int_env("RISK_API_RISK_TRACES_DEFAULT_LIMIT", 50)
+API_RISK_TRACES_MAX_LIMIT = _int_env("RISK_API_RISK_TRACES_MAX_LIMIT", 200)
+API_RISK_TRACES_HISTORY_DEFAULT_LIMIT = _int_env(
+    "RISK_API_RISK_TRACES_HISTORY_DEFAULT_LIMIT", 50
+)
+API_RISK_TRACES_HISTORY_MAX_LIMIT = _int_env(
+    "RISK_API_RISK_TRACES_HISTORY_MAX_LIMIT", 200
+)
 
 # --- risk.internal_url_whitelist.* (issue #163) -------------------------------
 # Wildcard hostname patterns (e.g. "*.corp.internal") identifying destinations
