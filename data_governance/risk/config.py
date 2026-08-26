@@ -10,9 +10,11 @@ storage retention, the trace-risk NOTIFY-trigger channel/poll-fallback
 interval, the fan-out batch size, and the metrics refresh interval. The
 remaining ``api.*.default_limit`` parameters belong to whichever issue
 implements the endpoint that consumes them; issue #113 (rule catalog) owns
-``API_RISK_RULES_DEFAULT_LIMIT``/``API_RISK_RULES_MAX_LIMIT``, and issue
-#109 (interaction/trace risk reads) owns the
-``API_RISK_INTERACTIONS_*``/``API_RISK_TRACES_*`` pairs below.
+``API_RISK_RULES_DEFAULT_LIMIT``/``API_RISK_RULES_MAX_LIMIT``, issue #109
+(interaction/trace risk reads) owns the
+``API_RISK_INTERACTIONS_*``/``API_RISK_TRACES_*`` pairs below, and issue #111
+(dashboard metrics API) owns the ``API_METRICS_TOP_RULES_*``/
+``API_METRICS_TOP_TRACES_*`` pairs.
 
 The leg-trigger and classification-trigger config (channel names, poll
 fallbacks, reserved processor names for #99/#100) has been removed: those two
@@ -53,6 +55,10 @@ __all__ = [
     "API_RISK_TRACES_MAX_LIMIT",
     "API_RISK_TRACES_HISTORY_DEFAULT_LIMIT",
     "API_RISK_TRACES_HISTORY_MAX_LIMIT",
+    "API_METRICS_TOP_RULES_DEFAULT_LIMIT",
+    "API_METRICS_TOP_RULES_MAX_LIMIT",
+    "API_METRICS_TOP_TRACES_DEFAULT_LIMIT",
+    "API_METRICS_TOP_TRACES_MAX_LIMIT",
     "INTERNAL_URL_WHITELIST_PATTERNS",
 ]
 
@@ -184,6 +190,29 @@ API_RISK_TRACES_HISTORY_DEFAULT_LIMIT = _int_env(
 )
 API_RISK_TRACES_HISTORY_MAX_LIMIT = _int_env(
     "RISK_API_RISK_TRACES_HISTORY_MAX_LIMIT", 200
+)
+
+# --- api.metrics.* (issue #111) ---------------------------------------------
+# Default/max limits for the top-N leaderboards under /risk/metrics/top-rules
+# and /risk/metrics/top-traces. These are bounded rankings, not paginated
+# lists (implementation-notes-v3 §8.2's documented exception for metrics
+# top-N endpoints), so there is no cursor/page-size pair here — just a
+# default and a hard cap per leaderboard. Top-traces gets the same 50 cap as
+# top-rules (not API_RISK_TRACES_MAX_LIMIT's 200): that constant bounds a
+# cursor-paginated list a client walks page by page, while this is a bounded
+# ranking with no cursor at all, so a lower ceiling costs nothing.
+
+API_METRICS_TOP_RULES_DEFAULT_LIMIT = _int_env(
+    "RISK_API_METRICS_TOP_RULES_DEFAULT_LIMIT", 10
+)
+API_METRICS_TOP_RULES_MAX_LIMIT = _int_env(
+    "RISK_API_METRICS_TOP_RULES_MAX_LIMIT", 50
+)
+API_METRICS_TOP_TRACES_DEFAULT_LIMIT = _int_env(
+    "RISK_API_METRICS_TOP_TRACES_DEFAULT_LIMIT", 10
+)
+API_METRICS_TOP_TRACES_MAX_LIMIT = _int_env(
+    "RISK_API_METRICS_TOP_TRACES_MAX_LIMIT", 50
 )
 
 # --- risk.internal_url_whitelist.* (issue #163) -------------------------------
