@@ -302,6 +302,32 @@ def test_enforcement_distribution_empty(configured_db):
     assert dist.pct == {}
 
 
+def test_enforcement_distribution_uses_latest_version_only(
+    configured_db, insert_interaction_risk
+):
+    insert_interaction_risk(
+        interaction_id="ix-1",
+        version=1,
+        enforcement_type="block",
+        risk_level="critical",
+        computed_at=NOW,
+    )
+    insert_interaction_risk(
+        interaction_id="ix-1",
+        version=2,
+        enforcement_type="allow",
+        risk_level="none",
+        computed_at=NOW,
+    )
+
+    time_from, time_to = _window()
+    dist = metrics.get_enforcement_distribution(time_from=time_from, time_to=time_to)
+
+    assert dist.total == 1
+    assert dist.counts == {"allow": 1}
+    assert "block" not in dist.counts
+
+
 # ---------------------------------------------------------------------------
 # FR-DAS-051 — top rules
 # ---------------------------------------------------------------------------
