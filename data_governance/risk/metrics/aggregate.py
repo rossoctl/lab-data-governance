@@ -381,7 +381,7 @@ def get_summary(
     rule_ids = [row[0] for row in rule_id_rows]
     critical_rule_count = sum(
         1
-        for rule_id in rule_ids
+        for rule_id in set(rule_ids)
         if (rule := catalog.get_rule(rule_id)) is not None
         and rule.get("risk_level") == "critical"
     )
@@ -603,9 +603,16 @@ def get_risk_by_category(
         )
         rows = tx.fetch_all(sql, params)
 
+    rule_ids = [rule_id for (rule_id,) in rows]
+    rules_by_id = {
+        rule_id: rule
+        for rule_id in set(rule_ids)
+        if (rule := catalog.get_rule(rule_id)) is not None
+    }
+
     counts: dict[str, int] = {}
-    for (rule_id,) in rows:
-        rule = catalog.get_rule(rule_id)
+    for rule_id in rule_ids:
+        rule = rules_by_id.get(rule_id)
         if rule is None:
             continue
         for category in rule["categories"]:
