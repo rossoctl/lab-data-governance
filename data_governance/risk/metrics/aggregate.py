@@ -255,15 +255,18 @@ current_traces AS (
 
 
 def _window_predicate(
-    time_from: dt.datetime | None, time_to: dt.datetime | None
+    time_from: dt.datetime | None,
+    time_to: dt.datetime | None,
+    *,
+    column: str = "computed_at",
 ) -> tuple[str, list[Any]]:
     conditions = []
     params: list[Any] = []
     if time_from is not None:
-        conditions.append("computed_at >= %s")
+        conditions.append(f"{column} >= %s")
         params.append(time_from)
     if time_to is not None:
-        conditions.append("computed_at <= %s")
+        conditions.append(f"{column} <= %s")
         params.append(time_to)
     where = " WHERE " + " AND ".join(conditions) if conditions else ""
     return where, params
@@ -336,21 +339,20 @@ def get_summary(
             return empty_tiles
 
         window_where, window_params = _window_predicate(time_from, time_to)
-        # _entity_tile_sql joins current_interactions as "ci", so the window
-        # predicate (built in terms of a bare "computed_at") needs its column
-        # qualified, and joined with the entity_kind filter that always
-        # follows it.
+        entity_where, entity_params = _window_predicate(
+            time_from, time_to, column="ci.computed_at"
+        )
         entity_where = (
-            (window_where.replace("computed_at", "ci.computed_at") + " AND e.kind = %s")
-            if window_where
+            (entity_where + " AND e.kind = %s")
+            if entity_where
             else " WHERE e.kind = %s"
         )
 
         agents_row = tx.fetch_one(
-            _entity_tile_sql(entity_where), window_params + ["agent"]
+            _entity_tile_sql(entity_where), entity_params + ["agent"]
         )
         users_row = tx.fetch_one(
-            _entity_tile_sql(entity_where), window_params + ["user"]
+            _entity_tile_sql(entity_where), entity_params + ["user"]
         )
 
         evaluated_row = tx.fetch_one(
