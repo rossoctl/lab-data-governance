@@ -79,7 +79,13 @@ for an unrecognized rule.
 but FR-DAS-053 requires the second tiebreak to be ``trace_enforcement_type``
 severity specifically. This module runs its own bounded, no-cursor ranking
 query instead (a top-N ranking has no meaningful "next page" — see
-implementation-notes-v3 §8.2's exception for metrics endpoints).
+implementation-notes-v3 §8.2's exception for metrics endpoints). Only the
+ranking/ordering is bespoke, though: the row shape is unchanged, so the
+column list and row-to-view mapping are reused directly from
+:mod:`data_governance.retrieval.risk` (``_TRACE_COLUMNS`` /
+``_row_to_trace_view``), named as a reach-in per that package's own
+documented convention (see :mod:`data_governance.retrieval`'s docstring)
+rather than duplicated here.
 """
 
 from __future__ import annotations
@@ -90,6 +96,8 @@ from typing import Any
 
 from data_governance import db
 from data_governance.retrieval.risk import TraceRiskView
+from data_governance.retrieval.risk import _row_to_trace_view as _row_to_trace_risk_view
+from data_governance.retrieval.risk import _TRACE_COLUMNS
 from data_governance.risk.rules import catalog
 from data_governance.risk.rules.catalog import ENFORCEMENT_ORDER, RISK_LEVEL_ORDER
 
@@ -513,24 +521,16 @@ def get_top_traces(
             return []
 
         where, params = _window_predicate(time_from, time_to)
+        trace_cols = ", ".join(_TRACE_COLUMNS)
         sql = (
             "WITH current_traces AS ("
-            "SELECT DISTINCT ON (trace_id) "
-            "trace_risk_id, trace_id, version, computed_at, trace_risk_level, "
-            "trace_enforcement_type, risk_compounding_mode, "
-            "enforcement_aggregation_mode, interaction_count, "
-            "policy_event_count, all_entity_ids, triggered_rule_ids, "
-            "overall_confidence, contributing_interaction_risk_ids "
+            f"SELECT DISTINCT ON (trace_id) {trace_cols} "
             "FROM trace_risk_records ORDER BY trace_id, version DESC), "
             "ranked AS ("
             f"SELECT *, {_trace_risk_rank_sql()} AS risk_rank, "
             f"{_trace_enforcement_rank_sql()} AS enforcement_rank "
             "FROM current_traces) "
-            f"SELECT trace_risk_id, trace_id, version, computed_at, "
-            f"trace_risk_level, trace_enforcement_type, risk_compounding_mode, "
-            f"enforcement_aggregation_mode, interaction_count, "
-            f"policy_event_count, all_entity_ids, triggered_rule_ids, "
-            f"overall_confidence, contributing_interaction_risk_ids "
+            f"SELECT {trace_cols} "
             f"FROM ranked{where} "
             f"ORDER BY risk_rank ASC, enforcement_rank ASC, computed_at DESC, "
             f"trace_id ASC LIMIT %s"
@@ -544,45 +544,6 @@ def get_top_traces(
         rows = tx.fetch_all(sql, full_params)
 
     return [_row_to_trace_risk_view(row) for row in rows]
-
-
-def _row_to_trace_risk_view(row: tuple[Any, ...]) -> TraceRiskView:
-    (
-        trace_risk_id,
-        trace_id,
-        version,
-        computed_at,
-        trace_risk_level,
-        trace_enforcement_type,
-        risk_compounding_mode,
-        enforcement_aggregation_mode,
-        interaction_count,
-        policy_event_count,
-        all_entity_ids,
-        triggered_rule_ids,
-        overall_confidence,
-        contributing_interaction_risk_ids,
-    ) = row
-    return TraceRiskView(
-        trace_risk_id=str(trace_risk_id),
-        trace_id=trace_id,
-        version=version,
-        computed_at=computed_at,
-        trace_risk_level=trace_risk_level,
-        trace_enforcement_type=trace_enforcement_type,
-        risk_compounding_mode=risk_compounding_mode,
-        enforcement_aggregation_mode=enforcement_aggregation_mode,
-        interaction_count=interaction_count,
-        policy_event_count=policy_event_count,
-        all_entity_ids=list(all_entity_ids or []),
-        triggered_rule_ids=list(triggered_rule_ids or []),
-        overall_confidence=(
-            float(overall_confidence) if overall_confidence is not None else None
-        ),
-        contributing_interaction_risk_ids=[
-            str(v) for v in (contributing_interaction_risk_ids or [])
-        ],
-    )
 
 
 # ---------------------------------------------------------------------------
