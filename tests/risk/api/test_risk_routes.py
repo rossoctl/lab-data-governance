@@ -17,6 +17,8 @@ import uuid
 import psycopg
 import pytest
 
+from tests.risk.api.conftest import assert_no_forbidden_keys
+
 
 def _uuid() -> str:
     return str(uuid.uuid4())
@@ -298,7 +300,7 @@ def test_list_interactions_empty_result_has_no_total_or_completeness_field(
 ):
     body = client.get("/risk/interactions").json()
 
-    _assert_no_forbidden_keys(body)
+    assert_no_forbidden_keys(body)
 
 
 def test_list_interactions_regulatory_tag_matches_a_leg(
@@ -470,18 +472,6 @@ def test_get_trace_history_unknown_id_is_empty_not_404(client, insert_trace_risk
 # FR-DAS-084: no total / completeness field, recursively
 # ---------------------------------------------------------------------------
 
-_FORBIDDEN_KEYS = {"total", "is_complete", "complete", "completeness"}
-
-
-def _assert_no_forbidden_keys(value) -> None:
-    if isinstance(value, dict):
-        assert not (set(value.keys()) & _FORBIDDEN_KEYS), value.keys()
-        for v in value.values():
-            _assert_no_forbidden_keys(v)
-    elif isinstance(value, list):
-        for item in value:
-            _assert_no_forbidden_keys(item)
-
 
 def test_list_interactions_response_has_no_forbidden_keys(
     client, insert_interaction_risk
@@ -490,7 +480,7 @@ def test_list_interactions_response_has_no_forbidden_keys(
 
     body = client.get("/risk/interactions").json()
 
-    _assert_no_forbidden_keys(body)
+    assert_no_forbidden_keys(body)
 
 
 def test_list_traces_response_has_no_forbidden_keys(client, insert_trace_risk):
@@ -498,4 +488,4 @@ def test_list_traces_response_has_no_forbidden_keys(client, insert_trace_risk):
 
     body = client.get("/risk/traces").json()
 
-    _assert_no_forbidden_keys(body)
+    assert_no_forbidden_keys(body)

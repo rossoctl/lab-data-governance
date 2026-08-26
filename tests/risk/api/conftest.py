@@ -75,3 +75,21 @@ def configured_db(migrated_dsn: str) -> Iterator[str]:
         yield migrated_dsn
     finally:
         db.close_pool()
+
+
+# FR-DAS-084: no `total`/`is_complete`/`complete`/`completeness` field
+# anywhere in a `/risk/*` response, at any nesting depth. Shared by
+# test_risk_routes.py and test_risk_trace_detail.py rather than duplicated —
+# the trace-detail file needs the recursion to reach through its
+# `interactions` list.
+FORBIDDEN_KEYS = {"total", "is_complete", "complete", "completeness"}
+
+
+def assert_no_forbidden_keys(value) -> None:
+    if isinstance(value, dict):
+        assert not (set(value.keys()) & FORBIDDEN_KEYS), value.keys()
+        for v in value.values():
+            assert_no_forbidden_keys(v)
+    elif isinstance(value, list):
+        for item in value:
+            assert_no_forbidden_keys(item)

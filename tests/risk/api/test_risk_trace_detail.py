@@ -16,6 +16,8 @@ import uuid
 import psycopg
 import pytest
 
+from tests.risk.api.conftest import assert_no_forbidden_keys
+
 
 def _uuid() -> str:
     return str(uuid.uuid4())
@@ -143,19 +145,6 @@ def test_trace_detail_interactions_exist_but_no_trace_risk_record_is_404(
     assert resp.status_code == 404
 
 
-_FORBIDDEN_KEYS = {"total", "is_complete", "complete", "completeness"}
-
-
-def _assert_no_forbidden_keys(value) -> None:
-    if isinstance(value, dict):
-        assert not (set(value.keys()) & _FORBIDDEN_KEYS), value.keys()
-        for v in value.values():
-            _assert_no_forbidden_keys(v)
-    elif isinstance(value, list):
-        for item in value:
-            _assert_no_forbidden_keys(item)
-
-
 def test_trace_detail_has_no_forbidden_keys_nested_through_interactions(
     client, seed
 ):
@@ -164,4 +153,4 @@ def test_trace_detail_has_no_forbidden_keys_nested_through_interactions(
 
     body = client.get("/risk/traces/tr-detail-1").json()
 
-    _assert_no_forbidden_keys(body)
+    assert_no_forbidden_keys(body)

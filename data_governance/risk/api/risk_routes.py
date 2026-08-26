@@ -35,6 +35,14 @@ _TRACE_CURSOR_FIELDS = {
     retrieval.SORT_RISK_LEVEL_DESC: ("risk_rank", "computed_at", "trace_id"),
 }
 
+# `/history` endpoints have exactly one sort (ascending by version) — no
+# `sort` query param, so there's no per-request choice among these, but the
+# cursor fields are still keyed the same way as `_INTERACTION_CURSOR_FIELDS`/
+# `_TRACE_CURSOR_FIELDS` so `_decode_cursor` can stay a single helper for
+# both the list and history endpoints.
+_HISTORY_SORT = "version"
+_HISTORY_CURSOR_FIELDS = {_HISTORY_SORT: ("version",)}
+
 
 def _parse_sort(params: Any) -> str:
     sort = params.get("sort") or _DEFAULT_SORT
@@ -202,12 +210,9 @@ async def _interaction_history_handler(request: Request) -> Response:
     interaction_id = request.path_params["interaction_id"]
     params = request.query_params
     try:
-        cursor = None
-        raw = params.get("cursor")
-        if raw is not None:
-            cursor = http.decode_keyset_cursor(
-                raw, expect_sort="version", expect_fields=("version",)
-            )
+        cursor = _decode_cursor(
+            params, sort=_HISTORY_SORT, cursor_fields=_HISTORY_CURSOR_FIELDS
+        )
         limit = http.parse_limit(
             params,
             default=config.API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT,
@@ -223,7 +228,7 @@ async def _interaction_history_handler(request: Request) -> Response:
     return http.json_ok(
         {
             "items": [_interaction_risk_to_json(v) for v in page.items],
-            "next_cursor": _encode_next_cursor(page.next_key, sort="version"),
+            "next_cursor": _encode_next_cursor(page.next_key, sort=_HISTORY_SORT),
         }
     )
 
@@ -304,12 +309,9 @@ async def _trace_history_handler(request: Request) -> Response:
     trace_id = request.path_params["trace_id"]
     params = request.query_params
     try:
-        cursor = None
-        raw = params.get("cursor")
-        if raw is not None:
-            cursor = http.decode_keyset_cursor(
-                raw, expect_sort="version", expect_fields=("version",)
-            )
+        cursor = _decode_cursor(
+            params, sort=_HISTORY_SORT, cursor_fields=_HISTORY_CURSOR_FIELDS
+        )
         limit = http.parse_limit(
             params,
             default=config.API_RISK_TRACES_HISTORY_DEFAULT_LIMIT,
@@ -323,7 +325,7 @@ async def _trace_history_handler(request: Request) -> Response:
     return http.json_ok(
         {
             "items": [_trace_risk_to_json(v) for v in page.items],
-            "next_cursor": _encode_next_cursor(page.next_key, sort="version"),
+            "next_cursor": _encode_next_cursor(page.next_key, sort=_HISTORY_SORT),
         }
     )
 

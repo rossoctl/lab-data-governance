@@ -34,6 +34,17 @@ takes/returns a **decoded** cursor dict (a plain ``{field: value}`` mapping);
 base64 encode/decode stays in the HTTP layer (``risk/api/http.py``), matching
 how :func:`.spans.get_spans` takes an ``int`` seq rather than a token.
 
+``list_interaction_risk``/``list_trace_risk`` are public, re-exported
+functions (see :mod:`data_governance.retrieval`'s ``__init__``) — but the
+cursor/sort mismatch rejection (400, "cursor does not match the requested
+sort") is enforced only in the HTTP layer, at ``risk/api/http.py``'s
+``decode_keyset_cursor``, via its ``expect_fields`` check. The seam's own
+``_cursor_predicate``/``_trace_cursor_predicate`` do not re-check the cursor's
+shape against ``sort``: they index straight into the cursor dict by the keys
+the given ``sort`` expects. A caller that bypasses the HTTP layer — a future
+second caller, a script — and passes a cursor dict shaped for one sort while
+requesting another gets a ``KeyError``, not a clean rejection.
+
 ``trace_compute._CURRENT_INTERACTION_RISK_SQL``'s "latest current row per
 interaction" shape is duplicated here, not imported: that query selects a
 narrower column set tailored to trace-aggregation input, and the two are
@@ -308,6 +319,11 @@ def list_interaction_risk(
     ``cursor`` is a decoded keyset dict (the caller's HTTP layer owns
     base64); ``None`` starts from the first page. Returns empty
     (``next_key=None``) before migration 0016 has run.
+
+    ``cursor`` must be shaped for the given ``sort`` — this function does not
+    itself verify that; the HTTP layer's ``decode_keyset_cursor`` is what
+    rejects a cursor/sort mismatch with a 400. A cursor shaped for the wrong
+    sort raises ``KeyError`` here (see the module docstring).
     """
     with db.transaction() as tx:
         if not _risk_tables_exist(tx):
@@ -581,6 +597,10 @@ def list_trace_risk(
 
     ``cursor`` is a decoded keyset dict; ``None`` starts from the first page.
     Returns empty (``next_key=None``) before migration 0016 has run.
+
+    ``cursor`` must be shaped for the given ``sort`` — this function does not
+    itself verify that; see :func:`list_interaction_risk`'s docstring and the
+    module docstring for the same caveat.
     """
     with db.transaction() as tx:
         if not _trace_risk_table_exists(tx):
