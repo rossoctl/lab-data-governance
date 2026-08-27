@@ -219,11 +219,9 @@ class Window:
     to `data_governance.risk.metrics.aggregate`'s `time_from`/`time_to`
     keyword args.
 
-    Note on interval semantics: `aggregate.py`'s own `_window_predicate` is
-    actually a **closed** interval (`>= time_from AND <= time_to`), despite
-    that module's docstring claiming half-open `[time_from, time_to)`. This
-    dataclass documents the real (closed) behavior rather than the aspirational
-    one; a record with `computed_at == time_from` or `== time_to` IS included.
+    Note on interval semantics: `aggregate.py`'s `_window_predicate` is a
+    **closed** interval (`>= time_from AND <= time_to`); a record with
+    `computed_at == time_from` or `== time_to` IS included.
     """
 
     label: str
