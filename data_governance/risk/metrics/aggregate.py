@@ -22,7 +22,7 @@ JSON — the HTTP `/risk/metrics/*` routes that shape these into the PRD §7.4
 response bodies are issue #111, not built here. Callers pass ``time_from``/
 ``time_to`` directly (mirroring :mod:`data_governance.retrieval.risk`'s
 convention); resolving the PRD's ``window`` string (``24h``/``7d``/``30d``/
-``custom``) into a concrete ``[time_from, time_to)`` pair is the HTTP layer's
+``custom``) into a concrete ``[time_from, time_to]`` pair is the HTTP layer's
 job; this module has no ``now()`` dependency of its own, so it stays
 testable with fixed timestamps.
 
