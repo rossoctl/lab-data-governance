@@ -91,3 +91,48 @@ test('the browser back button walks the tab history', async ({ page }) => {
     'true',
   );
 });
+
+// Risk tab coverage (issue #165). The top-level Risk/Traces switcher is a
+// horizontal Nav (role="link" items), deliberately not a literal role="tab"
+// strip, so it can't collide with TraceDetailPage's own tab switcher that
+// every test above selects on.
+
+test('the Risk nav item renders the risk dashboard shell', async ({ page }) => {
+  await page.goto('/ui/risk');
+  await expect(page.getByText('Data Governance')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Risk dashboard' })).toBeVisible();
+});
+
+test('clicking Risk from Traces navigates there and back again', async ({ page }) => {
+  await page.goto('/ui/traces');
+  await page.getByRole('link', { name: 'Risk' }).click();
+  await expect(page).toHaveURL(/\/ui\/risk$/);
+  await expect(page.getByRole('heading', { name: 'Risk dashboard' })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Traces' }).click();
+  await expect(page).toHaveURL(/\/ui\/traces$/);
+  await expect(page.getByRole('heading', { name: 'Recent traces' })).toBeVisible();
+});
+
+test('deep link /ui/risk/rules resolves client-side without bouncing to /traces', async ({
+  page,
+}) => {
+  await page.goto('/ui/risk/rules');
+  await expect(page).toHaveURL(/\/ui\/risk\/rules$/);
+  await expect(page.getByRole('heading', { name: 'Risk rules' })).toBeVisible();
+});
+
+test('deep link /ui/risk/traces/:id resolves client-side without bouncing to /traces', async ({
+  page,
+}) => {
+  await page.goto('/ui/risk/traces/some-trace-id');
+  await expect(page).toHaveURL(/\/ui\/risk\/traces\/some-trace-id$/);
+  await expect(page.getByRole('heading', { name: 'Risk trace' })).toBeVisible();
+});
+
+test('reload on /ui/risk/rules stays put', async ({ page }) => {
+  await page.goto('/ui/risk/rules');
+  await page.reload();
+  await expect(page).toHaveURL(/\/ui\/risk\/rules$/);
+  await expect(page.getByRole('heading', { name: 'Risk rules' })).toBeVisible();
+});
