@@ -92,7 +92,11 @@ def _interaction_risk_to_json(view: retrieval.InteractionRiskView) -> dict[str, 
     }
 
 
-def _trace_risk_to_json(view: retrieval.TraceRiskView) -> dict[str, Any]:
+def trace_risk_to_json(view: retrieval.TraceRiskView) -> dict[str, Any]:
+    """Public (issue #111): `metrics_routes.py`'s top-traces leaderboard
+    serializes the same `TraceRiskView` shape and imports this rather than
+    duplicating the mapping — PRD §6.3 specifies one trace-risk-record JSON
+    shape, not one per endpoint."""
     return {
         "trace_risk_id": view.trace_risk_id,
         "trace_id": view.trace_id,
@@ -268,7 +272,7 @@ async def _list_traces_handler(request: Request) -> Response:
 
     return http.json_ok(
         {
-            "items": [_trace_risk_to_json(v) for v in page.items],
+            "items": [trace_risk_to_json(v) for v in page.items],
             "next_cursor": _encode_next_cursor(page.next_key, sort=sort),
         }
     )
@@ -292,7 +296,7 @@ async def _get_trace_detail_handler(request: Request) -> Response:
         )
     return http.json_ok(
         {
-            "trace_risk": _trace_risk_to_json(detail.trace_risk),
+            "trace_risk": trace_risk_to_json(detail.trace_risk),
             "interactions": [
                 _forest_interaction_to_json(ix) for ix in detail.interactions
             ],
@@ -324,7 +328,7 @@ async def _trace_history_handler(request: Request) -> Response:
 
     return http.json_ok(
         {
-            "items": [_trace_risk_to_json(v) for v in page.items],
+            "items": [trace_risk_to_json(v) for v in page.items],
             "next_cursor": _encode_next_cursor(page.next_key, sort=_HISTORY_SORT),
         }
     )

@@ -227,3 +227,51 @@ def test_new_risk_api_constants_are_all_exported():
         "API_RISK_TRACES_HISTORY_MAX_LIMIT",
     ):
         assert name in cfg.__all__
+
+
+# --- api.metrics.* (issue #111) -----------------------------------------------
+# Pagination defaults/maximums for the top-N leaderboards under
+# /risk/metrics/top-rules and /risk/metrics/top-traces. These are bounded
+# rankings, not paginated lists (implementation-notes-v3 §8.2's exception for
+# metrics top-N endpoints), so there is no accompanying cursor/page-size pair
+# to distinguish here — just a default and a hard cap per leaderboard.
+
+
+def test_metrics_top_n_defaults():
+    cfg = _reload()
+    assert cfg.API_METRICS_TOP_RULES_DEFAULT_LIMIT == 10
+    assert cfg.API_METRICS_TOP_RULES_MAX_LIMIT == 50
+    assert cfg.API_METRICS_TOP_TRACES_DEFAULT_LIMIT == 10
+    assert cfg.API_METRICS_TOP_TRACES_MAX_LIMIT == 50
+
+
+def test_metrics_top_n_overridable_via_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("RISK_API_METRICS_TOP_RULES_DEFAULT_LIMIT", "5")
+    monkeypatch.setenv("RISK_API_METRICS_TOP_RULES_MAX_LIMIT", "25")
+    monkeypatch.setenv("RISK_API_METRICS_TOP_TRACES_DEFAULT_LIMIT", "6")
+    monkeypatch.setenv("RISK_API_METRICS_TOP_TRACES_MAX_LIMIT", "26")
+    cfg = _reload()
+    assert cfg.API_METRICS_TOP_RULES_DEFAULT_LIMIT == 5
+    assert cfg.API_METRICS_TOP_RULES_MAX_LIMIT == 25
+    assert cfg.API_METRICS_TOP_TRACES_DEFAULT_LIMIT == 6
+    assert cfg.API_METRICS_TOP_TRACES_MAX_LIMIT == 26
+
+
+def test_metrics_top_rules_default_limit_malformed_falls_back(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setenv("RISK_API_METRICS_TOP_RULES_DEFAULT_LIMIT", "not-a-number")
+    cfg = _reload()
+    assert cfg.API_METRICS_TOP_RULES_DEFAULT_LIMIT == 10
+    assert "RISK_API_METRICS_TOP_RULES_DEFAULT_LIMIT" in capsys.readouterr().err
+
+
+def test_metrics_constants_are_all_exported():
+    cfg = _reload()
+    for name in (
+        "API_METRICS_TOP_RULES_DEFAULT_LIMIT",
+        "API_METRICS_TOP_RULES_MAX_LIMIT",
+        "API_METRICS_TOP_TRACES_DEFAULT_LIMIT",
+        "API_METRICS_TOP_TRACES_MAX_LIMIT",
+    ):
+        assert name in cfg.__all__
