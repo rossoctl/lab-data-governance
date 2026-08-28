@@ -27,12 +27,14 @@ import type {
 export const RISK_QUERY_KEY_ROOT = ['risk'] as const;
 
 /**
- * The server's uniform default list-page size
+ * The dashboard's shared page/limit size for list and top-N endpoints. Was
+ * originally pinned to the server's own default
  * (`API_RISK_{RULES,INTERACTIONS,TRACES}_DEFAULT_LIMIT` in
- * `data_governance/risk/config.py`), read here rather than guessed so a
- * hook can pass it explicitly instead of relying on the server's default.
+ * `data_governance/risk/config.py`, 50) but the dashboard's cards are compact
+ * summaries, not full listings, so it is now a deliberate UI-side override
+ * passed explicitly rather than left to the server's default.
  */
-export const RISK_PAGE_SIZE = 50;
+export const RISK_PAGE_SIZE = 10;
 
 /** Build a query key nested under {@link RISK_QUERY_KEY_ROOT}. */
 export function riskQueryKey(...segments: unknown[]): readonly unknown[] {

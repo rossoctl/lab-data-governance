@@ -8,6 +8,7 @@ import {
   useRiskByCategory,
   useTopRules,
   useRiskTracesInfinite,
+  RISK_PAGE_SIZE,
 } from '../../risk-api/hooks';
 import { RISK_WINDOW_KEYS, DEFAULT_RISK_WINDOW, parseRiskWindow } from '../../lib/riskWindow';
 import { SummaryTiles } from './dashboard/SummaryTiles';
@@ -63,7 +64,7 @@ export function RiskDashboardPage() {
   const summary = useRiskSummary(windowKey);
   const distribution = useRiskDistribution(windowKey);
   const byCategory = useRiskByCategory(windowKey);
-  const topRules = useTopRules(windowKey, 5);
+  const topRules = useTopRules(windowKey, RISK_PAGE_SIZE);
   const traces = useRiskTracesInfinite(windowKey);
 
   const isLoading = summary.isLoading;

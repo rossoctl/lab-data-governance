@@ -32,10 +32,11 @@ describe('risk-api hooks scaffold', () => {
     expect(riskQueryKey('traces', 'abc')).toEqual(riskQueryKey('traces', 'abc'));
   });
 
-  it('pins the shared page size to the server default', () => {
-    // data_governance/risk/config.py's API_RISK_{RULES,INTERACTIONS,TRACES}_
-    // DEFAULT_LIMIT are uniformly 50.
-    expect(RISK_PAGE_SIZE).toBe(50);
+  it('pins the shared dashboard page size to a compact-card limit', () => {
+    // Deliberate UI-side override, smaller than the server's own
+    // API_RISK_{RULES,INTERACTIONS,TRACES}_DEFAULT_LIMIT (50) — the
+    // dashboard's cards are compact summaries, not full listings.
+    expect(RISK_PAGE_SIZE).toBe(10);
   });
 
   it('exposes the root as a readonly tuple so a caller can spread it into a queryKey', () => {
