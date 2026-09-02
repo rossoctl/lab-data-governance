@@ -59,6 +59,13 @@ def _attr(span: Span, key: str) -> Any:
     return (span.attributes or {}).get(key)
 
 
+def _protocol(span: Span) -> str:
+    """The exchange's protocol as the kind table spells it (unknown → http),
+    the same normalization ``classify_attrs`` applies."""
+    proto = str(_attr(span, "lineage.protocol") or "http").lower()
+    return proto if proto in ("a2a", "mcp", "inference") else "http"
+
+
 def _direction(span: Span) -> str:
     return str(_attr(span, "lineage.direction") or "").lower()
 
@@ -194,16 +201,61 @@ def _callee(kinds: Kinds, req: Span, echo_self_id: str | None) -> _Entity:
     return _Entity(kinds.callee_kind, ident)
 
 
-def _caller(kinds: Kinds, req: Span) -> _Entity:
+def _caller(kinds: Kinds, req: Span, self_kind_of: dict[str, str]) -> _Entity:
     """Caller identity from facts. Inbound: user:<principal.sub>, or the
     anonymous client:(unknown) — the wire carries no caller address (contract
-    v1.4 removed ``lineage.peer.addr``). Outbound: this pod's self.id."""
+    v1.4 removed ``lineage.peer.addr``). Outbound: this pod's self.id, of the
+    kind this trace already knows the pod to be (``_self_kinds``), else the
+    table's default."""
     if _direction(req) == "inbound":
         sub = _attr(req, "lineage.principal.sub")
         if sub:
             return _Entity("user", str(sub))
         return _Entity("client", _UNKNOWN)
-    return _Entity("agent", _require_self_id(req))
+    self_id = _require_self_id(req)
+    return _Entity(self_kind_of.get(self_id, kinds.caller_kind), self_id)
+
+
+def _self_kinds(reqs: dict[str, Span]) -> dict[str, str]:
+    """What each ``lineage.self.id`` in this trace IS. One verdict per pod, from
+    the pod's own traffic, applied wherever that pod is caller or callee:
+
+    1. **served role** — the kind table types the callee of an inbound exchange
+       (mcp → tool, a2a → agent, inference → llm), and that callee is the pod
+       itself. A pod whose inbounds disagree (it serves both a2a and mcp) is an
+       agent, the table's own default.
+    2. **sent protocol**, only when nothing was served in this trace — a pod
+       that sends a2a or mcp behaves like an agent and is one.
+    3. otherwise the pod is undecided. ``entity_kind`` has no value for that
+       (migration 0004 is the fixed interface), so it falls through to the
+       table's outbound default, ``agent``, until the vocabulary grows.
+
+    The table's outbound rows say the caller is an ``agent`` because agents were
+    the only pods that called out when it was written. A tool that makes its own
+    egress — a weather tool fetching a forecast over http, a booking tool
+    delegating over a2a — would otherwise be minted twice, ``tool:X`` for what
+    it serves and ``agent:X`` for what it calls (seen live 2026-09-01). Read off
+    the whole trace, so any arrival order gives the same plan; the stored
+    ``entities`` row minted under a partial trace is not withdrawn (global,
+    upsert-only — ADR-0030), only re-pointed away from.
+    """
+    served: dict[str, set[str]] = {}
+    sent: dict[str, set[str]] = {}
+    for s in reqs.values():
+        self_id = _attr(s, "lineage.self.id")
+        if not self_id:
+            continue
+        if _direction(s) == "inbound":
+            served.setdefault(str(self_id), set()).add(classify(s).callee_kind)
+        else:
+            sent.setdefault(str(self_id), set()).add(_protocol(s))
+    verdict: dict[str, str] = {}
+    for self_id, kinds in served.items():
+        verdict[self_id] = next(iter(kinds)) if len(kinds) == 1 else "agent"
+    for self_id, protocols in sent.items():
+        if self_id not in verdict and protocols & {"a2a", "mcp"}:
+            verdict[self_id] = "agent"
+    return verdict
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +380,8 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
             if self_id:
                 echo_self_of[owner] = str(self_id)
 
+    self_kind_of = _self_kinds(reqs)
+
     want: dict[str, _Row] = {}
     for aid in anchor_ids:
         req = reqs[aid]
@@ -345,7 +399,7 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
             trace_id=trace_id,
             anchor_span_id=aid,
             parent_anchor_span_id=parent_anchor,
-            caller=_caller(kinds, req),
+            caller=_caller(kinds, req, self_kind_of),
             callee=_callee(kinds, req, echo_self_of.get(aid)),
             started_at=req.started_at,
             ended_at=(resp.ended_at or resp.started_at) if resp is not None else None,

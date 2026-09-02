@@ -30,7 +30,11 @@ from typing import Any
 # The whole vocabulary of the derivation, on facts alone. `caller_kind` "user" is
 # the inbound-entry default and is downgraded to "client" when the request has no
 # validated principal (an anonymous caller — folded by peer ip in the caller
-# derivation). Content kinds are None for `http` (no parser matched → no semantic
+# derivation). The outbound `caller_kind` "agent" is likewise a default: the
+# derivation replaces it with what the same trace shows the calling pod to be
+# from its own inbound (a tool that calls out stays `tool:`, see
+# `processors.interactions.sidecar._self_kinds`). Content kinds are None for
+# `http` (no parser matched → no semantic
 # body is ever produced → the payload columns stay NULL). Every non-None content
 # kind here is projectable by processors/classification/projection.py — the
 # parity test (test_content_kind_parity) pins that so this table cannot drift
