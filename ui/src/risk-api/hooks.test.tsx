@@ -8,6 +8,9 @@ import {
   useRiskByCategory,
   useTopRules,
   useRiskTracesInfinite,
+  useRulesInfinite,
+  useRule,
+  useRuleCategories,
 } from './hooks';
 
 // JSX-wrapper tests for the dashboard hooks (issue #169). Kept in a NEW
@@ -161,5 +164,137 @@ describe('useRiskTracesInfinite', () => {
     const secondUrl = fetchMock.mock.calls[1][0] as string;
     expect(secondUrl).toContain('cursor=CURSOR1');
     expect(result.current.data?.pages).toEqual([page1, page2]);
+  });
+});
+
+// Rules catalog hooks (issue #171).
+
+describe('useRulesInfinite', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('fetches GET /risk/rules with no filters and follows next_cursor', async () => {
+    const page1 = { items: [{ rule_id: 'DG-001' }], next_cursor: 'CURSOR1' };
+    const page2 = { items: [{ rule_id: 'DG-002' }], next_cursor: null };
+    const fetchMock = fetch as ReturnType<typeof vi.fn>;
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => page1 })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => page2 });
+
+    const { result } = renderHook(() => useRulesInfinite({}), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    const firstUrl = fetchMock.mock.calls[0][0] as string;
+    expect(firstUrl).toBe('/risk/rules');
+
+    expect(result.current.hasNextPage).toBe(true);
+    await result.current.fetchNextPage();
+    await waitFor(() => expect(fetchMock.mock.calls).toHaveLength(2));
+
+    const secondUrl = fetchMock.mock.calls[1][0] as string;
+    expect(secondUrl).toBe('/risk/rules?cursor=CURSOR1');
+    expect(result.current.data?.pages).toEqual([page1, page2]);
+  });
+
+  it('includes category and risk_level filters in the query when given', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [], next_cursor: null }),
+    });
+
+    renderHook(() => useRulesInfinite({ category: 'pii_exposure', riskLevel: 'critical' }), {
+      wrapper: wrapper(),
+    });
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toContain('category=pii_exposure');
+    expect(calledUrl).toContain('risk_level=critical');
+  });
+
+  it('gives differing filters different query keys, so switching a filter refetches', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [], next_cursor: null }),
+    });
+
+    const { result: a } = renderHook(() => useRulesInfinite({ category: 'pii_exposure' }), {
+      wrapper: wrapper(),
+    });
+    const { result: b } = renderHook(() => useRulesInfinite({ category: 'data_exfiltration' }), {
+      wrapper: wrapper(),
+    });
+    await waitFor(() => expect(a.current.isSuccess).toBe(true));
+    await waitFor(() => expect(b.current.isSuccess).toBe(true));
+
+    const urls = (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
+    expect(urls.some((u) => u.includes('category=pii_exposure'))).toBe(true);
+    expect(urls.some((u) => u.includes('category=data_exfiltration'))).toBe(true);
+  });
+});
+
+describe('useRule', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('fetches GET /risk/rules/{rule_id} and unwraps the body', async () => {
+    const body = { rule_id: 'DG-001', rule_name: 'pii_to_untrusted_external' };
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => body,
+    });
+
+    const { result } = renderHook(() => useRule('DG-001'), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(body);
+
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toBe('/risk/rules/DG-001');
+  });
+
+  it('surfaces a 404 as an error rather than throwing past react-query', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({
+        error: 'not found',
+        detail: "no rule with id 'nope'",
+        timestamp: '2026-08-02T00:00:00Z',
+      }),
+    });
+
+    const { result } = renderHook(() => useRule('nope'), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect((result.current.error as { status?: number })?.status).toBe(404);
+  });
+
+  it('does not fetch when ruleId is undefined', async () => {
+    renderHook(() => useRule(undefined), { wrapper: wrapper() });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('useRuleCategories', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('fetches GET /risk/rules/categories and unwraps the body', async () => {
+    const body = { items: [{ category: 'pii_exposure', rule_count: 2 }] };
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => body,
+    });
+
+    const { result } = renderHook(() => useRuleCategories(), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(body);
+
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toBe('/risk/rules/categories');
   });
 });

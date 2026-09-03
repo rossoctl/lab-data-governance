@@ -106,3 +106,77 @@ export interface TraceRiskListResponse {
   items: TraceRiskRecord[];
   next_cursor: string | null;
 }
+
+/**
+ * Rule catalog wire types (issue #171), matching
+ * `data_governance/risk/rules/catalog.py`'s `_flatten_rule` §6.5 serving
+ * shape exactly. Note this is a flat catalog entry, not a PRD §7.7 literal
+ * "conditions" array — a rule's match criteria are structural fields whose
+ * presence is the predicate (`event_type`, `data_items`,
+ * `data_destinations`), per `catalog.py`'s module docstring. The rules UI
+ * renders these as condition-type/value rows to match the mockup's
+ * Conditions table without inventing a `conditions` field the API doesn't
+ * return.
+ */
+
+/** One `GET /risk/rules/{rule_id}` `rule_sources` entry — a citation, not a URL. */
+export interface RuleSource {
+  document_name: string;
+  version: string;
+  section: string;
+  'article/clause': string;
+}
+
+/** One `data_items` match-criteria entry. Every field is optional — a rule's
+ * on-disk entry only has the criteria that apply to it. */
+export interface RuleDataItem {
+  regulatory_tags?: string[];
+  classification_level?: string;
+  [key: string]: unknown;
+}
+
+/** One `data_destinations` match-criteria entry. */
+export interface RuleDataDestination {
+  data_destination_categories?: string[];
+  data_destination_trust_level?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * One rule, the shape both `GET /risk/rules`'s `items` and
+ * `GET /risk/rules/{rule_id}` return (the detail endpoint returns one of
+ * these, not a wrapped envelope — `_rule_detail_handler` calls
+ * `http.json_ok(rule)` directly). `rule_name`, `risk_level`, `enforcement`,
+ * and `explanation` are nullable: `_flatten_rule` reads them from an
+ * optional `rule_decision` object that some catalog entries may omit.
+ */
+export interface RuleListItem {
+  rule_id: string;
+  rule_name: string | null;
+  categories: string[];
+  risk_level: string | null;
+  enforcement: string | null;
+  explanation: string | null;
+  event_type: string | null;
+  data_items: RuleDataItem[];
+  data_destinations: RuleDataDestination[];
+  allowed_actions: string[];
+  rule_sources: RuleSource[];
+}
+
+/** `GET /risk/rules` response body — cursor/limit paginated per §8.1. */
+export interface RuleListResponse {
+  items: RuleListItem[];
+  next_cursor: string | null;
+}
+
+/** One `GET /risk/rules/categories` `items` entry — FR-DAS-061. */
+export interface RuleCategoryCount {
+  category: string;
+  rule_count: number;
+}
+
+/** `GET /risk/rules/categories` response body. */
+export interface RuleCategoriesResponse {
+  items: RuleCategoryCount[];
+}

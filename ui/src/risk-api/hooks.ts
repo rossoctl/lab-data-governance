@@ -21,6 +21,9 @@ import type {
   RiskByCategoryResponse,
   TopRulesResponse,
   TraceRiskListResponse,
+  RuleListResponse,
+  RuleListItem,
+  RuleCategoriesResponse,
 } from './types';
 
 /** Shared root every risk query key nests under. */
@@ -101,5 +104,57 @@ export function useRiskTracesInfinite(
         ...(pageParam !== undefined ? { cursor: pageParam } : {}),
       }),
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+  });
+}
+
+/** Optional `GET /risk/rules` filters (issue #171), matching #113's `category`/`risk_level` params. */
+export interface RulesFilter {
+  category?: string;
+  riskLevel?: string;
+}
+
+/**
+ * Rules catalog table (issue #171). `GET /risk/rules`, keyset-paginated via
+ * the server's own `next_cursor` — same convention as
+ * {@link useRiskTracesInfinite}. Filters are part of the query key so
+ * switching category/risk_level starts a fresh paginated query rather than
+ * reusing a stale cursor from a different filter set.
+ */
+export function useRulesInfinite(
+  filter: RulesFilter,
+): UseInfiniteQueryResult<InfiniteData<RuleListResponse>> {
+  return useInfiniteQuery({
+    queryKey: riskQueryKey('rules', filter),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      riskFetchJson<RuleListResponse>('/rules', {
+        category: filter.category,
+        risk_level: filter.riskLevel,
+        ...(pageParam !== undefined ? { cursor: pageParam } : {}),
+      }),
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+  });
+}
+
+/**
+ * Rule detail (issue #171). `GET /risk/rules/{rule_id}`. Disabled when
+ * `ruleId` is undefined (e.g. a route mounted without a param yet) so no
+ * request goes out for `/risk/rules/undefined`; a missing `rule_id` on a
+ * real request 404s server-side and surfaces via `RiskApiError.status`,
+ * left for the caller (`RiskRuleDetailPage`) to render as a not-found state.
+ */
+export function useRule(ruleId: string | undefined): UseQueryResult<RuleListItem> {
+  return useQuery({
+    queryKey: riskQueryKey('rules', ruleId),
+    queryFn: () => riskFetchJson<RuleListItem>(`/rules/${ruleId}`),
+    enabled: ruleId !== undefined,
+  });
+}
+
+/** FR-DAS-061 category filter options. `GET /risk/rules/categories`. */
+export function useRuleCategories(): UseQueryResult<RuleCategoriesResponse> {
+  return useQuery({
+    queryKey: riskQueryKey('rules', 'categories'),
+    queryFn: () => riskFetchJson<RuleCategoriesResponse>('/rules/categories'),
   });
 }
