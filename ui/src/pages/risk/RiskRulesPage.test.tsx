@@ -93,11 +93,35 @@ describe('RiskRulesPage content (#171)', () => {
     await waitFor(() => expect(screen.getByText(/no rules/i)).toBeInTheDocument());
   });
 
-  it('shows an empty state, not a crash, when a cursor lands past the end', async () => {
-    mockFetchRouter({ rules: { items: [], next_cursor: null } });
-    renderWithProviders(<RiskRulesPage />, { route: '/risk/rules?cursor=PAST_END' });
+  it('shows an empty state, not a crash, when the last page in the cursor chain is empty', async () => {
+    // Pagination cursor state lives in react-query's infinite-query cache
+    // (fetchNextPage()), not the URL — RiskRulesPage reads no `?cursor=`
+    // search param, so a URL cursor can't be exercised from here. This
+    // instead drives the same "next_cursor: null, zero items" server
+    // response a real past-the-end page would return, via the second page
+    // of a fetchNextPage() chain rather than a cold URL cursor.
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/risk/rules/categories')) {
+        return { ok: true, status: 200, json: async () => ({ items: [] }) };
+      }
+      if (url.includes('cursor=LAST')) {
+        return { ok: true, status: 200, json: async () => ({ items: [], next_cursor: null }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [rule()], next_cursor: 'LAST' }),
+      };
+    });
+    renderWithProviders(<RiskRulesPage />, { route: '/risk/rules' });
 
-    await waitFor(() => expect(screen.getByText(/no rules/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/pii_to_untrusted_external/)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /load more/i }));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument());
+    // Page 1's row must still be present — the empty *next* page must not
+    // clear previously loaded rows.
+    expect(screen.getByText(/pii_to_untrusted_external/)).toBeInTheDocument();
   });
 
   it('renders a fallback for a rule with no sources, e.g. "none" rather than omitting the cell', async () => {
@@ -186,6 +210,58 @@ describe('RiskRulesPage content (#171)', () => {
     await userEvent.click(screen.getByRole('button', { name: /load more/i }));
 
     await waitFor(() => expect(screen.getByText(/second_rule/)).toBeInTheDocument());
+    // Page 1's row must still be present — "Load more" accumulates pages,
+    // it doesn't replace the list with just the newest page.
+    expect(screen.getByText(/pii_to_untrusted_external/)).toBeInTheDocument();
+  });
+
+  it('resets to page 1 rather than appending when a filter changes with a page already loaded', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/risk/rules/categories')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            items: [
+              { category: 'data_exfiltration', rule_count: 1 },
+              { category: 'pii_exposure', rule_count: 1 },
+            ],
+          }),
+        };
+      }
+      if (url.includes('category=pii_exposure')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: [rule({ rule_id: 'DG-003', rule_name: 'other_category_rule' })], next_cursor: null }),
+        };
+      }
+      if (url.includes('cursor=CURSOR1')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: [rule({ rule_id: 'DG-002', rule_name: 'second_rule' })], next_cursor: null }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [rule()], next_cursor: 'CURSOR1' }),
+      };
+    });
+    renderWithProviders(<RiskRulesPage />, { route: '/risk/rules' });
+
+    await waitFor(() => expect(screen.getByText(/pii_to_untrusted_external/)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /load more/i }));
+    await waitFor(() => expect(screen.getByText(/second_rule/)).toBeInTheDocument());
+
+    await userEvent.selectOptions(screen.getByLabelText(/category/i), 'pii_exposure');
+
+    await waitFor(() => expect(screen.getByText(/other_category_rule/)).toBeInTheDocument());
+    // The prior filter's accumulated pages must not carry over into the new
+    // filter's result set.
+    expect(screen.queryByText(/pii_to_untrusted_external/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/second_rule/)).not.toBeInTheDocument();
   });
 
   it('renders an error state without throwing on a fetch failure', async () => {

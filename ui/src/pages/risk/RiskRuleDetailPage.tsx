@@ -21,6 +21,7 @@ import { EnforcementChip } from '../../risk-components/EnforcementChip';
 import { useRule } from '../../risk-api/hooks';
 import { RiskApiError } from '../../risk-api/client';
 import type { RuleDataItem, RuleDataDestination } from '../../risk-api/types';
+import { joinOrNone } from '../../lib/joinOrNone';
 
 /** One condition-type/value row for the mockup's Conditions table, derived
  * from the structural match fields `catalog.py` actually returns (no
@@ -78,6 +79,14 @@ function buildConditionRows(
  *
  * Breadcrumb follows `TraceDetailPage`'s two-node convention: crumb 1 links
  * back to the list, crumb 2 is the current item's full id.
+ *
+ * Unlike every other risk view, this page does not use `RiskViewShell`: the
+ * breadcrumb must stay visible while loading and on error so the user always
+ * has a way back to `/risk/rules`, but the shell swaps `children` out
+ * entirely on `isLoading`/`isError`, which would hide it. Loading/error/
+ * not-found are hand-rendered below instead. A shell with an optional
+ * header/breadcrumb slot would remove the need for this per-page opt-out —
+ * left as a follow-up rather than done here.
  */
 export function RiskRuleDetailPage() {
   const { ruleId } = useParams<{ ruleId: string }>();
@@ -139,7 +148,7 @@ export function RiskRuleDetailPage() {
                 <DescriptionListGroup>
                   <DescriptionListTerm>Categories</DescriptionListTerm>
                   <DescriptionListDescription>
-                    {rule.data.categories.length === 0 ? 'none' : rule.data.categories.join(', ')}
+                    {joinOrNone(rule.data.categories)}
                   </DescriptionListDescription>
                 </DescriptionListGroup>
                 <DescriptionListGroup>
@@ -215,7 +224,7 @@ export function RiskRuleDetailPage() {
           <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '3rem' }}>
             Allowed Actions
           </Title>
-          <p>{rule.data.allowed_actions.length === 0 ? 'none' : rule.data.allowed_actions.join(', ')}</p>
+          <p>{joinOrNone(rule.data.allowed_actions)}</p>
         </>
       ) : null}
     </PageSection>

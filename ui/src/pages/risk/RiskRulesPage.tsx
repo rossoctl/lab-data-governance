@@ -15,6 +15,7 @@ import { RiskBadge } from '../../risk-components/RiskBadge';
 import { EnforcementChip } from '../../risk-components/EnforcementChip';
 import { CursorPagination } from '../../risk-components/CursorPagination';
 import { useRulesInfinite, useRuleCategories } from '../../risk-api/hooks';
+import { joinOrNone } from '../../lib/joinOrNone';
 
 /**
  * Rules catalog table (issue #171, parent #168) — replaces the #165 stub.
@@ -67,6 +68,11 @@ export function RiskRulesPage() {
       title="Risk rules"
       isLoading={isLoading}
       isError={isError}
+      // Deliberately always false, not `isEmpty`: the shell's own empty
+      // branch replaces `children` entirely, which would hide the toolbar
+      // and filters. An empty filtered result should let the user change
+      // filters without losing them, so the empty state is rendered inline
+      // below instead, alongside the toolbar.
       isEmpty={false}
     >
       <Toolbar>
@@ -131,9 +137,7 @@ export function RiskRulesPage() {
                       {rule.rule_id}
                     </div>
                   </Td>
-                  <Td dataLabel="Categories">
-                    {rule.categories.length === 0 ? 'none' : rule.categories.join(', ')}
-                  </Td>
+                  <Td dataLabel="Categories">{joinOrNone(rule.categories)}</Td>
                   <Td dataLabel="Risk">
                     <RiskBadge level={rule.risk_level ?? 'unknown'} />
                   </Td>
@@ -141,9 +145,7 @@ export function RiskRulesPage() {
                     <EnforcementChip type={rule.enforcement ?? 'none'} />
                   </Td>
                   <Td dataLabel="Source">
-                    {rule.rule_sources.length === 0
-                      ? 'none'
-                      : rule.rule_sources.map((s) => s.document_name).join(', ')}
+                    {joinOrNone(rule.rule_sources.map((s) => s.document_name))}
                   </Td>
                 </Tr>
               ))}
