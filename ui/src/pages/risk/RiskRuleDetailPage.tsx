@@ -12,6 +12,8 @@ import {
   DescriptionListGroup,
   DescriptionListTerm,
   DescriptionListDescription,
+  Grid,
+  GridItem,
 } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { RiskBadge } from '../../risk-components/RiskBadge';
@@ -116,43 +118,85 @@ export function RiskRuleDetailPage() {
         </EmptyState>
       ) : rule.data ? (
         <>
-          <DescriptionList isHorizontal className="pf-v5-u-mt-md">
-            <DescriptionListGroup>
-              <DescriptionListTerm>Rule</DescriptionListTerm>
-              <DescriptionListDescription>
-                {rule.data.rule_name ?? rule.data.rule_id}
-              </DescriptionListDescription>
-            </DescriptionListGroup>
-            <DescriptionListGroup>
-              <DescriptionListTerm>Rule ID</DescriptionListTerm>
-              <DescriptionListDescription className="dg-mono">{rule.data.rule_id}</DescriptionListDescription>
-            </DescriptionListGroup>
-            <DescriptionListGroup>
-              <DescriptionListTerm>Categories</DescriptionListTerm>
-              <DescriptionListDescription>
-                {rule.data.categories.length === 0 ? 'none' : rule.data.categories.join(', ')}
-              </DescriptionListDescription>
-            </DescriptionListGroup>
-            <DescriptionListGroup>
-              <DescriptionListTerm>Risk level</DescriptionListTerm>
-              <DescriptionListDescription>
-                <RiskBadge level={rule.data.risk_level ?? 'unknown'} />
-              </DescriptionListDescription>
-            </DescriptionListGroup>
-            <DescriptionListGroup>
-              <DescriptionListTerm>Enforcement suggestion</DescriptionListTerm>
-              <DescriptionListDescription>
-                <EnforcementChip type={rule.data.enforcement ?? 'none'} />
-              </DescriptionListDescription>
-            </DescriptionListGroup>
-          </DescriptionList>
+          <Grid hasGutter className="pf-v5-u-mt-md">
+            <GridItem md={6}>
+              <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm">
+                Rule information
+              </Title>
+              <DescriptionList isHorizontal>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Rule</DescriptionListTerm>
+                  <DescriptionListDescription>
+                    {rule.data.rule_name ?? rule.data.rule_id}
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Rule ID</DescriptionListTerm>
+                  <DescriptionListDescription className="dg-mono">
+                    {rule.data.rule_id}
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Categories</DescriptionListTerm>
+                  <DescriptionListDescription>
+                    {rule.data.categories.length === 0 ? 'none' : rule.data.categories.join(', ')}
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Risk level</DescriptionListTerm>
+                  <DescriptionListDescription>
+                    <RiskBadge level={rule.data.risk_level ?? 'unknown'} />
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Enforcement suggestion</DescriptionListTerm>
+                  <DescriptionListDescription>
+                    <EnforcementChip type={rule.data.enforcement ?? 'none'} />
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+              </DescriptionList>
+            </GridItem>
 
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
+            <GridItem md={6}>
+              <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm">
+                Conditions
+              </Title>
+              {(() => {
+                const rows = buildConditionRows(
+                  rule.data.event_type,
+                  rule.data.data_items,
+                  rule.data.data_destinations,
+                );
+                return rows.length === 0 ? (
+                  <p>none</p>
+                ) : (
+                  <Table aria-label="Conditions" variant="compact">
+                    <Thead>
+                      <Tr>
+                        <Th>Condition type</Th>
+                        <Th>Value</Th>
+                      </Tr>
+                    </Thead>
+                    <Tbody>
+                      {rows.map((row, i) => (
+                        <Tr key={`${row.type}-${i}`}>
+                          <Td dataLabel="Condition type">{row.type}</Td>
+                          <Td dataLabel="Value">{row.value}</Td>
+                        </Tr>
+                      ))}
+                    </Tbody>
+                  </Table>
+                );
+              })()}
+            </GridItem>
+          </Grid>
+
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-2xl pf-v5-u-mb-sm">
             Explanation
           </Title>
           <p>{rule.data.explanation ?? 'No explanation provided.'}</p>
 
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-2xl pf-v5-u-mb-sm">
             Sources
           </Title>
           {rule.data.rule_sources.length === 0 ? (
@@ -168,38 +212,7 @@ export function RiskRuleDetailPage() {
             </p>
           )}
 
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
-            Conditions
-          </Title>
-          {(() => {
-            const rows = buildConditionRows(
-              rule.data.event_type,
-              rule.data.data_items,
-              rule.data.data_destinations,
-            );
-            return rows.length === 0 ? (
-              <p>none</p>
-            ) : (
-              <Table aria-label="Conditions" variant="compact">
-                <Thead>
-                  <Tr>
-                    <Th>Condition type</Th>
-                    <Th>Value</Th>
-                  </Tr>
-                </Thead>
-                <Tbody>
-                  {rows.map((row, i) => (
-                    <Tr key={`${row.type}-${i}`}>
-                      <Td dataLabel="Condition type">{row.type}</Td>
-                      <Td dataLabel="Value">{row.value}</Td>
-                    </Tr>
-                  ))}
-                </Tbody>
-              </Table>
-            );
-          })()}
-
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-2xl pf-v5-u-mb-sm">
             Allowed Actions
           </Title>
           <p>{rule.data.allowed_actions.length === 0 ? 'none' : rule.data.allowed_actions.join(', ')}</p>
