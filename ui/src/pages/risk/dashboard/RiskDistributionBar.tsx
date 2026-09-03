@@ -19,6 +19,11 @@ const LEVEL_TITLE: Record<string, string> = {
  * FR-DAS-050's stacked risk-distribution bar (issue #169). Segment widths
  * come from `distributionSegments` (already zero-division-guarded), so an
  * all-zero window renders five zero-width segments rather than `NaN%`.
+ *
+ * Each segment is its own column — the coloured bar chunk on top, that
+ * segment's legend label directly beneath it — rather than one bar row with
+ * a separate legend row below, so a label always sits under the chunk it
+ * describes instead of in an unrelated flex-wrapped line.
  */
 export function RiskDistributionBar({ distribution }: RiskDistributionBarProps) {
   const segments = distributionSegments(distribution);
@@ -27,24 +32,20 @@ export function RiskDistributionBar({ distribution }: RiskDistributionBarProps) 
     <Card isCompact>
       <CardTitle>Risk Distribution</CardTitle>
       <CardBody>
-        <div
-          style={{ display: 'flex', width: '100%', height: '1rem', overflow: 'hidden', borderRadius: '4px' }}
-        >
+        <Flex spaceItems={{ default: 'spaceItemsNone' }} alignItems={{ default: 'alignItemsFlexStart' }}>
           {segments.map((segment) => (
-            <div
+            <FlexItem
               key={segment.level}
               data-testid="risk-distribution-segment"
               data-level={segment.level}
-              role="img"
-              aria-label={`${LEVEL_TITLE[segment.level]}: ${segment.count} (${segment.pct}%)`}
-              style={{ width: `${segment.pct}%`, backgroundColor: riskLevelColorVar(segment.level) }}
-            />
-          ))}
-        </div>
-        <Flex spaceItems={{ default: 'spaceItemsMd' }} className="pf-v5-u-mt-sm">
-          {segments.map((segment) => (
-            <FlexItem key={segment.level}>
-              <Label color={colorForRiskLevel(segment.level)} isCompact>
+              style={{ width: `${segment.pct}%`, minWidth: segment.pct > 0 ? '2.5rem' : undefined }}
+            >
+              <div
+                role="img"
+                aria-label={`${LEVEL_TITLE[segment.level]}: ${segment.count} (${segment.pct}%)`}
+                style={{ height: '1rem', borderRadius: '4px', backgroundColor: riskLevelColorVar(segment.level) }}
+              />
+              <Label color={colorForRiskLevel(segment.level)} isCompact className="pf-v5-u-mt-sm">
                 {LEVEL_TITLE[segment.level]}: {segment.count} ({segment.pct}%)
               </Label>
             </FlexItem>

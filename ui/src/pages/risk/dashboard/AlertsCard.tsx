@@ -16,6 +16,13 @@
  * (native hover tooltip) and is spelled out in full in the expanded group's
  * detail row, so nothing is permanently hidden, only deferred to a click or
  * hover.
+ *
+ * There is no dedicated "Open" column: the whole summary row is clickable
+ * (same destination as the old link) via `onRowClick`, since a full row is a
+ * bigger, easier target than a single cell's worth of column. The Open link
+ * itself now lives only in the expanded detail row — a group has to be
+ * opened to see its rules anyway, so the explicit link sits alongside them
+ * rather than duplicating the row's own click target.
  */
 import { Fragment, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -75,7 +82,6 @@ export function AlertsCard({ items, hasNextPage, isFetchingNextPage, onNextPage 
                     <Th>Enforcement</Th>
                     <Th>Interactions</Th>
                     <Th>Policy events</Th>
-                    <Th>Open</Th>
                   </Tr>
                 </Thead>
                 <Tbody>
@@ -83,12 +89,19 @@ export function AlertsCard({ items, hasNextPage, isFetchingNextPage, onNextPage 
                     const isExpanded = expanded.has(group.traceId);
                     return (
                       <Fragment key={group.traceId}>
-                        <Tr>
+                        <Tr
+                          data-testid={`alert-row-${group.traceId}`}
+                          isClickable
+                          onRowClick={() => toggle(group.traceId)}
+                        >
                           <Td dataLabel="Expand">
                             <Button
                               variant="plain"
                               aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${group.traceId}`}
-                              onClick={() => toggle(group.traceId)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggle(group.traceId);
+                              }}
                             >
                               {isExpanded ? <AngleDownIcon /> : <AngleRightIcon />}
                             </Button>
@@ -116,13 +129,10 @@ export function AlertsCard({ items, hasNextPage, isFetchingNextPage, onNextPage 
                           </Td>
                           <Td dataLabel="Interactions">{group.summary.interaction_count}</Td>
                           <Td dataLabel="Policy events">{group.summary.policy_event_count}</Td>
-                          <Td dataLabel="Open">
-                            <Link to={`/risk/traces/${group.traceId}`}>Open</Link>
-                          </Td>
                         </Tr>
                         {isExpanded && (
                           <Tr>
-                            <Td dataLabel="Details" colSpan={7}>
+                            <Td dataLabel="Details" colSpan={6}>
                               <div>
                                 <strong>Trace:</strong> {group.traceId}
                               </div>
@@ -135,10 +145,19 @@ export function AlertsCard({ items, hasNextPage, isFetchingNextPage, onNextPage 
                                         key={ruleId}
                                         to={`/risk/rules/${ruleId}`}
                                         style={{ marginRight: '0.5rem' }}
+                                        onClick={(event) => event.stopPropagation()}
                                       >
                                         {ruleId}
                                       </Link>
                                     ))}
+                              </div>
+                              <div className="pf-v5-u-mt-sm">
+                                <Link
+                                  to={`/risk/traces/${group.traceId}`}
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  Open
+                                </Link>
                               </div>
                             </Td>
                           </Tr>

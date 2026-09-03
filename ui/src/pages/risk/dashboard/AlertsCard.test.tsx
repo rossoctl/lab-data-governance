@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { AlertsCard } from './AlertsCard';
 import type { TraceRiskRecord } from '../../../risk-api/types';
 
@@ -39,20 +39,20 @@ function renderCard(props: Partial<Parameters<typeof AlertsCard>[0]> = {}) {
 }
 
 describe('AlertsCard', () => {
-  it('renders groups collapsed by default, with an Open link to the trace', () => {
+  it('renders groups collapsed by default, with no separate Open column', () => {
     renderCard();
     expect(screen.queryByText('rule-1')).not.toBeInTheDocument();
-    const link = screen.getByRole('link', { name: /open/i });
-    expect(link).toHaveAttribute('href', '/risk/traces/trace-1');
+    expect(screen.queryByRole('columnheader', { name: 'Open' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^open$/i })).not.toBeInTheDocument();
   });
 
-  it('renders every column header, and truncates the trace id with its full value available on hover', () => {
+  it('renders every remaining column header, and truncates the trace id with its full value available on hover', () => {
     const items = [
       record({ trace_id: 'trace-with-a-very-long-identifier-that-would-overflow-the-column' }),
     ];
     renderCard({ items });
 
-    for (const header of ['Trace', 'Risk level', 'Enforcement', 'Interactions', 'Policy events', 'Open']) {
+    for (const header of ['Trace', 'Risk level', 'Enforcement', 'Interactions', 'Policy events']) {
       expect(screen.getByRole('columnheader', { name: header })).toBeInTheDocument();
     }
 
@@ -60,7 +60,7 @@ describe('AlertsCard', () => {
     expect(traceCell).toBeInTheDocument();
   });
 
-  it("shows the full trace id in the expanded group's detail row", () => {
+  it("shows the full trace id in the expanded group's detail row, alongside an Open link", () => {
     const items = [record({ trace_id: 'trace-with-a-very-long-identifier' })];
     renderCard({ items });
 
@@ -68,6 +68,13 @@ describe('AlertsCard', () => {
     expect(screen.getByText(/Trace:/).parentElement).toHaveTextContent(
       'Trace: trace-with-a-very-long-identifier',
     );
+    const link = screen.getByRole('link', { name: /^open$/i });
+    expect(link).toHaveAttribute('href', '/risk/traces/trace-with-a-very-long-identifier');
+  });
+
+  it('has no Open link while a group is collapsed', () => {
+    renderCard();
+    expect(screen.queryByRole('link', { name: /^open$/i })).not.toBeInTheDocument();
   });
 
   it('expands a group on chevron click without navigating, and collapses again on a second click', () => {
@@ -78,6 +85,30 @@ describe('AlertsCard', () => {
 
     fireEvent.click(toggle);
     expect(screen.queryByText('rule-1')).not.toBeInTheDocument();
+  });
+
+  it('expands a group when its row is clicked, same as the chevron', () => {
+    renderCard();
+    fireEvent.click(screen.getByTestId('alert-row-trace-1'));
+    expect(screen.getByText('rule-1')).toBeInTheDocument();
+  });
+
+  it('does not navigate when the row is clicked (only the detail-row Open link navigates)', () => {
+    render(
+      <MemoryRouter initialEntries={['/risk']}>
+        <Routes>
+          <Route
+            path="/risk"
+            element={
+              <AlertsCard items={[record()]} hasNextPage={false} isFetchingNextPage={false} onNextPage={vi.fn()} />
+            }
+          />
+          <Route path="/risk/traces/:traceId" element={<div>Trace detail page</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByTestId('alert-row-trace-1'));
+    expect(screen.queryByText('Trace detail page')).not.toBeInTheDocument();
   });
 
   it('leaves other groups collapsed when one group is expanded', () => {
@@ -98,8 +129,8 @@ describe('AlertsCard', () => {
       record({ trace_risk_id: 'trr-2', version: 2, trace_risk_level: 'critical' }),
     ];
     renderCard({ items });
-    expect(screen.getAllByRole('link', { name: /open/i })).toHaveLength(1);
     expect(screen.getByText('critical')).toBeInTheDocument();
+    expect(screen.getAllByTestId('alert-row-trace-1')).toHaveLength(1);
   });
 
   it('shows "Load more" only when hasNextPage is true', () => {

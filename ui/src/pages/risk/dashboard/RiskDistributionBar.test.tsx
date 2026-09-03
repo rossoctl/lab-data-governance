@@ -29,6 +29,13 @@ describe('RiskDistributionBar', () => {
     expect(labels).toEqual(['critical', 'high', 'medium', 'low', 'none']);
   });
 
+  it("nests each segment's legend label directly under that segment's bar chunk", () => {
+    render(<RiskDistributionBar distribution={distribution()} />);
+    const [criticalSegment] = screen.getAllByTestId('risk-distribution-segment');
+    const label = screen.getByText(/Critical: 2 \(2%\)/);
+    expect(criticalSegment).toContainElement(label);
+  });
+
   it('gives each segment an accessible label carrying both count and percentage', () => {
     render(<RiskDistributionBar distribution={distribution()} />);
     expect(screen.getByLabelText(/critical: 2 \(2%\)/i)).toBeInTheDocument();

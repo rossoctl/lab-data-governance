@@ -123,6 +123,23 @@ describe('RiskDashboardPage content (#169)', () => {
     expect(screen.queryByText('Users')).not.toBeInTheDocument();
   });
 
+  it('places Top rules in the right pane, above Alerts', async () => {
+    mockFetchRouter();
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
+    const rightPane = screen.getByText('Policies and Alerts').closest('.pf-v5-l-grid__item')!;
+    expect(rightPane).toContainElement(screen.getByText('Top rules'));
+    expect(rightPane).toContainElement(screen.getByText('Alerts'));
+
+    const topRulesTitle = screen.getByText('Top rules');
+    const alertsTitle = screen.getByText('Alerts');
+    expect(topRulesTitle.compareDocumentPosition(alertsTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    const leftPane = screen.getByText('Risk Analysis').closest('.pf-v5-l-grid__item')!;
+    expect(leftPane).not.toContainElement(screen.getByText('Top rules'));
+  });
+
   it('changing the window toggle writes ?window=7d and re-requests every endpoint with it', async () => {
     mockFetchRouter();
     renderWithProviders(
@@ -174,14 +191,16 @@ describe('RiskDashboardPage content (#169)', () => {
     expect(screen.getByTestId('location')).not.toHaveTextContent('window=24h');
   });
 
-  it('shows 1 hour and All time as disabled toggle options pending backend support', async () => {
+  it('offers only the three server-supported window options, none disabled', async () => {
     mockFetchRouter();
     renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
 
     await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: 'Last hour' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'All time' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Last hour' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'All time' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Last 24 hours' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Last 7 days' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Last 30 days' })).toBeEnabled();
   });
 
   it('renders the error state when the summary request fails', async () => {
