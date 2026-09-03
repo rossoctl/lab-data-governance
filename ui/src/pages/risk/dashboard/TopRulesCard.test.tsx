@@ -51,4 +51,11 @@ describe('TopRulesCard', () => {
     expect(link).toHaveAttribute('href', '/risk/rules/rule-2');
     expect(within(table).getAllByRole('row')).toHaveLength(2); // header + 1 data row
   });
+
+  it('renders an "All Rules" link to the rules catalog, independent of item count', () => {
+    renderCard([]);
+
+    const link = screen.getByRole('link', { name: /all rules/i });
+    expect(link).toHaveAttribute('href', '/risk/rules');
+  });
 });

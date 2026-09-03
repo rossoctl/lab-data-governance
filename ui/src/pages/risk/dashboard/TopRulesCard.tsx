@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Card, CardTitle, CardBody, EmptyState, EmptyStateBody } from '@patternfly/react-core';
+import { Card, CardTitle, CardHeader, CardBody, EmptyState, EmptyStateBody } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { RiskBadge } from '../../../risk-components/RiskBadge';
 import type { TopRuleItem } from '../../../risk-api/types';
@@ -18,7 +18,17 @@ interface TopRulesCardProps {
 export function TopRulesCard({ items }: TopRulesCardProps) {
   return (
     <Card isCompact>
-      <CardTitle>Top rules</CardTitle>
+      <CardHeader
+        actions={{
+          actions: (
+            <Link to="/risk/rules" className="pf-v5-c-button pf-m-link pf-m-inline">
+              All Rules
+            </Link>
+          ),
+        }}
+      >
+        <CardTitle>Top rules</CardTitle>
+      </CardHeader>
       <CardBody>
         {items.length === 0 ? (
           <EmptyState variant="xs">
