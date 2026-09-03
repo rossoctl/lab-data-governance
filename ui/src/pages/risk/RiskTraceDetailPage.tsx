@@ -23,24 +23,28 @@ import {
 } from '../../lib/riskForestAdapter';
 import { parseViolationIndex, stepViolation } from '../../lib/riskViolation';
 import { EntityGraph } from '../../components/ExecutionFlowGraph';
-import { InteractionDiagram } from '../../components/InteractionDiagram';
 import { PolicyDecisionPanel } from '../../risk-components/PolicyDecisionPanel';
 import { ViolationStepper } from '../../risk-components/ViolationStepper';
 
 /**
  * Trace detail — the "Alert Execution" view (issue #170, parent #167): given
- * a `trace_id`, render the interaction forest as an execution-flow graph and
- * a sequence diagram, with a policy-decision panel that steps through each
- * triggered-rule violation. Read-only, no mutation.
+ * a `trace_id`, render the interaction forest as an execution-flow graph,
+ * with a policy-decision panel that steps through each triggered-rule
+ * violation. Read-only, no mutation.
  *
  * REUSE, NOT REBUILD (user instruction: "reuse as much as possible... extend
  * as needed"). The forest from `GET /risk/traces/{id}` is adapted by
  * `lib/riskForestAdapter.ts` into the same `flow.Entity[]`/`flow.Interaction[]`
- * shape `lib/graph.ts`'s `deriveGraph` and `lib/sequenceDiagram.ts`'s
- * `deriveSequenceDiagram` already consume, so both derivations and both
- * renderers (`EntityGraph`, `InteractionDiagram`) are the SAME code the
- * ordinary Flow tables use — extended additively with an optional risk-colour
- * seam (`riskLevelByInteraction`) rather than forked or replaced.
+ * shape `lib/graph.ts`'s `deriveGraph` already consumes, so both the
+ * derivation and the renderer (`EntityGraph`) are the SAME code the ordinary
+ * Flow tab uses — extended additively with an optional risk-colour seam
+ * (`riskLevelByInteraction`) rather than forked or replaced.
+ *
+ * ONE DIAGRAM, REQUEST ARROWS ONLY: this page shows the execution-flow graph
+ * alone (no sequence diagram) and `toFlowInteractions` keeps only each
+ * interaction's request leg, so every edge is a single caller→callee call
+ * arrow — no response arrow doubling it back. See `riskForestAdapter.ts`'s
+ * header for why that needed no change to `graph.ts` itself.
  *
  * Like `RiskRuleDetailPage`, this does NOT use `RiskViewShell`: the
  * breadcrumb must stay visible on every state (loading/404/error), but the
@@ -65,9 +69,9 @@ export function RiskTraceDetailPage() {
   // array reference each render, invalidating them for no reason.
   const forest = useMemo(() => detail.data?.interactions ?? [], [detail.data]);
 
-  // Both derivations run on every render (not just once violations exist) so
-  // the two diagrams always render, even when there are zero violations —
-  // AC #5's "both diagrams render, stepper absent" case.
+  // The graph derivation runs on every render (not just once violations
+  // exist) so the diagram always renders, even when there are zero
+  // violations — AC #5's "diagram renders, stepper absent" case.
   const flowEntities = useMemo(
     () => toFlowEntities(forest, entities.data),
     [forest, entities.data],
@@ -150,22 +154,6 @@ export function RiskTraceDetailPage() {
             traceId={traceId ?? ''}
             spec={graphSpec}
             selectedInteractionId={selectedInteractionId}
-            riskLevelByInteraction={riskColours}
-          />
-
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
-            Sequence
-          </Title>
-          <InteractionDiagram
-            entities={flowEntities}
-            interactions={flowInteractions}
-            selectedId={selectedInteractionId}
-            onSelect={() => {
-              /* Read-only view: selection is driven by the violation
-                 stepper/URL, not by clicking the diagrams — a click here
-                 would have nowhere to write a selection that isn't already
-                 tied to a violation index. */
-            }}
             riskLevelByInteraction={riskColours}
           />
 

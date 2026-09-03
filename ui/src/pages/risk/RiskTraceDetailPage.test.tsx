@@ -273,7 +273,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
     expect(screen.getByText('Rule detail page')).toBeInTheDocument();
   });
 
-  it('shows both diagrams and an empty state, with no stepper, when there are zero violations', async () => {
+  it('shows the diagram and an empty state, with no stepper, when there are zero violations', async () => {
     mockFetchRouter({
       detail: {
         trace_risk: { trace_id: 't1' },
@@ -284,7 +284,6 @@ describe('RiskTraceDetailPage content (#170)', () => {
 
     await waitFor(() => expect(screen.getByText('No policy violations')).toBeInTheDocument());
     expect(screen.getByText('Execution flow')).toBeInTheDocument();
-    expect(screen.getByText('Sequence')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /previous/i })).not.toBeInTheDocument();
     expect(screen.queryByTestId('policy-decision-panel')).not.toBeInTheDocument();
   });
@@ -302,7 +301,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
     expect(screen.getByText('Risk dashboard')).toBeInTheDocument();
   });
 
-  it('still renders both diagrams with degraded (unknown) participant labels when the entities read fails', async () => {
+  it('still renders the diagram with degraded (unknown) participant labels when the entities read fails', async () => {
     // Per the codebase's established silent-fallback convention (no Alert
     // component exists anywhere for a "degraded labels" banner — see
     // toFlowEntities/PolicyDecisionPanel's own 'unknown' fallback), a failed
@@ -312,7 +311,6 @@ describe('RiskTraceDetailPage content (#170)', () => {
 
     await waitFor(() => expect(screen.getByText('Policy decisions')).toBeInTheDocument());
     expect(screen.getByText('Execution flow')).toBeInTheDocument();
-    expect(screen.getByText('Sequence')).toBeInTheDocument();
     // entityKindsOf dedupes via a Set — caller and callee both degrade to the
     // same 'unknown' kind, so the row shows one 'unknown', not two.
     expect(within(screen.getByTestId('policy-decision-panel')).getByText('unknown')).toBeInTheDocument();

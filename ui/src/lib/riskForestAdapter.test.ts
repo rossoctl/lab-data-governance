@@ -7,7 +7,6 @@ import {
   violationsOf,
 } from './riskForestAdapter';
 import { deriveGraph } from './graph';
-import { deriveSequenceDiagram } from './sequenceDiagram';
 import type { ForestInteraction, InteractionRisk } from '../risk-api/types';
 import type { Entity as FlowEntity } from './flow';
 
@@ -71,26 +70,19 @@ function flowEntity(overrides: Partial<FlowEntity> = {}): FlowEntity {
 
 describe('riskForestAdapter', () => {
   describe('toFlowInteractions', () => {
-    it('synthesizes seq from array position: 1,2 / 3,4 / 5,6', () => {
+    it('synthesizes seq from array position: 1, 2, 3', () => {
       const forest = [
         forestInteraction({ interaction_id: 'ix1' }),
         forestInteraction({ interaction_id: 'ix2' }),
         forestInteraction({ interaction_id: 'ix3' }),
       ];
       const flow = toFlowInteractions(forest);
-      expect(flow[0].legs.map((l) => l.seq)).toEqual([1, 2]);
-      expect(flow[1].legs.map((l) => l.seq)).toEqual([3, 4]);
-      expect(flow[2].legs.map((l) => l.seq)).toEqual([5, 6]);
+      expect(flow[0].legs.map((l) => l.seq)).toEqual([1]);
+      expect(flow[1].legs.map((l) => l.seq)).toEqual([2]);
+      expect(flow[2].legs.map((l) => l.seq)).toEqual([3]);
     });
 
-    it('gives a request-only interaction (no response leg) exactly one leg', () => {
-      const forest = [forestInteraction({ legs: [leg({ leg_type: 'request' })] })];
-      const flow = toFlowInteractions(forest);
-      expect(flow[0].legs).toHaveLength(1);
-      expect(flow[0].legs[0].seq).toBe(1);
-    });
-
-    it('computes duration_seconds from the leg delta when both legs are present', () => {
+    it('keeps only the request leg — the execution-flow graph draws request arrows only', () => {
       const forest = [
         forestInteraction({
           legs: [
@@ -100,36 +92,48 @@ describe('riskForestAdapter', () => {
         }),
       ];
       const flow = toFlowInteractions(forest);
-      expect(flow[0].duration_seconds).toBeCloseTo(2.5);
+      expect(flow[0].legs).toHaveLength(1);
+      expect(flow[0].legs[0].leg_type).toBe('request');
+      expect(flow[0].legs[0].seq).toBe(1);
     });
 
-    it('duration_seconds is null with no response leg', () => {
+    it('gives a request-only interaction (no response leg to begin with) exactly one leg', () => {
       const forest = [forestInteraction({ legs: [leg({ leg_type: 'request' })] })];
+      const flow = toFlowInteractions(forest);
+      expect(flow[0].legs).toHaveLength(1);
+      expect(flow[0].legs[0].seq).toBe(1);
+    });
+
+    it('duration_seconds is always null — there is no response leg to measure a delta against', () => {
+      const forest = [
+        forestInteraction({
+          legs: [
+            leg({ leg_type: 'request', occurred_at: '2026-01-01T00:00:00.000Z' }),
+            leg({ leg_type: 'response', occurred_at: '2026-01-01T00:00:02.500Z' }),
+          ],
+        }),
+      ];
       const flow = toFlowInteractions(forest);
       expect(flow[0].duration_seconds).toBeNull();
     });
 
-    it('any_error is an OR of the legs, preserving null when no leg reports', () => {
+    it("any_error reflects only the request leg's own outcome", () => {
       const noErrorReported = toFlowInteractions([
-        forestInteraction({
-          legs: [leg({ leg_type: 'request', error: null }), leg({ leg_type: 'response', error: null })],
-        }),
+        forestInteraction({ legs: [leg({ leg_type: 'request', error: null })] }),
       ]);
       expect(noErrorReported[0].any_error).toBeNull();
 
-      const oneErrors = toFlowInteractions([
+      const errored = toFlowInteractions([
         forestInteraction({
           legs: [leg({ leg_type: 'request', error: true }), leg({ leg_type: 'response', error: null })],
         }),
       ]);
-      expect(oneErrors[0].any_error).toBe(true);
+      expect(errored[0].any_error).toBe(true);
 
-      const noneErrors = toFlowInteractions([
-        forestInteraction({
-          legs: [leg({ leg_type: 'request', error: false }), leg({ leg_type: 'response', error: false })],
-        }),
+      const notErrored = toFlowInteractions([
+        forestInteraction({ legs: [leg({ leg_type: 'request', error: false })] }),
       ]);
-      expect(noneErrors[0].any_error).toBe(false);
+      expect(notErrored[0].any_error).toBe(false);
     });
 
     it('passes a null participant straight through', () => {
@@ -257,8 +261,8 @@ describe('riskForestAdapter', () => {
     });
   });
 
-  describe('adapter output feeds the existing derivations (integration)', () => {
-    it('deriveGraph accepts the widened output: message order, swapped response direction, null-participant dropped', () => {
+  describe('adapter output feeds the existing derivation (integration)', () => {
+    it('deriveGraph accepts the widened output: one request-only edge per call, in forest order, null-participant dropped', () => {
       const forest = [
         forestInteraction({
           interaction_id: 'ix1',
@@ -280,40 +284,13 @@ describe('riskForestAdapter', () => {
       const flowEntities = toFlowEntities(forest, [flowEntity({ id: 'e1' }), flowEntity({ id: 'e2' })]);
 
       const graph = deriveGraph(flowEntities, flowInteractions);
-      // ix1's request (e1->e2, seq 1) then response (e2->e1, seq 2), in forest order.
-      expect(graph.edges.map((e) => e.seq)).toEqual([1, 2]);
-      expect(graph.edges[0]).toMatchObject({ source: 'e1', target: 'e2' });
-      expect(graph.edges[1]).toMatchObject({ source: 'e2', target: 'e1' }); // swapped on response
+      // ix1 contributes exactly one edge (its request leg only) — no response
+      // arrow doubling it back, even though the forest interaction has a
+      // response leg.
+      expect(graph.edges.map((e) => e.seq)).toEqual([1]);
+      expect(graph.edges[0]).toMatchObject({ source: 'e1', target: 'e2', legType: 'request' });
       // ix2 has a null caller -> dropped, not drawn.
       expect(graph.dropped.map((d) => d.id)).toEqual(['ix2']);
-    });
-
-    it('deriveSequenceDiagram accepts the widened output the same way', () => {
-      const forest = [
-        forestInteraction({
-          interaction_id: 'ix1',
-          caller_entity_id: 'e1',
-          callee_entity_id: 'e2',
-          legs: [
-            leg({ leg_type: 'request', occurred_at: '2026-01-01T00:00:00Z' }),
-            leg({ leg_type: 'response', occurred_at: '2026-01-01T00:00:01Z' }),
-          ],
-        }),
-        forestInteraction({
-          interaction_id: 'ix2',
-          caller_entity_id: 'e2',
-          callee_entity_id: null,
-          legs: [leg({ leg_type: 'request', occurred_at: '2026-01-01T00:00:02Z' })],
-        }),
-      ];
-      const flowInteractions = toFlowInteractions(forest);
-      const flowEntities = toFlowEntities(forest, [flowEntity({ id: 'e1' }), flowEntity({ id: 'e2' })]);
-
-      const diagram = deriveSequenceDiagram(flowEntities, flowInteractions);
-      expect(diagram.messages.map((m) => m.seq)).toEqual([1, 2]);
-      expect(diagram.messages[0]).toMatchObject({ fromIndex: 0, toIndex: 1 });
-      expect(diagram.messages[1]).toMatchObject({ fromIndex: 1, toIndex: 0 }); // swapped on response
-      expect(diagram.dropped.map((d) => d.id)).toEqual(['ix2']);
     });
   });
 });

@@ -18,10 +18,9 @@
  *    ARRAY POSITION *is* the temporal order the server committed to. This
  *    module synthesizes `seq` from that position rather than re-deriving an
  *    order of its own: interaction at index `i` (0-based) gets its request
- *    leg `seq = 2i + 1` and its response leg `seq = 2i + 2`. Derived, not
- *    re-sorted on `occurred_at` — re-sorting here could silently disagree
- *    with the server on ties or on null-timestamp placement, which the
- *    server has already resolved once.
+ *    leg `seq = i + 1`. Derived, not re-sorted on `occurred_at` —
+ *    re-sorting here could silently disagree with the server on ties or on
+ *    null-timestamp placement, which the server has already resolved once.
  *
  *    STATED LIMITATION: this is coarser than the `/api/` tree's real
  *    trace-wide leg `seq` (`flow.ts`'s own domain) and cannot interleave a
@@ -30,6 +29,18 @@
  *    the finest order the risk payload's own sort gives us. If the risk API
  *    ever returns a genuine leg `seq`, this is the one place to change.
  *
+ *    REQUEST LEGS ONLY (issue #170 follow-up): the execution-flow graph on
+ *    this page draws one arrow per call, not one per direction of the wire
+ *    — a response arrow doubling every edge back added visual noise without
+ *    adding information the graph needs to convey. `toFlowInteractions`
+ *    therefore keeps only each interaction's request leg; `deriveGraph`
+ *    already draws exactly one edge for a request-only interaction (the
+ *    same code path it uses for a call whose response hasn't arrived yet),
+ *    so no change to `graph.ts` was needed. A consequence, not a separate
+ *    decision: `duration_seconds` is always `null` here (there is no
+ *    response leg to measure a delta against) and `any_error` reflects only
+ *    the request leg's own outcome — neither is rendered by this page.
+ *
  * 2. NO ENTITY METADATA. `ForestInteraction.caller_entity_id`/
  *    `callee_entity_id` are opaque ids with no `kind`/`display_name` — that
  *    comes from the pre-existing, non-risk `GET /api/traces/{traceId}/entities`
@@ -37,19 +48,12 @@
  *    a real row wins; an id the forest references but `useEntities` didn't
  *    return (or a wholly absent/failed entities read) degrades to a
  *    synthesized `kind: 'unknown'` stand-in labelled with the bare id,
- *    rather than pushing the interaction into `deriveGraph`/
- *    `deriveSequenceDiagram`'s `dropped` list — a label going missing is a
- *    presentation problem, not a reason to hide a real interaction.
+ *    rather than pushing the interaction into `deriveGraph`'s `dropped`
+ *    list — a label going missing is a presentation problem, not a reason
+ *    to hide a real interaction.
  */
 import type { Entity, Interaction, InteractionLeg } from './flow';
 import type { ForestInteraction } from '../risk-api/types';
-
-/** `(ended - started)` in seconds, or `null` when either end is absent. */
-function durationSeconds(requestAt: string | null, responseAt: string | null): number | null {
-  if (requestAt == null || responseAt == null) return null;
-  const ms = new Date(responseAt).getTime() - new Date(requestAt).getTime();
-  return ms / 1000;
-}
 
 /**
  * OR-aggregate a forest interaction's leg errors, tri-state preserved: an
@@ -67,22 +71,27 @@ function anyError(legs: readonly { error: boolean | null }[]): boolean | null {
 
 /**
  * Widen the risk forest's interactions to `flow.Interaction[]`, synthesizing
- * `seq` from array position (see module header). Field-for-field pass-through
- * otherwise, including a null `caller_entity_id`/`callee_entity_id` — both
- * derivations already route that into `dropped`.
+ * `seq` from array position (see module header) and keeping only each
+ * interaction's REQUEST leg — the execution-flow graph this feeds draws one
+ * arrow per call, not one per direction of the wire. Field-for-field
+ * pass-through otherwise, including a null `caller_entity_id`/
+ * `callee_entity_id` — both derivations already route that into `dropped`.
  */
 export function toFlowInteractions(forest: readonly ForestInteraction[]): Interaction[] {
   return forest.map((ix, i) => {
     const requestLeg = ix.legs.find((l) => l.leg_type === 'request');
-    const responseLeg = ix.legs.find((l) => l.leg_type === 'response');
 
-    const legs: InteractionLeg[] = ix.legs.map((leg) => ({
-      leg_type: leg.leg_type,
-      occurred_at: leg.occurred_at,
-      payload_hash: leg.payload_hash,
-      error: leg.error,
-      seq: leg.leg_type === 'request' ? 2 * i + 1 : 2 * i + 2,
-    }));
+    const legs: InteractionLeg[] = requestLeg
+      ? [
+          {
+            leg_type: requestLeg.leg_type,
+            occurred_at: requestLeg.occurred_at,
+            payload_hash: requestLeg.payload_hash,
+            error: requestLeg.error,
+            seq: i + 1,
+          },
+        ]
+      : [];
 
     return {
       id: ix.interaction_id,
@@ -91,8 +100,8 @@ export function toFlowInteractions(forest: readonly ForestInteraction[]): Intera
       summary: ix.summary,
       parent_interaction_id: ix.parent_interaction_id,
       legs,
-      duration_seconds: durationSeconds(requestLeg?.occurred_at ?? null, responseLeg?.occurred_at ?? null),
-      any_error: anyError(ix.legs),
+      duration_seconds: null,
+      any_error: anyError(legs),
       span_count: ix.span_count,
       anchor_count: ix.anchor_count,
     };
