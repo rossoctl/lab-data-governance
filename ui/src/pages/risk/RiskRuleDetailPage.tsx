@@ -128,7 +128,7 @@ export function RiskRuleDetailPage() {
       ) : rule.data ? (
         <>
           <Grid className="pf-v5-u-mt-md" style={{ rowGap: 'var(--pf-v5-global--gutter)', columnGap: '0.5rem' }}>
-            <GridItem md={8}>
+            <GridItem md={5}>
               <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm">
                 Rule information
               </Title>
@@ -166,7 +166,7 @@ export function RiskRuleDetailPage() {
               </DescriptionList>
             </GridItem>
 
-            <GridItem md={4}>
+            <GridItem md={5}>
               <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm">
                 Conditions
               </Title>
