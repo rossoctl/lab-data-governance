@@ -118,7 +118,7 @@ export function RiskRuleDetailPage() {
         </EmptyState>
       ) : rule.data ? (
         <>
-          <Grid hasGutter className="pf-v5-u-mt-md">
+          <Grid className="pf-v5-u-mt-md" style={{ rowGap: 'var(--pf-v5-global--gutter)', columnGap: '0.5rem' }}>
             <GridItem md={6}>
               <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm">
                 Rule information
@@ -191,12 +191,12 @@ export function RiskRuleDetailPage() {
             </GridItem>
           </Grid>
 
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '6rem' }}>
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '3rem' }}>
             Explanation
           </Title>
           <p>{rule.data.explanation ?? 'No explanation provided.'}</p>
 
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '6rem' }}>
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '3rem' }}>
             Sources
           </Title>
           {rule.data.rule_sources.length === 0 ? (
@@ -212,7 +212,7 @@ export function RiskRuleDetailPage() {
             </p>
           )}
 
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '6rem' }}>
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '3rem' }}>
             Allowed Actions
           </Title>
           <p>{rule.data.allowed_actions.length === 0 ? 'none' : rule.data.allowed_actions.join(', ')}</p>

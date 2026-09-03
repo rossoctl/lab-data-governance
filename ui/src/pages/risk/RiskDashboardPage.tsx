@@ -116,7 +116,7 @@ export function RiskDashboardPage() {
 
       <Grid hasGutter className="pf-v5-u-mt-md">
         <GridItem span={12} lg={6}>
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-md" style={{ marginTop: '6rem' }}>
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-md" style={{ marginTop: '3rem' }}>
             Risk Analysis
           </Title>
           <Stack hasGutter>
@@ -131,7 +131,7 @@ export function RiskDashboardPage() {
           </Stack>
         </GridItem>
         <GridItem span={12} lg={6}>
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-md" style={{ marginTop: '6rem' }}>
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-md" style={{ marginTop: '3rem' }}>
             Policies and Alerts
           </Title>
           <Stack hasGutter>
