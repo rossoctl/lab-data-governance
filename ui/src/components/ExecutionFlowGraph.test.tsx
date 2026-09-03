@@ -2136,9 +2136,15 @@ describe('EntityGraph risk colouring (issue #170)', () => {
   function renderEntityGraph(
     spec: GraphSpec,
     riskLevelByInteraction?: ReadonlyMap<string, string>,
+    hideParallelGroupsNotice?: boolean,
   ) {
     return renderWithProviders(
-      <EntityGraph traceId="T1" spec={spec} riskLevelByInteraction={riskLevelByInteraction} />,
+      <EntityGraph
+        traceId="T1"
+        spec={spec}
+        riskLevelByInteraction={riskLevelByInteraction}
+        hideParallelGroupsNotice={hideParallelGroupsNotice}
+      />,
     );
   }
 
@@ -2272,6 +2278,24 @@ describe('EntityGraph risk colouring (issue #170)', () => {
     };
     expect(e1.riskLevel).toBeUndefined();
     expect(e1.kindColoured).toBe(true);
+  });
+
+  it("suppresses the 'entity pair(s) with multiple interactions' notice when hideParallelGroupsNotice is set — the risk trace view draws request legs only, so the notice's response-leg premise never applies there", async () => {
+    const spec = riskSpec();
+    spec.parallelGroups = [{ key: 'e1|e2', edgeIds: ['i1:request', 'i1:response'] }];
+    renderEntityGraph(spec, undefined, true);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(screen.queryByText(/with multiple interactions/i)).not.toBeInTheDocument();
+  });
+
+  it('still shows the notice when hideParallelGroupsNotice is omitted — the flag is opt-out, not a default change', async () => {
+    const spec = riskSpec();
+    spec.parallelGroups = [{ key: 'e1|e2', edgeIds: ['i1:request', 'i1:response'] }];
+    renderEntityGraph(spec);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(screen.getByText(/1 entity pair with multiple interactions/i)).toBeInTheDocument();
   });
 });
 

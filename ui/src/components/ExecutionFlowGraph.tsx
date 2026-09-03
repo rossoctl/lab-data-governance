@@ -1880,6 +1880,19 @@ export interface EntityGraphProps {
    * drawn as a colour.
    */
   riskLevelByInteraction?: ReadonlyMap<string, string>;
+  /**
+   * Suppress the built-in "N entity pair(s) with multiple interactions"
+   * notice (issue #170's Alert Execution view). That notice's whole premise
+   * is the request/response leg pair a completed interaction normally draws
+   * in the same channel — see the notice's own comment below, "a single
+   * completed interaction always puts two arrows... so counting edges would
+   * fire this notice on virtually every trace". The risk trace view draws
+   * request legs only (`riskForestAdapter.toFlowInteractions`), so a
+   * "multiple interactions" notice there is answering a question about
+   * response arrows that page never draws — noise, not a caveat. Both
+   * existing tabs omit this prop and keep the notice unchanged.
+   */
+  hideParallelGroupsNotice?: boolean;
 }
 
 /**
@@ -1927,6 +1940,7 @@ export function EntityGraph({
   legend,
   testId = 'execution-flow-graph',
   riskLevelByInteraction,
+  hideParallelGroupsNotice = false,
 }: EntityGraphProps) {
   // One Visualization instance for the view's lifetime. Created lazily in state
   // (not a ref-with-side-effects) so React owns it; the factory is registered
@@ -2503,7 +2517,7 @@ export function EntityGraph({
             response) in the same channel, so counting edges would fire this notice
             on virtually every trace — noise that is always on carries no
             information. See lib/graph's parallelGroups. */}
-        {spec.parallelGroups.length > 0 && (
+        {spec.parallelGroups.length > 0 && !hideParallelGroupsNotice && (
           <Alert
             variant="info"
             isInline

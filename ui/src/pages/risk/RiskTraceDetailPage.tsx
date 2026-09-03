@@ -57,11 +57,11 @@ import { ViolationStepper } from '../../risk-components/ViolationStepper';
  * `?violation=N` URL and the Previous/Next controls can never disagree.
  */
 export function RiskTraceDetailPage() {
-  const { traceId } = useParams<{ traceId: string }>();
+  const { traceId = '' } = useParams<{ traceId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const detail = useTraceRiskDetail(traceId);
-  const entities = useEntities(traceId ?? '');
+  const entities = useEntities(traceId);
   const catalog = useRuleCatalogIndex();
 
   // Memoized so its identity is stable across renders when detail.data is
@@ -151,10 +151,11 @@ export function RiskTraceDetailPage() {
             Execution flow
           </Title>
           <EntityGraph
-            traceId={traceId ?? ''}
+            traceId={traceId}
             spec={graphSpec}
             selectedInteractionId={selectedInteractionId}
             riskLevelByInteraction={riskColours}
+            hideParallelGroupsNotice
           />
 
           <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">

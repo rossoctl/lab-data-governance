@@ -75,19 +75,20 @@ export function riskLevelColorVar(level: string): string {
 }
 
 /**
- * Severity order, least to most severe — mirrors the server's own
- * `RISK_LEVEL_ORDER` (`data_governance/risk/rules/catalog.py`). `unknown` sits
- * beside `none` at the bottom: neither is a claim that something IS safe, so
- * neither should out-rank a level that is an actual verdict.
+ * Severity order, most to least severe — the same tuple as the server's own
+ * `RISK_LEVEL_ORDER` (`data_governance/risk/rules/catalog.py`), verbatim, so
+ * the UI has no ranking of its own to fall out of sync with the server's.
+ * `unknown` sits beside `none` at the bottom: neither is a claim that
+ * something IS safe, so neither should out-rank a level that is an actual
+ * verdict.
  */
-const RISK_LEVEL_SEVERITY: Record<string, number> = {
-  unknown: 0,
-  none: 0,
-  low: 1,
-  medium: 2,
-  high: 3,
-  critical: 4,
-};
+const RISK_LEVEL_ORDER: readonly string[] = ['critical', 'high', 'medium', 'low', 'none', 'unknown'];
+
+/** A level's position in {@link RISK_LEVEL_ORDER}; a level not listed ranks with `unknown`. */
+function severityRank(level: string): number {
+  const index = RISK_LEVEL_ORDER.indexOf(level);
+  return index === -1 ? RISK_LEVEL_ORDER.indexOf('unknown') : index;
+}
 
 /**
  * The more severe of two risk levels, `unknown` losing every tie so a real
@@ -102,7 +103,7 @@ const RISK_LEVEL_SEVERITY: Record<string, number> = {
  * replace this roll-up rather than sit beside it.
  */
 export function moreSevereRiskLevel(a: string, b: string): string {
-  const sa = RISK_LEVEL_SEVERITY[a] ?? RISK_LEVEL_SEVERITY.unknown;
-  const sb = RISK_LEVEL_SEVERITY[b] ?? RISK_LEVEL_SEVERITY.unknown;
-  return sb > sa ? b : a;
+  // Lower index = more severe, so the smaller rank wins; a tie (both
+  // unranked, or the same level twice) keeps `a`.
+  return severityRank(b) < severityRank(a) ? b : a;
 }

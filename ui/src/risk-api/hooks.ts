@@ -190,8 +190,14 @@ export function useTraceRiskDetail(traceId: string | undefined): UseQueryResult<
  * `/risk/rules/{id}`, it just can't show that rule's `rule_name` inline.
  * Following the cursor to build a complete index would reintroduce the
  * multi-request cost this hook exists to avoid, for a cosmetic gain.
+ *
+ * Capped at the server's own ceiling (`API_RISK_RULES_MAX_LIMIT`,
+ * `data_governance/risk/config.py`, default 200) rather than some larger
+ * number: the server clamps `limit` to that value regardless, so requesting
+ * more than it would ever serve in one page was dead intent, not a bigger
+ * page.
  */
-const RULE_CATALOG_INDEX_LIMIT = 500;
+const RULE_CATALOG_INDEX_LIMIT = 200;
 
 export function useRuleCatalogIndex(): UseQueryResult<Map<string, RuleListItem>> {
   return useQuery({
