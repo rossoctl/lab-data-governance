@@ -1,10 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Routes, Route } from 'react-router-dom';
 import { renderWithProviders } from '../../test/renderWithProviders';
 import { LocationProbe } from '../../test/LocationProbe';
 import { RiskTraceDetailPage } from './RiskTraceDetailPage';
+
+/**
+ * Click one edge, the way a reader does — same target and same `act` wrap as
+ * `ExecutionFlowGraph.test.tsx`'s own `clickEdge` helper (see that file's
+ * header for why `fireEvent` rather than `userEvent`, and why the `act` wrap
+ * is needed for PF's mobx selection state).
+ */
+function clickEdge(id: string) {
+  const handler = document.querySelector(`[data-id="${id}"] [data-test-id="edge-handler"]`);
+  if (!handler) throw new Error(`no clickable handler on edge ${id}`);
+  act(() => {
+    fireEvent.click(handler);
+  });
+}
 
 // Mounted under a real :traceId route so useParams resolves, mirroring
 // TraceDetailPage.test.tsx's harness() convention for the same requirement.
@@ -228,6 +242,60 @@ describe('RiskTraceDetailPage content (#170)', () => {
     // Stepper: now "1 of 2", Previous disabled.
     expect(screen.getByText('1 of 2')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /previous/i })).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('clicking a violating edge selects that violation, the same way the stepper does (issue #170)', async () => {
+    mockFetchRouter({
+      detail: {
+        trace_risk: { trace_id: 't1' },
+        interactions: [
+          interaction({ interaction_id: 'i1', summary: 'first violation' }),
+          interaction({ interaction_id: 'i2', summary: 'second violation', risk: risk({ interaction_id: 'i2' }) }),
+        ],
+      },
+    });
+    renderWithProviders(
+      <>
+        <LocationProbe />
+        {harness()}
+      </>,
+      { route: '/risk/traces/t1' },
+    );
+
+    await waitFor(() => expect(screen.getByText('1 of 2')).toBeInTheDocument());
+
+    clickEdge('i2:request');
+
+    await waitFor(() => expect(screen.getByText('2 of 2')).toBeInTheDocument());
+    expect(within(screen.getByTestId('policy-decision-panel')).getByText('second violation')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('violation=2');
+  });
+
+  it('clicking an edge whose interaction triggered no rule is a no-op, leaving the open violation as-is', async () => {
+    mockFetchRouter({
+      detail: {
+        trace_risk: { trace_id: 't1' },
+        interactions: [
+          interaction({ interaction_id: 'i1', summary: 'only violation' }),
+          interaction({ interaction_id: 'i2', summary: 'not a violation', risk: null }),
+        ],
+      },
+    });
+    renderWithProviders(
+      <>
+        <LocationProbe />
+        {harness()}
+      </>,
+      { route: '/risk/traces/t1' },
+    );
+
+    await waitFor(() => expect(screen.getByText('1 of 1')).toBeInTheDocument());
+
+    clickEdge('i2:request');
+
+    expect(screen.getByText('1 of 1')).toBeInTheDocument();
+    expect(within(screen.getByTestId('policy-decision-panel')).getByText('only violation')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).not.toHaveTextContent('violation=');
   });
 
   it('clamps an out-of-range or non-numeric ?violation= to violation 1 without error', async () => {

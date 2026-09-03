@@ -2297,6 +2297,30 @@ describe('EntityGraph risk colouring (issue #170)', () => {
 
     expect(screen.getByText(/1 entity pair with multiple interactions/i)).toBeInTheDocument();
   });
+
+  it("blanks each edge's seq-number tag when hideEdgeLabels is set — the risk trace view has no Flat table to cross-reference the number against (issue #170)", async () => {
+    renderWithProviders(
+      <EntityGraph traceId="T1" spec={riskSpec()} hideEdgeLabels />,
+    );
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    // `DirectedEdge` reads only `data?.label` for its visible tag (this file's
+    // header explains why tag CONTENT can't be asserted through rendered DOM
+    // on jsdom's zero-bbox surface) — so the blanking is asserted on the model
+    // data itself, the same way `riskLevel` is asserted above.
+    const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
+    const res = capturedController?.getEdgeById('i1:response')?.getData() as { label?: string };
+    expect(req.label).toBe('');
+    expect(res.label).toBe('');
+  });
+
+  it('leaves the seq-number tag data unchanged when hideEdgeLabels is omitted — a pure regression guard for the two existing tabs, which never pass it', async () => {
+    renderEntityGraph(riskSpec());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
+    expect(req.label).toBe('1');
+  });
 });
 
 /**

@@ -1893,6 +1893,19 @@ export interface EntityGraphProps {
    * existing tabs omit this prop and keep the notice unchanged.
    */
   hideParallelGroupsNotice?: boolean;
+  /**
+   * Suppress each edge's visible `seq`-number tag (issue #170's Alert
+   * Execution view). That number is meaningful on the Execution Flow/Lineage
+   * tabs, where it is the trace-wide leg order a reader cross-references
+   * against the Flat table's own `seq` column — a table this view has no
+   * equivalent of. Here the arrows are the whole picture (one request leg
+   * per interaction, no table alongside them), so a bare number floating on
+   * every arrow is clutter with nothing to cross-reference, not information.
+   * The interaction's full summary is still available via the edge's
+   * `<title>` hover text either way. Both existing tabs omit this prop and
+   * keep their tags unchanged.
+   */
+  hideEdgeLabels?: boolean;
 }
 
 /**
@@ -1941,6 +1954,7 @@ export function EntityGraph({
   testId = 'execution-flow-graph',
   riskLevelByInteraction,
   hideParallelGroupsNotice = false,
+  hideEdgeLabels = false,
 }: EntityGraphProps) {
   // One Visualization instance for the view's lifetime. Created lazily in state
   // (not a ref-with-side-effects) so React owns it; the factory is registered
@@ -2192,6 +2206,11 @@ export function EntityGraph({
         bendpoints: edgeBendpoints(e, cellById),
         data: {
           ...e,
+          // Blanked rather than left on the spec when the caller opts out (see
+          // `EntityGraphProps.hideEdgeLabels`) — `DirectedEdge` reads only
+          // `data?.label` for its visible tag, so this is the single place
+          // that needs to know about the flag.
+          label: hideEdgeLabels ? '' : e.label,
           highlight: roleOf(e.id, highlight, false),
           // Per INTERACTION, so both legs of the selected one are marked — see
           // EdgeData. A primitive comparison, so this adds nothing the effect's
@@ -2226,7 +2245,9 @@ export function EntityGraph({
     // `riskLevelByInteraction` is listed directly too, same reasoning as
     // `selectedInteractionId`: the risk colour is baked into element `data`, and
     // both existing tabs pass `undefined` forever, so this dependency is a no-op
-    // for them.
+    // for them. `hideEdgeLabels` joins them for the identical reason: the blanked
+    // label is baked into element `data` too, and both existing tabs pass `false`
+    // forever.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     controller,
@@ -2236,6 +2257,7 @@ export function EntityGraph({
     highlightKey,
     selectedInteractionId,
     riskLevelByInteraction,
+    hideEdgeLabels,
   ]);
 
   /**

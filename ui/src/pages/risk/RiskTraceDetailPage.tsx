@@ -55,6 +55,13 @@ import { ViolationStepper } from '../../risk-components/ViolationStepper';
  * `lib/riskViolation.ts`'s header for why, and note the selection is ALWAYS
  * derived from that param, never from component state, so a cold-opened
  * `?violation=N` URL and the Previous/Next controls can never disagree.
+ *
+ * CLICKING AN EDGE selects that interaction's violation the same way the
+ * stepper does — both write the same `?violation=` param via `setViolation`,
+ * so a graph click and Previous/Next can never disagree either. An edge
+ * whose interaction triggered no rule has no violation index to select, so
+ * `handleSelectInteraction` no-ops for it rather than clearing whatever
+ * violation is currently open.
  */
 export function RiskTraceDetailPage() {
   const { traceId = '' } = useParams<{ traceId: string }>();
@@ -86,6 +93,25 @@ export function RiskTraceDetailPage() {
 
   const violationIndex = parseViolationIndex(searchParams.get('violation'), violations.length);
   const violation = violationIndex != null ? violations[violationIndex - 1] : null;
+
+  // Maps a clicked edge's interaction id back to its 1-based position in
+  // `violations`, the same numbering `?violation=` uses — so a graph click
+  // and the stepper always agree on what "violation N" means.
+  const violationIndexByInteractionId = useMemo(() => {
+    const map = new Map<string, number>();
+    violations.forEach((v, i) => map.set(v.interaction_id, i + 1));
+    return map;
+  }, [violations]);
+
+  // Clicking an edge whose interaction triggered no rule has no policy
+  // decision to show — left as a no-op rather than clearing the current
+  // selection, since a click that can't show anything shouldn't hide what
+  // was already open.
+  function handleSelectInteraction(interactionId: string | null) {
+    if (interactionId == null) return;
+    const index = violationIndexByInteractionId.get(interactionId);
+    if (index != null) setViolation(index);
+  }
 
   // Written by DELETING the param at the default, never by setting it
   // explicitly — the same convention `RiskDashboardPage.tsx` documents for
@@ -154,8 +180,10 @@ export function RiskTraceDetailPage() {
             traceId={traceId}
             spec={graphSpec}
             selectedInteractionId={selectedInteractionId}
+            onSelectInteraction={handleSelectInteraction}
             riskLevelByInteraction={riskColours}
             hideParallelGroupsNotice
+            hideEdgeLabels
           />
 
           <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
