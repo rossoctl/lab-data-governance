@@ -191,12 +191,12 @@ export function RiskRuleDetailPage() {
             </GridItem>
           </Grid>
 
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-2xl pf-v5-u-mb-sm">
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '6rem' }}>
             Explanation
           </Title>
           <p>{rule.data.explanation ?? 'No explanation provided.'}</p>
 
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-2xl pf-v5-u-mb-sm">
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '6rem' }}>
             Sources
           </Title>
           {rule.data.rule_sources.length === 0 ? (
@@ -212,7 +212,7 @@ export function RiskRuleDetailPage() {
             </p>
           )}
 
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-2xl pf-v5-u-mb-sm">
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mb-sm" style={{ marginTop: '6rem' }}>
             Allowed Actions
           </Title>
           <p>{rule.data.allowed_actions.length === 0 ? 'none' : rule.data.allowed_actions.join(', ')}</p>
