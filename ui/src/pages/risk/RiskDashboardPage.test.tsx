@@ -108,18 +108,22 @@ describe('RiskDashboardPage content (#169)', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
-  it('renders all five cards once data loads', async () => {
+  it('renders all cards once data loads, under their two pane titles', async () => {
     mockFetchRouter();
     renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
 
     await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
+    expect(screen.getByText('Risk Analysis')).toBeInTheDocument();
+    expect(screen.getByText('Policies and Alerts')).toBeInTheDocument();
+    expect(screen.getByText('Risk Distribution')).toBeInTheDocument();
     expect(screen.getByText('Top rules')).toBeInTheDocument();
     expect(screen.getByText('Risk by category')).toBeInTheDocument();
     expect(screen.getByText('Alerts')).toBeInTheDocument();
     expect(screen.getByLabelText(/critical: 1 \(1%\)/i)).toBeInTheDocument();
+    expect(screen.queryByText('Users')).not.toBeInTheDocument();
   });
 
-  it('changing the window select writes ?window=7d and re-requests every endpoint with it', async () => {
+  it('changing the window toggle writes ?window=7d and re-requests every endpoint with it', async () => {
     mockFetchRouter();
     renderWithProviders(
       <>
@@ -130,7 +134,7 @@ describe('RiskDashboardPage content (#169)', () => {
     );
 
     await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
-    await userEvent.selectOptions(screen.getByLabelText('Time window'), '7d');
+    await userEvent.click(screen.getByRole('button', { name: 'Last 7 days' }));
 
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/risk?window=7d'),
@@ -164,10 +168,20 @@ describe('RiskDashboardPage content (#169)', () => {
     );
 
     await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
-    await userEvent.selectOptions(screen.getByLabelText('Time window'), '24h');
+    await userEvent.click(screen.getByRole('button', { name: 'Last 24 hours' }));
 
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/risk'));
     expect(screen.getByTestId('location')).not.toHaveTextContent('window=24h');
+  });
+
+  it('shows 1 hour and All time as disabled toggle options pending backend support', async () => {
+    mockFetchRouter();
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Last hour' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'All time' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Last 24 hours' })).toBeEnabled();
   });
 
   it('renders the error state when the summary request fails', async () => {

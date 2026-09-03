@@ -46,6 +46,30 @@ describe('AlertsCard', () => {
     expect(link).toHaveAttribute('href', '/risk/traces/trace-1');
   });
 
+  it('renders every column header, and truncates the trace id with its full value available on hover', () => {
+    const items = [
+      record({ trace_id: 'trace-with-a-very-long-identifier-that-would-overflow-the-column' }),
+    ];
+    renderCard({ items });
+
+    for (const header of ['Trace', 'Risk level', 'Enforcement', 'Interactions', 'Policy events', 'Open']) {
+      expect(screen.getByRole('columnheader', { name: header })).toBeInTheDocument();
+    }
+
+    const traceCell = screen.getByTitle('trace-with-a-very-long-identifier-that-would-overflow-the-column');
+    expect(traceCell).toBeInTheDocument();
+  });
+
+  it("shows the full trace id in the expanded group's detail row", () => {
+    const items = [record({ trace_id: 'trace-with-a-very-long-identifier' })];
+    renderCard({ items });
+
+    fireEvent.click(screen.getByRole('button', { name: /trace-with-a-very-long-identifier/i }));
+    expect(screen.getByText(/Trace:/).parentElement).toHaveTextContent(
+      'Trace: trace-with-a-very-long-identifier',
+    );
+  });
+
   it('expands a group on chevron click without navigating, and collapses again on a second click', () => {
     renderCard();
     const toggle = screen.getByRole('button', { name: /trace-1/i });

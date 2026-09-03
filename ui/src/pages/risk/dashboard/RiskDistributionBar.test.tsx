@@ -18,6 +18,11 @@ function distribution(
 }
 
 describe('RiskDistributionBar', () => {
+  it('renders a card title "Risk Distribution"', () => {
+    render(<RiskDistributionBar distribution={distribution()} />);
+    expect(screen.getByText('Risk Distribution')).toBeInTheDocument();
+  });
+
   it('renders five segments in severity order (critical first, none last)', () => {
     render(<RiskDistributionBar distribution={distribution()} />);
     const labels = screen.getAllByTestId('risk-distribution-segment').map((el) => el.dataset.level);

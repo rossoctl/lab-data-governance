@@ -19,10 +19,10 @@ function summary(overrides: Partial<RiskSummary> = {}): RiskSummary {
 }
 
 describe('SummaryTiles', () => {
-  it('renders all five tiles with correct numbers', () => {
+  it('renders four tiles with correct numbers, and no Users tile', () => {
     render(<SummaryTiles summary={summary()} />);
     expect(screen.getByText('Agents')).toBeInTheDocument();
-    expect(screen.getByText('Users')).toBeInTheDocument();
+    expect(screen.queryByText('Users')).not.toBeInTheDocument();
     expect(screen.getByText('Workflows')).toBeInTheDocument();
     expect(screen.getByText('Evaluated actions')).toBeInTheDocument();
     expect(screen.getByText('Rules fired')).toBeInTheDocument();
@@ -42,11 +42,21 @@ describe('SummaryTiles', () => {
   it('renders 0% rather than NaN% when a tile has 0 total', () => {
     render(
       <SummaryTiles
-        summary={summary({ users: { total: 0, risky: 0, risky_pct: 0 } })}
+        summary={summary({ agents: { total: 0, risky: 0, risky_pct: 0 } })}
       />,
     );
     expect(screen.getByText(/^0 total$/)).toBeInTheDocument();
     expect(screen.getByText(/^0 risky \(0%\)$/)).toBeInTheDocument();
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+  });
+
+  it('renders each tile\'s risky/critical line in the danger colour', () => {
+    render(<SummaryTiles summary={summary()} />);
+    expect(screen.getByText(/1 risky \(25%\)/)).toHaveStyle({
+      color: 'var(--pf-v5-global--danger-color--100)',
+    });
+    expect(screen.getByText(/2 critical/)).toHaveStyle({
+      color: 'var(--pf-v5-global--danger-color--100)',
+    });
   });
 });
