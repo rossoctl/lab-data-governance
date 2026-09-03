@@ -10,7 +10,7 @@ two distinct `(trace_id, span_id)` rows arriving at different times, sharing
 an exchange id", and deliberately left the Case-Y **algorithm** unbuilt,
 blocked on a captured trace from that source. That source exists — the
 AuthBridge sidecar's two-span lineage plugin (wire contract:
-`docs/sidecar-wire-contract.md`, v1.6.0) — and this ADR lands its writer as
+`docs/sidecar-wire-contract.md`, v1.6.1) — and this ADR lands its writer as
 `INTERACTIONS_ALGORITHM=sidecar`, a production peer of `streaming` (ADR-0007)
 and `graph` (ADR-0026), following ADR-0026's selection precedent: one dict
 entry in `__main__.py`, one driver module over the shared `_driver` loop, the
