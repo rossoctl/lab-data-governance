@@ -170,6 +170,7 @@ import {
 } from '../lib/lineageReachability';
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
 import { kindColorVar, nodeNeutralColorVar } from '../lib/entityKind';
+import { riskLevelColorVar, moreSevereRiskLevel } from '../lib/riskLevel';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import { LineageSourceNotices, LineageSourcePicker } from './flow/LineageSourcePicker';
 import { LineageEntityPicker } from './flow/LineageEntityPicker';
@@ -284,6 +285,23 @@ type NodeData = GraphNodeSpec & {
   highlight: HighlightRole;
   lineage: NodeLineageFacts;
   kindColoured: boolean;
+  /**
+   * This node's ENTITY risk level, resolved when the caller supplied a
+   * `riskLevelByInteraction` map (issue #170) — see
+   * {@link EntityGraphProps.riskLevelByInteraction}. `undefined` when no map
+   * was supplied at all, which is what keeps both existing tabs' node colour
+   * unchanged; present (possibly `'unknown'`) whenever a map is passed, even
+   * for a node with no incident edges in it.
+   *
+   * STOPGAP, not a first-class fact: the risk API has no per-entity risk
+   * level, only per-INTERACTION (`ForestInteraction.risk`). This is the worse
+   * of the node's incident edges' levels (`moreSevereRiskLevel`,
+   * `lib/riskLevel.ts`), computed by `EntityGraph` itself rather than by the
+   * caller, because the roll-up needs the same edge set the graph already
+   * derives. If the risk model ever gains a genuine per-entity level, that
+   * should replace this roll-up rather than sit beside it.
+   */
+  riskLevel?: string;
 };
 /**
  * An edge's `data`: its derived spec, its highlight role, and whether its parent
@@ -309,6 +327,17 @@ type EdgeData = GraphEdgeSpec & {
   highlight: HighlightRole;
   isSelected: boolean;
   lineage: EdgeLineageFacts;
+  /**
+   * This edge's leg's INTERACTION risk level, looked up from the caller's
+   * `riskLevelByInteraction` map (issue #170) by `e.interactionId` — see
+   * {@link EntityGraphProps.riskLevelByInteraction}. `undefined` whenever no
+   * map was supplied, or the map has no entry for this interaction (not yet
+   * computed — eventual consistency, not a "safe" verdict; see
+   * `riskForestAdapter.riskLevelByInteraction`'s docstring). Both of an
+   * interaction's two legs share the same level, since the verdict is per
+   * interaction, not per leg.
+   */
+  riskLevel?: string;
 };
 
 /**
@@ -950,12 +979,23 @@ function edgeLineageSuffix(data: EdgeData | undefined): string {
 
 function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof DefaultNode>) {
   const data = element.getData() as NodeData | undefined;
-  // PER TAB (see `NodeData.kindColoured`): Execution Flow paints entity kind, because
-  // nothing else on that tab wants hue; Lineage paints every node neutral so the
-  // trace's data sources can be the one coloured thing. Defaults to NEUTRAL when
-  // `data` is missing — the conservative direction, since a stray kind hue on the
-  // Lineage tab would compete with the source colouring.
-  const colour = data?.kindColoured ? kindColorVar(data.kind) : nodeNeutralColorVar();
+  // RISK TAKES PRECEDENCE (issue #170), same reasoning as the edge colour below:
+  // a node's `riskLevel` is present only when a caller passed
+  // `riskLevelByInteraction` at all (see `EntityGraphProps.riskLevelByInteraction`),
+  // which today is only the trace-detail view — both existing tabs leave it
+  // `undefined` and fall straight through to the unchanged branch beneath.
+  //
+  // PER TAB OTHERWISE (see `NodeData.kindColoured`): Execution Flow paints entity
+  // kind, because nothing else on that tab wants hue; Lineage paints every node
+  // neutral so the trace's data sources can be the one coloured thing. Defaults to
+  // NEUTRAL when `data` is missing — the conservative direction, since a stray kind
+  // hue on the Lineage tab would compete with the source colouring.
+  const colour =
+    data?.riskLevel !== undefined
+      ? riskLevelColorVar(data.riskLevel)
+      : data?.kindColoured
+        ? kindColorVar(data.kind)
+        : nodeNeutralColorVar();
   return (
     <g
       // The exact variables PF's own topology-components.css reads for a node's
@@ -1384,7 +1424,17 @@ function DirectedEdge({
   // and PF's selection state is used for nothing but firing the event.
   Omit<WithSelectionProps, 'selected'>) {
   const data = element.getData() as EdgeData | undefined;
-  const colour = data?.isError ? 'var(--dg-color-error)' : 'var(--dg-tree-guide)';
+  // ERROR KEEPS PRECEDENCE (issue #170): a leg's `isError` is a fact about what
+  // happened on the wire, not a risk grade, so it wins even over a critical risk
+  // level. Risk colour is next, present only when the caller passed
+  // `riskLevelByInteraction` AND this edge's interaction has an entry in it —
+  // both existing tabs never pass the map, so `data?.riskLevel` is always
+  // `undefined` for them and this falls straight through unchanged.
+  const colour = data?.isError
+    ? 'var(--dg-color-error)'
+    : data?.riskLevel !== undefined
+      ? riskLevelColorVar(data.riskLevel)
+      : 'var(--dg-tree-guide)';
   // `selected` stripped HERE rather than in the destructure above, because the lint
   // config permits no unused binding and a `_`-prefixed one would need a rule change to
   // exempt. Deleting the key off a shallow copy says the same thing with no config
@@ -1816,6 +1866,20 @@ export interface EntityGraphProps {
   legend?: React.ReactNode;
   /** `data-testid` on the wrapper, so each tab is addressable as itself. */
   testId?: string;
+  /**
+   * Interaction id -> risk level (issue #170's Alert Execution view), from
+   * `lib/riskForestAdapter.ts`'s `riskLevelByInteraction`. Omitted entirely
+   * by both existing tabs (Execution Flow, Lineage) — a colour a third view
+   * needs, not something either of them renders — which is what keeps their
+   * node/edge colours byte-for-byte unchanged: every risk-colour branch below
+   * is reached only when this is present.
+   *
+   * An interaction absent from the map (its `risk` was `null` — not yet
+   * computed) gets no edge/node treatment at all, same as an absent map;
+   * only an explicit entry paints anything, so "not yet computed" is never
+   * drawn as a colour.
+   */
+  riskLevelByInteraction?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -1862,6 +1926,7 @@ export function EntityGraph({
   controls,
   legend,
   testId = 'execution-flow-graph',
+  riskLevelByInteraction,
 }: EntityGraphProps) {
   // One Visualization instance for the view's lifetime. Created lazily in state
   // (not a ref-with-side-effects) so React owns it; the factory is registered
@@ -2035,6 +2100,22 @@ export function EntityGraph({
     // moves again. Routing against the cell keeps the detour a property of the
     // LAYOUT, which is the thing it is dodging.
     const cellById = new Map(spec.nodes.map((n) => [n.id, { column: n.column, row: n.row }]));
+    // A node's risk colour (see `NodeData.riskLevel`'s STOPGAP note) is the
+    // worst level among the edges it touches, as either source or target —
+    // built once per model push rather than per node, since it is one pass
+    // over `spec.edges` regardless of node count. `undefined` for a node with
+    // no risk-mapped incident edge, which leaves it uncoloured, not "safe".
+    const riskLevelByNode = new Map<string, string>();
+    if (riskLevelByInteraction !== undefined) {
+      for (const e of spec.edges) {
+        const level = riskLevelByInteraction.get(e.interactionId);
+        if (level === undefined) continue;
+        for (const nodeId of [e.source, e.target]) {
+          const existing = riskLevelByNode.get(nodeId);
+          riskLevelByNode.set(nodeId, existing === undefined ? level : moreSevereRiskLevel(existing, level));
+        }
+      }
+    }
     const model: Model = {
       // No `layout` key: see the controller's note. Omitting it leaves
       // `BaseGraph.currentLayout` undefined, so `graph.layout()` is a no-op and
@@ -2070,6 +2151,7 @@ export function EntityGraph({
             // rather than on a new "which tab" prop that would be a second way to say
             // the same thing and could contradict it.
             kindColoured: highlight === undefined,
+            riskLevel: riskLevelByNode.get(n.id),
           } satisfies NodeData,
         };
       }),
@@ -2103,6 +2185,7 @@ export function EntityGraph({
           // digest, unlike the highlight's object).
           isSelected: selectedInteractionId != null && e.interactionId === selectedInteractionId,
           lineage: edgeLineageFactsOf(e.id, highlight),
+          riskLevel: riskLevelByInteraction?.get(e.interactionId),
         } satisfies EdgeData,
       })),
     };
@@ -2125,8 +2208,21 @@ export function EntityGraph({
     // re-applied on every push rather than only on a poll: selecting an edge is now
     // one more thing that rebuilds the model, and the reader's dragged nodes have to
     // ride through it exactly as they ride through a highlight change.
+    //
+    // `riskLevelByInteraction` is listed directly too, same reasoning as
+    // `selectedInteractionId`: the risk colour is baked into element `data`, and
+    // both existing tabs pass `undefined` forever, so this dependency is a no-op
+    // for them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controller, spec, traceId, harvestDraggedPositions, highlightKey, selectedInteractionId]);
+  }, [
+    controller,
+    spec,
+    traceId,
+    harvestDraggedPositions,
+    highlightKey,
+    selectedInteractionId,
+    riskLevelByInteraction,
+  ]);
 
   /**
    * "Put it back": every node returns to its layered (column, row) cell and the

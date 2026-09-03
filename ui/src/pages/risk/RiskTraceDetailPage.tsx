@@ -1,21 +1,202 @@
-import { useParams } from 'react-router-dom';
-import { RiskViewShell } from '../../risk-components/RiskViewShell';
+import { useMemo } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import {
+  PageSection,
+  Title,
+  Breadcrumb,
+  BreadcrumbItem,
+  Spinner,
+  EmptyState,
+  EmptyStateHeader,
+  EmptyStateBody,
+  Label,
+} from '@patternfly/react-core';
+import { useEntities } from '../../api/hooks';
+import { useTraceRiskDetail, useRuleCatalogIndex } from '../../risk-api/hooks';
+import { RiskApiError } from '../../risk-api/client';
+import { deriveGraph } from '../../lib/graph';
+import {
+  toFlowEntities,
+  toFlowInteractions,
+  riskLevelByInteraction,
+  violationsOf,
+} from '../../lib/riskForestAdapter';
+import { parseViolationIndex, stepViolation } from '../../lib/riskViolation';
+import { EntityGraph } from '../../components/ExecutionFlowGraph';
+import { InteractionDiagram } from '../../components/InteractionDiagram';
+import { PolicyDecisionPanel } from '../../risk-components/PolicyDecisionPanel';
+import { ViolationStepper } from '../../risk-components/ViolationStepper';
 
 /**
- * Stub detail page for a single risk trace (issue #165). No data yet — #167
- * wires this to `/risk/traces/:traceId`.
+ * Trace detail — the "Alert Execution" view (issue #170, parent #167): given
+ * a `trace_id`, render the interaction forest as an execution-flow graph and
+ * a sequence diagram, with a policy-decision panel that steps through each
+ * triggered-rule violation. Read-only, no mutation.
+ *
+ * REUSE, NOT REBUILD (user instruction: "reuse as much as possible... extend
+ * as needed"). The forest from `GET /risk/traces/{id}` is adapted by
+ * `lib/riskForestAdapter.ts` into the same `flow.Entity[]`/`flow.Interaction[]`
+ * shape `lib/graph.ts`'s `deriveGraph` and `lib/sequenceDiagram.ts`'s
+ * `deriveSequenceDiagram` already consume, so both derivations and both
+ * renderers (`EntityGraph`, `InteractionDiagram`) are the SAME code the
+ * ordinary Flow tables use — extended additively with an optional risk-colour
+ * seam (`riskLevelByInteraction`) rather than forked or replaced.
+ *
+ * Like `RiskRuleDetailPage`, this does NOT use `RiskViewShell`: the
+ * breadcrumb must stay visible on every state (loading/404/error), but the
+ * shell swaps `children` out entirely on `isLoading`/`isError`, which would
+ * hide it. Loading/error/not-found are hand-rendered below instead.
+ *
+ * `?violation=` is 1-based with the default (1) omitted from the URL — see
+ * `lib/riskViolation.ts`'s header for why, and note the selection is ALWAYS
+ * derived from that param, never from component state, so a cold-opened
+ * `?violation=N` URL and the Previous/Next controls can never disagree.
  */
 export function RiskTraceDetailPage() {
   const { traceId } = useParams<{ traceId: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const detail = useTraceRiskDetail(traceId);
+  const entities = useEntities(traceId ?? '');
+  const catalog = useRuleCatalogIndex();
+
+  // Memoized so its identity is stable across renders when detail.data is
+  // unchanged — `?? []` would otherwise hand every useMemo below a fresh
+  // array reference each render, invalidating them for no reason.
+  const forest = useMemo(() => detail.data?.interactions ?? [], [detail.data]);
+
+  // Both derivations run on every render (not just once violations exist) so
+  // the two diagrams always render, even when there are zero violations —
+  // AC #5's "both diagrams render, stepper absent" case.
+  const flowEntities = useMemo(
+    () => toFlowEntities(forest, entities.data),
+    [forest, entities.data],
+  );
+  const flowInteractions = useMemo(() => toFlowInteractions(forest), [forest]);
+  const graphSpec = useMemo(
+    () => deriveGraph(flowEntities, flowInteractions),
+    [flowEntities, flowInteractions],
+  );
+  const riskColours = useMemo(() => riskLevelByInteraction(forest), [forest]);
+  const violations = useMemo(() => violationsOf(forest), [forest]);
+
+  const violationIndex = parseViolationIndex(searchParams.get('violation'), violations.length);
+  const violation = violationIndex != null ? violations[violationIndex - 1] : null;
+
+  // Written by DELETING the param at the default, never by setting it
+  // explicitly — the same convention `RiskDashboardPage.tsx` documents for
+  // `?window=`, so the canonical URL for violation 1 stays clean.
+  function setViolation(next: number) {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (next === 1) params.delete('violation');
+      else params.set('violation', String(next));
+      return params;
+    });
+  }
+
+  function handleStep(delta: -1 | 1) {
+    if (violationIndex == null) return;
+    setViolation(stepViolation(violationIndex, delta, violations.length));
+  }
+
+  const selectedInteractionId = violation?.interaction_id ?? null;
+
+  const isNotFound =
+    detail.isError && detail.error instanceof RiskApiError && detail.error.status === 404;
 
   return (
-    <RiskViewShell
-      title="Risk trace"
-      isLoading={false}
-      isError={false}
-      isEmpty={false}
-    >
-      <p>Risk detail for trace {traceId} will appear here.</p>
-    </RiskViewShell>
+    <PageSection>
+      <Breadcrumb>
+        <BreadcrumbItem
+          render={({ className }) => (
+            <Link to="/risk" className={className}>
+              Risk dashboard
+            </Link>
+          )}
+        />
+        <BreadcrumbItem isActive className="dg-mono">
+          {traceId}
+        </BreadcrumbItem>
+      </Breadcrumb>
+
+      <Title headingLevel="h2" size="xl" style={{ marginTop: '0.5rem' }}>
+        Risk trace{' '}
+        {detail.data && (
+          <Label isCompact className="pf-v5-u-ml-sm">
+            {violations.length} violation{violations.length === 1 ? '' : 's'}
+          </Label>
+        )}
+      </Title>
+
+      {detail.isLoading ? (
+        <Spinner aria-label="Loading risk trace" />
+      ) : isNotFound ? (
+        <EmptyState>
+          <EmptyStateHeader titleText="Trace not found" headingLevel="h4" />
+          <EmptyStateBody>No trace with id {traceId} has a risk record.</EmptyStateBody>
+        </EmptyState>
+      ) : detail.isError ? (
+        <EmptyState>
+          <EmptyStateHeader titleText="Failed to load" headingLevel="h4" />
+          <EmptyStateBody>Could not load this trace. Try again later.</EmptyStateBody>
+        </EmptyState>
+      ) : detail.data ? (
+        <>
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
+            Execution flow
+          </Title>
+          <EntityGraph
+            traceId={traceId ?? ''}
+            spec={graphSpec}
+            selectedInteractionId={selectedInteractionId}
+            riskLevelByInteraction={riskColours}
+          />
+
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
+            Sequence
+          </Title>
+          <InteractionDiagram
+            entities={flowEntities}
+            interactions={flowInteractions}
+            selectedId={selectedInteractionId}
+            onSelect={() => {
+              /* Read-only view: selection is driven by the violation
+                 stepper/URL, not by clicking the diagrams — a click here
+                 would have nowhere to write a selection that isn't already
+                 tied to a violation index. */
+            }}
+            riskLevelByInteraction={riskColours}
+          />
+
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
+            Policy decisions
+          </Title>
+          {violations.length === 0 ? (
+            <EmptyState>
+              <EmptyStateHeader titleText="No policy violations" headingLevel="h4" />
+              <EmptyStateBody>
+                No rule was triggered by any interaction in this trace.
+              </EmptyStateBody>
+            </EmptyState>
+          ) : violation && violationIndex != null ? (
+            <>
+              <ViolationStepper
+                position={violationIndex}
+                count={violations.length}
+                onStep={handleStep}
+              />
+              <PolicyDecisionPanel
+                violation={violation}
+                ruleIndex={catalog.data}
+                entities={flowEntities}
+              />
+            </>
+          ) : null}
+        </>
+      ) : null}
+    </PageSection>
   );
 }
+
+export default RiskTraceDetailPage;

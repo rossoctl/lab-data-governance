@@ -73,3 +73,36 @@ export function riskLevelColorVar(level: string): string {
   const globalVar = PF_COLOR_TO_GLOBAL_VAR[colorForRiskLevel(level)] ?? PF_COLOR_TO_GLOBAL_VAR_FALLBACK;
   return `var(${globalVar}, var(--dg-color-label))`;
 }
+
+/**
+ * Severity order, least to most severe — mirrors the server's own
+ * `RISK_LEVEL_ORDER` (`data_governance/risk/rules/catalog.py`). `unknown` sits
+ * beside `none` at the bottom: neither is a claim that something IS safe, so
+ * neither should out-rank a level that is an actual verdict.
+ */
+const RISK_LEVEL_SEVERITY: Record<string, number> = {
+  unknown: 0,
+  none: 0,
+  low: 1,
+  medium: 2,
+  high: 3,
+  critical: 4,
+};
+
+/**
+ * The more severe of two risk levels, `unknown` losing every tie so a real
+ * verdict is never masked by an absent one.
+ *
+ * STOPGAP (issue #170): the risk API reports risk per INTERACTION, not per
+ * entity — there is no first-class "this entity's risk level" anywhere in the
+ * system. `ExecutionFlowGraph`'s node colouring uses this to roll up the
+ * levels of a node's incident edges into one node-level colour, purely so the
+ * node reads as "was this entity involved in the worst violation on screen".
+ * If the risk model ever gains a genuine per-entity level, that should
+ * replace this roll-up rather than sit beside it.
+ */
+export function moreSevereRiskLevel(a: string, b: string): string {
+  const sa = RISK_LEVEL_SEVERITY[a] ?? RISK_LEVEL_SEVERITY.unknown;
+  const sb = RISK_LEVEL_SEVERITY[b] ?? RISK_LEVEL_SEVERITY.unknown;
+  return sb > sa ? b : a;
+}

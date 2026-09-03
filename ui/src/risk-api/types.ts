@@ -180,3 +180,76 @@ export interface RuleCategoryCount {
 export interface RuleCategoriesResponse {
   items: RuleCategoryCount[];
 }
+
+/**
+ * Trace forest wire types (issue #170), matching `risk_routes.py`'s
+ * `_forest_leg_to_json`/`_forest_interaction_to_json`/`trace_risk_to_json`
+ * field-for-field, backed by `retrieval/risk.py`'s `ForestLegView`/
+ * `ForestInteractionView`/`TraceRiskDetail` dataclasses.
+ */
+
+/** One `ForestInteraction`'s leg — `_forest_leg_to_json`. */
+export interface ForestLeg {
+  leg_type: 'request' | 'response';
+  occurred_at: string | null;
+  payload_hash: string | null;
+  error: boolean | null;
+}
+
+/**
+ * The current risk record for one forest interaction — `_interaction_risk_to_json`,
+ * the same shape `GET /risk/interactions/{id}` returns, nested here rather than
+ * flattened onto `ForestInteraction` (`risk_level`/`triggered_rule_ids`/etc. all
+ * live on `.risk`, not on the interaction directly — see `ForestInteractionView.risk`).
+ * `classification_summary`'s shape is not guaranteed by the API beyond "a JSON
+ * object or null" — see `PolicyDecisionPanel`'s defensive narrowing.
+ */
+export interface InteractionRisk {
+  interaction_risk_id: string;
+  interaction_id: string;
+  trace_id: string;
+  parent_interaction_id: string | null;
+  caller_entity_id: string | null;
+  callee_entity_id: string | null;
+  version: number;
+  computed_at: string;
+  risk_level: string;
+  enforcement_type: string | null;
+  policy_event_count: number;
+  triggered_rule_ids: string[];
+  classification_summary: Record<string, unknown> | null;
+  opa_policy_versions_used: string[];
+  overall_confidence: number | null;
+}
+
+/**
+ * One interaction of `GET /risk/traces/{trace_id}`'s forest —
+ * `_forest_interaction_to_json`. `risk` is `null` when not yet computed
+ * (eventual consistency, not an error — `ForestInteractionView`'s docstring).
+ *
+ * `caller_entity_id`/`callee_entity_id` are typed nullable here despite the
+ * Python dataclass declaring them non-optional (`ForestInteractionView`):
+ * they come straight off `SELECT ... caller_entity_id, callee_entity_id FROM
+ * interactions` (`get_trace_risk_detail`) with no null guard, the same
+ * columns `flow.Interaction` already types as `string | null`. Costs
+ * nothing on this side — `lib/graph.ts`/`lib/sequenceDiagram.ts` already
+ * route a null-participant interaction into `dropped`.
+ */
+export interface ForestInteraction {
+  interaction_id: string;
+  trace_id: string;
+  parent_interaction_id: string | null;
+  caller_entity_id: string | null;
+  callee_entity_id: string | null;
+  summary: string | null;
+  legs: ForestLeg[];
+  risk: InteractionRisk | null;
+  span_count: number;
+  anchor_count: number;
+}
+
+/** `GET /risk/traces/{trace_id}` response body — `TraceRiskDetail`. */
+export interface TraceRiskDetailResponse {
+  trace_risk: TraceRiskRecord;
+  interactions: ForestInteraction[];
+}

@@ -11,7 +11,8 @@ import Point from '@patternfly/react-topology/dist/esm/geom/Point';
 import { Visualization } from '@patternfly/react-topology/dist/esm/Visualization';
 import { SELECTION_EVENT } from '@patternfly/react-topology/dist/esm/behavior/useSelection';
 import { renderWithProviders } from '../test/renderWithProviders';
-import { ExecutionFlowGraph, LineageGraph } from './ExecutionFlowGraph';
+import { ExecutionFlowGraph, LineageGraph, EntityGraph } from './ExecutionFlowGraph';
+import { riskLevelColorVar } from '../lib/riskLevel';
 import type {
   Entity,
   Interaction,
@@ -20,6 +21,7 @@ import type {
   LineageReachability,
   LineageStatus,
 } from '../types';
+import type { GraphSpec } from '../lib/graph';
 
 /**
  * The summary as the WIRE spells it, which is what a fetch stub must return.
@@ -2030,6 +2032,246 @@ describe('ExecutionFlowGraph', () => {
     const reqEnd = pts('i1:request').at(-1)!;
     expect(Math.abs(reqEnd.x - e2.x)).toBeLessThanOrEqual(radius);
     expect(Math.abs(reqEnd.y - e2.y)).toBeLessThanOrEqual(radius);
+  });
+});
+
+/**
+ * `EntityGraph`'s risk-colour seam (issue #170's Alert Execution view), rendered
+ * DIRECTLY rather than through `ExecutionFlowGraph`/`LineageGraph`.
+ *
+ * Neither tab wrapper fetches or passes `riskLevelByInteraction` — the Alert
+ * Execution page owns its own risk read and derives its own `GraphSpec` via
+ * `lib/riskForestAdapter.ts`, feeding both straight into `EntityGraph`, which is
+ * exported for exactly this. Going through a tab wrapper here would mean
+ * threading a prop neither tab has any use for just to reach a component that is
+ * already reachable directly — so these cases build a small `GraphSpec` by hand
+ * (skipping `mockApi`/`useEntities`/`useInteractions` entirely) and mount
+ * `EntityGraph` itself, reusing the SAME `capturedController`/`nodeData`/
+ * `edgeData` helpers the tab tests above use, since both routes build the
+ * identical `Visualization` underneath.
+ */
+describe('EntityGraph risk colouring (issue #170)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+    capturedController = null;
+    modelPushes = 0;
+    // Same `capture(this)` shape as the `ExecutionFlowGraph` describe block's
+    // own `beforeEach` — see its comment for why a named function is used
+    // instead of `capturedController = this`, which trips
+    // `@typescript-eslint/no-this-alias`.
+    const real = Visualization.prototype.fromModel;
+    const capture = (vis: Visualization) => {
+      capturedController = vis;
+      modelPushes += 1;
+    };
+    vi.spyOn(Visualization.prototype, 'fromModel').mockImplementation(function (
+      this: Visualization,
+      ...args: Parameters<Visualization['fromModel']>
+    ) {
+      capture(this);
+      return real.apply(this, args);
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** Two nodes, one completed interaction — the smallest spec with both legs. */
+  function riskSpec(): GraphSpec {
+    return {
+      nodes: [
+        {
+          id: 'e1',
+          label: 'agent-a',
+          kind: 'agent',
+          naturalKey: 'agent:(p,a)',
+          isIsolated: false,
+          encounterIndex: 0,
+          column: 0,
+          row: 0,
+        },
+        {
+          id: 'e2',
+          label: 'search',
+          kind: 'tool',
+          naturalKey: 'tool:(p,svc)',
+          isIsolated: false,
+          encounterIndex: 1,
+          column: 1,
+          row: 0,
+        },
+      ],
+      edges: [
+        {
+          id: 'i1:request',
+          interactionId: 'i1',
+          legType: 'request',
+          source: 'e1',
+          target: 'e2',
+          label: '1',
+          seq: 1,
+          title: 'summary-i1',
+          isError: false,
+          isSelfCall: false,
+        },
+        {
+          id: 'i1:response',
+          interactionId: 'i1',
+          legType: 'response',
+          source: 'e2',
+          target: 'e1',
+          label: '2',
+          seq: 2,
+          title: 'summary-i1',
+          isError: false,
+          isSelfCall: false,
+        },
+      ],
+      dropped: [],
+      parallelGroups: [],
+    };
+  }
+
+  function renderEntityGraph(
+    spec: GraphSpec,
+    riskLevelByInteraction?: ReadonlyMap<string, string>,
+  ) {
+    return renderWithProviders(
+      <EntityGraph traceId="T1" spec={spec} riskLevelByInteraction={riskLevelByInteraction} />,
+    );
+  }
+
+  it("colours an edge by ITS OWN interaction's risk level, calling riskLevelColorVar rather than a hardcoded value", async () => {
+    // The mapping under test is "same colour scheme as RiskBadge" (AC #2) — the
+    // production code calls `riskLevelColorVar`, so the test must too, or a change
+    // to that function's colour table would silently stop being caught here.
+    renderEntityGraph(
+      riskSpec(),
+      new Map([['i1', 'critical']]),
+    );
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain(riskLevelColorVar('critical'));
+    expect(req).not.toMatch(/#[0-9a-f]{6}/i);
+    // Both legs belong to the same interaction, so both take its one risk level.
+    const res = document.querySelector('[data-id="i1:response"]')!.innerHTML;
+    expect(res).toContain(riskLevelColorVar('critical'));
+  });
+
+  it('gives a low-risk interaction a visibly different colour than a critical one', async () => {
+    renderEntityGraph(riskSpec(), new Map([['i1', 'low']]));
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain(riskLevelColorVar('low'));
+    expect(req).not.toContain(riskLevelColorVar('critical'));
+  });
+
+  it("treats an interaction ABSENT from a SUPPLIED map as no treatment at all, never as a safe verdict", async () => {
+    // `riskForestAdapter.riskLevelByInteraction` omits `risk: null` entries
+    // entirely (not yet computed — see that function's docstring), and this
+    // component's contract is to treat an omitted entry as "no risk colouring"
+    // rather than as any verdict — painting it green ('low'/'none') would
+    // misreport "not yet computed" as "checked and safe", and painting it grey
+    // ('unknown') would still be a colour where the honest answer is none. So a
+    // map that is present but lacks this interaction's entry must fall all the
+    // way back to the ordinary tree-guide colour, exactly as if no map had been
+    // passed at all (see the regression case below).
+    renderEntityGraph(riskSpec(), new Map());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain('var(--dg-tree-guide)');
+    expect(req).not.toContain(riskLevelColorVar('unknown'));
+    expect(req).not.toContain(riskLevelColorVar('low'));
+    expect(req).not.toContain(riskLevelColorVar('none'));
+
+    const e1 = capturedController?.getNodeById('e1')?.getData() as { riskLevel?: string };
+    expect(e1.riskLevel).toBeUndefined();
+  });
+
+  it('keeps ERROR precedence over risk colouring on an edge — a fact outranks a grade', async () => {
+    const spec = riskSpec();
+    spec.edges[0]!.isError = true;
+    renderEntityGraph(spec, new Map([['i1', 'critical']]));
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain('var(--dg-color-error)');
+    expect(req).not.toContain(riskLevelColorVar('critical'));
+  });
+
+  it("rolls a node's stroke up to the MOST SEVERE level of its incident edges (stopgap pending real per-entity risk)", async () => {
+    // e1 sits on both legs of i1 (critical) — the only interaction in this spec —
+    // so it rolls up to 'critical' too. Verified through `nodeData`'s exposed
+    // `riskLevel` field, not a computed style: node content renders empty on
+    // jsdom's zero-bbox surface (see this file's header), but the model DATA the
+    // node carries is not culled.
+    renderEntityGraph(riskSpec(), new Map([['i1', 'critical']]));
+    await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+    const e1 = capturedController?.getNodeById('e1')?.getData() as { riskLevel?: string };
+    const e2 = capturedController?.getNodeById('e2')?.getData() as { riskLevel?: string };
+    expect(e1.riskLevel).toBe('critical');
+    expect(e2.riskLevel).toBe('critical');
+  });
+
+  it("rolls a node up to the MORE severe of two DIFFERING incident edges", async () => {
+    // Two interactions sharing e2: i1 (low) and i2 (critical). e1 only touches
+    // i1, so it stays 'low'; e2 touches both, so it rolls up to 'critical' — the
+    // roll-up is per-node, not a blanket "worst in the trace".
+    const spec = riskSpec();
+    spec.nodes.push({
+      id: 'e3',
+      label: 'gpt-4',
+      kind: 'llm',
+      naturalKey: 'llm:api.example.com/gpt',
+      isIsolated: false,
+      encounterIndex: 2,
+      column: 2,
+      row: 0,
+    });
+    spec.edges.push({
+      id: 'i2:request',
+      interactionId: 'i2',
+      legType: 'request',
+      source: 'e2',
+      target: 'e3',
+      label: '3',
+      seq: 3,
+      title: 'summary-i2',
+      isError: false,
+      isSelfCall: false,
+    });
+    renderEntityGraph(spec, new Map([['i1', 'low'], ['i2', 'critical']]));
+    await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+    const e1 = capturedController?.getNodeById('e1')?.getData() as { riskLevel?: string };
+    const e2 = capturedController?.getNodeById('e2')?.getData() as { riskLevel?: string };
+    expect(e1.riskLevel).toBe('low');
+    expect(e2.riskLevel).toBe('critical');
+  });
+
+  it('leaves BOTH existing tabs unchanged when no risk map is passed — a pure regression guard', async () => {
+    // Neither `ExecutionFlowGraph` nor `LineageGraph` ever passes
+    // `riskLevelByInteraction`, so omitting it entirely must reproduce exactly
+    // today's colouring: kind-coloured nodes, `--dg-tree-guide` edges.
+    renderEntityGraph(riskSpec());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain('var(--dg-tree-guide)');
+    expect(req).not.toContain(riskLevelColorVar('critical'));
+    expect(req).not.toContain(riskLevelColorVar('unknown'));
+
+    const e1 = capturedController?.getNodeById('e1')?.getData() as {
+      riskLevel?: string;
+      kindColoured: boolean;
+    };
+    expect(e1.riskLevel).toBeUndefined();
+    expect(e1.kindColoured).toBe(true);
   });
 });
 

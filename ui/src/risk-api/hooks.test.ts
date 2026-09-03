@@ -42,4 +42,13 @@ describe('risk-api hooks scaffold', () => {
   it('exposes the root as a readonly tuple so a caller can spread it into a queryKey', () => {
     expect(RISK_QUERY_KEY_ROOT).toEqual(['risk']);
   });
+
+  it("keeps a trace's detail key disjoint from the traces list key (issue #170)", () => {
+    // useTraceRiskDetail('t1') vs useRiskTracesInfinite({window}) both nest
+    // under riskQueryKey('traces', ...) — the 'detail' tail is what stops
+    // them from colliding in react-query's cache.
+    const detailKey = riskQueryKey('traces', 't1', 'detail');
+    const listKey = riskQueryKey('traces', { window: '24h' });
+    expect(detailKey).not.toEqual(listKey);
+  });
 });

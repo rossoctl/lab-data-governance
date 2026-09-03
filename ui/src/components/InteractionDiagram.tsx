@@ -8,6 +8,7 @@ import {
 
 import { deriveSequenceDiagram, type MessageSpec } from '../lib/sequenceDiagram';
 import { kindColorVar } from '../lib/entityKind';
+import { riskLevelColorVar } from '../lib/riskLevel';
 import type { Entity, Interaction } from '../types';
 
 /**
@@ -58,19 +59,38 @@ function MessageRow({
   isSelected,
   width,
   onSelect,
+  riskLevel,
 }: {
   msg: MessageSpec;
   row: number;
   isSelected: boolean;
   width: number;
   onSelect: () => void;
+  /**
+   * This message's INTERACTION's risk level (issue #170), or `undefined` when
+   * no risk map was supplied, or when one was but this interaction has no entry
+   * in it — see {@link InteractionDiagramProps.riskLevelByInteraction} for why
+   * those two cases are collapsed into one "no treatment" outcome rather than
+   * one of them painting a colour.
+   */
+  riskLevel: string | undefined;
 }) {
   const y = rowY(row);
   const x1 = colX(msg.fromIndex);
   const x2 = colX(msg.toIndex);
   // The `--dg-*` tokens, never a raw hex — the same pairing the graph's edges use,
   // so a failed leg is the same red in both tabs.
-  const colour = msg.isError ? 'var(--dg-color-error)' : 'var(--dg-tree-guide)';
+  //
+  // ERROR KEEPS PRECEDENCE (issue #170), same reasoning as the graph's edges: a
+  // leg's `error` is a FACT about what happened, while a risk level is a GRADE
+  // the policy engine assigned, and a fact must not be masked by a grade. Risk
+  // colouring only applies when `riskLevel` is defined — see this component's
+  // top-level doc comment for what an undefined value means.
+  const colour = msg.isError
+    ? 'var(--dg-color-error)'
+    : riskLevel !== undefined
+      ? riskLevelColorVar(riskLevel)
+      : 'var(--dg-tree-guide)';
 
   // The arrowhead, as a filled triangle pointing along the direction of travel.
   // Drawn by hand rather than with an SVG `marker`: a marker's `fill` cannot
@@ -202,12 +222,13 @@ function MessageRow({
  * is lazily mounted and holds no props but the trace id), which is why the split
  * falls here.
  */
-export function InteractionDiagram({
-  entities,
-  interactions,
-  selectedId,
-  onSelect,
-}: {
+/**
+ * Props `InteractionDiagram` was given before issue #170, restated as a named
+ * type so {@link InteractionDiagramProps.riskLevelByInteraction}'s doc comment
+ * has somewhere to point back to `entities`/`interactions`/`selectedId`/
+ * `onSelect` without repeating each of their own comments.
+ */
+export interface InteractionDiagramProps {
   entities: readonly Entity[];
   interactions: readonly Interaction[];
   /** The selected INTERACTION's id — legs have no selection of their own. */
@@ -218,7 +239,33 @@ export function InteractionDiagram({
    * interaction's detail panel.
    */
   onSelect: (ix: Interaction) => void;
-}) {
+  /**
+   * Interaction id -> risk level (issue #170's Alert Execution view), from
+   * `lib/riskForestAdapter.ts`'s `riskLevelByInteraction`. Omitted by the Flow
+   * tables' own mount of this component — a colour the risk trace-detail view
+   * needs, not something the ordinary Interactions tab renders — which is what
+   * keeps that tab's arrow colours byte-for-byte unchanged: the risk-colour
+   * branch in `MessageRow` is reached only when this is present.
+   *
+   * An interaction ABSENT from a supplied map (its `risk` was `null` — not yet
+   * computed) gets no arrow treatment at all, same as an absent map entirely;
+   * only an explicit entry paints a colour, so "not yet computed" is never
+   * drawn as a colour of its own (see `riskLevelByInteraction`'s docstring).
+   *
+   * Lifeline HEAD boxes keep `kindColorVar` regardless — this seam only
+   * touches the message arrows, mirroring the mockup's kind-coloured
+   * participants over risk-coloured messages.
+   */
+  riskLevelByInteraction?: ReadonlyMap<string, string>;
+}
+
+export function InteractionDiagram({
+  entities,
+  interactions,
+  selectedId,
+  onSelect,
+  riskLevelByInteraction,
+}: InteractionDiagramProps) {
   const spec = useMemo(
     () => deriveSequenceDiagram(entities, interactions),
     [entities, interactions],
@@ -340,6 +387,7 @@ export function InteractionDiagram({
                 const ix = ixById.get(msg.interactionId);
                 if (ix) onSelect(ix);
               }}
+              riskLevel={riskLevelByInteraction?.get(msg.interactionId)}
             />
           ))}
         </svg>
