@@ -218,7 +218,12 @@ def _caller(kinds: Kinds, req: Span, self_kind_of: dict[str, str]) -> _Entity:
 
 def _self_kinds(reqs: dict[str, Span]) -> dict[str, str]:
     """What each ``lineage.self.id`` in this trace IS. One verdict per pod, from
-    the pod's own traffic, applied wherever that pod is caller or callee:
+    the pod's own traffic, applied where that pod is the *caller* of an outbound
+    exchange (``_caller``). The callee side keeps the kind table's protocol kind:
+    an echoing callee served that same protocol, so the two agree for a2a, mcp
+    and inference — but not for plain http, where the outbound row says
+    ``service`` and the served role says ``agent`` (a known limit, not fixed
+    here). The tiers:
 
     1. **served role** — the kind table types the callee of an inbound exchange
        (mcp → tool, a2a → agent, inference → llm), and that callee is the pod
