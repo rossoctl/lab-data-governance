@@ -184,6 +184,7 @@ export function RiskTraceDetailPage() {
             riskLevelByInteraction={riskColours}
             hideParallelGroupsNotice
             hideEdgeLabels
+            compactSurface
           />
 
           <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">

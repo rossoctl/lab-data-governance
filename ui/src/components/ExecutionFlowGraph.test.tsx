@@ -2321,6 +2321,27 @@ describe('EntityGraph risk colouring (issue #170)', () => {
     const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
     expect(req.label).toBe('1');
   });
+
+  // compactSurface (issue #170 follow-up): jsdom applies no stylesheet, so it
+  // cannot see the shorter rendered height itself — see this file's header on
+  // why CSS effects are asserted through className presence, never through a
+  // computed-style or layout assertion. The real height was confirmed in a
+  // browser (not part of this automated suite).
+  it('adds the dg-graph-surface--compact modifier class when compactSurface is set', async () => {
+    renderWithProviders(<EntityGraph traceId="T1" spec={riskSpec()} compactSurface />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const surface = document.querySelector('.dg-graph-surface')!;
+    expect(surface).toHaveClass('dg-graph-surface--compact');
+  });
+
+  it('omits the dg-graph-surface--compact modifier class when compactSurface is omitted — a regression guard for the two existing tabs, which never pass it', async () => {
+    renderEntityGraph(riskSpec());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const surface = document.querySelector('.dg-graph-surface')!;
+    expect(surface).not.toHaveClass('dg-graph-surface--compact');
+  });
 });
 
 /**

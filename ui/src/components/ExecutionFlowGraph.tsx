@@ -1906,6 +1906,16 @@ export interface EntityGraphProps {
    * keep their tags unchanged.
    */
   hideEdgeLabels?: boolean;
+  /**
+   * Shrink the drawing surface (issue #170 follow-up: the risk trace view's
+   * "Action" row, the first field of its `PolicyDecisionPanel` below the
+   * graph, was falling below the fold). Toggles `dg-graph-surface--compact`
+   * (global.css), which shortens `.dg-graph-surface`'s viewport-derived
+   * height beyond its default allowance — see that rule's comment for why
+   * the default itself was left alone. Both existing tabs omit this prop and
+   * keep their current height.
+   */
+  compactSurface?: boolean;
 }
 
 /**
@@ -1955,6 +1965,7 @@ export function EntityGraph({
   riskLevelByInteraction,
   hideParallelGroupsNotice = false,
   hideEdgeLabels = false,
+  compactSurface = false,
 }: EntityGraphProps) {
   // One Visualization instance for the view's lifetime. Created lazily in state
   // (not a ref-with-side-effects) so React owns it; the factory is registered
@@ -2410,7 +2421,7 @@ export function EntityGraph({
           and an instruction to "select an entity" whose control sat below the fold
           would be unfollowable. See `EntityGraphProps.controls`. */}
       {controls}
-      <div className="dg-graph-surface">
+      <div className={`dg-graph-surface${compactSurface ? ' dg-graph-surface--compact' : ''}`}>
         <VisualizationProvider controller={controller}>
           <VisualizationSurface />
           {/* Zoom controls. PF's own `TopologyControlBar` rather than four
