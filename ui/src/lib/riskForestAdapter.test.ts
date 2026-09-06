@@ -4,6 +4,7 @@ import {
   toFlowEntities,
   unresolvedEntityIds,
   riskLevelByInteraction,
+  classificationByInteraction,
   violationsOf,
 } from './riskForestAdapter';
 import { deriveGraph } from './graph';
@@ -231,6 +232,110 @@ describe('riskForestAdapter', () => {
       const forest = [forestInteraction({ interaction_id: 'ix1', risk: null })];
       const map = riskLevelByInteraction(forest);
       expect(map.has('ix1')).toBe(false);
+    });
+  });
+
+  // Mirrors `riskLevelByInteraction` immediately above but for classification
+  // data (issue #170 follow-up: regulatory tags as edge labels). The
+  // wire-shape narrowing itself (pending/payload-less/absent legs, non-string
+  // members, etc.) is covered directly in `classificationSummary.test.ts` —
+  // these tests cover only what this adapter layer adds: the map-presence
+  // rule and interaction-id keying.
+  describe('classificationByInteraction', () => {
+    it('maps interaction id to its tags and levels when classified', () => {
+      const forest = [
+        forestInteraction({
+          interaction_id: 'ix1',
+          risk: risk({
+            classification_summary: {
+              request: { sensitivity_level: 'RESTRICTED', regulatory_tags: ['PII', 'GDPR'] },
+            },
+          }),
+        }),
+      ];
+      const map = classificationByInteraction(forest);
+      expect(map.get('ix1')).toEqual({ tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] });
+    });
+
+    it('unions tags and levels across both legs of the same interaction', () => {
+      const forest = [
+        forestInteraction({
+          interaction_id: 'ix1',
+          risk: risk({
+            classification_summary: {
+              request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PII'] },
+              response: { sensitivity_level: 'RESTRICTED', regulatory_tags: ['GDPR'] },
+            },
+          }),
+        }),
+      ];
+      const map = classificationByInteraction(forest);
+      expect(map.get('ix1')).toEqual({ tags: ['PII', 'GDPR'], levels: ['INTERNAL', 'RESTRICTED'] });
+    });
+
+    it('is present for a classified verdict with a level but no regulatory tags', () => {
+      // A genuine PUBLIC-with-no-tags verdict must still be visible to the
+      // graph's hover text — see `classificationByInteraction`'s docstring
+      // for why this is "present when EITHER is non-empty", not "present
+      // only when tags exist".
+      const forest = [
+        forestInteraction({
+          interaction_id: 'ix1',
+          risk: risk({
+            classification_summary: { request: { sensitivity_level: 'PUBLIC', regulatory_tags: [] } },
+          }),
+        }),
+      ];
+      const map = classificationByInteraction(forest);
+      expect(map.get('ix1')).toEqual({ tags: [], levels: ['PUBLIC'] });
+    });
+
+    it('omits an interaction whose classification_summary is null', () => {
+      const forest = [
+        forestInteraction({ interaction_id: 'ix1', risk: risk({ classification_summary: null }) }),
+      ];
+      const map = classificationByInteraction(forest);
+      expect(map.has('ix1')).toBe(false);
+    });
+
+    it('omits an interaction whose risk is null (not yet computed)', () => {
+      const forest = [forestInteraction({ interaction_id: 'ix1', risk: null })];
+      const map = classificationByInteraction(forest);
+      expect(map.has('ix1')).toBe(false);
+    });
+
+    it('omits an interaction whose legs are only pending/payload-less', () => {
+      const forest = [
+        forestInteraction({
+          interaction_id: 'ix1',
+          risk: risk({
+            classification_summary: {
+              request: { classification_pending: true },
+              response: { payload: null },
+            },
+          }),
+        }),
+      ];
+      const map = classificationByInteraction(forest);
+      expect(map.has('ix1')).toBe(false);
+    });
+
+    it('keys strictly by interaction_id across a mixed forest', () => {
+      const forest = [
+        forestInteraction({
+          interaction_id: 'ix1',
+          risk: risk({
+            classification_summary: { request: { sensitivity_level: 'RESTRICTED', regulatory_tags: ['PII'] } },
+          }),
+        }),
+        forestInteraction({ interaction_id: 'ix2', risk: risk({ classification_summary: null }) }),
+        forestInteraction({ interaction_id: 'ix3', risk: null }),
+      ];
+      const map = classificationByInteraction(forest);
+      expect(map.size).toBe(1);
+      expect(map.get('ix1')).toEqual({ tags: ['PII'], levels: ['RESTRICTED'] });
+      expect(map.has('ix2')).toBe(false);
+      expect(map.has('ix3')).toBe(false);
     });
   });
 

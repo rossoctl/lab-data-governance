@@ -20,16 +20,33 @@ if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
 // with an unrelated-looking "Unable to find …" error.
 //
 // A zero-size stub is the honest minimum: it makes the measurement DEFINED
-// without pretending jsdom laid anything out. PF treats a zero size as "not
-// measured yet" and skips the tag's background rect and the node label, so the
-// zeros are not mistaken for real geometry. Everything geometric therefore
-// remains unobservable here by design.
+// without pretending jsdom laid anything out.
 //
-// IT IS NOT COVERED ANYWHERE ELSE EITHER, and this comment used to claim it was
-// "asserted in Playwright against a real browser". There is no such spec: `ui/e2e/`
-// holds only smoke and classification specs, neither of which opens the graph. So
-// the geometry is verified BY HAND today — see ExecutionFlowGraph.test.tsx's note on
-// the split, and the PR's "Verify by hand" list for what that means in practice.
+// CORRECTION (issue #170 follow-up): this comment used to claim the zero size
+// makes PF skip the tag's background rect AND the node label alike. That's
+// only half true. Read from PF's own source
+// (DefaultConnectorTag.js/useSize.js): `useSize`'s zero-size state object is
+// TRUTHY, so `DefaultConnectorTag`'s `textSize &&` guard — which gates only
+// the `<rect>` — passes; the `<text>` holding the tag string has no guard at
+// all and renders unconditionally. So the edge tag's TEXT (and its `<rect>`)
+// ARE observable under jsdom — verified both by reading the source and by an
+// empirical probe (see ExecutionFlowGraph.test.tsx's header note) — and are
+// asserted directly in that file's tests. `NodeLabel` (node labels) is the
+// one that stays unobservable: it wraps its `<text>` in a `Tippy` tooltip on
+// the zero-bbox measurement, which never attaches under jsdom's tooltip stub.
+//
+// What remains genuinely unobservable is GEOMETRY — position, real size,
+// visual collision, whether a label visually fits. That's the true scope of
+// "not asserted here", not "tag text doesn't render". Node labels, node
+// geometry, and anything about visual layout are therefore not observable
+// here and are NOT asserted; that is still verified BY HAND — see
+// ExecutionFlowGraph.test.tsx's note on the split, and the PR's "Verify by
+// hand" list for what that means in practice.
+//
+// IT IS NOT COVERED ANYWHERE ELSE EITHER, and this comment used to also claim
+// it was "asserted in Playwright against a real browser". There is no such
+// spec: `ui/e2e/` holds only smoke and classification specs, neither of
+// which opens the graph.
 if (typeof SVGElement !== 'undefined') {
   const proto = SVGElement.prototype as unknown as { getBBox?: () => DOMRect };
   if (!proto.getBBox) {

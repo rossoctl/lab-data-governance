@@ -171,6 +171,8 @@ import {
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
 import { kindColorVar, nodeNeutralColorVar } from '../lib/entityKind';
 import { riskLevelColorVar, moreSevereRiskLevel } from '../lib/riskLevel';
+import { edgeTagLabel } from '../lib/classificationSummary';
+import type { InteractionClassification } from '../lib/classificationSummary';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import { LineageSourceNotices, LineageSourcePicker } from './flow/LineageSourcePicker';
 import { LineageEntityPicker } from './flow/LineageEntityPicker';
@@ -338,6 +340,20 @@ type EdgeData = GraphEdgeSpec & {
    * interaction, not per leg.
    */
   riskLevel?: string;
+  /**
+   * This edge's leg's INTERACTION regulatory tags + sensitivity level(s),
+   * looked up from the caller's `classificationByInteraction` map (issue #170
+   * follow-up) by `e.interactionId` — see
+   * {@link EntityGraphProps.classificationByInteraction}. `undefined`
+   * whenever no map was supplied, or the map has no entry for this
+   * interaction — see `riskForestAdapter.classificationByInteraction`'s
+   * docstring for the omitted-vs-present rule (an entry with `tags: []` but a
+   * non-empty `levels` IS present; this field is `undefined` only when the
+   * map itself was never supplied or the lookup misses entirely). Both of an
+   * interaction's two legs share the same record, for the same reason
+   * `riskLevel` above does.
+   */
+  classification?: InteractionClassification;
 };
 
 /**
@@ -977,6 +993,36 @@ function edgeLineageSuffix(data: EdgeData | undefined): string {
   return '';
 }
 
+/**
+ * This leg's regulatory tags + sensitivity level(s), in words, for the edge's
+ * hover text (issue #170 follow-up: regulatory tags as edge labels). Unlike
+ * the VISIBLE tag (`edgeTagLabel`, capped at
+ * {@link import('../lib/classificationSummary').EDGE_TAG_MAX_TAGS} tags),
+ * hover text has no width constraint, so this always spells out the FULL
+ * list — the two are read together as "the number shown is a summary, the
+ * hover is the complete answer", which is what makes the visible cap
+ * lossless rather than a loss of information.
+ *
+ * Returns `''` — not "none" — when `data.classification` is `undefined`
+ * (no map supplied, or no entry for this interaction), same
+ * never-render-unknown-as-a-verdict reasoning as `edgeTagLabel`'s docstring:
+ * an unclassified leg's hover text should say nothing about classification
+ * at all, not assert an absence the data doesn't support. A genuine
+ * `{tags: [], levels: ['PUBLIC']}` entry, by contrast, DOES render — as
+ * `(PUBLIC)` with no tags before it — because that IS a real verdict.
+ *
+ * Placed BEFORE `edgeLineageSuffix` in both the `<title>` and `aria-label`
+ * call sites, keeping that route parenthetical last in both strings.
+ */
+function edgeClassificationSuffix(data: EdgeData | undefined): string {
+  const c = data?.classification;
+  if (!c) return '';
+  const tags = c.tags.length > 0 ? c.tags.join(', ') : '';
+  const levels = c.levels.length > 0 ? `(${c.levels.join(', ')})` : '';
+  const clause = [tags, levels].filter((s) => s !== '').join(' ');
+  return clause === '' ? '' : ` — ${clause}`;
+}
+
 function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof DefaultNode>) {
   const data = element.getData() as NodeData | undefined;
   // RISK TAKES PRECEDENCE (issue #170), same reasoning as the edge colour below:
@@ -1495,7 +1541,7 @@ function DirectedEdge({
       // label was only "edge" would be reachable and unidentifiable.
       aria-label={`Interaction leg, seq ${data?.seq ?? '?'}, ${data?.legType ?? ''}: ${
         data?.title ?? ''
-      }${data?.isError ? ' (failed)' : ''}${edgeLineageSuffix(data)}`}
+      }${data?.isError ? ' (failed)' : ''}${edgeClassificationSuffix(data)}${edgeLineageSuffix(data)}`}
       // Reflects the app's selection (per INTERACTION, so both legs read as pressed
       // together) — the state a sighted reader gets from the weight/dash treatment.
       aria-pressed={data?.isSelected ?? false}
@@ -1511,8 +1557,12 @@ function DirectedEdge({
       }}
     >
       {/* The interaction's summary, plus which leg of it this arrow is — the
-          hover text, now that the visible label is the compact seq number. */}
-      <title>{`#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}`}</title>
+          hover text, now that the visible label is the compact seq number
+          (Execution Flow / Lineage tabs) or, on the risk trace view, the
+          regulatory-tag string (see `edgeClassificationSuffix`'s docstring —
+          the hover text carries the FULL tags + level list either way, never
+          truncated the way the visible tag is). */}
+      <title>{`#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}${edgeClassificationSuffix(data)}`}</title>
       {/* `CurvedEdge`, not PF's `DefaultEdge` — a drop-in at these props that draws a
           smooth arc through the routed bendpoint instead of a polyline corner. Every
           feature relied on below (the click target, the arrowhead, the tag, the wide
@@ -1881,6 +1931,30 @@ export interface EntityGraphProps {
    */
   riskLevelByInteraction?: ReadonlyMap<string, string>;
   /**
+   * Interaction id -> regulatory tags + sensitivity level(s) (issue #170
+   * follow-up: regulatory tags as edge labels on the risk trace graph), from
+   * `lib/riskForestAdapter.ts`'s `classificationByInteraction`. Omitted
+   * entirely by both existing tabs, same reasoning as
+   * {@link riskLevelByInteraction} immediately above — a label a third view
+   * needs, not something either of them renders.
+   *
+   * WHEN SUPPLIED (checked by presence, not by whether a given edge has an
+   * entry), this REPURPOSES the edge's visible tag slot: the tag becomes
+   * `edgeTagLabel(classification?.tags ?? [])` instead of the seq number —
+   * see {@link hideEdgeLabels}'s doc for why presence, not per-edge hit, is
+   * the right test, and `lib/graph.ts`'s `label` docstring for why this
+   * happens at the renderer rather than by changing what `deriveGraph`
+   * itself puts in `GraphEdgeSpec.label`. `''` for an edge with no entry
+   * (drawn as no visible tag at all — `showTag`'s truthiness gate), never
+   * the seq number in that case, so the risk view's edges never mix two
+   * vocabularies (a bare number could otherwise be misread as a tag count).
+   *
+   * The full tags + level list, not just the capped visible string, also
+   * feeds `EdgeData.classification` for the hover text — see
+   * `edgeClassificationSuffix`.
+   */
+  classificationByInteraction?: ReadonlyMap<string, InteractionClassification>;
+  /**
    * Suppress the built-in "N entity pair(s) with multiple interactions"
    * notice (issue #170's Alert Execution view). That notice's whole premise
    * is the request/response leg pair a completed interaction normally draws
@@ -1904,6 +1978,15 @@ export interface EntityGraphProps {
    * The interaction's full summary is still available via the edge's
    * `<title>` hover text either way. Both existing tabs omit this prop and
    * keep their tags unchanged.
+   *
+   * STILL PASSED ALONGSIDE {@link classificationByInteraction} (issue #170
+   * follow-up), not replaced by it: `classificationByInteraction`'s presence
+   * takes precedence over this flag whenever both are supplied — a trace
+   * with zero classified interactions still draws bare arrows (this flag's
+   * job) rather than falling back to seq numbers once a classification map
+   * exists at all. The two flags answer different questions ("hide the seq
+   * number" vs. "show classification tags instead") and the risk trace view
+   * passes both because it wants both answers.
    */
   hideEdgeLabels?: boolean;
   /**
@@ -1921,7 +2004,10 @@ export interface EntityGraphProps {
 /**
  * THE ONE graph renderer: a directed graph of a trace's **Entities** (nodes) and
  * **Interaction legs** (edges), each edge labelled with that leg's trace-wide
- * `seq`, optionally with a subset highlighted.
+ * `seq` — or, on the risk trace view (`classificationByInteraction` supplied),
+ * with its interaction's regulatory tags instead, see
+ * {@link EntityGraphProps.classificationByInteraction} — optionally with a
+ * subset highlighted.
  *
  * One edge per LEG, not per interaction: the request travels caller → callee and
  * the response travels back callee → caller (ADR-0025), so a completed
@@ -1963,6 +2049,7 @@ export function EntityGraph({
   legend,
   testId = 'execution-flow-graph',
   riskLevelByInteraction,
+  classificationByInteraction,
   hideParallelGroupsNotice = false,
   hideEdgeLabels = false,
   compactSurface = false,
@@ -2217,11 +2304,22 @@ export function EntityGraph({
         bendpoints: edgeBendpoints(e, cellById),
         data: {
           ...e,
-          // Blanked rather than left on the spec when the caller opts out (see
-          // `EntityGraphProps.hideEdgeLabels`) — `DirectedEdge` reads only
-          // `data?.label` for its visible tag, so this is the single place
-          // that needs to know about the flag.
-          label: hideEdgeLabels ? '' : e.label,
+          // Three-way precedence (see `EntityGraphProps.classificationByInteraction`
+          // and `.hideEdgeLabels`) — `DirectedEdge` reads only `data?.label` for its
+          // visible tag, so this is the single place that needs to know about either
+          // flag:
+          //   1. `classificationByInteraction` SUPPLIED (checked by presence, not by
+          //      whether THIS edge has an entry) → the tag slot becomes the
+          //      classification string, `''` for an edge with no entry — never the
+          //      seq number in that case, so the risk view's edges never mix two
+          //      vocabularies (a bare number could be misread as a tag count).
+          //   2. Else `hideEdgeLabels` → blanked.
+          //   3. Else → `e.label` (the seq number), unchanged for both existing tabs.
+          label: classificationByInteraction
+            ? edgeTagLabel(classificationByInteraction.get(e.interactionId)?.tags ?? [])
+            : hideEdgeLabels
+              ? ''
+              : e.label,
           highlight: roleOf(e.id, highlight, false),
           // Per INTERACTION, so both legs of the selected one are marked — see
           // EdgeData. A primitive comparison, so this adds nothing the effect's
@@ -2230,6 +2328,7 @@ export function EntityGraph({
           isSelected: selectedInteractionId != null && e.interactionId === selectedInteractionId,
           lineage: edgeLineageFactsOf(e.id, highlight),
           riskLevel: riskLevelByInteraction?.get(e.interactionId),
+          classification: classificationByInteraction?.get(e.interactionId),
         } satisfies EdgeData,
       })),
     };
@@ -2258,7 +2357,9 @@ export function EntityGraph({
     // both existing tabs pass `undefined` forever, so this dependency is a no-op
     // for them. `hideEdgeLabels` joins them for the identical reason: the blanked
     // label is baked into element `data` too, and both existing tabs pass `false`
-    // forever.
+    // forever. `classificationByInteraction` joins them for the same reason again —
+    // both the tag string and the hover-text record are baked into element `data`,
+    // and both existing tabs pass `undefined` forever.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     controller,
@@ -2268,6 +2369,7 @@ export function EntityGraph({
     highlightKey,
     selectedInteractionId,
     riskLevelByInteraction,
+    classificationByInteraction,
     hideEdgeLabels,
   ]);
 

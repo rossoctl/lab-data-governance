@@ -54,6 +54,8 @@
  */
 import type { Entity, Interaction, InteractionLeg } from './flow';
 import type { ForestInteraction } from '../risk-api/types';
+import { regulatoryTagsOf, classificationLevelsOf } from './classificationSummary';
+import type { InteractionClassification } from './classificationSummary';
 
 /**
  * OR-aggregate a forest interaction's leg errors, tri-state preserved: an
@@ -158,6 +160,47 @@ export function riskLevelByInteraction(forest: readonly ForestInteraction[]): Ma
   const map = new Map<string, string>();
   for (const ix of forest) {
     if (ix.risk != null) map.set(ix.interaction_id, ix.risk.risk_level);
+  }
+  return map;
+}
+
+/**
+ * Interaction id -> regulatory tags + sensitivity level(s) (issue #170
+ * follow-up: regulatory tags as edge labels on the risk trace graph), read
+ * via `lib/classificationSummary.ts`'s defensive narrowing of
+ * `risk.classification_summary`. Mirrors `riskLevelByInteraction` immediately
+ * above — a side-channel `Map` the graph consumes ALONGSIDE the flow types,
+ * not a field threaded through them (see `ExecutionFlowGraph.tsx`'s
+ * `classificationByInteraction` prop doc for why: `toFlowInteractions` above
+ * deliberately drops `ix.risk`, and the non-risk `/api/` path this same
+ * adapter's sibling derivations feed has no source for classification at
+ * all, so a `flow.Interaction` field would be permanently-`undefined` on two
+ * of three tabs).
+ *
+ * ONE RECORD PER ENTRY, not two separate maps: `InteractionClassification`
+ * pairs `tags` with `levels` because the graph's visible edge tag reads only
+ * `tags`, but its hover text reads both — a consumer of the pair must never
+ * see one populated and the other missing because two independent lookups
+ * happened to disagree.
+ *
+ * PRESENT WHEN EITHER IS NON-EMPTY, omitted only when BOTH are empty. A
+ * genuine `{tags: [], levels: ['PUBLIC']}` verdict — classified, nothing
+ * regulatory flagged — is present: it draws no visible tag (`edgeTagLabel`'s
+ * truthiness gate on an empty list), but its hover text must still be able to
+ * say "PUBLIC" rather than silently losing a real verdict. Omitted for the
+ * same cases `riskLevelByInteraction` above has no entry for, plus a
+ * classified-but-both-empty leg (which the wire shape doesn't currently
+ * produce, but this function doesn't assume it never will).
+ */
+export function classificationByInteraction(
+  forest: readonly ForestInteraction[],
+): Map<string, InteractionClassification> {
+  const map = new Map<string, InteractionClassification>();
+  for (const ix of forest) {
+    if (ix.risk == null) continue;
+    const tags = regulatoryTagsOf(ix.risk.classification_summary);
+    const levels = classificationLevelsOf(ix.risk.classification_summary);
+    if (tags.length > 0 || levels.length > 0) map.set(ix.interaction_id, { tags, levels });
   }
   return map;
 }

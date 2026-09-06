@@ -11,59 +11,9 @@ import {
 import { RiskBadge } from './RiskBadge';
 import { EnforcementChip } from './EnforcementChip';
 import { joinOrNone } from '../lib/joinOrNone';
+import { regulatoryTagsOf, classificationLevelsOf } from '../lib/classificationSummary';
 import type { Entity } from '../lib/flow';
 import type { ForestInteraction, RuleListItem } from '../risk-api/types';
-
-/**
- * One classified LEG's shape inside `InteractionRisk.classification_summary`
- * when a payload was actually classified — `data_governance/risk/engine/
- * utils.py`'s `_verdict_summary`. The other two possible per-leg shapes are
- * `{classification_pending: true}` (still running) and `{payload: null}`
- * (nothing to classify); neither carries tags or a sensitivity level, so
- * both fall through this narrowing to the "none" default below.
- */
-interface ClassifiedLegSummary {
-  sensitivity_level?: unknown;
-  regulatory_tags?: unknown;
-}
-
-/**
- * `classification_summary` is typed `Record<string, unknown> | null` on the
- * wire (`risk-api/types.ts`'s `InteractionRisk`) because the API guarantees
- * only "a JSON object or null" — the per-leg value can be a classified
- * verdict, `{classification_pending: true}`, or `{payload: null}` (see
- * `utils.py`'s `classification_summary()`), and a leg absent from the object
- * entirely is a fourth, silent case. Rather than typing an optimistic
- * interface that a pending/no-payload/absent leg would violate at runtime,
- * this narrows defensively and falls back to "none"/`[]` for anything that
- * doesn't look like a classified verdict — never throws.
- */
-function classifiedLegs(summary: Record<string, unknown> | null): ClassifiedLegSummary[] {
-  if (summary == null || typeof summary !== 'object') return [];
-  return (['request', 'response'] as const)
-    .map((leg) => summary[leg])
-    .filter((v): v is ClassifiedLegSummary => typeof v === 'object' && v !== null);
-}
-
-/** Every `regulatory_tags` string across whichever legs were actually classified, deduplicated. */
-function regulatoryTagsOf(summary: Record<string, unknown> | null): string[] {
-  const tags = new Set<string>();
-  for (const leg of classifiedLegs(summary)) {
-    if (Array.isArray(leg.regulatory_tags)) {
-      for (const tag of leg.regulatory_tags) if (typeof tag === 'string') tags.add(tag);
-    }
-  }
-  return [...tags];
-}
-
-/** Every `sensitivity_level` string across whichever legs were actually classified, deduplicated. */
-function classificationLevelsOf(summary: Record<string, unknown> | null): string[] {
-  const levels = new Set<string>();
-  for (const leg of classifiedLegs(summary)) {
-    if (typeof leg.sensitivity_level === 'string') levels.add(leg.sensitivity_level);
-  }
-  return [...levels];
-}
 
 /** The rule ids resolved through the catalog index, each rendered as a link. */
 function RuleLinks({ ruleIds, ruleIndex }: { ruleIds: readonly string[]; ruleIndex: ReadonlyMap<string, RuleListItem> | undefined }) {
@@ -187,6 +137,14 @@ export function PolicyDecisionPanel({
           </DescriptionListGroup>
           <DescriptionListGroup>
             <DescriptionListTerm>Regulatory tags</DescriptionListTerm>
+            {/* This row says "none" for an unclassified interaction via
+                `joinOrNone`'s fallback — correct HERE, where the reader has
+                already drilled into one violation and a labelled row must
+                say something. The execution-flow graph's edge tag reads the
+                same `regulatoryTagsOf` but deliberately does NOT say "none"
+                for the same empty case — see `lib/classificationSummary.
+                edgeTagLabel`'s docstring for why a bare graph mark can't
+                make the same claim a labelled row can. */}
             <DescriptionListDescription>{joinOrNone(regulatoryTagsOf(risk.classification_summary))}</DescriptionListDescription>
           </DescriptionListGroup>
           <DescriptionListGroup>

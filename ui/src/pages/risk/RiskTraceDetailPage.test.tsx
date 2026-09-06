@@ -409,4 +409,50 @@ describe('RiskTraceDetailPage content (#170)', () => {
     );
     expect(ruleCalls.length).toBeLessThanOrEqual(1);
   });
+
+  // Issue #170 follow-up: regulatory tags as edge labels. Proves the wiring
+  // end-to-end — adapter (`classificationByInteraction`) -> page -> prop ->
+  // the graph's rendered tag — without re-covering the adapter's own
+  // omission rules (`riskForestAdapter.test.ts`) or the label/precedence
+  // logic (`ExecutionFlowGraph.test.tsx`), which is exactly what those two
+  // files already exercise directly.
+  describe('classification tags on the execution-flow graph (issue #170 follow-up)', () => {
+    it("shows the interaction's regulatory tags on its edge, proving adapter -> prop -> tag", async () => {
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [
+            interaction({
+              risk: risk({
+                classification_summary: {
+                  request: { sensitivity_level: 'RESTRICTED', regulatory_tags: ['PII', 'GDPR'] },
+                },
+              }),
+            }),
+          ],
+        },
+      });
+      renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+      await waitFor(() => expect(screen.getByText('Policy decisions')).toBeInTheDocument());
+      expect(
+        document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent,
+      ).toBe('PII, GDPR');
+    });
+
+    it("shows no tag anywhere in the graph, and never the word 'none', when risk is null throughout", async () => {
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [interaction({ risk: null })],
+        },
+      });
+      renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+      await waitFor(() => expect(screen.getByText('No policy violations')).toBeInTheDocument());
+      const graphSection = screen.getByText('Execution flow').closest('div')?.parentElement ?? document.body;
+      expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag')).toBeNull();
+      expect(within(graphSection as HTMLElement).queryByText(/\bnone\b/i)).not.toBeInTheDocument();
+    });
+  });
 });

@@ -202,7 +202,7 @@ export interface ForestLeg {
  * flattened onto `ForestInteraction` (`risk_level`/`triggered_rule_ids`/etc. all
  * live on `.risk`, not on the interaction directly — see `ForestInteractionView.risk`).
  * `classification_summary`'s shape is not guaranteed by the API beyond "a JSON
- * object or null" — see `PolicyDecisionPanel`'s defensive narrowing.
+ * object or null" — see `lib/classificationSummary.ts`'s defensive narrowing.
  */
 export interface InteractionRisk {
   interaction_risk_id: string;

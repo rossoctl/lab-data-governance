@@ -19,6 +19,7 @@ import {
   toFlowEntities,
   toFlowInteractions,
   riskLevelByInteraction,
+  classificationByInteraction,
   violationsOf,
 } from '../../lib/riskForestAdapter';
 import { parseViolationIndex, stepViolation } from '../../lib/riskViolation';
@@ -37,8 +38,14 @@ import { ViolationStepper } from '../../risk-components/ViolationStepper';
  * `lib/riskForestAdapter.ts` into the same `flow.Entity[]`/`flow.Interaction[]`
  * shape `lib/graph.ts`'s `deriveGraph` already consumes, so both the
  * derivation and the renderer (`EntityGraph`) are the SAME code the ordinary
- * Flow tab uses — extended additively with an optional risk-colour seam
- * (`riskLevelByInteraction`) rather than forked or replaced.
+ * Flow tab uses — extended additively with optional risk seams rather than
+ * forked or replaced: `riskLevelByInteraction` colours each edge by risk
+ * level, and `classificationByInteraction` (issue #170 follow-up) replaces
+ * the edge's visible seq-number label with that interaction's regulatory
+ * tags (full tags + sensitivity level on hover) — see `EntityGraph`'s prop
+ * docs for the precedence between that and `hideEdgeLabels` below. Both
+ * seams are exclusive to this page; the Execution Flow and Lineage tabs pass
+ * neither and are therefore unchanged.
  *
  * ONE DIAGRAM, REQUEST ARROWS ONLY: this page shows the execution-flow graph
  * alone (no sequence diagram) and `toFlowInteractions` keeps only each
@@ -89,6 +96,11 @@ export function RiskTraceDetailPage() {
     [flowEntities, flowInteractions],
   );
   const riskColours = useMemo(() => riskLevelByInteraction(forest), [forest]);
+  // Regulatory tags + sensitivity level as edge labels (issue #170 follow-up)
+  // — same side-channel-map shape as `riskColours` immediately above, see
+  // `EntityGraph`'s `classificationByInteraction` prop doc for why this isn't
+  // a `GraphEdgeSpec` field.
+  const classifications = useMemo(() => classificationByInteraction(forest), [forest]);
   const violations = useMemo(() => violationsOf(forest), [forest]);
 
   const violationIndex = parseViolationIndex(searchParams.get('violation'), violations.length);
@@ -182,7 +194,14 @@ export function RiskTraceDetailPage() {
             selectedInteractionId={selectedInteractionId}
             onSelectInteraction={handleSelectInteraction}
             riskLevelByInteraction={riskColours}
+            classificationByInteraction={classifications}
             hideParallelGroupsNotice
+            // STAYS passed alongside `classificationByInteraction`, not
+            // superseded by it: the map's presence — not any per-edge hit —
+            // already takes precedence over this flag inside `EntityGraph`
+            // (see that prop's doc), so a trace with zero classified
+            // interactions still draws bare arrows here rather than falling
+            // back to seq numbers just because a (empty) map exists.
             hideEdgeLabels
             compactSurface
           />
