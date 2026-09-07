@@ -159,9 +159,17 @@ function SourcesTable({
                 // The full natural key stays reachable whenever the visible text
                 // is the shortened name: two sources can share a display_name,
                 // and a governance surface must not make two distinct origins
-                // look identical. Native `title`, matching EntityPill / SpanTree
-                // rather than introducing a PF Tooltip convention here. Omitted
-                // when unresolved — the label already IS the key.
+                // look identical. Native `title`, matching EntityPill / SpanTree,
+                // is the right choice HERE — an HTML `<title>` attribute on a
+                // table cell does show the browser's own tooltip, unlike its SVG
+                // namesake. (That distinction is the whole reason
+                // `ExecutionFlowGraph.tsx`'s graph edges now use a PF `Tooltip`
+                // instead: a native `<title>` *element* inside `<svg>` produced
+                // no visible tooltip in this app at all — see that file's
+                // `DirectedEdge`. So this is not a blanket "never use PF
+                // Tooltip" rule, only "not needed for HTML cells and pills,
+                // where the native mechanism already works.") Omitted when
+                // unresolved — the label already IS the key.
                 title={qualified ? source : undefined}
               >
                 {label}

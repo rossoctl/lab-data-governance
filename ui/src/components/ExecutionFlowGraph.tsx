@@ -5,6 +5,7 @@ import {
   EmptyStateBody,
   EmptyStateHeader,
   Spinner,
+  Tooltip,
 } from '@patternfly/react-core';
 // DEEP imports, not the `@patternfly/react-topology` barrel — it keeps the
 // barrel's pipelines / side-bar / context-menu subtrees out of the production
@@ -170,6 +171,9 @@ import {
 } from '../lib/lineageReachability';
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
 import { kindColorVar, nodeNeutralColorVar } from '../lib/entityKind';
+import { riskLevelColorVar, moreSevereRiskLevel } from '../lib/riskLevel';
+import { edgeTagLabel } from '../lib/classificationSummary';
+import type { InteractionClassification } from '../lib/classificationSummary';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import { LineageSourceNotices, LineageSourcePicker } from './flow/LineageSourcePicker';
 import { LineageEntityPicker } from './flow/LineageEntityPicker';
@@ -284,6 +288,23 @@ type NodeData = GraphNodeSpec & {
   highlight: HighlightRole;
   lineage: NodeLineageFacts;
   kindColoured: boolean;
+  /**
+   * This node's ENTITY risk level, resolved when the caller supplied a
+   * `riskLevelByInteraction` map (issue #170) — see
+   * {@link EntityGraphProps.riskLevelByInteraction}. `undefined` when no map
+   * was supplied at all, which is what keeps both existing tabs' node colour
+   * unchanged; present (possibly `'unknown'`) whenever a map is passed, even
+   * for a node with no incident edges in it.
+   *
+   * STOPGAP, not a first-class fact: the risk API has no per-entity risk
+   * level, only per-INTERACTION (`ForestInteraction.risk`). This is the worse
+   * of the node's incident edges' levels (`moreSevereRiskLevel`,
+   * `lib/riskLevel.ts`), computed by `EntityGraph` itself rather than by the
+   * caller, because the roll-up needs the same edge set the graph already
+   * derives. If the risk model ever gains a genuine per-entity level, that
+   * should replace this roll-up rather than sit beside it.
+   */
+  riskLevel?: string;
 };
 /**
  * An edge's `data`: its derived spec, its highlight role, and whether its parent
@@ -309,6 +330,31 @@ type EdgeData = GraphEdgeSpec & {
   highlight: HighlightRole;
   isSelected: boolean;
   lineage: EdgeLineageFacts;
+  /**
+   * This edge's leg's INTERACTION risk level, looked up from the caller's
+   * `riskLevelByInteraction` map (issue #170) by `e.interactionId` — see
+   * {@link EntityGraphProps.riskLevelByInteraction}. `undefined` whenever no
+   * map was supplied, or the map has no entry for this interaction (not yet
+   * computed — eventual consistency, not a "safe" verdict; see
+   * `riskForestAdapter.riskLevelByInteraction`'s docstring). Both of an
+   * interaction's two legs share the same level, since the verdict is per
+   * interaction, not per leg.
+   */
+  riskLevel?: string;
+  /**
+   * This edge's leg's INTERACTION regulatory tags + sensitivity level(s),
+   * looked up from the caller's `classificationByInteraction` map (issue #170
+   * follow-up) by `e.interactionId` — see
+   * {@link EntityGraphProps.classificationByInteraction}. `undefined`
+   * whenever no map was supplied, or the map has no entry for this
+   * interaction — see `riskForestAdapter.classificationByInteraction`'s
+   * docstring for the omitted-vs-present rule (an entry with `tags: []` but a
+   * non-empty `levels` IS present; this field is `undefined` only when the
+   * map itself was never supplied or the lookup misses entirely). Both of an
+   * interaction's two legs share the same record, for the same reason
+   * `riskLevel` above does.
+   */
+  classification?: InteractionClassification;
 };
 
 /**
@@ -948,14 +994,76 @@ function edgeLineageSuffix(data: EdgeData | undefined): string {
   return '';
 }
 
+/**
+ * This leg's regulatory tags + sensitivity level(s), in words, for the edge's
+ * hover text (issue #170 follow-up: regulatory tags as edge labels). Unlike
+ * the VISIBLE tag (`edgeTagLabel`, capped at
+ * {@link import('../lib/classificationSummary').EDGE_TAG_MAX_TAGS} tags),
+ * hover text has no width constraint, so this always spells out the FULL
+ * list — the two are read together as "the number shown is a summary, the
+ * hover is the complete answer", which is what makes the visible cap
+ * lossless rather than a loss of information.
+ *
+ * Returns `''` — not "none" — when `data.classification` is `undefined`
+ * (no map supplied, or no entry for this interaction), same
+ * never-render-unknown-as-a-verdict reasoning as `edgeTagLabel`'s docstring:
+ * an unclassified leg's hover text should say nothing about classification
+ * at all, not assert an absence the data doesn't support. A genuine
+ * `{tags: [], levels: ['PUBLIC']}` entry, by contrast, DOES render — as
+ * `(PUBLIC)` with no tags before it — because that IS a real verdict.
+ *
+ * Placed BEFORE `edgeLineageSuffix` in both the `<title>` and `aria-label`
+ * call sites, keeping that route parenthetical last in both strings.
+ */
+function edgeClassificationSuffix(data: EdgeData | undefined): string {
+  const c = data?.classification;
+  if (!c) return '';
+  const tags = c.tags.length > 0 ? c.tags.join(', ') : '';
+  const levels = c.levels.length > 0 ? `(${c.levels.join(', ')})` : '';
+  const clause = [tags, levels].filter((s) => s !== '').join(' ');
+  return clause === '' ? '' : ` — ${clause}`;
+}
+
+/**
+ * The edge's hover text — one helper feeding BOTH the native SVG `<title>`
+ * and the interactive `Tooltip` in `DirectedEdge` below, so the two elements
+ * can never drift apart. That is the whole reason this exists as its own
+ * function rather than being inlined twice: the fix that added the `Tooltip`
+ * kept the `<title>` alongside it (a deliberate choice — see `DirectedEdge`'s
+ * note on why), and two independently-hand-written template literals saying
+ * "the same thing" is exactly the kind of divergence that drifts silently.
+ * A test asserts the two elements' text stays equal; this helper is why that
+ * test can even be true by construction rather than by coincidence.
+ *
+ * Deliberately does NOT include `edgeLineageSuffix` — unlike `aria-label`,
+ * which does. The visible/audible split was a considered choice, not an
+ * oversight: keeping the hover text identical to what the inert `<title>`
+ * already said avoids also changing the Lineage tab's hover wording as a
+ * side effect of an unrelated bug fix.
+ */
+function edgeHoverText(data: EdgeData | undefined): string {
+  return `#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}${edgeClassificationSuffix(data)}`;
+}
+
 function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof DefaultNode>) {
   const data = element.getData() as NodeData | undefined;
-  // PER TAB (see `NodeData.kindColoured`): Execution Flow paints entity kind, because
-  // nothing else on that tab wants hue; Lineage paints every node neutral so the
-  // trace's data sources can be the one coloured thing. Defaults to NEUTRAL when
-  // `data` is missing — the conservative direction, since a stray kind hue on the
-  // Lineage tab would compete with the source colouring.
-  const colour = data?.kindColoured ? kindColorVar(data.kind) : nodeNeutralColorVar();
+  // RISK TAKES PRECEDENCE (issue #170), same reasoning as the edge colour below:
+  // a node's `riskLevel` is present only when a caller passed
+  // `riskLevelByInteraction` at all (see `EntityGraphProps.riskLevelByInteraction`),
+  // which today is only the trace-detail view — both existing tabs leave it
+  // `undefined` and fall straight through to the unchanged branch beneath.
+  //
+  // PER TAB OTHERWISE (see `NodeData.kindColoured`): Execution Flow paints entity
+  // kind, because nothing else on that tab wants hue; Lineage paints every node
+  // neutral so the trace's data sources can be the one coloured thing. Defaults to
+  // NEUTRAL when `data` is missing — the conservative direction, since a stray kind
+  // hue on the Lineage tab would compete with the source colouring.
+  const colour =
+    data?.riskLevel !== undefined
+      ? riskLevelColorVar(data.riskLevel)
+      : data?.kindColoured
+        ? kindColorVar(data.kind)
+        : nodeNeutralColorVar();
   return (
     <g
       // The exact variables PF's own topology-components.css reads for a node's
@@ -1384,7 +1492,17 @@ function DirectedEdge({
   // and PF's selection state is used for nothing but firing the event.
   Omit<WithSelectionProps, 'selected'>) {
   const data = element.getData() as EdgeData | undefined;
-  const colour = data?.isError ? 'var(--dg-color-error)' : 'var(--dg-tree-guide)';
+  // ERROR KEEPS PRECEDENCE (issue #170): a leg's `isError` is a fact about what
+  // happened on the wire, not a risk grade, so it wins even over a critical risk
+  // level. Risk colour is next, present only when the caller passed
+  // `riskLevelByInteraction` AND this edge's interaction has an entry in it —
+  // both existing tabs never pass the map, so `data?.riskLevel` is always
+  // `undefined` for them and this falls straight through unchanged.
+  const colour = data?.isError
+    ? 'var(--dg-color-error)'
+    : data?.riskLevel !== undefined
+      ? riskLevelColorVar(data.riskLevel)
+      : 'var(--dg-tree-guide)';
   // `selected` stripped HERE rather than in the destructure above, because the lint
   // config permits no unused binding and a `_`-prefixed one would need a rule change to
   // exempt. Deleting the key off a shallow copy says the same thing with no config
@@ -1392,8 +1510,33 @@ function DirectedEdge({
   // the HOC injects the prop regardless of what the type declares.
   const pfProps: Record<string, unknown> = { ...rest };
   delete pfProps.selected;
+  // THE TOOLTIP'S TRIGGER. A plain `useRef`, not a `useState` callback ref —
+  // worth stating why, since a callback ref is the usual answer to "does the
+  // consumer see this ref in time". PF's `Popper` (which `Tooltip` below
+  // forwards `triggerRef` to) resolves the trigger in an effect keyed on
+  // `[triggerRef, trigger]` — both stable here — so that effect runs exactly
+  // ONCE per mount; a later ref mutation schedules no re-render and would
+  // never be picked up. A `useState` ref would dodge that by giving Popper a
+  // fresh, populated value to depend on — but at the cost of a second render
+  // of every edge on mount, and (worse) a fresh `triggerRef` IDENTITY every
+  // render, which would re-run that effect continuously. Neither cost buys
+  // anything here, because REACT ATTACHES REFS DURING THE COMMIT'S REF PHASE,
+  // before any passive effect in that same commit — and the `<g>` below and
+  // the `<Tooltip>` are siblings committed together. So by the time Popper's
+  // effect first runs, `edgeRef.current` is already the `<g>`.
+  //
+  // That argument is sound, but it is NOT enforced by the type system or by
+  // anything else that would fail loudly if it stopped being true (e.g. if a
+  // future edit moved the `<Tooltip>` into a lazily-rendered branch mounted
+  // after the `<g>`, in a separate commit). The guarantee is pinned by a
+  // test instead — `ExecutionFlowGraph.test.tsx`'s "summary appears as a
+  // real tooltip on hover" test IS that tripwire: if the ref were ever
+  // populated too late, that test would start failing.
+  const edgeRef = useRef<SVGGElement>(null);
   return (
+    <>
     <g
+      ref={edgeRef}
       // `--pf-topology__edge--Stroke` is the right lever, and the only one that
       // works from out here. The line (`.pf-topology__edge__link`) and the
       // ARROWHEAD (`.pf-topology-connector-arrow`) both paint from
@@ -1445,7 +1588,7 @@ function DirectedEdge({
       // label was only "edge" would be reachable and unidentifiable.
       aria-label={`Interaction leg, seq ${data?.seq ?? '?'}, ${data?.legType ?? ''}: ${
         data?.title ?? ''
-      }${data?.isError ? ' (failed)' : ''}${edgeLineageSuffix(data)}`}
+      }${data?.isError ? ' (failed)' : ''}${edgeClassificationSuffix(data)}${edgeLineageSuffix(data)}`}
       // Reflects the app's selection (per INTERACTION, so both legs read as pressed
       // together) — the state a sighted reader gets from the weight/dash treatment.
       aria-pressed={data?.isSelected ?? false}
@@ -1461,8 +1604,19 @@ function DirectedEdge({
       }}
     >
       {/* The interaction's summary, plus which leg of it this arrow is — the
-          hover text, now that the visible label is the compact seq number. */}
-      <title>{`#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}`}</title>
+          hover text, now that the visible label is the compact seq number
+          (Execution Flow / Lineage tabs) or, on the risk trace view, the
+          regulatory-tag string (see `edgeClassificationSuffix`'s docstring —
+          the hover text carries the FULL tags + level list either way, never
+          truncated the way the visible tag is).
+
+          KEPT DELIBERATELY alongside the interactive `Tooltip` below, rather
+          than removed as redundant, once it became clear this element never
+          produced a VISIBLE tooltip in this app (native SVG `<title>` simply
+          doesn't, in the browsers this app targets) — see the bug report and
+          `Tooltip`'s note. Both read from `edgeHoverText` so they can't drift
+          apart; a test asserts they stay equal. */}
+      <title>{edgeHoverText(data)}</title>
       {/* `CurvedEdge`, not PF's `DefaultEdge` — a drop-in at these props that draws a
           smooth arc through the routed bendpoint instead of a polyline corner. Every
           feature relied on below (the click target, the arrowhead, the tag, the wide
@@ -1530,6 +1684,33 @@ function DirectedEdge({
           .join(' ')}
       />
     </g>
+    {/* THE ACTUAL VISIBLE TOOLTIP — the fix. Everything above this renders the
+        edge itself and never changes shape; this is a SIBLING, not a child,
+        because `Tooltip` (via `Popper`, which it forwards `triggerRef` to)
+        portals its floating content into `document.body` regardless of
+        where it is mounted in the tree, so nesting it inside the `<g>` would
+        buy nothing and would place it among elements PF re-layers on hover
+        and drag for no reason.
+
+        NO `children` PASSED, and that is load-bearing, not an omission.
+        `Tooltip.d.ts` declares `children` OPTIONAL; leaving it out makes
+        `Tooltip` pass `trigger: undefined` down to `Popper`, and BOTH of
+        Popper's trigger-rendering branches gate on
+        `trigger && React.isValidElement(trigger)` — so with no children,
+        Popper renders NO in-place DOM of its own at all. That specifically
+        avoids the `!triggerRef` branch, which wraps its trigger in an HTML
+        `<div style="display:contents">` — invalid inside `<svg>`. Passing
+        the `<g>` above as `children` instead of relying on `triggerRef`
+        would risk exactly that wrapper landing inside the SVG tree.
+
+        `aria="none"`: belt-and-braces, not strictly required today (the
+        `aria-describedby` cloning `Tooltip` would otherwise do can't run
+        with no `children` regardless), but it states the intent plainly —
+        the accessible name is `aria-label` above, this tooltip is a VISUAL
+        affordance only — and keeps that true even if a future edit adds
+        `children` for some other reason. */}
+    <Tooltip triggerRef={edgeRef} content={edgeHoverText(data)} aria="none" />
+    </>
   );
 }
 
@@ -1816,12 +1997,98 @@ export interface EntityGraphProps {
   legend?: React.ReactNode;
   /** `data-testid` on the wrapper, so each tab is addressable as itself. */
   testId?: string;
+  /**
+   * Interaction id -> risk level (issue #170's Alert Execution view), from
+   * `lib/riskForestAdapter.ts`'s `riskLevelByInteraction`. Omitted entirely
+   * by both existing tabs (Execution Flow, Lineage) — a colour a third view
+   * needs, not something either of them renders — which is what keeps their
+   * node/edge colours byte-for-byte unchanged: every risk-colour branch below
+   * is reached only when this is present.
+   *
+   * An interaction absent from the map (its `risk` was `null` — not yet
+   * computed) gets no edge/node treatment at all, same as an absent map;
+   * only an explicit entry paints anything, so "not yet computed" is never
+   * drawn as a colour.
+   */
+  riskLevelByInteraction?: ReadonlyMap<string, string>;
+  /**
+   * Interaction id -> regulatory tags + sensitivity level(s) (issue #170
+   * follow-up: regulatory tags as edge labels on the risk trace graph), from
+   * `lib/riskForestAdapter.ts`'s `classificationByInteraction`. Omitted
+   * entirely by both existing tabs, same reasoning as
+   * {@link riskLevelByInteraction} immediately above — a label a third view
+   * needs, not something either of them renders.
+   *
+   * WHEN SUPPLIED (checked by presence, not by whether a given edge has an
+   * entry), this REPURPOSES the edge's visible tag slot: the tag becomes
+   * `edgeTagLabel(classification?.tags ?? [])` instead of the seq number —
+   * see {@link hideEdgeLabels}'s doc for why presence, not per-edge hit, is
+   * the right test, and `lib/graph.ts`'s `label` docstring for why this
+   * happens at the renderer rather than by changing what `deriveGraph`
+   * itself puts in `GraphEdgeSpec.label`. `''` for an edge with no entry
+   * (drawn as no visible tag at all — `showTag`'s truthiness gate), never
+   * the seq number in that case, so the risk view's edges never mix two
+   * vocabularies (a bare number could otherwise be misread as a tag count).
+   *
+   * The full tags + level list, not just the capped visible string, also
+   * feeds `EdgeData.classification` for the hover text — see
+   * `edgeClassificationSuffix`.
+   */
+  classificationByInteraction?: ReadonlyMap<string, InteractionClassification>;
+  /**
+   * Suppress the built-in "N entity pair(s) with multiple interactions"
+   * notice (issue #170's Alert Execution view). That notice's whole premise
+   * is the request/response leg pair a completed interaction normally draws
+   * in the same channel — see the notice's own comment below, "a single
+   * completed interaction always puts two arrows... so counting edges would
+   * fire this notice on virtually every trace". The risk trace view draws
+   * request legs only (`riskForestAdapter.toFlowInteractions`), so a
+   * "multiple interactions" notice there is answering a question about
+   * response arrows that page never draws — noise, not a caveat. Both
+   * existing tabs omit this prop and keep the notice unchanged.
+   */
+  hideParallelGroupsNotice?: boolean;
+  /**
+   * Suppress each edge's visible `seq`-number tag (issue #170's Alert
+   * Execution view). That number is meaningful on the Execution Flow/Lineage
+   * tabs, where it is the trace-wide leg order a reader cross-references
+   * against the Flat table's own `seq` column — a table this view has no
+   * equivalent of. Here the arrows are the whole picture (one request leg
+   * per interaction, no table alongside them), so a bare number floating on
+   * every arrow is clutter with nothing to cross-reference, not information.
+   * The interaction's full summary is still available via the edge's
+   * `<title>` hover text either way. Both existing tabs omit this prop and
+   * keep their tags unchanged.
+   *
+   * STILL PASSED ALONGSIDE {@link classificationByInteraction} (issue #170
+   * follow-up), not replaced by it: `classificationByInteraction`'s presence
+   * takes precedence over this flag whenever both are supplied — a trace
+   * with zero classified interactions still draws bare arrows (this flag's
+   * job) rather than falling back to seq numbers once a classification map
+   * exists at all. The two flags answer different questions ("hide the seq
+   * number" vs. "show classification tags instead") and the risk trace view
+   * passes both because it wants both answers.
+   */
+  hideEdgeLabels?: boolean;
+  /**
+   * Shrink the drawing surface (issue #170 follow-up: the risk trace view's
+   * "Action" row, the first field of its `PolicyDecisionPanel` below the
+   * graph, was falling below the fold). Toggles `dg-graph-surface--compact`
+   * (global.css), which shortens `.dg-graph-surface`'s viewport-derived
+   * height beyond its default allowance — see that rule's comment for why
+   * the default itself was left alone. Both existing tabs omit this prop and
+   * keep their current height.
+   */
+  compactSurface?: boolean;
 }
 
 /**
  * THE ONE graph renderer: a directed graph of a trace's **Entities** (nodes) and
  * **Interaction legs** (edges), each edge labelled with that leg's trace-wide
- * `seq`, optionally with a subset highlighted.
+ * `seq` — or, on the risk trace view (`classificationByInteraction` supplied),
+ * with its interaction's regulatory tags instead, see
+ * {@link EntityGraphProps.classificationByInteraction} — optionally with a
+ * subset highlighted.
  *
  * One edge per LEG, not per interaction: the request travels caller → callee and
  * the response travels back callee → caller (ADR-0025), so a completed
@@ -1862,6 +2129,11 @@ export function EntityGraph({
   controls,
   legend,
   testId = 'execution-flow-graph',
+  riskLevelByInteraction,
+  classificationByInteraction,
+  hideParallelGroupsNotice = false,
+  hideEdgeLabels = false,
+  compactSurface = false,
 }: EntityGraphProps) {
   // One Visualization instance for the view's lifetime. Created lazily in state
   // (not a ref-with-side-effects) so React owns it; the factory is registered
@@ -2035,6 +2307,22 @@ export function EntityGraph({
     // moves again. Routing against the cell keeps the detour a property of the
     // LAYOUT, which is the thing it is dodging.
     const cellById = new Map(spec.nodes.map((n) => [n.id, { column: n.column, row: n.row }]));
+    // A node's risk colour (see `NodeData.riskLevel`'s STOPGAP note) is the
+    // worst level among the edges it touches, as either source or target —
+    // built once per model push rather than per node, since it is one pass
+    // over `spec.edges` regardless of node count. `undefined` for a node with
+    // no risk-mapped incident edge, which leaves it uncoloured, not "safe".
+    const riskLevelByNode = new Map<string, string>();
+    if (riskLevelByInteraction !== undefined) {
+      for (const e of spec.edges) {
+        const level = riskLevelByInteraction.get(e.interactionId);
+        if (level === undefined) continue;
+        for (const nodeId of [e.source, e.target]) {
+          const existing = riskLevelByNode.get(nodeId);
+          riskLevelByNode.set(nodeId, existing === undefined ? level : moreSevereRiskLevel(existing, level));
+        }
+      }
+    }
     const model: Model = {
       // No `layout` key: see the controller's note. Omitting it leaves
       // `BaseGraph.currentLayout` undefined, so `graph.layout()` is a no-op and
@@ -2070,6 +2358,7 @@ export function EntityGraph({
             // rather than on a new "which tab" prop that would be a second way to say
             // the same thing and could contradict it.
             kindColoured: highlight === undefined,
+            riskLevel: riskLevelByNode.get(n.id),
           } satisfies NodeData,
         };
       }),
@@ -2096,6 +2385,22 @@ export function EntityGraph({
         bendpoints: edgeBendpoints(e, cellById),
         data: {
           ...e,
+          // Three-way precedence (see `EntityGraphProps.classificationByInteraction`
+          // and `.hideEdgeLabels`) — `DirectedEdge` reads only `data?.label` for its
+          // visible tag, so this is the single place that needs to know about either
+          // flag:
+          //   1. `classificationByInteraction` SUPPLIED (checked by presence, not by
+          //      whether THIS edge has an entry) → the tag slot becomes the
+          //      classification string, `''` for an edge with no entry — never the
+          //      seq number in that case, so the risk view's edges never mix two
+          //      vocabularies (a bare number could be misread as a tag count).
+          //   2. Else `hideEdgeLabels` → blanked.
+          //   3. Else → `e.label` (the seq number), unchanged for both existing tabs.
+          label: classificationByInteraction
+            ? edgeTagLabel(classificationByInteraction.get(e.interactionId)?.tags ?? [])
+            : hideEdgeLabels
+              ? ''
+              : e.label,
           highlight: roleOf(e.id, highlight, false),
           // Per INTERACTION, so both legs of the selected one are marked — see
           // EdgeData. A primitive comparison, so this adds nothing the effect's
@@ -2103,6 +2408,8 @@ export function EntityGraph({
           // digest, unlike the highlight's object).
           isSelected: selectedInteractionId != null && e.interactionId === selectedInteractionId,
           lineage: edgeLineageFactsOf(e.id, highlight),
+          riskLevel: riskLevelByInteraction?.get(e.interactionId),
+          classification: classificationByInteraction?.get(e.interactionId),
         } satisfies EdgeData,
       })),
     };
@@ -2125,8 +2432,27 @@ export function EntityGraph({
     // re-applied on every push rather than only on a poll: selecting an edge is now
     // one more thing that rebuilds the model, and the reader's dragged nodes have to
     // ride through it exactly as they ride through a highlight change.
+    //
+    // `riskLevelByInteraction` is listed directly too, same reasoning as
+    // `selectedInteractionId`: the risk colour is baked into element `data`, and
+    // both existing tabs pass `undefined` forever, so this dependency is a no-op
+    // for them. `hideEdgeLabels` joins them for the identical reason: the blanked
+    // label is baked into element `data` too, and both existing tabs pass `false`
+    // forever. `classificationByInteraction` joins them for the same reason again —
+    // both the tag string and the hover-text record are baked into element `data`,
+    // and both existing tabs pass `undefined` forever.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controller, spec, traceId, harvestDraggedPositions, highlightKey, selectedInteractionId]);
+  }, [
+    controller,
+    spec,
+    traceId,
+    harvestDraggedPositions,
+    highlightKey,
+    selectedInteractionId,
+    riskLevelByInteraction,
+    classificationByInteraction,
+    hideEdgeLabels,
+  ]);
 
   /**
    * "Put it back": every node returns to its layered (column, row) cell and the
@@ -2278,7 +2604,7 @@ export function EntityGraph({
           and an instruction to "select an entity" whose control sat below the fold
           would be unfollowable. See `EntityGraphProps.controls`. */}
       {controls}
-      <div className="dg-graph-surface">
+      <div className={`dg-graph-surface${compactSurface ? ' dg-graph-surface--compact' : ''}`}>
         <VisualizationProvider controller={controller}>
           <VisualizationSurface />
           {/* Zoom controls. PF's own `TopologyControlBar` rather than four
@@ -2407,7 +2733,7 @@ export function EntityGraph({
             response) in the same channel, so counting edges would fire this notice
             on virtually every trace — noise that is always on carries no
             information. See lib/graph's parallelGroups. */}
-        {spec.parallelGroups.length > 0 && (
+        {spec.parallelGroups.length > 0 && !hideParallelGroupsNotice && (
           <Alert
             variant="info"
             isInline
