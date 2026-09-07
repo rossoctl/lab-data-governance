@@ -39,6 +39,7 @@ from data_governance import db
 from data_governance.risk.engine import utils
 from data_governance.risk.engine.evidence import gather_evidence
 from data_governance.risk.engine.opa import OpaClient
+from data_governance.risk.rules.rego import FALLBACK_RULE_ID
 
 __all__ = ["RecordWrite", "compute_interaction_risk", "prepare_interaction_risk"]
 
@@ -253,15 +254,25 @@ def _record_params(
     decision: utils.PolicyDecision,
 ) -> tuple[dict, dict]:
     """Build the params dict for both the insert and the idempotency
-    comparison, returned together so callers can't drift them apart."""
+    comparison, returned together so callers can't drift them apart.
+
+    ``triggered_rule_ids`` carries catalog rules only: the compiled bundle's
+    fallback decision reports :data:`FALLBACK_RULE_ID` in ``triggered_rules``
+    to say "nothing fired", and storing that sentinel would make every clean
+    interaction count as a rule firing downstream (the metrics rules-fired /
+    top-rules queries unnest this column; alerts name rules from it). The
+    decision cache (``interaction_policy_decisions``) keeps OPA's answer
+    verbatim — this is the one place the sentinel is interpreted.
+    """
     legs_evidenced = utils.legs_evidenced(legs)
     classification_summary = utils.classification_summary(classifications)
     confidence = utils.quantize_confidence(decision.confidence)
+    fired_rule_ids = [r for r in decision.triggered_rules if r != FALLBACK_RULE_ID]
     normalized = {
         "risk_level": decision.risk_level,
         "enforcement_type": decision.enforcement_type,
         "policy_event_count": 1,
-        "triggered_rule_ids": sorted(decision.triggered_rules),
+        "triggered_rule_ids": sorted(fired_rule_ids),
         "legs_evidenced": legs_evidenced,
         "classification_summary": (
             json.loads(json.dumps(classification_summary, sort_keys=True, default=str))
@@ -280,7 +291,7 @@ def _record_params(
         "risk_level": decision.risk_level,
         "enforcement_type": decision.enforcement_type,
         "policy_event_count": 1,
-        "triggered_rule_ids": decision.triggered_rules,
+        "triggered_rule_ids": fired_rule_ids,
         "legs_evidenced": legs_evidenced,
         "classification_summary": json.dumps(classification_summary, default=str),
         "opa_policy_versions_used": (

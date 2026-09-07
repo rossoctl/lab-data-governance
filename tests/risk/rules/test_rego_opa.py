@@ -454,3 +454,77 @@ def test_shipped_bundle_reports_its_policy_version_on_fire_and_on_fallback(
     fallback = _evaluate(opa_base_url, {"event_type": "internal_sharing"})
     assert fallback.triggered_rules == ["0000"]
     assert fallback.policy_version == expected
+
+
+# --- the engine's own OPA input through the compiled shipped catalog ------------
+#
+# Bridges #163's evidence mapping to #173's compiled bundle: the exact
+# payload build_opa_input emits for the live A/B (identical PII/PHI/RESTRICTED
+# payload, one variable — the destination host) must produce the decisions
+# the engine stores and the demo asserts. This is the one test that pins the
+# whole producer -> compiler -> OPA -> client chain on the shipped catalog.
+
+
+def _exfil_opa_input(peer_host: str) -> dict[str, Any]:
+    from data_governance.processors.classification.verdict import Verdict
+    from data_governance.risk.engine import utils
+
+    verdict = Verdict(
+        sensitivity_level="RESTRICTED",
+        regulatory_tags=["PII", "PHI"],
+        contains_identity_bundle=False,
+        is_personalized=True,
+        primary_domain="healthcare",
+        findings=[],
+        model_version=1,
+    )
+    return utils.build_opa_input(
+        legs=[],
+        span_ids=[],
+        classifications={"p1": verdict},
+        caller_entity_id="priorauth-clinical",
+        callee_entity_id=None,
+        anchor=utils.AnchorFacts(
+            direction="outbound", peer_host=peer_host, url_scheme="http",
+            url_path="/v1/chat/completions", self_id="priorauth-clinical",
+        ),
+        internal_patterns=["*.svc.cluster.local", "*.svc"],
+    )
+
+
+@pytest.mark.opa
+def test_engine_input_exfil_arm_fires_all_three_rules_most_restrictive(
+    opa_client, opa_base_url
+):
+    from data_governance.risk.rules import catalog
+
+    put_response = _put_policy(opa_client, compile_policy(catalog.load_rules_source()))
+    assert put_response.status_code == 200, put_response.text
+
+    decision = _evaluate(opa_base_url, _exfil_opa_input("api.exfil-partner.example:8000"))
+    assert decision.risk_level == "critical"
+    assert decision.enforcement_type == "block"
+    assert sorted(decision.triggered_rules) == ["DG-001", "DG-002", "DG-004"]
+    # most_restrictive ties (all three critical/block) break on lowest rule
+    # id on BOTH axes, so DG-001's allowed_actions/explanation win outright —
+    # unlike #162's retired evaluator, which intersected allowed_actions
+    # across every firing rule (-> []). Pinned so the difference is visible.
+    assert decision.allowed_actions == ["redact"]
+    assert decision.explanation.startswith("PII detected")
+    assert decision.confidence == 0.95
+
+
+@pytest.mark.opa
+def test_engine_input_internal_control_arm_falls_back(opa_client, opa_base_url):
+    from data_governance.risk.rules import catalog
+    from data_governance.risk.rules.rego import FALLBACK_RULE_ID
+
+    put_response = _put_policy(opa_client, compile_policy(catalog.load_rules_source()))
+    assert put_response.status_code == 200, put_response.text
+
+    decision = _evaluate(
+        opa_base_url, _exfil_opa_input("partner-echo.extern-sim.svc.cluster.local:8000")
+    )
+    assert decision.risk_level == "none"
+    assert decision.enforcement_type == "allow"
+    assert decision.triggered_rules == [FALLBACK_RULE_ID]

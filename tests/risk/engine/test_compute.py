@@ -333,3 +333,51 @@ def test_zero_legs_still_computes_a_record(configured_db: str):
     assert version == 1
     assert risk_level == "none"
     assert legs_evidenced == []
+
+
+# --- the compiled bundle's fallback rule (#173/#176) ---------------------------
+#
+# When no catalog rule fires, the compiled Rego's default decision reports
+# triggered_rules == ["0000"] (rego.FALLBACK_RULE_ID). That sentinel means
+# "nothing fired" and must not be stored as a fired rule on the risk record —
+# metrics unnest triggered_rule_ids to count rules fired, and alerts name
+# rules from it. The decision cache keeps OPA's answer verbatim.
+
+
+def _rule_columns(dsn: str, interaction_id: str = _IX_ID) -> tuple[list[str], list[str]]:
+    with psycopg.connect(dsn) as conn:
+        (record_rules,) = conn.execute(
+            "SELECT triggered_rule_ids FROM interaction_risk_records "
+            "WHERE interaction_id = %s ORDER BY version DESC LIMIT 1",
+            (interaction_id,),
+        ).fetchone()
+        (cached_rules,) = conn.execute(
+            "SELECT triggered_rules FROM interaction_policy_decisions "
+            "WHERE interaction_id = %s ORDER BY version DESC LIMIT 1",
+            (interaction_id,),
+        ).fetchone()
+    return list(record_rules), list(cached_rules)
+
+
+def test_fallback_rule_id_is_not_stored_as_a_fired_rule(seeded: str):
+    from data_governance.risk.rules.rego import FALLBACK_RULE_ID
+
+    opa = _FakeOpaClient(
+        [_decision(risk_level="none", enforcement_type="allow",
+                   triggered_rules=[FALLBACK_RULE_ID])]
+    )
+    compute_interaction_risk(_IX_ID, opa_client=opa)
+
+    record_rules, cached_rules = _rule_columns(seeded)
+    assert record_rules == [], "the fallback sentinel is not a catalog rule"
+    assert cached_rules == [FALLBACK_RULE_ID], "the decision cache keeps OPA's raw answer"
+
+
+def test_real_rule_ids_are_stored_verbatim(seeded: str):
+    opa = _FakeOpaClient(
+        [_decision(risk_level="critical", triggered_rules=["DG-002", "DG-001"])]
+    )
+    compute_interaction_risk(_IX_ID, opa_client=opa)
+
+    record_rules, _cached = _rule_columns(seeded)
+    assert sorted(record_rules) == ["DG-001", "DG-002"]
