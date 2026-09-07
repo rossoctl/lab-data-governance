@@ -5,6 +5,7 @@ import {
   EmptyStateBody,
   EmptyStateHeader,
   Spinner,
+  Tooltip,
 } from '@patternfly/react-core';
 // DEEP imports, not the `@patternfly/react-topology` barrel — it keeps the
 // barrel's pipelines / side-bar / context-menu subtrees out of the production
@@ -1023,6 +1024,27 @@ function edgeClassificationSuffix(data: EdgeData | undefined): string {
   return clause === '' ? '' : ` — ${clause}`;
 }
 
+/**
+ * The edge's hover text — one helper feeding BOTH the native SVG `<title>`
+ * and the interactive `Tooltip` in `DirectedEdge` below, so the two elements
+ * can never drift apart. That is the whole reason this exists as its own
+ * function rather than being inlined twice: the fix that added the `Tooltip`
+ * kept the `<title>` alongside it (a deliberate choice — see `DirectedEdge`'s
+ * note on why), and two independently-hand-written template literals saying
+ * "the same thing" is exactly the kind of divergence that drifts silently.
+ * A test asserts the two elements' text stays equal; this helper is why that
+ * test can even be true by construction rather than by coincidence.
+ *
+ * Deliberately does NOT include `edgeLineageSuffix` — unlike `aria-label`,
+ * which does. The visible/audible split was a considered choice, not an
+ * oversight: keeping the hover text identical to what the inert `<title>`
+ * already said avoids also changing the Lineage tab's hover wording as a
+ * side effect of an unrelated bug fix.
+ */
+function edgeHoverText(data: EdgeData | undefined): string {
+  return `#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}${edgeClassificationSuffix(data)}`;
+}
+
 function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof DefaultNode>) {
   const data = element.getData() as NodeData | undefined;
   // RISK TAKES PRECEDENCE (issue #170), same reasoning as the edge colour below:
@@ -1488,8 +1510,33 @@ function DirectedEdge({
   // the HOC injects the prop regardless of what the type declares.
   const pfProps: Record<string, unknown> = { ...rest };
   delete pfProps.selected;
+  // THE TOOLTIP'S TRIGGER. A plain `useRef`, not a `useState` callback ref —
+  // worth stating why, since a callback ref is the usual answer to "does the
+  // consumer see this ref in time". PF's `Popper` (which `Tooltip` below
+  // forwards `triggerRef` to) resolves the trigger in an effect keyed on
+  // `[triggerRef, trigger]` — both stable here — so that effect runs exactly
+  // ONCE per mount; a later ref mutation schedules no re-render and would
+  // never be picked up. A `useState` ref would dodge that by giving Popper a
+  // fresh, populated value to depend on — but at the cost of a second render
+  // of every edge on mount, and (worse) a fresh `triggerRef` IDENTITY every
+  // render, which would re-run that effect continuously. Neither cost buys
+  // anything here, because REACT ATTACHES REFS DURING THE COMMIT'S REF PHASE,
+  // before any passive effect in that same commit — and the `<g>` below and
+  // the `<Tooltip>` are siblings committed together. So by the time Popper's
+  // effect first runs, `edgeRef.current` is already the `<g>`.
+  //
+  // That argument is sound, but it is NOT enforced by the type system or by
+  // anything else that would fail loudly if it stopped being true (e.g. if a
+  // future edit moved the `<Tooltip>` into a lazily-rendered branch mounted
+  // after the `<g>`, in a separate commit). The guarantee is pinned by a
+  // test instead — `ExecutionFlowGraph.test.tsx`'s "summary appears as a
+  // real tooltip on hover" test IS that tripwire: if the ref were ever
+  // populated too late, that test would start failing.
+  const edgeRef = useRef<SVGGElement>(null);
   return (
+    <>
     <g
+      ref={edgeRef}
       // `--pf-topology__edge--Stroke` is the right lever, and the only one that
       // works from out here. The line (`.pf-topology__edge__link`) and the
       // ARROWHEAD (`.pf-topology-connector-arrow`) both paint from
@@ -1561,8 +1608,15 @@ function DirectedEdge({
           (Execution Flow / Lineage tabs) or, on the risk trace view, the
           regulatory-tag string (see `edgeClassificationSuffix`'s docstring —
           the hover text carries the FULL tags + level list either way, never
-          truncated the way the visible tag is). */}
-      <title>{`#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}${edgeClassificationSuffix(data)}`}</title>
+          truncated the way the visible tag is).
+
+          KEPT DELIBERATELY alongside the interactive `Tooltip` below, rather
+          than removed as redundant, once it became clear this element never
+          produced a VISIBLE tooltip in this app (native SVG `<title>` simply
+          doesn't, in the browsers this app targets) — see the bug report and
+          `Tooltip`'s note. Both read from `edgeHoverText` so they can't drift
+          apart; a test asserts they stay equal. */}
+      <title>{edgeHoverText(data)}</title>
       {/* `CurvedEdge`, not PF's `DefaultEdge` — a drop-in at these props that draws a
           smooth arc through the routed bendpoint instead of a polyline corner. Every
           feature relied on below (the click target, the arrowhead, the tag, the wide
@@ -1630,6 +1684,33 @@ function DirectedEdge({
           .join(' ')}
       />
     </g>
+    {/* THE ACTUAL VISIBLE TOOLTIP — the fix. Everything above this renders the
+        edge itself and never changes shape; this is a SIBLING, not a child,
+        because `Tooltip` (via `Popper`, which it forwards `triggerRef` to)
+        portals its floating content into `document.body` regardless of
+        where it is mounted in the tree, so nesting it inside the `<g>` would
+        buy nothing and would place it among elements PF re-layers on hover
+        and drag for no reason.
+
+        NO `children` PASSED, and that is load-bearing, not an omission.
+        `Tooltip.d.ts` declares `children` OPTIONAL; leaving it out makes
+        `Tooltip` pass `trigger: undefined` down to `Popper`, and BOTH of
+        Popper's trigger-rendering branches gate on
+        `trigger && React.isValidElement(trigger)` — so with no children,
+        Popper renders NO in-place DOM of its own at all. That specifically
+        avoids the `!triggerRef` branch, which wraps its trigger in an HTML
+        `<div style="display:contents">` — invalid inside `<svg>`. Passing
+        the `<g>` above as `children` instead of relying on `triggerRef`
+        would risk exactly that wrapper landing inside the SVG tree.
+
+        `aria="none"`: belt-and-braces, not strictly required today (the
+        `aria-describedby` cloning `Tooltip` would otherwise do can't run
+        with no `children` regardless), but it states the intent plainly —
+        the accessible name is `aria-label` above, this tooltip is a VISUAL
+        affordance only — and keeps that true even if a future edit adds
+        `children` for some other reason. */}
+    <Tooltip triggerRef={edgeRef} content={edgeHoverText(data)} aria="none" />
+    </>
   );
 }
 

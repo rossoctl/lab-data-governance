@@ -35,6 +35,17 @@ if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
 // one that stays unobservable: it wraps its `<text>` in a `Tippy` tooltip on
 // the zero-bbox measurement, which never attaches under jsdom's tooltip stub.
 //
+// CORRECTION (edge-hover-tooltip fix): the sentence above is about PF
+// TOPOLOGY's `Tippy` specifically, and it would be easy to over-read it as
+// "tooltips don't work under jsdom" in general. They do, for a DIFFERENT
+// library: PF CORE's `Tooltip` (used by `ExecutionFlowGraph.tsx`'s edges as
+// of that fix) renders its floating content via `Popper`, which portals into
+// `document.body` regardless of the SVG measurement gaps documented here —
+// nothing in that path touches `getBBox`. That content IS observable and IS
+// asserted, via `screen.getByRole('tooltip')`, in ExecutionFlowGraph.test.tsx.
+// So "stays unobservable" below is true of `Tippy`/`NodeLabel` only, not of
+// every tooltip mechanism in this codebase.
+//
 // What remains genuinely unobservable is GEOMETRY — position, real size,
 // visual collision, whether a label visually fits. That's the true scope of
 // "not asserted here", not "tag text doesn't render". Node labels, node

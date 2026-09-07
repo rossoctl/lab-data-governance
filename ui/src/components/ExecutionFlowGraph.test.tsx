@@ -73,7 +73,29 @@ interface WireLineageSummary {
  * earlier version of this note claimed the tag text was not rendered either; that
  * was wrong, and the classification-tag tests below (issue #170 follow-up) assert
  * the tag's rendered text directly rather than deferring that coverage to a
- * browser check. What remains genuinely unobservable is GEOMETRY — real size,
+ * browser check.
+ *
+ * A TOOLTIP'S CONTENT IS ALSO OBSERVABLE — but only for the RIGHT tooltip
+ * mechanism (issue #171 follow-up). `NodeLabel`'s `<Tippy>`, above, stays
+ * unattached under jsdom. That is a fact about PF TOPOLOGY's `Tippy`
+ * specifically, not about tooltips in general: PF CORE's `Tooltip` — used by
+ * `DirectedEdge` below, as of the hover-tooltip fix — renders its floating
+ * content through `Popper`, which portals into `document.body` regardless of
+ * any SVG measurement gap (nothing in that path touches `getBBox`). Its text
+ * IS observable, via `screen.getByRole('tooltip')` (PF sets `role="tooltip"`
+ * on the portalled content), and is asserted directly in the classification-
+ * tag tests' tooltip cases below. Three mechanics matter for those tests and
+ * are stated here once rather than per test: (1) Popper attaches a *native*
+ * `addEventListener('mouseenter', …)`, so `fireEvent.mouseEnter` is required
+ * — `fireEvent.mouseOver` is a no-op, same gotcha as `useHover`'s
+ * `pf-m-hover` above; (2) the trigger is the outer `<g class=
+ * "dg-graph-edge-focus">`, not the inner `[data-test-id="edge-handler"]`
+ * `useHover` listens on; (3) always `await waitFor(...)` — `entryDelay`/
+ * `exitDelay` default to 300ms and Popper's own positioning update is an
+ * async debounced promise on top of that, so a synchronous assertion right
+ * after the event would be racing the tooltip into existence.
+ *
+ * What remains genuinely unobservable is GEOMETRY — real size,
  * position, whether a label visually fits or collides with a neighbour — which is
  * why the 2-tag truncation cap's fit is still verified by hand (see this
  * component's `classificationByInteraction` doc and the PR's browser-check list),
@@ -2478,6 +2500,147 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
       expect(title).not.toContain('none');
       expect(title).not.toContain('()');
+    });
+
+    /**
+     * The VISIBLE tooltip (issue #171 follow-up). Hovering (or keyboard-
+     * focusing) an edge showed a colour change only — never any text — on
+     * every tab that mounts this graph. Root cause: the `<title>` above is a
+     * native SVG element, which this app never surfaces as a browser
+     * tooltip (see `ExecutionFlowGraph.tsx`'s `DirectedEdge` note). The fix
+     * adds a real PF `Tooltip`, targeted at the outer `<g>` via `triggerRef`
+     * — the `<title>` stays, by choice, so BOTH must keep saying the same
+     * thing. `edgeHoverText` is the single helper that makes that true by
+     * construction rather than by two hand-written strings staying in sync;
+     * the last test below is the guard that would catch them drifting.
+     *
+     * Mechanics, stated once rather than per test:
+     * - `fireEvent.mouseEnter`, never `mouseOver` — Popper attaches a native
+     *   `addEventListener('mouseenter', …)` (see `pf-m-hover`'s test above
+     *   for the same gotcha with `useHover`), so RTL's synthetic
+     *   `mouseover` is a no-op here.
+     * - The target is the outer `<g class="dg-graph-edge-focus">`, not
+     *   `[data-test-id="edge-handler"]` — that inner element is what
+     *   `useHover` listens on; `triggerRef` here points at the outer `<g>`.
+     * - Always `await waitFor(...)`: `Tooltip`'s default `entryDelay`/
+     *   `exitDelay` is 300ms, and Popper's positioning update is itself an
+     *   async debounced promise on top of that. No fake timers are used
+     *   anywhere in this file, and they would fight `waitFor` if introduced
+     *   here.
+     * - `screen.getByRole('tooltip')` / `queryByRole('tooltip')`, never
+     *   `container.querySelector` — the tooltip content portals into
+     *   `document.body` (PF's default `appendTo`), not into the graph's
+     *   own DOM subtree.
+     * - No `userEvent.hover` — see this file's header for why `userEvent`
+     *   near the SVG surface throws on `svg.width.baseVal`.
+     */
+    it('shows no tooltip before any hover', async () => {
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    });
+
+    it("shows the edge's summary as a real, queryable tooltip on hover — the tripwire for Popper's trigger wiring", async () => {
+      // If `triggerRef` never resolved to a real element (e.g. because the
+      // `<g>` and `<Tooltip>` were not committed together, or the ref went
+      // to the wrong node), Popper attaches no listener and nothing below
+      // ever appears — this is the test that would catch that, not a
+      // hand-wave "the ref looks right" read of the source.
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+      expect(screen.getByRole('tooltip')).toHaveTextContent('#1 request — summary-i1 — PII, GDPR (RESTRICTED)');
+    });
+
+    it('shows the full untruncated tag list and level on hover, where the visible tag is capped to two — the motivating case', async () => {
+      // The whole point of the fix: the visible tag is a lossy summary
+      // (`edgeClassificationSuffix`'s docstring makes that claim), and hover
+      // was meant to be the one place a reader sees the complete verdict.
+      // Both halves of that contract are asserted in one test because
+      // neither half alone proves the contract holds end to end.
+      renderWithClassification(
+        new Map([['i1', { tags: ['PII', 'GDPR', 'HIPAA', 'PCI'], levels: ['RESTRICTED'] }]]),
+      );
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe(
+        'PII, GDPR +2',
+      );
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+      expect(screen.getByRole('tooltip')).toHaveTextContent('PII, GDPR, HIPAA, PCI (RESTRICTED)');
+    });
+
+    it('also shows the tooltip on keyboard focus, not only on pointer hover', async () => {
+      // `Tooltip`'s default `trigger` is `'mouseenter focus'`, and the outer
+      // `<g>` is already `tabIndex={0}` for its own click/keyboard handling
+      // — so a keyboard user reaches the same tooltip a mouse user does.
+      // This would silently regress if a future edit narrowed `trigger` to
+      // `'mouseenter'` alone.
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.focus(trigger);
+
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+    });
+
+    it('hides the tooltip again on mouseleave', async () => {
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+
+      fireEvent.mouseLeave(trigger);
+      await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument(), { timeout: 2000 });
+    });
+
+    it("omits the classification clause from the tooltip for an unclassified edge, and never says 'none' — the visible counterpart of the <title> assertion above", async () => {
+      renderWithClassification(new Map());
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+      const tooltip = screen.getByRole('tooltip');
+      expect(tooltip).toHaveTextContent('#1 request — summary-i1');
+      expect(tooltip.textContent).not.toContain('none');
+    });
+
+    it('keeps the <title> and the tooltip byte-for-byte identical — the guard the keep-both decision requires', async () => {
+      // Both elements are kept deliberately (see `DirectedEdge`'s note) and
+      // both are built from the one `edgeHoverText` helper. This is the
+      // only assertion that would actually catch the two drifting apart —
+      // e.g. a future edit to one call site and not the other — and it is
+      // the reason that helper exists rather than two independent template
+      // literals saying "the same thing".
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+
+      // `toHaveTextContent` treats a string argument as a substring/regex
+      // match, and `title` contains regex metacharacters (parentheses) —
+      // so this compares the raw `textContent` strings directly rather
+      // than risking a silently-too-loose (or throwing) pattern match.
+      expect(screen.getByRole('tooltip').textContent).toBe(title);
+      expect(title.length).toBeGreaterThan(0);
     });
 
     it("leaves the edge's aria-label byte-for-byte unchanged when the map is omitted, and places the classification clause before the lineage suffix when both apply", async () => {
