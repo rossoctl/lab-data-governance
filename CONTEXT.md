@@ -875,6 +875,83 @@ and `error_count`. Computed at query time alongside the **Listing root**;
 present on both the `GET /api/traces` collection rows and the
 `GET /api/traces/{tid}` singular. Backed by the `TraceCounts` retrieval type.
 
+**Interaction risk record** / **Trace risk record**:
+The **risk engine**'s versioned verdict on one **Interaction** or one **Trace**,
+written by the risk-compute processors (not `P-interactions`) into
+`interaction_risk_records` / `trace_risk_records`. Each record carries a
+`risk_level`, an `enforcement_type`, the `triggered_rule_ids` that produced it,
+and (interaction grain only) a `classification_summary` snapshot used for
+`regulatory_tag` filtering. Like **Interactions** and **Entities**, a record is
+**immutable once written**: a recompute inserts a new row with an incremented
+`version` rather than mutating the existing one, so the full decision history
+survives. Distinct from **Classification** (the payload-level NER verdict) and
+from **Interaction leg** (the call-shaped record risk is computed *from*) — a
+risk record is the governance-facing rollup, one grain up from both.
+_Avoid_: reading `interaction_risk_records` directly with inline SQL — the
+**Risk retrieval** seam exists to keep the latest-version reduction and filter
+ordering (filter *after* picking latest, never before — see AC-DAS-016) in one
+place instead of re-derived per caller.
+
+**Current version** (risk records):
+The single **Interaction risk record** or **Trace risk record** a reader means
+by "the risk of X **right now**" — the row with the highest `version` for a
+given `interaction_id` / `trace_id`. Computed at query time via
+`DISTINCT ON (key) ... ORDER BY key, version DESC`, mirroring how a **Listing
+root** is chosen rather than stored. `GET /risk/interactions*` and
+`GET /risk/traces*` serve only the current version by default; every version
+remains readable via the corresponding `/history` sub-resource, ordered
+oldest-first (ascending by `version`) since that read is explicitly about the
+decision trail, not "what's true now".
+_Avoid_: filtering a list of risk records by `risk_level` (or any other
+per-record field) *before* reducing to the current version — a superseded,
+more-severe old version would then leak into a result the current version
+would not have matched.
+
+**Forest** (trace risk detail):
+The per-**Trace** read that nests every **Interaction** in the trace, each
+with its **Interaction leg**s and its **current-version** risk record, under
+that trace's **current-version** **Trace risk record** — served by
+`GET /risk/traces/{trace_id}`. Named for the same tree-of-interactions shape
+as the **Interaction tree**, but scoped to the risk read surface and assembled
+by a fixed, size-independent number of queries (six) rather than one query per
+interaction. Deliberately carries **span counts, not span rows**, per the
+repo's lean-list convention (mirrors `ForestInteractionView.span_count`) — a
+caller wanting evidence spans for one interaction follows up on that
+interaction's own sub-resource. An interaction with no current risk record
+reports `risk: null` (eventual consistency — the compute processor has not
+reached it yet), never an error and never an omitted entry. 404s when the
+trace has no **Trace risk record** at all, even if its interactions exist
+(risk not yet computed for the trace as a whole) — the same 404 an unknown
+trace id gets, so the contract's shape does not vary with how far compute has
+progressed.
+_Avoid_: reconciling a forest's interaction count against the trace risk
+record's own `interaction_count` field — the record is a snapshot as of its
+`computed_at`, the forest is read live; the two are allowed to disagree, and
+adding a flag to flag that disagreement would edge toward the `is_complete`
+shape FR-DAS-084 forbids.
+
+**Risk retrieval**:
+The typed read path over **Interaction risk record**s and **Trace risk
+record**s, sibling to **Interaction retrieval** and `payloads` in the same
+**Retrieval API** package (`data_governance.retrieval.risk`). Exposes
+`list_interaction_risk` / `get_interaction_risk` /
+`get_interaction_risk_history` and their trace-grain counterparts
+(`list_trace_risk` / `get_trace_risk` / `get_trace_risk_history`), plus
+`get_trace_risk_detail` for the **Forest** read. Backs the `/risk/interactions*`
+and `/risk/traces*` HTTP namespace (`data_governance/risk/api/risk_routes.py`),
+sibling to the `/risk/rules*` namespace already served by `rules_routes.py`.
+Pagination is **DB-level keyset**, not the in-memory offset `paginate()` the
+rules namespace uses — a risk record table is insert-only-and-versioned, so an
+offset cursor would skip or double-serve rows as concurrent recomputes insert
+new current versions between page reads (the same failure `get_spans`
+documents for issue #30). A decoded cursor's key shape carries its sort, so a
+cursor minted under one sort is rejected, not silently reinterpreted, if
+replayed under another.
+_Avoid_: importing anything from `data_governance.api` (the UI-facing REST
+package) into `data_governance.risk.api` or `data_governance.retrieval` — the
+import direction is one-way (ADR-0005), and the risk read surface must stay
+usable by non-UI consumers.
+
 ## Relationships
 
 - A **Trace** contains one or more **Spans**, all sharing its `trace_id`.
@@ -906,6 +983,17 @@ present on both the `GET /api/traces` collection rows and the
   and JS assets under `/ui/`. The single `GET /spans` pass-through was retired
   in favour of these — the library `get_spans` (and its `root_only` /
   `parent_id` parameters) is unchanged; only the HTTP surface was reshaped.
+- The governance/risk surface is namespaced separately under `/risk/*`
+  (`data_governance/risk/api/`), sibling to `/api/*` rather than nested under
+  it, and reads through **Risk retrieval** and the rule-catalog seam rather
+  than the `/api/*` **Retrieval API** — `/risk/rules*` (rule catalog),
+  `/risk/interactions*` and `/risk/traces*` (**Interaction risk record** /
+  **Trace risk record**, latest version by default, `/history` for every
+  version, `/risk/traces/{tid}` for the **Forest**). Both `/api/*` and
+  `/risk/*` are registered on the one Starlette app built by
+  `data_governance.api.build_app()`, but the import direction is one-way:
+  `data_governance.api → data_governance.risk.api`, never the reverse, so the
+  risk surface stays usable by non-UI consumers.
 
 ## Example dialogue
 

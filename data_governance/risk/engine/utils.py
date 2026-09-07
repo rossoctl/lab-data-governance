@@ -226,6 +226,19 @@ def matches_internal_whitelist(url: str, *, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(hostname, pattern.lower()) for pattern in patterns)
 
 
+_CATEGORY_TO_TRUST_LEVEL: Final[dict[str, str]] = {
+    "external": "UNTRUSTED_EXTERNAL",
+    "public": "UNTRUSTED_PUBLIC",
+}
+
+
+def _trust_level_for_category(category: str) -> str:
+    """The trust level implied by *category* when none was explicitly
+    provided: ``"external"`` -> ``UNTRUSTED_EXTERNAL``, ``"public"`` ->
+    ``UNTRUSTED_PUBLIC``, anything else -> ``UNKNOWN``."""
+    return _CATEGORY_TO_TRUST_LEVEL.get(category, "UNKNOWN")
+
+
 def _finding_to_entity(finding: dict[str, Any]) -> dict[str, Any]:
     entity = {
         "entity_type": finding.get("entity_type"),
@@ -285,10 +298,11 @@ def _destination(anchor: AnchorFacts, internal_patterns: list[str]) -> dict[str,
     The destination of an exchange is its callee: outbound, the peer host the
     sidecar called; inbound, the sidecar's own workload (named by its
     ``self_id``, categorised by the address it was reached on when present).
-    Category comes from :func:`_category`; an external destination is
-    additionally stamped ``UNTRUSTED_EXTERNAL`` — the MVP trust model has
-    exactly that one trust fact, so internal destinations carry NO trust
-    level rather than a guessed ``TRUSTED_*`` value. A full URL is composed
+    Category comes from :func:`_category`; the trust level is derived from
+    that category by :func:`_trust_level_for_category` (``external`` ->
+    ``UNTRUSTED_EXTERNAL``, anything else -> ``UNKNOWN`` — the MVP trust
+    model has exactly one trust fact, so an internal destination is stamped
+    ``UNKNOWN`` rather than a guessed ``TRUSTED_*`` value). A full URL is composed
     only when the producer emitted a scheme (the contract's own no-guessing
     rule). Returns ``None`` when the facts name no destination at all.
     """
@@ -316,8 +330,7 @@ def _destination(anchor: AnchorFacts, internal_patterns: list[str]) -> dict[str,
         destination["data_destination_url"] = (
             f"{anchor.url_scheme}://{anchor.peer_host}{anchor.url_path or ''}"
         )
-    if category == "external":
-        destination["data_destination_trust_level"] = "UNTRUSTED_EXTERNAL"
+    destination["data_destination_trust_level"] = _trust_level_for_category(category)
     return destination
 
 
@@ -339,7 +352,7 @@ def build_opa_input(
     the evidence source #178 anticipated when it added a placeholder
     ``destination_url`` parameter "until issue #163's evidence-gathering
     wiring lands". From the anchor this maps ``data_destinations``
-    (name/url/category, plus ``UNTRUSTED_EXTERNAL`` trust on external),
+    (name/url/category/trust level),
     ``event_type`` (``external_sharing`` vs ``internal_sharing``, decided by
     the destination's category), and ``accessing_user`` (the validated
     inbound principal; ``user_roles`` is ``[]`` because the schema requires
@@ -362,6 +375,14 @@ def build_opa_input(
     declaration to a policy author. ``span_ids`` has no corresponding
     top-level field in the schema; it identifies the OTEL evidence behind
     this payload but carries no rule-relevant content of its own.
+
+    There is no source of an explicit ``data_destination_trust_level`` in the
+    wire facts either, so whenever a category is derived above, a trust level
+    is derived alongside it from that same category by
+    :func:`_trust_level_for_category` (#178's follow-up): ``"external"`` ->
+    ``"UNTRUSTED_EXTERNAL"``, ``"public"`` -> ``"UNTRUSTED_PUBLIC"``, and
+    anything else (including ``"internal"``, which this MVP whitelist never
+    distinguishes further) -> ``"UNKNOWN"``.
     """
     if internal_patterns is None:
         internal_patterns = INTERNAL_URL_WHITELIST_PATTERNS

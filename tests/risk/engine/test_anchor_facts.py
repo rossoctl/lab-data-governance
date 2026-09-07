@@ -130,7 +130,11 @@ def test_outbound_external_destination_maps_fully() -> None:
     assert "accessing_user" not in payload
 
 
-def test_outbound_internal_destination_has_no_trust_level() -> None:
+def test_outbound_internal_destination_has_unknown_trust_level() -> None:
+    """#178's follow-up stamps a trust level on every destination, derived
+    from its category; the MVP whitelist has no richer category to draw a
+    TRUSTED_* level from, so internal is stamped ``UNKNOWN`` rather than a
+    guessed value (before that follow-up this branch omitted the key)."""
     anchor = utils.AnchorFacts(
         direction="outbound", peer_host="records-tool.team2.svc:8000",
         self_id="priorauth-intake", url_scheme="http", url_path="/mcp",
@@ -138,9 +142,9 @@ def test_outbound_internal_destination_has_no_trust_level() -> None:
     payload = utils.build_opa_input(**_BASE, anchor=anchor, internal_patterns=_PATTERNS)
     (dest,) = payload["data_destinations"]
     assert dest["data_destination_categories"] == ["internal"]
-    assert "data_destination_trust_level" not in dest, (
+    assert dest["data_destination_trust_level"] == "UNKNOWN", (
         "internal carries no guessed TRUSTED_* value — the MVP trust model "
-        "has exactly one trust fact (UNTRUSTED_EXTERNAL on external)"
+        "derives the level from the category alone"
     )
     assert payload["event_type"] == "internal_sharing"
 
@@ -171,7 +175,7 @@ def test_inbound_clusterip_reached_address_is_still_internal() -> None:
     (dest,) = payload["data_destinations"]
     assert dest["data_destination_name"] == "a2a-contact-extractor"
     assert dest["data_destination_categories"] == ["internal"]
-    assert "data_destination_trust_level" not in dest
+    assert dest["data_destination_trust_level"] == "UNKNOWN"
     assert payload["event_type"] == "internal_sharing"
 
 

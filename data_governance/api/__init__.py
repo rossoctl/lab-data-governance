@@ -66,7 +66,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from data_governance import db, retrieval
-from data_governance.risk.api import rules_routes
+from data_governance.risk.api import metrics_routes, risk_routes, rules_routes
 
 __all__ = ["SpansApiServer", "build_app"]
 
@@ -736,6 +736,13 @@ def build_app() -> Starlette:
         # /risk/rules/categories before the /risk/rules/{rule_id} catch-all,
         # mirroring the /ui/assets-before-catch-all convention above.
         *rules_routes.routes(),
+        # DAS interaction/trace risk reads (issue #109). risk_routes.routes()
+        # orders each pair's /history route before its {id} route.
+        *risk_routes.routes(),
+        # DAS dashboard metrics (issue #111). All six paths are literal (no
+        # {param}), so unlike the two route lists above there is no ordering
+        # hazard to defuse here.
+        *metrics_routes.routes(),
     ]
     return Starlette(routes=routes)
 
