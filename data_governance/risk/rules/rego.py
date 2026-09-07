@@ -59,8 +59,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import jsonschema
-
 from data_governance.risk.rules.catalog import ENFORCEMENT_ORDER, RISK_LEVEL_ORDER
 
 __all__ = ["FALLBACK_RULE_ID", "compile_policy", "policy_version"]
@@ -413,6 +411,12 @@ def compile_policy(
     unrecognized combining mode.
     """
     if validate:
+        # Dev-only dependency, imported where it is used: the engine imports
+        # this module at runtime for FALLBACK_RULE_ID/policy_version, and the
+        # processor image ships no jsonschema (observed live: leg-ready
+        # crash-looped on import).
+        import jsonschema
+
         with _SCHEMA_PATH.open(encoding="utf-8") as f:
             schema = json.load(f)
         jsonschema.validate(instance=policy, schema=schema)

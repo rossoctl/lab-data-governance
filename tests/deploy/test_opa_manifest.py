@@ -61,6 +61,10 @@ def test_opa_loads_policies_from_configmap_mount(deployment: dict) -> None:
     (container,) = pod["containers"]
     assert container["args"][:2] == ["run", "--server"]
     assert "/policies" in container["args"]
+    assert "--ignore=.*" in container["args"], (
+        "kubelet's ..data symlink dir would load the bundle twice — a second "
+        "`default policy_decision` is a fatal duplicate"
+    )
     (mount,) = container["volumeMounts"]
     assert mount["mountPath"] == "/policies"
     (volume,) = pod["volumes"]

@@ -67,6 +67,11 @@ spec:
             - "run"
             - "--server"
             - "--addr=:8181"
+            # kubelet's atomic writer exposes a ConfigMap file twice under the
+            # mount (the ..data symlink dir); OPA walks both and refuses the
+            # compiled bundle's `default policy_decision` as a duplicate
+            # (observed live). Skip dot-entries.
+            - "--ignore=.*"
             - "/policies"
           ports:
             - name: http
