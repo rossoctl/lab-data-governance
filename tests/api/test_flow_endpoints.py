@@ -8,6 +8,10 @@ The flow graph is served as four lean resources nested under a trace
 - ``GET /api/traces/{tid}/interactions/{iid}/spans`` → ``{"spans": [...]}``
 - ``GET /api/traces/{tid}/entities/{eid}/spans``      → ``{"spans": [...]}``
 
+plus the cross-trace cursor feed over the same interactions:
+
+- ``GET /api/interactions?since_seq&limit`` → ``{"interactions": [...], "next_seq": n}``
+
 The list responses are lean: interactions carry a ``span_count`` /
 ``anchor_count`` summary (so the flow table can size evidence without pulling
 every span) but NOT the span rows themselves, and neither list bundles the
@@ -144,6 +148,156 @@ def test_interactions_carry_nested_legs(seeded, api_server):
     assert ix["any_error"] is True
 
 
+def test_interactions_kinds_null_for_non_sidecar_anchor(seeded, api_server):
+    """The seeded anchor span has no lineage.* facts (a streaming/graph-shaped
+    anchor): kinds must be null — never fabricated from classify defaults."""
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert "kinds" in ix
+    assert ix["kinds"] is None
+    # Destination follows the same rule: no lineage facts, no derivation.
+    assert ix["destination"] is None
+
+
+def test_interactions_kinds_rederived_from_sidecar_anchor(
+    seeded, api_server, configured_db
+):
+    """A sidecar-shaped anchor (lineage facts + mcp.method on its stored
+    attributes) yields the read-time kinds object — including the mcp.method
+    noise override — without any payload rows existing at all."""
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE spans SET attributes = %s::jsonb "
+            "WHERE trace_id = %s AND span_id = 's-anchor'",
+            (
+                '{"lineage.role": "request", "lineage.direction": "outbound", '
+                '"lineage.protocol": "mcp", "lineage.exchange.id": "s-anchor", '
+                '"lineage.self.id": "svc-a", "mcp.method": "tools/list"}',
+                _TID,
+            ),
+        )
+        conn.commit()
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert ix["kinds"] == {
+        "protocol": "mcp",
+        "mcp_method": "tools/list",
+        "request_content_kind": "tool_discovery_request",
+        "response_content_kind": "tool_discovery_result",
+    }
+
+
+def test_interactions_destination_composed_from_anchor(
+    seeded, api_server, configured_db
+):
+    """An anchor carrying the location facts (wire contract v1.5.1) yields the
+    read-time destination: composed URL, host/path echoes, and the
+    consumer-side internal flag for a cluster-local authority."""
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE spans SET attributes = %s::jsonb "
+            "WHERE trace_id = %s AND span_id = 's-anchor'",
+            (
+                '{"lineage.role": "request", "lineage.direction": "outbound", '
+                '"lineage.protocol": "mcp", "lineage.exchange.id": "s-anchor", '
+                '"lineage.self.id": "svc-a", '
+                '"lineage.peer.host": "weather-tool-mcp.team1.svc.cluster.local:8000", '
+                '"url.path": "/mcp", "url.scheme": "http"}',
+                _TID,
+            ),
+        )
+        conn.commit()
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert ix["destination"] == {
+        "url": "http://weather-tool-mcp.team1.svc.cluster.local:8000/mcp",
+        "host": "weather-tool-mcp.team1.svc.cluster.local:8000",
+        "path": "/mcp",
+        "internal": True,
+    }
+
+
+def test_interactions_destination_no_scheme_no_url(
+    seeded, api_server, configured_db
+):
+    """Spans stored before v1.5.1 carry no url.scheme: host/path still surface
+    but the URL is never guessed. An external authority flags internal=False."""
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE spans SET attributes = %s::jsonb "
+            "WHERE trace_id = %s AND span_id = 's-anchor'",
+            (
+                '{"lineage.role": "request", "lineage.direction": "outbound", '
+                '"lineage.protocol": "http", "lineage.exchange.id": "s-anchor", '
+                '"lineage.self.id": "svc-a", '
+                '"lineage.peer.host": "api.example.com:443", "url.path": "/v1/x"}',
+                _TID,
+            ),
+        )
+        conn.commit()
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert ix["destination"] == {
+        "url": None,
+        "host": "api.example.com:443",
+        "path": "/v1/x",
+        "internal": False,
+    }
+
+
+def test_interactions_http_principal_session_from_the_span_pair(
+    seeded, api_server, configured_db
+):
+    """Issue #155: the request-side facts (method, principal, a2a session) come
+    off the anchor span, the response-side facts (status, outcome) off the span
+    the processor paired as the response leg — one exchange, one view."""
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE spans SET attributes = %s::jsonb "
+            "WHERE trace_id = %s AND span_id = 's-anchor'",
+            (
+                '{"lineage.role": "request", "lineage.direction": "outbound", '
+                '"lineage.protocol": "a2a", "lineage.exchange.id": "s-anchor", '
+                '"lineage.self.id": "svc-a", "http.method": "POST", '
+                '"lineage.principal.sub": "alice", "a2a.session_id": "sess-7"}',
+                _TID,
+            ),
+        )
+        conn.execute(
+            "UPDATE spans SET attributes = %s::jsonb "
+            "WHERE trace_id = %s AND span_id = 's-info'",
+            (
+                '{"lineage.role": "response", "lineage.direction": "outbound", '
+                '"lineage.exchange.id": "s-anchor", "http.status_code": 200, '
+                '"lineage.outcome": "ok"}',
+                _TID,
+            ),
+        )
+        conn.execute(
+            "UPDATE interaction_spans SET leg_type = 'response' "
+            "WHERE trace_id = %s AND span_id = 's-info'",
+            (_TID,),
+        )
+        conn.commit()
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert ix["http"] == {"method": "POST", "status_code": 200, "outcome": "ok"}
+    assert ix["principal_sub"] == "alice"
+    assert ix["session_id"] == "sess-7"
+    # The trace travels with the interaction, not only in the URL.
+    assert ix["trace_id"] == _TID
+
+
+def test_interactions_http_null_for_non_sidecar_anchor(seeded, api_server):
+    """No lineage facts on the anchor → no http event, no principal, no
+    session: the same guard kinds and destination use."""
+    resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
+    (ix,) = resp.json()["interactions"]
+    assert ix["http"] is None
+    assert ix["principal_sub"] is None
+    assert ix["session_id"] is None
+
+
 def test_interaction_duration_null_when_response_leg_absent(
     seeded, api_server, configured_db
 ):
@@ -187,9 +341,13 @@ def test_interaction_spans_sub_resource(seeded, api_server):
     # Provenance shape: joined-through span fields present, plus the leg the
     # span evidences (ADR-0025).
     assert set(spans[0]) == {
-        "span_id", "role", "parent_id", "kind", "service_name", "leg_type"
+        "span_id", "role", "parent_id", "kind", "name", "service_name", "leg_type"
     }
     assert by_id["s-anchor"]["leg_type"] == "request"
+    # Span names ship with the evidence rows (issue #155), so a consumer
+    # holding an interaction can name its associated spans in one read.
+    assert by_id["s-anchor"]["name"] == "call"
+    assert by_id["s-info"]["name"] == "child"
 
 
 def test_entity_spans_sub_resource(seeded, api_server):
@@ -209,6 +367,49 @@ def test_entity_spans_sub_resource(seeded, api_server):
         "span_id", "role", "parent_id", "kind", "service_name"
     }
     assert "leg_type" not in spans[0]
+
+
+def test_interactions_feed_is_cursorable(seeded, api_server, configured_db):
+    """``GET /api/interactions?since_seq=`` — the cross-trace stream shape of
+    the same resource (issue #155): interactions plus the cursor to pass back.
+    """
+    base = _base_url(api_server)
+    first = httpx.get(f"{base}/api/interactions?since_seq=0")
+    assert first.status_code == 200
+    body = first.json()
+    assert set(body) == {"interactions", "next_seq"}
+    (ix,) = body["interactions"]
+    assert ix["id"] == _IX_ID
+    assert ix["trace_id"] == _TID
+    assert body["next_seq"] > 0
+
+    # Caught up: same cursor back, nothing new.
+    caught_up = httpx.get(f"{base}/api/interactions?since_seq={body['next_seq']}")
+    assert caught_up.json() == {"interactions": [], "next_seq": body["next_seq"]}
+
+    # A late response leg re-emits its interaction — the mutation signal.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE interaction_legs SET seq = nextval('interaction_legs_seq') "
+            "WHERE interaction_id = %s AND leg_type = 'response'",
+            (_IX_ID,),
+        )
+        conn.commit()
+    again = httpx.get(f"{base}/api/interactions?since_seq={body['next_seq']}").json()
+    assert [i["id"] for i in again["interactions"]] == [_IX_ID]
+    assert again["next_seq"] > body["next_seq"]
+
+
+def test_interactions_feed_defaults_and_validates(seeded, api_server):
+    """No ``since_seq`` means from the beginning; a bad cursor or an
+    out-of-range limit is a 400, not a 500 and not a silently clamped page."""
+    base = _base_url(api_server)
+    assert len(httpx.get(f"{base}/api/interactions").json()["interactions"]) == 1
+    assert httpx.get(f"{base}/api/interactions?limit=1").status_code == 200
+    assert httpx.get(f"{base}/api/interactions?since_seq=abc").status_code == 400
+    assert httpx.get(f"{base}/api/interactions?since_seq=-1").status_code == 400
+    assert httpx.get(f"{base}/api/interactions?limit=0").status_code == 400
+    assert httpx.get(f"{base}/api/interactions?limit=1001").status_code == 400
 
 
 def test_unknown_ids_return_empty_spans_not_404(seeded, api_server):

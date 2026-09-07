@@ -25,6 +25,16 @@ The developed security mechanisms will be fully integrated into Kagenti. This de
 Proof of Value:
 The operational success and security efficacy of this integration will be actively demonstrated alongside 1 to 2 "Client 0" internal early adopters.
 
+## Two-span lineage
+
+The sidecar-based lineage pipeline: the AuthBridge lineage sidecar captures each
+agent turn as two facts-only spans per HTTP exchange, the interactions processor
+derives them with `INTERACTIONS_ALGORITHM=sidecar`, and the DG UI renders the
+per-request interaction forest. The producer side (sidecar plugin + app adapter
+kit with its own runbook) lives in the sibling `kagenti-extensions` repo under
+`authbridge/demos/lineage-adapter/`; the wire between the two is
+[`docs/sidecar-wire-contract.md`](docs/sidecar-wire-contract.md).
+
 ## Repo layout
 
 ```
