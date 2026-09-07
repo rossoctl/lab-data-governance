@@ -479,6 +479,21 @@ body {
   position: relative;
 }
 
+/* The `- 12rem` above budgets only for the chrome ABOVE the surface (see the
+   comment at this section's header) — it assumes nothing below the graph
+   matters, which held for the Execution Flow and Lineage tabs (footnotes
+   only). The risk trace view (issue #170's Alert Execution page) is the
+   first consumer with a whole second section below the graph — the policy
+   decision panel — and needed enough of it on screen without scrolling that
+   its first row ("Action") is visible at first paint. Opt-in via
+   `EntityGraphProps.compactSurface` so the other two tabs, and `.dg-seq-scroll`
+   (global.css, sequence-diagram section) which intentionally matches this
+   rule's height so the two canvases read as the same kind of surface, are
+   untouched. */
+.dg-graph-surface--compact {
+  height: calc(100vh - var(--pf-v5-c-page__header--MinHeight, 4.75rem) - 24rem);
+}
+
 /* The zoom control bar, floated over the bottom-left of the drawing area.
    Bottom-LEFT specifically: the nodes are laid out on a layered grid that grows
    RIGHTWARDS with call depth and DOWNWARDS with chronology (see

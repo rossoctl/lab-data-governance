@@ -17,15 +17,17 @@
  * detail row, so nothing is permanently hidden, only deferred to a click or
  * hover.
  *
- * There is no dedicated "Open" column: the whole summary row is clickable
- * (same destination as the old link) via `onRowClick`, since a full row is a
- * bigger, easier target than a single cell's worth of column. The Open link
- * itself now lives only in the expanded detail row — a group has to be
- * opened to see its rules anyway, so the explicit link sits alongside them
- * rather than duplicating the row's own click target.
+ * There is no dedicated "Open" column: clicking anywhere on the summary row
+ * (other than the expand chevron) navigates straight to the trace, via
+ * `navigate()` on `onRowClick` — a full row is a bigger, easier target than a
+ * single cell's worth of column. Only the chevron button expands/collapses
+ * the detail row in place; it calls `event.stopPropagation()` so the row's
+ * own click handler doesn't also fire a navigation underneath it. The Open
+ * link in the expanded detail row is kept too, alongside the triggered
+ * rules, as a visible affordance once a group is already open.
  */
 import { Fragment, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   Card,
   CardTitle,
@@ -52,6 +54,7 @@ interface AlertsCardProps {
 export function AlertsCard({ items, hasNextPage, isFetchingNextPage, onNextPage }: AlertsCardProps) {
   const groups = groupTraceRisksByWorkflow(items);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const navigate = useNavigate();
 
   function toggle(traceId: string) {
     setExpanded((prev) => {
@@ -92,7 +95,7 @@ export function AlertsCard({ items, hasNextPage, isFetchingNextPage, onNextPage 
                         <Tr
                           data-testid={`alert-row-${group.traceId}`}
                           isClickable
-                          onRowClick={() => toggle(group.traceId)}
+                          onRowClick={() => navigate(`/risk/traces/${group.traceId}`)}
                         >
                           <Td dataLabel="Expand">
                             <Button

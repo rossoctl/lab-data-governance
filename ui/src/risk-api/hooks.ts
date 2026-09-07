@@ -24,6 +24,7 @@ import type {
   RuleListResponse,
   RuleListItem,
   RuleCategoriesResponse,
+  TraceRiskDetailResponse,
 } from './types';
 
 /** Shared root every risk query key nests under. */
@@ -156,5 +157,52 @@ export function useRuleCategories(): UseQueryResult<RuleCategoriesResponse> {
   return useQuery({
     queryKey: riskQueryKey('rules', 'categories'),
     queryFn: () => riskFetchJson<RuleCategoriesResponse>('/rules/categories'),
+  });
+}
+
+/**
+ * Trace detail forest (issue #170). `GET /risk/traces/{trace_id}` — the
+ * trace risk record plus its full interaction forest in one read (AC #1: no
+ * N+1, no per-interaction refetch). Disabled when `traceId` is undefined,
+ * mirroring {@link useRule}'s guard against a request for `/risk/traces/undefined`.
+ *
+ * Query key ends in `'detail'` to stay disjoint from
+ * {@link useRiskTracesInfinite}'s `riskQueryKey('traces', { window })` — the
+ * two must never collide in react-query's cache despite both nesting under
+ * `riskQueryKey('traces', ...)`.
+ */
+export function useTraceRiskDetail(traceId: string | undefined): UseQueryResult<TraceRiskDetailResponse> {
+  return useQuery({
+    queryKey: riskQueryKey('traces', traceId, 'detail'),
+    queryFn: () => riskFetchJson<TraceRiskDetailResponse>(`/traces/${traceId}`),
+    enabled: traceId !== undefined,
+  });
+}
+
+/**
+ * The rule catalog as an id-indexed lookup (issue #170's `PolicyDecisionPanel`,
+ * "prefer [one bulk read] to avoid N+1" over fetching each triggered rule by
+ * id). ONE `GET /risk/rules` call with an explicit high `limit`, `select`ed
+ * into a `Map<rule_id, RuleListItem>`.
+ *
+ * `/risk/rules` is cursor-paginated (issue #171); a catalog larger than one
+ * page degrades a rule reference to its bare id — the panel still links to
+ * `/risk/rules/{id}`, it just can't show that rule's `rule_name` inline.
+ * Following the cursor to build a complete index would reintroduce the
+ * multi-request cost this hook exists to avoid, for a cosmetic gain.
+ *
+ * Capped at the server's own ceiling (`API_RISK_RULES_MAX_LIMIT`,
+ * `data_governance/risk/config.py`, default 200) rather than some larger
+ * number: the server clamps `limit` to that value regardless, so requesting
+ * more than it would ever serve in one page was dead intent, not a bigger
+ * page.
+ */
+const RULE_CATALOG_INDEX_LIMIT = 200;
+
+export function useRuleCatalogIndex(): UseQueryResult<Map<string, RuleListItem>> {
+  return useQuery({
+    queryKey: riskQueryKey('rules', 'catalog-index'),
+    queryFn: () => riskFetchJson<RuleListResponse>('/rules', { limit: RULE_CATALOG_INDEX_LIMIT }),
+    select: (data: RuleListResponse) => new Map(data.items.map((r) => [r.rule_id, r])),
   });
 }
