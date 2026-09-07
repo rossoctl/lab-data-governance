@@ -67,6 +67,11 @@ spec:
             - "run"
             - "--server"
             - "--addr=:8181"
+            # A ConfigMap volume materializes as symlinked dot-directories
+            # (..data, ..<timestamp>); without this OPA loads every policy
+            # file three times over and refuses to start ("multiple default
+            # rules ... found").
+            - "--ignore=.*"
             - "/policies"
           ports:
             - name: http
