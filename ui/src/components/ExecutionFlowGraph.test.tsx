@@ -11,7 +11,8 @@ import Point from '@patternfly/react-topology/dist/esm/geom/Point';
 import { Visualization } from '@patternfly/react-topology/dist/esm/Visualization';
 import { SELECTION_EVENT } from '@patternfly/react-topology/dist/esm/behavior/useSelection';
 import { renderWithProviders } from '../test/renderWithProviders';
-import { ExecutionFlowGraph, LineageGraph } from './ExecutionFlowGraph';
+import { ExecutionFlowGraph, LineageGraph, EntityGraph } from './ExecutionFlowGraph';
+import { riskLevelColorVar } from '../lib/riskLevel';
 import type {
   Entity,
   Interaction,
@@ -20,6 +21,7 @@ import type {
   LineageReachability,
   LineageStatus,
 } from '../types';
+import type { GraphSpec } from '../lib/graph';
 
 /**
  * The summary as the WIRE spells it, which is what a fetch stub must return.
@@ -58,13 +60,48 @@ interface WireLineageSummary {
  *
  * WHAT IT CANNOT: jsdom implements no SVG layout, so `SVGGraphicsElement.getBBox`
  * does not exist; `src/test/setup.ts` stubs it to a ZERO size (see the long note
- * there for why the absence, not the zeros, is what breaks). PF's `NodeLabel` and
- * its per-edge connector tag both measure themselves with `useSize` → `getBBox()`,
- * and treat a zero measurement as "not laid out yet" and bail out. So each node's
- * `<g data-kind="node">` is emitted but stays EMPTY, and the edge's `seq` tag text
- * is not rendered. Node labels, the seq tag, node geometry and anything about
- * visual layout are therefore not observable here and are NOT asserted — a test
- * claiming to verify them would be lying. They are covered instead by:
+ * there for why the absence, not the zeros, is what breaks). PF's `NodeLabel`
+ * measures itself with `useSize` → `getBBox()` and, on that zero measurement,
+ * renders its `<text>` INSIDE a `<Tippy>` tooltip wrapper it otherwise skips —
+ * which never attaches to the DOM under jsdom's tooltip stub — so a node's label
+ * text is not observable here. **This does NOT hold for the edge's connector tag**:
+ * `DefaultConnectorTag`'s `textSize &&` guard gates only its background `<rect>`,
+ * and `useSize`'s zero-size state (`{width:0, height:0}`) is a truthy object, so
+ * the tag's own `<text>` renders unconditionally and IS observable — verified by
+ * reading `DefaultConnectorTag.js`/`useSize.js` directly and empirically by
+ * rendering this component and querying `.pf-topology__edge__tag text`. An
+ * earlier version of this note claimed the tag text was not rendered either; that
+ * was wrong, and the classification-tag tests below (issue #170 follow-up) assert
+ * the tag's rendered text directly rather than deferring that coverage to a
+ * browser check.
+ *
+ * A TOOLTIP'S CONTENT IS ALSO OBSERVABLE — but only for the RIGHT tooltip
+ * mechanism (issue #171 follow-up). `NodeLabel`'s `<Tippy>`, above, stays
+ * unattached under jsdom. That is a fact about PF TOPOLOGY's `Tippy`
+ * specifically, not about tooltips in general: PF CORE's `Tooltip` — used by
+ * `DirectedEdge` below, as of the hover-tooltip fix — renders its floating
+ * content through `Popper`, which portals into `document.body` regardless of
+ * any SVG measurement gap (nothing in that path touches `getBBox`). Its text
+ * IS observable, via `screen.getByRole('tooltip')` (PF sets `role="tooltip"`
+ * on the portalled content), and is asserted directly in the classification-
+ * tag tests' tooltip cases below. Three mechanics matter for those tests and
+ * are stated here once rather than per test: (1) Popper attaches a *native*
+ * `addEventListener('mouseenter', …)`, so `fireEvent.mouseEnter` is required
+ * — `fireEvent.mouseOver` is a no-op, same gotcha as `useHover`'s
+ * `pf-m-hover` above; (2) the trigger is the outer `<g class=
+ * "dg-graph-edge-focus">`, not the inner `[data-test-id="edge-handler"]`
+ * `useHover` listens on; (3) always `await waitFor(...)` — `entryDelay`/
+ * `exitDelay` default to 300ms and Popper's own positioning update is an
+ * async debounced promise on top of that, so a synchronous assertion right
+ * after the event would be racing the tooltip into existence.
+ *
+ * What remains genuinely unobservable is GEOMETRY — real size,
+ * position, whether a label visually fits or collides with a neighbour — which is
+ * why the 2-tag truncation cap's fit is still verified by hand (see this
+ * component's `classificationByInteraction` doc and the PR's browser-check list),
+ * not here. Node labels, node geometry and anything about visual layout are
+ * therefore not observable here and are NOT asserted — a test claiming to verify
+ * them would be lying. They are covered instead by:
  *   - `lib/graph.test.ts` — the node/edge derivation (per-leg direction, seq
  *     labels, error tri-state, every edge case) as pure logic, which is where the
  *     real coverage lives; and
@@ -849,17 +886,19 @@ describe('ExecutionFlowGraph', () => {
 
   it('keeps the arrowhead and the seq tag on a curved edge', async () => {
     // The fork must not have quietly dropped either of the two things `DefaultEdge`
-    // contributed besides the path. The arrowhead renders under jsdom; the tag's TEXT
-    // does not (it measures itself via getBBox — see this file's header), so the tag
-    // is asserted as its `<g>`, which is what is genuinely observable.
+    // contributed besides the path. Both the arrowhead and the tag's `<text>` render
+    // under jsdom (see this file's header for why the tag text, specifically, is
+    // observable despite `getBBox` being stubbed to zero) — so this asserts the tag's
+    // actual seq-number text, not just its `<g>`.
     mockApi(ENTITIES, [mkIx({ id: 'i1' })]);
     renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
 
     await waitFor(() => expect(edgeEls()).toHaveLength(2));
-    for (const id of ['i1:request', 'i1:response']) {
+    for (const [id, seq] of [['i1:request', '1'], ['i1:response', '2']] as const) {
       const el = document.querySelector(`[data-id="${id}"]`)!;
       expect(el.querySelector('.pf-topology-connector-arrow')).not.toBeNull();
       expect(el.querySelector('.pf-topology__edge__tag')).not.toBeNull();
+      expect(el.querySelector('.pf-topology__edge__tag text')?.textContent).toBe(seq);
     }
   });
 
@@ -2030,6 +2069,643 @@ describe('ExecutionFlowGraph', () => {
     const reqEnd = pts('i1:request').at(-1)!;
     expect(Math.abs(reqEnd.x - e2.x)).toBeLessThanOrEqual(radius);
     expect(Math.abs(reqEnd.y - e2.y)).toBeLessThanOrEqual(radius);
+  });
+});
+
+/**
+ * `EntityGraph`'s risk-colour seam (issue #170's Alert Execution view), rendered
+ * DIRECTLY rather than through `ExecutionFlowGraph`/`LineageGraph`.
+ *
+ * Neither tab wrapper fetches or passes `riskLevelByInteraction` — the Alert
+ * Execution page owns its own risk read and derives its own `GraphSpec` via
+ * `lib/riskForestAdapter.ts`, feeding both straight into `EntityGraph`, which is
+ * exported for exactly this. Going through a tab wrapper here would mean
+ * threading a prop neither tab has any use for just to reach a component that is
+ * already reachable directly — so these cases build a small `GraphSpec` by hand
+ * (skipping `mockApi`/`useEntities`/`useInteractions` entirely) and mount
+ * `EntityGraph` itself, reusing the SAME `capturedController`/`nodeData`/
+ * `edgeData` helpers the tab tests above use, since both routes build the
+ * identical `Visualization` underneath.
+ */
+describe('EntityGraph risk colouring (issue #170)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+    capturedController = null;
+    modelPushes = 0;
+    // Same `capture(this)` shape as the `ExecutionFlowGraph` describe block's
+    // own `beforeEach` — see its comment for why a named function is used
+    // instead of `capturedController = this`, which trips
+    // `@typescript-eslint/no-this-alias`.
+    const real = Visualization.prototype.fromModel;
+    const capture = (vis: Visualization) => {
+      capturedController = vis;
+      modelPushes += 1;
+    };
+    vi.spyOn(Visualization.prototype, 'fromModel').mockImplementation(function (
+      this: Visualization,
+      ...args: Parameters<Visualization['fromModel']>
+    ) {
+      capture(this);
+      return real.apply(this, args);
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** Two nodes, one completed interaction — the smallest spec with both legs. */
+  function riskSpec(): GraphSpec {
+    return {
+      nodes: [
+        {
+          id: 'e1',
+          label: 'agent-a',
+          kind: 'agent',
+          naturalKey: 'agent:(p,a)',
+          isIsolated: false,
+          encounterIndex: 0,
+          column: 0,
+          row: 0,
+        },
+        {
+          id: 'e2',
+          label: 'search',
+          kind: 'tool',
+          naturalKey: 'tool:(p,svc)',
+          isIsolated: false,
+          encounterIndex: 1,
+          column: 1,
+          row: 0,
+        },
+      ],
+      edges: [
+        {
+          id: 'i1:request',
+          interactionId: 'i1',
+          legType: 'request',
+          source: 'e1',
+          target: 'e2',
+          label: '1',
+          seq: 1,
+          title: 'summary-i1',
+          isError: false,
+          isSelfCall: false,
+        },
+        {
+          id: 'i1:response',
+          interactionId: 'i1',
+          legType: 'response',
+          source: 'e2',
+          target: 'e1',
+          label: '2',
+          seq: 2,
+          title: 'summary-i1',
+          isError: false,
+          isSelfCall: false,
+        },
+      ],
+      dropped: [],
+      parallelGroups: [],
+    };
+  }
+
+  function renderEntityGraph(
+    spec: GraphSpec,
+    riskLevelByInteraction?: ReadonlyMap<string, string>,
+    hideParallelGroupsNotice?: boolean,
+  ) {
+    return renderWithProviders(
+      <EntityGraph
+        traceId="T1"
+        spec={spec}
+        riskLevelByInteraction={riskLevelByInteraction}
+        hideParallelGroupsNotice={hideParallelGroupsNotice}
+      />,
+    );
+  }
+
+  it("colours an edge by ITS OWN interaction's risk level, calling riskLevelColorVar rather than a hardcoded value", async () => {
+    // The mapping under test is "same colour scheme as RiskBadge" (AC #2) — the
+    // production code calls `riskLevelColorVar`, so the test must too, or a change
+    // to that function's colour table would silently stop being caught here.
+    renderEntityGraph(
+      riskSpec(),
+      new Map([['i1', 'critical']]),
+    );
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain(riskLevelColorVar('critical'));
+    expect(req).not.toMatch(/#[0-9a-f]{6}/i);
+    // Both legs belong to the same interaction, so both take its one risk level.
+    const res = document.querySelector('[data-id="i1:response"]')!.innerHTML;
+    expect(res).toContain(riskLevelColorVar('critical'));
+  });
+
+  it('gives a low-risk interaction a visibly different colour than a critical one', async () => {
+    renderEntityGraph(riskSpec(), new Map([['i1', 'low']]));
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain(riskLevelColorVar('low'));
+    expect(req).not.toContain(riskLevelColorVar('critical'));
+  });
+
+  it("treats an interaction ABSENT from a SUPPLIED map as no treatment at all, never as a safe verdict", async () => {
+    // `riskForestAdapter.riskLevelByInteraction` omits `risk: null` entries
+    // entirely (not yet computed — see that function's docstring), and this
+    // component's contract is to treat an omitted entry as "no risk colouring"
+    // rather than as any verdict — painting it green ('low'/'none') would
+    // misreport "not yet computed" as "checked and safe", and painting it grey
+    // ('unknown') would still be a colour where the honest answer is none. So a
+    // map that is present but lacks this interaction's entry must fall all the
+    // way back to the ordinary tree-guide colour, exactly as if no map had been
+    // passed at all (see the regression case below).
+    renderEntityGraph(riskSpec(), new Map());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain('var(--dg-tree-guide)');
+    expect(req).not.toContain(riskLevelColorVar('unknown'));
+    expect(req).not.toContain(riskLevelColorVar('low'));
+    expect(req).not.toContain(riskLevelColorVar('none'));
+
+    const e1 = capturedController?.getNodeById('e1')?.getData() as { riskLevel?: string };
+    expect(e1.riskLevel).toBeUndefined();
+  });
+
+  it('keeps ERROR precedence over risk colouring on an edge — a fact outranks a grade', async () => {
+    const spec = riskSpec();
+    spec.edges[0]!.isError = true;
+    renderEntityGraph(spec, new Map([['i1', 'critical']]));
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain('var(--dg-color-error)');
+    expect(req).not.toContain(riskLevelColorVar('critical'));
+  });
+
+  it("rolls a node's stroke up to the MOST SEVERE level of its incident edges (stopgap pending real per-entity risk)", async () => {
+    // e1 sits on both legs of i1 (critical) — the only interaction in this spec —
+    // so it rolls up to 'critical' too. Verified through `nodeData`'s exposed
+    // `riskLevel` field, not a computed style: node content renders empty on
+    // jsdom's zero-bbox surface (see this file's header), but the model DATA the
+    // node carries is not culled.
+    renderEntityGraph(riskSpec(), new Map([['i1', 'critical']]));
+    await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+    const e1 = capturedController?.getNodeById('e1')?.getData() as { riskLevel?: string };
+    const e2 = capturedController?.getNodeById('e2')?.getData() as { riskLevel?: string };
+    expect(e1.riskLevel).toBe('critical');
+    expect(e2.riskLevel).toBe('critical');
+  });
+
+  it("rolls a node up to the MORE severe of two DIFFERING incident edges", async () => {
+    // Two interactions sharing e2: i1 (low) and i2 (critical). e1 only touches
+    // i1, so it stays 'low'; e2 touches both, so it rolls up to 'critical' — the
+    // roll-up is per-node, not a blanket "worst in the trace".
+    const spec = riskSpec();
+    spec.nodes.push({
+      id: 'e3',
+      label: 'gpt-4',
+      kind: 'llm',
+      naturalKey: 'llm:api.example.com/gpt',
+      isIsolated: false,
+      encounterIndex: 2,
+      column: 2,
+      row: 0,
+    });
+    spec.edges.push({
+      id: 'i2:request',
+      interactionId: 'i2',
+      legType: 'request',
+      source: 'e2',
+      target: 'e3',
+      label: '3',
+      seq: 3,
+      title: 'summary-i2',
+      isError: false,
+      isSelfCall: false,
+    });
+    renderEntityGraph(spec, new Map([['i1', 'low'], ['i2', 'critical']]));
+    await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+    const e1 = capturedController?.getNodeById('e1')?.getData() as { riskLevel?: string };
+    const e2 = capturedController?.getNodeById('e2')?.getData() as { riskLevel?: string };
+    expect(e1.riskLevel).toBe('low');
+    expect(e2.riskLevel).toBe('critical');
+  });
+
+  it('leaves BOTH existing tabs unchanged when no risk map is passed — a pure regression guard', async () => {
+    // Neither `ExecutionFlowGraph` nor `LineageGraph` ever passes
+    // `riskLevelByInteraction`, so omitting it entirely must reproduce exactly
+    // today's colouring: kind-coloured nodes, `--dg-tree-guide` edges.
+    renderEntityGraph(riskSpec());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = document.querySelector('[data-id="i1:request"]')!.innerHTML;
+    expect(req).toContain('var(--dg-tree-guide)');
+    expect(req).not.toContain(riskLevelColorVar('critical'));
+    expect(req).not.toContain(riskLevelColorVar('unknown'));
+
+    const e1 = capturedController?.getNodeById('e1')?.getData() as {
+      riskLevel?: string;
+      kindColoured: boolean;
+    };
+    expect(e1.riskLevel).toBeUndefined();
+    expect(e1.kindColoured).toBe(true);
+  });
+
+  it("suppresses the 'entity pair(s) with multiple interactions' notice when hideParallelGroupsNotice is set — the risk trace view draws request legs only, so the notice's response-leg premise never applies there", async () => {
+    const spec = riskSpec();
+    spec.parallelGroups = [{ key: 'e1|e2', edgeIds: ['i1:request', 'i1:response'] }];
+    renderEntityGraph(spec, undefined, true);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(screen.queryByText(/with multiple interactions/i)).not.toBeInTheDocument();
+  });
+
+  it('still shows the notice when hideParallelGroupsNotice is omitted — the flag is opt-out, not a default change', async () => {
+    const spec = riskSpec();
+    spec.parallelGroups = [{ key: 'e1|e2', edgeIds: ['i1:request', 'i1:response'] }];
+    renderEntityGraph(spec);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    expect(screen.getByText(/1 entity pair with multiple interactions/i)).toBeInTheDocument();
+  });
+
+  it("blanks each edge's seq-number tag when hideEdgeLabels is set — the risk trace view has no Flat table to cross-reference the number against (issue #170)", async () => {
+    renderWithProviders(
+      <EntityGraph traceId="T1" spec={riskSpec()} hideEdgeLabels />,
+    );
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    // Asserted on the model data (the same way `riskLevel` is asserted above)
+    // AND on rendered DOM — the tag `<g>` disappears entirely, since
+    // `showTag`'s truthiness gate skips it for an empty string (this file's
+    // header on why the tag's `<text>` is genuinely observable under jsdom).
+    const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
+    const res = capturedController?.getEdgeById('i1:response')?.getData() as { label?: string };
+    expect(req.label).toBe('');
+    expect(res.label).toBe('');
+    expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag')).toBeNull();
+  });
+
+  it('leaves the seq-number tag data unchanged when hideEdgeLabels is omitted — a pure regression guard for the two existing tabs, which never pass it', async () => {
+    renderEntityGraph(riskSpec());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
+    expect(req.label).toBe('1');
+    expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe('1');
+  });
+
+  /**
+   * The classification-tag seam (issue #170 follow-up: regulatory tags as
+   * edge labels). Same rendering approach as the risk-colour tests above —
+   * `EntityGraph` directly, hand-built `GraphSpec` — and, per this file's
+   * corrected header note, the tag's rendered `<text>` is asserted directly
+   * rather than deferred to a browser check; only GEOMETRY (whether the
+   * 2-tag cap visually fits) still needs the manual pass.
+   */
+  describe('classification tags (issue #170 follow-up)', () => {
+    function renderWithClassification(
+      classificationByInteraction?: ReadonlyMap<string, { tags: readonly string[]; levels: readonly string[] }>,
+      hideEdgeLabels?: boolean,
+    ) {
+      return renderWithProviders(
+        <EntityGraph
+          traceId="T1"
+          spec={riskSpec()}
+          classificationByInteraction={classificationByInteraction}
+          hideEdgeLabels={hideEdgeLabels}
+        />,
+      );
+    }
+
+    it("renders the edge's own interaction's tags, capped, as both the model label and the rendered tag text", async () => {
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const req = capturedController?.getEdgeById('i1:request')?.getData() as {
+        label?: string;
+        classification?: { tags: readonly string[]; levels: readonly string[] };
+      };
+      expect(req.label).toBe('PII, GDPR');
+      expect(req.classification).toEqual({ tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] });
+      expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe(
+        'PII, GDPR',
+      );
+      // Both legs of the interaction share the one verdict, same as riskLevel.
+      const res = capturedController?.getEdgeById('i1:response')?.getData() as { label?: string };
+      expect(res.label).toBe('PII, GDPR');
+    });
+
+    it('caps at EDGE_TAG_MAX_TAGS with a +N overflow indicator in both the model label and the rendered text', async () => {
+      renderWithClassification(
+        new Map([['i1', { tags: ['PII', 'GDPR', 'HIPAA', 'PCI'], levels: ['RESTRICTED'] }]]),
+      );
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
+      expect(req.label).toBe('PII, GDPR +2');
+      expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe(
+        'PII, GDPR +2',
+      );
+    });
+
+    it("draws NO visible tag for an edge whose interaction is present in the map with an empty tag list — never the word 'none'", async () => {
+      // A genuine PUBLIC-with-no-tags verdict (see `classificationByInteraction`'s
+      // docstring): present in the map, contributes nothing to the visible tag.
+      renderWithClassification(new Map([['i1', { tags: [], levels: ['PUBLIC'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const req = capturedController?.getEdgeById('i1:request')?.getData() as {
+        label?: string;
+        classification?: { tags: readonly string[]; levels: readonly string[] };
+      };
+      expect(req.label).toBe('');
+      expect(req.classification).toEqual({ tags: [], levels: ['PUBLIC'] });
+      expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag')).toBeNull();
+    });
+
+    it("draws NO visible tag and carries no classification data for an edge whose interaction has NO entry in a supplied map", async () => {
+      renderWithClassification(new Map());
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const req = capturedController?.getEdgeById('i1:request')?.getData() as {
+        label?: string;
+        classification?: unknown;
+      };
+      // The presence-not-hit rule: a supplied map with no entry for this
+      // interaction blanks the tag — it must NOT fall back to the seq number,
+      // which would mix vocabularies (a bare "1" could be misread as a tag count).
+      expect(req.label).toBe('');
+      expect(req.classification).toBeUndefined();
+      expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag')).toBeNull();
+    });
+
+    it('takes precedence over hideEdgeLabels when both are supplied — the tag slot is the classification string, not blanked', async () => {
+      renderWithClassification(new Map([['i1', { tags: ['PII'], levels: ['RESTRICTED'] }]]), true);
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
+      expect(req.label).toBe('PII');
+    });
+
+    it('leaves the seq-number tag completely unchanged when the map is omitted entirely — the pure regression guard for both existing tabs', async () => {
+      renderWithClassification(undefined);
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const req = capturedController?.getEdgeById('i1:request')?.getData() as {
+        label?: string;
+        classification?: unknown;
+      };
+      expect(req.label).toBe('1');
+      expect(req.classification).toBeUndefined();
+    });
+
+    it("carries the tags and level in the edge's <title> hover text, before the lineage suffix, without the word 'none' when unclassified", async () => {
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
+      expect(title).toContain('#1');
+      expect(title).toContain('PII, GDPR (RESTRICTED)');
+      expect(title).not.toContain('none');
+    });
+
+    it("carries a level with no tags as '(LEVEL)' with no empty parens artifact", async () => {
+      renderWithClassification(new Map([['i1', { tags: [], levels: ['PUBLIC'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
+      expect(title).toContain('(PUBLIC)');
+      expect(title).not.toContain('()');
+    });
+
+    it('carries multiple levels joined in the hover text', async () => {
+      renderWithClassification(new Map([['i1', { tags: ['PII'], levels: ['INTERNAL', 'RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
+      expect(title).toContain('(INTERNAL, RESTRICTED)');
+    });
+
+    it('omits the classification clause from the hover title when unclassified, and does not say "none"', async () => {
+      renderWithClassification(new Map());
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
+      expect(title).not.toContain('none');
+      expect(title).not.toContain('()');
+    });
+
+    /**
+     * The VISIBLE tooltip (issue #171 follow-up). Hovering (or keyboard-
+     * focusing) an edge showed a colour change only — never any text — on
+     * every tab that mounts this graph. Root cause: the `<title>` above is a
+     * native SVG element, which this app never surfaces as a browser
+     * tooltip (see `ExecutionFlowGraph.tsx`'s `DirectedEdge` note). The fix
+     * adds a real PF `Tooltip`, targeted at the outer `<g>` via `triggerRef`
+     * — the `<title>` stays, by choice, so BOTH must keep saying the same
+     * thing. `edgeHoverText` is the single helper that makes that true by
+     * construction rather than by two hand-written strings staying in sync;
+     * the last test below is the guard that would catch them drifting.
+     *
+     * Mechanics, stated once rather than per test:
+     * - `fireEvent.mouseEnter`, never `mouseOver` — Popper attaches a native
+     *   `addEventListener('mouseenter', …)` (see `pf-m-hover`'s test above
+     *   for the same gotcha with `useHover`), so RTL's synthetic
+     *   `mouseover` is a no-op here.
+     * - The target is the outer `<g class="dg-graph-edge-focus">`, not
+     *   `[data-test-id="edge-handler"]` — that inner element is what
+     *   `useHover` listens on; `triggerRef` here points at the outer `<g>`.
+     * - Always `await waitFor(...)`: `Tooltip`'s default `entryDelay`/
+     *   `exitDelay` is 300ms, and Popper's positioning update is itself an
+     *   async debounced promise on top of that. No fake timers are used
+     *   anywhere in this file, and they would fight `waitFor` if introduced
+     *   here.
+     * - `screen.getByRole('tooltip')` / `queryByRole('tooltip')`, never
+     *   `container.querySelector` — the tooltip content portals into
+     *   `document.body` (PF's default `appendTo`), not into the graph's
+     *   own DOM subtree.
+     * - No `userEvent.hover` — see this file's header for why `userEvent`
+     *   near the SVG surface throws on `svg.width.baseVal`.
+     */
+    it('shows no tooltip before any hover', async () => {
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    });
+
+    it("shows the edge's summary as a real, queryable tooltip on hover — the tripwire for Popper's trigger wiring", async () => {
+      // If `triggerRef` never resolved to a real element (e.g. because the
+      // `<g>` and `<Tooltip>` were not committed together, or the ref went
+      // to the wrong node), Popper attaches no listener and nothing below
+      // ever appears — this is the test that would catch that, not a
+      // hand-wave "the ref looks right" read of the source.
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+      expect(screen.getByRole('tooltip')).toHaveTextContent('#1 request — summary-i1 — PII, GDPR (RESTRICTED)');
+    });
+
+    it('shows the full untruncated tag list and level on hover, where the visible tag is capped to two — the motivating case', async () => {
+      // The whole point of the fix: the visible tag is a lossy summary
+      // (`edgeClassificationSuffix`'s docstring makes that claim), and hover
+      // was meant to be the one place a reader sees the complete verdict.
+      // Both halves of that contract are asserted in one test because
+      // neither half alone proves the contract holds end to end.
+      renderWithClassification(
+        new Map([['i1', { tags: ['PII', 'GDPR', 'HIPAA', 'PCI'], levels: ['RESTRICTED'] }]]),
+      );
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe(
+        'PII, GDPR +2',
+      );
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+      expect(screen.getByRole('tooltip')).toHaveTextContent('PII, GDPR, HIPAA, PCI (RESTRICTED)');
+    });
+
+    it('also shows the tooltip on keyboard focus, not only on pointer hover', async () => {
+      // `Tooltip`'s default `trigger` is `'mouseenter focus'`, and the outer
+      // `<g>` is already `tabIndex={0}` for its own click/keyboard handling
+      // — so a keyboard user reaches the same tooltip a mouse user does.
+      // This would silently regress if a future edit narrowed `trigger` to
+      // `'mouseenter'` alone.
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.focus(trigger);
+
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+    });
+
+    it('hides the tooltip again on mouseleave', async () => {
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+
+      fireEvent.mouseLeave(trigger);
+      await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument(), { timeout: 2000 });
+    });
+
+    it("omits the classification clause from the tooltip for an unclassified edge, and never says 'none' — the visible counterpart of the <title> assertion above", async () => {
+      renderWithClassification(new Map());
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+      const tooltip = screen.getByRole('tooltip');
+      expect(tooltip).toHaveTextContent('#1 request — summary-i1');
+      expect(tooltip.textContent).not.toContain('none');
+    });
+
+    it('keeps the <title> and the tooltip byte-for-byte identical — the guard the keep-both decision requires', async () => {
+      // Both elements are kept deliberately (see `DirectedEdge`'s note) and
+      // both are built from the one `edgeHoverText` helper. This is the
+      // only assertion that would actually catch the two drifting apart —
+      // e.g. a future edit to one call site and not the other — and it is
+      // the reason that helper exists rather than two independent template
+      // literals saying "the same thing".
+      renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
+
+      const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+      fireEvent.mouseEnter(trigger);
+      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+
+      // `toHaveTextContent` treats a string argument as a substring/regex
+      // match, and `title` contains regex metacharacters (parentheses) —
+      // so this compares the raw `textContent` strings directly rather
+      // than risking a silently-too-loose (or throwing) pattern match.
+      expect(screen.getByRole('tooltip').textContent).toBe(title);
+      expect(title.length).toBeGreaterThan(0);
+    });
+
+    it("leaves the edge's aria-label byte-for-byte unchanged when the map is omitted, and places the classification clause before the lineage suffix when both apply", async () => {
+      // Baseline: map omitted entirely, no lineage highlight — the existing
+      // aria-label shape must not have gained a stray trailing/leading artifact.
+      const { unmount } = renderWithClassification(undefined);
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+      const plainLabel = screen
+        .getByRole('button', { name: /seq 1, request:/i })
+        .getAttribute('aria-label');
+      expect(plainLabel).toBe('Interaction leg, seq 1, request: summary-i1');
+      unmount();
+
+      // With a highlight that puts this leg on the upstream route AND a
+      // classification entry, the clause must land BEFORE the lineage
+      // parenthetical, not after it.
+      renderWithProviders(
+        <EntityGraph
+          traceId="T1"
+          spec={riskSpec()}
+          classificationByInteraction={new Map([['i1', { tags: ['PII'], levels: ['RESTRICTED'] }]])}
+          highlight={{
+            selectedNodeId: 'e2',
+            nodeIds: ['e1', 'e2'],
+            edgeIds: ['i1:request'],
+            reachability: {
+              dataSourceNodeIds: [],
+              chosenSourceNodeId: null,
+              upstreamNodeIds: ['e1'],
+              downstreamNodeIds: [],
+              upstreamEdgeIds: ['i1:request'],
+              downstreamEdgeIds: [],
+              frontierNodeIds: [],
+              hopsByNodeId: new Map(),
+            },
+          }}
+        />,
+      );
+      await waitFor(() => expect(edgeEls().length).toBeGreaterThan(0));
+      const labelled = screen
+        .getByRole('button', { name: /seq 1, request:/i })
+        .getAttribute('aria-label');
+      expect(labelled).toContain('PII (RESTRICTED) (on the upstream route)');
+    });
+  });
+
+  // compactSurface (issue #170 follow-up): jsdom applies no stylesheet, so it
+  // cannot see the shorter rendered height itself — see this file's header on
+  // why CSS effects are asserted through className presence, never through a
+  // computed-style or layout assertion. The real height was confirmed in a
+  // browser (not part of this automated suite).
+  it('adds the dg-graph-surface--compact modifier class when compactSurface is set', async () => {
+    renderWithProviders(<EntityGraph traceId="T1" spec={riskSpec()} compactSurface />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const surface = document.querySelector('.dg-graph-surface')!;
+    expect(surface).toHaveClass('dg-graph-surface--compact');
+  });
+
+  it('omits the dg-graph-surface--compact modifier class when compactSurface is omitted — a regression guard for the two existing tabs, which never pass it', async () => {
+    renderEntityGraph(riskSpec());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const surface = document.querySelector('.dg-graph-surface')!;
+    expect(surface).not.toHaveClass('dg-graph-surface--compact');
   });
 });
 

@@ -170,6 +170,21 @@ export interface GraphEdgeSpec {
    * is a single number and stays legible on a short arrow — which is the reason
    * the interaction's prose `summary` moved to `title` instead of being the
    * label.
+   *
+   * That rejection was of PROSE specifically, not of every alternative to the
+   * seq number, and it's narrower than it reads: what a short arrow cannot
+   * carry is an unbounded *sentence*, not a bounded set of short uppercase
+   * tokens. The risk trace view (issue #170 follow-up) replaces this field's
+   * rendered text with an interaction's regulatory tags — but does so at the
+   * RENDERER (`ExecutionFlowGraph.tsx`'s `EntityGraph`), not here: this field
+   * is still always the `seq` coming out of `deriveGraph`, unconditionally.
+   * The renderer swaps in the tag string via a side-channel
+   * `classificationByInteraction` map, the same shape `EntityGraphProps.riskLevelByInteraction`
+   * already uses for risk colour — deliberately, since this derivation has no
+   * access to classification data at all (it isn't part of `flow.Interaction`;
+   * see `riskForestAdapter.ts`'s header for why a field wasn't added there
+   * either). Don't add a `tags` field here to "do it properly" — a consumer
+   * on the other two tabs would just find it permanently `undefined`.
    */
   label: string;
   /** The leg's `seq` itself, for ordering and for tests that assert on a number. */

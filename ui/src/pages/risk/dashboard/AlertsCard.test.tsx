@@ -87,13 +87,7 @@ describe('AlertsCard', () => {
     expect(screen.queryByText('rule-1')).not.toBeInTheDocument();
   });
 
-  it('expands a group when its row is clicked, same as the chevron', () => {
-    renderCard();
-    fireEvent.click(screen.getByTestId('alert-row-trace-1'));
-    expect(screen.getByText('rule-1')).toBeInTheDocument();
-  });
-
-  it('does not navigate when the row is clicked (only the detail-row Open link navigates)', () => {
+  it('navigates to the trace when its row is clicked', () => {
     render(
       <MemoryRouter initialEntries={['/risk']}>
         <Routes>
@@ -108,6 +102,25 @@ describe('AlertsCard', () => {
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByTestId('alert-row-trace-1'));
+    expect(screen.getByText('Trace detail page')).toBeInTheDocument();
+  });
+
+  it('expands a group on row click without navigating when only the chevron is clicked', () => {
+    render(
+      <MemoryRouter initialEntries={['/risk']}>
+        <Routes>
+          <Route
+            path="/risk"
+            element={
+              <AlertsCard items={[record()]} hasNextPage={false} isFetchingNextPage={false} onNextPage={vi.fn()} />
+            }
+          />
+          <Route path="/risk/traces/:traceId" element={<div>Trace detail page</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /trace-1/i }));
+    expect(screen.getByText('rule-1')).toBeInTheDocument();
     expect(screen.queryByText('Trace detail page')).not.toBeInTheDocument();
   });
 

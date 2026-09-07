@@ -11,6 +11,8 @@ import {
   useRulesInfinite,
   useRule,
   useRuleCategories,
+  useTraceRiskDetail,
+  useRuleCatalogIndex,
 } from './hooks';
 
 // JSX-wrapper tests for the dashboard hooks (issue #169). Kept in a NEW
@@ -296,5 +298,84 @@ describe('useRuleCategories', () => {
 
     const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
     expect(calledUrl).toBe('/risk/rules/categories');
+  });
+});
+
+// Trace detail forest + rule catalog index (issue #170).
+
+describe('useTraceRiskDetail', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('fetches GET /risk/traces/{trace_id} and unwraps the body', async () => {
+    const body = {
+      trace_risk: { trace_risk_id: 'tr1', trace_id: 't1' },
+      interactions: [],
+    };
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => body,
+    });
+
+    const { result } = renderHook(() => useTraceRiskDetail('t1'), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toEqual(body);
+
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toBe('/risk/traces/t1');
+  });
+
+  it('surfaces a 404 as an error rather than throwing past react-query', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({
+        error: 'not found',
+        detail: "no trace risk record for 'nope'",
+        timestamp: '2026-08-02T00:00:00Z',
+      }),
+    });
+
+    const { result } = renderHook(() => useTraceRiskDetail('nope'), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect((result.current.error as { status?: number })?.status).toBe(404);
+  });
+
+  it('does not fetch when traceId is undefined', async () => {
+    renderHook(() => useTraceRiskDetail(undefined), { wrapper: wrapper() });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('useRuleCatalogIndex', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('fetches GET /risk/rules once with a high limit and indexes by rule_id', async () => {
+    const body = {
+      items: [
+        { rule_id: 'DG-001', rule_name: 'pii_to_untrusted_external' },
+        { rule_id: 'DG-002', rule_name: 'excess_data_volume' },
+      ],
+      next_cursor: null,
+    };
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => body,
+    });
+
+    const { result } = renderHook(() => useRuleCatalogIndex(), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(calledUrl).toContain('/risk/rules?limit=');
+
+    expect(result.current.data?.get('DG-001')?.rule_name).toBe('pii_to_untrusted_external');
+    expect(result.current.data?.get('DG-002')?.rule_name).toBe('excess_data_volume');
+    expect(result.current.data?.size).toBe(2);
   });
 });
