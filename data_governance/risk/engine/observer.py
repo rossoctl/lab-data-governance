@@ -26,8 +26,9 @@ Failure semantics (issue #158 scope item 3 — the decisions, and why):
   order and completeness beat progress here.
 - **Unusable OPA answer** (:class:`OpaResponseError` — OPA responded 2xx but
   the body has no usable decision): also a hold, NOT a skip. It means the
-  loaded policy is broken (the shipped policy's fallback rule makes a missing
-  decision impossible — see rules/rego/), which an operator can fix and
+  loaded policy is broken (the compiled bundle's ``default policy_decision``
+  makes a missing decision impossible — see rules/rego.py), which an
+  operator can fix and
   reload; skipping would permanently lose legs to a config mistake. The
   WARNING log every retry wake is the operator signal.
 - **Poison leg** (:class:`InteractionNotFoundError` — the leg references an

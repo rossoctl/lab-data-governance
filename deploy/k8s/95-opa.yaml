@@ -11,15 +11,15 @@
 # extra wiring needed on the engine side.
 #
 # Policy loading: the pod mounts the `opa-policy` ConfigMap at /policies and
-# starts `opa run --server /policies`. The ConfigMap is created FROM the
-# canonical in-repo files (data_governance/risk/rules/rego/data_governance.rego
-# + data_governance/risk/rules/_policy_data/rules_source.json) by
-# deploy/create-opa-configmap.sh — it is deliberately NOT embedded here, so
-# the repo files stay the single source of truth and cannot drift from a
-# second copy pasted into YAML. A policy change is: edit the repo file, re-run
-# the script, restart the pod. The ConfigMap (and so the policy) survives pod
-# restarts; opa-test coverage for the policy runs in CI via
-# tests/risk/rules/test_rego_policy.py on this same pinned image.
+# starts `opa run --server /policies`. The ConfigMap holds ONE file,
+# data_governance.rego, COMPILED from the canonical rule catalog
+# (data_governance/risk/rules/_policy_data/rules_source.json) by the #173
+# compiler via deploy/create-opa-configmap.sh — it is deliberately NOT
+# embedded here, so the catalog stays the single source of truth and cannot
+# drift from a second copy pasted into YAML. A policy change is: edit the
+# catalog, re-run the script, restart the pod. The ConfigMap (and so the
+# policy) survives pod restarts; the compiled Rego is exercised against a
+# real OPA in tests/risk/rules/test_rego_opa.py (`pytest -m opa`).
 apiVersion: v1
 kind: Service
 metadata:
@@ -59,9 +59,8 @@ spec:
       containers:
         - name: opa
           # Pinned release (2026-07-30). This tag is the single source of
-          # truth for the OPA version — the rego test harness
-          # (tests/risk/rules/test_rego_policy.py) reads it from this file so
-          # CI always tests the policy on the exact server version deployed.
+          # truth for the OPA version (tests/deploy/test_opa_manifest.py
+          # guards that it stays a versioned stock-OPA tag).
           image: docker.io/openpolicyagent/opa:1.19.0
           imagePullPolicy: IfNotPresent
           args:
