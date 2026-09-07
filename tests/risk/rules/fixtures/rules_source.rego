@@ -32,7 +32,7 @@ _rule_order := {"DG-001": 0, "DG-002": 1, "DG-004": 2}
 _risk_level_rank := {"critical": 0, "high": 1, "medium": 2, "low": 3, "none": 4, "unknown": 5}
 _enforcement_rank := {"block": 0, "quarantine": 1, "require_approval": 2, "redact": 3, "mask": 4, "anonymize": 5, "encrypt": 6, "escalate": 7, "notify": 8, "warn": 9, "log_only": 10, "audit": 11, "allow": 12}
 
-default policy_decision := {"risk_level": "none", "enforcement_type": "allow", "allowed_actions": [], "explanation": "No rules fired, falling back to default rule", "confidence": 1.0, "triggered_rules": ["0000"], "rule_combining_mode": "most_restrictive"}
+default policy_decision := {"risk_level": "none", "enforcement_type": "allow", "allowed_actions": [], "explanation": "No rules fired, falling back to default rule", "confidence": 1.0, "triggered_rules": ["0000"], "rule_combining_mode": "most_restrictive", "policy_version": "data-governance-v1:1.0.0"}
 
 _UNRANKED := 9999
 
@@ -61,5 +61,6 @@ policy_decision := decision if {
         "confidence": object.get(_rule_decisions[enf_winner], "confidence", null),
         "triggered_rules": ids,
         "rule_combining_mode": "most_restrictive",
+        "policy_version": "data-governance-v1:1.0.0",
     }
 }

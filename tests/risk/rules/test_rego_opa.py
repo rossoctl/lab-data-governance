@@ -412,3 +412,45 @@ def test_most_restrictive_combined_decision_conforms_to_opa_output_schema(opa_cl
 
     result = _raw_policy_decision(opa_client, {"event_type": "x"})
     _opa_output_validator().validate(result)
+
+
+# --- policy_version round-trips from the shipped catalog -----------------
+
+
+@pytest.mark.opa
+def test_shipped_bundle_reports_its_policy_version_on_fire_and_on_fallback(
+    opa_client, opa_base_url
+):
+    """The engine persists ``OpaDecision.policy_version`` as the audit
+    trail's ``opa_policy_versions_used``; the compiled shipped catalog must
+    therefore report ``"<policy_id>:<version>"`` on every decision — the
+    firing path and the default-rule fallback alike."""
+    from data_governance.risk.rules import catalog
+    from data_governance.risk.rules.rego import policy_version
+
+    policy = catalog.load_rules_source()
+    expected = policy_version(policy)
+    assert expected == f"{policy['policy_id']}:{policy['version']}"
+
+    put_response = _put_policy(opa_client, compile_policy(policy))
+    assert put_response.status_code == 200, put_response.text
+
+    fired = _evaluate(
+        opa_base_url,
+        {
+            "event_type": "external_sharing",
+            "data_items": [{"regulatory_tags": ["PII"]}],
+            "data_destinations": [
+                {
+                    "data_destination_categories": ["external"],
+                    "data_destination_trust_level": "UNTRUSTED_EXTERNAL",
+                }
+            ],
+        },
+    )
+    assert fired.triggered_rules == ["DG-001"]
+    assert fired.policy_version == expected
+
+    fallback = _evaluate(opa_base_url, {"event_type": "internal_sharing"})
+    assert fallback.triggered_rules == ["0000"]
+    assert fallback.policy_version == expected

@@ -361,3 +361,43 @@ def test_validate_false_skips_schema_validation():
     bare_policy = _policy([_rule("R-1")])
     rego = compile_policy(bare_policy, validate=False)
     assert "package data_governance" in rego
+
+
+# --- policy_version ------------------------------------------------------
+#
+# Both the fallback and the combined decision report which compiled policy
+# produced them ("<policy_id>:<version>"), so the engine's stored
+# policy_version / opa_policy_versions_used name the bundle OPA actually
+# loaded rather than whatever catalog the engine process happens to ship.
+
+
+def test_fallback_carries_policy_version_from_the_envelope():
+    rego = _compile(_policy([_rule("R-1")], policy_id="p", version="2.3.4"))
+    default_line = next(
+        line for line in rego.splitlines() if line.startswith("default policy_decision")
+    )
+    assert '"policy_version": "p:2.3.4"' in default_line
+
+
+@pytest.mark.parametrize("mode", ["most_restrictive", "first_fires"])
+def test_combined_decision_carries_policy_version_from_the_envelope(mode):
+    rego = _compile(
+        _policy([_rule("R-1")], policy_id="p", version="2.3.4", rule_combining_mode=mode)
+    )
+    # Once in the default block, once in the combined-decision literal.
+    assert rego.count('"policy_version": "p:2.3.4"') == 2
+
+
+def test_policy_version_is_omitted_when_the_envelope_names_none():
+    """An envelope without policy_id/version (the fixture shape) compiles to
+    decisions with no policy_version key at all — omitted, never null."""
+    rego = _compile(_policy([_rule("R-1")]))
+    assert "policy_version" not in rego
+
+
+def test_policy_version_helper():
+    from data_governance.risk.rules.rego import policy_version
+
+    assert policy_version({"policy_id": "p", "version": "1"}) == "p:1"
+    assert policy_version({"policy_id": "p"}) is None
+    assert policy_version({"version": "1"}) is None

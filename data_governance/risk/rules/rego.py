@@ -39,6 +39,14 @@ winners' explanations with ``"; "``, deduplicated to one when the same rule
 wins both axes. A rule that fires but wins neither axis contributes nothing
 beyond its id in ``triggered_rules``.
 
+Both the fallback and the combined decision also carry ``policy_version``
+(``"<policy_id>:<version>"`` from the policy envelope, omitted when the
+envelope names neither) so the persisted decision records which compiled
+policy produced it (FR-DAS-033 audit trail: ``interaction_policy_decisions
+.policy_version`` / ``interaction_risk_records.opa_policy_versions_used``)
+without the engine guessing from whatever catalog *it* happens to ship —
+the bundle OPA loaded is the only authority on its own version.
+
 Every string emitted into the generated Rego source goes through
 ``json.dumps`` (which doubles as a safe Rego string literal — both languages
 use the same double-quoted, backslash-escaped syntax), so a quote or
@@ -55,9 +63,15 @@ import jsonschema
 
 from data_governance.risk.rules.catalog import ENFORCEMENT_ORDER, RISK_LEVEL_ORDER
 
-__all__ = ["compile_policy"]
+__all__ = ["FALLBACK_RULE_ID", "compile_policy", "policy_version"]
 
 _PACKAGE = "data_governance"
+
+# The id the fallback decision reports in ``triggered_rules`` when no
+# catalog rule fired. Not a catalog rule: consumers that count or name
+# fired rules (risk records, metrics, alerts) must treat it as "nothing
+# fired" — see ``data_governance.risk.engine.compute``.
+FALLBACK_RULE_ID = "0000"
 
 # Vendored alongside the catalog module, same convention as
 # ``catalog.py``'s own ``_POLICY_DATA_DIR``. Self-contained — no cross-file
@@ -246,19 +260,44 @@ def _rank_object(order: tuple[str, ...]) -> str:
     return f"{{{pairs}}}"
 
 
+def policy_version(policy: dict[str, Any]) -> str | None:
+    """``"<policy_id>:<version>"`` for a policy envelope naming both, else
+    ``None`` — the value the compiled decisions report as
+    ``policy_version``."""
+    policy_id = policy.get("policy_id")
+    version = policy.get("version")
+    if policy_id is None or version is None:
+        return None
+    return f"{policy_id}:{version}"
+
+
 def _fallback_decision(policy: dict[str, Any], *, mode: str) -> dict[str, Any]:
     unknown_enforcement = policy["runtime_enforcement_mode"][
         "unknown_behavior_enforcement_type"
     ]
-    return {
+    decision = {
         "risk_level": "none",
         "enforcement_type": unknown_enforcement,
         "allowed_actions": [],
         "explanation": "No rules fired, falling back to default rule",
         "confidence": 1.0,
-        "triggered_rules": ["0000"],
+        "triggered_rules": [FALLBACK_RULE_ID],
         "rule_combining_mode": mode,
     }
+    version = policy_version(policy)
+    if version is not None:
+        decision["policy_version"] = version
+    return decision
+
+
+def _version_line(policy: dict[str, Any]) -> str:
+    """The ``"policy_version": ...`` entry for a combined-decision object
+    literal — empty when the envelope names no version, so the key is
+    omitted rather than emitted as ``null``."""
+    version = policy_version(policy)
+    if version is None:
+        return ""
+    return f'        "policy_version": {_lit(version)},\n'
 
 
 def _combining_block(policy: dict[str, Any]) -> str:
@@ -270,6 +309,7 @@ def _combining_block(policy: dict[str, Any]) -> str:
         raise ValueError(f"rule_combining_mode must be one of {_VALID_MODES}, got {mode!r}")
 
     fallback = _fallback_decision(policy, mode=mode)
+    version_line = _version_line(policy)
     rules = policy["rules"]
 
     # rule_id -> rule_decision, so the combining rule can look up each
@@ -305,6 +345,7 @@ def _combining_block(policy: dict[str, Any]) -> str:
             "    decision := object.union(_rule_decisions[first_id], {\n"
             '        "triggered_rules": sort([id | some id in triggered_rules]),\n'
             '        "rule_combining_mode": "first_fires",\n'
+            f"{version_line}"
             "    })\n"
             "}\n"
         )
@@ -337,6 +378,7 @@ def _combining_block(policy: dict[str, Any]) -> str:
             '        "confidence": object.get(_rule_decisions[enf_winner], "confidence", null),\n'
             '        "triggered_rules": ids,\n'
             '        "rule_combining_mode": "most_restrictive",\n'
+            f"{version_line}"
             "    }\n"
             "}\n"
         )

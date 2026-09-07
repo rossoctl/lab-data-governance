@@ -2,7 +2,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://example.org/schemas/opa_output.schema.json",
     "title": "OPA Policy Decision Output",
-    "description": "JSON Schema for the policy_decision value returned by OPA (POST /v1/data/data_governance/policy_decision). This is compiled and produced by data_governance.risk.rules.rego, not authored policy input, so it is deliberately separate from policy.schema.json and opa_input.schema.json. Same field set as a rule's rule_decision (policy.schema.json#/$defs/ruleDecision) plus triggered_rules and rule_combining_mode. Enum value/object definitions are shared with policy.schema.json via $ref so the two schemas stay in sync.",
+    "description": "JSON Schema for the policy_decision value returned by OPA (POST /v1/data/data_governance/policy_decision). This is compiled and produced by data_governance.risk.rules.rego, not authored policy input, so it is deliberately separate from policy.schema.json and opa_input.schema.json. Same field set as a rule's rule_decision (policy.schema.json#/$defs/ruleDecision) plus triggered_rules, rule_combining_mode and policy_version. Enum value/object definitions are shared with policy.schema.json via $ref so the two schemas stay in sync.",
     "type": "object",
     "required": ["explanation", "confidence", "triggered_rules"],
     "additionalProperties": false,
@@ -19,6 +19,10 @@
             "type": "array",
             "items": { "type": "string" }
         },
-        "rule_combining_mode": { "$ref": "policy.schema.json#/$defs/ruleCombiningModeValues" }
+        "rule_combining_mode": { "$ref": "policy.schema.json#/$defs/ruleCombiningModeValues" },
+        "policy_version": {
+            "type": "string",
+            "description": "\"<policy_id>:<version>\" of the compiled policy that produced this decision; present whenever the policy envelope names both."
+        }
     }
 }
