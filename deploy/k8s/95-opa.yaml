@@ -1,0 +1,102 @@
+# OPA policy server for the DAS risk engine (issue #162).
+#
+# A frozen stock OPA container (no OPA code changes, version pinned below) in
+# the data-governance namespace, serving the decision endpoint the merged OPA
+# client (data_governance/risk/engine/opa.py) is configured with:
+#
+#   POST http://opa:8181/v1/data/data_governance/policy_decision
+#
+# The Service name `opa` makes the client's RISK_OPA_BASE_URL default
+# (http://opa:8181) resolve as-is for every consumer in this namespace — no
+# extra wiring needed on the engine side.
+#
+# Policy loading: the pod mounts the `opa-policy` ConfigMap at /policies and
+# starts `opa run --server /policies`. The ConfigMap is created by
+# deploy/create-opa-configmap.sh, which COMPILES the canonical rule catalog
+# (data_governance/risk/rules/_policy_data/rules_source.json) to Rego via the
+# in-repo compiler (data_governance.risk.rules.compile, issue #173) — it is
+# deliberately NOT embedded here, so the catalog stays the single source of
+# truth and cannot drift from a second copy pasted into YAML. A policy change
+# is: edit the catalog, re-run the script, restart the pod. The ConfigMap
+# (and so the policy) survives pod restarts; real-OPA coverage for the
+# compiled policy runs via tests/risk/rules/test_rego_opa.py (-m opa).
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: opa
+    app.kubernetes.io/part-of: data-governance
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: opa
+  ports:
+    - name: http
+      port: 8181
+      targetPort: 8181
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: opa
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opa
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opa
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      containers:
+        - name: opa
+          # Pinned release (2026-07-30). This tag is the single source of
+          # truth for the OPA version deployed with the compiled policy
+          # (see tests/risk/rules/test_rego_opa.py for the real-OPA harness).
+          image: docker.io/openpolicyagent/opa:1.19.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "run"
+            - "--server"
+            - "--addr=:8181"
+            - "/policies"
+          ports:
+            - name: http
+              containerPort: 8181
+          volumeMounts:
+            - name: policy
+              mountPath: /policies
+              readOnly: true
+          # OPA serves GET /health (200 when up; with the flags below it
+          # would also gate on bundle activation — we load from disk, so
+          # plain /health is the right probe).
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"
+      volumes:
+        - name: policy
+          configMap:
+            name: opa-policy

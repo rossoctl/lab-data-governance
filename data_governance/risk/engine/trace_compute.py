@@ -54,17 +54,30 @@ __all__ = ["compute_trace_risk"]
 
 _MAX_ATTEMPTS = 2
 
-# "Current" = the latest version per interaction_id within this trace_id.
-# DISTINCT ON (interaction_id) ... ORDER BY interaction_id, version DESC picks
-# exactly that row per interaction, mirroring the *_latest_idx query shape
-# used everywhere else in this package for "latest version for this key."
+# "Current" = the latest version per interaction_id within this trace_id,
+# for interactions that still EXIST. DISTINCT ON (interaction_id) ... ORDER BY
+# interaction_id, version DESC picks exactly that row per interaction,
+# mirroring the *_latest_idx query shape used everywhere else in this package
+# for "latest version for this key."
+#
+# The INNER JOIN against `interactions` is load-bearing (observed live): the
+# sidecar lineage derivation rewrites a trace's interactions wholesale as
+# spans arrive, and an exchange can be re-keyed mid-derivation — leaving
+# immutable risk records for interaction ids that no longer exist. Those
+# ghost records must not contribute to the rollup (they would inflate
+# interaction_count and could freeze a stale risk level into every future
+# trace version). Re-reading the live lineage table at aggregation time is
+# the DAS discipline (FR-DAS-004: read live, never cache) — the records
+# themselves stay append-only and untouched.
 _CURRENT_INTERACTION_RISK_SQL = """
-SELECT DISTINCT ON (interaction_id)
-    interaction_risk_id, risk_level, enforcement_type, policy_event_count,
-    triggered_rule_ids, caller_entity_id, callee_entity_id, overall_confidence
-FROM interaction_risk_records
-WHERE trace_id = %s
-ORDER BY interaction_id, version DESC
+SELECT DISTINCT ON (r.interaction_id)
+    r.interaction_risk_id, r.risk_level, r.enforcement_type,
+    r.policy_event_count, r.triggered_rule_ids, r.caller_entity_id,
+    r.callee_entity_id, r.overall_confidence
+FROM interaction_risk_records r
+JOIN interactions i ON i.id = r.interaction_id
+WHERE r.trace_id = %s
+ORDER BY r.interaction_id, r.version DESC
 """
 
 _LATEST_TRACE_RECORD_SQL = (
@@ -192,33 +205,47 @@ def _record_params(trace_id: str, aggregate: TraceRiskAggregate) -> tuple[dict, 
     return params, normalized
 
 
-def _attempt(trace_id: str) -> None:
-    with db.transaction() as tx:
-        current_records = _fetch_current_records(tx, trace_id)
-        aggregate = aggregate_trace_risk(current_records)
-        params, normalized = _record_params(trace_id, aggregate)
+def _attempt_in(tx: db.Transaction, trace_id: str) -> None:
+    current_records = _fetch_current_records(tx, trace_id)
+    aggregate = aggregate_trace_risk(current_records)
+    params, normalized = _record_params(trace_id, aggregate)
 
-        latest_row = tx.fetch_one(_LATEST_TRACE_RECORD_SQL, (trace_id,))
-        if _normalized_latest_record(latest_row) == normalized:
-            return
+    latest_row = tx.fetch_one(_LATEST_TRACE_RECORD_SQL, (trace_id,))
+    if _normalized_latest_record(latest_row) == normalized:
+        return
 
-        tx.execute(_INSERT_TRACE_RECORD_SQL, params)
+    tx.execute(_INSERT_TRACE_RECORD_SQL, params)
 
 
-def compute_trace_risk(trace_id: str) -> None:
+def compute_trace_risk(trace_id: str, *, tx: db.Transaction | None = None) -> None:
     """Compute and persist the current trace risk record for *trace_id*.
 
     Idempotent: if the freshly-computed record is identical to the latest
-    stored version, nothing is written and no NOTIFY fires. Retries once on
-    a ``UNIQUE (trace_id, version)`` collision from a racing concurrent
-    recompute — the retry re-gathers current records and re-checks
-    idempotency, so a retry that lost the race to a winner whose write
-    already matches simply becomes a no-op.
+    stored version, nothing is written and no NOTIFY fires.
+
+    When *tx* is provided the whole gather/aggregate/write runs inside the
+    caller's transaction — the trace-trigger processor (#102/#164) passes its
+    per-item transaction here so the write commits atomically with the
+    stream's cursor advance (ADR-0007: an engine failure rolls the cursor
+    back and the item is re-delivered, never silently skipped). No retry in
+    this mode: a ``UNIQUE (trace_id, version)`` collision propagates, the
+    caller's transaction rolls back, and the stream re-delivers the item —
+    the re-delivery IS the retry, and it re-checks idempotency on arrival.
+
+    When *tx* is ``None`` the call owns its transaction and retries once on
+    that collision from a racing concurrent recompute — the retry re-gathers
+    current records and re-checks idempotency, so a retry that lost the race
+    to a winner whose write already matches simply becomes a no-op.
     """
+    if tx is not None:
+        _attempt_in(tx, trace_id)
+        return
+
     last_error: psycopg.errors.UniqueViolation | None = None
     for _attempt_number in range(_MAX_ATTEMPTS):
         try:
-            _attempt(trace_id)
+            with db.transaction() as own_tx:
+                _attempt_in(own_tx, trace_id)
             return
         except psycopg.errors.UniqueViolation as exc:
             last_error = exc
