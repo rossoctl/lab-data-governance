@@ -170,7 +170,13 @@ import {
   type DirectionHighlight,
 } from '../lib/lineageReachability';
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
-import { kindColorVar, nodeNeutralColorVar } from '../lib/entityKind';
+import {
+  KIND_SHAPE,
+  kindColorVar,
+  nodeNeutralColorVar,
+  shapeForKind,
+  type EntityKindShape,
+} from '../lib/entityKind';
 import { riskLevelColorVar, moreSevereRiskLevel } from '../lib/riskLevel';
 import { edgeTagLabel } from '../lib/classificationSummary';
 import type { InteractionClassification } from '../lib/classificationSummary';
@@ -184,6 +190,103 @@ import type { Entity, Interaction, LineageStatus } from '../types';
  * because a node whose size is unknown cannot be positioned at all.
  */
 const NODE_DIAMETER = 40;
+
+/**
+ * `lib/entityKind`'s shape NAME → PF's `NodeShape` (issue #218).
+ *
+ * A NAME→NAME TABLE AT THE BOUNDARY, exactly like `PF_COLOR_TO_GLOBAL_VAR` in that
+ * module: the kind→shape decision lives there (one place), and this file is the only
+ * thing that knows how to say it in PatternFly's vocabulary. The reason for the split
+ * is bundling, and it is not cosmetic — `entityKind.ts` is imported eagerly by
+ * `EntityPill` and `InteractionDiagram`, while `NodeShape` is a runtime enum from
+ * `@patternfly/react-topology`, whose ~130kB of JS and CSS is confined to THIS module
+ * so it rides the lazy chunk (see the import-order note above). Importing the enum
+ * there would pull the topology chunk onto every reader of the trace list.
+ *
+ * TYPED AS A TOTAL `Record<EntityKindShape, NodeShape>`, so adding a shape name in
+ * `entityKind.ts` without teaching this table how to draw it is a compile error rather
+ * than a node that silently falls back to an ellipse.
+ *
+ * Only `hexagon`/`rect`/`rhombus`/`circle` are reachable from the four kinds #218
+ * names; `ellipse` is the fallback every other kind keeps (see `KIND_SHAPE_FALLBACK`),
+ * and is what every node was before this change.
+ */
+const SHAPE_TO_NODE_SHAPE: Record<EntityKindShape, NodeShape> = {
+  hexagon: NodeShape.hexagon,
+  rect: NodeShape.rect,
+  rhombus: NodeShape.rhombus,
+  circle: NodeShape.circle,
+  ellipse: NodeShape.ellipse,
+};
+
+/**
+ * The shape legend's rows: the four kinds #218 names, each with the WORD for its
+ * outline and a human label for the kind.
+ *
+ * DERIVED FROM `KIND_SHAPE`, NOT RESTATED. The legend's whole job is to be true about
+ * what the graph draws, so it reads the same map the nodes do — a hand-written list
+ * here would be a second place a kind is assigned a shape, and the one that goes stale
+ * silently (a legend that is merely WRONG is worse than no legend, because a reader
+ * trusts it over their own eyes).
+ *
+ * `Object.entries(KIND_SHAPE)` and not a literal array for the same reason: adding a
+ * fifth kind to the map puts it in the legend automatically instead of leaving an
+ * unexplained outline on the graph — which is the exact failure a key exists to
+ * prevent.
+ *
+ * THE SHAPE IS NAMED IN WORDS as well as drawn. At 0.75rem a hexagon and a circle are
+ * a genuine squint, and the swatch is `aria-hidden`, so the word is what makes the row
+ * usable to a screen reader and to anyone reading at a glance — the same belt-and-
+ * braces the Lineage legend applies with its "(double ring)".
+ */
+const SHAPE_LEGEND_ROWS: ReadonlyArray<{ kind: string; label: string; shapeWord: string }> = (
+  [
+    // Kind → the words. Ordered agent, tool, llm, user: the order the issue lists them
+    // in, which is also roughly call order (a user calls an agent, which calls tools
+    // and models) rather than alphabetical.
+    { kind: 'agent', label: 'Agent', shapeWord: 'hexagon' },
+    { kind: 'tool', label: 'Tool', shapeWord: 'rectangle' },
+    { kind: 'llm', label: 'LLM', shapeWord: 'diamond' },
+    { kind: 'user', label: 'User', shapeWord: 'circle' },
+  ] as const
+).filter((row) => row.kind in KIND_SHAPE);
+
+/**
+ * The standing key to the node outlines, rendered on EVERY graph view.
+ *
+ * WHY IT IS NOT PASSED THROUGH `EntityGraphProps.legend`, which is the slot that
+ * already exists for a key: that slot is a caller's, and the Lineage tab fills it with
+ * its five reachability rows. Routing shapes through it would mean either deleting
+ * those (the shapes are not a substitute — they answer a different question) or asking
+ * all three call sites to remember to compose them, which is precisely the
+ * per-call-site opt-out that made the shapes inconsistent in the first place. So
+ * `EntityGraph` renders this ITSELF, unconditionally, and the `legend` slot keeps its
+ * existing meaning: view-specific treatments. Both keys are on screen because both
+ * sets of treatments are.
+ *
+ * Rendered as a `group` with a name, like the Lineage legend, so it is announced as
+ * the key it is rather than as four stray words.
+ */
+function EntityShapeLegend() {
+  return (
+    <div className="dg-shape-legend" role="group" aria-label="Entity shape legend">
+      {SHAPE_LEGEND_ROWS.map((row) => (
+        <span className="dg-shape-legend-item" key={row.kind}>
+          {/* The swatch DRAWS the outline rather than standing for it (the rule stated
+              in global.css's `.dg-lineage-swatch` block), so the key is the treatment
+              itself. `aria-hidden` because the row's own text already says both the
+              kind and the shape — an unnamed graphic between the labels would just be
+              noise to a screen reader. */}
+          <span
+            className={`dg-shape-swatch dg-shape-swatch--${shapeForKind(row.kind)}`}
+            aria-hidden="true"
+          />
+          {`${row.label} (${row.shapeWord})`}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 /**
  * How a node/edge participates in a highlight, when one is active.
@@ -2476,7 +2579,18 @@ export function EntityGraph({
           label: n.label,
           width: NODE_DIAMETER,
           height: NODE_DIAMETER,
-          shape: NodeShape.ellipse,
+          // THE ONE SHAPE DECISION (issue #218), read from `lib/entityKind` through
+          // the NAME→NAME table above. Was hardcoded `NodeShape.ellipse` for every
+          // node; a kind the map does not name still resolves to exactly that, so an
+          // unrecognised kind draws as it always did.
+          //
+          // A MODEL FIELD, not something the renderer does: PF's `getShapeComponent`
+          // switches on `getNodeShape()` to pick the shape component, and the matching
+          // anchor (`EllipseAnchor` / `RectAnchor` / the polygon one) comes with it —
+          // so edge endpoints follow the new outline without this file computing
+          // anything. Setting it in `KindColouredNode` instead would leave the anchors
+          // on the ellipse and the arrows meeting the shapes at the wrong points.
+          shape: SHAPE_TO_NODE_SHAPE[shapeForKind(n.kind)],
           x,
           y,
           // The whole spec row rides along as `data` so the renderers read kind /
@@ -2790,6 +2904,13 @@ export function EntityGraph({
           </div>
         </VisualizationProvider>
       </div>
+      {/* THE ENTITY-SHAPE KEY, on every view (issue #218) — see `EntityShapeLegend` for
+          why `EntityGraph` renders it itself instead of routing it through the `legend`
+          slot below. FIRST of the two keys: the outlines are a standing property of
+          every graph this component draws, whereas whatever a caller passes below is
+          specific to one view, so the general key reads before the particular one. */}
+      <EntityShapeLegend />
+
       {/* THE LEGEND, immediately below the surface — a key belongs under the picture it
           decodes, and above the prose so it stays adjacent to the drawing it explains.
           See `EntityGraphProps.legend`. */}

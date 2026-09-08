@@ -188,6 +188,31 @@ const ENTITIES: Entity[] = [
   { id: 'e3', kind: 'llm', natural_key: 'llm:api.example.com/gpt', display_name: 'gpt-4', detected_from: 'span' },
 ];
 
+/**
+ * The four kinds issue #218 assigns a shape to, as one fixture.
+ *
+ * A SEPARATE FIXTURE rather than two more rows on {@link ENTITIES}, because several
+ * tests in this file read that array POSITIONALLY (and `lib/graph` keeps `nodes` in
+ * `entities` order for exactly that reason — see its note). Appending to it would
+ * shift nothing today but makes every existing case's premise depend on a row added
+ * for an unrelated reason. `ENTITIES` already covers agent/tool/llm; this adds the
+ * `user` row it lacks, plus one kind the shape map deliberately does NOT name, so the
+ * fallback is exercised by a real node and not only by a unit call.
+ */
+const SHAPE_ENTITIES: Entity[] = [
+  { id: 'e1', kind: 'agent', natural_key: 'agent:(p,a)', display_name: 'agent-a', detected_from: 'span' },
+  { id: 'e2', kind: 'tool', natural_key: 'tool:(p,svc)', display_name: 'search', detected_from: 'span' },
+  { id: 'e3', kind: 'llm', natural_key: 'llm:api.example.com/gpt', display_name: 'gpt-4', detected_from: 'span' },
+  { id: 'e4', kind: 'user', natural_key: 'user:alice', display_name: 'alice', detected_from: 'span' },
+  {
+    id: 'e5',
+    kind: 'external_service',
+    natural_key: 'service:pay.example.com',
+    display_name: 'payments',
+    detected_from: 'span',
+  },
+];
+
 /** A leg, defaulting to a successful one. */
 function mkLeg(
   legType: 'request' | 'response',
@@ -371,6 +396,25 @@ function nodeData(id: string): {
   const node = capturedController?.getNodeById(id);
   if (!node) throw new Error(`no node ${id} on the graph`);
   return node.getData() as ReturnType<typeof nodeData>;
+}
+
+/**
+ * A node's SHAPE, read off the PF model (issue #218).
+ *
+ * THE MODEL, NOT THE DOM, and this one has no choice about it: PF resolves `shape`
+ * to a shape COMPONENT (`Ellipse`, `Hexagon`, `Rectangle`, `Rhombus`), and those
+ * components are exactly what the surface culls on jsdom's zero-size viewport — see
+ * the file header and `nodeData`'s note. There is no `<polygon>` or `<ellipse>` in
+ * the document to query, and no stylesheet applies, so a DOM assertion here would
+ * not be strict-but-failing, it would be vacuous.
+ *
+ * `getNodeShape()` is the value PF itself switches on in `getShapeComponent`, so
+ * asserting it is asserting the drawing decision rather than a proxy for it.
+ */
+function nodeShape(id: string): string {
+  const node = capturedController?.getNodeById(id);
+  if (!node) throw new Error(`no node ${id} on the graph`);
+  return node.getNodeShape();
 }
 
 /**
@@ -4562,5 +4606,344 @@ describe('LineageGraph', () => {
     await userEvent.click(screen.getByRole('button', { name: /^Reset View$/i }));
 
     await waitFor(() => expect(nodeAt('e1')).toEqual(cell(0, 0)));
+  });
+});
+
+/**
+ * ENTITY SHAPES AND THEIR LEGEND (issue #218).
+ *
+ * The requirement: an entity's KIND is readable from its node's outline — agent a
+ * hexagon, tool a rectangle, llm a rhombus, user a circle — on EVERY graph view, with
+ * a legend naming the four so no outline is on screen unexplained.
+ *
+ * WHY THIS IS ASSERTED ON `getNodeShape()` AND ON THE LEGEND'S TEXT, and never on a
+ * drawn polygon: PF turns `shape` into a shape COMPONENT, and node content is culled
+ * on jsdom's zero-size surface (file header, and `nodeShape`'s own note). The two
+ * halves of the requirement are therefore checked where each is actually observable —
+ * the shape decision on the model, the key in the DOM.
+ *
+ * THE THREE VIEWS ARE TESTED SEPARATELY, deliberately, even though all three render
+ * one `EntityGraph`. "Consistent across all graph views" is the requirement, and one
+ * test on the shared component would pass while a call site opted out — the props
+ * `EntityGraphProps` already offers for exactly that (`compactSurface`,
+ * `hideEdgeLabels`, `legend`) are what make the opt-out plausible enough to pin.
+ */
+describe('entity shapes by kind (issue #218)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+    capturedController = null;
+    const real = Visualization.prototype.fromModel;
+    const capture = (vis: Visualization) => {
+      capturedController = vis;
+    };
+    vi.spyOn(Visualization.prototype, 'fromModel').mockImplementation(function (
+      this: Visualization,
+      ...args: Parameters<Visualization['fromModel']>
+    ) {
+      capture(this);
+      return real.apply(this, args);
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * A direct-`spec` graph for the two call sites that pass one (the Risk view).
+   *
+   * ITS OWN LOCAL COPY rather than the `riskSpec` helper the risk-colouring block
+   * already has: that one is scoped inside its own `describe` and names two kinds,
+   * and HOISTING it to module scope to share it would edit test code this issue has
+   * no business touching. Four kinds are needed here anyway — the point of this block
+   * is the shape per kind.
+   */
+  function shapeSpec(): GraphSpec {
+    const nodes = [
+      { id: 'e1', label: 'agent-a', kind: 'agent', naturalKey: 'agent:(p,a)', column: 0, row: 0 },
+      { id: 'e2', label: 'search', kind: 'tool', naturalKey: 'tool:(p,svc)', column: 1, row: 0 },
+      { id: 'e3', label: 'gpt-4', kind: 'llm', naturalKey: 'llm:api/gpt', column: 1, row: 1 },
+      { id: 'e4', label: 'alice', kind: 'user', naturalKey: 'user:alice', column: 0, row: 1 },
+    ].map((n, i) => ({ ...n, isIsolated: false, encounterIndex: i }));
+    return {
+      nodes,
+      edges: [
+        {
+          id: 'i1:request',
+          interactionId: 'i1',
+          legType: 'request' as const,
+          source: 'e1',
+          target: 'e2',
+          label: '1',
+          seq: 1,
+          title: 'summary-i1',
+          isError: false,
+          isSelfCall: false,
+        },
+      ],
+      dropped: [],
+      parallelGroups: [],
+    };
+  }
+
+  /** The five-kind fixture wired to one interaction per pair, so no node is isolated. */
+  function mockShapeApi() {
+    mockApi(SHAPE_ENTITIES, [
+      mkIx({ id: 'i1', caller_entity_id: 'e4', callee_entity_id: 'e1' }, 1),
+      mkIx({ id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 2),
+      mkIx({ id: 'i3', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
+      mkIx({ id: 'i4', caller_entity_id: 'e1', callee_entity_id: 'e5' }, 4),
+    ]);
+  }
+
+  describe('the Execution Flow tab', () => {
+    it('draws each of the four named kinds as its own shape', async () => {
+      // The issue's mapping, end to end through the real component: fixture kind →
+      // GraphNodeSpec.kind → shapeForKind → the PF model's `shape`.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+      expect(nodeShape('e1')).toBe('hexagon'); // agent
+      expect(nodeShape('e2')).toBe('rect'); // tool
+      expect(nodeShape('e3')).toBe('rhombus'); // llm
+      expect(nodeShape('e4')).toBe('circle'); // user
+    });
+
+    it('leaves a kind the map does not name as the ellipse it always was', async () => {
+      // `external_service` is a kind `KIND_COLOR` knows and `KIND_SHAPE` deliberately
+      // does not. It must keep the PREVIOUS drawing rather than borrow one of the four
+      // outlines the legend assigns a specific meaning to.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+      expect(nodeShape('e5')).toBe('ellipse');
+    });
+
+    it('gives the four kinds four DISTINCT shapes, so none is confusable', async () => {
+      // A regression that collapsed two kinds onto one shape would leave the graph
+      // looking plausible while saying less than it claims. Asserted as a set size for
+      // the same reason the colour test is.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+      const shapes = ['e1', 'e2', 'e3', 'e4'].map(nodeShape);
+      expect(new Set(shapes).size).toBe(4);
+    });
+
+    it('separates agent from llm, which the kind COLOURING cannot', async () => {
+      // The pair that motivates shapes over more colours: `agent` and `llm` share
+      // `blue` by design (see lib/entityKind.test.ts), so on this kind-coloured tab
+      // hue alone cannot tell them apart. This asserts the graph actually spends the
+      // new channel on that pair.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+      expect(nodeData('e1').kindColoured).toBe(true);
+      expect(nodeData('e3').kindColoured).toBe(true);
+      expect(nodeShape('e1')).not.toBe(nodeShape('e3'));
+    });
+
+    it('renders the shape legend, naming all four kinds', async () => {
+      // The second half of the issue. A shape with no key is the same puzzle a colour
+      // with no key is — and the Lineage tab's legend note already states that rule.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(screen.getByTestId('execution-flow-graph')).toBeInTheDocument());
+
+      const legend = screen.getByRole('group', { name: /Entity shape legend/i });
+      expect(legend).toHaveTextContent(/Agent/i);
+      expect(legend).toHaveTextContent(/Tool/i);
+      expect(legend).toHaveTextContent(/LLM/i);
+      expect(legend).toHaveTextContent(/User/i);
+    });
+
+    it('names the SHAPES in the legend, not just the kinds', async () => {
+      // A key whose rows read "Agent, Tool, LLM, User" beside four small marks is only
+      // usable if the reader can tell which mark is which. At legend size the four
+      // outlines are ~0.75rem, which is small enough that hexagon-vs-circle is a
+      // genuine squint — so the shape is NAMED as well as drawn, the same belt-and-
+      // braces the Lineage legend uses for "(double ring)".
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(screen.getByTestId('execution-flow-graph')).toBeInTheDocument());
+
+      const legend = screen.getByRole('group', { name: /Entity shape legend/i });
+      expect(legend).toHaveTextContent(/hexagon/i);
+      expect(legend).toHaveTextContent(/rectangle/i);
+      expect(legend).toHaveTextContent(/diamond|rhombus/i);
+      expect(legend).toHaveTextContent(/circle/i);
+    });
+
+    it('puts the legend BELOW the drawing, in document order', async () => {
+      // Same contract the Lineage tab's legend is held to, and for the same reason: a
+      // key is consulted after looking at the picture and finding a mark you cannot
+      // read, so it belongs where the eye lands on the way back out. Document order,
+      // not CSS — jsdom applies no stylesheet.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(screen.getByTestId('execution-flow-graph')).toBeInTheDocument());
+
+      const surface = document.querySelector('.dg-graph-surface')!;
+      const legend = screen.getByRole('group', { name: /Entity shape legend/i });
+      expect(surface.compareDocumentPosition(legend) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+    });
+
+    it('draws one legend swatch per kind, marked decorative', async () => {
+      // The swatches carry no information the row's text does not already state, so
+      // they are `aria-hidden` — exactly as the Lineage legend's are. Without that a
+      // screen reader announces four unnamed graphics between the four labels.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(screen.getByTestId('execution-flow-graph')).toBeInTheDocument());
+
+      const legend = screen.getByRole('group', { name: /Entity shape legend/i });
+      const swatches = legend.querySelectorAll('.dg-shape-swatch');
+      expect(swatches.length).toBe(4);
+      for (const sw of Array.from(swatches)) {
+        expect(sw).toHaveAttribute('aria-hidden', 'true');
+      }
+    });
+  });
+
+  describe('the Lineage tab', () => {
+    it('shapes its nodes by kind too, even though it gives up kind HUE', async () => {
+      // THE CASE MOST AT RISK OF BEING MISSED. This tab deliberately paints every node
+      // neutral (`nodeNeutralColorVar`) because hue there is spoken for by the data
+      // sources and the two directions — so kind has NO colour channel at all here.
+      // That makes shape the only thing on this tab that distinguishes an agent from a
+      // tool visually, which is a stronger reason to shape it, not a reason to skip it.
+      renderLineage({ selectedEntityId: null });
+      await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+      expect(nodeData('e1').kindColoured).toBe(false); // still neutral, unchanged
+      expect(nodeShape('e1')).toBe('hexagon');
+      expect(nodeShape('e2')).toBe('rect');
+      expect(nodeShape('e3')).toBe('rhombus');
+    });
+
+    it('keeps its OWN legend as well as the shape one — neither replaces the other', async () => {
+      // The composition requirement. `EntityGraphProps.legend` is a single slot that
+      // the Lineage tab already fills with its five reachability rows; a shape legend
+      // rendered THROUGH that slot would silently delete them. Both keys must be on
+      // screen, because both sets of treatments are.
+      renderLineage({ selectedEntityId: null });
+      await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
+
+      const lineageLegend = screen.getByRole('group', { name: /Lineage graph legend/i });
+      expect(lineageLegend).toHaveTextContent(/Data source for this trace/i);
+      expect(lineageLegend).toHaveTextContent(/Not derived yet/i);
+
+      const shapeLegend = screen.getByRole('group', { name: /Entity shape legend/i });
+      expect(shapeLegend).toHaveTextContent(/Agent/i);
+      expect(shapeLegend).toHaveTextContent(/User/i);
+    });
+  });
+
+  describe('the Risk trace-detail view', () => {
+    it('shapes its nodes by kind, and keeps the risk COLOURING that view adds', async () => {
+      // The third call site (`RiskTraceDetailPage` renders `EntityGraph` directly).
+      // Risk colour takes precedence over kind colour there by design — issue #170 —
+      // and shape is a different channel, so the two must COMPOSE: a high-risk agent
+      // is a red hexagon, not a red ellipse. This is the assertion that fails if shape
+      // were folded into the same precedence chain as colour.
+      render(
+        <QueryClientProvider
+          client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+        >
+          <MemoryRouter>
+            <EntityGraph
+              traceId="T1"
+              spec={shapeSpec()}
+              riskLevelByInteraction={new Map([['i1', 'high']])}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+      expect(nodeData('e1').kind).toBe('agent');
+      expect(nodeShape('e1')).toBe('hexagon');
+      // The risk colour is still applied — shape did not displace it. Read off the
+      // element rather than through the shared `nodeData` helper: `riskLevel` is not on
+      // that helper's declared shape (only this one view supplies it), and widening a
+      // helper the whole file shares for one case is the wrong trade.
+      const risk = (capturedController!.getNodeById('e1')!.getData() as { riskLevel?: string })
+        .riskLevel;
+      expect(risk).toBe('high');
+    });
+
+    it('renders the shape legend on this view as well', async () => {
+      // "Consistent across all graph views" includes the key, not only the shapes: a
+      // reader who meets a hexagon here must be able to find out what it means without
+      // switching tabs.
+      render(
+        <QueryClientProvider
+          client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+        >
+          <MemoryRouter>
+            <EntityGraph traceId="T1" spec={shapeSpec()} compactSurface hideEdgeLabels />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(screen.getByTestId('execution-flow-graph')).toBeInTheDocument());
+
+      expect(screen.getByRole('group', { name: /Entity shape legend/i })).toBeInTheDocument();
+    });
+  });
+
+  describe('geometry the shapes must not disturb', () => {
+    it('keeps every node on its layered grid cell', async () => {
+      // The shapes are a change of OUTLINE, not of layout: `gridPosition` is arithmetic
+      // on (column, row) and a node's position is its CENTRE in PF topology, so a
+      // hexagon and an ellipse at the same cell sit at the same point. Pinned because
+      // `NODE_DIAMETER` doubles as the arrow's leaving radius (see `ADJACENT_BOW_Y`),
+      // and a size change made to accommodate a shape would move the whole grid.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+      expect(nodeAt('e4')).toEqual(cell(0, 0)); // the user, first caller
+      expect(nodeAt('e1')).toEqual(cell(1, 0)); // the agent it calls
+    });
+
+    it('keeps all four shapes the same 40px box, so the grid pitch still holds', async () => {
+      // One box for every kind. The row/column steps (96px / 220px) and the bow that
+      // clears the node discs are all sized against ONE diameter, so a per-shape size
+      // would silently re-tune three unrelated pieces of geometry.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+      for (const id of ['e1', 'e2', 'e3', 'e4', 'e5']) {
+        const node = capturedController!.getNodeById(id)!;
+        expect(node.getDimensions().width).toBe(40);
+        expect(node.getDimensions().height).toBe(40);
+      }
+    });
+
+    it('still carries the kind on the node data, so shape is not the only channel', async () => {
+      // Shape is a NEW channel, not a replacement for the words. `nodeTitle` builds the
+      // node's `<title>` and accessible name from `data.kind` and `data.naturalKey`, so
+      // a reader using a screen reader — or one who has not read the legend — still
+      // gets the kind as text.
+      //
+      // ASSERTED ON THE DATA, not on the rendered `<title>`: that element is inside the
+      // node's `<g>`, which jsdom's zero-size surface culls (see `nodeShape`). The
+      // title text itself is covered by the existing tooltip tests in this file; what
+      // is at stake HERE is only that adding shape did not displace the kind from the
+      // data those tooltips are built from.
+      mockShapeApi();
+      renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+      await waitFor(() => expect(nodeEls().length).toBeGreaterThan(0));
+
+      expect(nodeData('e1').kind).toBe('agent');
+      expect(nodeData('e4').kind).toBe('user');
+    });
   });
 });
