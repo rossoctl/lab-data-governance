@@ -951,6 +951,117 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
+   THE ENTITY-SHAPE KEY (issue #218) — which node outline means which entity kind.
+
+   ON EVERY GRAPH VIEW, unlike `.dg-lineage-legend` above, which keys treatments only
+   the Lineage tab paints. The node outlines are a standing property of every graph
+   `EntityGraph` draws, so the key is rendered by that component itself rather than
+   passed in per view (see `EntityShapeLegend`) — and on the Lineage tab BOTH keys are
+   on screen, because both sets of treatments are.
+
+   Deliberately the same visual grammar as `.dg-lineage-legend` — same gap, padding,
+   panel fill, border and type size — so the two read as one key in two parts rather
+   than as two competing panels. Only the `margin-top` differs in intent: this one sits
+   directly under the surface, and the lineage key stacks beneath it. */
+.dg-shape-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  background: var(--dg-surface-panel);
+  border: 1px solid var(--dg-border-subtle);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  color: var(--dg-color-label);
+}
+
+.dg-shape-legend-item {
+  display: inline-flex;
+  gap: 0.375rem;
+  align-items: center;
+  white-space: nowrap;
+}
+
+/* THE SWATCH IS THE SHAPE, drawn — not a chip that stands for it. Same rule as
+   `.dg-lineage-swatch`'s block states for the rings, and it matters more here: a key
+   whose four rows all showed the same little disc would be answering the one question
+   the reader opened it with ("which outline is a tool?") by restating the question.
+
+   `clip-path` on a filled box rather than `border` + `border-radius`, because a border
+   can only draw a rectangle or an ellipse — there is no CSS border shape for a hexagon
+   or a rhombus. FILLED rather than outlined: at 0.75rem a 1px outline of a hexagon is
+   indistinguishable from an outline of a circle, so the silhouette has to be solid to
+   be legible at this size. The graph's own nodes are outlined (PF strokes
+   `.pf-topology__node__background`), so this is the one place the key deliberately
+   shows the shape's SILHOUETTE instead of its exact treatment — the alternative is a
+   key too small to read, which is worse.
+
+   Sized a touch larger than the lineage swatch (0.875rem vs 0.75rem) for the same
+   reason: a clipped polygon loses its corners first, and the corners are the whole
+   signal. `flex: none` so a long row cannot squash a swatch into a different shape
+   than the one it claims to be.
+
+   `currentColor`, so the mark inherits the legend's own `--dg-color-label` and tracks
+   the dark theme with the text beside it. The key is about SHAPE, not hue — the kinds'
+   colours are keyed by the entity pills in the tables on the same screen — so giving
+   these swatches four different colours would assert a second mapping the graph does
+   not necessarily paint (the Lineage tab draws every node neutral). One neutral for
+   all four is the honest choice. */
+.dg-shape-swatch {
+  display: inline-block;
+  flex: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  background: currentColor;
+}
+
+/* A regular hexagon with FLAT TOP AND BOTTOM and a vertex at each side, which is the
+   orientation PF's own `Hexagon` draws: its `getPointsForSides(6, size)` starts at angle
+   0 (the +x axis), so vertices land at 0deg and 180deg — the left and right midpoints —
+   and the top and bottom come out as horizontal edges. Verified against that function
+   rather than assumed, because the other orientation is the more common one in icon sets
+   and a key that showed it would be subtly lying about the node. */
+.dg-shape-swatch--hexagon {
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+}
+
+/* PF's `Rectangle` at a 40x40 box is a SQUARE, and a heavily rounded one: the component
+   defaults to `cornerRadius = 15` on a 40px side, i.e. a radius of 37.5% per corner. So
+   the swatch is square rather than widened to a literal "rectangle" (that would not be
+   the shape the graph draws), and it is rounded in proportion — 37.5% of 0.875rem —
+   rather than left sharp, which at this size is the difference a reader actually sees
+   between this mark and the hexagon beside it.
+
+   The legend TEXT still says "rectangle": that is the word the issue uses and the word a
+   reader reaches for, and "rounded square" in a key would be pedantry about the mark
+   instead of a name for the kind. */
+.dg-shape-swatch--rect {
+  border-radius: 37.5%;
+}
+
+/* The diamond/rhombus: a square on its point. */
+.dg-shape-swatch--rhombus {
+  clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+}
+
+/* `border-radius` rather than a `clip-path` circle — it antialiases better at this size
+   in every engine, and a circle is the one shape CSS can draw exactly. */
+.dg-shape-swatch--circle {
+  border-radius: 50%;
+}
+
+/* The fallback outline (`KIND_SHAPE_FALLBACK`), for a kind the shape map does not name.
+   No row of the key uses it today — the key is derived from `KIND_SHAPE`, which names
+   only the four — but the class is emitted by the same `shapeForKind` call the nodes
+   use, so it is defined rather than left to render as an unstyled square if a fifth
+   kind is ever added to the map. */
+.dg-shape-swatch--ellipse {
+  border-radius: 50%;
+}
+
+/* ---------------------------------------------------------------------------
    The Lineage tab's DATA SOURCE picker (LineageSourcePicker) — which single source
    the reachability walk is tracing.
 
