@@ -166,4 +166,43 @@ describe('AlertsCard', () => {
     renderCard({ items: [] });
     expect(screen.getByText(/no incidents/i)).toBeInTheDocument();
   });
+
+  // Issue #214: only traces with a non-none risk level belong in this table.
+  // The hook filters server-side; the card filters too, so a none-risk record
+  // arriving from any other source (a cached page, a hand-passed `items`, a
+  // future `/risk/alerts` swap) still cannot render a row.
+
+  it('does not render a row for a none-risk trace', () => {
+    const items = [
+      record({ trace_risk_id: 'trr-1', trace_id: 'trace-risky', trace_risk_level: 'low' }),
+      record({ trace_risk_id: 'trr-2', trace_id: 'trace-quiet', trace_risk_level: 'none' }),
+    ];
+    renderCard({ items });
+
+    expect(screen.getByTestId('alert-row-trace-risky')).toBeInTheDocument();
+    expect(screen.queryByTestId('alert-row-trace-quiet')).not.toBeInTheDocument();
+  });
+
+  it('renders the empty state when every trace is none-risk', () => {
+    const items = [
+      record({ trace_risk_id: 'trr-1', trace_id: 'trace-1', trace_risk_level: 'none' }),
+      record({ trace_risk_id: 'trr-2', trace_id: 'trace-2', trace_risk_level: 'none' }),
+    ];
+    renderCard({ items });
+
+    expect(screen.getByText(/no incidents/i)).toBeInTheDocument();
+    expect(screen.queryByRole('row', { name: /trace-1/i })).not.toBeInTheDocument();
+  });
+
+  it('still offers Load more when a page filters down to nothing, so paging can continue', () => {
+    // A page can legitimately contain only none-risk records; hiding the
+    // pagination control would strand the user with no way to reach the
+    // alerts on later pages.
+    renderCard({
+      items: [record({ trace_id: 'trace-quiet', trace_risk_level: 'none' })],
+      hasNextPage: true,
+    });
+
+    expect(screen.getByRole('button', { name: /load more/i })).toBeInTheDocument();
+  });
 });

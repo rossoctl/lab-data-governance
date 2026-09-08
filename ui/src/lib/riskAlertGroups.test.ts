@@ -76,6 +76,76 @@ describe('groupTraceRisksByWorkflow', () => {
     ]);
   });
 
+  // Issue #214: only traces with a non-none risk level belong in the alerts table.
+
+  it('drops traces whose current risk level is none', () => {
+    const groups = groupTraceRisksByWorkflow([
+      record({ trace_id: 't-none', trace_risk_level: 'none' }),
+      record({ trace_id: 't-low', trace_risk_level: 'low' }),
+    ]);
+    expect(groups.map((g) => g.traceId)).toEqual(['t-low']);
+  });
+
+  it('keeps every risk level from low upwards', () => {
+    const groups = groupTraceRisksByWorkflow([
+      record({ trace_id: 't-critical', trace_risk_level: 'critical' }),
+      record({ trace_id: 't-high', trace_risk_level: 'high' }),
+      record({ trace_id: 't-medium', trace_risk_level: 'medium' }),
+      record({ trace_id: 't-low', trace_risk_level: 'low' }),
+    ]);
+    expect(groups.map((g) => g.traceId)).toEqual([
+      't-critical',
+      't-high',
+      't-medium',
+      't-low',
+    ]);
+  });
+
+  it('returns an empty array when every trace is none-risk', () => {
+    expect(
+      groupTraceRisksByWorkflow([
+        record({ trace_id: 't-1', trace_risk_level: 'none' }),
+        record({ trace_id: 't-2', trace_risk_level: 'none' }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('judges none-ness by the current version, dropping a trace downgraded to none', () => {
+    // An older version carried real risk, but the latest recompute cleared it:
+    // the trace is no longer an alert.
+    const groups = groupTraceRisksByWorkflow([
+      record({ trace_id: 't-1', version: 1, trace_risk_level: 'critical' }),
+      record({ trace_id: 't-1', version: 2, trace_risk_level: 'none' }),
+    ]);
+    expect(groups).toEqual([]);
+  });
+
+  it('judges none-ness by the current version, keeping a trace upgraded off none', () => {
+    const groups = groupTraceRisksByWorkflow([
+      record({ trace_id: 't-1', version: 1, trace_risk_level: 'none' }),
+      record({ trace_id: 't-1', version: 2, trace_risk_level: 'medium' }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].summary.trace_risk_level).toBe('medium');
+    // Filtering removes whole groups, never rows within a kept group's history.
+    expect(groups[0].rows).toHaveLength(2);
+  });
+
+  it('keeps a trace whose risk level is unrecognised rather than silently hiding it', () => {
+    // An OPA-sourced level this UI does not know about is not "no risk" —
+    // dropping it would hide a real alert (risk_level is TEXT, not an enum).
+    const groups = groupTraceRisksByWorkflow([
+      record({ trace_id: 't-weird', trace_risk_level: 'catastrophic' }),
+    ]);
+    expect(groups.map((g) => g.traceId)).toEqual(['t-weird']);
+  });
+
+  it('is case-insensitive when recognising none', () => {
+    expect(
+      groupTraceRisksByWorkflow([record({ trace_id: 't-1', trace_risk_level: 'NONE' })]),
+    ).toEqual([]);
+  });
+
   it('is deterministic for identical inputs', () => {
     const input = [
       record({ trace_id: 't-1', trace_risk_level: 'high' }),
