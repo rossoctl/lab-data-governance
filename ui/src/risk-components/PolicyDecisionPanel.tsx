@@ -53,11 +53,20 @@ function entityKindsOf(violation: ForestInteraction, entities: readonly Entity[]
 }
 
 /**
- * The policy-decision panel for one violation (issue #170's Alert Execution
- * view): a `ForestInteraction` whose `risk.triggered_rule_ids` is non-empty
- * (see `lib/riskForestAdapter.ts`'s `violationsOf`). Read-only, no mutation —
+ * The panel for one **policy event** (issue #170's Alert Execution view): a
+ * `ForestInteraction` whose `risk.triggered_rule_ids` is non-empty (see
+ * `lib/riskForestAdapter.ts`'s `violationsOf`). Read-only, no mutation —
  * this is a step-through disclosure of a decision the policy engine already
  * made, not a form.
+ *
+ * Naming (issue #222): the rendered strings are "Policy event" and
+ * "Interaction" — the decided user-facing vocabulary. The internal
+ * identifiers still say "violation" (`violationsOf`, the `violation` prop,
+ * this component's own name, the `?violation=` URL param): #222 is a UI
+ * terminology decision about what the reader sees, and renaming the code
+ * surface would also break the shipped `?violation=` deep-link contract.
+ * The two are deliberately allowed to diverge; treat "violation" in this
+ * file's identifiers as a synonym for "policy event".
  *
  * `violation.risk` is guaranteed non-null by the caller (only a
  * `violationsOf` result reaches this component), so it is read directly
@@ -95,11 +104,11 @@ export function PolicyDecisionPanel({
 
   return (
     <Card data-testid="policy-decision-panel">
-      <CardTitle>Policy decision</CardTitle>
+      <CardTitle>Policy event</CardTitle>
       <CardBody>
         <DescriptionList isHorizontal>
           <DescriptionListGroup>
-            <DescriptionListTerm>Action</DescriptionListTerm>
+            <DescriptionListTerm>Interaction</DescriptionListTerm>
             <DescriptionListDescription>{violation.summary ?? 'none'}</DescriptionListDescription>
           </DescriptionListGroup>
           <DescriptionListGroup>

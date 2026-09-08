@@ -108,7 +108,7 @@ export function RiskDashboardPage() {
       isLoading={isLoading}
       isError={isError}
       isEmpty={isEmpty}
-      emptyBody="No evaluated interactions in this window."
+      emptyBody="No monitored interactions in this window."
       toolbar={
         <ToggleGroup aria-label="Time window" className="pf-v5-u-mb-md">
           {RISK_WINDOW_KEYS.map((key) => (

@@ -23,9 +23,9 @@ describe('SummaryTiles', () => {
     render(<SummaryTiles summary={summary()} />);
     expect(screen.getByText('Agents')).toBeInTheDocument();
     expect(screen.queryByText('Users')).not.toBeInTheDocument();
-    expect(screen.getByText('Workflows')).toBeInTheDocument();
-    expect(screen.getByText('Evaluated actions')).toBeInTheDocument();
-    expect(screen.getByText('Rules fired')).toBeInTheDocument();
+    expect(screen.getByText('Traces')).toBeInTheDocument();
+    expect(screen.getByText('Monitored interactions')).toBeInTheDocument();
+    expect(screen.getByText('Rules triggered')).toBeInTheDocument();
 
     expect(screen.getByText(/4 total/)).toBeInTheDocument();
     expect(screen.getByText(/1 risky \(25%\)/)).toBeInTheDocument();
@@ -33,7 +33,7 @@ describe('SummaryTiles', () => {
     expect(screen.getByText(/100 total/)).toBeInTheDocument();
   });
 
-  it('renders the rules-fired tile with total + critical, not a risky_pct', () => {
+  it('renders the rules-triggered tile with total + critical, not a risky_pct', () => {
     render(<SummaryTiles summary={summary()} />);
     expect(screen.getByText(/6 total/)).toBeInTheDocument();
     expect(screen.getByText(/2 critical/)).toBeInTheDocument();
@@ -48,6 +48,19 @@ describe('SummaryTiles', () => {
     expect(screen.getByText(/^0 total$/)).toBeInTheDocument();
     expect(screen.getByText(/^0 risky \(0%\)$/)).toBeInTheDocument();
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+  });
+
+  // Issue #222: the decided vocabulary. These tile labels are the user-facing
+  // contract, so the retired wording is asserted absent rather than merely
+  // "the new wording is present" — a stray duplicate tile would pass the
+  // latter. The API field names (`workflows`, `evaluated_interactions`,
+  // `rules_fired`) deliberately keep their server-side spelling; only the
+  // rendered labels change.
+  it('uses the decided terminology and none of the retired labels', () => {
+    render(<SummaryTiles summary={summary()} />);
+    expect(screen.queryByText('Evaluated actions')).not.toBeInTheDocument();
+    expect(screen.queryByText('Rules fired')).not.toBeInTheDocument();
+    expect(screen.queryByText('Workflows')).not.toBeInTheDocument();
   });
 
   it('renders each tile\'s risky/critical line in the danger colour', () => {

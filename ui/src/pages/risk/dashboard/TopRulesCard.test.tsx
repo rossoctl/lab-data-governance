@@ -52,6 +52,15 @@ describe('TopRulesCard', () => {
     expect(within(table).getAllByRole('row')).toHaveLength(2); // header + 1 data row
   });
 
+  // Issue #222: "triggered", never "fired". This empty state was previously
+  // uncovered.
+  it('says "No rules triggered in this window" when empty, not "fired"', () => {
+    renderCard([]);
+
+    expect(screen.getByText('No rules triggered in this window.')).toBeInTheDocument();
+    expect(screen.queryByText(/fired/i)).not.toBeInTheDocument();
+  });
+
   it('renders an "All Rules" link to the rules catalog, independent of item count', () => {
     renderCard([]);
 

@@ -166,7 +166,7 @@ export function RiskTraceDetailPage() {
         Risk trace{' '}
         {detail.data && (
           <Label isCompact className="pf-v5-u-ml-sm">
-            {violations.length} violation{violations.length === 1 ? '' : 's'}
+            {violations.length} policy event{violations.length === 1 ? '' : 's'}
           </Label>
         )}
       </Title>
@@ -207,11 +207,11 @@ export function RiskTraceDetailPage() {
           />
 
           <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
-            Policy decisions
+            Policy events
           </Title>
           {violations.length === 0 ? (
             <EmptyState>
-              <EmptyStateHeader titleText="No policy violations" headingLevel="h4" />
+              <EmptyStateHeader titleText="No policy events" headingLevel="h4" />
               <EmptyStateBody>
                 No rule was triggered by any interaction in this trace.
               </EmptyStateBody>
