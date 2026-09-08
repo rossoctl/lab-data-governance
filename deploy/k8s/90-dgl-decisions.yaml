@@ -1,0 +1,92 @@
+---
+# P-dgl-decisions processor Deployment.
+#
+# Reads `spans` table rows where service_name='dgl-governance' and writes
+# one row per DGL evaluation decision into the `dgl_decisions` table
+# (migration 0012). Follows the identical pattern as 70-interactions.yaml:
+# same image, no Service, single replica, init container runs migration.
+#
+# The init container's `python -m data_governance.db.migrate` will create
+# the dgl_decisions table (migration 0012) on first deploy.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-governance-dgl-decisions
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-dgl-decisions
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-dgl-decisions
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-governance-dgl-decisions
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      initContainers:
+        - name: migrate
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.db.migrate"]
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"
+      containers:
+        - name: dgl-decisions
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.processors.dgl_decisions"]
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"
