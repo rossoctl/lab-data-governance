@@ -6,8 +6,6 @@ import {
   ToolbarItem,
   FormSelect,
   FormSelectOption,
-  EmptyState,
-  EmptyStateBody,
 } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { RiskViewShell } from '../../risk-components/RiskViewShell';
@@ -26,6 +24,16 @@ import { joinOrNone } from '../../lib/joinOrNone';
  * `_rules_list_handler`) rather than fetched-then-filtered client-side, so
  * the rendered set always matches a direct `GET /risk/rules?category=...`
  * call (AC-DAS-030).
+ *
+ * The category/risk-level filters are passed as `RiskViewShell`'s `toolbar`
+ * (issue #215), so they stay on screen in the loading, error and empty states
+ * as well as the content one — an over-narrow filter has to be correctable in
+ * place, and a failed load must not strand the user with no controls. This
+ * replaces an earlier workaround that pinned `isEmpty={false}` and rendered an
+ * inline empty state purely to keep the filters visible; the shell now owns the
+ * empty branch again, so both risk views get their empty state from one place.
+ * The user-visible message is unchanged ("No rules match the current filters."),
+ * passed as `emptyBody`.
  *
  * The mockup's Source column is the rule's regulatory/framework citations
  * (`rule_sources`); a rule can carry more than one, so the cell joins every
@@ -68,96 +76,85 @@ export function RiskRulesPage() {
       title="Risk rules"
       isLoading={isLoading}
       isError={isError}
-      // Deliberately always false, not `isEmpty`: the shell's own empty
-      // branch replaces `children` entirely, which would hide the toolbar
-      // and filters. An empty filtered result should let the user change
-      // filters without losing them, so the empty state is rendered inline
-      // below instead, alongside the toolbar.
-      isEmpty={false}
+      isEmpty={isEmpty}
+      emptyBody="No rules match the current filters."
+      toolbar={
+        <Toolbar>
+          <ToolbarContent>
+            <ToolbarItem>
+              <FormSelect
+                aria-label="Category"
+                value={category}
+                onChange={(_e, v) => setFilter('category', v)}
+                style={{ width: 200 }}
+              >
+                <FormSelectOption value="" label="All categories" />
+                {(categories.data?.items ?? []).map((c) => (
+                  <FormSelectOption key={c.category} value={c.category} label={c.category} />
+                ))}
+              </FormSelect>
+            </ToolbarItem>
+            <ToolbarItem>
+              <FormSelect
+                aria-label="Risk level"
+                value={riskLevel}
+                onChange={(_e, v) => setFilter('risk_level', v)}
+                style={{ width: 160 }}
+              >
+                <FormSelectOption value="" label="All risk levels" />
+                <FormSelectOption value="critical" label="Critical" />
+                <FormSelectOption value="high" label="High" />
+                <FormSelectOption value="medium" label="Medium" />
+                <FormSelectOption value="low" label="Low" />
+                <FormSelectOption value="none" label="None" />
+              </FormSelect>
+            </ToolbarItem>
+          </ToolbarContent>
+        </Toolbar>
+      }
     >
-      <Toolbar>
-        <ToolbarContent>
-          <ToolbarItem>
-            <FormSelect
-              aria-label="Category"
-              value={category}
-              onChange={(_e, v) => setFilter('category', v)}
-              style={{ width: 200 }}
+      <Table aria-label="Risk rules" variant="compact">
+        <Thead>
+          <Tr>
+            <Th>Rule</Th>
+            <Th>Categories</Th>
+            <Th>Risk</Th>
+            <Th>Enforcement</Th>
+            <Th>Source</Th>
+          </Tr>
+        </Thead>
+        <Tbody>
+          {items.map((rule) => (
+            <Tr
+              key={rule.rule_id}
+              isClickable
+              onRowClick={() => navigate(`/risk/rules/${encodeURIComponent(rule.rule_id)}`)}
             >
-              <FormSelectOption value="" label="All categories" />
-              {(categories.data?.items ?? []).map((c) => (
-                <FormSelectOption key={c.category} value={c.category} label={c.category} />
-              ))}
-            </FormSelect>
-          </ToolbarItem>
-          <ToolbarItem>
-            <FormSelect
-              aria-label="Risk level"
-              value={riskLevel}
-              onChange={(_e, v) => setFilter('risk_level', v)}
-              style={{ width: 160 }}
-            >
-              <FormSelectOption value="" label="All risk levels" />
-              <FormSelectOption value="critical" label="Critical" />
-              <FormSelectOption value="high" label="High" />
-              <FormSelectOption value="medium" label="Medium" />
-              <FormSelectOption value="low" label="Low" />
-              <FormSelectOption value="none" label="None" />
-            </FormSelect>
-          </ToolbarItem>
-        </ToolbarContent>
-      </Toolbar>
-
-      {isEmpty ? (
-        <EmptyState>
-          <EmptyStateBody>No rules match the current filters.</EmptyStateBody>
-        </EmptyState>
-      ) : (
-        <>
-          <Table aria-label="Risk rules" variant="compact">
-            <Thead>
-              <Tr>
-                <Th>Rule</Th>
-                <Th>Categories</Th>
-                <Th>Risk</Th>
-                <Th>Enforcement</Th>
-                <Th>Source</Th>
-              </Tr>
-            </Thead>
-            <Tbody>
-              {items.map((rule) => (
-                <Tr
-                  key={rule.rule_id}
-                  isClickable
-                  onRowClick={() => navigate(`/risk/rules/${encodeURIComponent(rule.rule_id)}`)}
-                >
-                  <Td dataLabel="Rule">
-                    {rule.rule_name ?? rule.rule_id}
-                    <div className="dg-mono pf-v5-u-font-size-sm pf-v5-u-color-200">
-                      {rule.rule_id}
-                    </div>
-                  </Td>
-                  <Td dataLabel="Categories">{joinOrNone(rule.categories)}</Td>
-                  <Td dataLabel="Risk">
-                    <RiskBadge level={rule.risk_level ?? 'unknown'} />
-                  </Td>
-                  <Td dataLabel="Enforcement">
-                    <EnforcementChip type={rule.enforcement ?? 'none'} />
-                  </Td>
-                  <Td dataLabel="Source">
-                    {joinOrNone(rule.rule_sources.map((s) => s.document_name))}
-                  </Td>
-                </Tr>
-              ))}
-            </Tbody>
-          </Table>
-          <CursorPagination
-            hasNextPage={rules.hasNextPage ?? false}
-            isFetchingNextPage={rules.isFetchingNextPage}
-            onNextPage={() => rules.fetchNextPage()}
-          />
-        </>
-      )}
+              <Td dataLabel="Rule">
+                {rule.rule_name ?? rule.rule_id}
+                <div className="dg-mono pf-v5-u-font-size-sm pf-v5-u-color-200">
+                  {rule.rule_id}
+                </div>
+              </Td>
+              <Td dataLabel="Categories">{joinOrNone(rule.categories)}</Td>
+              <Td dataLabel="Risk">
+                <RiskBadge level={rule.risk_level ?? 'unknown'} />
+              </Td>
+              <Td dataLabel="Enforcement">
+                <EnforcementChip type={rule.enforcement ?? 'none'} />
+              </Td>
+              <Td dataLabel="Source">
+                {joinOrNone(rule.rule_sources.map((s) => s.document_name))}
+              </Td>
+            </Tr>
+          ))}
+        </Tbody>
+      </Table>
+      <CursorPagination
+        hasNextPage={rules.hasNextPage ?? false}
+        isFetchingNextPage={rules.isFetchingNextPage}
+        onNextPage={() => rules.fetchNextPage()}
+      />
     </RiskViewShell>
   );
 }

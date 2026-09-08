@@ -14,6 +14,16 @@ interface RiskViewShellProps {
   isError: boolean;
   isEmpty: boolean;
   emptyBody?: ReactNode;
+  /**
+   * Controls that select *what* the view shows — a window toggle, filter
+   * selects — rendered above the state branch and therefore present in all
+   * four states (issue #215).
+   *
+   * Anything here must not depend on loaded data, because it renders while
+   * there is none: a filter's *options* may come from a query (and can be
+   * empty), but the control itself has to stand on its own.
+   */
+  toolbar?: ReactNode;
   children: ReactNode;
 }
 
@@ -29,6 +39,15 @@ interface RiskViewShellProps {
  * Precedence is isLoading > isError > isEmpty > children: the four flags
  * are independent booleans a caller (a TanStack Query result) could set
  * inconsistently, e.g. stale `isEmpty` data alongside a fresh `isError`.
+ *
+ * `toolbar` sits OUTSIDE that precedence, between the title and the branch
+ * (issue #215). Each of the three non-content branches replaces `children`
+ * wholesale, so a control placed in `children` disappeared in precisely the
+ * states where the user most needs it — an empty 24h window hid the very
+ * window selector that could widen it, and a failed load hid it too. Keeping
+ * the selector in the toolbar makes the empty state a dead end no longer.
+ * `children` keeps the original precedence untouched, so a view that passes
+ * no toolbar renders exactly as it did before.
  */
 export function RiskViewShell({
   title,
@@ -36,6 +55,7 @@ export function RiskViewShell({
   isError,
   isEmpty,
   emptyBody = 'Nothing to show yet.',
+  toolbar,
   children,
 }: RiskViewShellProps) {
   return (
@@ -43,6 +63,7 @@ export function RiskViewShell({
       <Title headingLevel="h2" size="xl">
         {title}
       </Title>
+      {toolbar}
       {isLoading ? (
         <Spinner aria-label={`Loading ${title}`} />
       ) : isError ? (
