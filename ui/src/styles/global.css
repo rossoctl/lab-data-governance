@@ -145,6 +145,13 @@
   --dg-detail-panel-width: 30%;
   --dg-detail-panel-min: 520px;
   --dg-detail-panel-gap: 1rem;
+
+  /* The corner radius that turns a shape-legend swatch into a round mark (issue #218).
+     Read by BOTH `.dg-shape-swatch--circle` and `--ellipse`, which are separate rules
+     for separate shapes that happen to draw the same at the swatch's square box — see
+     their comments. Tokenised so the two cannot drift apart while they are still meant
+     to agree, without merging them into one rule and losing that distinction. */
+  --dg-shape-swatch-round: 50%;
 }
 
 html.pf-v5-theme-dark,
@@ -1049,16 +1056,27 @@ body {
 /* `border-radius` rather than a `clip-path` circle — it antialiases better at this size
    in every engine, and a circle is the one shape CSS can draw exactly. */
 .dg-shape-swatch--circle {
-  border-radius: 50%;
+  border-radius: var(--dg-shape-swatch-round);
 }
 
 /* The fallback outline (`KIND_SHAPE_FALLBACK`), for a kind the shape map does not name.
    No row of the key uses it today — the key is derived from `KIND_SHAPE`, which names
    only the four — but the class is emitted by the same `shapeForKind` call the nodes
    use, so it is defined rather than left to render as an unstyled square if a fifth
-   kind is ever added to the map. */
+   kind is ever added to the map.
+
+   IDENTICAL TO `--circle` ABOVE, AND DELIBERATELY A SEPARATE RULE. The two collapse
+   only because the swatch BOX is square (0.875rem either way), so a 50% radius draws
+   the same mark for both; they are two different shapes in `EntityKindShape` and two
+   different graph nodes — PF draws the User kind's `circle` and the fallback `ellipse`
+   distinguishably at 40px, where the node box is not what constrains them. Merged into
+   one selector list this would read as "one rule for one thing", and the next change
+   that separates them — a wider swatch, or giving the fallback its own aspect so it is
+   visibly NOT a User — would have to take it apart and rediscover why. They share
+   `--dg-shape-swatch-round` so they cannot drift apart by accident while they are still
+   meant to agree, which is the actual risk in duplicated values. */
 .dg-shape-swatch--ellipse {
-  border-radius: 50%;
+  border-radius: var(--dg-shape-swatch-round);
 }
 
 /* ---------------------------------------------------------------------------
