@@ -884,6 +884,260 @@ describe('ExecutionFlowGraph', () => {
     expect(onLinkCurve(bandApex)).toBeLessThan(1);
   });
 
+  /* -------------------------------------------------------------------------
+     THE EDGE TAG SITS ON THE CURVE (issue #219).
+
+     THE BUG. `DefaultConnectorTag` computes its own translate as the MIDPOINT of the
+     two points it is handed and takes no position override, so handing it the edge's
+     `startPoint`/`endPoint` put every label on the CHORD midpoint — while the drawn
+     line is an arc whose apex is the bendpoint. The gap between the two is the
+     bendpoint's whole offset, and `edgeBendpoints` sizes that offset for CLEARANCE:
+     18px on an ordinary adjacent call, `spans * ROW_STEP_Y / 2` (96px at spans 2) on
+     a column-skipping edge, and `COLUMN_STEP_X / 2` (110px) on a same-column one. So
+     the label was not merely "off the stroke" — on the routed cases it floated in
+     empty canvas a whole grid step from the arrow it names, which is the reported
+     defect ("especially the case for rounded edges").
+
+     WHAT IS ASSERTED, and why it is honest under jsdom. The tag's `<g>` carries a
+     plain `transform="translate(x, y)"` that is pure arithmetic on the two points the
+     component chose — no measurement — so the label's ANCHOR POSITION is exactly
+     observable, in the same way node placement and the path `d` already are. What is
+     NOT observable is the rendered label's SIZE (`getBBox` is stubbed to zero, see
+     this file's header), so no test below claims the label's BOX overlaps the stroke,
+     only that its anchor is on or within a stated few px of the curve. That is the
+     property the fix is about and the strongest claim the environment supports; the
+     visual result is a by-hand / Playwright fact.
+
+     The tolerance is expressed against `TAG_CURVE_OFFSET` — the deliberate small
+     nudge that keeps the filled tag from sitting exactly on the stroke and hiding the
+     line under itself at the one place a reader tells two arcs apart — rather than as
+     a bare literal, so retuning that constant cannot silently break the invariant
+     while leaving these tests green.
+     ------------------------------------------------------------------------- */
+
+  /**
+   * The translate PF baked into one edge's tag `<g>`.
+   *
+   * This is the label's ANCHOR — `DefaultConnectorTag` centres its text and its
+   * background rect on it (`startX = -width/2`, `y: 0` with `dy="0.35em"`), so the
+   * anchor is where the label visually sits.
+   */
+  function tagAt(id: string): XY {
+    const t = document
+      .querySelector(`[data-id="${id}"] .pf-topology__edge__tag`)!
+      .getAttribute('transform')!;
+    const m = /translate\((-?[\d.]+),\s*(-?[\d.]+)\)/.exec(t);
+    if (!m) throw new Error(`no translate() in tag transform: ${t}`);
+    return { x: Number(m[1]), y: Number(m[2]) };
+  }
+
+  /**
+   * The smallest distance from `p` to the drawn arc of edge `id`, in px.
+   *
+   * Samples the emitted path densely and takes the nearest hit. Written against the
+   * parsed `d` — the string the component actually produced — so it measures the
+   * label against the line the reader sees, not against a re-derivation of where the
+   * line ought to be.
+   */
+  function distanceToCurve(id: string, p: XY): number {
+    const { from, control, to } = parseQuad(linkD(id));
+    let best = Infinity;
+    for (let t = 0; t <= 1.0001; t += 0.0005) {
+      const s = quadAt(from, control, to, t);
+      best = Math.min(best, Math.hypot(s.x - p.x, s.y - p.y));
+    }
+    return best;
+  }
+
+  /**
+   * The nudge off the stroke the component is allowed, restated here rather than
+   * imported (this file's standing rule — see the `cell` helper's note). A label is
+   * "touching" its edge within this plus a hair for the sampling step.
+   */
+  const TAG_CURVE_OFFSET = 9;
+  /** The sampling grid above resolves to well under a px; a whole px is generous. */
+  const TOLERANCE = TAG_CURVE_OFFSET + 1;
+
+  it('puts the seq tag ON the drawn curve of an ORDINARY adjacent call, not on the chord', async () => {
+    // THE COMMON CASE — a plain call to the entity you call — and the one every
+    // reader meets first. The chord midpoint is ADJACENT_BOW_Y (18px) from the apex
+    // here, which at a 96px row pitch is most of the way to the next row's band: far
+    // enough that the label reads as floating beside the arrow rather than on it.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    for (const id of ['i1:request', 'i1:response']) {
+      expect(distanceToCurve(id, tagAt(id))).toBeLessThanOrEqual(TOLERANCE);
+    }
+  });
+
+  it('puts the seq tag on the curve of a COLUMN-SKIPPING edge, where the chord is a whole row step away', async () => {
+    // THE WORST CASE, and the one that makes this a real bug rather than a polish
+    // item: a skipping edge lifts by `spans * ROW_STEP_Y / 2`, so at spans 2 the
+    // chord midpoint is 96px — a full row pitch — from the arc. A label there is not
+    // near ANY edge; it is loose canvas text a reader cannot attribute.
+    mockApi(ENTITIES, [
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+      mkIx({ id: 'i2', caller_entity_id: 'e2', callee_entity_id: 'e3' }, 3),
+      mkIx({ id: 'i3', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 5),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(6));
+
+    expect(distanceToCurve('i3:request', tagAt('i3:request'))).toBeLessThanOrEqual(TOLERANCE);
+
+    // And the fix genuinely MOVED the label: the old position (the chord midpoint)
+    // is still far from the curve, so this cannot pass by the arc having flattened.
+    const { from, to } = parseQuad(linkD('i3:request'));
+    const chordMid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    expect(distanceToCurve('i3:request', chordMid)).toBeGreaterThan(STEP_Y / 2);
+  });
+
+  it('puts the seq tag on the curve of a SAME-COLUMN edge, whose chord midpoint is a half column step off', async () => {
+    // The third routing case, and the largest offset of the three
+    // (`COLUMN_STEP_X / 2` = 110px): the bow is HORIZONTAL here, so a label left on
+    // the chord sits INSIDE the column it bows out of — over the very nodes the
+    // detour exists to avoid drawing through.
+    //
+    // THE FIXTURE IS THE CYCLIC ONE, borrowed from 'bows a WITHIN-COLUMN edge out to
+    // the side of its column' rather than invented: the column rule is longest-path,
+    // so an ordinary request edge ALWAYS lands its target strictly right of its
+    // source and can never be within-column. Only where the `n - 1` ceiling binds —
+    // on a cycle — do two request-connected nodes share a column. e1 → e3, e2 → e1,
+    // e3 → e2 relaxes to columns 1, 2, 2, so `c` (e3 → e2) runs within column 2. An
+    // earlier draft of this test used a plain two-callee shape and its own premise
+    // guard caught that the edge was not same-column at all.
+    mockApi(ENTITIES, [
+      mkIx({ id: 'a', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 1),
+      mkIx({ id: 'b', caller_entity_id: 'e2', callee_entity_id: 'e1' }, 3),
+      mkIx({ id: 'c', caller_entity_id: 'e3', callee_entity_id: 'e2' }, 5),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(6));
+
+    // GUARD THE PREMISE rather than assume it: this case only tests what it claims if
+    // the two endpoints really did land in the same column, i.e. the anchors differ
+    // in x by no more than a node's own width. (Kept because it already earned its
+    // keep once — see the fixture note above.)
+    const { from, to } = parseQuad(linkD('c:request'));
+    expect(Math.abs(from.x - to.x)).toBeLessThanOrEqual(2 * 20);
+
+    expect(distanceToCurve('c:request', tagAt('c:request'))).toBeLessThanOrEqual(TOLERANCE);
+  });
+
+  it("keeps a pair's two tags SEPARATED, each outside its own leg's bow", async () => {
+    // THE PROPERTY THE OLD POSITION BOUGHT, which this fix must not spend. The reason
+    // `edgeBendpoints` bows an adjacent pair at all is that A→B and B→A share both
+    // anchors, so the request and its response drew on one line with their two `seq`
+    // tags colliding. Moving each label onto its own arc has to keep them apart.
+    //
+    // NOT "on opposite sides of the chord", which is what an earlier draft of this
+    // test asserted and what the bendpoints alone would suggest. Measured, both arcs
+    // on this fixture bow the SAME way (the request 38px above its chord, the response
+    // 2px above it). That is because `edgeBendpoints` signs its parity offset about
+    // the CELL CENTRE row (y = 40) while the drawn chord runs between the two node
+    // ellipse BOUNDARIES (y = 60) — a 20px shift that swallows the 18px bow on the leg
+    // whose sign points back toward the chord. It is a real pre-existing asymmetry in
+    // the bow, NOT something this change introduced, and it is out of scope here:
+    // issue #219 is about the label's distance from its edge, and the labels are still
+    // 36px apart and each unambiguously attached to its own arc. Asserting the
+    // opposite-sides claim would be asserting something false about the code.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const req = tagAt('i1:request');
+    const resp = tagAt('i1:response');
+
+    // EACH TAG IS ON ITS OWN ARC'S SIDE, stated against each leg's OWN apex rather
+    // than against a shared chord — and that distinction is the whole content of this
+    // test, because the two arcs on this fixture are NOT mirror images. The
+    // bendpoints are derived from CELL CENTRES (x = 40 and 260) while the drawn
+    // anchors sit on the node ellipse BOUNDARY (x = 60 and 280), so the request
+    // curve (`M60 60 Q130 -16 280 60`) bows 38px off its chord while the response's
+    // (`M280 60 Q130 56 60 60`) bows only 2px. An assertion phrased as "both tags are
+    // ±18px from the chord" would therefore be false for a reason that has nothing to
+    // do with this fix — a trap an earlier draft of this test fell into.
+    for (const [id, tag] of [['i1:request', req], ['i1:response', resp]] as const) {
+      const { from, control, to } = parseQuad(linkD(id));
+      const apex = quadAt(from, control, to, 0.5);
+      const chordMidY = (from.y + to.y) / 2;
+      // The tag is on the far side of the apex from the chord — i.e. OUTSIDE its own
+      // bow, never in the gap between the arc and the chord where the sibling leg's
+      // label is heading.
+      expect(Math.sign(tag.y - chordMidY)).toBe(Math.sign(apex.y - chordMidY));
+      expect(Math.abs(tag.y - chordMidY)).toBeGreaterThan(Math.abs(apex.y - chordMidY));
+    }
+
+    // AND THE TWO ARE STILL APART, which is the half of this that a regression would
+    // break. Pinned as a separation in px — not as a side claim (see the note above) —
+    // and at more than twice the nudge, so a fix that collapsed both labels onto one
+    // point or onto the shared chord fails here.
+    expect(Math.abs(req.y - resp.y)).toBeGreaterThan(2 * TAG_CURVE_OFFSET);
+  });
+
+  it('nudges the tag just OFF the stroke rather than centring it exactly on the line', async () => {
+    // THE DELIBERATE PART, pinned so a later "simplification" to a bare apex does not
+    // silently undo it. The tag is a small FILLED rect; sitting exactly on the arc
+    // hides the line under it at the apex — precisely where a reader tells a request
+    // from its response on a bowed pair. So the anchor is offset a few px along the
+    // curve's NORMAL: touching the edge (that is issue #219) without covering it.
+    //
+    // Asserted as a band, not a point: `> 0` says the nudge exists, `<= TOLERANCE`
+    // says it is still touching. A regression in either direction fails.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const d = distanceToCurve('i1:request', tagAt('i1:request'));
+    expect(d).toBeGreaterThan(0);
+    expect(d).toBeLessThanOrEqual(TOLERANCE);
+  });
+
+  it('puts the tag on the STRAIGHT line of a self-call, which has no curve to hug', async () => {
+    // The degenerate case, and the one a curve-only fix would crash or NaN on: a
+    // self-call has one anchor and no bendpoint, so `curvePath` emits a straight `L`
+    // and there is no normal to offset along. The label must still land on the mark
+    // rather than at `NaN` — asserted as a finite anchor at the (degenerate) line.
+    mockApi(ENTITIES, [
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e1' }),
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    const at = tagAt('i1:request');
+    expect(Number.isFinite(at.x)).toBe(true);
+    expect(Number.isFinite(at.y)).toBe(true);
+  });
+
+  it('keeps the tag on the curve after the source node is DRAGGED', async () => {
+    // THE LIVE-GEOMETRY CHECK. The label's position is derived from the same
+    // observable node positions the path is, so it has to be recomputed on a drag —
+    // exactly the failure mode `CurvedEdge`'s own `observer` note describes for the
+    // path itself ("the arrows detach from the node the reader is dragging"). A tag
+    // positioned from stale points would strand the label where the edge used to be.
+    //
+    // Not a simulated gesture (see the header) — `setPosition` is the effect a drag
+    // has, which is the part the component must cope with.
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+    await act(async () => {
+      moveNode('e1', 300, 400);
+    });
+
+    expect(distanceToCurve('i1:request', tagAt('i1:request'))).toBeLessThanOrEqual(TOLERANCE);
+  });
+
   it('keeps the arrowhead and the seq tag on a curved edge', async () => {
     // The fork must not have quietly dropped either of the two things `DefaultEdge`
     // contributed besides the path. Both the arrowhead and the tag's `<text>` render

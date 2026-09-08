@@ -882,6 +882,125 @@ function curveTangentPoint(
 }
 
 /**
+ * How far, in px, the edge's tag is nudged OFF the drawn stroke, along the curve's
+ * normal at the point the tag sits on.
+ *
+ * WHY NOT ZERO. The tag is a small FILLED rect (`DefaultConnectorTag` draws a
+ * `.pf-topology__edge__tag__background` behind its text), so centring it exactly on
+ * the arc hides the line under it — and it hides it at the APEX, which on a bowed
+ * request/response pair is the one place a reader uses to tell the two arcs apart.
+ * That was the original reason the tag was left on the chord, and it is a real
+ * concern; the mistake was the SIZE of the resulting gap, not the instinct.
+ *
+ * WHY NOT MORE. Issue #219 is that the label must be "actually on or touching the
+ * edge it refers to". At 9px the tag's own background — roughly 8px above and below
+ * its baseline at this font size — reaches back to the stroke, so the label reads as
+ * attached to the line while the line stays visible beside it. Sized as HALF a tag
+ * height rather than as a fraction of the bow, deliberately: it is a typographic
+ * clearance, so it must not grow with the routing (a 96px skipping detour does not
+ * need a 48px label gap — that is the bug this fixes).
+ */
+const TAG_CURVE_OFFSET = 9;
+
+/**
+ * Where along an edge's curve the tag sits, as a Bézier parameter.
+ *
+ * The APEX (t=0.5) is the natural choice and the one the reader expects: it is the
+ * visual middle of the arc, it is where the two legs of a pair are furthest apart,
+ * and it is the point the chord midpoint was a (bad) approximation OF.
+ */
+const TAG_CURVE_T = 0.5;
+
+/**
+ * The unit NORMAL to a quadratic at `t` — the direction to nudge the tag off the
+ * stroke.
+ *
+ * The derivative of a quadratic at `t` is `2((1-t)(c-from) + t(to-c))`; rotating it
+ * by 90° gives `(-dy, dx)`. The factor of 2 is dropped because the vector is
+ * normalised anyway.
+ *
+ * DEGENERATE CASE, and it is reachable rather than theoretical: a zero-length
+ * derivative (a self-call, whose two anchors coincide) has no direction to rotate,
+ * so `Math.hypot` would be 0 and the normalisation would produce `NaN` — which SVG
+ * renders as a dropped element, i.e. a silently missing label. Returning a zero
+ * vector instead leaves the tag exactly on the (degenerate) mark, which is the right
+ * answer for a shape that has no visible arc to sit beside.
+ */
+function unitNormalAt(from: XY, control: XY, to: XY, t: number): XY {
+  const dx = (1 - t) * (control.x - from.x) + t * (to.x - control.x);
+  const dy = (1 - t) * (control.y - from.y) + t * (to.y - control.y);
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { x: 0, y: 0 };
+  return { x: -dy / len, y: dx / len };
+}
+
+/**
+ * WHERE THE EDGE'S TAG BELONGS: a point on (just off) the DRAWN curve — issue #219.
+ *
+ * THE BUG THIS FIXES. `DefaultConnectorTag` computes its own translate as the
+ * MIDPOINT of the two points it is handed (`start + (end - start) * 0.5`) and takes
+ * no position override, so handing it the edge's `startPoint`/`endPoint` — which is
+ * what a fork of `DefaultEdge` does, and what this component did — pins every label
+ * to the CHORD midpoint. The line, meanwhile, is an arc through the bendpoint. The
+ * gap between the two is the bendpoint's entire offset, and `edgeBendpoints` sizes
+ * that offset for CLEARANCE, not for legibility:
+ *
+ *   - adjacent call:      `ADJACENT_BOW_Y`          = 18px
+ *   - column-skipping:    `spans * ROW_STEP_Y / 2`  = 96px at spans 2, more beyond
+ *   - same column:        `COLUMN_STEP_X / 2`       = 110px
+ *
+ * So on the routed cases the label was not "slightly off the stroke" — it floated a
+ * whole grid step away in empty canvas, or worse, over the nodes the detour exists to
+ * avoid. That is the reported defect, and it is why the earlier reasoning ("the chord
+ * midpoint leaves the label just inside its own arc, off the stroke") did not hold:
+ * it was true for a shallow bow and false for every routed edge.
+ *
+ * THE FIX IS A POSITION, NOT A NEW RENDERER. `DefaultConnectorTag` is kept — it owns
+ * the tag's background rect, its text centring, its status modifier and the class the
+ * stylesheet keys on, and reimplementing that to move a point would be a fork for no
+ * reason. Since its translate is the midpoint of its two arguments, ANY pair with the
+ * desired midpoint places it: this returns the point, and the caller hands the tag
+ * `[p, p]`. A degenerate pair is fine — the component reads only the midpoint, and
+ * nothing else in that renderer uses the two points.
+ *
+ * THE PROPERTY THE OLD POSITION BOUGHT IS KEPT. The whole reason an adjacent pair is
+ * bowed at all is that A→B and B→A share both anchors, so their labels collided on
+ * one line. Anchoring each label to its OWN arc keeps them apart by MORE than before,
+ * not less: the two arcs are `2 * ADJACENT_BOW_Y` apart at the apex, and the two tags
+ * now sit on their respective arcs instead of both on the shared chord.
+ *
+ * STRAIGHT EDGES FALL THROUGH to the chord midpoint, which for them IS the line — a
+ * self-call has no bendpoint, `curvePath` emits a straight `L`, and there is no arc to
+ * hug. The normal is zero there (see {@link unitNormalAt}), so the tag lands on the
+ * mark rather than at `NaN`.
+ */
+function tagAnchor(from: XY, bendpoints: readonly XY[], to: XY): XY {
+  if (bendpoints.length === 0) {
+    // No curve: the chord midpoint is the line's own midpoint. No normal to offset
+    // along either, so the tag sits exactly on it.
+    return { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  }
+  const segments = arcSegments(from, bendpoints, to);
+  // THE MIDDLE ARC of the chain, so a multi-bendpoint route (which `edgeBendpoints`
+  // does not produce today, but `arcSegments` deliberately supports — see its note)
+  // gets its label near the route's own middle rather than always on the first arc.
+  const [segFrom, via, segTo] = segments[Math.floor(segments.length / 2)]!;
+  const control = controlThrough(segFrom, via, segTo);
+  const on = quadraticAt(segFrom, control, segTo, TAG_CURVE_T);
+  const normal = unitNormalAt(segFrom, control, segTo, TAG_CURVE_T);
+  // WHICH WAY along the normal: away from the chord, i.e. the same side the curve
+  // bows to. Placing it on the INNER side would put the label between the arc and the
+  // chord, which on a bowed pair is the gap the sibling leg's own label is heading
+  // for — so the two would converge exactly where the bow exists to separate them.
+  const chordMid = { x: (segFrom.x + segTo.x) / 2, y: (segFrom.y + segTo.y) / 2 };
+  const outward = Math.sign((on.x - chordMid.x) * normal.x + (on.y - chordMid.y) * normal.y) || 1;
+  return {
+    x: on.x + normal.x * TAG_CURVE_OFFSET * outward,
+    y: on.y + normal.y * TAG_CURVE_OFFSET * outward,
+  };
+}
+
+/**
  * The graph element's own id in the topology model.
  *
  * A named constant rather than a literal in two places, because the selection
@@ -1282,6 +1401,12 @@ const CurvedEdge = observer(function CurvedEdge({
       : pointFromPair(getConnectorStartPoint(tangentToEnd, endPoint, endTerminalSize));
   const backgroundPath = curvePath(bandStart, bendpoints, bandEnd);
 
+  // WHERE THE TAG GOES — on the LINK's curve (the `startPoint`/`endPoint` pair), not
+  // the hit band's: the band is trimmed back at its ends for the arrowheads, so its
+  // arc is a fractionally different shape, and the label must sit on the line the
+  // reader can actually see.
+  const tagPoint = tagAnchor(startPoint, bendpoints, endPoint);
+
   // PF's own class composition, reproduced. `styles.topologyEdge` etc. are spelled as
   // literals rather than imported from `css/topology-components`: that module is CJS
   // with a `require('./topology-components.css')` side effect, the stylesheet is
@@ -1336,22 +1461,33 @@ const CurvedEdge = observer(function CurvedEdge({
         />
         {showTag && (
           <g transform={`scale(${hover ? tagScale : 1})`}>
-            {/* THE TAG STILL SITS ON THE CHORD MIDPOINT, not on the curve, because
-                `DefaultConnectorTag` computes its own translate from the two points it
-                is given (`start + (end - start) * 0.5`) and takes no position
-                override. Handing it the curve's apex instead — which IS available, it
-                is the bendpoint — was considered and rejected: the apex is where the
-                two legs of a pair are FURTHEST apart, but the tag is a small filled
-                rect and putting it exactly on the drawn line hides that line under it
-                at the one place the reader uses to tell the two arcs apart. The chord
-                midpoint leaves the label just inside its own arc, off the stroke, and
-                the parity-signed bow keeps the request's and response's labels on
-                opposite sides — which is the collision this graph actually had to
-                fix. */}
+            {/* THE TAG SITS ON THE DRAWN CURVE (issue #219), not on the chord.
+                `DefaultConnectorTag` computes its own translate as the MIDPOINT of the
+                two points it is given (`start + (end - start) * 0.5`) and takes no
+                position override — so the way to place it is to hand it a pair whose
+                midpoint is where the label belongs. {@link tagAnchor} computes that
+                point from the SAME curve geometry the visible path is built from, and
+                the degenerate `[p, p]` pair is passed deliberately: the midpoint of a
+                point with itself is that point, and nothing else in that renderer
+                reads the two arguments.
+
+                THIS REPLACES the chord midpoint, whose reasoning is recorded in
+                `tagAnchor`'s doc along with why it did not hold: it was defensible for
+                a shallow bow and wrong by up to a whole grid step on every ROUTED
+                edge, which is what the issue reported. The concern that motivated it —
+                a filled tag exactly on the stroke hides the line at the apex, where a
+                reader tells a bowed pair's two arcs apart — is kept, and is now paid
+                for with a 9px nudge along the curve's normal (`TAG_CURVE_OFFSET`)
+                rather than with an 18–110px gap.
+
+                `tagPositionScale` is applied to the RESULT rather than to the inputs,
+                so the anchor is computed in graph space and then scaled exactly as
+                PF's own hover rescale expects — scaling the endpoints first and
+                deriving a curve from scaled points would bend a different curve. */}
             <DefaultConnectorTag
               className={tagClass}
-              startPoint={element.getStartPoint().scale(tagPositionScale)}
-              endPoint={element.getEndPoint().scale(tagPositionScale)}
+              startPoint={pointOf(tagPoint).scale(tagPositionScale)}
+              endPoint={pointOf(tagPoint).scale(tagPositionScale)}
               tag={tag}
               status={tagStatus}
             />
