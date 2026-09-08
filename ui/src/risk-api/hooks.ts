@@ -15,6 +15,7 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import { riskFetchJson } from './client';
+import { ALERT_RISK_LEVELS } from '../lib/riskAlertGroups';
 import type {
   RiskSummary,
   RiskDistributionResponse,
@@ -90,6 +91,17 @@ export function useTopRules(window: string, limit?: number): UseQueryResult<TopR
  * `next_cursor` — unlike `useTracesInfinite`'s short-page heuristic, this
  * endpoint returns an explicit cursor, so paging stops exactly when the
  * server says there's no more.
+ *
+ * Filtered to non-none risk levels (issue #214): the alerts table lists only
+ * traces needing attention, so `risk_level` is pinned to
+ * {@link ALERT_RISK_LEVELS} as a CSV (the endpoint's `risk_level` param is
+ * `http.parse_csv_param`-parsed and applied after its latest-version-per-trace
+ * reduction). Doing this server-side rather than dropping none-risk rows after
+ * the fact is what keeps pagination meaningful — every row the server returns
+ * is a row the card will show, so `limit`/`next_cursor` count alerts, not
+ * evaluated traces. The filter is part of the queryFn (not the query key)
+ * because it is a constant, not user state: there is no UI to vary it, so no
+ * key could ever change with it.
  */
 export function useRiskTracesInfinite(
   window: string,
@@ -101,6 +113,7 @@ export function useRiskTracesInfinite(
       riskFetchJson<TraceRiskListResponse>('/traces', {
         window,
         sort: 'risk_level_desc',
+        risk_level: ALERT_RISK_LEVELS.join(','),
         limit: RISK_PAGE_SIZE,
         ...(pageParam !== undefined ? { cursor: pageParam } : {}),
       }),

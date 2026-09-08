@@ -427,6 +427,39 @@ def test_list_traces_returns_latest_version_only(client, insert_trace_risk):
     assert body["items"][0]["trace_risk_level"] == "high"
 
 
+def test_list_traces_filter_by_risk_level_csv(client, insert_trace_risk):
+    """The alerts UI (issue #214) asks for every non-none level as one CSV, so
+    a multi-value ``risk_level`` must match any of them."""
+    insert_trace_risk(trace_id="tr-critical", trace_risk_level="critical")
+    insert_trace_risk(trace_id="tr-low", trace_risk_level="low")
+    insert_trace_risk(trace_id="tr-none", trace_risk_level="none")
+
+    body = client.get(
+        "/risk/traces", params={"risk_level": "critical,high,medium,low"}
+    ).json()
+
+    assert {item["trace_id"] for item in body["items"]} == {"tr-critical", "tr-low"}
+
+
+def test_list_traces_risk_level_filter_applies_to_latest_version(
+    client, insert_trace_risk
+):
+    """The filter runs AFTER the latest-per-trace reduction, so a trace whose
+    newest version is ``none`` is excluded even though an older version was
+    high — and vice versa. This is what lets the alerts card filter server-side
+    (issue #214) instead of re-deriving currency on the client."""
+    insert_trace_risk(trace_id="tr-cleared", version=1, trace_risk_level="high")
+    insert_trace_risk(trace_id="tr-cleared", version=2, trace_risk_level="none")
+    insert_trace_risk(trace_id="tr-raised", version=1, trace_risk_level="none")
+    insert_trace_risk(trace_id="tr-raised", version=2, trace_risk_level="high")
+
+    body = client.get(
+        "/risk/traces", params={"risk_level": "critical,high,medium,low"}
+    ).json()
+
+    assert [item["trace_id"] for item in body["items"]] == ["tr-raised"]
+
+
 def test_list_traces_ignores_regulatory_tag_param(client, insert_trace_risk):
     insert_trace_risk(trace_id="tr-1")
 

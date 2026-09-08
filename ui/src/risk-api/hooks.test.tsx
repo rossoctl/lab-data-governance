@@ -167,6 +167,54 @@ describe('useRiskTracesInfinite', () => {
     expect(secondUrl).toContain('cursor=CURSOR1');
     expect(result.current.data?.pages).toEqual([page1, page2]);
   });
+
+  // Issue #214: the alerts table shows only traces with a non-none risk level.
+  // Filtering server-side keeps keyset pagination honest — a page of
+  // RISK_PAGE_SIZE is RISK_PAGE_SIZE alerts, not a page mostly of none-risk
+  // rows the client then throws away.
+
+  it('requests only non-none risk levels, so none-risk traces never reach the client', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [], next_cursor: null }),
+    });
+
+    renderHook(() => useRiskTracesInfinite('24h'), { wrapper: wrapper() });
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+
+    const url = new URL(
+      (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string,
+      'http://localhost',
+    );
+    const levels = url.searchParams.get('risk_level')?.split(',') ?? [];
+    expect(new Set(levels)).toEqual(new Set(['critical', 'high', 'medium', 'low']));
+    expect(levels).not.toContain('none');
+  });
+
+  it('keeps the risk_level filter on every subsequent page, not just the first', async () => {
+    const fetchMock = fetch as ReturnType<typeof vi.fn>;
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [{ trace_id: 't1' }], next_cursor: 'CURSOR1' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [{ trace_id: 't2' }], next_cursor: null }),
+      });
+
+    const { result } = renderHook(() => useRiskTracesInfinite('24h'), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    await result.current.fetchNextPage();
+    await waitFor(() => expect(fetchMock.mock.calls).toHaveLength(2));
+
+    const secondUrl = fetchMock.mock.calls[1][0] as string;
+    expect(secondUrl).toContain('risk_level=');
+    expect(secondUrl).not.toContain('none');
+  });
 });
 
 // Rules catalog hooks (issue #171).

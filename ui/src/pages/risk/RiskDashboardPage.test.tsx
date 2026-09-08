@@ -32,7 +32,14 @@ describe('RiskDashboardPage content (#169)', () => {
     };
   }
 
-  function mockFetchRouter(overrides: { summary?: Record<string, unknown> } = {}) {
+  function mockFetchRouter(
+    overrides: {
+      summary?: Record<string, unknown>;
+      // Issue #214: lets a test serve its own /risk/traces page (e.g. an
+      // all-none one) without duplicating the whole router.
+      traces?: Record<string, unknown>;
+    } = {},
+  ) {
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
       if (url.includes('/risk/metrics/summary')) {
         return { ok: true, status: 200, json: async () => overrides.summary ?? summaryBody() };
@@ -75,6 +82,9 @@ describe('RiskDashboardPage content (#169)', () => {
         };
       }
       if (url.includes('/risk/traces')) {
+        if (overrides.traces) {
+          return { ok: true, status: 200, json: async () => overrides.traces };
+        }
         return {
           ok: true,
           status: 200,
@@ -172,6 +182,57 @@ describe('RiskDashboardPage content (#169)', () => {
       );
       expect(calls.some((u) => u.includes('/risk/traces') && u.includes('window=7d'))).toBe(true);
     });
+  });
+
+  // Issue #214 — end-to-end through the real hook + card, not just the units.
+
+  it('asks /risk/traces for non-none risk levels only', async () => {
+    mockFetchRouter();
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
+    await waitFor(() => {
+      const tracesUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls
+        .map((c) => c[0] as string)
+        .find((u) => u.includes('/risk/traces'));
+      expect(tracesUrl).toBeDefined();
+      const levels =
+        new URL(tracesUrl!, 'http://localhost').searchParams.get('risk_level')?.split(',') ?? [];
+      expect(new Set(levels)).toEqual(new Set(['critical', 'high', 'medium', 'low']));
+    });
+  });
+
+  it('shows no alert row for a none-risk trace, even if the API returns one', async () => {
+    mockFetchRouter({
+      traces: {
+        items: [
+          {
+            trace_risk_id: 'trr-none',
+            trace_id: 'trace-quiet',
+            version: 1,
+            computed_at: '2026-08-02T00:00:00Z',
+            trace_risk_level: 'none',
+            trace_enforcement_type: null,
+            risk_compounding_mode: 'max',
+            enforcement_aggregation_mode: 'strictest',
+            interaction_count: 3,
+            policy_event_count: 0,
+            all_entity_ids: [],
+            triggered_rule_ids: [],
+            overall_confidence: 0.9,
+            contributing_interaction_risk_ids: [],
+          },
+        ],
+        next_cursor: null,
+      },
+    });
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
+    // The Alerts card still renders — it just has nothing to list.
+    expect(screen.getByText('Alerts')).toBeInTheDocument();
+    expect(screen.queryByTestId('alert-row-trace-quiet')).not.toBeInTheDocument();
+    expect(screen.getByText(/no incidents/i)).toBeInTheDocument();
   });
 
   it('selecting 24h again deletes ?window rather than writing it', async () => {

@@ -17,6 +17,20 @@
  * detail row, so nothing is permanently hidden, only deferred to a click or
  * hover.
  *
+ * Only traces with a non-none risk level are listed (issue #214) — an alerts
+ * table is a worklist, and a trace evaluated as clean is not work. The filter
+ * lives in `groupTraceRisksByWorkflow`, and `useRiskTracesInfinite` asks the
+ * server for the same subset so none-risk rows do not consume page budget.
+ * The client-side half is kept even so: `items` is a plain prop, and a
+ * none-risk record could still arrive from a cached page or a future
+ * `/risk/alerts` swap.
+ *
+ * Because filtering can empty a page the server still has successors for, the
+ * "no incidents" empty state replaces only the TABLE — the pagination control
+ * renders whenever `hasNextPage`, regardless of how many groups survived.
+ * Gating it on `groups.length` instead would strand the user on an all-none
+ * page with no way to reach the alerts behind it.
+ *
  * There is no dedicated "Open" column: clicking anywhere on the summary row
  * (other than the expand chevron) navigates straight to the trace, via
  * `navigate()` on `onRowClick` — a full row is a bigger, easier target than a
@@ -74,110 +88,108 @@ export function AlertsCard({ items, hasNextPage, isFetchingNextPage, onNextPage 
             <EmptyStateBody>No incidents in this window.</EmptyStateBody>
           </EmptyState>
         ) : (
-          <>
-            <div style={{ overflowX: 'auto' }}>
-              <Table aria-label="Alerts" variant="compact">
-                <Thead>
-                  <Tr>
-                    <Th screenReaderText="Expand" />
-                    <Th>Trace</Th>
-                    <Th>Risk level</Th>
-                    <Th>Enforcement</Th>
-                    <Th>Interactions</Th>
-                    <Th>Policy events</Th>
-                  </Tr>
-                </Thead>
-                <Tbody>
-                  {groups.map((group) => {
-                    const isExpanded = expanded.has(group.traceId);
-                    return (
-                      <Fragment key={group.traceId}>
-                        <Tr
-                          data-testid={`alert-row-${group.traceId}`}
-                          isClickable
-                          onRowClick={() => navigate(`/risk/traces/${group.traceId}`)}
-                        >
-                          <Td dataLabel="Expand">
-                            <Button
-                              variant="plain"
-                              aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${group.traceId}`}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggle(group.traceId);
-                              }}
-                            >
-                              {isExpanded ? <AngleDownIcon /> : <AngleRightIcon />}
-                            </Button>
+          <div style={{ overflowX: 'auto' }}>
+            <Table aria-label="Alerts" variant="compact">
+              <Thead>
+                <Tr>
+                  <Th screenReaderText="Expand" />
+                  <Th>Trace</Th>
+                  <Th>Risk level</Th>
+                  <Th>Enforcement</Th>
+                  <Th>Interactions</Th>
+                  <Th>Policy events</Th>
+                </Tr>
+              </Thead>
+              <Tbody>
+                {groups.map((group) => {
+                  const isExpanded = expanded.has(group.traceId);
+                  return (
+                    <Fragment key={group.traceId}>
+                      <Tr
+                        data-testid={`alert-row-${group.traceId}`}
+                        isClickable
+                        onRowClick={() => navigate(`/risk/traces/${group.traceId}`)}
+                      >
+                        <Td dataLabel="Expand">
+                          <Button
+                            variant="plain"
+                            aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${group.traceId}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggle(group.traceId);
+                            }}
+                          >
+                            {isExpanded ? <AngleDownIcon /> : <AngleRightIcon />}
+                          </Button>
+                        </Td>
+                        <Td dataLabel="Trace">
+                          <span
+                            title={group.traceId}
+                            style={{
+                              display: 'inline-block',
+                              maxWidth: '10ch',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              verticalAlign: 'bottom',
+                            }}
+                          >
+                            {group.traceId}
+                          </span>
+                        </Td>
+                        <Td dataLabel="Risk level">
+                          <RiskBadge level={group.summary.trace_risk_level} />
+                        </Td>
+                        <Td dataLabel="Enforcement">
+                          <EnforcementChip type={group.summary.trace_enforcement_type ?? 'none'} />
+                        </Td>
+                        <Td dataLabel="Interactions">{group.summary.interaction_count}</Td>
+                        <Td dataLabel="Policy events">{group.summary.policy_event_count}</Td>
+                      </Tr>
+                      {isExpanded && (
+                        <Tr>
+                          <Td dataLabel="Details" colSpan={6}>
+                            <div>
+                              <strong>Trace:</strong> {group.traceId}
+                            </div>
+                            <div>
+                              <strong>Triggered rules:</strong>{' '}
+                              {group.summary.triggered_rule_ids.length === 0
+                                ? 'none'
+                                : group.summary.triggered_rule_ids.map((ruleId) => (
+                                    <Link
+                                      key={ruleId}
+                                      to={`/risk/rules/${ruleId}`}
+                                      style={{ marginRight: '0.5rem' }}
+                                      onClick={(event) => event.stopPropagation()}
+                                    >
+                                      {ruleId}
+                                    </Link>
+                                  ))}
+                            </div>
+                            <div className="pf-v5-u-mt-sm">
+                              <Link
+                                to={`/risk/traces/${group.traceId}`}
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                Open
+                              </Link>
+                            </div>
                           </Td>
-                          <Td dataLabel="Trace">
-                            <span
-                              title={group.traceId}
-                              style={{
-                                display: 'inline-block',
-                                maxWidth: '10ch',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                                verticalAlign: 'bottom',
-                              }}
-                            >
-                              {group.traceId}
-                            </span>
-                          </Td>
-                          <Td dataLabel="Risk level">
-                            <RiskBadge level={group.summary.trace_risk_level} />
-                          </Td>
-                          <Td dataLabel="Enforcement">
-                            <EnforcementChip type={group.summary.trace_enforcement_type ?? 'none'} />
-                          </Td>
-                          <Td dataLabel="Interactions">{group.summary.interaction_count}</Td>
-                          <Td dataLabel="Policy events">{group.summary.policy_event_count}</Td>
                         </Tr>
-                        {isExpanded && (
-                          <Tr>
-                            <Td dataLabel="Details" colSpan={6}>
-                              <div>
-                                <strong>Trace:</strong> {group.traceId}
-                              </div>
-                              <div>
-                                <strong>Triggered rules:</strong>{' '}
-                                {group.summary.triggered_rule_ids.length === 0
-                                  ? 'none'
-                                  : group.summary.triggered_rule_ids.map((ruleId) => (
-                                      <Link
-                                        key={ruleId}
-                                        to={`/risk/rules/${ruleId}`}
-                                        style={{ marginRight: '0.5rem' }}
-                                        onClick={(event) => event.stopPropagation()}
-                                      >
-                                        {ruleId}
-                                      </Link>
-                                    ))}
-                              </div>
-                              <div className="pf-v5-u-mt-sm">
-                                <Link
-                                  to={`/risk/traces/${group.traceId}`}
-                                  onClick={(event) => event.stopPropagation()}
-                                >
-                                  Open
-                                </Link>
-                              </div>
-                            </Td>
-                          </Tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                </Tbody>
-              </Table>
-            </div>
-            <CursorPagination
-              hasNextPage={hasNextPage}
-              isFetchingNextPage={isFetchingNextPage}
-              onNextPage={onNextPage}
-            />
-          </>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </Tbody>
+            </Table>
+          </div>
         )}
+        <CursorPagination
+          hasNextPage={hasNextPage}
+          isFetchingNextPage={isFetchingNextPage}
+          onNextPage={onNextPage}
+        />
       </CardBody>
     </Card>
   );
