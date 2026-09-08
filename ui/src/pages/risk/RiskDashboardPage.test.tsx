@@ -282,3 +282,245 @@ describe('RiskDashboardPage content (#169)', () => {
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
   });
 });
+
+/**
+ * Issue #215 — the time-span selector must stay visible when there is no data
+ * to display. The default window is 24h, so a quiet system loads an empty
+ * dashboard; with the selector hidden inside the shell's replaced `children`
+ * there was no way to widen the window to where the data actually is. The
+ * selector now lives in the shell's `toolbar` slot, so it survives the loading,
+ * error and empty branches as well as the content one.
+ */
+describe('RiskDashboardPage time selector visibility (#215)', () => {
+  /** A summary whose window contains nothing at all — drives the empty branch. */
+  function emptySummaryBody() {
+    return {
+      window: '24h',
+      from: '2026-08-01T00:00:00Z',
+      to: '2026-08-02T00:00:00Z',
+      agents: { total: 0, risky: 0, risky_pct: 0 },
+      users: { total: 0, risky: 0, risky_pct: 0 },
+      workflows: { total: 0, risky: 0, risky_pct: 0 },
+      evaluated_interactions: { total: 0, risky: 0, risky_pct: 0 },
+      rules_fired: { total: 0, critical: 0 },
+      computed_at: '2026-08-02T00:00:00Z',
+    };
+  }
+
+  /** A summary whose window DOES contain data — the 7d side of the widen test. */
+  function populatedSummaryBody() {
+    return {
+      window: '7d',
+      from: '2026-07-26T00:00:00Z',
+      to: '2026-08-02T00:00:00Z',
+      agents: { total: 4, risky: 1, risky_pct: 25 },
+      users: { total: 2, risky: 0, risky_pct: 0 },
+      workflows: { total: 10, risky: 3, risky_pct: 30 },
+      evaluated_interactions: { total: 100, risky: 5, risky_pct: 5 },
+      rules_fired: { total: 6, critical: 2 },
+      computed_at: '2026-08-02T00:00:00Z',
+    };
+  }
+
+  /** Every endpoint answers "nothing in this window", not just the summary. */
+  function mockEmptyWindow() {
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/risk/metrics/summary')) {
+        return { ok: true, status: 200, json: async () => emptySummaryBody() };
+      }
+      if (url.includes('/risk/metrics/risk-distribution')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            window: '24h',
+            distribution: { critical: 0, high: 0, medium: 0, low: 0, none: 0, total: 0 },
+            computed_at: '2026-08-02T00:00:00Z',
+          }),
+        };
+      }
+      if (url.includes('/risk/metrics/risk-by-category')) {
+        return { ok: true, status: 200, json: async () => ({ window: '24h', items: [] }) };
+      }
+      if (url.includes('/risk/metrics/top-rules')) {
+        return { ok: true, status: 200, json: async () => ({ window: '24h', items: [] }) };
+      }
+      if (url.includes('/risk/traces')) {
+        return { ok: true, status: 200, json: async () => ({ items: [], next_cursor: null }) };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+  }
+
+  function windowButtons() {
+    return ['Last 24 hours', 'Last 7 days', 'Last 30 days'].map((name) =>
+      screen.queryByRole('button', { name }),
+    );
+  }
+
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('keeps all three window options visible when the window has no data', async () => {
+    mockEmptyWindow();
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    await waitFor(() =>
+      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+    );
+    for (const button of windowButtons()) {
+      expect(button).toBeInTheDocument();
+      expect(button).toBeEnabled();
+    }
+  });
+
+  it('lets the user widen the window from the empty state, and shows the data found there', async () => {
+    // 24h is empty; 7d has data. This is the issue's exact scenario: the user
+    // must be able to escape the empty default window without editing the URL.
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      const has7d = url.includes('window=7d');
+      if (url.includes('/risk/metrics/summary')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => (has7d ? populatedSummaryBody() : emptySummaryBody()),
+        };
+      }
+      if (url.includes('/risk/metrics/risk-distribution')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            window: has7d ? '7d' : '24h',
+            distribution: has7d
+              ? { critical: 1, high: 2, medium: 3, low: 4, none: 90, total: 100 }
+              : { critical: 0, high: 0, medium: 0, low: 0, none: 0, total: 0 },
+            computed_at: '2026-08-02T00:00:00Z',
+          }),
+        };
+      }
+      if (url.includes('/risk/metrics/risk-by-category')) {
+        return { ok: true, status: 200, json: async () => ({ window: has7d ? '7d' : '24h', items: [] }) };
+      }
+      if (url.includes('/risk/metrics/top-rules')) {
+        return { ok: true, status: 200, json: async () => ({ window: has7d ? '7d' : '24h', items: [] }) };
+      }
+      if (url.includes('/risk/traces')) {
+        return { ok: true, status: 200, json: async () => ({ items: [], next_cursor: null }) };
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    renderWithProviders(
+      <>
+        <RiskDashboardPage />
+        <LocationProbe />
+      </>,
+      { route: '/risk' },
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Last 7 days' }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/risk?window=7d'),
+    );
+    // The empty state gives way to real content — the tiles are back.
+    await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
+    expect(
+      screen.queryByText(/no evaluated interactions in this window/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('marks the window from the URL as selected even while the empty state shows', async () => {
+    mockEmptyWindow();
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk?window=30d' });
+
+    await waitFor(() =>
+      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: 'Last 24 hours' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('keeps the window options visible while the dashboard is still loading', () => {
+    // A never-settling fetch pins the shell in its loading branch. Without the
+    // toolbar slot the spinner replaced the selector, so a mis-clicked window
+    // could not be corrected until the request finished.
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}));
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    expect(screen.getByLabelText(/loading risk dashboard/i)).toBeInTheDocument();
+    for (const button of windowButtons()) {
+      expect(button).toBeInTheDocument();
+      expect(button).toBeEnabled();
+    }
+  });
+
+  it('keeps the window options visible when the request fails', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new TypeError('network error'));
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+    for (const button of windowButtons()) {
+      expect(button).toBeInTheDocument();
+      expect(button).toBeEnabled();
+    }
+  });
+
+  it('can switch window straight out of the error state', async () => {
+    // Recovery path: a failed 24h load must not trap the user on 24h.
+    (fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new TypeError('network error'));
+    renderWithProviders(
+      <>
+        <RiskDashboardPage />
+        <LocationProbe />
+      </>,
+      { route: '/risk' },
+    );
+
+    await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Last 30 days' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/risk?window=30d'),
+    );
+  });
+
+  it('renders the selector exactly once in the empty state', async () => {
+    // Guards against the toolbar being rendered both in the slot and in
+    // `children` — duplicate toggle groups would break every getByRole above.
+    mockEmptyWindow();
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    await waitFor(() =>
+      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+    );
+    expect(screen.getAllByRole('button', { name: 'Last 7 days' })).toHaveLength(1);
+    expect(screen.getAllByLabelText('Time window')).toHaveLength(1);
+  });
+
+  it('does not render the dashboard cards in the empty state', async () => {
+    // The toolbar escaping the empty branch must not drag the cards out with
+    // it — an empty window should still read as empty, not as a wall of
+    // zeroed-out cards.
+    mockEmptyWindow();
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    await waitFor(() =>
+      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('Agents')).not.toBeInTheDocument();
+    expect(screen.queryByText('Risk Distribution')).not.toBeInTheDocument();
+    expect(screen.queryByText('Alerts')).not.toBeInTheDocument();
+    expect(screen.queryByText('Risk Analysis')).not.toBeInTheDocument();
+  });
+});

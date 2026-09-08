@@ -12,64 +12,68 @@ describe('RiskRulesPage', () => {
   });
 });
 
+// Shared fixtures for every RiskRulesPage block below. Hoisted to module scope
+// (issue #215) so the new filter-visibility block can drive the same server
+// shapes as the #171 content block instead of duplicating them. Both are pure
+// factories holding no per-test state, so sharing them changes no behaviour.
+function rule(overrides: Record<string, unknown> = {}) {
+  return {
+    rule_id: 'DG-001',
+    rule_name: 'pii_to_untrusted_external',
+    categories: ['data_exfiltration', 'pii_exposure'],
+    risk_level: 'critical',
+    enforcement: 'block',
+    explanation: 'PII detected in payload sent to an untrusted external destination.',
+    event_type: 'external_sharing',
+    data_items: [{ regulatory_tags: ['PII'] }],
+    data_destinations: [{ data_destination_categories: ['external'] }],
+    allowed_actions: ['redact'],
+    rule_sources: [
+      {
+        document_name: 'OWASP Top 10 for LLM Applications',
+        version: '2025',
+        section: 'LLM02',
+        'article/clause': 'Sensitive Information Disclosure',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function mockFetchRouter(overrides: {
+  rules?: Record<string, unknown>;
+  categories?: Record<string, unknown>;
+} = {}) {
+  (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+    if (url.includes('/risk/rules/categories')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          overrides.categories ?? {
+            items: [
+              { category: 'data_exfiltration', rule_count: 1 },
+              { category: 'pii_exposure', rule_count: 1 },
+            ],
+          },
+      };
+    }
+    if (url.includes('/risk/rules')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => overrides.rules ?? { items: [rule()], next_cursor: null },
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+}
+
 // New coverage for issue #171: the real rules table — every catalog field
 // (or a link to the detail page for verbose ones), category/risk-level
 // filters, cursor pagination, and row navigation. The stub test above is
 // untouched — its heading assertion still holds against the real content.
 describe('RiskRulesPage content (#171)', () => {
-  function rule(overrides: Record<string, unknown> = {}) {
-    return {
-      rule_id: 'DG-001',
-      rule_name: 'pii_to_untrusted_external',
-      categories: ['data_exfiltration', 'pii_exposure'],
-      risk_level: 'critical',
-      enforcement: 'block',
-      explanation: 'PII detected in payload sent to an untrusted external destination.',
-      event_type: 'external_sharing',
-      data_items: [{ regulatory_tags: ['PII'] }],
-      data_destinations: [{ data_destination_categories: ['external'] }],
-      allowed_actions: ['redact'],
-      rule_sources: [
-        {
-          document_name: 'OWASP Top 10 for LLM Applications',
-          version: '2025',
-          section: 'LLM02',
-          'article/clause': 'Sensitive Information Disclosure',
-        },
-      ],
-      ...overrides,
-    };
-  }
-
-  function mockFetchRouter(overrides: {
-    rules?: Record<string, unknown>;
-    categories?: Record<string, unknown>;
-  } = {}) {
-    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
-      if (url.includes('/risk/rules/categories')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () =>
-            overrides.categories ?? {
-              items: [
-                { category: 'data_exfiltration', rule_count: 1 },
-                { category: 'pii_exposure', rule_count: 1 },
-              ],
-            },
-        };
-      }
-      if (url.includes('/risk/rules')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => overrides.rules ?? { items: [rule()], next_cursor: null },
-        };
-      }
-      throw new Error(`unexpected fetch: ${url}`);
-    });
-  }
-
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
@@ -269,5 +273,89 @@ describe('RiskRulesPage content (#171)', () => {
     renderWithProviders(<RiskRulesPage />, { route: '/risk/rules' });
 
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+  });
+});
+
+/**
+ * Issue #215 — the rules page had already worked around the shell hiding its
+ * controls (it passed `isEmpty={false}` and rendered an inline empty state so
+ * the filters survived). Now that the shell has a real `toolbar` slot, the
+ * filters move there and the shell owns the empty branch again, so both risk
+ * views get their empty state from one place. The filters must stay reachable
+ * in every state — including the loading and error ones the old workaround
+ * never covered.
+ */
+describe('RiskRulesPage filter visibility (#215)', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  function expectFiltersPresent() {
+    expect(screen.getByLabelText('Category')).toBeInTheDocument();
+    expect(screen.getByLabelText('Risk level')).toBeInTheDocument();
+  }
+
+  it('keeps both filters visible when no rules match', async () => {
+    mockFetchRouter({ rules: { items: [], next_cursor: null } });
+    renderWithProviders(<RiskRulesPage />, { route: '/risk/rules' });
+
+    await waitFor(() => expect(screen.getByText(/no rules/i)).toBeInTheDocument());
+    expectFiltersPresent();
+  });
+
+  it('keeps both filters visible while loading', () => {
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}));
+    renderWithProviders(<RiskRulesPage />, { route: '/risk/rules' });
+
+    expect(screen.getByLabelText(/loading risk rules/i)).toBeInTheDocument();
+    expectFiltersPresent();
+  });
+
+  it('keeps both filters visible when the request fails', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new TypeError('network error'));
+    renderWithProviders(<RiskRulesPage />, { route: '/risk/rules' });
+
+    await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+    expectFiltersPresent();
+  });
+
+  it('lets the user clear a filter that produced no matches', async () => {
+    // The point of keeping the filters visible: an over-narrow filter must be
+    // correctable in place, without losing the rest of the query.
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/risk/rules/categories')) {
+        return { ok: true, status: 200, json: async () => ({ items: [] }) };
+      }
+      if (url.includes('risk_level=low')) {
+        return { ok: true, status: 200, json: async () => ({ items: [], next_cursor: null }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ items: [rule()], next_cursor: null }) };
+    });
+
+    renderWithProviders(<RiskRulesPage />, { route: '/risk/rules?risk_level=low' });
+
+    await waitFor(() => expect(screen.getByText(/no rules/i)).toBeInTheDocument());
+    await userEvent.selectOptions(screen.getByLabelText('Risk level'), '');
+
+    await waitFor(() =>
+      expect(screen.getByText(/pii_to_untrusted_external/)).toBeInTheDocument(),
+    );
+  });
+
+  it('does not render the rules table in the empty state', async () => {
+    mockFetchRouter({ rules: { items: [], next_cursor: null } });
+    renderWithProviders(<RiskRulesPage />, { route: '/risk/rules' });
+
+    await waitFor(() => expect(screen.getByText(/no rules/i)).toBeInTheDocument());
+    expect(screen.queryByRole('grid', { name: 'Risk rules' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: 'Risk rules' })).not.toBeInTheDocument();
+  });
+
+  it('renders each filter exactly once', async () => {
+    mockFetchRouter({ rules: { items: [], next_cursor: null } });
+    renderWithProviders(<RiskRulesPage />, { route: '/risk/rules' });
+
+    await waitFor(() => expect(screen.getByText(/no rules/i)).toBeInTheDocument());
+    expect(screen.getAllByLabelText('Category')).toHaveLength(1);
+    expect(screen.getAllByLabelText('Risk level')).toHaveLength(1);
   });
 });

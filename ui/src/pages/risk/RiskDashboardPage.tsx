@@ -53,6 +53,16 @@ const WINDOW_LABEL: Record<string, string> = {
  * Neither pane title is itself a query key or URL state — just a heading
  * over its cards.
  *
+ * The window selector is passed as the shell's `toolbar`, not rendered among
+ * `children` (issue #215). The shell's loading, error and empty branches each
+ * replace `children` wholesale, so a selector living there vanished in exactly
+ * the states where it is most needed: the default 24h window on a quiet system
+ * loads empty, and with no visible selector there was no way to widen it short
+ * of hand-editing the URL. The toggle depends only on `windowKey` — URL state,
+ * never fetched data — so it renders correctly whether or not any query has
+ * resolved. The cards stay in `children`, so an empty window still reads as
+ * empty rather than as a wall of zeroes.
+ *
  * Each group's expand/collapse state (inside `AlertsCard`) is deliberately
  * NOT reflected in the URL. The URL-as-truth convention exists to restore
  * *view identity* on reload/bookmark/back — which window, which trace, which
@@ -99,19 +109,20 @@ export function RiskDashboardPage() {
       isError={isError}
       isEmpty={isEmpty}
       emptyBody="No evaluated interactions in this window."
+      toolbar={
+        <ToggleGroup aria-label="Time window" className="pf-v5-u-mb-md">
+          {RISK_WINDOW_KEYS.map((key) => (
+            <ToggleGroupItem
+              key={key}
+              text={WINDOW_LABEL[key]}
+              buttonId={key}
+              isSelected={windowKey === key}
+              onChange={() => setWindowKey(key)}
+            />
+          ))}
+        </ToggleGroup>
+      }
     >
-      <ToggleGroup aria-label="Time window" className="pf-v5-u-mb-md">
-        {RISK_WINDOW_KEYS.map((key) => (
-          <ToggleGroupItem
-            key={key}
-            text={WINDOW_LABEL[key]}
-            buttonId={key}
-            isSelected={windowKey === key}
-            onChange={() => setWindowKey(key)}
-          />
-        ))}
-      </ToggleGroup>
-
       {summary.data && <SummaryTiles summary={summary.data} />}
 
       <Grid hasGutter className="pf-v5-u-mt-md">
