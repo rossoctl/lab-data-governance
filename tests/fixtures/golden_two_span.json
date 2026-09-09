@@ -15,7 +15,8 @@
       "lineage.protocol": "a2a",
       "lineage.exchange.id": "a1a1a1a1a1a1a1a1",
       "lineage.self.id": "weather-service",
-           "lineage.principal.sub": "alice",
+      "lineage.self.namespace": "team1",
+      "lineage.principal.sub": "alice",
       "a2a.method": "message/send",
       "input.value": "what is the weather in Tokyo?"
     }
@@ -36,6 +37,7 @@
       "lineage.protocol": "a2a",
       "lineage.exchange.id": "a1a1a1a1a1a1a1a1",
       "lineage.self.id": "weather-service",
+      "lineage.self.namespace": "team1",
       "lineage.outcome": "ok",
       "output.value": "The weather in Tokyo is sunny, 22C."
     }
@@ -56,6 +58,7 @@
       "lineage.protocol": "inference",
       "lineage.exchange.id": "b1b1b1b1b1b1b1b1",
       "lineage.self.id": "weather-service",
+      "lineage.self.namespace": "team1",
       "lineage.peer.host": "host.containers.internal:11434",
       "inference.model": "qwen2.5:7b",
       "input.value": {
@@ -83,6 +86,7 @@
       "lineage.protocol": "inference",
       "lineage.exchange.id": "b1b1b1b1b1b1b1b1",
       "lineage.self.id": "weather-service",
+      "lineage.self.namespace": "team1",
       "lineage.outcome": "ok",
       "output.value": {
         "messages": [
@@ -109,6 +113,7 @@
       "lineage.protocol": "mcp",
       "lineage.exchange.id": "b3b3b3b3b3b3b3b3",
       "lineage.self.id": "weather-service",
+      "lineage.self.namespace": "team1",
       "lineage.peer.host": "weather-tool-mcp.team1.svc:8000",
       "mcp.method": "tools/call",
       "mcp.tool": "get_weather",
@@ -133,6 +138,7 @@
       "lineage.protocol": "mcp",
       "lineage.exchange.id": "b3b3b3b3b3b3b3b3",
       "lineage.self.id": "weather-service",
+      "lineage.self.namespace": "team1",
       "lineage.outcome": "ok",
       "output.value": {
         "tempC": 22,
@@ -156,7 +162,8 @@
       "lineage.protocol": "mcp",
       "lineage.exchange.id": "d1d1d1d1d1d1d1d1",
       "lineage.self.id": "weather-tool",
-           "mcp.method": "tools/call",
+      "lineage.self.namespace": "team1",
+      "mcp.method": "tools/call",
       "mcp.tool": "get_weather",
       "input.value": {
         "city": "Tokyo"
@@ -179,6 +186,7 @@
       "lineage.protocol": "mcp",
       "lineage.exchange.id": "d1d1d1d1d1d1d1d1",
       "lineage.self.id": "weather-tool",
+      "lineage.self.namespace": "team1",
       "lineage.outcome": "ok",
       "output.value": {
         "tempC": 22,
@@ -202,6 +210,7 @@
       "lineage.protocol": "inference",
       "lineage.exchange.id": "b5b5b5b5b5b5b5b5",
       "lineage.self.id": "weather-service",
+      "lineage.self.namespace": "team1",
       "lineage.peer.host": "host.containers.internal:11434",
       "inference.model": "qwen2.5:7b",
       "input.value": {
@@ -229,6 +238,7 @@
       "lineage.protocol": "inference",
       "lineage.exchange.id": "b5b5b5b5b5b5b5b5",
       "lineage.self.id": "weather-service",
+      "lineage.self.namespace": "team1",
       "lineage.outcome": "ok",
       "output.value": "The weather in Tokyo is sunny, 22C."
     }

@@ -43,33 +43,36 @@ GOLDEN: list[tuple[str, str | None, str, dict[str, Any]]] = [
     (A1, GHOST, "SERVER", {
         "lineage.role": "request", "lineage.direction": "inbound",
         "lineage.protocol": "a2a", "lineage.exchange.id": A1,
-        "lineage.self.id": "weather-service",
+        "lineage.self.id": "weather-service", "lineage.self.namespace": "team1",
         "lineage.principal.sub": "alice", "a2a.method": "message/send",
         "input.value": "what is the weather in Tokyo?",
     }),
     (A2, A1, "SERVER", {
         "lineage.role": "response", "lineage.direction": "inbound",
         "lineage.protocol": "a2a", "lineage.exchange.id": A1,
-        "lineage.self.id": "weather-service", "lineage.outcome": "ok",
+        "lineage.self.id": "weather-service",
+        "lineage.self.namespace": "team1", "lineage.outcome": "ok",
         "output.value": _ANSWER,
     }),
     (B1, A1, "CLIENT", {
         "lineage.role": "request", "lineage.direction": "outbound",
         "lineage.protocol": "inference", "lineage.exchange.id": B1,
-        "lineage.self.id": "weather-service", "lineage.peer.host": _LLM_HOST,
+        "lineage.self.id": "weather-service",
+        "lineage.self.namespace": "team1", "lineage.peer.host": _LLM_HOST,
         "inference.model": "qwen2.5:7b",
         "input.value": {"messages": [{"message.content": "user asks weather in Tokyo"}]},
     }),
     (B2, B1, "CLIENT", {
         "lineage.role": "response", "lineage.direction": "outbound",
         "lineage.protocol": "inference", "lineage.exchange.id": B1,
-        "lineage.self.id": "weather-service", "lineage.outcome": "ok",
+        "lineage.self.id": "weather-service",
+        "lineage.self.namespace": "team1", "lineage.outcome": "ok",
         "output.value": {"messages": [{"message.content": "call get_weather(Tokyo)"}]},
     }),
     (B3, A1, "CLIENT", {
         "lineage.role": "request", "lineage.direction": "outbound",
         "lineage.protocol": "mcp", "lineage.exchange.id": B3,
-        "lineage.self.id": "weather-service",
+        "lineage.self.id": "weather-service", "lineage.self.namespace": "team1",
         "lineage.peer.host": "weather-tool-mcp.team1.svc:8000",
         "mcp.method": "tools/call", "mcp.tool": "get_weather",
         "input.value": {"city": "Tokyo"},
@@ -77,33 +80,37 @@ GOLDEN: list[tuple[str, str | None, str, dict[str, Any]]] = [
     (B4, B3, "CLIENT", {
         "lineage.role": "response", "lineage.direction": "outbound",
         "lineage.protocol": "mcp", "lineage.exchange.id": B3,
-        "lineage.self.id": "weather-service", "lineage.outcome": "ok",
+        "lineage.self.id": "weather-service",
+        "lineage.self.namespace": "team1", "lineage.outcome": "ok",
         "output.value": {"tempC": 22, "sky": "sunny"},
     }),
     (D1, B3, "SERVER", {
         "lineage.role": "request", "lineage.direction": "inbound",
         "lineage.protocol": "mcp", "lineage.exchange.id": D1,
-        "lineage.self.id": "weather-tool",
+        "lineage.self.id": "weather-tool", "lineage.self.namespace": "team1",
         "mcp.method": "tools/call", "mcp.tool": "get_weather",
         "input.value": {"city": "Tokyo"},
     }),
     (D2, D1, "SERVER", {
         "lineage.role": "response", "lineage.direction": "inbound",
         "lineage.protocol": "mcp", "lineage.exchange.id": D1,
-        "lineage.self.id": "weather-tool", "lineage.outcome": "ok",
+        "lineage.self.id": "weather-tool",
+        "lineage.self.namespace": "team1", "lineage.outcome": "ok",
         "output.value": {"tempC": 22, "sky": "sunny"},
     }),
     (B5, A1, "CLIENT", {
         "lineage.role": "request", "lineage.direction": "outbound",
         "lineage.protocol": "inference", "lineage.exchange.id": B5,
-        "lineage.self.id": "weather-service", "lineage.peer.host": _LLM_HOST,
+        "lineage.self.id": "weather-service",
+        "lineage.self.namespace": "team1", "lineage.peer.host": _LLM_HOST,
         "inference.model": "qwen2.5:7b",
         "input.value": {"messages": [{"message.content": "weather is 22C sunny; summarize"}]},
     }),
     (B6, B5, "CLIENT", {
         "lineage.role": "response", "lineage.direction": "outbound",
         "lineage.protocol": "inference", "lineage.exchange.id": B5,
-        "lineage.self.id": "weather-service", "lineage.outcome": "ok",
+        "lineage.self.id": "weather-service",
+        "lineage.self.namespace": "team1", "lineage.outcome": "ok",
         "output.value": _ANSWER,  # == entry response → shared content hash
     }),
 ]
@@ -113,8 +120,8 @@ _T0 = dt.datetime(2026, 7, 21, 12, 0, 0, tzinfo=dt.timezone.utc)
 # Expected derived entities (natural keys).
 ENTITIES = {
     "user:alice",
-    "agent:weather-service",
-    "tool:weather-tool",
+    "agent:team1/weather-service",  # a pod: namespace/self.id (contract v1.7, §7)
+    "tool:team1/weather-tool",
     f"llm:{_LLM_HOST}/qwen2.5:7b",
 }
 ANCHORS = {A1, B1, B3, B5}  # the four interaction anchors
