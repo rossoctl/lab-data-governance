@@ -2852,7 +2852,12 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       fireEvent.mouseEnter(trigger);
 
       await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
-      expect(screen.getByRole('tooltip')).toHaveTextContent('#1 request — summary-i1 — PII, GDPR (RESTRICTED)');
+      // Tags + level ONLY. The seq number / leg / endpoints this used to
+      // repeat were dropped when the tooltip was cut down to the
+      // classification alone (see `edgeTooltipText`); the `<title>` below
+      // still carries the long form, and the byte-equality test that used to
+      // pair these two is now a deliberate-divergence test instead.
+      expect(screen.getByRole('tooltip')).toHaveTextContent('PII, GDPR (RESTRICTED)');
     });
 
     it('shows the full untruncated tag list and level on hover, where the visible tag is capped to two — the motivating case', async () => {
@@ -2892,7 +2897,21 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
     });
 
-    it('hides the tooltip again on mouseleave', async () => {
+    it('KEEPS the tooltip up when the pointer leaves the edge — it is dismissed only by another edge', async () => {
+      // BEHAVIOUR INTENTIONALLY INVERTED. This test previously asserted the
+      // tooltip hid on `mouseleave`. Two things retired that expectation:
+      //
+      //  1. Chrome never fires `mouseleave` on an SVG `<g>` whose only
+      //     rendered content is a thin stroked path (issue #213), so the rule
+      //     was never actually in force in the browser where it mattered — the
+      //     test passed in jsdom while the real behaviour was broken.
+      //  2. An attempt to reconstruct the leave (a document-level `mousemove`
+      //     testing `elementFromPoint`) made the tooltip unreadable: the hit
+      //     target is ~2px wide, so the slightest jitter dismissed it.
+      //
+      // The tooltip now persists until a DIFFERENT edge is hovered (or a
+      // wheel/scroll moves the arrow), which is what makes it readable. This
+      // test guards that persistence — the exact opposite of what it used to.
       renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
       await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
@@ -2901,29 +2920,46 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
 
       fireEvent.mouseLeave(trigger);
-      await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument(), { timeout: 2000 });
+      // Given ample time in which the old rule would have hidden it, it stays.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(screen.getByRole('tooltip')).toBeInTheDocument();
     });
 
-    it("omits the classification clause from the tooltip for an unclassified edge, and never says 'none' — the visible counterpart of the <title> assertion above", async () => {
+    it('renders NO tooltip at all for an unclassified edge — never an empty box, and never the word "none"', async () => {
+      // CHANGED with the tooltip's content (see `edgeTooltipText`): this used
+      // to assert the tooltip appeared carrying the seq/leg/endpoint text
+      // with the classification clause merely omitted. Now that tags + level
+      // are the tooltip's ONLY content, an unclassified edge has nothing to
+      // show, and an empty box tracking the cursor would be worse than no
+      // tooltip — so `DirectedEdge` suppresses it outright. The `<title>`
+      // still carries this edge's full identity (asserted separately below).
       renderWithClassification(new Map());
       await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
       const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
       fireEvent.mouseEnter(trigger);
 
-      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
-      const tooltip = screen.getByRole('tooltip');
-      expect(tooltip).toHaveTextContent('#1 request — summary-i1');
-      expect(tooltip.textContent).not.toContain('none');
+      // Given a moment in which a tooltip WOULD have appeared, none does.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+      // ...and the long-form identity is still available non-visually.
+      const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
+      expect(title).toContain('#1 request — summary-i1');
+      expect(title).not.toContain('none');
     });
 
-    it('keeps the <title> and the tooltip byte-for-byte identical — the guard the keep-both decision requires', async () => {
-      // Both elements are kept deliberately (see `DirectedEdge`'s note) and
-      // both are built from the one `edgeHoverText` helper. This is the
-      // only assertion that would actually catch the two drifting apart —
-      // e.g. a future edit to one call site and not the other — and it is
-      // the reason that helper exists rather than two independent template
-      // literals saying "the same thing".
+    it('keeps the long form in the <title> and the short form in the tooltip — the two now diverge DELIBERATELY', async () => {
+      // REPLACES a byte-for-byte-equality assertion. The two elements were
+      // deliberately identical (one `edgeHoverText` helper) until the visible
+      // tooltip was cut down to tags + level; keeping that assertion would
+      // now pin the exact behaviour this change removes. What still needs
+      // guarding is the SPLIT: the `<title>` must keep carrying the full
+      // identity for non-visual consumers, the tooltip must carry only the
+      // classification, and the classification clause itself must be
+      // formatted identically in both (both routes go through
+      // `edgeClassificationSuffix`, which is what makes that true by
+      // construction rather than by coincidence).
       renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
       await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
@@ -2932,13 +2968,16 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
       fireEvent.mouseEnter(trigger);
       await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+      const tooltip = screen.getByRole('tooltip').textContent ?? '';
 
-      // `toHaveTextContent` treats a string argument as a substring/regex
-      // match, and `title` contains regex metacharacters (parentheses) —
-      // so this compares the raw `textContent` strings directly rather
-      // than risking a silently-too-loose (or throwing) pattern match.
-      expect(screen.getByRole('tooltip').textContent).toBe(title);
-      expect(title.length).toBeGreaterThan(0);
+      // The tooltip is the classification and nothing else.
+      expect(tooltip).toBe('PII, GDPR (RESTRICTED)');
+
+      // The <title> keeps the full identity the tooltip dropped...
+      expect(title).toBe('#1 request — summary-i1 — PII, GDPR (RESTRICTED)');
+      // ...and ends with exactly the tooltip's string, so the shared
+      // classification formatting cannot drift between the two.
+      expect(title.endsWith(tooltip)).toBe(true);
     });
 
     it("leaves the edge's aria-label byte-for-byte unchanged when the map is omitted, and places the classification clause before the lineage suffix when both apply", async () => {
@@ -2982,6 +3021,253 @@ describe('EntityGraph risk colouring (issue #170)', () => {
         .getByRole('button', { name: /seq 1, request:/i })
         .getAttribute('aria-label');
       expect(labelled).toContain('PII (RESTRICTED) (on the upstream route)');
+    });
+  });
+
+  /**
+   * EDGE HOVER TOOLTIP DISMISSAL (issue #213, follow-up to #198).
+   *
+   * #198 made the tooltip APPEAR; it did not make it go away. The reporter's
+   * "no tooltip" was the second-order symptom of a dismissal failure, which
+   * is why the ten reproductions attached to #198 all passed: the first
+   * hover of a fresh page always works.
+   *
+   * WHAT ACTUALLY HAPPENS IN CHROME. PF's `Popper` attaches its hide
+   * listener with `element.addEventListener('mouseleave', …)` where
+   * `element` is the edge `<g>` handed to `triggerRef`. Chrome does not
+   * fire `mouseleave`/`mouseout`/`pointerleave` on an SVG container `<g>`
+   * whose only rendered content is a thin stroked path — the enter side
+   * fires, the leave side never does. Verified against the live cluster in
+   * real headed Chrome: moving the pointer from an edge to (1200, 800),
+   * far off the graph, produced the event sequence
+   * `["pointerenter", "mouseover", "mouseenter"]` and nothing more, on a
+   * `<g>` that was still connected and still held the listener. Safari
+   * fires the leave correctly, which is exactly why the bug reproduces in
+   * one browser and not the other.
+   *
+   * Consequence: every hovered edge strands a tooltip at `opacity: 1` at
+   * the position it had when it opened. They accumulate (observed totals
+   * 1, 2, 2, 2, 3, 4, 4 over seven sequential hovers), and once a stranded
+   * tooltip covers the next edge, that edge stops receiving `mouseenter`
+   * too — so the third consecutive hover produces NO new tooltip at all.
+   * That is the reported "tooltip does not appear".
+   *
+   * WHY THESE TESTS LOOK LIKE THIS. jsdom has no hit-testing and no SVG
+   * layout, so it cannot reproduce Chrome's *missing* event — firing
+   * `mouseLeave` in jsdom would test a listener Chrome never invokes and
+   * would pass against the broken code. Both tests below therefore fire
+   * ONLY the enter side, exactly as Chrome does, and assert the tooltip is
+   * dismissed anyway — via a path that does not depend on the `<g>`
+   * receiving a leave event. That is the property the fix has to hold, and
+   * the only one that distinguishes fixed from broken here.
+   */
+  describe('edge hover tooltip dismissal (issue #213)', () => {
+    /**
+     * TWO edges belonging to two DIFFERENT interactions, so each carries its
+     * own distinct classification text.
+     *
+     * `riskSpec()`'s two edges are the request and response legs of the SAME
+     * interaction (`i1`), and `classificationByInteraction` is keyed by
+     * interaction — so with that spec both edges necessarily show identical
+     * tooltip text. Now that the tooltip carries only the classification (see
+     * `edgeTooltipText`) and no longer the seq number, identical text would
+     * make "the second edge's tooltip replaced the first's" indistinguishable
+     * from "the first edge's tooltip was left standing" — precisely the
+     * distinction issue #213 is about. Hence a local spec with `i1`/`i2`.
+     */
+    function renderTwoEdges() {
+      const spec = riskSpec();
+      const [first] = spec.edges;
+      return renderWithProviders(
+        <EntityGraph
+          traceId="T1"
+          spec={{
+            ...spec,
+            edges: [
+              first,
+              {
+                ...spec.edges[1],
+                id: 'i2:request',
+                interactionId: 'i2',
+                legType: 'request',
+                title: 'summary-i2',
+              },
+            ],
+          }}
+          classificationByInteraction={
+            new Map([
+              ['i1', { tags: ['PII'], levels: ['RESTRICTED'] }],
+              ['i2', { tags: ['GDPR'], levels: ['INTERNAL'] }],
+            ])
+          }
+          hideEdgeLabels
+        />,
+      );
+    }
+
+    const triggerFor = (id: string) =>
+      document.querySelector(`[data-id="${id}"] .dg-graph-edge-focus`)!;
+
+    /**
+     * Every edge tooltip currently in the DOM.
+     *
+     * PRESENCE, not inline opacity, is the signal — deliberately. PF's `Popper`
+     * fades a dismissed tooltip (`setOpacity(0)`) and unmounts the node only
+     * after `animationDuration`; `DirectedEdge` passes `animationDuration={0}`
+     * so a dismissed tooltip leaves the DOM promptly rather than lingering
+     * invisibly. Filtering on `style.opacity` instead would be actively
+     * misleading here: opacity is ALSO momentarily `0` on the entry frame of a
+     * tooltip that is opening correctly, so a hidden node and a just-opened one
+     * are indistinguishable by that attribute.
+     */
+    const visibleTooltips = () => screen.queryAllByRole('tooltip');
+
+    it('strands no tooltip when the pointer moves to another edge without the first ever firing mouseleave — the Chrome case', async () => {
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      // Enter side ONLY, on both edges in turn. This is precisely the event
+      // sequence Chrome delivers: no leave is ever dispatched on the `<g>`
+      // the first tooltip is anchored to.
+      fireEvent.mouseEnter(triggerFor('i1:request'));
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+      expect(visibleTooltips()[0]).toHaveTextContent('PII (RESTRICTED)');
+
+      fireEvent.mouseEnter(triggerFor('i2:request'));
+
+      // Exactly one visible tooltip, and it is the SECOND edge's — not two
+      // stacked, and not the first edge's left standing while the second
+      // silently fails to open.
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+      // The SECOND edge's own classification — not the first's left standing.
+      // This is the assertion that distinguishes "replaced" from "stranded",
+      // which is why the two edges are given different tags above.
+      expect(visibleTooltips()[0]).toHaveTextContent('GDPR (INTERNAL)');
+      expect(visibleTooltips()[0]).not.toHaveTextContent('PII');
+    });
+
+    it('anchors the tooltip to the POINTER, not to the edge\'s bounding box', async () => {
+      // THE POSITIONING HALF of the reported bug. Handing `Tooltip` the edge
+      // `<g>` as its `triggerRef` placed the tooltip at the centre of that
+      // element's bounding box — the box of a long diagonal curve, measured at
+      // ~180x25px for a short arrow — which put it 89-106px from the cursor in
+      // Chrome. The fix anchors to a 1x1 element positioned at the pointer.
+      //
+      // jsdom reports every rect as 0x0, so the tooltip's own on-screen
+      // position cannot be asserted here. What IS observable, and what the fix
+      // actually turns on, is that Popper is handed a reference element which
+      // tracks the pointer rather than being the edge itself.
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const edge = triggerFor('i1:request');
+      fireEvent.mouseEnter(edge, { clientX: 640, clientY: 480 });
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+
+      const anchor = document.querySelector<HTMLElement>('body > div[aria-hidden="true"]');
+      expect(anchor).not.toBeNull();
+      // Not the edge, and positioned exactly where the pointer entered.
+      expect(anchor).not.toBe(edge);
+      expect(anchor!.style.position).toBe('fixed');
+      expect(anchor!.style.left).toBe('640px');
+      expect(anchor!.style.top).toBe('480px');
+      // Never paintable and never hit-testable — it exists only to be measured.
+      expect(anchor!.style.pointerEvents).toBe('none');
+
+      // It TRACKS the pointer along the edge rather than staying where the
+      // hover began, so a tooltip on a long arrow follows the cursor.
+      fireEvent.mouseMove(edge, { clientX: 700, clientY: 500 });
+      expect(anchor!.style.left).toBe('700px');
+      expect(anchor!.style.top).toBe('500px');
+    });
+
+    it('opens on keyboard focus anchored to the edge itself, and closes on blur', async () => {
+      // The keyboard route has no pointer coordinates, so the bounding-box
+      // position that reads badly for a mouse user is the only meaningful one
+      // here. And unlike the pointer case, BLUR does close: focus moving away
+      // is an unambiguous, reliably-delivered signal, not the jittery
+      // hit-testing question `mouseleave` on a 2px stroke asks. A controlled
+      // `Tooltip` does none of its own `trigger="mouseenter focus"` wiring, so
+      // without explicit focus/blur handlers this path silently disappears.
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const edge = triggerFor('i1:request');
+      fireEvent.focus(edge);
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+      expect(visibleTooltips()[0]).toHaveTextContent('PII (RESTRICTED)');
+
+      fireEvent.blur(edge);
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(0));
+    });
+
+    it('keeps exactly one tooltip up when the pointer wanders off the graph, and still replaces it on the next edge', async () => {
+      // SUPERSEDES an assertion that the pointer leaving the graph dismissed
+      // the tooltip. That rule was implemented with a document-level
+      // `mousemove` and had to go: on a ~2px hit target it fired constantly,
+      // dismissing the tooltip before it could be read. Persistence is now
+      // the requirement ("remain until the mouse is moved to a different
+      // edge"), so what needs guarding is that wandering off does NOT strand
+      // a SECOND tooltip or break the replacement path — the accumulation
+      // that issue #213 was actually about.
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      fireEvent.mouseEnter(triggerFor('i1:request'));
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+
+      fireEvent.mouseMove(document.body, { clientX: 1200, clientY: 800 });
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Still exactly one, still the first edge's — persistent, not stranded.
+      expect(visibleTooltips()).toHaveLength(1);
+      expect(visibleTooltips()[0]).toHaveTextContent('PII (RESTRICTED)');
+
+      // And the replacement path still works after the detour.
+      fireEvent.mouseEnter(triggerFor('i2:request'));
+      await waitFor(() => expect(visibleTooltips()[0]).toHaveTextContent('GDPR (INTERNAL)'));
+      expect(visibleTooltips()).toHaveLength(1);
+    });
+
+    // PF's listener wiring is gated on `trigger` (default 'mouseenter focus'),
+    // NOT on `isVisible` — so a controlled tooltip still gets PF's own
+    // show/hide callbacks attached, driving an internal `visible` state that
+    // our prop re-syncs only when the prop CHANGES. `trigger="manual"` is what
+    // stops that. This guards the trigger-element listeners specifically,
+    // because those are the ones PF genuinely attaches: the popper-side
+    // mouseenter/mouseleave and the document Escape handler are inert in
+    // 5.4.14 only through stale-ref/stale-closure bugs of PF's own, so
+    // asserting on them would pass with or without the fix and prove nothing.
+    it('does not let PF\'s own trigger listeners desync the tooltip from our state', async () => {
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      fireEvent.mouseEnter(triggerFor('i1:request'));
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+
+      // The anchor Popper resolved `triggerRef` to. With the default trigger
+      // PF would have hung mouseleave/blur on it; a `mouseleave` here would
+      // then flip PF's internal `visible` to false and blank the tooltip while
+      // this component still considers it open — and, because our `isVisible`
+      // prop never changed value, it would stay blank until another edge is
+      // hovered. With `trigger="manual"` nothing is attached and it is a no-op.
+      const anchor = document.querySelector<HTMLElement>(
+        'body > div[aria-hidden="true"][style*="position: fixed"]',
+      );
+      expect(anchor).not.toBeNull();
+
+      fireEvent.mouseLeave(anchor!);
+      fireEvent.blur(anchor!);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(visibleTooltips()).toHaveLength(1);
+      expect(visibleTooltips()[0]).toHaveTextContent('PII (RESTRICTED)');
+
+      // Still replaceable afterwards — i.e. left genuinely open, not merely
+      // still-mounted-but-desynced.
+      fireEvent.mouseEnter(triggerFor('i2:request'));
+      await waitFor(() => expect(visibleTooltips()[0]).toHaveTextContent('GDPR (INTERNAL)'));
+      expect(visibleTooltips()).toHaveLength(1);
     });
   });
 

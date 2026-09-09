@@ -1247,24 +1247,53 @@ function edgeClassificationSuffix(data: EdgeData | undefined): string {
 }
 
 /**
- * The edge's hover text — one helper feeding BOTH the native SVG `<title>`
- * and the interactive `Tooltip` in `DirectedEdge` below, so the two elements
- * can never drift apart. That is the whole reason this exists as its own
- * function rather than being inlined twice: the fix that added the `Tooltip`
- * kept the `<title>` alongside it (a deliberate choice — see `DirectedEdge`'s
- * note on why), and two independently-hand-written template literals saying
- * "the same thing" is exactly the kind of divergence that drifts silently.
- * A test asserts the two elements' text stays equal; this helper is why that
- * test can even be true by construction rather than by coincidence.
+ * The edge's FULL hover text — seq number, leg, endpoints, and the
+ * classification clause. Feeds the native SVG `<title>`, which is the
+ * non-visual fallback and therefore the one place the edge's complete
+ * identity has to stay available: a reader who cannot see the graph gets
+ * this string and nothing else, so trimming it would be a real loss.
+ *
+ * NO LONGER FEEDS THE VISIBLE TOOLTIP. The two were deliberately identical
+ * (one helper, with a test asserting byte-equality) up until the tooltip was
+ * cut down to the classification alone — see `edgeTooltipText` below for what
+ * the visible affordance shows now and why the two diverged. `<title>` keeps
+ * the long form; the tooltip does not.
  *
  * Deliberately does NOT include `edgeLineageSuffix` — unlike `aria-label`,
  * which does. The visible/audible split was a considered choice, not an
- * oversight: keeping the hover text identical to what the inert `<title>`
- * already said avoids also changing the Lineage tab's hover wording as a
- * side effect of an unrelated bug fix.
+ * oversight: keeping this identical to what the inert `<title>` already said
+ * avoided also changing the Lineage tab's hover wording as a side effect of
+ * an unrelated bug fix.
  */
 function edgeHoverText(data: EdgeData | undefined): string {
   return `#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}${edgeClassificationSuffix(data)}`;
+}
+
+/**
+ * The VISIBLE tooltip's text: regulatory tags and sensitivity level only.
+ *
+ * WHY THIS IS NOT `edgeHoverText`. The tooltip is a visual affordance on a
+ * dense diagram, and the seq number, leg and endpoint names it used to repeat
+ * are all *already on screen* — the seq number as the edge's own label on the
+ * Execution Flow and Lineage tabs, and the endpoints as the two nodes the
+ * arrow visibly connects. The one thing the graph cannot show, because
+ * `edgeTagLabel` caps the drawn tag to two tokens, is the full tag list and
+ * the level. So the tooltip now carries exactly that and nothing else, which
+ * on the risk trace view (where `hideEdgeLabels` makes hover the ONLY route
+ * to this information) is the whole reason the tooltip exists.
+ *
+ * Reuses `edgeClassificationSuffix` with its leading `' — '` separator
+ * stripped rather than re-deriving the string: the tags/level formatting, the
+ * dedup order, and the "never say 'none'" rule are decisions that belong in
+ * one place, and a second hand-written version of them is exactly the kind of
+ * divergence that drifts silently.
+ *
+ * Returns `''` for an unclassified edge — there is no shorter honest thing to
+ * say, and `DirectedEdge` renders NO tooltip at all in that case rather than
+ * an empty box. The `<title>` still carries the full identity for that edge.
+ */
+function edgeTooltipText(data: EdgeData | undefined): string {
+  return edgeClassificationSuffix(data).replace(/^ — /, '');
 }
 
 function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof DefaultNode>) {
@@ -1699,6 +1728,201 @@ function pointFromPair([x, y]: [number, number]): Point {
  * but does not LOOK clickable, which is a worse defect than it sounds: a reader who
  * never guesses the arrow is a target gets none of this feature.
  */
+/**
+ * AT MOST ONE edge tooltip open across the whole graph.
+ *
+ * Each `DirectedEdge` owns its own tooltip state, so nothing in React's tree
+ * would otherwise stop two from being open at once — and issue #213's headline
+ * symptom was exactly that: tooltips accumulating, several visible together.
+ * Closing the previous one when a new edge opens is a graph-wide invariant, so
+ * it lives in one module-level slot rather than being negotiated between
+ * siblings through a context every edge would re-render on.
+ *
+ * This does NOT depend on the pointer having left the previous edge. That
+ * matters: the pointer leaving is precisely the signal Chrome withholds for an
+ * SVG `<g>` (see `useEdgeTooltip`), and "a different edge just opened" is a
+ * fact we observe directly instead of inferring from an event that may never
+ * arrive.
+ */
+let closeOpenEdgeTooltip: (() => void) | null = null;
+
+/**
+ * Whether an edge's hover tooltip is showing, and the handler that opens it.
+ *
+ * WHY THIS EXISTS INSTEAD OF LETTING PF DRIVE THE TOOLTIP (issue #213).
+ * `Tooltip`, left uncontrolled, hands `triggerRef` to `Popper`, which
+ * attaches both listeners with `element.addEventListener(…)` on the edge
+ * `<g>`. The enter side works everywhere. The LEAVE side does not: Chrome
+ * fires no `mouseleave`, `mouseout` or `pointerleave` on an SVG container
+ * `<g>` whose only rendered content is a thin stroked path. Verified in real
+ * headed Chrome against a live trace — moving the pointer from an edge to
+ * (1200, 800), far off the graph, yields exactly
+ * `["pointerenter", "mouseover", "mouseenter"]` and nothing more, on a `<g>`
+ * that is still connected and still holds the listener. Safari fires the
+ * leave, which is why #213 reproduced in one browser only and why the ten
+ * reproductions on #198 (all first-hover-of-a-fresh-page) passed.
+ *
+ * Without a leave, `Popper` never hides: every hovered edge strands a
+ * tooltip at `opacity: 1` where it opened. They accumulate, and once a
+ * stranded one covers the next edge that edge stops getting `mouseenter`
+ * too — so after two or three hovers a new edge produces NO tooltip, which
+ * is what #213 was filed as.
+ *
+ * THE FIX: keep `mouseenter` (reliable in every browser) for opening, and
+ * DROP the close-on-leave rule altogether rather than trying to reconstruct
+ * the event Chrome withholds. A tooltip closes when a DIFFERENT edge opens
+ * one — a fact observed directly, from an event that does fire — or when a
+ * wheel/scroll moves the arrow out from under it. Nothing else.
+ *
+ * An earlier attempt did reconstruct the leave, via a document-level
+ * `mousemove` that closed the tooltip once `elementFromPoint` was no longer
+ * inside the edge's `<g>`. It fixed the accumulation but made the tooltip
+ * unreadable: the hit target is a ~2px stroke, so the slightest jitter off it
+ * dismissed the tooltip. Requiring another edge to be reached instead is both
+ * simpler and what a reader actually needs — the tooltip stays up long enough
+ * to read.
+ *
+ * Positioning is anchored to the POINTER, not to the edge element; see
+ * `anchorRef` below for why the `<g>`'s own bounding box is the wrong rect.
+ */
+function useEdgeTooltip() {
+  const [isVisible, setIsVisible] = useState(false);
+
+  // THE POSITIONING ANCHOR: a 1x1 rect at the pointer, not the edge `<g>`.
+  //
+  // Handing `Tooltip` the `<g>` as its `triggerRef` puts the tooltip at the
+  // centre of that element's bounding box — and an edge's box is the box of a
+  // long diagonal curve, ~180x25px for a short arrow and larger for a routed
+  // one. Measured in Chrome on the live trace, that placed the tooltip 89-106px
+  // away from the pointer, reading as "belonging to nothing in particular".
+  //
+  // Popper accepts a `triggerRef` that RETURNS an element (it calls the
+  // function when the ref itself has no `.current`), which is the documented
+  // seam for a virtual reference. A detached 1x1 div positioned at the last
+  // pointer coordinates gives Popper a real `getBoundingClientRect` to place
+  // against, so the tooltip lands on the cursor and its `position="top"` /
+  // flip behaviour keep working unchanged.
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const getAnchor = useCallback(() => {
+    if (anchorRef.current == null) {
+      const el = document.createElement('div');
+      el.setAttribute('aria-hidden', 'true');
+      // Never painted and never hit-tested — it exists only so Popper has a
+      // rect to measure. `position: fixed` makes its rect viewport-relative,
+      // which is the coordinate space `MouseEvent.clientX/Y` is already in.
+      el.style.cssText =
+        'position:fixed;width:1px;height:1px;pointer-events:none;opacity:0;left:0;top:0';
+      document.body.appendChild(el);
+      anchorRef.current = el;
+    }
+    return anchorRef.current;
+  }, []);
+
+  const moveAnchorTo = useCallback(
+    (clientX: number, clientY: number) => {
+      const el = getAnchor();
+      el.style.left = `${clientX}px`;
+      el.style.top = `${clientY}px`;
+    },
+    [getAnchor],
+  );
+
+  // The anchor is ours to clean up — it lives outside React's tree.
+  useEffect(
+    () => () => {
+      anchorRef.current?.remove();
+      anchorRef.current = null;
+    },
+    [],
+  );
+
+  // This edge's own closer, identity-stable for the life of the component so
+  // the registry can tell "still mine" from "a newer edge took it".
+  const closeSelf = useCallback(() => setIsVisible(false), []);
+
+  /**
+   * Opens this edge's tooltip at the pointer, closing whichever edge held the
+   * single open slot.
+   *
+   * A DIFFERENT EDGE OPENING is the ONLY thing that closes a tooltip (plus a
+   * wheel/scroll, below, which physically moves the arrow out from under it).
+   * There is deliberately no "pointer left this edge" rule: the hit target is
+   * a ~2px stroke, so any such rule — and the document-level `mousemove` that
+   * implemented it — dismissed the tooltip on the slightest jitter, which is
+   * the "disappears very quickly" half of the reported bug. Requiring the
+   * user to reach another edge instead means the tooltip stays put long
+   * enough to actually read, which is the whole point of it.
+   *
+   * Note this also removes the reliance on `mouseleave` that issue #213 was
+   * about, and does so more simply: there is now no close-on-leave path at all
+   * to be browser-dependent.
+   */
+  const claimSlot = useCallback(() => {
+    if (closeOpenEdgeTooltip != null && closeOpenEdgeTooltip !== closeSelf) {
+      closeOpenEdgeTooltip();
+    }
+    closeOpenEdgeTooltip = closeSelf;
+    setIsVisible(true);
+  }, [closeSelf]);
+
+  const show = useCallback(
+    (clientX: number, clientY: number) => {
+      moveAnchorTo(clientX, clientY);
+      claimSlot();
+    },
+    [claimSlot, moveAnchorTo],
+  );
+
+  /**
+   * The KEYBOARD route: open anchored to the edge element itself.
+   *
+   * A focused edge has no pointer coordinates to anchor to, and the
+   * bounding-box centre that reads badly for a mouse user (it is nowhere near
+   * their cursor) is exactly right here — it is the only meaningful position
+   * for "this element", and it is where a keyboard user's attention already
+   * is. `Tooltip`'s own `trigger="mouseenter focus"` handling is unavailable
+   * to us because the component is controlled, so focus/blur are wired
+   * explicitly at the call site.
+   */
+  const showAtElement = useCallback(
+    (el: Element) => {
+      const r = el.getBoundingClientRect();
+      moveAnchorTo(r.left + r.width / 2, r.top);
+      claimSlot();
+    },
+    [claimSlot, moveAnchorTo],
+  );
+
+  // A scroll, a pan or a zoom moves the edge out from under a tooltip anchored
+  // to a fixed viewport point, so the tooltip would be left describing an
+  // arrow no longer beneath it. This is a genuine "the thing I point at has
+  // moved" dismissal, unlike the pointer-jitter one removed above.
+  useEffect(() => {
+    if (!isVisible) return;
+    const close = () => setIsVisible(false);
+    window.addEventListener('wheel', close, { passive: true });
+    window.addEventListener('scroll', close, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener('wheel', close);
+      window.removeEventListener('scroll', close, { capture: true });
+    };
+  }, [isVisible]);
+
+  // Release the slot on unmount — a re-derived graph or a filter change can
+  // unmount a hovered edge, and a closer left behind would both leak the
+  // component and, once a later edge compared against it, misattribute the
+  // slot. Only relinquish it if it is still OURS: a newer edge may already
+  // hold it, and clearing it then would strand THAT one open.
+  useEffect(
+    () => () => {
+      if (closeOpenEdgeTooltip === closeSelf) closeOpenEdgeTooltip = null;
+    },
+    [closeSelf],
+  );
+
+  return { isVisible, show, showAtElement, hide: closeSelf, getAnchor, moveTo: moveAnchorTo };
+}
+
 function DirectedEdge({
   element,
   onSelect,
@@ -1749,33 +1973,43 @@ function DirectedEdge({
   // the HOC injects the prop regardless of what the type declares.
   const pfProps: Record<string, unknown> = { ...rest };
   delete pfProps.selected;
-  // THE TOOLTIP'S TRIGGER. A plain `useRef`, not a `useState` callback ref —
-  // worth stating why, since a callback ref is the usual answer to "does the
-  // consumer see this ref in time". PF's `Popper` (which `Tooltip` below
-  // forwards `triggerRef` to) resolves the trigger in an effect keyed on
-  // `[triggerRef, trigger]` — both stable here — so that effect runs exactly
-  // ONCE per mount; a later ref mutation schedules no re-render and would
-  // never be picked up. A `useState` ref would dodge that by giving Popper a
-  // fresh, populated value to depend on — but at the cost of a second render
-  // of every edge on mount, and (worse) a fresh `triggerRef` IDENTITY every
-  // render, which would re-run that effect continuously. Neither cost buys
-  // anything here, because REACT ATTACHES REFS DURING THE COMMIT'S REF PHASE,
-  // before any passive effect in that same commit — and the `<g>` below and
-  // the `<Tooltip>` are siblings committed together. So by the time Popper's
-  // effect first runs, `edgeRef.current` is already the `<g>`.
-  //
-  // That argument is sound, but it is NOT enforced by the type system or by
-  // anything else that would fail loudly if it stopped being true (e.g. if a
-  // future edit moved the `<Tooltip>` into a lazily-rendered branch mounted
-  // after the `<g>`, in a separate commit). The guarantee is pinned by a
-  // test instead — `ExecutionFlowGraph.test.tsx`'s "summary appears as a
-  // real tooltip on hover" test IS that tripwire: if the ref were ever
-  // populated too late, that test would start failing.
-  const edgeRef = useRef<SVGGElement>(null);
+  // Visibility is OURS, not PF's — see `useEdgeTooltip` for why Popper's
+  // own hover handling cannot be used here.
+  const {
+    isVisible: isTooltipVisible,
+    show: showTooltip,
+    showAtElement: showTooltipAtElement,
+    hide: hideTooltip,
+    getAnchor: getTooltipAnchor,
+    moveTo: moveTooltipTo,
+  } = useEdgeTooltip();
+  // Tags + level only — see `edgeTooltipText`. Empty for an unclassified edge,
+  // which suppresses the tooltip below.
+  const tooltipText = edgeTooltipText(data);
   return (
     <>
     <g
-      ref={edgeRef}
+      // The one hover event that is reliable on an SVG `<g>` in every
+      // browser, and the only thing that opens a tooltip. Its coordinates
+      // place the tooltip AT THE POINTER rather than at the centre of this
+      // element's bounding box — see `useEdgeTooltip`'s `anchorRef`.
+      onMouseEnter={(e) => showTooltip(e.clientX, e.clientY)}
+      // Re-anchor as the pointer travels along the edge, so a tooltip opened
+      // at one end of a long arrow follows the cursor instead of staying
+      // pinned where the hover began. Does NOT open or close anything — only
+      // `mouseenter` opens, only another edge (or a scroll) closes.
+      onMouseMove={(e) => {
+        if (isTooltipVisible) moveTooltipTo(e.clientX, e.clientY);
+      }}
+      // KEYBOARD PARITY. `Tooltip`'s default `trigger` is
+      // `'mouseenter focus'`, but a CONTROLLED `Tooltip` (`isVisible`) does
+      // none of its own trigger wiring, so focus/blur are handled here or not
+      // at all — and a keyboard user must reach the same tooltip a mouse user
+      // does. Unlike the pointer case, blur DOES close: focus moving away is
+      // an unambiguous, reliably-delivered signal, not the jittery
+      // hit-testing question `mouseleave` on a 2px stroke asks.
+      onFocus={(e) => showTooltipAtElement(e.currentTarget)}
+      onBlur={hideTooltip}
       // `--pf-topology__edge--Stroke` is the right lever, and the only one that
       // works from out here. The line (`.pf-topology__edge__link`) and the
       // ARROWHEAD (`.pf-topology-connector-arrow`) both paint from
@@ -1948,7 +2182,66 @@ function DirectedEdge({
         the accessible name is `aria-label` above, this tooltip is a VISUAL
         affordance only — and keeps that true even if a future edit adds
         `children` for some other reason. */}
-    <Tooltip triggerRef={edgeRef} content={edgeHoverText(data)} aria="none" />
+    {/* Suppressed entirely for an unclassified edge rather than rendered
+        empty: the tooltip's only content is now the classification, so with
+        none there is nothing to show and an empty box following the cursor
+        would be worse than no tooltip. The `<title>` above still carries that
+        edge's full identity either way. */}
+    {tooltipText !== '' && (
+    <Tooltip
+      // The POINTER anchor, not `edgeRef`. Popper calls a function-valued
+      // `triggerRef` to resolve its reference element, which is the seam a
+      // virtual reference goes through — see `useEdgeTooltip`'s `anchorRef`
+      // for why the edge's own bounding box placed the tooltip ~100px from
+      // the cursor.
+      triggerRef={getTooltipAnchor}
+      content={tooltipText}
+      aria="none"
+      // CONTROLLED (issue #213): visibility is ours, so the `mouseleave`
+      // Chrome never fires for an SVG `<g>` stops being load-bearing.
+      // `triggerRef` is still required, and still used: it is what Popper
+      // positions the floating content against.
+      isVisible={isTooltipVisible}
+      // `trigger="manual"` is REQUIRED, not redundant with `isVisible`.
+      // PF gates its listener wiring on `trigger` (default
+      // `'mouseenter focus'`), NOT on `isVisible`: `Tooltip.tsx` passes
+      // `onMouseEnter/onMouseLeave/onFocus/onBlur` plus
+      // `onPopperMouseEnter/onPopperMouseLeave` and a document-level
+      // Escape handler down to `Popper` whenever those triggers are
+      // named, and `Popper` attaches each one it is given. Those
+      // callbacks drive PF's OWN internal `visible` state, which our
+      // `isVisible` prop only re-syncs when the prop itself changes
+      // value — so any of them firing desyncs the tooltip from what this
+      // component believes is open, and it would stay desynced until the
+      // next edge hover. `'manual'` is the one value that makes
+      // `Tooltip.tsx` pass `false` for all of them, so nothing is
+      // attached and there is nothing to desync.
+      //
+      // Two of those paths happen to be inert in PF 5.4.14 anyway, but
+      // only by accident and NOT because of `isVisible`: the popper-side
+      // mouseenter/mouseleave never attach (`Tooltip.tsx` recreates
+      // `popperRef` with `createRef()` in its render body, so the ref
+      // object `Popper` captured in its effect is always a stale one and
+      // `popperElement` is null when the listeners would be added), and
+      // the Escape handler fires but reads a stale `visible === false`
+      // from its closure and no-ops. Depending on either would be
+      // depending on someone else's bug staying unfixed.
+      trigger="manual"
+      // No open/close animation delay. The delays exist to keep a
+      // tooltip from flickering as a pointer crosses a dense row of
+      // triggers; here a single tooltip is replaced outright when
+      // another edge claims the slot, so a 300ms entry delay only makes
+      // the swap look sluggish.
+      entryDelay={0}
+      exitDelay={0}
+      // The fade itself is what keeps a hidden tooltip's node mounted (Popper
+      // unmounts it only after `animationDuration`). A stranded-looking node
+      // during that window is harmless in a browser, but it is indistinguishable
+      // from the #213 bug when inspecting the DOM — so dismissal here is
+      // immediate and total rather than animated.
+      animationDuration={0}
+    />
+    )}
     </>
   );
 }
