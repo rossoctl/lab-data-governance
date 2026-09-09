@@ -287,15 +287,25 @@ from a single span. This varies by which P-interactions algorithm wrote the legs
   caller→callee (see "Interaction leg" — orientation is on the parent, not the
   leg); only the leg's timing/payload/error/`seq` are per-leg.
 
-A future Case-Y source (two spans, distinct `span_id`s, shared exchange id,
-arriving at different times) produces fully **observed** legs finalizing
-independently. Consumers reading a `response` leg's `occurred_at` as "when the
-response actually happened" are correct for the graph's observed-style and the
-future observed legs, and approximately correct (= call return time) for the
-streaming algorithm's derived ones. The split into legs is a **boundary
-projection**: the verified `--scramble`-gated streaming algorithm holds one
-interaction internally and is unchanged (ADR-0025); the graph algorithm owns its
-per-leg projection in `graph_adapter`.
+- **Sidecar algorithm — fully observed legs (Case-Y, ADR-0030).** The
+  AuthBridge sidecar source emits a request span and a response span as two
+  distinct `(trace_id, span_id)` rows arriving at different times, sharing an
+  exchange id (= the request span's own span id). Each leg's
+  `occurred_at`/`payload_hash`/`error` comes from its own span; the request
+  leg's `error` is NULL (the wire carries no request-side outcome), and the
+  response leg's `seq` clamps to `max(request.seq, response.seq)` so
+  request-before-response ordering survives scrambled arrival. A missing
+  response leg IS the in-flight signal — never fabricated.
+
+Consumers reading a `response` leg's `occurred_at` as "when the response
+actually happened" are correct for the graph's observed-style and the sidecar's
+observed legs, and approximately correct (= call return time) for the streaming
+algorithm's derived ones. The split into legs is a **boundary projection**: the
+verified `--scramble`-gated streaming algorithm holds one interaction
+internally and is unchanged (ADR-0025); the graph algorithm owns its per-leg
+projection in `graph_adapter`; the sidecar algorithm owns its own write path
+(`sidecar._write`, ADR-0030 — its whole-trace reconcile needs trace-scoped
+deletes `state.flush` deliberately forbids).
 _Avoid_: assuming every `response` leg was observed from its own span — the
 streaming algorithm's derived legs share the request span.
 
@@ -439,8 +449,11 @@ The processor that reads stored **Spans** and derives **Entities**,
 `interaction_payloads` tables. Implemented by the
 `data_governance.processors.interactions` module (the module name drops the
 `P-` prefix, mirroring how `P-otel-receiver` is the `otlp_receiver` module).
-Runs after `P-otel-receiver`; semantically
-aware where the receiver is not. Out of scope for v1 ingestion; introduced
+One of three selectable derivations drives it (`INTERACTIONS_ALGORITHM`, one
+at a time, shared cursor): `streaming` (ADR-0007, the code default), `graph`
+(ADR-0026), or `sidecar` (ADR-0030 — the two-span AuthBridge wire-fact
+reconcile; the deployed choice here). Runs after `P-otel-receiver`;
+semantically aware where the receiver is not. Out of scope for v1 ingestion; introduced
 as a later increment (v2-shaped — it crosses PROJECT.md §4's "no payload
 extraction in v1" line deliberately). Streaming consumer of `spans`
 cursored by `seq` (§6 pattern), woken by `LISTEN dg_spans_inserted` with a
@@ -902,7 +915,8 @@ present on both the `GET /api/traces` collection rows and the
   backend composes its REST endpoints from it. The REST layer is
   resource-oriented and namespaced: JSON resources under `/api/`
   (`/api/traces`, `/api/traces/{tid}`, `/api/traces/{tid}/spans[/{sid}[/children]]`,
-  the interaction/entity sub-resources, `/api/payloads/{hash}`); HTML pages
+  the interaction/entity sub-resources, the cross-trace interaction feed
+  `/api/interactions?since_seq&limit`, `/api/payloads/{hash}`); HTML pages
   and JS assets under `/ui/`. The single `GET /spans` pass-through was retired
   in favour of these — the library `get_spans` (and its `root_only` /
   `parent_id` parameters) is unchanged; only the HTTP surface was reshaped.
