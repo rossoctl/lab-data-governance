@@ -2985,6 +2985,107 @@ describe('EntityGraph risk colouring (issue #170)', () => {
     });
   });
 
+  /**
+   * EDGE HOVER TOOLTIP DISMISSAL (issue #213, follow-up to #198).
+   *
+   * #198 made the tooltip APPEAR; it did not make it go away. The reporter's
+   * "no tooltip" was the second-order symptom of a dismissal failure, which
+   * is why the ten reproductions attached to #198 all passed: the first
+   * hover of a fresh page always works.
+   *
+   * WHAT ACTUALLY HAPPENS IN CHROME. PF's `Popper` attaches its hide
+   * listener with `element.addEventListener('mouseleave', …)` where
+   * `element` is the edge `<g>` handed to `triggerRef`. Chrome does not
+   * fire `mouseleave`/`mouseout`/`pointerleave` on an SVG container `<g>`
+   * whose only rendered content is a thin stroked path — the enter side
+   * fires, the leave side never does. Verified against the live cluster in
+   * real headed Chrome: moving the pointer from an edge to (1200, 800),
+   * far off the graph, produced the event sequence
+   * `["pointerenter", "mouseover", "mouseenter"]` and nothing more, on a
+   * `<g>` that was still connected and still held the listener. Safari
+   * fires the leave correctly, which is exactly why the bug reproduces in
+   * one browser and not the other.
+   *
+   * Consequence: every hovered edge strands a tooltip at `opacity: 1` at
+   * the position it had when it opened. They accumulate (observed totals
+   * 1, 2, 2, 2, 3, 4, 4 over seven sequential hovers), and once a stranded
+   * tooltip covers the next edge, that edge stops receiving `mouseenter`
+   * too — so the third consecutive hover produces NO new tooltip at all.
+   * That is the reported "tooltip does not appear".
+   *
+   * WHY THESE TESTS LOOK LIKE THIS. jsdom has no hit-testing and no SVG
+   * layout, so it cannot reproduce Chrome's *missing* event — firing
+   * `mouseLeave` in jsdom would test a listener Chrome never invokes and
+   * would pass against the broken code. Both tests below therefore fire
+   * ONLY the enter side, exactly as Chrome does, and assert the tooltip is
+   * dismissed anyway — via a path that does not depend on the `<g>`
+   * receiving a leave event. That is the property the fix has to hold, and
+   * the only one that distinguishes fixed from broken here.
+   */
+  describe('edge hover tooltip dismissal (issue #213)', () => {
+    function renderTwoEdges() {
+      return renderWithProviders(
+        <EntityGraph
+          traceId="T1"
+          spec={riskSpec()}
+          classificationByInteraction={new Map([['i1', { tags: ['PII'], levels: ['RESTRICTED'] }]])}
+          hideEdgeLabels
+        />,
+      );
+    }
+
+    const triggerFor = (id: string) =>
+      document.querySelector(`[data-id="${id}"] .dg-graph-edge-focus`)!;
+
+    /**
+     * Every edge tooltip currently in the DOM.
+     *
+     * PRESENCE, not inline opacity, is the signal — deliberately. PF's `Popper`
+     * fades a dismissed tooltip (`setOpacity(0)`) and unmounts the node only
+     * after `animationDuration`; `DirectedEdge` passes `animationDuration={0}`
+     * so a dismissed tooltip leaves the DOM promptly rather than lingering
+     * invisibly. Filtering on `style.opacity` instead would be actively
+     * misleading here: opacity is ALSO momentarily `0` on the entry frame of a
+     * tooltip that is opening correctly, so a hidden node and a just-opened one
+     * are indistinguishable by that attribute.
+     */
+    const visibleTooltips = () => screen.queryAllByRole('tooltip');
+
+    it('strands no tooltip when the pointer moves to another edge without the first ever firing mouseleave — the Chrome case', async () => {
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      // Enter side ONLY, on both edges in turn. This is precisely the event
+      // sequence Chrome delivers: no leave is ever dispatched on the `<g>`
+      // the first tooltip is anchored to.
+      fireEvent.mouseEnter(triggerFor('i1:request'));
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+
+      fireEvent.mouseEnter(triggerFor('i1:response'));
+
+      // Exactly one visible tooltip, and it is the SECOND edge's — not two
+      // stacked, and not the first edge's left standing while the second
+      // silently fails to open.
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+      expect(visibleTooltips()[0]).toHaveTextContent('#2 response');
+    });
+
+    it('dismisses the tooltip when the pointer leaves the graph surface entirely, with no mouseleave on the edge', async () => {
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      fireEvent.mouseEnter(triggerFor('i1:request'));
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+
+      // The pointer moves away over the document, never re-entering an edge.
+      // Chrome gives the `<g>` nothing here, so a `<g>`-anchored hide
+      // listener can never run — dismissal has to come from elsewhere.
+      fireEvent.mouseMove(document.body, { clientX: 1200, clientY: 800 });
+
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(0));
+    });
+  });
+
   // compactSurface (issue #170 follow-up): jsdom applies no stylesheet, so it
   // cannot see the shorter rendered height itself — see this file's header on
   // why CSS effects are asserted through className presence, never through a
