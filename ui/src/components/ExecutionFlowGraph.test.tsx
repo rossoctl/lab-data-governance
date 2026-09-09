@@ -3228,6 +3228,47 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       await waitFor(() => expect(visibleTooltips()[0]).toHaveTextContent('GDPR (INTERNAL)'));
       expect(visibleTooltips()).toHaveLength(1);
     });
+
+    // PF's listener wiring is gated on `trigger` (default 'mouseenter focus'),
+    // NOT on `isVisible` — so a controlled tooltip still gets PF's own
+    // show/hide callbacks attached, driving an internal `visible` state that
+    // our prop re-syncs only when the prop CHANGES. `trigger="manual"` is what
+    // stops that. This guards the trigger-element listeners specifically,
+    // because those are the ones PF genuinely attaches: the popper-side
+    // mouseenter/mouseleave and the document Escape handler are inert in
+    // 5.4.14 only through stale-ref/stale-closure bugs of PF's own, so
+    // asserting on them would pass with or without the fix and prove nothing.
+    it('does not let PF\'s own trigger listeners desync the tooltip from our state', async () => {
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      fireEvent.mouseEnter(triggerFor('i1:request'));
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+
+      // The anchor Popper resolved `triggerRef` to. With the default trigger
+      // PF would have hung mouseleave/blur on it; a `mouseleave` here would
+      // then flip PF's internal `visible` to false and blank the tooltip while
+      // this component still considers it open — and, because our `isVisible`
+      // prop never changed value, it would stay blank until another edge is
+      // hovered. With `trigger="manual"` nothing is attached and it is a no-op.
+      const anchor = document.querySelector<HTMLElement>(
+        'body > div[aria-hidden="true"][style*="position: fixed"]',
+      );
+      expect(anchor).not.toBeNull();
+
+      fireEvent.mouseLeave(anchor!);
+      fireEvent.blur(anchor!);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(visibleTooltips()).toHaveLength(1);
+      expect(visibleTooltips()[0]).toHaveTextContent('PII (RESTRICTED)');
+
+      // Still replaceable afterwards — i.e. left genuinely open, not merely
+      // still-mounted-but-desynced.
+      fireEvent.mouseEnter(triggerFor('i2:request'));
+      await waitFor(() => expect(visibleTooltips()[0]).toHaveTextContent('GDPR (INTERNAL)'));
+      expect(visibleTooltips()).toHaveLength(1);
+    });
   });
 
   // compactSurface (issue #170 follow-up): jsdom applies no stylesheet, so it

@@ -2197,18 +2197,41 @@ function DirectedEdge({
       triggerRef={getTooltipAnchor}
       content={tooltipText}
       aria="none"
-      // CONTROLLED (issue #213). `isVisible` makes PF skip its own
-      // trigger wiring entirely — `Popper` gates every
-      // `addEventListener` on the uncontrolled path — so the
-      // `mouseleave` Chrome never fires for an SVG `<g>` stops being
-      // load-bearing. `triggerRef` is still required, and still used:
-      // it is what Popper positions the floating content against.
+      // CONTROLLED (issue #213): visibility is ours, so the `mouseleave`
+      // Chrome never fires for an SVG `<g>` stops being load-bearing.
+      // `triggerRef` is still required, and still used: it is what Popper
+      // positions the floating content against.
       isVisible={isTooltipVisible}
+      // `trigger="manual"` is REQUIRED, not redundant with `isVisible`.
+      // PF gates its listener wiring on `trigger` (default
+      // `'mouseenter focus'`), NOT on `isVisible`: `Tooltip.tsx` passes
+      // `onMouseEnter/onMouseLeave/onFocus/onBlur` plus
+      // `onPopperMouseEnter/onPopperMouseLeave` and a document-level
+      // Escape handler down to `Popper` whenever those triggers are
+      // named, and `Popper` attaches each one it is given. Those
+      // callbacks drive PF's OWN internal `visible` state, which our
+      // `isVisible` prop only re-syncs when the prop itself changes
+      // value — so any of them firing desyncs the tooltip from what this
+      // component believes is open, and it would stay desynced until the
+      // next edge hover. `'manual'` is the one value that makes
+      // `Tooltip.tsx` pass `false` for all of them, so nothing is
+      // attached and there is nothing to desync.
+      //
+      // Two of those paths happen to be inert in PF 5.4.14 anyway, but
+      // only by accident and NOT because of `isVisible`: the popper-side
+      // mouseenter/mouseleave never attach (`Tooltip.tsx` recreates
+      // `popperRef` with `createRef()` in its render body, so the ref
+      // object `Popper` captured in its effect is always a stale one and
+      // `popperElement` is null when the listeners would be added), and
+      // the Escape handler fires but reads a stale `visible === false`
+      // from its closure and no-ops. Depending on either would be
+      // depending on someone else's bug staying unfixed.
+      trigger="manual"
       // No open/close animation delay. The delays exist to keep a
       // tooltip from flickering as a pointer crosses a dense row of
-      // triggers, but our close is driven by `mousemove` rather than by
-      // a leave event, and a 300ms exit delay there reads as the
-      // tooltip lagging behind the cursor.
+      // triggers; here a single tooltip is replaced outright when
+      // another edge claims the slot, so a 300ms entry delay only makes
+      // the swap look sluggish.
       entryDelay={0}
       exitDelay={0}
       // The fade itself is what keeps a hidden tooltip's node mounted (Popper
