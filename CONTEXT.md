@@ -159,6 +159,18 @@ The stable, kind-specific identity string for an **Entity**. One row per
   its last attached interaction retargets away. Per ADR-0011.)
 - `service` → `service:<hostname>` (port out of scope for v2)
 
+Under the `sidecar` algorithm (ADR-0030, wire contract §7) the formats above
+give way to the sidecar's facts: an entity that IS a pod — an `agent` or
+deployed `tool` identified by `lineage.self.id` — is keyed
+`<kind>:<lineage.self.namespace>/<lineage.self.id>`, and its namespace is
+stored again in `entities.namespace` (migration 0020) so it can be read
+without parsing the key. The namespace sits *inside* the key because the key
+is what the row id hashes and what `UNIQUE` guards: a column alone could not
+split `team1/weather-service` from `team2/weather-service`. A `user`, an
+anonymous `client`, an `llm` endpoint and an un-sidecared callee named by
+`peer.host` have no namespace; a pod whose spans predate contract v1.7 keys
+without one (absence recorded, never guessed).
+
 **Canonical service name**:
 A **Span**'s `service.name` with its `openinference.project.name` stripped
 as a prefix (with optional trailing `-` or `_` separator), if both

@@ -62,9 +62,9 @@ def seeded(configured_db: str) -> str:
                 (_TID, sid, name),
             )
         conn.execute(
-            "INSERT INTO entities (id, kind, natural_key, display_name, "
+            "INSERT INTO entities (id, kind, natural_key, display_name, namespace, "
             "detected_from, original_seq) "
-            "VALUES (%s, 'agent', 'nk-1', 'Agent One', 'span-attr', 1)",
+            "VALUES (%s, 'agent', 'nk-1', 'Agent One', 'team1', 'span-attr', 1)",
             (_ENT_ID,),
         )
         conn.execute(
@@ -324,6 +324,7 @@ def test_entities_list_is_lean(seeded, api_server):
     (ent,) = body["entities"]
     assert ent["id"] == _ENT_ID
     assert ent["display_name"] == "Agent One"
+    assert ent["namespace"] == "team1"  # migration 0020, read through EntityView
     assert "spans_by_entity" not in body
     assert "interactions" not in body
 

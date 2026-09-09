@@ -158,6 +158,7 @@ def test_graph_wire_shape(seeded: str, api_server: SpansApiServer) -> None:
         "natural_key",
         "kind",
         "display_name",
+        "namespace",  # wire contract v1.7 / migration 0020; null for non-pods
         "hops",
     }
     assert set(body["legs"][0]) == {
