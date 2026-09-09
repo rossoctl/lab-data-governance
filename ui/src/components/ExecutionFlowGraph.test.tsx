@@ -2897,7 +2897,21 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
     });
 
-    it('hides the tooltip again on mouseleave', async () => {
+    it('KEEPS the tooltip up when the pointer leaves the edge — it is dismissed only by another edge', async () => {
+      // BEHAVIOUR INTENTIONALLY INVERTED. This test previously asserted the
+      // tooltip hid on `mouseleave`. Two things retired that expectation:
+      //
+      //  1. Chrome never fires `mouseleave` on an SVG `<g>` whose only
+      //     rendered content is a thin stroked path (issue #213), so the rule
+      //     was never actually in force in the browser where it mattered — the
+      //     test passed in jsdom while the real behaviour was broken.
+      //  2. An attempt to reconstruct the leave (a document-level `mousemove`
+      //     testing `elementFromPoint`) made the tooltip unreadable: the hit
+      //     target is ~2px wide, so the slightest jitter dismissed it.
+      //
+      // The tooltip now persists until a DIFFERENT edge is hovered (or a
+      // wheel/scroll moves the arrow), which is what makes it readable. This
+      // test guards that persistence — the exact opposite of what it used to.
       renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
       await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
@@ -2906,7 +2920,9 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
 
       fireEvent.mouseLeave(trigger);
-      await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument(), { timeout: 2000 });
+      // Given ample time in which the old rule would have hidden it, it stays.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(screen.getByRole('tooltip')).toBeInTheDocument();
     });
 
     it('renders NO tooltip at all for an unclassified edge — never an empty box, and never the word "none"', async () => {
@@ -3130,19 +3146,87 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       expect(visibleTooltips()[0]).not.toHaveTextContent('PII');
     });
 
-    it('dismisses the tooltip when the pointer leaves the graph surface entirely, with no mouseleave on the edge', async () => {
+    it('anchors the tooltip to the POINTER, not to the edge\'s bounding box', async () => {
+      // THE POSITIONING HALF of the reported bug. Handing `Tooltip` the edge
+      // `<g>` as its `triggerRef` placed the tooltip at the centre of that
+      // element's bounding box — the box of a long diagonal curve, measured at
+      // ~180x25px for a short arrow — which put it 89-106px from the cursor in
+      // Chrome. The fix anchors to a 1x1 element positioned at the pointer.
+      //
+      // jsdom reports every rect as 0x0, so the tooltip's own on-screen
+      // position cannot be asserted here. What IS observable, and what the fix
+      // actually turns on, is that Popper is handed a reference element which
+      // tracks the pointer rather than being the edge itself.
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const edge = triggerFor('i1:request');
+      fireEvent.mouseEnter(edge, { clientX: 640, clientY: 480 });
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+
+      const anchor = document.querySelector<HTMLElement>('body > div[aria-hidden="true"]');
+      expect(anchor).not.toBeNull();
+      // Not the edge, and positioned exactly where the pointer entered.
+      expect(anchor).not.toBe(edge);
+      expect(anchor!.style.position).toBe('fixed');
+      expect(anchor!.style.left).toBe('640px');
+      expect(anchor!.style.top).toBe('480px');
+      // Never paintable and never hit-testable — it exists only to be measured.
+      expect(anchor!.style.pointerEvents).toBe('none');
+
+      // It TRACKS the pointer along the edge rather than staying where the
+      // hover began, so a tooltip on a long arrow follows the cursor.
+      fireEvent.mouseMove(edge, { clientX: 700, clientY: 500 });
+      expect(anchor!.style.left).toBe('700px');
+      expect(anchor!.style.top).toBe('500px');
+    });
+
+    it('opens on keyboard focus anchored to the edge itself, and closes on blur', async () => {
+      // The keyboard route has no pointer coordinates, so the bounding-box
+      // position that reads badly for a mouse user is the only meaningful one
+      // here. And unlike the pointer case, BLUR does close: focus moving away
+      // is an unambiguous, reliably-delivered signal, not the jittery
+      // hit-testing question `mouseleave` on a 2px stroke asks. A controlled
+      // `Tooltip` does none of its own `trigger="mouseenter focus"` wiring, so
+      // without explicit focus/blur handlers this path silently disappears.
+      renderTwoEdges();
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+      const edge = triggerFor('i1:request');
+      fireEvent.focus(edge);
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+      expect(visibleTooltips()[0]).toHaveTextContent('PII (RESTRICTED)');
+
+      fireEvent.blur(edge);
+      await waitFor(() => expect(visibleTooltips()).toHaveLength(0));
+    });
+
+    it('keeps exactly one tooltip up when the pointer wanders off the graph, and still replaces it on the next edge', async () => {
+      // SUPERSEDES an assertion that the pointer leaving the graph dismissed
+      // the tooltip. That rule was implemented with a document-level
+      // `mousemove` and had to go: on a ~2px hit target it fired constantly,
+      // dismissing the tooltip before it could be read. Persistence is now
+      // the requirement ("remain until the mouse is moved to a different
+      // edge"), so what needs guarding is that wandering off does NOT strand
+      // a SECOND tooltip or break the replacement path — the accumulation
+      // that issue #213 was actually about.
       renderTwoEdges();
       await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
       fireEvent.mouseEnter(triggerFor('i1:request'));
       await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
 
-      // The pointer moves away over the document, never re-entering an edge.
-      // Chrome gives the `<g>` nothing here, so a `<g>`-anchored hide
-      // listener can never run — dismissal has to come from elsewhere.
       fireEvent.mouseMove(document.body, { clientX: 1200, clientY: 800 });
+      await new Promise((r) => setTimeout(r, 100));
 
-      await waitFor(() => expect(visibleTooltips()).toHaveLength(0));
+      // Still exactly one, still the first edge's — persistent, not stranded.
+      expect(visibleTooltips()).toHaveLength(1);
+      expect(visibleTooltips()[0]).toHaveTextContent('PII (RESTRICTED)');
+
+      // And the replacement path still works after the detour.
+      fireEvent.mouseEnter(triggerFor('i2:request'));
+      await waitFor(() => expect(visibleTooltips()[0]).toHaveTextContent('GDPR (INTERNAL)'));
+      expect(visibleTooltips()).toHaveLength(1);
     });
   });
 
