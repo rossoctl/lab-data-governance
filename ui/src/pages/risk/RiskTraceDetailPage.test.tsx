@@ -186,7 +186,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
     });
     renderWithProviders(harness(), { route: '/risk/traces/t1' });
 
-    await waitFor(() => expect(screen.getByText('Policy decisions')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Policy events')).toBeInTheDocument());
 
     const detailCalls = (fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) =>
       String(url).includes('/risk/traces/'),
@@ -341,6 +341,54 @@ describe('RiskTraceDetailPage content (#170)', () => {
     expect(screen.getByText('Rule detail page')).toBeInTheDocument();
   });
 
+  // Issue #222 terminology. The header count label had no coverage before, so
+  // these are new tests rather than edits: singular and plural are both
+  // asserted because the label pluralizes ("1 policy event" vs "2 policy
+  // events"), and the retired "violation(s)" wording is asserted absent so a
+  // partial rename cannot pass.
+  it('labels the header count "policy events", pluralized, not "violations"', async () => {
+    mockFetchRouter({
+      detail: {
+        trace_risk: { trace_id: 't1' },
+        interactions: [
+          interaction({ interaction_id: 'i1' }),
+          interaction({ interaction_id: 'i2', risk: risk({ interaction_id: 'i2' }) }),
+        ],
+      },
+    });
+    renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+    await waitFor(() => expect(screen.getByText('2 policy events')).toBeInTheDocument());
+    expect(screen.queryByText(/violation/i)).not.toBeInTheDocument();
+  });
+
+  it('uses the singular "1 policy event" for a trace with exactly one', async () => {
+    mockFetchRouter({
+      detail: {
+        trace_risk: { trace_id: 't1' },
+        interactions: [interaction({ interaction_id: 'i1' })],
+      },
+    });
+    renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+    await waitFor(() => expect(screen.getByText('1 policy event')).toBeInTheDocument());
+  });
+
+  it('says "0 policy events" and shows no retired wording when none triggered', async () => {
+    mockFetchRouter({
+      detail: {
+        trace_risk: { trace_id: 't1' },
+        interactions: [interaction({ risk: null })],
+      },
+    });
+    renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+    await waitFor(() => expect(screen.getByText('No policy events')).toBeInTheDocument());
+    expect(screen.getByText('0 policy events')).toBeInTheDocument();
+    expect(screen.queryByText(/violation/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Policy decisions')).not.toBeInTheDocument();
+  });
+
   it('shows the diagram and an empty state, with no stepper, when there are zero violations', async () => {
     mockFetchRouter({
       detail: {
@@ -350,7 +398,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
     });
     renderWithProviders(harness(), { route: '/risk/traces/t1' });
 
-    await waitFor(() => expect(screen.getByText('No policy violations')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('No policy events')).toBeInTheDocument());
     expect(screen.getByText('Execution flow')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /previous/i })).not.toBeInTheDocument();
     expect(screen.queryByTestId('policy-decision-panel')).not.toBeInTheDocument();
@@ -377,7 +425,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
     mockFetchRouter({ entities: { status: 500 } });
     renderWithProviders(harness(), { route: '/risk/traces/t1' });
 
-    await waitFor(() => expect(screen.getByText('Policy decisions')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Policy events')).toBeInTheDocument());
     expect(screen.getByText('Execution flow')).toBeInTheDocument();
     // entityKindsOf dedupes via a Set — caller and callee both degrade to the
     // same 'unknown' kind, so the row shows one 'unknown', not two.
@@ -434,7 +482,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
       });
       renderWithProviders(harness(), { route: '/risk/traces/t1' });
 
-      await waitFor(() => expect(screen.getByText('Policy decisions')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('Policy events')).toBeInTheDocument());
       expect(
         document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent,
       ).toBe('PII, GDPR');
@@ -449,7 +497,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
       });
       renderWithProviders(harness(), { route: '/risk/traces/t1' });
 
-      await waitFor(() => expect(screen.getByText('No policy violations')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText('No policy events')).toBeInTheDocument());
       const graphSection = screen.getByText('Execution flow').closest('div')?.parentElement ?? document.body;
       expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag')).toBeNull();
       expect(within(graphSection as HTMLElement).queryByText(/\bnone\b/i)).not.toBeInTheDocument();

@@ -33,8 +33,17 @@ function riskyLine(tile: TileCounts): string {
  * forced into the same "risky (%)" phrasing.
  *
  * The `Users` tile is deliberately omitted (issue #169 follow-up) — agents
- * and workflows are the risk surfaces this dashboard's audience acts on;
+ * and traces are the risk surfaces this dashboard's audience acts on;
  * per-user counts weren't judged worth a tile's worth of space here.
+ *
+ * Labels follow issue #222's decided vocabulary: "Monitored interactions"
+ * (the summary-tile form of the shorter "Interactions" used in table
+ * columns), "Rules triggered" (never "fired"), and "Traces" (never
+ * "Workflows" — temporary until the backend supports workflows). The API
+ * field names deliberately keep their server-side spelling
+ * (`workflows`, `evaluated_interactions`, `rules_fired`): renaming a
+ * rendered label is a UI change, renaming a response field is a breaking API
+ * change, so the two are allowed to diverge here.
  */
 export function SummaryTiles({ summary }: SummaryTilesProps) {
   return (
@@ -43,15 +52,15 @@ export function SummaryTiles({ summary }: SummaryTilesProps) {
         <div>{summary.agents.total} total</div>
         <DangerLine>{riskyLine(summary.agents)}</DangerLine>
       </Tile>
-      <Tile title="Workflows">
+      <Tile title="Traces">
         <div>{summary.workflows.total} total</div>
         <DangerLine>{riskyLine(summary.workflows)}</DangerLine>
       </Tile>
-      <Tile title="Evaluated actions">
+      <Tile title="Monitored interactions">
         <div>{summary.evaluated_interactions.total} total</div>
         <DangerLine>{riskyLine(summary.evaluated_interactions)}</DangerLine>
       </Tile>
-      <Tile title="Rules fired">
+      <Tile title="Rules triggered">
         <div>{summary.rules_fired.total} total</div>
         <DangerLine>{summary.rules_fired.critical} critical</DangerLine>
       </Tile>

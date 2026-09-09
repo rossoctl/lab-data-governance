@@ -118,6 +118,20 @@ describe('RiskDashboardPage content (#169)', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
+  // Issue #222: the summary tile is "Monitored interactions", so the empty
+  // state that stands in for it says the same thing. Previously uncovered.
+  it('uses the "monitored interactions" wording in the no-data empty state', async () => {
+    mockFetchRouter({
+      summary: summaryBody({ evaluated_interactions: { total: 0, risky: 0, risky_pct: 0 } }),
+    });
+    renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
+
+    await waitFor(() =>
+      expect(screen.getByText('No monitored interactions in this window.')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/evaluated/i)).not.toBeInTheDocument();
+  });
+
   it('renders all cards once data loads, under their two pane titles', async () => {
     mockFetchRouter();
     renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
@@ -366,7 +380,7 @@ describe('RiskDashboardPage time selector visibility (#215)', () => {
     renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
 
     await waitFor(() =>
-      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+      expect(screen.getByText(/no monitored interactions in this window/i)).toBeInTheDocument(),
     );
     for (const button of windowButtons()) {
       expect(button).toBeInTheDocument();
@@ -420,7 +434,7 @@ describe('RiskDashboardPage time selector visibility (#215)', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+      expect(screen.getByText(/no monitored interactions in this window/i)).toBeInTheDocument(),
     );
 
     await userEvent.click(screen.getByRole('button', { name: 'Last 7 days' }));
@@ -431,7 +445,7 @@ describe('RiskDashboardPage time selector visibility (#215)', () => {
     // The empty state gives way to real content — the tiles are back.
     await waitFor(() => expect(screen.getByText('Agents')).toBeInTheDocument());
     expect(
-      screen.queryByText(/no evaluated interactions in this window/i),
+      screen.queryByText(/no monitored interactions in this window/i),
     ).not.toBeInTheDocument();
   });
 
@@ -440,7 +454,7 @@ describe('RiskDashboardPage time selector visibility (#215)', () => {
     renderWithProviders(<RiskDashboardPage />, { route: '/risk?window=30d' });
 
     await waitFor(() =>
-      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+      expect(screen.getByText(/no monitored interactions in this window/i)).toBeInTheDocument(),
     );
     expect(screen.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute(
       'aria-pressed',
@@ -502,7 +516,7 @@ describe('RiskDashboardPage time selector visibility (#215)', () => {
     renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
 
     await waitFor(() =>
-      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+      expect(screen.getByText(/no monitored interactions in this window/i)).toBeInTheDocument(),
     );
     expect(screen.getAllByRole('button', { name: 'Last 7 days' })).toHaveLength(1);
     expect(screen.getAllByLabelText('Time window')).toHaveLength(1);
@@ -516,7 +530,7 @@ describe('RiskDashboardPage time selector visibility (#215)', () => {
     renderWithProviders(<RiskDashboardPage />, { route: '/risk' });
 
     await waitFor(() =>
-      expect(screen.getByText(/no evaluated interactions in this window/i)).toBeInTheDocument(),
+      expect(screen.getByText(/no monitored interactions in this window/i)).toBeInTheDocument(),
     );
     expect(screen.queryByText('Agents')).not.toBeInTheDocument();
     expect(screen.queryByText('Risk Distribution')).not.toBeInTheDocument();

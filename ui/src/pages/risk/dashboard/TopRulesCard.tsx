@@ -32,7 +32,7 @@ export function TopRulesCard({ items }: TopRulesCardProps) {
       <CardBody>
         {items.length === 0 ? (
           <EmptyState variant="xs">
-            <EmptyStateBody>No rules fired in this window.</EmptyStateBody>
+            <EmptyStateBody>No rules triggered in this window.</EmptyStateBody>
           </EmptyState>
         ) : (
           <Table aria-label="Top rules" variant="compact">

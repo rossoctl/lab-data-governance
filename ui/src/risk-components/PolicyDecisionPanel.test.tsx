@@ -212,10 +212,31 @@ describe('PolicyDecisionPanel', () => {
     expect(screen.getByText('unknown')).toBeInTheDocument();
   });
 
-  it("renders the violation's summary as the Action", () => {
+  it("renders the violation's summary as the Interaction", () => {
     renderPanel(mkViolation({ summary: 'agent calls search with a customer record' }), new Map([['DG-001', mkRule()]]), ENTITIES);
 
     expect(screen.getByText('agent calls search with a customer record')).toBeInTheDocument();
+  });
+
+  // Issue #222 terminology: the card is one "Policy event" and its first row
+  // is the "Interaction" it describes. Both term labels were previously
+  // uncovered (only the row's *value* was asserted), so these pin the labels
+  // themselves and assert the retired wording is gone — "Action" is checked
+  // with an exact-match matcher so it does not accidentally pass on the
+  // unrelated "Allowed actions" row, which keeps its name.
+  it('titles the card "Policy event" and labels the first row "Interaction"', () => {
+    renderPanel(mkViolation(), new Map([['DG-001', mkRule()]]), ENTITIES);
+
+    expect(screen.getByText('Policy event')).toBeInTheDocument();
+    expect(screen.getByText('Interaction')).toBeInTheDocument();
+    expect(screen.queryByText('Policy decision')).not.toBeInTheDocument();
+    expect(screen.queryByText('Action', { exact: true })).not.toBeInTheDocument();
+  });
+
+  it('keeps the unrelated "Allowed actions" row, which issue #222 does not rename', () => {
+    renderPanel(mkViolation(), new Map([['DG-001', mkRule()]]), ENTITIES);
+
+    expect(screen.getByText('Allowed actions')).toBeInTheDocument();
   });
 
   it("renders the risk level as a RiskBadge", () => {
