@@ -2852,7 +2852,12 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       fireEvent.mouseEnter(trigger);
 
       await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
-      expect(screen.getByRole('tooltip')).toHaveTextContent('#1 request — summary-i1 — PII, GDPR (RESTRICTED)');
+      // Tags + level ONLY. The seq number / leg / endpoints this used to
+      // repeat were dropped when the tooltip was cut down to the
+      // classification alone (see `edgeTooltipText`); the `<title>` below
+      // still carries the long form, and the byte-equality test that used to
+      // pair these two is now a deliberate-divergence test instead.
+      expect(screen.getByRole('tooltip')).toHaveTextContent('PII, GDPR (RESTRICTED)');
     });
 
     it('shows the full untruncated tag list and level on hover, where the visible tag is capped to two — the motivating case', async () => {
@@ -2904,26 +2909,41 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       await waitFor(() => expect(screen.queryByRole('tooltip')).not.toBeInTheDocument(), { timeout: 2000 });
     });
 
-    it("omits the classification clause from the tooltip for an unclassified edge, and never says 'none' — the visible counterpart of the <title> assertion above", async () => {
+    it('renders NO tooltip at all for an unclassified edge — never an empty box, and never the word "none"', async () => {
+      // CHANGED with the tooltip's content (see `edgeTooltipText`): this used
+      // to assert the tooltip appeared carrying the seq/leg/endpoint text
+      // with the classification clause merely omitted. Now that tags + level
+      // are the tooltip's ONLY content, an unclassified edge has nothing to
+      // show, and an empty box tracking the cursor would be worse than no
+      // tooltip — so `DirectedEdge` suppresses it outright. The `<title>`
+      // still carries this edge's full identity (asserted separately below).
       renderWithClassification(new Map());
       await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
       const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
       fireEvent.mouseEnter(trigger);
 
-      await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
-      const tooltip = screen.getByRole('tooltip');
-      expect(tooltip).toHaveTextContent('#1 request — summary-i1');
-      expect(tooltip.textContent).not.toContain('none');
+      // Given a moment in which a tooltip WOULD have appeared, none does.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+      // ...and the long-form identity is still available non-visually.
+      const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
+      expect(title).toContain('#1 request — summary-i1');
+      expect(title).not.toContain('none');
     });
 
-    it('keeps the <title> and the tooltip byte-for-byte identical — the guard the keep-both decision requires', async () => {
-      // Both elements are kept deliberately (see `DirectedEdge`'s note) and
-      // both are built from the one `edgeHoverText` helper. This is the
-      // only assertion that would actually catch the two drifting apart —
-      // e.g. a future edit to one call site and not the other — and it is
-      // the reason that helper exists rather than two independent template
-      // literals saying "the same thing".
+    it('keeps the long form in the <title> and the short form in the tooltip — the two now diverge DELIBERATELY', async () => {
+      // REPLACES a byte-for-byte-equality assertion. The two elements were
+      // deliberately identical (one `edgeHoverText` helper) until the visible
+      // tooltip was cut down to tags + level; keeping that assertion would
+      // now pin the exact behaviour this change removes. What still needs
+      // guarding is the SPLIT: the `<title>` must keep carrying the full
+      // identity for non-visual consumers, the tooltip must carry only the
+      // classification, and the classification clause itself must be
+      // formatted identically in both (both routes go through
+      // `edgeClassificationSuffix`, which is what makes that true by
+      // construction rather than by coincidence).
       renderWithClassification(new Map([['i1', { tags: ['PII', 'GDPR'], levels: ['RESTRICTED'] }]]));
       await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
@@ -2932,13 +2952,16 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       const trigger = document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
       fireEvent.mouseEnter(trigger);
       await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+      const tooltip = screen.getByRole('tooltip').textContent ?? '';
 
-      // `toHaveTextContent` treats a string argument as a substring/regex
-      // match, and `title` contains regex metacharacters (parentheses) —
-      // so this compares the raw `textContent` strings directly rather
-      // than risking a silently-too-loose (or throwing) pattern match.
-      expect(screen.getByRole('tooltip').textContent).toBe(title);
-      expect(title.length).toBeGreaterThan(0);
+      // The tooltip is the classification and nothing else.
+      expect(tooltip).toBe('PII, GDPR (RESTRICTED)');
+
+      // The <title> keeps the full identity the tooltip dropped...
+      expect(title).toBe('#1 request — summary-i1 — PII, GDPR (RESTRICTED)');
+      // ...and ends with exactly the tooltip's string, so the shared
+      // classification formatting cannot drift between the two.
+      expect(title.endsWith(tooltip)).toBe(true);
     });
 
     it("leaves the edge's aria-label byte-for-byte unchanged when the map is omitted, and places the classification clause before the lineage suffix when both apply", async () => {
@@ -3023,12 +3046,44 @@ describe('EntityGraph risk colouring (issue #170)', () => {
    * the only one that distinguishes fixed from broken here.
    */
   describe('edge hover tooltip dismissal (issue #213)', () => {
+    /**
+     * TWO edges belonging to two DIFFERENT interactions, so each carries its
+     * own distinct classification text.
+     *
+     * `riskSpec()`'s two edges are the request and response legs of the SAME
+     * interaction (`i1`), and `classificationByInteraction` is keyed by
+     * interaction — so with that spec both edges necessarily show identical
+     * tooltip text. Now that the tooltip carries only the classification (see
+     * `edgeTooltipText`) and no longer the seq number, identical text would
+     * make "the second edge's tooltip replaced the first's" indistinguishable
+     * from "the first edge's tooltip was left standing" — precisely the
+     * distinction issue #213 is about. Hence a local spec with `i1`/`i2`.
+     */
     function renderTwoEdges() {
+      const spec = riskSpec();
+      const [first] = spec.edges;
       return renderWithProviders(
         <EntityGraph
           traceId="T1"
-          spec={riskSpec()}
-          classificationByInteraction={new Map([['i1', { tags: ['PII'], levels: ['RESTRICTED'] }]])}
+          spec={{
+            ...spec,
+            edges: [
+              first,
+              {
+                ...spec.edges[1],
+                id: 'i2:request',
+                interactionId: 'i2',
+                legType: 'request',
+                title: 'summary-i2',
+              },
+            ],
+          }}
+          classificationByInteraction={
+            new Map([
+              ['i1', { tags: ['PII'], levels: ['RESTRICTED'] }],
+              ['i2', { tags: ['GDPR'], levels: ['INTERNAL'] }],
+            ])
+          }
           hideEdgeLabels
         />,
       );
@@ -3060,14 +3115,19 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       // the first tooltip is anchored to.
       fireEvent.mouseEnter(triggerFor('i1:request'));
       await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
+      expect(visibleTooltips()[0]).toHaveTextContent('PII (RESTRICTED)');
 
-      fireEvent.mouseEnter(triggerFor('i1:response'));
+      fireEvent.mouseEnter(triggerFor('i2:request'));
 
       // Exactly one visible tooltip, and it is the SECOND edge's — not two
       // stacked, and not the first edge's left standing while the second
       // silently fails to open.
       await waitFor(() => expect(visibleTooltips()).toHaveLength(1));
-      expect(visibleTooltips()[0]).toHaveTextContent('#2 response');
+      // The SECOND edge's own classification — not the first's left standing.
+      // This is the assertion that distinguishes "replaced" from "stranded",
+      // which is why the two edges are given different tags above.
+      expect(visibleTooltips()[0]).toHaveTextContent('GDPR (INTERNAL)');
+      expect(visibleTooltips()[0]).not.toHaveTextContent('PII');
     });
 
     it('dismisses the tooltip when the pointer leaves the graph surface entirely, with no mouseleave on the edge', async () => {

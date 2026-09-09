@@ -1247,24 +1247,53 @@ function edgeClassificationSuffix(data: EdgeData | undefined): string {
 }
 
 /**
- * The edge's hover text — one helper feeding BOTH the native SVG `<title>`
- * and the interactive `Tooltip` in `DirectedEdge` below, so the two elements
- * can never drift apart. That is the whole reason this exists as its own
- * function rather than being inlined twice: the fix that added the `Tooltip`
- * kept the `<title>` alongside it (a deliberate choice — see `DirectedEdge`'s
- * note on why), and two independently-hand-written template literals saying
- * "the same thing" is exactly the kind of divergence that drifts silently.
- * A test asserts the two elements' text stays equal; this helper is why that
- * test can even be true by construction rather than by coincidence.
+ * The edge's FULL hover text — seq number, leg, endpoints, and the
+ * classification clause. Feeds the native SVG `<title>`, which is the
+ * non-visual fallback and therefore the one place the edge's complete
+ * identity has to stay available: a reader who cannot see the graph gets
+ * this string and nothing else, so trimming it would be a real loss.
+ *
+ * NO LONGER FEEDS THE VISIBLE TOOLTIP. The two were deliberately identical
+ * (one helper, with a test asserting byte-equality) up until the tooltip was
+ * cut down to the classification alone — see `edgeTooltipText` below for what
+ * the visible affordance shows now and why the two diverged. `<title>` keeps
+ * the long form; the tooltip does not.
  *
  * Deliberately does NOT include `edgeLineageSuffix` — unlike `aria-label`,
  * which does. The visible/audible split was a considered choice, not an
- * oversight: keeping the hover text identical to what the inert `<title>`
- * already said avoids also changing the Lineage tab's hover wording as a
- * side effect of an unrelated bug fix.
+ * oversight: keeping this identical to what the inert `<title>` already said
+ * avoided also changing the Lineage tab's hover wording as a side effect of
+ * an unrelated bug fix.
  */
 function edgeHoverText(data: EdgeData | undefined): string {
   return `#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}${edgeClassificationSuffix(data)}`;
+}
+
+/**
+ * The VISIBLE tooltip's text: regulatory tags and sensitivity level only.
+ *
+ * WHY THIS IS NOT `edgeHoverText`. The tooltip is a visual affordance on a
+ * dense diagram, and the seq number, leg and endpoint names it used to repeat
+ * are all *already on screen* — the seq number as the edge's own label on the
+ * Execution Flow and Lineage tabs, and the endpoints as the two nodes the
+ * arrow visibly connects. The one thing the graph cannot show, because
+ * `edgeTagLabel` caps the drawn tag to two tokens, is the full tag list and
+ * the level. So the tooltip now carries exactly that and nothing else, which
+ * on the risk trace view (where `hideEdgeLabels` makes hover the ONLY route
+ * to this information) is the whole reason the tooltip exists.
+ *
+ * Reuses `edgeClassificationSuffix` with its leading `' — '` separator
+ * stripped rather than re-deriving the string: the tags/level formatting, the
+ * dedup order, and the "never say 'none'" rule are decisions that belong in
+ * one place, and a second hand-written version of them is exactly the kind of
+ * divergence that drifts silently.
+ *
+ * Returns `''` for an unclassified edge — there is no shorter honest thing to
+ * say, and `DirectedEdge` renders NO tooltip at all in that case rather than
+ * an empty box. The `<title>` still carries the full identity for that edge.
+ */
+function edgeTooltipText(data: EdgeData | undefined): string {
+  return edgeClassificationSuffix(data).replace(/^ — /, '');
 }
 
 function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof DefaultNode>) {
@@ -1904,6 +1933,9 @@ function DirectedEdge({
   // Visibility is OURS, not PF's — see `useEdgeTooltip` for why Popper's
   // own hover handling cannot be used here.
   const { isVisible: isTooltipVisible, show: showTooltip } = useEdgeTooltip(edgeRef);
+  // Tags + level only — see `edgeTooltipText`. Empty for an unclassified edge,
+  // which suppresses the tooltip below.
+  const tooltipText = edgeTooltipText(data);
   return (
     <>
     <g
@@ -2084,9 +2116,15 @@ function DirectedEdge({
         the accessible name is `aria-label` above, this tooltip is a VISUAL
         affordance only — and keeps that true even if a future edit adds
         `children` for some other reason. */}
+    {/* Suppressed entirely for an unclassified edge rather than rendered
+        empty: the tooltip's only content is now the classification, so with
+        none there is nothing to show and an empty box following the cursor
+        would be worse than no tooltip. The `<title>` above still carries that
+        edge's full identity either way. */}
+    {tooltipText !== '' && (
     <Tooltip
       triggerRef={edgeRef}
-      content={edgeHoverText(data)}
+      content={tooltipText}
       aria="none"
       // CONTROLLED (issue #213). `isVisible` makes PF skip its own
       // trigger wiring entirely — `Popper` gates every
@@ -2109,6 +2147,7 @@ function DirectedEdge({
       // immediate and total rather than animated.
       animationDuration={0}
     />
+    )}
     </>
   );
 }
