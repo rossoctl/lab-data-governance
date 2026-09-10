@@ -125,11 +125,60 @@ export interface InteractionLeg {
 }
 
 /**
+ * Per-interaction classification kinds, re-derived server-side from the anchor
+ * (request) span's attributes by the sanctioned classifier
+ * (`data_governance.sidecar_facts`); `null` when the anchor span carries no
+ * sidecar lineage facts — a streaming- or graph-derived interaction, which must
+ * read as not-infrastructure rather than as a fabricated default. Content kinds
+ * are null for plain-http interactions (no semantic body kind).
+ */
+export interface InteractionKinds {
+  protocol: string;
+  mcp_method: string | null;
+  request_content_kind: string | null;
+  response_content_kind: string | null;
+}
+
+/**
+ * Where the interaction's exchange was addressed, re-derived server-side from
+ * the anchor span's location facts; `null` when the anchor carries none.
+ * `url` is composed only when the scheme fact exists (wire contract v1.5.1) —
+ * older spans render host + path without a URL, never a guessed one.
+ * `internal` marks cluster-local authorities (consumer-side vocabulary).
+ */
+export interface InteractionDestination {
+  url: string | null;
+  host: string | null;
+  path: string | null;
+  internal: boolean | null;
+}
+
+/**
+ * The interaction's HTTP event, re-derived server-side from the span pair:
+ * `method` off the request span, `status_code` / `outcome` off the response
+ * span. `null` when the anchor carries no sidecar facts or none of the three
+ * facts exists; individual fields are null while the response is in flight.
+ */
+export interface InteractionHttp {
+  method: string | null;
+  status_code: number | null;
+  outcome: string | null;
+}
+
+/**
  * A derived interaction (ADR-0025) for one trace: a parent identity row plus
  * one or two request/response `legs`. The leg-dependent fields (timing,
  * payload, error) live on the legs; the accessors below project them back for
  * display. `duration_seconds` is computed by the API (null = response in
  * flight); `any_error` aggregates the legs.
+ *
+ * `kinds` / `destination` / `http` / `principal_sub` / `session_id` are the
+ * sidecar read-time derivations (issue #155, ADR-0030): all off the same
+ * winning anchor span, so they describe one exchange. None is ever fabricated.
+ * They are **optional** rather than nullable-required because an interaction
+ * value does not always come from the flow read — the graph, diagram and
+ * reachability paths build their own — and a field this view can omit should
+ * not force every other constructor to name it. The flow API always sends them.
  */
 export interface Interaction {
   id: string;
@@ -142,6 +191,38 @@ export interface Interaction {
   any_error: boolean | null;
   span_count: number;
   anchor_count: number;
+  kinds?: InteractionKinds | null;
+  destination?: InteractionDestination | null;
+  http?: InteractionHttp | null;
+  /** Validated JWT subject of the caller; null when the call carried none. */
+  principal_sub?: string | null;
+  /** a2a session id; null on every other protocol. */
+  session_id?: string | null;
+}
+
+/**
+ * One-line rendering of the HTTP event for the detail panel — `POST → 200 (ok)`
+ * — skipping whichever of the three facts is absent. Null when there is nothing
+ * to show, so the panel omits the row rather than printing an empty one.
+ */
+export function httpSummary(http: InteractionHttp | null | undefined): string | null {
+  if (!http) return null;
+  const head = [http.method, http.status_code == null ? null : `→ ${http.status_code}`]
+    .filter(Boolean)
+    .join(' ');
+  const tail = http.outcome ? `(${http.outcome})` : '';
+  return [head, tail].filter(Boolean).join(' ') || null;
+}
+
+/**
+ * MCP protocol plumbing (lifecycle / tool discovery) — the rows the flow view
+ * hides by default. The vocabulary comes from the server's sanctioned
+ * classifier, which stamps `kinds` on each interaction row; an interaction with
+ * no `kinds` at all is never infrastructure.
+ */
+export function isInfrastructure(ix: Pick<Interaction, 'kinds'>): boolean {
+  const k = ix.kinds?.request_content_kind;
+  return k === 'mcp_lifecycle_request' || k === 'tool_discovery_request';
 }
 
 /** The request (or response) leg of an interaction, if present. */
