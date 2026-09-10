@@ -102,9 +102,9 @@ def test_0008_is_applied_in_the_chain(migrated_dsn: str) -> None:
     assert "0008_payload_classifications" in walked
 
 
-def test_head_is_0015(migrated_dsn: str) -> None:
+def test_head_is_0020(migrated_dsn: str) -> None:
     """Applying the chain to head lands on the current head revision
-    (`0015_lineage_entities_rename`).
+    (`0020_entity_namespace`).
 
     The chain is LINEAR. `main`'s branch keeps its shipped numbers
     (0010_entity_ready_notify → 0011_drop_leg_original_seq) and the lineage chain
@@ -128,7 +128,7 @@ def test_head_is_0015(migrated_dsn: str) -> None:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0015_lineage_entities_rename"
+    assert version == "0020_entity_namespace"
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
