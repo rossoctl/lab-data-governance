@@ -1,0 +1,127 @@
+# P-leg-ready consumer Deployment (issues #123/#158) — a DB consumer, NOT an
+# inbound API.
+#
+# Drains `interaction_legs` readiness-gated by `seq`, wakes on the
+# `dg_interaction_leg_ready` LISTEN channel plus the poll backstop, and —
+# since #158 — drives the interaction risk engine as its downstream observer:
+# each ready leg recomputes its interaction's risk record, with the record
+# write committing atomically with the `leg_ready` cursor advance
+# (data_governance/processors/leg_ready/driver.py,
+# data_governance/risk/engine/observer.py). The engine calls the OPA Service
+# (95-opa.yaml) at RISK_OPA_BASE_URL; while OPA is unreachable the stream
+# HOLDS (head-of-line, retried every wake) rather than skipping legs — that
+# is #158's whole guarantee, so an OPA outage shows up as rising leg lag,
+# never as missing risk records.
+#
+# Same image as the receiver — one repo-root Containerfile, one image;
+# deployments differ only by `command:` (issue #38). Single replica,
+# no-surge rollout: single-cursor drainer, like 70/80/91.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-governance-leg-ready
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-leg-ready
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-leg-ready
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-governance-leg-ready
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      initContainers:
+        # ADR-0002: migrate to head before the consumer starts (idempotent
+        # across pods; the entry point still runs the defence-in-depth
+        # schema-version check).
+        - name: migrate
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.db.migrate"]
+          # DATABASE_URL must come AFTER the POSTGRES_* entries it references
+          # (issue #40; pinned by the env-placeholder ordering test).
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"
+      containers:
+        - name: leg-ready
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.processors.leg_ready"]
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+            # Where the risk engine's OPA client posts decision requests.
+            # Stated explicitly for operator visibility although it equals
+            # the code default — the `opa` Service (95-opa.yaml) lives in
+            # this namespace. Set RISK_ENGINE_OBSERVER=off to run the bare
+            # lineage consumer with no risk engine (and no OPA dependency).
+            - name: RISK_OPA_BASE_URL
+              value: "http://opa:8181"
+            # Which destinations count as internal (#178's wildcard hostname
+            # whitelist). Its code default is EMPTY on purpose — absent
+            # configuration, every destination is external — so this list is
+            # load-bearing, not decorative: without it every ordinary
+            # in-cluster call with a dotted hostname classifies external and
+            # trips the external-sharing rules. Covers in-cluster service
+            # DNS, the kind cluster's localtest.me ingress hosts, and the
+            # podman/docker host gateways the local LLM runs behind.
+            # (Cluster-DNS short names with no dot at all — `opa`, `ollama` —
+            # need no pattern: no glob can express "has no dot", so the
+            # engine treats them as structurally internal.)
+            - name: RISK_INTERNAL_URL_WHITELIST_PATTERNS
+              value: "*.svc,*.svc.cluster.local,*.localtest.me,localhost,*.localhost,127.0.0.1,host.containers.internal,host.docker.internal"
+          # No ports / no Service (metrics on 9094 stay in-pod); no probes —
+          # no HTTP serving surface, k8s restarts on process exit.
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              memory: "512Mi"
