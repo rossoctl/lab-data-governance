@@ -15,7 +15,7 @@ with `--cortex-local-path` (see [ADR-0032](adr/0032-dg-sh-builds-on-cortex-linea
 An earlier draft of this design aimed to keep `dg.sh` free of any cortex
 dependency by vendoring its own generator; that goal was **retired** — the kit
 is a reviewed, input-validating, hardened generator we should consume rather
-than re-implement (ADR-0032, delta 1).
+than re-implement (ADR-0032, Decision #1).
 
 Today (before this script):
 
@@ -28,8 +28,9 @@ Today (before this script):
   lineage-attach kit** (PR #852), a curated, attach-only kit with its own
   generator, live applier, and propagation shim.
 
-`dg.sh` folds the component lifecycle into two verbs and adds namespace
-activation that **drives the cortex kit** from here, in the consumer's repo.
+`dg.sh` folds the component lifecycle into three verbs
+(`install`/`uninstall`/`status`) and adds namespace activation that **drives the
+cortex kit** from here, in the consumer's repo.
 
 ## Background: how the pieces fit
 
@@ -48,7 +49,7 @@ activation that **drives the cortex kit** from here, in the consumer's repo.
   [ADR-0032](adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md). The kit is
   **envoy-sidecar-only**, and `instrument` acts only on **no-sidecar** entities
   (the kit injects an envoy sidecar); an entity that already has a sidecar
-  (proxy or envoy) is skipped (ADR-0032 delta 2, revised).
+  (proxy or envoy) is skipped (ADR-0032 Decision #2, revised).
 - **Consumer** — this repo's `feat/interactions-sidecar-algorithm` branch reads
   those spans (wire contract **v1.6.2** — `docs/sidecar-wire-contract.md`, kept
   byte-identical with cortex; the `parent.source` tracestate/wire/none minting
@@ -173,7 +174,7 @@ component tee carries the spans to the receiver. This is the kit's own default
 (`attach-lineage.sh`'s `OTEL_ENDPOINT` default is exactly this), so the
 no-sidecar row needs no override.
 
-**The propagation shim (delta 6).** Capture alone records every hop but cannot
+**The propagation shim.** Capture alone records every hop but cannot
 attribute an app's *outbound* calls to the inbound that caused them — only code
 inside the request carries the `traceparent` through, and an uninstrumented
 Python app (the agent-examples demo agents) does not. This is exactly the
@@ -191,7 +192,7 @@ only.
 `sidecar-patch.sh` / `build-otel-shim.sh` per entity, passing `NAMESPACE`,
 `DEPLOY`, `SELF_ID`, `APP_CONTAINER`, `APP_IMAGE`, `SIDECAR_IMAGE`,
 `PROXY_INIT_IMAGE`, `OTEL_ENDPOINT` through the kit's documented environment
-contract. It does **not** copy or vendor the kit (ADR-0032 delta 1).
+contract. It does **not** copy or vendor the kit (ADR-0032 Decision #1).
 
 **Preflights** (fail loud, never guess):
 
@@ -233,7 +234,7 @@ contract. It does **not** copy or vendor the kit (ADR-0032 delta 1).
   Together the dry-run catches pre-apply rejections and the crash-loop watch
   catches post-apply boot failures — between them they catch *any*
   incompatibility (a stale kit, an ahead kit, a wrong image, config-key skew) by
-  its symptom, not by guessing at versions (ADR-0032 delta 4; see also the
+  its symptom, not by guessing at versions (ADR-0032 Decision #4; see also the
   version-skew failure mode in the root `CLAUDE.md`);
 - the kit's own **six read-only preconditions** (`sidecar-patch.sh`, in order:
   `require_deployment` (Deployment exists); `require_envoy_config` (platform
@@ -245,7 +246,7 @@ contract. It does **not** copy or vendor the kit (ADR-0032 delta 1).
   would silently repoint the owner's mount); `require_app_container`
   (`APP_CONTAINER` names a real container)) are the source of truth for the
   no-sidecar row `instrument` acts on — `dg.sh` does **not** re-implement them
-  (ADR-0032 delta 3). (`refuse_name_collision`/`refuse_volume_collision` also
+  (ADR-0032 Decision #3). (`refuse_name_collision`/`refuse_volume_collision` also
   mean a stray attempt to attach onto an entity that already has the kit's
   sidecar fails cleanly, but `dg.sh` never reaches the kit for an
   already-sidecarred entity — it skips it first.)

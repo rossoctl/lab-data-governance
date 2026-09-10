@@ -68,20 +68,23 @@ passed with `--cortex-local-path <dir>` (or the `CORTEX_LOCAL_PATH` env var).
 component verbs (`install`/`uninstall`/`status`) and `namespace status` never
 touch cortex.
 
-The cortex kit is **envoy-sidecar-only**: it owns the no-sidecar (inject envoy)
-and envoy-sidecar-in-place rows. The **proxy-sidecar-in-place** row is
-**`dg.sh`'s own** edit — the kit has no proxy path (ADR-0032). Both modes work
-because cortex PR 760 makes the proxy-sidecar outbound listener propagate the
-`dg-parent` stamp too. On a proxy-sidecar entity whose namespace has
-`egressEnforcement: none`, `instrument` **warns** loudly (outbound calls are
-then not captured); envoy-sidecar captures transparently, so no warning there.
+`instrument` wires lineage onto **no-sidecar entities only**, delegated wholesale
+to the cortex kit, which injects an envoy lineage sidecar (and, for a Python app,
+bakes the propagate-only shim). Any entity that **already has a sidecar** — proxy
+or envoy, template- or webhook-injected — is **skipped, mutating nothing**
+(ADR-0032). Retrofitting lineage onto an existing sidecar is not a supported
+route: the platform's enforcing proxy sidecar 401s the demo's plain MCP/A2A
+calls, and an in-place edit of a webhook-injected (operator-owned) pipeline
+ConfigMap is clobbered on the next roll — see ADR-0032 for the live-validation
+findings behind this revision. Because the only wiring path is the kit's
+no-sidecar inject, there is no `egressEnforcement` warning: proxy entities are
+never touched.
 
-This `dg.sh namespace instrument` proxy-sidecar row is the **productized form of
-the ad-hoc proxy-sidecar attach recipe** the root `CLAUDE.md` § 3a and
+This `dg.sh namespace instrument` no-sidecar path is the **productized form of
+the ad-hoc lineage-attach recipe** the root `CLAUDE.md` § 3a and
 `LINEAGE-PROXY-SIDECAR-RECIPE.md` document (the hand-run `instrument-one.sh`
-loop). Where the demo stays on the proxy shape, `dg.sh`'s proxy row
-**supersedes** that manual recipe for the productized flow; the envoy rows are
-delegated wholesale to the cortex kit.
+loop): where a namespace's agents/tools ship with no sidecar, `dg.sh`
+**supersedes** that manual recipe for the productized flow.
 
 ### End-to-end operator scenario
 

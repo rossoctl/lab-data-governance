@@ -533,6 +533,22 @@ get_pod_json_soft() {
     printf '%s' "${out}"
 }
 
+# pod_items_count <pod-listing-json>: print the number of Pods in a `kubectl get
+# pods -o json` listing (the length of .items). Used to distinguish a pod read
+# that AUTHORITATIVELY shows no sidecar (>=1 Running pod, none of them carrying a
+# sidecar) from one that is simply EMPTY (0 Running pods) — for the latter,
+# detect_sidecar_type prints 'none' too, but that 'none' is unconfirmed and must
+# not be trusted on the mutating instrument path (a webhook-injected sidecar is
+# visible only on a live Pod). Takes the JSON as $1.
+pod_items_count() {
+    local json="$1"
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+print(len(doc.get("items") or []))
+'
+}
+
 # get_configmap_data <ns> <cm>: print the ConfigMap's .data map, or empty on
 # NotFound (a dangling volume reference is reported as "plugin absent", not a
 # crash). Any OTHER failure (apiserver unreachable/500, RBAC-denied) is a LOUD
@@ -1039,9 +1055,24 @@ instrument_entity() {
     # the Pod doc so an injected sidecar is correctly SEEN (→ skipped below),
     # instead of being misclassified 'none' and wrongly instrumented (the kit
     # would inject a SECOND sidecar onto an entity that already has one).
+    #
+    # CRITICAL: a template 'none' is only safe to act on once a live Pod CONFIRMS
+    # it. detect_sidecar_type prints 'none' both for a Pod that genuinely has no
+    # sidecar AND for an EMPTY listing (0 Running pods — Deployment scaled to 0,
+    # or just-applied and not yet admitted). The latter 'none' is unconfirmed: a
+    # webhook-injected sidecar would only appear once a Pod is admitted, so
+    # trusting it here would inject a SECOND sidecar. On the mutating instrument
+    # path we therefore REFUSE when the template shows no sidecar and there is no
+    # Running pod to confirm from — fail loud, mutate nothing (matches the verb's
+    # fail-loud posture; the read-only `status` verb tolerates this via the soft
+    # probe and simply reports the unconfirmed template verdict).
     if [[ "${type}" == "none" ]]; then
-        local pod_json pod_type
+        local pod_json pod_type pod_count
         pod_json="$(get_pod_json "${ns}" "${entity}")"
+        pod_count="$(pod_items_count "${pod_json}")"
+        if [[ "${pod_count}" -eq 0 ]]; then
+            die "instrument: '${entity}' in '${ns}' shows no sidecar in its Deployment template and has no Running pod to confirm that from. A webhook-injected sidecar is visible only on an admitted Pod, so instrumenting now could attach a SECOND sidecar. Scale the Deployment up (or wait for its pods to be Running) and re-run — refusing to instrument on an unconfirmed 'none'."
+        fi
         pod_type="$(detect_sidecar_type "${pod_json}")"
         if [[ "${pod_type}" != "none" ]]; then
             json="${pod_json}"

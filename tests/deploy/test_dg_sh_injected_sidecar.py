@@ -466,6 +466,10 @@ def sandbox(tmp_path: Path):
                 ``containers`` entry (defaults False);
               * ``lineage``: bool — whether the sidecar's pipeline CM carries the
                 lineage-telemetry plugin.
+              * ``no_pod``: bool — write NO ``pods-{name}.json`` fixture, so the
+                fake kubectl serves ``{"items":[]}`` for the pod read (models a
+                Deployment scaled to 0 / just-applied, no Running pod yet).
+                Defaults False.
             """
             items = []
             for name, spec in entities.items():
@@ -496,6 +500,10 @@ def sandbox(tmp_path: Path):
                 items.append(dep)
                 (fixdir / f"entity-{name}.json").write_text(json.dumps({"items": [dep]}))
 
+                if spec.get("no_pod", False):
+                    # No Running pod: leave the pods-{name}.json fixture absent so
+                    # the fake kubectl serves {"items":[]} for the pod read.
+                    continue
                 pod = _pod(name, pod_sidecar=pod_sidecar, cm_name=cm_name, native=native)
                 (fixdir / f"pods-{name}.json").write_text(json.dumps({"items": [pod]}))
             (fixdir / "entities.json").write_text(json.dumps({"items": items}))
@@ -749,6 +757,37 @@ def test_instrument_injected_proxy_does_not_drive_envoy_kit(sandbox) -> None:
     assert "sidecar-patch.sh stub should not run" not in (r.stdout + r.stderr), (
         f"an injected proxy entity must NOT drive the envoy kit; got:\n{r.stdout}\n{r.stderr}"
     )
+
+
+def test_instrument_no_running_pod_refuses_on_unconfirmed_none(sandbox) -> None:
+    """A template that shows NO sidecar and has NO Running pod to confirm it must
+    make `instrument` refuse and mutate nothing. get_pod_json returns exit 0 with
+    {"items":[]} when the Deployment is scaled to 0 (or just-applied), and
+    detect_sidecar_type prints 'none' for an empty listing too — so trusting that
+    'none' would attach a SECOND sidecar onto an entity that actually carries a
+    webhook-injected one (visible only once a Pod is admitted). The instrument
+    path must distinguish an EMPTY pod read from a CONFIRMED no-sidecar read and
+    die loud on the former."""
+    sandbox.set_namespace(
+        {"legacy-agent": {"template_sidecar": None, "no_pod": True}}
+    )
+    r = sandbox.run("namespace", "travel-advisor", "instrument")
+    assert r.returncode != 0, (
+        f"instrument must refuse on an unconfirmed 'none' (no Running pod); stdout={r.stdout!r}"
+    )
+    combined = (r.stdout + r.stderr).lower()
+    assert "no running pod" in combined or "no pod" in combined, (
+        f"the refusal must explain there is no Running pod to confirm from; got:\n{combined}"
+    )
+    # Nothing mutated, and the kit was never driven.
+    calls = " ".join(sandbox.kubectl_calls())
+    for m in ("apply", "patch", "rollout restart", "edit", "replace", "delete"):
+        assert m not in calls, (
+            f"a refused (unconfirmed-none) entity must mutate nothing; found {m!r} in calls={calls!r}"
+        )
+    assert "sidecar-patch.sh stub should not run" not in (r.stdout + r.stderr) and (
+        "build-otel-shim.sh stub" not in (r.stdout + r.stderr)
+    ), f"the kit must NOT be driven on an unconfirmed 'none'; got:\n{r.stdout}\n{r.stderr}"
 
 
 # ===========================================================================

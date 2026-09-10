@@ -263,12 +263,23 @@ fi
 # ---- Pod fetch (injected-sidecar fallback) -----------------------------------
 # When the Deployment TEMPLATE shows no sidecar, dg.sh falls back to the live Pod
 # (`kubectl get pods ... -o json`) to catch a webhook-injected sidecar. This
-# model has NO injected sidecars, so an empty pod list makes the fallback
-# re-detect `none` and the entity is routed exactly as its template dictates.
+# model has NO injected sidecars, so the served Pod MIRRORS the template — a
+# Running pod that CONFIRMS the template verdict (a no-sidecar template → a
+# no-sidecar pod → an authoritative `none`). set_namespace writes pods-<ent>.json;
+# a MISSING fixture serves {"items":[]} so a test can model a Deployment with no
+# Running pod (scaled to 0 / just-applied), which the mutating path refuses on.
 # Tested BEFORE the plain-text crash-loop probe below (which reads a jsonpath, NOT
 # -o json), so only the -o json fallback query lands here.
 if [[ "$*" == *"get"* && ( "$*" == *" pods"* || "$*" == *"pods "* || "$*" == *" pod "* ) && ( "$*" == *"-o json"* || "$*" == *"-ojson"* ) ]]; then
-  printf '%s' '{"items":[]}'
+  ent=""
+  for a in "$@"; do
+    case "$a" in
+      *app.kubernetes.io/name=*)
+        ent="${a##*app.kubernetes.io/name=}"; ent="${ent%%,*}" ;;
+    esac
+  done
+  f="$FIXDIR/pods-${ent}.json"
+  if [[ -n "$ent" && -f "$f" ]]; then cat "$f"; else printf '%s' '{"items":[]}'; fi
   exit 0
 fi
 # ---- crash-loop watch: pod phase / restart probes ---------------------------
@@ -451,6 +462,26 @@ def sandbox(tmp_path: Path):
                 dep = _deployment(name, sidecar=sidecar, cm_name=cm_name, image=image)
                 items.append(dep)
                 (fixdir / f"entity-{name}.json").write_text(json.dumps({"items": [dep]}))
+
+                # A live Pod mirroring the Deployment template (this model has NO
+                # injected sidecars, so the admitted Pod matches the template). It
+                # gives the instrument path a Running pod to CONFIRM a template
+                # 'none' against — without one, get_pod_json returns {"items":[]}
+                # and the mutating path refuses on an unconfirmed 'none' (a pod
+                # scaled to 0 could hide a webhook-injected sidecar). A Pod carries
+                # its containers/volumes at .spec directly, not .spec.template.spec.
+                pod = {
+                    "apiVersion": "v1",
+                    "kind": "Pod",
+                    "metadata": {
+                        "name": f"{name}-abc123",
+                        "namespace": "travel-advisor",
+                        "labels": dep["metadata"]["labels"],
+                    },
+                    "spec": dep["spec"]["template"]["spec"],
+                    "status": {"phase": "Running"},
+                }
+                (fixdir / f"pods-{name}.json").write_text(json.dumps({"items": [pod]}))
             (fixdir / "entities.json").write_text(json.dumps({"items": items}))
 
         def kubectl_calls(self) -> list[str]:

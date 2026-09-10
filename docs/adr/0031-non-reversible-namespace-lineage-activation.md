@@ -41,19 +41,20 @@ the workloads.
 > **How the plugin is wired is decided separately.** This ADR is about the
 > *reversibility and mode-preservation* of `instrument`. **ADR-0032** decides
 > that the wiring itself is done by driving the cortex lineage-attach kit
-> (PR #852) — located via `--cortex-local-path` — for the no-sidecar and
-> envoy-sidecar rows, with `dg.sh`'s own edit only for the proxy-sidecar row
-> the kit does not cover. The two ADRs are compatible: the kit is
-> additive-attach and forces no mode switch, so both decisions below hold.
+> (PR #852) — located via `--cortex-local-path` — and, on live validation, was
+> revised to wire lineage onto **no-sidecar entities only** (any entity that
+> already has a sidecar, proxy or envoy, is skipped). The two ADRs are
+> compatible: the kit is additive-attach and forces no mode switch, so both
+> decisions below hold regardless of which entities `instrument` ends up wiring.
 
 ## Decision
 
 ### 1. Activation is additive-only and never switches sidecar mode
 
-`instrument` wires the plugin into whatever sidecar the entity already has
-(injecting a sidecar only where there is none), on **both** proxy-sidecar and
-envoy-sidecar. It does **not** flip a namespace from `proxy-sidecar` to
-`envoy-sidecar`.
+`instrument` only ever **adds** — it injects a lineage sidecar where there is
+none, and skips any entity that already has one (ADR-0032). It never edits,
+replaces, or removes an existing sidecar, and in particular never flips a
+namespace from `proxy-sidecar` to `envoy-sidecar`.
 
 ### 2. Activation is non-reversible in v1
 
@@ -69,18 +70,17 @@ is a namespace-wide, security-adjacent change with a real footgun: a workload
 using `tlsBridgeMode: enabled` **loses its TLS bridge** under envoy-sidecar
 (the setting is rejected/no-op there). It also requires recreating every
 injected pod in the namespace (CREATE-only webhook) and mutates shared operator
-state (the namespace runtime ConfigMap). PR 760 removed the reason to switch:
-the plugin's tracestate propagation now works on the proxy-sidecar outbound
-listener too, so we can activate in place on whichever mode is present. Keeping
-activation additive means it never alters how any workload's traffic is
-secured — so "non-reversible" (decision 2) is safe, because the only thing not
-scripted-undoable is the plugin wiring, not a change to a workload's security
-posture.
+state (the namespace runtime ConfigMap). `instrument` sidesteps all of this: it
+only injects a lineage sidecar where there is none and leaves every existing
+sidecar untouched (ADR-0032), so it never alters how any workload's traffic is
+secured — which makes "non-reversible" (decision 2) safe, because the only thing
+not scripted-undoable is the newly-injected lineage sidecar, not a change to an
+existing workload's security posture.
 
 **Why non-reversible (decision 2).** A precise reversible un-wire is the
 genuinely hard, fiddly part of the design: strategic-merge patches do not
 cleanly un-merge, so a faithful `reset` needs marker annotations recording
-exactly what was added and a per-entity inverse for each of the three states —
+exactly what was added and a per-entity inverse for the injected sidecar —
 significant surface area for a v1 whose target is a disposable dev cluster
 where `kubectl delete namespace` / redeploy is the expected reset. Because
 activation is additive and touches no shared operator state, deferring the
