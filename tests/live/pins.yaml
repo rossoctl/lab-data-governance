@@ -45,4 +45,4 @@ llm:
 
 contract:
   # docs/sidecar-wire-contract.md version; the cortex copy must be byte-identical.
-  version: "1.6.3"
+  version: "1.7.0"

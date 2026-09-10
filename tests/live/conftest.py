@@ -282,6 +282,10 @@ def preflight(env: Env, kube: Kube, pins: dict[str, Any], run_record) -> Preflig
     cx_contract = env.cortex_dir / "authbridge" / "docs" / "lineage-wire-contract.md"
     if dg_contract.exists() and cx_contract.exists():
         pf.expect("contract.byte_identical", True, dg_contract.read_bytes() == cx_contract.read_bytes())
+        # The pin names the contract version this tier was written against; the
+        # file's title line is the version on the branch under test.
+        m = re.search(r"\(v(\d+\.\d+\.\d+)\)", dg_contract.read_text(encoding="utf-8").splitlines()[0])
+        pf.expect("contract.version", pins["contract"]["version"], m.group(1) if m else None)
     else:
         pf.problems.append(f"contract files missing: {dg_contract.exists()=} {cx_contract.exists()=}")
 

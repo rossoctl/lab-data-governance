@@ -26,7 +26,7 @@ alerts where deployed). It runs only under `-m live`, and only on a cluster that
 ## How a run flows
 
 1. Preflight compares the cluster with `pins.yaml` (kube context, contract file byte-identity
-   on both sides, one running 2/2 pod per app workload on the pinned shim image with the
+   on both sides and at the pinned version, one running 2/2 pod per app workload on the pinned shim image with the
    pinned sidecar, LLM env on the four agents, DG pod images and OPA image, alembic head, every
    pinned image id present in the node's image store) and fails the session on the first
    mismatch, naming expected and observed.
