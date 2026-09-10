@@ -362,6 +362,30 @@ export function TraceDetailPage() {
   const effectiveLegView: LegViewKey =
     view === 'diagram' || view === 'graph' || view === 'lineage' ? view : legView;
 
+  /**
+   * The flow view's infrastructure filter ↔ URL. `?showInfra=1` encodes the
+   * non-default "shown" state; the default (hidden) is the ABSENCE of the param,
+   * mirroring `?hideOrphans` on the trace list — ADR-0021: defaults are omitted,
+   * not written, so a plain `/flow` link is the plain view.
+   */
+  const showInfra = searchParams.get('showInfra') === '1';
+  const handleShowInfraChange = useCallback(
+    (show: boolean) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (show) next.set('showInfra', '1');
+          else next.delete('showInfra');
+          return next;
+        },
+        // `replace`, matching `?legs` and `?src`: revealing plumbing is re-reading
+        // one dataset, not navigating.
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
   const lineageSource: string | null = parseLineageSource(searchParams.get('src'));
   const handleLineageSourceChange = useCallback(
     (source: string) => {
@@ -592,6 +616,8 @@ export function TraceDetailPage() {
               // presentation from inside one of them would be a second control for what
               // the top-level tabs now decide.
               showLegTabs={view === 'flow'}
+              showInfra={showInfra}
+              onShowInfraChange={handleShowInfraChange}
               lineageSource={lineageSource}
               onLineageSourceChange={handleLineageSourceChange}
             />

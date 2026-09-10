@@ -469,12 +469,20 @@ def _send_http(
 def _resolve_fixture(arg: str) -> Path:
     """Accept a full path, a path ending in .json, or a bare fixture stem.
 
-    Same resolution shape as ``load_fixture._resolve_fixture``.
+    Same resolution shape as ``load_fixture._resolve_fixture``. A bare stem is
+    looked up under the graph fixtures directory first, then under
+    ``tests/fixtures/`` (home of the sidecar golden trace,
+    ``golden_two_span``).
     """
     p = Path(arg)
     if p.exists():
         return p
-    return _FIXTURES / (arg if arg.endswith(".json") else f"{arg}.json")
+    name = arg if arg.endswith(".json") else f"{arg}.json"
+    primary = _FIXTURES / name
+    if primary.exists():
+        return primary
+    fallback = _REPO_ROOT / "tests" / "fixtures" / name
+    return fallback if fallback.exists() else primary
 
 
 def _default_endpoint(transport: str) -> str:

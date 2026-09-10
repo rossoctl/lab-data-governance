@@ -125,12 +125,13 @@ spec:
             - name: DATABASE_URL
               value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
             # Which interaction-derivation algorithm drives the drain loop
-            # (data_governance/processors/interactions/__main__.py). Both write
-            # the same production interactions tables via state.flush. Defaults
-            # to "streaming"; set to "graph" to select the graph derivation
-            # (ADR-0026).
+            # (data_governance/processors/interactions/__main__.py). All write
+            # the same production interactions tables; only one runs at a time.
+            # "sidecar" (ADR-0030) is the two-span AuthBridge derivation this
+            # deployment ingests; "streaming" (the code default, ADR-0007) and
+            # "graph" (ADR-0026) remain selectable.
             - name: INTERACTIONS_ALGORITHM
-              value: "streaming"
+              value: "sidecar"
           # No ports / no Service: the processor has no inbound API. It serves a
           # Prometheus /metrics surface on 9091 in-pod
           # (data_governance/processors/interactions/__main__.py), but — like
