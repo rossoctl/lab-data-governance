@@ -18,6 +18,7 @@ alerts where deployed). It runs only under `-m live`, and only on a cluster that
 | `test_travel_live.py` | drive | scenarios L1–L10, each docstring the expectation card written before the run |
 | `settle.py` | read | when the tables are ready to read: every deployed stream's cursor at its head and the trace quiet |
 | `shape.py` | read | the assertions: the lineage forest, tolerated strays, the risk invariants, plus the per-interaction readers the scenarios use |
+| `report.py` | read | renders one Markdown summary of a run record from the files it left (`python3 tests/live/report.py`) |
 | `catalog_e2e.json` | data | the shipped catalog byte-identical plus five `E2E-*` rules, so one trace can carry three verdict levels |
 | `k8s/e2e-sink.yaml` | data | a service that accepts a connection and never answers (L4/L5) |
 | `__init__.py` | | empty |
@@ -148,6 +149,10 @@ LLM's plan varies between turns, the shape does not.
 Later scenarios address the trace L1 minted, so the file runs in order with `-x`.
 
 ## Reading a run record
+
+`python3 tests/live/report.py [runs/<dir>]` renders one Markdown summary of a record (the newest
+by default): the verdict table, then per scenario the docstring beside the numbers read. It reads
+only the files below and asserts nothing.
 
 | file | what it tells you |
 |---|---|
