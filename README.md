@@ -88,23 +88,43 @@ uv run pytest
 
 ## Deploying to the local Kind cluster
 
-The full procedure (first-time deploy, re-deploy after a code change,
-collector wiring, UI access) lives in
-[`deploy/k8s/README.md`](deploy/k8s/README.md). Quick re-deploy from a
-clean working tree on `main`:
+The primary entry point is **`deploy/dg.sh`** — one script that installs,
+uninstalls, and reports the status of the whole data-governance component
+(Postgres, receiver, UI, the three processors, the UI HTTPRoute, and the
+collector tee), and activates lineage telemetry on a namespace's agents/tools:
+
+```sh
+./deploy/dg.sh component install     # build + load + apply + tee + rollout
+./deploy/dg.sh component status      # what's present/ready + is the tee wired
+./deploy/dg.sh component uninstall   # the inverse (add --keep-data to keep the PVC)
+```
+
+`component install` wraps the underlying steps (`build-and-load.sh` →
+`kubectl apply -f deploy/k8s/` → `patch-rossoctl-collector.sh` → rollout
+restart/status); those raw steps stay documented in
+[`deploy/k8s/README.md`](deploy/k8s/README.md), which also holds the full
+procedure (first-time deploy, re-deploy after a code change, namespace lineage
+activation, collector wiring, UI access) and the end-to-end operator scenario.
+
+Quick re-deploy after a code change:
 
 ```sh
 git pull --ff-only
-./deploy/build-and-load.sh
-kubectl apply -f deploy/k8s/
-kubectl -n data-governance rollout restart \
-  deployment/data-governance-receiver deployment/data-governance-ui
+./deploy/dg.sh component install     # idempotent; add --no-build to skip the image build
 ```
 
-The `rollout restart` is required: manifests pin `:latest` with
-`imagePullPolicy: IfNotPresent`, so `apply` alone will not cycle pods
-onto the newly-loaded image. See `deploy/k8s/README.md` for the full
-explanation and the `rollout status` waits.
+`component install` performs the `rollout restart` for you — required because
+manifests pin `:latest` with `imagePullPolicy: IfNotPresent`, so `kubectl
+apply` alone will not cycle pods onto the newly-loaded image. The equivalent
+raw sequence (and the `rollout status` waits) is documented in
+`deploy/k8s/README.md` for when you need to drive the steps individually.
+
+The `dg.sh` design and the two boundary decisions it encodes are recorded in
+[`docs/cli.md`](docs/cli.md),
+[ADR-0031](docs/adr/0031-non-reversible-namespace-lineage-activation.md)
+(why namespace activation is non-reversible / mode-preserving), and
+[ADR-0032](docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md)
+(why `instrument` drives the cortex lineage-attach kit).
 
 ## Configuration
 
