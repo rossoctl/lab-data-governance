@@ -2,7 +2,7 @@
 
 The graph-based P-interactions algorithm (ADR-0026): a batch derivation of
 **entities** and **interactions** from a trace's spans, answering **does this
-produce a sensible execution flow on real Kagenti agent traces?** — validated
+produce a sensible execution flow on real rossoctl agent traces?** — validated
 against the captured fixtures in `tests/processors/interactions/graph/`.
 
 It is now one of the two production algorithms (the other being the streaming
