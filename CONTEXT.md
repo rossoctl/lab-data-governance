@@ -1,6 +1,6 @@
 # Data Governance
 
-The data-governance extension of Kagenti: ingests OTEL spans from Kagenti agents,
+The data-governance extension of rossoctl: ingests OTEL spans from rossoctl agents,
 tools, and services, stores them verbatim in Postgres, and exposes typed retrieval
 for a UI and future processors. v1 is span-shaped only — semantic concepts
 (interactions, lineage, classifications) are deliberately deferred.
@@ -119,8 +119,8 @@ functions (Layer 2): `write_span` (receiver), `get_spans` (UI backend
 processor's storage operations. See ADR-0005.
 
 **Entity**:
-A participant in a Kagenti **Interaction**. One of seven kinds: `user`
-(interacts with an agent via the Kagenti UI), `client` (invokes an agent
+A participant in a rossoctl **Interaction**. One of seven kinds: `user`
+(interacts with an agent via the rossoctl UI), `client` (invokes an agent
 from outside the platform with no platform-stamped user identity), `agent`,
 `tool` (in-process, hosted by an agent), `tool` (deployed as its own
 service, e.g. an MCP server — same kind, distinguished by natural-key
@@ -183,7 +183,7 @@ are distinct entities.
 **Caller inference rule**:
 The processor-side rule by which `P-interactions` derives **Entity** identity
 (kind + natural key) from a **Span**'s attributes. Hybrid by design: prefer
-Kagenti platform-stamped attributes (`kagenti.*`) when present, fall back to
+rossoctl platform-stamped attributes (`kagenti.*`) when present, fall back to
 generic OTEL / OpenInference attributes (HTTP server attributes,
 `client.address`, `user_agent`, `peer.service`, `service.name`, OpenInference
 LLM/tool keys). External callers/services with no richer evidence are

@@ -10,8 +10,8 @@
 
 The Data Governance UI is built on **PatternFly 5** (`@patternfly/react-core` v5.4,
 `@patternfly/react-icons` v5.4), matching the visual language of
-[`kagenti/ui-v2`](https://github.com/kagenti/kagenti/tree/main/kagenti/ui-v2).
-All CSS custom properties below are the PF5 / Kagenti tokens already defined in
+[`rossoctl/ui-v2`](https://github.com/rossoctl/rossoctl/tree/main/rossoctl/ui-v2).
+All CSS custom properties below are the PF5 / rossoctl tokens already defined in
 `global.css`. No new icon library is introduced — all glyphs come from
 `@patternfly/react-icons`.
 
