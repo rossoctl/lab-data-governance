@@ -385,8 +385,9 @@ def sandbox(tmp_path: Path):
     sysdir.mkdir()
     fixdir = tmp_path / "fixtures"
     fixdir.mkdir()
-    cortex = tmp_path / "cortex"
-    kitdir = cortex / "authbridge" / "lineage-attach"
+    # A FAKE lineage-attach kit dir dg.sh is pointed at via DG_LINEAGE_ATTACH_DIR
+    # (the seam that replaced --cortex-local-path when ADR-0033 vendored the kit).
+    kitdir = tmp_path / "lineage-attach"
     kitdir.mkdir(parents=True)
     log = tmp_path / "kubectl.log"
 
@@ -400,9 +401,9 @@ def sandbox(tmp_path: Path):
         if src and Path(tool).name not in _CONTROLLED:
             (sysdir / tool).symlink_to(src)
 
-    # A stub #852 kit so the instrument-path preflight resolves (the injected
-    # case we test is SKIPPED — it already has a sidecar — so the kit must NOT
-    # run, but the preflight still checks the kit is present).
+    # A stub #852 kit so the instrument-path integrity check resolves (the
+    # injected case we test is SKIPPED — it already has a sidecar — so the kit
+    # must NOT run, but the check still verifies the kit is present).
     _STUB_SIDECAR_PATCH = 'echo "sidecar-patch.sh stub should not run for proxy" >&2\nexit 0\n'
     _STUB_BUILD_SHIM = 'echo "build-otel-shim.sh stub" >&2\nexit 0\n'
     _STUB_ATTACH = 'echo "attach-lineage.sh stub" >&2\nexit 0\n'
@@ -411,7 +412,6 @@ def sandbox(tmp_path: Path):
         def __init__(self) -> None:
             self.bindir = bindir
             self.fixdir = fixdir
-            self.cortex = cortex
             self.kitdir = kitdir
             self.log = log
             self.get_fails = False
@@ -424,6 +424,10 @@ def sandbox(tmp_path: Path):
             _make_bin(kitdir, "sidecar-patch.sh", _STUB_SIDECAR_PATCH)
             _make_bin(kitdir, "build-otel-shim.sh", _STUB_BUILD_SHIM)
             _make_bin(kitdir, "attach-lineage.sh", _STUB_ATTACH)
+            # The sourced / build-input companions require_vendored_kit checks for.
+            for f in ("container-runtime.sh", "Dockerfile.otel-shim",
+                      "lineage-propagate-hook.py"):
+                (kitdir / f).write_text("# stub\n")
             self._write_kubectl()
             self.set_namespace({})
 
@@ -513,20 +517,21 @@ def sandbox(tmp_path: Path):
                 return []
             return [ln for ln in log.read_text().splitlines() if ln.strip()]
 
-        def run(self, *args: str, cortex_path: str | None = "__default__", **kw):
+        def run(self, *args: str, kit_dir: str | None = "__default__", **kw):
             env = dict(os.environ)
             env["PATH"] = f"{bindir}:{sysdir}"
             env["KUBECTL_LOG"] = str(log)
             env["FIXDIR"] = str(fixdir)
             env.setdefault("KIND_CLUSTER", "rossoctl")
+            # Point dg.sh at the FAKE stub kit via the DG_LINEAGE_ATTACH_DIR test
+            # seam (replaces the retired --cortex-local-path flag; ADR-0033).
+            if kit_dir == "__default__":
+                env["DG_LINEAGE_ATTACH_DIR"] = str(self.kitdir)
+            elif kit_dir is not None:
+                env["DG_LINEAGE_ATTACH_DIR"] = kit_dir
             env.update(self.envflags)
             env.update(kw.pop("env", {}) or {})
-            argv = ["bash", str(DG_SH)]
-            if cortex_path == "__default__":
-                argv += ["--cortex-local-path", str(cortex)]
-            elif cortex_path is not None:
-                argv += ["--cortex-local-path", cortex_path]
-            argv += list(args)
+            argv = ["bash", str(DG_SH), *args]
             return subprocess.run(
                 argv, capture_output=True, text=True, env=env, timeout=120, **kw
             )

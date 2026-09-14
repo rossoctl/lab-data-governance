@@ -22,9 +22,11 @@ no-live-cluster stance the rest of ``tests/deploy/`` takes. The fake records the
 both the *selectors* ``dg.sh`` uses and the *output* it produces without a
 cluster.
 
-The ``--cortex-local-path`` global (issue #181 re-scope comment, flowing down
-from #184 / ADR-0032) is parsed and carried by the skeleton but consumed by no
-verb here; we only assert it parses and does not perturb the working verbs.
+The ``--cortex-local-path`` global (issue #181 re-scope comment) was **retired**
+when the lineage-attach kit was vendored into ``deploy/lineage-attach/`` (ADR-0033,
+supersedes ADR-0032); we assert it is now rejected as an unknown option. The
+(now-real, #184) ``instrument`` verb is pointed at a stub kit via the
+``DG_LINEAGE_ATTACH_DIR`` test seam.
 """
 
 from __future__ import annotations
@@ -162,21 +164,25 @@ def sandbox(tmp_path: Path):
         if src and Path(tool).name not in _CONTROLLED:
             (sysdir / tool).symlink_to(src)
 
-    # A stub cortex lineage-attach kit, so the enumeration-shape tests can drive
-    # the (now-real, #184) `instrument` verb past its kit-resolvable preflight.
+    # A stub lineage-attach kit, so the enumeration-shape tests can drive the
+    # (now-real, #184) `instrument` verb past its vendored-kit integrity check.
     # The stubs succeed and no-op; these #181 tests assert only the shared
     # enumeration selector shape, not the kit's behaviour (that is #184's file).
-    cortex = tmp_path / "cortex-kit"
-    kitdir = cortex / "authbridge" / "lineage-attach"
+    # dg.sh is pointed at it via DG_LINEAGE_ATTACH_DIR (the test seam that
+    # replaced --cortex-local-path when ADR-0033 vendored the kit).
+    kitdir = tmp_path / "lineage-attach"
     kitdir.mkdir(parents=True)
     for s in ("sidecar-patch.sh", "build-otel-shim.sh", "attach-lineage.sh"):
         _make_bin(kitdir, s, "exit 0\n")
+    # The sourced / build-input companions require_vendored_kit also checks for.
+    for f in ("container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py"):
+        (kitdir / f).write_text("# stub\n")
 
     class _Sandbox:
         def __init__(self) -> None:
             self.bindir = bindir
             self.log = log
-            self.cortex = cortex
+            self.kitdir = kitdir
             # default: docker present (podman absent) so the container-tool
             # preflight is satisfiable.
             self.set_container_tool("docker")
@@ -215,6 +221,11 @@ def sandbox(tmp_path: Path):
             env["PATH"] = f"{bindir}:{sysdir}"
             env["KUBECTL_LOG"] = str(log)
             env.setdefault("KIND_CLUSTER", "rossoctl")
+            # Point the (now-real) `instrument` verb at the stub kit via the
+            # DG_LINEAGE_ATTACH_DIR test seam (replaced --cortex-local-path;
+            # ADR-0033). A test may override it through env= to exercise a
+            # missing/incomplete kit.
+            env.setdefault("DG_LINEAGE_ATTACH_DIR", str(kitdir))
             env.update(kw.pop("env", {}) or {})
             return subprocess.run(
                 ["bash", str(DG_SH), *args],
@@ -309,13 +320,13 @@ def test_namespace_verb_recognised(sandbox) -> None:
     covered in tests/deploy/test_dg_sh_instrument.py); `status` became real in
     #183 (tests/deploy/test_dg_sh_namespace_status.py). Here we only guard that
     the `instrument` verb is recognised (dispatched, not "unknown action") — it
-    is no longer the #181 stub. Without a cortex path it refuses at the kit
-    preflight, which is a recognised, non-usage failure, not an 'unknown
-    namespace action'."""
+    is no longer the #181 stub. It runs the real activation path (against the
+    stub kit the sandbox points DG_LINEAGE_ATTACH_DIR at), which is a recognised
+    dispatch, not an 'unknown namespace action'."""
     sandbox.set_kubectl(entity_out="research-agent\n")
     r = sandbox.run("namespace", "some-ns", "instrument")
     combined = (r.stdout + r.stderr).lower()
-    # Recognised: it is dispatched (it reaches the kit/cortex preflight), not
+    # Recognised: it is dispatched (it reaches the real instrument path), not
     # rejected as an unknown action, and it is no longer a stub.
     assert "unknown namespace action" not in combined, (
         f"instrument must be a recognised verb; got:\n{combined}"
@@ -440,8 +451,7 @@ def test_entity_enumeration_uses_component_selector(sandbox) -> None:
     `app.kubernetes.io/component in (agent, mcp-tool)` selector, and NEVER reads
     the operator-reserved `rossoctl.io/type`."""
     sandbox.set_kubectl(entity_out="research-agent\npayment-agent\n")
-    sandbox.run("--cortex-local-path", str(sandbox.cortex),
-                "namespace", "travel-advisor", "instrument")
+    sandbox.run("namespace", "travel-advisor", "instrument")
     calls = " ".join(sandbox.kubectl_calls())
     assert "app.kubernetes.io/component" in calls, (
         f"entity enumeration must use app.kubernetes.io/component; calls: "
@@ -459,8 +469,7 @@ def test_single_entity_select_uses_name_label(sandbox) -> None:
     """A named <entity> is selected by `app.kubernetes.io/name` (driven here
     through the still-stubbed `instrument` verb)."""
     sandbox.set_kubectl(entity_out="research-agent\n")
-    sandbox.run("--cortex-local-path", str(sandbox.cortex),
-                "namespace", "travel-advisor", "instrument", "research-agent")
+    sandbox.run("namespace", "travel-advisor", "instrument", "research-agent")
     calls = " ".join(sandbox.kubectl_calls())
     assert "app.kubernetes.io/name" in calls, (
         f"single-entity select must use app.kubernetes.io/name; calls: "
@@ -473,8 +482,7 @@ def test_named_entity_not_found_is_loud_error(sandbox) -> None:
     (driven here through the still-stubbed `instrument` verb, which enumerates
     up front so a bad <entity> fails loud even in the stub)."""
     sandbox.set_kubectl(entity_out="")  # nothing matches the name
-    r = sandbox.run("--cortex-local-path", str(sandbox.cortex),
-                    "namespace", "travel-advisor", "instrument", "nope-agent")
+    r = sandbox.run("namespace", "travel-advisor", "instrument", "nope-agent")
     assert r.returncode != 0, "unresolved named entity must fail loud"
     combined = (r.stdout + r.stderr).lower()
     assert "nope-agent" in combined, "error must name the entity that was not found"
@@ -521,23 +529,19 @@ def test_missing_kubectl_reported_by_component_status(sandbox) -> None:
 
 
 # ---------------------------------------------------------------------------
-# --cortex-local-path global: parsed + carried, unused by the working verbs
+# --cortex-local-path is RETIRED (ADR-0033 vendored the kit into
+# deploy/lineage-attach/): it is no longer a recognised global option.
 # ---------------------------------------------------------------------------
 
 
-def test_cortex_local_path_flag_is_accepted_and_inert_here(sandbox, tmp_path) -> None:
-    """`--cortex-local-path` parses as a global and does not perturb the verbs
-    that do not consume it (#181 re-scope; consumed only by #184 instrument)."""
+def test_retired_cortex_local_path_flag_is_rejected(sandbox) -> None:
+    """`--cortex-local-path` was retired when the lineage-attach kit was vendored
+    (ADR-0033). It is now an unknown global option — a loud usage error, not a
+    silently-ignored no-op — so a runbook still passing it fails visibly."""
     sandbox.set_kubectl(ns_out=_NS_OUTPUT)
-    ctx = tmp_path / "cortex"
-    ctx.mkdir()
-    r = sandbox.run("--cortex-local-path", str(ctx), "namespaces", "list")
-    assert r.returncode == 0, r.stderr
-    printed = {ln.strip() for ln in r.stdout.splitlines() if ln.strip()}
-    assert "travel-advisor" in printed
-
-
-def test_cortex_local_path_flag_requires_value(sandbox) -> None:
-    r = sandbox.run("--cortex-local-path")
-    assert r.returncode != 0
-    assert "usage" in (r.stdout + r.stderr).lower() or "cortex" in (r.stdout + r.stderr).lower()
+    r = sandbox.run("--cortex-local-path", "/some/cortex", "namespaces", "list")
+    assert r.returncode != 0, "the retired flag must not be silently accepted"
+    combined = (r.stdout + r.stderr).lower()
+    assert "unknown option" in combined and "--cortex-local-path" in combined, (
+        f"the retired flag must fail loud as an unknown option; got:\n{combined}"
+    )

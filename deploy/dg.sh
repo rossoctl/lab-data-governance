@@ -7,20 +7,12 @@
 #
 # Authoritative design: docs/cli.md
 # Decision records:     docs/adr/0031-non-reversible-namespace-lineage-activation.md
-#                       docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md
+#                       docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md
 #
 # ---------------------------------------------------------------------------
-# THIS SLICE (issue #181): skeleton + shared cluster helpers.
-#
-#   * command-grammar dispatch,
-#   * `namespaces list` (the one verb that WORKS this ticket),
-#   * the shared helpers the later verbs reuse (entity enumeration,
-#     user-namespace filter, preflight primitives),
-#   * parse + carry the `--cortex-local-path` global (consumed only by the
-#     later `namespace instrument` verb, #184).
-#
-# The `component` and `namespace instrument|status` verbs are recognised but
-# stubbed here; later tickets fill them in.
+# `namespace instrument` drives the lineage-attach kit VENDORED into this repo
+# at deploy/lineage-attach/ (ADR-0033 decision 1, supersedes ADR-0032). No
+# cortex checkout is required for any verb; the extension stands alone.
 # ---------------------------------------------------------------------------
 #
 # Grammar:
@@ -29,11 +21,6 @@
 #   dg.sh component  [install|uninstall|status]
 #   dg.sh namespaces [list]
 #   dg.sh namespace  <ns> [instrument|status] [<entity>]
-#
-#   --cortex-local-path <dir>   # (env CORTEX_LOCAL_PATH) path to a cortex
-#                               # checkout; `instrument` locates the #852 kit
-#                               # under it. Required for `instrument`; unused by
-#                               # the other verbs.
 #
 # Fail-loud posture: every preflight and every unresolved input is a loud,
 # non-zero exit — never a silent no-op.
@@ -51,6 +38,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_AND_LOAD="${DG_BUILD_AND_LOAD:-${SCRIPT_DIR}/build-and-load.sh}"
 PATCH_COLLECTOR="${DG_PATCH_COLLECTOR:-${SCRIPT_DIR}/patch-rossoctl-collector.sh}"
 K8S_DIR="${DG_K8S_DIR:-${SCRIPT_DIR}/k8s}"
+# The lineage-attach kit is VENDORED into this repo (deploy/lineage-attach/) so
+# `instrument` needs no cortex checkout (ADR-0033 decision 1, supersedes 0032's
+# external --cortex-local-path arrangement). dg.sh shells out to its own local
+# copies. Tests override the dir via DG_LINEAGE_ATTACH_DIR to point at a fake
+# stub kit — the same override pattern as DG_BUILD_AND_LOAD / DG_K8S_DIR above.
+KIT_DIR="${DG_LINEAGE_ATTACH_DIR:-${SCRIPT_DIR}/lineage-attach}"
 
 # The data-governance component's own resources.
 DG_NAMESPACE="data-governance"
@@ -89,10 +82,6 @@ ENTITY_COMPONENT_SELECTOR='app.kubernetes.io/component in (agent, mcp-tool)'
 # Namespace label marking a user (rossoctl-enabled) namespace.
 NS_ENABLED_SELECTOR='rossoctl-enabled=true'
 
-# --cortex-local-path / CORTEX_LOCAL_PATH is a GLOBAL option: parsed here,
-# carried for the later `instrument` verb, consumed by no verb in this slice.
-CORTEX_LOCAL_PATH="${CORTEX_LOCAL_PATH:-}"
-
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
@@ -109,11 +98,6 @@ Usage:
   ${PROG} component  [install|uninstall|status]
   ${PROG} namespaces [list]
   ${PROG} namespace  <ns> [instrument|status] [<entity>]
-
-Global options:
-  --cortex-local-path <dir>   Path to a cortex checkout (env CORTEX_LOCAL_PATH);
-                              locates the lineage-attach kit for 'instrument'.
-                              Required for 'instrument'; unused by other verbs.
 EOF
 }
 
@@ -787,12 +771,13 @@ namespace_status() {
 # │  |                                        | (best-effort)       | edit     | │
 # │  | sidecar present, lineage-telemetry on  | no-op (idempotent)  | —        | │
 # │                                                                              │
-# │ MIGRATION: the CODE below still implements the ADR-0032 behavior (drive the  │
-# │ external #852 kit via --cortex-local-path; inject ENVOY on no-sidecar; SKIP  │
-# │ any existing sidecar). It is being migrated to the table above across the    │
-# │ lab-data-governance one-trace epic (vendor kit → detection → proxy injector  │
-# │ → turnspan bake → owner-split rewire). Do NOT read this table as current     │
-# │ code behavior until that rewire lands.                                       │
+# │ MIGRATION: the CODE below still implements the ADR-0032 BEHAVIOR (inject     │
+# │ ENVOY on a no-sidecar entity; SKIP any existing sidecar) — but it now drives │
+# │ the VENDORED kit (deploy/lineage-attach/), not an external checkout: the     │
+# │ vendor-kit step of the epic has landed (#241). It is still being migrated to │
+# │ the table above across the one-trace epic (vendor kit ✔ → detection → proxy  │
+# │ injector → turnspan bake → owner-split rewire). Do NOT read this table as    │
+# │ current code behavior until that rewire lands.                               │
 # └──────────────────────────────────────────────────────────────────────────────┘
 #
 # Under ADR-0033 the injected proxy is AUTH-FREE (lineage-only — not the enforcing
@@ -819,23 +804,35 @@ namespace_status() {
 # also documents the destination in the kit-invocation log.
 DG_OTEL_ENDPOINT="otel-collector.rossoctl-system.svc.cluster.local:4317"
 
-# resolve_kit_dir: echo the lineage-attach kit directory under CORTEX_LOCAL_PATH,
-# or die loud if the path is unset / the kit's scripts are absent. Mutates
-# nothing (ADR-0032: resolve the kit, do not guess). The three scripts that must
-# exist are the kit's documented surface: sidecar-patch.sh (live applier),
-# build-otel-shim.sh (the propagate-only shim), attach-lineage.sh (the generator).
-resolve_kit_dir() {
-    [[ -n "${CORTEX_LOCAL_PATH}" ]] \
-        || die "instrument needs the cortex lineage-attach kit: pass --cortex-local-path <dir> (or set CORTEX_LOCAL_PATH) pointing at a cortex checkout"
-    local kit="${CORTEX_LOCAL_PATH%/}/authbridge/lineage-attach"
-    [[ -d "${kit}" ]] \
-        || die "cortex lineage-attach kit not found under '${CORTEX_LOCAL_PATH}' (expected ${kit}); mutating nothing"
+# require_vendored_kit: die loud if the VENDORED lineage-attach kit under
+# ${KIT_DIR} is missing or incomplete. This is a repo-integrity check, not a
+# user-facing "pass a path" preflight — the kit ships in this repo
+# (deploy/lineage-attach/), so an absent file means a broken checkout, not a
+# missing --cortex-local-path (ADR-0033: the kit is vendored, retired the flag).
+# Mutates nothing.
+#
+# We check the WHOLE surface the drive path actually needs, not just the three
+# entry scripts: build-otel-shim.sh sources container-runtime.sh and its docker
+# build reads Dockerfile.otel-shim + lineage-propagate-hook.py. Checking only the
+# executables would let a partial checkout PASS the preflight and then die
+# mid-bake — after ensure_envoy_config may already have mutated the cluster —
+# which would break this preflight's "refuse, mutate nothing" promise.
+require_vendored_kit() {
+    [[ -d "${KIT_DIR}" ]] \
+        || die "the vendored lineage-attach kit is missing (expected ${KIT_DIR}); this is a broken checkout — the kit ships in deploy/lineage-attach/. Mutating nothing."
+    # Driven scripts: must be present AND executable.
     local s
     for s in sidecar-patch.sh build-otel-shim.sh attach-lineage.sh; do
-        [[ -x "${kit}/${s}" ]] \
-            || die "cortex lineage-attach kit is incomplete: ${kit}/${s} is missing or not executable; mutating nothing"
+        [[ -x "${KIT_DIR}/${s}" ]] \
+            || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/${s} is missing or not executable. Mutating nothing."
     done
-    printf '%s' "${kit}"
+    # Sourced / build-input files the shim bake needs: must be present (they are
+    # read, not exec'd, so an executable bit is not required).
+    local f
+    for f in container-runtime.sh Dockerfile.otel-shim lineage-propagate-hook.py; do
+        [[ -e "${KIT_DIR}/${f}" ]] \
+            || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/${f} is missing (the shim bake needs it). Mutating nothing."
+    done
 }
 
 # component_installed: 0 (true) if the data-governance namespace is present,
@@ -1180,9 +1177,9 @@ instrument_entity() {
 }
 
 # namespace_instrument <ns> [<entity>]: the non-reversible activation verb. Runs
-# the dg.sh-side preflights (kit resolvable, component installed, tee wired),
-# enumerates the targeted entities (loud on a bad <entity>), and drives each
-# through the decision table. A crash-loop on any entity halts the whole run.
+# the dg.sh-side preflights (vendored kit intact, component installed, tee
+# wired), enumerates the targeted entities (loud on a bad <entity>), and drives
+# each through the decision table. A crash-loop on any entity halts the whole run.
 namespace_instrument() {
     local ns="$1"
     local entity="${2:-}"
@@ -1191,9 +1188,8 @@ namespace_instrument() {
     command -v python3 >/dev/null 2>&1 \
         || die "'python3' is required for sidecar detection (namespace instrument); install it"
 
-    # Preflight 1: the kit must be resolvable (refuse, mutate nothing).
-    local kit
-    kit="$(resolve_kit_dir)"
+    # Preflight 1: the vendored kit must be intact (refuse, mutate nothing).
+    require_vendored_kit
 
     # Preflight 2: the consumer side must be up (component installed + tee wired).
     instrument_preflight
@@ -1209,7 +1205,7 @@ namespace_instrument() {
     local name
     while IFS= read -r name; do
         [[ -n "${name}" ]] || continue
-        instrument_entity "${kit}" "${ns}" "${name}"
+        instrument_entity "${KIT_DIR}" "${ns}" "${name}"
     done <<< "${names}"
 
     err ">> instrument: done for namespace '${ns}'."
@@ -1250,17 +1246,6 @@ main() {
     # GLOBAL position are a usage error.
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --cortex-local-path)
-                [[ $# -ge 2 ]] || usage_error "--cortex-local-path requires a <dir> argument"
-                CORTEX_LOCAL_PATH="$2"
-                export CORTEX_LOCAL_PATH
-                shift 2
-                ;;
-            --cortex-local-path=*)
-                CORTEX_LOCAL_PATH="${1#*=}"
-                export CORTEX_LOCAL_PATH
-                shift
-                ;;
             -h|--help)
                 usage
                 exit 0

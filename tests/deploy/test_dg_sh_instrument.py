@@ -4,19 +4,19 @@ The activation slice of ``dg.sh`` — the substantial one. It switches on lineag
 for the agents/tools in ``<ns>`` (all of them, or a single ``<entity>`` when
 named). It is **non-reversible, additive-only, and never changes a namespace's
 sidecar mode** (design: ``docs/cli.md`` § ``instrument``; ADR-0031
-non-reversible / mode-preserving; ADR-0032 build-on-the-kit).
+non-reversible / mode-preserving; ADR-0033 vendors-the-kit, supersedes 0032).
 
 Re-scope (issue #184 comment; ADR-0032): ``dg.sh`` no longer emits its own YAML.
-It **drives the cortex #852 lineage-attach kit** located under
-``$CORTEX_LOCAL_PATH/authbridge/lineage-attach/``. ``instrument`` wires lineage
+It **drives the #852 lineage-attach kit VENDORED into this repo** at
+``deploy/lineage-attach/`` (ADR-0033 retired ``--cortex-local-path``; the kit is
+local, no cortex checkout). ``instrument`` wires lineage
 ONLY onto entities that have **no sidecar** (kit-only, no-sidecar prerequisite —
 ADR-0032, revised). Any entity that already has a sidecar (proxy OR envoy,
 whether embedded in the Deployment template or webhook-injected into the Pod) is
 **out of scope**: instrument refuses/skips it, mutating nothing, and continues.
-Rationale (``docs/proposals/with-sidecar-live-validation-findings.md``): an
-in-place edit of an operator-owned injected CM is clobbered on the next roll, and
-the enforcing injected sidecar 401s the demo — so retrofitting an existing
-sidecar is not a supported route.
+Rationale (ADR-0032, "Consequences"): an in-place edit of an operator-owned
+injected CM is clobbered on the next roll, and the enforcing injected sidecar
+401s the demo — so retrofitting an existing sidecar is not a supported route.
 
     | Entity's current sidecar | Owner                             |
     |--------------------------|-----------------------------------|
@@ -26,7 +26,7 @@ sidecar is not a supported route.
 
 Kit ground truth (pinned at fbff6753 for this test's live counterpart, but the
 UNIT tests here drive a FAKE kit — a stub ``lineage-attach/`` under a tmp path
-``--cortex-local-path`` points at — so no cluster is needed):
+that ``DG_LINEAGE_ATTACH_DIR`` points dg.sh at — so no cluster is needed):
 
   * ``sidecar-patch.sh`` reads ``DEPLOY`` (required), ``NAMESPACE``, ``SELF_ID``,
     ``APP_CONTAINER`` and inherits ``APP_IMAGE`` / ``OTEL_ENDPOINT`` /
@@ -396,9 +396,11 @@ def sandbox(tmp_path: Path):
     sysdir.mkdir()
     fixdir = tmp_path / "fixtures"
     fixdir.mkdir()
-    # A cortex checkout: <cortex>/authbridge/lineage-attach/{scripts}
-    cortex = tmp_path / "cortex"
-    kitdir = cortex / "authbridge" / "lineage-attach"
+    # A FAKE lineage-attach kit — stub scripts that log argv+env instead of the
+    # real vendored ones. dg.sh is pointed here via DG_LINEAGE_ATTACH_DIR (the
+    # test seam that replaced --cortex-local-path when ADR-0033 vendored the kit
+    # into deploy/lineage-attach/).
+    kitdir = tmp_path / "lineage-attach"
     kitdir.mkdir(parents=True)
     log = tmp_path / "kubectl.log"
     kitlog = tmp_path / "kit.log"
@@ -417,7 +419,6 @@ def sandbox(tmp_path: Path):
         def __init__(self) -> None:
             self.bindir = bindir
             self.fixdir = fixdir
-            self.cortex = cortex
             self.kitdir = kitdir
             self.log = log
             self.kitlog = kitlog
@@ -429,16 +430,28 @@ def sandbox(tmp_path: Path):
             self.set_namespace({})
 
         def _write_kit(self) -> None:
+            # The three driven scripts (stubs that log argv+env), executable...
             _make_bin(self.kitdir, "sidecar-patch.sh", _STUB_SIDECAR_PATCH)
             _make_bin(self.kitdir, "build-otel-shim.sh", _STUB_BUILD_SHIM)
             _make_bin(self.kitdir, "attach-lineage.sh", _STUB_ATTACH)
+            # ...plus the sourced / build-input companions require_vendored_kit
+            # also insists on (build-otel-shim.sh sources container-runtime.sh and
+            # its docker build reads the Dockerfile + hook). A real vendored kit
+            # ships them; the stub must too, or the integrity check refuses.
+            for f in ("container-runtime.sh", "Dockerfile.otel-shim",
+                      "lineage-propagate-hook.py"):
+                (self.kitdir / f).write_text("# stub\n")
+
+        def remove_kit_file(self, name: str) -> None:
+            """Delete one kit file so the vendored-kit integrity check refuses."""
+            p = self.kitdir / name
+            if p.exists():
+                p.unlink()
 
         def remove_kit(self) -> None:
-            """Delete the kit scripts so the kit-resolvable preflight refuses."""
+            """Delete the driven scripts so the vendored-kit integrity check refuses."""
             for s in ("sidecar-patch.sh", "build-otel-shim.sh", "attach-lineage.sh"):
-                p = self.kitdir / s
-                if p.exists():
-                    p.unlink()
+                self.remove_kit_file(s)
 
         def set_flag(self, **kw: str) -> None:
             self.envflags.update({k: str(v) for k, v in kw.items()})
@@ -492,21 +505,25 @@ def sandbox(tmp_path: Path):
         def kit_log(self) -> str:
             return kitlog.read_text() if kitlog.exists() else ""
 
-        def run(self, *args: str, cortex_path: str | None = "__default__", **kw):
+        def run(self, *args: str, kit_dir: str | None = "__default__", **kw):
             env = dict(os.environ)
             env["PATH"] = f"{bindir}:{sysdir}"
             env["KUBECTL_LOG"] = str(log)
             env["KIT_LOG"] = str(kitlog)
             env["FIXDIR"] = str(fixdir)
             env.setdefault("KIND_CLUSTER", "rossoctl")
+            # Point dg.sh at the FAKE stub kit (not the real vendored scripts,
+            # which would kubectl-patch / build images) via the DG_LINEAGE_ATTACH_DIR
+            # test seam — the same override pattern as DG_BUILD_AND_LOAD / DG_K8S_DIR.
+            # (Replaces the retired --cortex-local-path flag; ADR-0033 vendored the
+            # kit into deploy/lineage-attach/.)
+            if kit_dir == "__default__":
+                env["DG_LINEAGE_ATTACH_DIR"] = str(self.kitdir)
+            elif kit_dir is not None:
+                env["DG_LINEAGE_ATTACH_DIR"] = kit_dir
             env.update(self.envflags)
             env.update(kw.pop("env", {}) or {})
-            argv = ["bash", str(DG_SH)]
-            if cortex_path == "__default__":
-                argv += ["--cortex-local-path", str(cortex)]
-            elif cortex_path is not None:
-                argv += ["--cortex-local-path", cortex_path]
-            argv += list(args)
+            argv = ["bash", str(DG_SH), *args]
             return subprocess.run(
                 argv, capture_output=True, text=True, env=env, timeout=120, **kw
             )
@@ -515,47 +532,95 @@ def sandbox(tmp_path: Path):
 
 
 # ===========================================================================
-# AC: kit-resolvable preflight — refuse (mutate nothing) if the kit is absent
+# AC: vendored-kit integrity check — refuse (mutate nothing) if the vendored
+# kit is incomplete. ADR-0033 vendored the kit into deploy/lineage-attach/ and
+# retired --cortex-local-path / CORTEX_LOCAL_PATH / resolve_kit_dir; the only
+# surviving refusal is a broken-checkout invariant, not a missing-flag error.
 # ===========================================================================
 
 
-def test_instrument_refuses_when_cortex_path_missing(sandbox) -> None:
-    """No --cortex-local-path / CORTEX_LOCAL_PATH → refuse, mutate nothing."""
-    sandbox.set_namespace({"research-agent": {"sidecar": None}})
-    r = sandbox.run("namespace", "travel-advisor", "instrument", cortex_path=None)
-    assert r.returncode != 0, "instrument without a cortex path must refuse"
-    combined = (r.stdout + r.stderr).lower()
-    assert "cortex" in combined, f"refusal must mention the cortex path; got:\n{combined}"
-    # Mutated nothing: the kit was never invoked, no kubectl patch/apply/rollout.
-    assert sandbox.kit_log() == "", "kit must not run when the path is missing"
-    calls = " ".join(sandbox.kubectl_calls())
-    for m in ("apply", "patch", "rollout restart"):
-        assert m not in calls, f"a refused instrument must not {m!r}; calls={calls!r}"
-
-
-def test_instrument_refuses_when_kit_scripts_absent(sandbox) -> None:
-    """The path is given but the lineage-attach scripts are not under it →
-    refuse, mutate nothing (ADR-0032: resolve the kit, don't guess)."""
+def test_instrument_refuses_when_vendored_kit_incomplete(sandbox) -> None:
+    """A vendored kit missing its scripts is a broken checkout → refuse, mutate
+    nothing (this is the integrity check that replaced resolve_kit_dir)."""
     sandbox.set_namespace({"research-agent": {"sidecar": None}})
     sandbox.remove_kit()
     r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode != 0, "a missing kit must refuse"
+    assert r.returncode != 0, "an incomplete vendored kit must refuse"
     combined = (r.stdout + r.stderr).lower()
     assert "lineage-attach" in combined or "kit" in combined, (
         f"refusal must name the missing kit; got:\n{combined}"
     )
     assert sandbox.kit_log() == "", "no kit script may run when scripts are absent"
+    calls = " ".join(sandbox.kubectl_calls())
+    for m in ("apply", "patch", "rollout restart"):
+        assert m not in calls, f"a refused instrument must not {m!r}; calls={calls!r}"
 
 
-def test_instrument_env_can_supply_cortex_path(sandbox) -> None:
-    """CORTEX_LOCAL_PATH env is equivalent to --cortex-local-path (#181 grammar)."""
+@pytest.mark.parametrize(
+    "missing",
+    ["container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py"],
+)
+def test_instrument_refuses_when_kit_companion_file_absent(sandbox, missing) -> None:
+    """The integrity check covers the WHOLE surface the drive path needs, not
+    just the three entry scripts: build-otel-shim.sh sources container-runtime.sh
+    and its docker build reads the Dockerfile + propagate hook. A checkout with
+    the scripts but missing one of these must refuse BEFORE any mutation —
+    otherwise the bake dies mid-run after ensure_envoy_config may have already
+    written a ConfigMap, breaking the 'refuse, mutate nothing' promise."""
     sandbox.set_namespace({"research-agent": {"sidecar": None}})
-    r = sandbox.run(
-        "namespace", "travel-advisor", "instrument",
-        cortex_path=None, env={"CORTEX_LOCAL_PATH": str(sandbox.cortex)},
+    sandbox.remove_kit_file(missing)
+    r = sandbox.run("namespace", "travel-advisor", "instrument")
+    assert r.returncode != 0, f"a kit missing {missing} must refuse"
+    combined = (r.stdout + r.stderr).lower()
+    assert "incomplete" in combined and missing.lower() in combined, (
+        f"refusal must name the missing companion file {missing}; got:\n{combined}"
     )
+    assert sandbox.kit_log() == "", "no kit script may run when the kit is incomplete"
+    calls = " ".join(sandbox.kubectl_calls())
+    for m in ("apply", "patch", "rollout restart", "create configmap"):
+        assert m not in calls, f"a refused instrument must not {m!r}; calls={calls!r}"
+
+
+# ===========================================================================
+# AC (#241): the kit ships in-repo and `instrument` resolves it with NO cortex
+# checkout and NO env override — the whole point of vendoring.
+# ===========================================================================
+
+_VENDORED_KIT = REPO_ROOT / "deploy" / "lineage-attach"
+
+
+def test_vendored_kit_ships_in_repo_and_is_executable() -> None:
+    """The lineage-attach kit is vendored into deploy/lineage-attach/ (ADR-0033);
+    its three driven scripts are present and executable. This is the filesystem
+    invariant require_vendored_kit checks — a broken checkout fails it loud."""
+    assert _VENDORED_KIT.is_dir(), f"vendored kit dir must exist: {_VENDORED_KIT}"
+    for s in ("sidecar-patch.sh", "build-otel-shim.sh", "attach-lineage.sh"):
+        p = _VENDORED_KIT / s
+        assert p.is_file(), f"vendored kit is missing {s}"
+        assert os.access(p, os.X_OK), f"vendored kit script {s} is not executable"
+
+
+def test_instrument_resolves_vendored_kit_without_cortex_checkout(sandbox) -> None:
+    """With DG_LINEAGE_ATTACH_DIR unset and no cortex checkout on disk,
+    `instrument` falls back to the vendored deploy/lineage-attach/ and clears the
+    integrity preflight — proving the vendored kit is self-sufficient (#241 AC).
+
+    Driven against an already-sidecar'd entity so the run SKIPS before invoking
+    the kit: we exercise the preflight/resolution against the REAL vendored kit
+    without running its live-cluster attach against the fake kubectl."""
+    sandbox.set_namespace({"payment-agent": {"sidecar": "envoy", "lineage": False}})
+    # kit_dir=None → run() sets no DG_LINEAGE_ATTACH_DIR, so dg.sh uses its own
+    # default (${SCRIPT_DIR}/lineage-attach), i.e. the real vendored kit.
+    r = sandbox.run("namespace", "travel-advisor", "instrument", kit_dir=None)
     assert r.returncode == 0, r.stderr
-    assert "sidecar-patch.sh" in sandbox.kit_log(), "env-supplied path must resolve the kit"
+    combined = (r.stdout + r.stderr).lower()
+    # It got PAST the vendored-kit integrity check: no "missing/incomplete kit"
+    # refusal, and it reached the per-entity skip decision.
+    assert "vendored lineage-attach kit is missing" not in combined
+    assert "vendored lineage-attach kit is incomplete" not in combined
+    assert "skip" in combined and "sidecar" in combined, (
+        f"instrument must reach the skip decision via the vendored kit; got:\n{combined}"
+    )
 
 
 # ===========================================================================
