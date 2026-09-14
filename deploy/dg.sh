@@ -770,35 +770,49 @@ namespace_status() {
 #
 # Activate lineage for the agents/tools in <ns> — all of them, or the single
 # <entity> when named. Additive-only, and it NEVER changes a namespace's sidecar
-# mode (ADR-0031). Per targeted entity, the least mutation that works, with the
-# owner split ADR-0032 records:
+# mode (ADR-0031).
 #
-#   | current sidecar        | action                                | owner   |
-#   |------------------------|---------------------------------------|---------|
-#   | none                   | inject envoy lineage sidecar (+ shim  | #852    |
-#   |                        | for a Python app)                     | kit     |
-#   | envoy-sidecar in place | add lineage-telemetry to its pipeline | #852    |
-#   |                        | in place                              | kit     |
-#   | proxy-sidecar in place | add lineage-telemetry to its pipeline | dg.sh's |
-#   |                        | in place                              | OWN edit|
+# ┌─ ADR-0033 (accepted 2026-09-14) supersedes ADR-0032. The target owner split ─┐
+# │ (all auto-detected, no flag) is:                                             │
+# │                                                                              │
+# │  | current state                          | action              | owner    | │
+# │  |----------------------------------------|---------------------|----------| │
+# │  | no sidecar, ns NOT envoy-configured    | inject lineage-only | dg.sh    | │
+# │  |                                        | PROXY sidecar       | proxy    | │
+# │  |                                        | (+ two-shim image)  | injector | │
+# │  | no sidecar, ns already envoy-configured| inject envoy lineage| vendored | │
+# │  |                                        | sidecar (+ two-shim)| envoy    | │
+# │  | sidecar present, no lineage-telemetry  | APPEND lineage-     | dg.sh    | │
+# │  |                                        | telemetry in place  | in-place | │
+# │  |                                        | (best-effort)       | edit     | │
+# │  | sidecar present, lineage-telemetry on  | no-op (idempotent)  | —        | │
+# │                                                                              │
+# │ MIGRATION: the CODE below still implements the ADR-0032 behavior (drive the  │
+# │ external #852 kit via --cortex-local-path; inject ENVOY on no-sidecar; SKIP  │
+# │ any existing sidecar). It is being migrated to the table above across the    │
+# │ lab-data-governance one-trace epic (vendor kit → detection → proxy injector  │
+# │ → turnspan bake → owner-split rewire). Do NOT read this table as current     │
+# │ code behavior until that rewire lands.                                       │
+# └──────────────────────────────────────────────────────────────────────────────┘
 #
-# The #852 kit is envoy-sidecar-only (its ConfigMap hardcodes mode: envoy-sidecar;
-# its patch adds envoy-proxy as a NATIVE sidecar — an initContainer with
-# restartPolicy: Always, k8s >= 1.29 — plus proxy-init). So the first two rows
-# are the kit's job (sidecar-patch.sh) and the proxy row stays dg.sh's own.
+# Under ADR-0033 the injected proxy is AUTH-FREE (lineage-only — not the enforcing
+# token-exchange proxy, which 401s the demo), captures egress via transparent
+# iptables in INCLUDE-ONLY allowlist mode (A2A 8080 + MCP 8000 by default; every
+# other port passes through direct), and — like every producer under wire contract
+# v1.7.0 — supplies the workload `namespace` (via namespace_file) or the plugin
+# refuses to start. The in-place append keeps the sidecar's auth AS-IS and verifies
+# after the roll, warning loudly on an operator clobber or an enforcing-401 case.
 #
-# Two guard LAYERS, complementary (ADR-0032 decision 4):
-#   * the kit runs `kubectl patch --dry-run=server` BEFORE any write — its own
-#     pre-apply "version guard" that rejects a bad merge / admission / RBAC /
-#     cluster < 1.29;
+# Guard LAYERS, complementary (kept from ADR-0032 decision 4):
+#   * the attach path runs `kubectl patch --dry-run=server` BEFORE any write — a
+#     pre-apply guard that rejects a bad merge / admission / RBAC / cluster < 1.29;
 #   * dg.sh watches the rollout the attach triggers and detects a crash-looping
 #     sidecar (the `unknown plugin "lineage-telemetry"` / DisallowUnknownFields
 #     boot-crash surfaces as CrashLoopBackOff within seconds) — the POST-apply
 #     failure the dry-run cannot see. On a failed rollout / crash-loop dg.sh
-#     dumps the sidecar log, surfaces the kit's PRINTED back-out line verbatim
-#     (a reverse-patch, NOT a rollout undo — envoy-proxy is a native sidecar, so
-#     a whole-revision undo restores too much), fails loud, and does NOT proceed
-#     to the next entity.
+#     dumps the sidecar log, surfaces the PRINTED back-out line verbatim (a
+#     reverse-patch, NOT a rollout undo — a native sidecar makes a whole-revision
+#     undo restore too much), fails loud, and does NOT proceed to the next entity.
 
 # The platform collector the component tee carries to the receiver — the kit's
 # own OTEL_ENDPOINT default too, so passing it is a no-op belt-and-braces that
@@ -1145,14 +1159,16 @@ instrument_entity() {
             drive_kit_attach "${kit}" "${ns}" "${entity}" "${shim_container}" "${shim_image}"
             ;;
         proxy|envoy)
-            # Already has a sidecar → OUT OF SCOPE. instrument only wires lineage
-            # onto entities with NO sidecar, via the #852 kit (ADR-0032, revised
-            # to a kit-only, no-sidecar prerequisite). Retrofitting an existing
-            # sidecar is not a supported route: an in-place edit of an
-            # operator-owned (webhook-injected) pipeline CM is clobbered on the
-            # next roll, and the platform's enforcing sidecar 401s the demo — see
-            # docs/proposals/with-sidecar-live-validation-findings.md. Skip and
-            # continue; mutate nothing.
+            # CURRENT (ADR-0032) behavior: already has a sidecar → OUT OF SCOPE,
+            # skip. Retrofitting an existing sidecar was found unsafe on live
+            # validation: an in-place edit of an operator-owned (webhook-injected)
+            # pipeline CM is clobbered on the next roll, and the platform's
+            # enforcing sidecar 401s the demo's unauthenticated MCP/A2A calls.
+            # ADR-0033 REVISES this: it re-enables an in-place APPEND of
+            # lineage-telemetry as a best-effort, verify-after-roll step (warning
+            # loudly on clobber / enforcing) — see the owner-split table in the
+            # header above and ADR-0033. Until the owner-split rewire lands this
+            # block still skips; mutate nothing.
             err ">> instrument: '${entity}' already has a ${type} sidecar — skipping."
             err "   instrument only wires lineage onto entities with NO sidecar (via the #852 kit)."
             return 0

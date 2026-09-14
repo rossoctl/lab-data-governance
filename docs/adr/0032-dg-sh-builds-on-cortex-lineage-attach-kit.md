@@ -1,8 +1,19 @@
 ---
-status: accepted
+status: superseded by ADR-0033
 ---
 
 # `dg.sh namespace instrument` builds on the cortex lineage-attach kit (#852)
+
+> **Superseded by [ADR-0033](0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md)
+> (2026-09-14).** ADR-0033 reverses this ADR's two core decisions: `dg.sh` now
+> **vendors** the lineage-attach capability into `deploy/lineage-attach/` and
+> **retires `--cortex-local-path`** (Decision 1 here — drive the external kit —
+> is reversed), and the injected sidecar **defaults to a lineage-only `proxy`**
+> with `envoy` only when the namespace is already envoy-configured (Decision 2's
+> "no-sidecar → inject envoy" is reversed). ADR-0033 also re-enables in-place
+> activation of an existing sidecar as a best-effort, verify-after-roll append
+> (reversing the Decision #2 revision's unconditional skip). Everything below is
+> retained as the historical rationale for the arrangement ADR-0033 replaced.
 
 `dg.sh namespace <ns> instrument` activates lineage on a namespace's
 agents/tools. An earlier design (`docs/cli.md`, and ADR-0031
@@ -50,9 +61,11 @@ Two hard facts shape the decision:
 > **Revised (2026-09-10):** Decision #2 originally kept a **three**-row table —
 > no-sidecar (kit), envoy-sidecar-in-place (kit), proxy-sidecar-in-place
 > (`dg.sh`'s own edit) — so the proxy-shaped agent-examples demo could be
-> instrumented in place. Live validation
-> (`docs/proposals/with-sidecar-live-validation-findings.md`) showed the two
-> existing-sidecar rows do not hold: the platform-injected proxy sidecar is the
+> instrumented in place. Live validation (recorded at the time in a
+> `docs/proposals/with-sidecar-live-validation-findings.md` that was never
+> committed to this repo — the findings are summarized here and in ADR-0033)
+> showed the two existing-sidecar rows do not hold: the platform-injected proxy
+> sidecar is the
 > **enforcing** sidecar (`jwt`/`token-exchange`) and 401s the demo's
 > unauthenticated MCP/A2A calls, and an in-place edit of a **webhook-injected**
 > pipeline CM is **clobbered by the operator** (the per-workload

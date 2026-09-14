@@ -56,6 +56,16 @@ none, and skips any entity that already has one (ADR-0032). It never edits,
 replaces, or removes an existing sidecar, and in particular never flips a
 namespace from `proxy-sidecar` to `envoy-sidecar`.
 
+> **Revised (2026-09-14, [ADR-0033](0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md)).**
+> ADR-0033 re-enables in-place activation of an entity that already has a
+> sidecar: it **appends** the `lineage-telemetry` plugin to that sidecar's
+> pipeline (leaving its auth plugins exactly as-is), as a best-effort,
+> verify-after-roll step. The literal "never edits an existing sidecar" is
+> therefore refined — appending a plugin is an edit — but the substance of this
+> decision holds: the edit is purely **additive** (append, never remove or
+> replace), and it still **never switches sidecar mode** (an entity that runs
+> proxy keeps running proxy). Decision 2 (non-reversible in v1) is unchanged.
+
 ### 2. Activation is non-reversible in v1
 
 There is no `reset` / un-instrument verb. To undo activation, delete or

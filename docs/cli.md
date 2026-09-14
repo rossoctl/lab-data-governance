@@ -154,19 +154,26 @@ of the current kit (`fbff6753`) `envoy-proxy` is a **native sidecar**: an
 container and stays up for the pod's life; requires k8s >= 1.29), not an
 ordinary container.
 
-**Why not instrument an existing sidecar in place?** An earlier design kept a
-third row — a `dg.sh`-owned in-place edit of a `proxy-sidecar` pipeline — so the
-proxy-shaped agent-examples demo could be instrumented without a redeploy. Live
-validation (`docs/proposals/with-sidecar-live-validation-findings.md`) killed it:
-the platform-injected proxy sidecar is the **enforcing** sidecar
-(`jwt`/`token-exchange`) and 401s the demo's unauthenticated MCP/A2A calls, and
-an in-place edit of a **webhook-injected** pipeline ConfigMap is **clobbered by
-the operator** (the per-workload CM is Deployment-owned and regenerated on the
-roll `instrument` triggers). So `instrument` now only ever acts on a no-sidecar
-entity, letting the kit inject a `dg.sh`-ownable envoy sidecar — the supported
-lineage path for the demo (bare no-sidecar deploy → `instrument`; the
-known-working recipe in `LINEAGE-PROXY-SIDECAR-RECIPE.md`). See ADR-0032
-Decision #2 (revised) for the full rationale.
+**Instrumenting an existing sidecar in place.** An earlier design (ADR-0032,
+revised) *skipped* any entity that already had a sidecar, because live validation
+found in-place editing unsafe: the platform-injected proxy sidecar is the
+**enforcing** sidecar (`jwt`/`token-exchange`) and 401s the demo's unauthenticated
+MCP/A2A calls, and an in-place edit of a **webhook-injected** pipeline ConfigMap is
+**clobbered by the operator** (the per-workload CM is Deployment-owned and
+regenerated on the roll `instrument` triggers).
+
+**ADR-0033 (accepted 2026-09-14) revises this**: `instrument` re-enables an
+in-place **append** of the `lineage-telemetry` plugin to an existing sidecar's
+pipeline (leaving its auth plugins exactly as-is), as a **best-effort** step — it
+**verifies after the roll** that the plugin is actually live and **warns loudly**
+when the operator clobbered it, or when the existing pipeline is enforcing (so
+lineage will record 401s for unauthenticated callers). ADR-0033 also flips the
+injected default for a *no-sidecar* entity from envoy to a **lineage-only `proxy`
+sidecar** (envoy only when the namespace is already envoy-configured), and vendors
+the attach capability into `deploy/lineage-attach/` so `dg.sh` needs no cortex
+checkout (`--cortex-local-path` retired). See ADR-0033 for the full owner-split and
+rationale; the durable-in-place alternatives (operator-rendered / skip-injected)
+are recorded there as future work.
 
 The plugin points `otel_endpoint` at the platform collector
 (`otel-collector.rossoctl-system.svc.cluster.local:4317`); the existing
