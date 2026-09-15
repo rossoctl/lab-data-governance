@@ -68,17 +68,33 @@ wired. See ADR-0031 for why.
 incomplete (a broken checkout), `instrument` is a
 **refuse-and-mutate-nothing preflight** (it fails loud and changes nothing).
 
-`instrument` wires lineage onto **no-sidecar entities only**, delegated wholesale
-to the vendored kit, which injects an envoy lineage sidecar (and, for a Python
-app, bakes the propagate-only shim). Any entity that **already has a sidecar** —
-proxy or envoy, template- or webhook-injected — is **skipped, mutating nothing**
-(ADR-0032). Retrofitting lineage onto an existing sidecar is not a supported
-route: the platform's enforcing proxy sidecar 401s the demo's plain MCP/A2A
-calls, and an in-place edit of a webhook-injected (operator-owned) pipeline
-ConfigMap is clobbered on the next roll — see ADR-0032 for the live-validation
-findings behind this revision. Because the only wiring path is the kit's
-no-sidecar inject, there is no `egressEnforcement` warning: proxy entities are
-never touched.
+`instrument` dispatches each targeted entity by its **current sidecar state**,
+all auto-detected, no flag (the ADR-0033 owner-split):
+
+| Entity's current state | Action |
+| --- | --- |
+| no sidecar, namespace **not** envoy-configured | inject a lineage-only **proxy** sidecar (auth-free) + the two-shim image |
+| no sidecar, namespace **already** envoy-configured | inject an **envoy** lineage sidecar + the two-shim image |
+| sidecar present, **no** `lineage-telemetry` in its pipeline | **append** `lineage-telemetry` in place (auth left as-is), best-effort with verify-after-roll |
+| sidecar present, `lineage-telemetry` **already** wired | **no-op** (idempotent) |
+
+The default for a bare, no-sidecar entity is the **auth-free proxy** sidecar: it
+carries only `lineage-telemetry` + the parsers, so it does not 401 the demo's
+unauthenticated MCP/A2A calls, and captures egress transparently via an
+include-only iptables allowlist (A2A `8080` + MCP `8000` by default; every other
+port stays direct). "Already envoy-configured" is detected from the namespace —
+the presence of the platform `envoy-config` ConfigMap — and routes to the
+vendored envoy applier instead. For a Python app either injection also bakes +
+attaches the two-shim image (`LINEAGE_PROPAGATE=1`) so a run collapses to one
+trace rather than N fragments.
+
+Where an entity **already has a sidecar**, `instrument` **appends**
+`lineage-telemetry` to its pipeline in place (leaving its auth plugins exactly
+as-is — additive, never strip) as a **best-effort** step: it **verifies after the
+roll** that the plugin is live and **warns loudly** if the operator clobbered the
+(operator-owned) ConfigMap on the roll, or if the existing pipeline is enforcing
+(so lineage will record 401s for unauthenticated callers). See ADR-0033 for the
+full owner-split, and ADR-0031 for why activation stays additive and one-way.
 
 This `dg.sh namespace instrument` no-sidecar path is the **productized form of
 the ad-hoc lineage-attach recipe** the root `CLAUDE.md` § 3a and

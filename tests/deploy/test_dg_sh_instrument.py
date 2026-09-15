@@ -4,42 +4,46 @@ The activation slice of ``dg.sh`` — the substantial one. It switches on lineag
 for the agents/tools in ``<ns>`` (all of them, or a single ``<entity>`` when
 named). It is **non-reversible, additive-only, and never changes a namespace's
 sidecar mode** (design: ``docs/cli.md`` § ``instrument``; ADR-0031
-non-reversible / mode-preserving; ADR-0033 vendors-the-kit, supersedes 0032).
+non-reversible / mode-preserving; ADR-0033 vendors-the-kit + proxy-default,
+supersedes 0032).
 
-Re-scope (issue #184 comment; ADR-0032): ``dg.sh`` no longer emits its own YAML.
-It **drives the #852 lineage-attach kit VENDORED into this repo** at
-``deploy/lineage-attach/`` (ADR-0033 retired ``--cortex-local-path``; the kit is
-local, no cortex checkout). ``instrument`` wires lineage
-ONLY onto entities that have **no sidecar** (kit-only, no-sidecar prerequisite —
-ADR-0032, revised). Any entity that already has a sidecar (proxy OR envoy,
-whether embedded in the Deployment template or webhook-injected into the Pod) is
-**out of scope**: instrument refuses/skips it, mutating nothing, and continues.
-Rationale (ADR-0032, "Consequences"): an in-place edit of an operator-owned
-injected CM is clobbered on the next roll, and the enforcing injected sidecar
-401s the demo — so retrofitting an existing sidecar is not a supported route.
+**ADR-0033 owner-split (issue #245 — the behaviour flip).** ``dg.sh`` no longer
+emits its own YAML; it drives the lineage-attach kit **VENDORED into this repo**
+at ``deploy/lineage-attach/`` (``--cortex-local-path`` retired — the kit is
+local). Each targeted entity is dispatched by its CURRENT sidecar state, all
+auto-detected, no flag:
 
-    | Entity's current sidecar | Owner                             |
-    |--------------------------|-----------------------------------|
-    | none  → inject envoy     | #852 kit (sidecar-patch.sh)       |
-    | envoy-sidecar in place   | SKIP (already has a sidecar)      |
-    | proxy-sidecar in place   | SKIP (already has a sidecar)      |
+    | Entity's current state                     | Action                          | Owner                    |
+    |--------------------------------------------|---------------------------------|--------------------------|
+    | no sidecar, ns NOT envoy-configured        | inject lineage-only PROXY sidecar | dg.sh proxy applier (sidecar-patch-proxy.sh) |
+    | no sidecar, ns already envoy-configured    | inject ENVOY lineage sidecar    | vendored envoy applier (sidecar-patch.sh)    |
+    | sidecar present, no lineage-telemetry      | APPEND lineage-telemetry in place (best-effort, verify-after-roll) | dg.sh in-place edit |
+    | sidecar present, lineage-telemetry wired   | no-op (idempotent)              | —                        |
 
-Kit ground truth (pinned at fbff6753 for this test's live counterpart, but the
-UNIT tests here drive a FAKE kit — a stub ``lineage-attach/`` under a tmp path
-that ``DG_LINEAGE_ATTACH_DIR`` points dg.sh at — so no cluster is needed):
+"Already envoy-configured" is detected from the namespace: the presence of the
+platform ``envoy-config`` ConfigMap (not a flag). A bare, ad-hoc namespace (the
+travel_advisor demo) has none, so it takes the PROXY branch.
 
-  * ``sidecar-patch.sh`` reads ``DEPLOY`` (required), ``NAMESPACE``, ``SELF_ID``,
-    ``APP_CONTAINER`` and inherits ``APP_IMAGE`` / ``OTEL_ENDPOINT`` /
-    ``SIDECAR_IMAGE`` / ``PROXY_INIT_IMAGE`` for the generator;
-  * it prints its **back-out line** on stdout, verbatim:
+The injected proxy is AUTH-FREE (lineage-only) and captures egress via the
+include-only iptables allowlist (``OUTBOUND_PORTS_INCLUDE``, A2A 8080 + MCP 8000).
+The in-place append keeps the sidecar's auth exactly as-is (append, never strip),
+verifies after the roll, and warns loudly on an operator clobber or an enforcing
+pipeline (401 risk) — ADR-0033 Decision 3.
+
+Kit ground truth (the UNIT tests here drive a FAKE kit — a stub
+``lineage-attach/`` under a tmp path that ``DG_LINEAGE_ATTACH_DIR`` points dg.sh
+at — so no cluster is needed):
+
+  * both appliers (``sidecar-patch.sh`` envoy, ``sidecar-patch-proxy.sh`` proxy)
+    read ``DEPLOY`` (required), ``NAMESPACE``, ``SELF_ID``, ``APP_CONTAINER`` and
+    inherit the generator knobs; the proxy applier forwards
+    ``OUTBOUND_PORTS_INCLUDE``, the envoy applier ``OUTBOUND_PORTS_EXCLUDE``;
+  * each prints its **back-out line** on stdout, verbatim:
     ``>> back out: kubectl -n <ns> patch deploy/<d> --type strategic -p '<undo>'
     && kubectl -n <ns> delete cm authbridge-lineage-config-<d>`` — a
-    reverse-patch, NOT a ``rollout undo`` (the kit's own comment says a
-    whole-revision undo restores too much because envoy-proxy is a native
-    sidecar);
-  * it runs ``kubectl patch --dry-run=server`` before any write (the pre-apply
-    "version guard"), which is COMPLEMENTARY to dg.sh's post-apply crash-loop
-    watch, not a replacement.
+    reverse-patch, NOT a ``rollout undo``;
+  * each runs ``kubectl patch --dry-run=server`` before any write (the pre-apply
+    "version guard"), COMPLEMENTARY to dg.sh's post-apply crash-loop watch.
 
 Like the rest of ``tests/deploy/``, these drive the real script as a subprocess
 with a **fake ``kubectl``** and a **fake kit** on a synthetic ``PATH``. Nothing
@@ -149,6 +153,26 @@ pipeline:
   inbound:
     plugins:
       - name: a2a-parser
+      - name: mcp-parser
+  outbound:
+    plugins:
+      - name: a2a-parser
+"""
+
+# An ENFORCING pipeline (jwt-validation / token-exchange present, no lineage):
+# appending lineage here works, but lineage will record 401s for unauthenticated
+# callers — dg.sh must warn (ADR-0033 Decision 3). No lineage-telemetry yet.
+_CM_ENFORCING_NO_LINEAGE = """mode: proxy-sidecar
+pipeline:
+  inbound:
+    plugins:
+      - name: jwt-validation
+      - name: a2a-parser
+      - name: mcp-parser
+  outbound:
+    plugins:
+      - name: token-exchange
+      - name: a2a-parser
 """
 
 
@@ -222,8 +246,34 @@ echo ">> loaded docker.io/library/${name}-otel:latest into kind cluster rossoctl
 exit 0
 """
 
+# sidecar-patch-proxy.sh stub: the PROXY live applier (ADR-0033 owner-split, the
+# no-sidecar / NON-envoy-configured row). Logs the same env contract as the envoy
+# applier PLUS the include-only allowlist OUTBOUND_PORTS_INCLUDE (the proxy path's
+# knob, vs the envoy path's OUTBOUND_PORTS_EXCLUDE). Same back-out line + rollout
+# behaviour as the envoy stub, keyed off SP_ROLLOUT_FAILS.
+_STUB_SIDECAR_PATCH_PROXY = r"""
+if [[ -n "${KIT_LOG:-}" ]]; then
+  {
+    printf 'sidecar-patch-proxy.sh argv: %s\n' "$*"
+    printf 'sidecar-patch-proxy.sh env: DEPLOY=%s NAMESPACE=%s SELF_ID=%s APP_CONTAINER=%s APP_IMAGE=%s OTEL_ENDPOINT=%s SIDECAR_IMAGE=%s PROXY_INIT_IMAGE=%s OUTBOUND_PORTS_INCLUDE=%s\n' \
+      "${DEPLOY:-}" "${NAMESPACE:-}" "${SELF_ID:-}" "${APP_CONTAINER:-}" "${APP_IMAGE:-}" "${OTEL_ENDPOINT:-}" "${SIDECAR_IMAGE:-}" "${PROXY_INIT_IMAGE:-}" "${OUTBOUND_PORTS_INCLUDE:-}"
+  } >> "$KIT_LOG"
+fi
+undo='{"spec":{"template":{"spec":{"initContainers":[{"name":"proxy-init","$patch":"delete"},{"name":"authbridge-proxy","$patch":"delete"}]}}}}'
+echo "configmap/authbridge-lineage-config-${DEPLOY} created"
+echo "deployment.apps/${DEPLOY} patched"
+echo ">> back out: kubectl -n ${NAMESPACE} patch deploy/${DEPLOY} --type strategic -p '${undo}' && kubectl -n ${NAMESPACE} delete cm authbridge-lineage-config-${DEPLOY}"
+if [[ "${SP_ROLLOUT_FAILS:-0}" == "1" ]]; then
+  echo "error: deployment \"${DEPLOY}\" exceeded its progress deadline" >&2
+  exit 1
+fi
+echo "deployment \"${DEPLOY}\" successfully rolled out"
+echo ">> lineage proxy sidecar attached to deploy/${DEPLOY} (self_id=${SELF_ID}, ns=${NAMESPACE})"
+exit 0
+"""
+
 # attach-lineage.sh stub: present only so the kit-resolvable preflight (which
-# checks all three script names) passes. Never invoked directly by dg.sh.
+# checks all script names) passes. Never invoked directly by dg.sh.
 _STUB_ATTACH = 'echo "attach-lineage.sh stub" >&2\nexit 0\n'
 
 
@@ -304,36 +354,36 @@ if [[ "$*" == *"logs"* ]]; then
   exit 0
 fi
 
-# ---- envoy-config provisioning (dg.sh ensure_envoy_config; #184 gap) --------
-# Namespace-aware, flag-driven so a test can model "absent in the target ns but
-# present in a chart-managed source ns". ENVOY_CONFIG_TARGET / _SOURCE default 1
-# (present) so the normal instrument path is a no-op here.
-#   -n <ns> get cm envoy-config ...      -> target-ns probe
-#   -n <src> get cm envoy-config ...     -> source-ns probe (any ns != target)
-#   -A / --all-namespaces get cm envoy-config -> source discovery listing
+# ---- envoy-config probe (dg.sh ns_is_envoy_configured — ADR-0033 owner-split) -
+# The presence of the platform `envoy-config` ConfigMap in the TARGET namespace
+# is how dg.sh decides a no-sidecar entity's owner: present → ENVOY branch (the
+# vendored envoy applier); absent → PROXY branch (the auth-free proxy applier).
+# ENVOY_CONFIG_TARGET DEFAULTS TO 0 (absent) — the demo reality: a bare, ad-hoc
+# namespace has no envoy-config, so the DEFAULT no-sidecar path is the PROXY
+# branch. A test that wants the envoy branch sets ENVOY_CONFIG_TARGET=1.
 if [[ "$*" == *"get"* && "$*" == *"envoy-config"* ]]; then
   # extract the -n <ns> if present
   ns=""; prev=""
   for a in "$@"; do case "$prev" in -n|--namespace) ns="$a"; break ;; esac; prev="$a"; done
   if [[ "$*" == *"--all-namespaces"* || "$*" == *"-A"* ]]; then
-    # source discovery: list the chart-managed source ns iff a source exists
-    if [[ "${ENVOY_CONFIG_SOURCE:-1}" == "1" ]]; then printf '%s\n' "rossoctl-system"; fi
+    # (legacy source discovery — retained so an old copy path is inert, not an error)
+    if [[ "${ENVOY_CONFIG_SOURCE:-0}" == "1" ]]; then printf '%s\n' "rossoctl-system"; fi
     exit 0
   fi
   if [[ "$ns" == "travel-advisor" ]]; then
-    if [[ "${ENVOY_CONFIG_TARGET:-1}" == "1" ]]; then
-      printf '%s' 'admin: {}'; exit 0    # present in the target ns
+    if [[ "${ENVOY_CONFIG_TARGET:-0}" == "1" ]]; then
+      printf '%s' 'admin: {}'; exit 0    # present in the target ns → envoy branch
     fi
     printf '%s\n' 'Error from server (NotFound): configmaps "envoy-config" not found' >&2
     exit 1
   fi
   # any other (source) ns
-  if [[ "${ENVOY_CONFIG_SOURCE:-1}" == "1" ]]; then printf '%s' 'admin: {}'; exit 0; fi
+  if [[ "${ENVOY_CONFIG_SOURCE:-0}" == "1" ]]; then printf '%s' 'admin: {}'; exit 0; fi
   printf '%s\n' 'Error from server (NotFound): configmaps "envoy-config" not found' >&2
   exit 1
 fi
 
-# ---- ConfigMap fetch (proxy-row pipeline read + status-style detection) -----
+# ---- ConfigMap fetch (in-place append read + verify + status-style detection) -
 if [[ "$*" == *"get"* && ( "$*" == *"configmap"* || "$*" == *" cm "* || "$*" == *" cm"* ) ]]; then
   cmname=""; prev=""
   for a in "$@"; do
@@ -341,7 +391,25 @@ if [[ "$*" == *"get"* && ( "$*" == *"configmap"* || "$*" == *" cm "* || "$*" == 
     prev="$a"
   done
   f="$FIXDIR/cm-${cmname}.json"
+  # After an in-place append writes the CM, a "$FIXDIR/appended-${cmname}" marker
+  # records that the wired body is now live — UNLESS POD_CLOBBER=1, which models
+  # the operator reverting the operator-owned CM on the roll (verify then sees the
+  # OLD, unwired body and dg.sh must warn on the clobber).
+  wired_marker="$FIXDIR/appended-${cmname}"
+  if [[ -f "$wired_marker" && "${POD_CLOBBER:-0}" != "1" ]]; then
+    f="$FIXDIR/cm-${cmname}-wired.json"
+  fi
   if [[ -n "$cmname" && -f "$f" ]]; then
+    # A `{.data.config\.yaml}` read wants the raw config.yaml BODY (the append
+    # path reads + verifies it); a `{.data}` read wants the Go-map repr (status).
+    if [[ "$*" == *"config\.yaml"* || "$*" == *"config.yaml"* ]]; then
+      python3 - "$f" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+sys.stdout.write((doc.get("data") or {}).get("config.yaml", ""))
+PY
+      exit 0
+    fi
     python3 - "$f" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -353,6 +421,54 @@ PY
   fi
   printf '%s\n' "Error from server (NotFound): configmaps \"${cmname}\" not found" >&2
   exit 1
+fi
+
+# ---- create configmap --dry-run=client -o yaml (the append renders the CM) ---
+# dg.sh's in-place append builds the amended CM via
+# `create configmap <n> --from-file=config.yaml=/dev/stdin --dry-run=client -o yaml`
+# then pipes it to `apply -f -`. Model that render: read the stdin body and emit a
+# ConfigMap YAML wrapping it, so the downstream apply sees a real manifest.
+if [[ "$*" == *"create configmap"* && "$*" == *"--dry-run=client"* ]]; then
+  cmn=""; for a in "$@"; do case "$a" in authbridge-lineage-config-*) cmn="$a" ;; esac; done
+  body="$(cat)"
+  {
+    printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: travel-advisor\ndata:\n  config.yaml: |\n' "$cmn"
+    # indent the body by four spaces (under the |-block).
+    printf '%s\n' "$body" | sed 's/^/    /'
+  }
+  exit 0
+fi
+
+# ---- ConfigMap write (in-place append: dg.sh applies the amended CM) ---------
+# The append renders the amended per-app CM (lineage-telemetry inserted, auth
+# left as-is) and pipes it to `kubectl apply -f -`. We CAPTURE that stdin as the
+# new wired body — an honest echo of what dg.sh actually produced, not a
+# re-synthesis — and record a marker so the verify re-read (above) reflects it.
+if [[ "$1" == "apply" && ( "$*" == *"-f -"* || "$*" == *"-f-"* ) ]]; then
+  # Stash the applied manifest to a temp FILE and pass its PATH to python as argv
+  # — NOT via a pipe, which would collide with the heredoc that feeds python its
+  # program on stdin (a heredoc `python3 - <<PY` already occupies stdin).
+  applied_f="$(mktemp)"; cat > "$applied_f"
+  python3 - "$FIXDIR" "$applied_f" <<'PY'
+import json, sys, re
+fixdir, applied_f = sys.argv[1], sys.argv[2]
+raw = open(applied_f).read()
+# The applied doc is YAML from `kubectl create configmap --dry-run=client -o yaml`.
+# Pull the CM name and the config.yaml body without a YAML lib: name from the
+# authbridge-lineage-config-<n> token, body from the `config.yaml: |`-block.
+m = re.search(r"authbridge-lineage-config-[a-z0-9-]+", raw)
+if not m:
+    sys.exit(0)
+name = m.group(0)
+bm = re.search(r"config\.yaml:\s*\|?\s*\n(.*)$", raw, re.S)
+body = bm.group(1) if bm else raw
+import os
+os.makedirs(fixdir, exist_ok=True)
+open(os.path.join(fixdir, f"appended-{name}"), "w").close()
+json.dump({"data": {"config.yaml": body}}, open(os.path.join(fixdir, f"cm-{name}-wired.json"), "w"))
+PY
+  rm -f "$applied_f"
+  exit 0
 fi
 
 # ---- Deployment listing ------------------------------------------------------
@@ -435,8 +551,9 @@ def sandbox(tmp_path: Path):
             self.set_namespace({})
 
         def _write_kit(self) -> None:
-            # The three driven scripts (stubs that log argv+env), executable...
+            # The driven scripts (stubs that log argv+env), executable...
             _make_bin(self.kitdir, "sidecar-patch.sh", _STUB_SIDECAR_PATCH)
+            _make_bin(self.kitdir, "sidecar-patch-proxy.sh", _STUB_SIDECAR_PATCH_PROXY)
             _make_bin(self.kitdir, "build-otel-shim.sh", _STUB_BUILD_SHIM)
             _make_bin(self.kitdir, "attach-lineage.sh", _STUB_ATTACH)
             # ...plus the sourced / build-input companions require_vendored_kit
@@ -457,7 +574,7 @@ def sandbox(tmp_path: Path):
 
         def remove_kit(self) -> None:
             """Delete the driven scripts so the vendored-kit integrity check refuses."""
-            for s in ("sidecar-patch.sh", "build-otel-shim.sh", "attach-lineage.sh"):
+            for s in ("sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh", "attach-lineage.sh"):
                 self.remove_kit_file(s)
 
         def set_flag(self, **kw: str) -> None:
@@ -470,7 +587,12 @@ def sandbox(tmp_path: Path):
                 cm_name = None
                 if sidecar is not None:
                     cm_name = f"authbridge-lineage-config-{name}"
-                    data = _CM_WITH_LINEAGE if spec.get("lineage") else _CM_WITHOUT_LINEAGE
+                    if spec.get("lineage"):
+                        data = _CM_WITH_LINEAGE
+                    elif spec.get("enforcing"):
+                        data = _CM_ENFORCING_NO_LINEAGE
+                    else:
+                        data = _CM_WITHOUT_LINEAGE
                     cm_doc = {
                         "apiVersion": "v1",
                         "kind": "ConfigMap",
@@ -602,7 +724,7 @@ def test_vendored_kit_ships_in_repo_and_is_executable() -> None:
     its three driven scripts are present and executable. This is the filesystem
     invariant require_vendored_kit checks — a broken checkout fails it loud."""
     assert _VENDORED_KIT.is_dir(), f"vendored kit dir must exist: {_VENDORED_KIT}"
-    for s in ("sidecar-patch.sh", "build-otel-shim.sh", "attach-lineage.sh"):
+    for s in ("sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh", "attach-lineage.sh"):
         p = _VENDORED_KIT / s
         assert p.is_file(), f"vendored kit is missing {s}"
         assert os.access(p, os.X_OK), f"vendored kit script {s} is not executable"
@@ -613,21 +735,22 @@ def test_instrument_resolves_vendored_kit_without_cortex_checkout(sandbox) -> No
     `instrument` falls back to the vendored deploy/lineage-attach/ and clears the
     integrity preflight — proving the vendored kit is self-sufficient (#241 AC).
 
-    Driven against an already-sidecar'd entity so the run SKIPS before invoking
-    the kit: we exercise the preflight/resolution against the REAL vendored kit
+    Driven against an entity whose sidecar ALREADY has lineage wired so the run
+    reaches the idempotent NO-OP decision (mutating nothing) before invoking the
+    kit: we exercise the preflight/resolution against the REAL vendored kit
     without running its live-cluster attach against the fake kubectl."""
-    sandbox.set_namespace({"payment-agent": {"sidecar": "envoy", "lineage": False}})
+    sandbox.set_namespace({"payment-agent": {"sidecar": "envoy", "lineage": True}})
     # kit_dir=None → run() sets no DG_LINEAGE_ATTACH_DIR, so dg.sh uses its own
     # default (${SCRIPT_DIR}/lineage-attach), i.e. the real vendored kit.
     r = sandbox.run("namespace", "travel-advisor", "instrument", kit_dir=None)
     assert r.returncode == 0, r.stderr
     combined = (r.stdout + r.stderr).lower()
     # It got PAST the vendored-kit integrity check: no "missing/incomplete kit"
-    # refusal, and it reached the per-entity skip decision.
+    # refusal, and it reached the per-entity idempotent no-op decision.
     assert "vendored lineage-attach kit is missing" not in combined
     assert "vendored lineage-attach kit is incomplete" not in combined
-    assert "skip" in combined and "sidecar" in combined, (
-        f"instrument must reach the skip decision via the vendored kit; got:\n{combined}"
+    assert ("already" in combined and ("wired" in combined or "lineage" in combined)) or "no-op" in combined, (
+        f"instrument must reach the idempotent no-op decision via the vendored kit; got:\n{combined}"
     )
 
 
@@ -657,35 +780,83 @@ def test_instrument_refuses_when_tee_not_wired(sandbox) -> None:
 
 
 # ===========================================================================
-# AC: decision table — the kit drives the no-sidecar row ONLY; any existing
-# sidecar (proxy or envoy) is skipped (ADR-0032 revised, kit-only prerequisite)
+# AC: decision table (ADR-0033 owner-split, #245). A no-sidecar entity is
+# injected — PROXY by default (bare ns), ENVOY when the ns is envoy-configured.
 # ===========================================================================
 
 
-def test_instrument_no_sidecar_drives_kit_sidecar_patch(sandbox) -> None:
-    """A no-sidecar entity → the kit's sidecar-patch.sh is driven with DEPLOY
-    and NAMESPACE set to that entity."""
-    sandbox.set_namespace({"research-agent": {"sidecar": None}})
+def _proxy_env_lines(kit_log: str) -> list[str]:
+    return [ln for ln in kit_log.splitlines() if ln.startswith("sidecar-patch-proxy.sh env:")]
+
+
+def _envoy_env_lines(kit_log: str) -> list[str]:
+    # `sidecar-patch.sh` is a substring of `sidecar-patch-proxy.sh`, so match the
+    # exact envoy stub prefix (which is NOT the proxy prefix).
+    return [ln for ln in kit_log.splitlines() if ln.startswith("sidecar-patch.sh env:")]
+
+
+def test_instrument_no_sidecar_bare_ns_drives_proxy_applier(sandbox) -> None:
+    """A no-sidecar entity in a NON-envoy-configured namespace (the demo default)
+    → the PROXY applier sidecar-patch-proxy.sh is driven with DEPLOY + NAMESPACE
+    (ADR-0033 Decision 2). The envoy applier is NOT driven."""
+    sandbox.set_namespace({"research-agent": {"sidecar": None}})  # ENVOY_CONFIG_TARGET defaults 0
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
     kit = sandbox.kit_log()
-    assert "sidecar-patch.sh" in kit, f"no-sidecar row must drive the kit; kit log:\n{kit}"
-    assert "DEPLOY=research-agent" in kit, f"kit must be told the deployment; kit log:\n{kit}"
-    assert "NAMESPACE=travel-advisor" in kit, f"kit must be told the namespace; kit log:\n{kit}"
+    proxy = _proxy_env_lines(kit)
+    assert proxy, f"a bare-ns no-sidecar row must drive the PROXY applier; kit log:\n{kit}"
+    assert "DEPLOY=research-agent" in proxy[-1], f"applier must be told the deployment; kit:\n{kit}"
+    assert "NAMESPACE=travel-advisor" in proxy[-1], f"applier must be told the namespace; kit:\n{kit}"
+    assert not _envoy_env_lines(kit), (
+        f"a bare namespace must NOT take the envoy branch; kit log:\n{kit}"
+    )
+
+
+def test_instrument_no_sidecar_envoy_configured_ns_drives_envoy_applier(sandbox) -> None:
+    """A no-sidecar entity in an ALREADY envoy-configured namespace → the ENVOY
+    applier sidecar-patch.sh is driven (ADR-0033 Decision 2: envoy only when the
+    namespace already carries the platform envoy-config CM)."""
+    sandbox.set_namespace({"research-agent": {"sidecar": None}})
+    sandbox.set_flag(ENVOY_CONFIG_TARGET="1")  # envoy-config present → envoy branch
+    r = sandbox.run("namespace", "travel-advisor", "instrument")
+    assert r.returncode == 0, r.stderr
+    kit = sandbox.kit_log()
+    assert _envoy_env_lines(kit), f"an envoy-configured ns must drive the ENVOY applier; kit log:\n{kit}"
+    assert "DEPLOY=research-agent" in _envoy_env_lines(kit)[-1]
+    assert not _proxy_env_lines(kit), (
+        f"an envoy-configured ns must NOT take the proxy branch; kit log:\n{kit}"
+    )
 
 
 def test_instrument_no_sidecar_python_bakes_shim(sandbox) -> None:
     """A no-sidecar PYTHON entity also drives the kit's build-otel-shim.sh and
     passes APP_CONTAINER/APP_IMAGE so LINEAGE_PROPAGATE=1 is set — the
-    difference between one trace and N fragments (root CLAUDE.md §4)."""
+    difference between one trace and N fragments (root CLAUDE.md §4). True on the
+    default (proxy) branch."""
     sandbox.set_namespace({"research-agent": {"sidecar": None}})
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
     kit = sandbox.kit_log()
     assert "build-otel-shim.sh" in kit, f"no-sidecar row must bake the shim; kit log:\n{kit}"
     # and the attach must set the propagation switch on the app container.
-    assert "APP_CONTAINER=research-agent" in kit, (
+    proxy = _proxy_env_lines(kit)
+    assert proxy and "APP_CONTAINER=research-agent" in proxy[-1], (
         f"the attach must flip propagation on the app container; kit log:\n{kit}"
+    )
+
+
+def test_instrument_proxy_forwards_include_allowlist(sandbox) -> None:
+    """The proxy applier is handed OUTBOUND_PORTS_INCLUDE (the include-only
+    allowlist), the proxy path's egress knob — never the envoy path's EXCLUDE."""
+    sandbox.set_namespace({"research-agent": {"sidecar": None}})
+    r = sandbox.run(
+        "namespace", "travel-advisor", "instrument",
+        env={"OUTBOUND_PORTS_INCLUDE": "8080,8000,9000"},
+    )
+    assert r.returncode == 0, r.stderr
+    proxy = _proxy_env_lines(sandbox.kit_log())
+    assert proxy and "OUTBOUND_PORTS_INCLUDE=8080,8000,9000" in proxy[-1], (
+        f"dg.sh must forward OUTBOUND_PORTS_INCLUDE to the proxy applier; env line={proxy[-1] if proxy else None!r}"
     )
 
 
@@ -763,7 +934,7 @@ def test_instrument_bake_cluster_name_defaults_to_rossoctl(sandbox) -> None:
 def test_instrument_shim_refusal_falls_back_to_capture_only(sandbox) -> None:
     """A self-instrumenting app: the kit's bake interlock refuses the shim
     (exit 3). dg.sh must NOT abort the whole entity — it attaches capture only
-    (sidecar-patch.sh without APP_CONTAINER)."""
+    (the proxy applier without APP_CONTAINER)."""
     sandbox.set_namespace({"research-agent": {"sidecar": None}})
     sandbox.set_flag(SHIM_REFUSES="1")
     r = sandbox.run("namespace", "travel-advisor", "instrument")
@@ -771,12 +942,11 @@ def test_instrument_shim_refusal_falls_back_to_capture_only(sandbox) -> None:
         f"a bake-interlock refusal is capture-only, not a failure; stderr={r.stderr!r}"
     )
     kit = sandbox.kit_log()
-    assert "sidecar-patch.sh" in kit, "capture-only still attaches the sidecar"
+    proxy = _proxy_env_lines(kit)
+    assert proxy, f"capture-only still attaches the sidecar (proxy applier); kit log:\n{kit}"
     # capture-only: APP_CONTAINER is NOT passed to the attach.
-    sp_env = [ln for ln in kit.splitlines() if ln.startswith("sidecar-patch.sh env:")]
-    assert sp_env, f"sidecar-patch.sh must have run; kit log:\n{kit}"
-    assert "APP_CONTAINER= " in (sp_env[-1] + " "), (
-        f"a shim-refused entity must attach capture-only (no APP_CONTAINER); env line={sp_env[-1]!r}"
+    assert "APP_CONTAINER= " in (proxy[-1] + " "), (
+        f"a shim-refused entity must attach capture-only (no APP_CONTAINER); env line={proxy[-1]!r}"
     )
 
 
@@ -802,7 +972,7 @@ def test_instrument_shim_attestation_failure_dies_loud(sandbox) -> None:
         f"a broken bake must not be reported as capture-only; got:\n{combined}"
     )
     # And it must not have proceeded to attach the sidecar for this entity.
-    assert "sidecar-patch.sh" not in sandbox.kit_log(), (
+    assert not _proxy_env_lines(sandbox.kit_log()) and not _envoy_env_lines(sandbox.kit_log()), (
         "a broken shim must halt before the attach, not attach capture-only"
     )
 
@@ -821,7 +991,7 @@ def test_instrument_shim_build_error_dies_loud(sandbox) -> None:
     assert "capture-only" not in combined and "capture only" not in combined, (
         f"a broken bake must not be reported as capture-only; got:\n{combined}"
     )
-    assert "sidecar-patch.sh" not in sandbox.kit_log(), (
+    assert not _proxy_env_lines(sandbox.kit_log()) and not _envoy_env_lines(sandbox.kit_log()), (
         "a broken shim must halt before the attach, not attach capture-only"
     )
 
@@ -835,41 +1005,96 @@ def _assert_no_mutating_kubectl(sandbox, entity: str) -> None:
         )
 
 
-def test_instrument_envoy_sidecar_is_skipped(sandbox) -> None:
-    """An envoy-sidecar entity ALREADY has a sidecar → instrument skips it
-    (ADR-0032 revised: kit-only, no-sidecar prerequisite). The kit must NOT be
-    driven, and nothing must be mutated; the run still exits 0."""
+# ===========================================================================
+# AC: sidecar present, no lineage-telemetry → APPEND in place (best-effort,
+# verify-after-roll); sidecar present, lineage wired → no-op (ADR-0033 D3/D5).
+# ===========================================================================
+
+
+def _cm_applied(sandbox, entity: str) -> bool:
+    """True if dg.sh applied the amended per-app CM for <entity> (the in-place
+    append). The fake kubectl records an `appended-<cm>` marker on `apply -f -`."""
+    return (sandbox.fixdir / f"appended-authbridge-lineage-config-{entity}").exists()
+
+
+def test_instrument_envoy_sidecar_no_lineage_appends_in_place(sandbox) -> None:
+    """An envoy-sidecar entity WITHOUT lineage-telemetry → dg.sh appends the
+    plugin in place (ADR-0033 Decision 3), rolls, and verifies. The neither-
+    applier is driven (this is dg.sh's own in-place edit, not a kit inject); the
+    CM is re-applied with the plugin, and the run exits 0."""
     sandbox.set_namespace({"payment-agent": {"sidecar": "envoy", "lineage": False}})
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
     kit = sandbox.kit_log()
-    assert "sidecar-patch.sh" not in kit, (
-        f"an entity that already has a sidecar must NOT drive the kit; kit log:\n{kit}"
+    assert not _proxy_env_lines(kit) and not _envoy_env_lines(kit), (
+        f"an in-place append must NOT drive either kit applier; kit log:\n{kit}"
+    )
+    assert _cm_applied(sandbox, "payment-agent"), (
+        f"the append must re-apply the amended CM; kubectl calls:\n{sandbox.kubectl_calls()}"
     )
     combined = (r.stdout + r.stderr).lower()
-    assert "skip" in combined and "envoy" in combined and "sidecar" in combined, (
-        f"the skip must be reported clearly, naming the envoy sidecar; got:\n{combined}"
+    assert "append" in combined or "in place" in combined or "in-place" in combined, (
+        f"the in-place append must be reported; got:\n{combined}"
     )
-    _assert_no_mutating_kubectl(sandbox, "payment-agent")
 
 
-def test_instrument_proxy_sidecar_is_skipped(sandbox) -> None:
-    """A proxy-sidecar entity ALREADY has a sidecar → instrument skips it. dg.sh
-    no longer edits a proxy pipeline in place (that edit was clobbered by the
-    operator on a webhook-injected sidecar — findings doc). The kit is not
-    driven and nothing is mutated; the run still exits 0."""
+def test_instrument_proxy_sidecar_no_lineage_appends_in_place(sandbox) -> None:
+    """A proxy-sidecar entity WITHOUT lineage-telemetry → in-place append too
+    (origin-agnostic — any sidecar without the plugin gets it appended)."""
     sandbox.set_namespace({"legacy-agent": {"sidecar": "proxy", "lineage": False}})
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
-    kit = sandbox.kit_log()
-    assert "sidecar-patch.sh" not in kit, (
-        f"an entity that already has a sidecar must NOT drive the kit; kit log:\n{kit}"
+    assert _cm_applied(sandbox, "legacy-agent"), (
+        f"the append must re-apply the amended proxy CM; calls:\n{sandbox.kubectl_calls()}"
     )
+    # The appended CM body actually carries the plugin now.
+    wired = sandbox.fixdir / "cm-authbridge-lineage-config-legacy-agent-wired.json"
+    assert wired.exists() and "lineage-telemetry" in wired.read_text(), (
+        "the applied CM must carry the appended lineage-telemetry plugin"
+    )
+
+
+def test_instrument_sidecar_lineage_wired_is_noop(sandbox) -> None:
+    """A sidecar that ALREADY carries lineage-telemetry → no-op (idempotent, the
+    no-marker re-run signal, ADR-0033 Decision 5). Nothing is mutated; exit 0."""
+    sandbox.set_namespace({"payment-agent": {"sidecar": "envoy", "lineage": True}})
+    r = sandbox.run("namespace", "travel-advisor", "instrument")
+    assert r.returncode == 0, r.stderr
+    _assert_no_mutating_kubectl(sandbox, "payment-agent")
+    assert not _cm_applied(sandbox, "payment-agent"), "an already-wired sidecar must not re-apply the CM"
     combined = (r.stdout + r.stderr).lower()
-    assert "skip" in combined and "proxy" in combined and "sidecar" in combined, (
-        f"the skip must be reported clearly, naming the proxy sidecar; got:\n{combined}"
+    assert "already" in combined and ("wired" in combined or "lineage" in combined) or "no-op" in combined, (
+        f"an already-wired sidecar must be reported as an idempotent no-op; got:\n{combined}"
     )
-    _assert_no_mutating_kubectl(sandbox, "legacy-agent")
+
+
+def test_instrument_append_verify_clobber_warns_loud(sandbox) -> None:
+    """Best-effort: after the append + roll, dg.sh re-reads the running sidecar's
+    CM to VERIFY the plugin is live. When the operator clobbered it (the CM was
+    regenerated without the plugin on the roll), dg.sh must WARN loudly rather
+    than report a success it did not achieve (ADR-0033 Decision 3)."""
+    sandbox.set_namespace({"legacy-agent": {"sidecar": "proxy", "lineage": False}})
+    sandbox.set_flag(POD_CLOBBER="1")  # the verify re-read sees the OLD, unwired body
+    r = sandbox.run("namespace", "travel-advisor", "instrument")
+    # A clobber is surfaced (a warning) — the run does not falsely claim success.
+    combined = (r.stdout + r.stderr).lower()
+    assert "clobber" in combined or "operator" in combined or "revert" in combined, (
+        f"a verify-after-roll clobber must be warned about loudly; got:\n{combined}"
+    )
+
+
+def test_instrument_append_enforcing_pipeline_warns(sandbox) -> None:
+    """If the existing sidecar carries auth plugins (jwt-validation /
+    token-exchange), dg.sh must WARN that lineage will record 401s for
+    unauthenticated callers — a property of that pipeline, not something the
+    append can fix (ADR-0033 Decision 3)."""
+    sandbox.set_namespace({"legacy-agent": {"sidecar": "proxy", "lineage": False, "enforcing": True}})
+    r = sandbox.run("namespace", "travel-advisor", "instrument")
+    assert r.returncode == 0, r.stderr
+    combined = (r.stdout + r.stderr).lower()
+    assert "401" in combined or "enforc" in combined or "auth" in combined, (
+        f"an enforcing pipeline must be warned about (401 risk); got:\n{combined}"
+    )
 
 
 # ===========================================================================
@@ -877,10 +1102,11 @@ def test_instrument_proxy_sidecar_is_skipped(sandbox) -> None:
 # ===========================================================================
 
 
-def test_instrument_all_entities_visits_each_instruments_bare(sandbox) -> None:
-    """A whole-namespace instrument visits every entity: the no-sidecar one is
-    instrumented (kit driven), the already-has-a-sidecar one is skipped — and
-    the run continues past the skip (skip-and-continue), exiting 0."""
+def test_instrument_all_entities_visits_each_by_owner_split(sandbox) -> None:
+    """A whole-namespace instrument visits every entity and dispatches each by its
+    own state: the no-sidecar one is proxy-injected (bare ns default), the
+    sidecar-without-lineage one is appended in place — and the run continues past
+    both, exiting 0."""
     sandbox.set_namespace(
         {
             "research-agent": {"sidecar": None},
@@ -890,14 +1116,15 @@ def test_instrument_all_entities_visits_each_instruments_bare(sandbox) -> None:
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
     kit = sandbox.kit_log()
-    assert "DEPLOY=research-agent" in kit, f"the no-sidecar entity must be instrumented; kit:\n{kit}"
+    proxy = _proxy_env_lines(kit)
+    assert proxy and "DEPLOY=research-agent" in proxy[-1], (
+        f"the no-sidecar entity must be proxy-injected; kit:\n{kit}"
+    )
+    # the sidecar entity is NOT driven through an applier — it is appended in place.
     assert "DEPLOY=payment-agent" not in kit, (
-        f"the entity that already has a sidecar must be skipped, not driven; kit:\n{kit}"
+        f"the sidecar entity must be appended in place, not driven through an applier; kit:\n{kit}"
     )
-    combined = (r.stdout + r.stderr).lower()
-    assert "skip" in combined and "payment-agent" in combined, (
-        f"the skipped entity must be named in the skip message; got:\n{combined}"
-    )
+    assert _cm_applied(sandbox, "payment-agent"), "the sidecar entity's CM must be appended in place"
 
 
 def test_instrument_single_entity_scopes_to_one(sandbox) -> None:
@@ -926,121 +1153,113 @@ def test_instrument_unknown_entity_is_loud_error(sandbox) -> None:
 
 
 # ===========================================================================
-# AC: mixed namespace — only no-sidecar entities are instrumented; every
-# entity that already has a sidecar (proxy or envoy) is skipped, run exits 0
+# AC: mixed namespace — each entity dispatched by its own state (owner-split):
+# no-sidecar → proxy inject; sidecar-no-lineage → in-place append; sidecar-wired
+# → no-op. The whole run exits 0.
 # ===========================================================================
 
 
-def test_instrument_mixed_namespace_skips_sidecar_instruments_bare(sandbox) -> None:
-    """One no-sidecar, one proxy, one envoy entity in the same namespace: only
-    the no-sidecar entity drives the kit; the proxy and envoy entities are both
-    skipped (already have a sidecar). The whole run exits 0 (skip-and-continue),
-    and the kit is driven exactly once."""
+def test_instrument_mixed_namespace_dispatches_each_by_owner_split(sandbox) -> None:
+    """One no-sidecar, one proxy-without-lineage, one envoy-already-wired entity
+    in a bare namespace: the no-sidecar entity is proxy-injected (once), the
+    proxy-without-lineage entity is appended in place, and the already-wired
+    envoy entity is a no-op. The whole run exits 0."""
     sandbox.set_namespace(
         {
             "research-agent": {"sidecar": None},
             "legacy-agent": {"sidecar": "proxy", "lineage": False},
-            "payment-agent": {"sidecar": "envoy", "lineage": False},
+            "payment-agent": {"sidecar": "envoy", "lineage": True},
         }
     )
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
     kit = sandbox.kit_log()
-    assert "DEPLOY=research-agent" in kit, f"the bare entity must be instrumented; kit:\n{kit}"
-    assert "DEPLOY=legacy-agent" not in kit, f"the proxy entity must be skipped; kit:\n{kit}"
-    assert "DEPLOY=payment-agent" not in kit, f"the envoy entity must be skipped; kit:\n{kit}"
-    # The kit's sidecar-patch.sh ran exactly once (for the one no-sidecar entity).
-    assert kit.count("sidecar-patch.sh env:") == 1, (
-        f"the kit must be driven exactly once (only the no-sidecar entity); kit:\n{kit}"
+    # no-sidecar → proxy applier, exactly once (only research-agent).
+    proxy = _proxy_env_lines(kit)
+    assert len(proxy) == 1 and "DEPLOY=research-agent" in proxy[0], (
+        f"only the no-sidecar entity drives the proxy applier, once; kit:\n{kit}"
     )
-    combined = (r.stdout + r.stderr).lower()
-    assert "legacy-agent" in combined and "payment-agent" in combined, (
-        f"both skipped entities must be named in skip messages; got:\n{combined}"
-    )
+    # proxy-without-lineage → in-place append (CM re-applied, not an applier).
+    assert "DEPLOY=legacy-agent" not in kit, "the sidecar entity must not drive an applier"
+    assert _cm_applied(sandbox, "legacy-agent"), "the proxy-without-lineage entity must be appended in place"
+    # envoy-already-wired → no-op (no CM re-apply).
+    assert not _cm_applied(sandbox, "payment-agent"), "the already-wired entity must be a no-op"
 
 
 # ===========================================================================
-# AC: dg.sh ensures the platform envoy-config CM exists in the target ns before
-# driving the kit (#184 gap) — the kit REQUIRES it (require_envoy_config) but
-# never creates it, and an ad-hoc namespace (the travel_advisor demo) is not
-# chart-managed, so the chart never rendered it there. dg.sh owns provisioning
-# it (copy from a chart-managed source ns) so `instrument` is self-sufficient.
+# AC: the presence of the platform envoy-config CM in the target ns is what
+# routes a no-sidecar entity to the ENVOY branch (ADR-0033 Decision 2). Its
+# absence — the demo default — routes to the PROXY branch. dg.sh detects it,
+# it does not provision it (the copy-from-source path is retired: a bare ns just
+# takes the proxy branch instead).
 # ===========================================================================
 
 
-def test_instrument_envoy_config_present_is_noop(sandbox) -> None:
-    """When envoy-config already exists in the target ns, dg.sh does NOT create
-    it (idempotent) and still attaches."""
+def test_instrument_envoy_config_present_routes_to_envoy(sandbox) -> None:
+    """envoy-config present in the target ns → the no-sidecar entity takes the
+    ENVOY branch (the vendored envoy applier), NOT the proxy branch."""
     sandbox.set_namespace({"research-agent": {"sidecar": None}})
     sandbox.set_flag(ENVOY_CONFIG_TARGET="1")
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
-    creates = [c for c in sandbox.kubectl_calls()
-               if "create" in c and "envoy-config" in c]
-    assert not creates, f"envoy-config already present → must not re-create it; calls={creates!r}"
-    assert "sidecar-patch.sh" in sandbox.kit_log(), "attach must still proceed"
+    kit = sandbox.kit_log()
+    assert _envoy_env_lines(kit), f"envoy-config present → envoy applier; kit:\n{kit}"
+    assert not _proxy_env_lines(kit), f"envoy-config present must NOT take the proxy branch; kit:\n{kit}"
 
 
-def test_instrument_provisions_missing_envoy_config_before_attach(sandbox) -> None:
-    """envoy-config absent in the target ns but present in a chart-managed source
-    ns → dg.sh COPIES it in (create) before driving the kit, so the kit's
-    require_envoy_config precondition passes."""
+def test_instrument_envoy_config_absent_routes_to_proxy(sandbox) -> None:
+    """envoy-config ABSENT in the target ns (the ad-hoc travel_advisor demo) → the
+    no-sidecar entity takes the PROXY branch. dg.sh does NOT fail on the missing
+    envoy-config and does NOT try to provision it — the proxy path needs none."""
     sandbox.set_namespace({"research-agent": {"sidecar": None}})
-    sandbox.set_flag(ENVOY_CONFIG_TARGET="0", ENVOY_CONFIG_SOURCE="1")
+    sandbox.set_flag(ENVOY_CONFIG_TARGET="0")
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
-    calls = sandbox.kubectl_calls()
-    creates = [c for c in calls if "create" in c and "envoy-config" in c and "travel-advisor" in c]
-    assert creates, f"a missing envoy-config must be provisioned into the target ns; calls={calls!r}"
-    # …and it happens BEFORE the kit attaches (the kit needs it to exist).
-    assert "sidecar-patch.sh" in sandbox.kit_log(), "attach must proceed after provisioning"
-
-
-def test_instrument_missing_envoy_config_no_source_dies_loud(sandbox) -> None:
-    """envoy-config absent in the target ns AND no chart-managed source to copy
-    from → dg.sh must refuse loud (never fabricate an envoy.yaml), mutating
-    nothing — the kit would otherwise fail its precondition per entity."""
-    sandbox.set_namespace({"research-agent": {"sidecar": None}})
-    sandbox.set_flag(ENVOY_CONFIG_TARGET="0", ENVOY_CONFIG_SOURCE="0")
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode != 0, "no envoy-config and no source must refuse loud"
+    kit = sandbox.kit_log()
+    assert _proxy_env_lines(kit), f"envoy-config absent → proxy applier; kit:\n{kit}"
+    # It must NOT refuse for a missing envoy-config (that was the old always-envoy
+    # behaviour), and must NOT try to CREATE one.
     combined = (r.stdout + r.stderr).lower()
-    assert "envoy-config" in combined, f"the refusal must name envoy-config; got:\n{combined}"
-    assert sandbox.kit_log() == "", "a refused instrument must not drive the kit"
+    assert "missing" not in combined or "envoy-config" not in combined, (
+        f"a bare ns must take the proxy branch, not refuse on missing envoy-config; got:\n{combined}"
+    )
+    creates = [c for c in sandbox.kubectl_calls() if "create" in c and "envoy-config" in c]
+    assert not creates, f"the proxy branch must not provision envoy-config; calls={creates!r}"
 
 
 # ===========================================================================
-# AC: dg.sh forwards OUTBOUND_PORTS_EXCLUDE to the kit (#184 gap) — the envoy
-# sidecar's proxy-init would otherwise intercept the tools' plaintext non-HTTP
-# egress (Postgres 5432 / SMTP 1025 / object store), breaking them. The kit
-# accepts OUTBOUND_PORTS_EXCLUDE; dg.sh must pass it through.
+# AC: dg.sh forwards OUTBOUND_PORTS_EXCLUDE to the ENVOY applier (#184 gap) — the
+# envoy sidecar's proxy-init would otherwise intercept the tools' plaintext
+# non-HTTP egress (Postgres 5432 / SMTP 1025 / object store), breaking them. The
+# proxy path uses the INCLUDE allowlist instead (tested above). Both only on the
+# no-sidecar row; envoy needs an envoy-configured ns.
 # ===========================================================================
 
 
-def test_instrument_forwards_outbound_ports_exclude(sandbox) -> None:
+def test_instrument_envoy_forwards_outbound_ports_exclude(sandbox) -> None:
     sandbox.set_namespace({"research-agent": {"sidecar": None}})
+    sandbox.set_flag(ENVOY_CONFIG_TARGET="1")  # envoy branch
     r = sandbox.run(
         "namespace", "travel-advisor", "instrument",
         env={"OUTBOUND_PORTS_EXCLUDE": "5432,1025,9000"},
     )
     assert r.returncode == 0, r.stderr
-    kit = sandbox.kit_log()
-    sp_env = [ln for ln in kit.splitlines() if ln.startswith("sidecar-patch.sh env:")]
-    assert sp_env, f"sidecar-patch.sh must have run; kit log:\n{kit}"
+    sp_env = _envoy_env_lines(sandbox.kit_log())
+    assert sp_env, f"the envoy applier must have run; kit log:\n{sandbox.kit_log()}"
     assert "OUTBOUND_PORTS_EXCLUDE=5432,1025,9000" in sp_env[-1], (
-        f"dg.sh must forward OUTBOUND_PORTS_EXCLUDE to the kit; env line={sp_env[-1]!r}"
+        f"dg.sh must forward OUTBOUND_PORTS_EXCLUDE to the envoy applier; env line={sp_env[-1]!r}"
     )
 
 
-def test_instrument_no_ports_exclude_forwards_empty(sandbox) -> None:
+def test_instrument_envoy_no_ports_exclude_forwards_empty(sandbox) -> None:
     """Unset OUTBOUND_PORTS_EXCLUDE → dg.sh forwards nothing (kit default), never
-    a fabricated port list."""
+    a fabricated port list (envoy branch)."""
     sandbox.set_namespace({"research-agent": {"sidecar": None}})
+    sandbox.set_flag(ENVOY_CONFIG_TARGET="1")
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
-    sp_env = [ln for ln in sandbox.kit_log().splitlines()
-              if ln.startswith("sidecar-patch.sh env:")]
-    assert sp_env, "sidecar-patch.sh must have run"
+    sp_env = _envoy_env_lines(sandbox.kit_log())
+    assert sp_env, "the envoy applier must have run"
     assert "OUTBOUND_PORTS_EXCLUDE=\n" in (sp_env[-1] + "\n"), (
         f"unset → empty, not a fabricated list; env line={sp_env[-1]!r}"
     )
@@ -1111,10 +1330,10 @@ def test_instrument_crashloop_stops_before_next_entity(sandbox) -> None:
     sandbox.set_flag(SP_ROLLOUT_FAILS="1")
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode != 0
-    # Exactly one entity was attempted before the loud stop — the failing kit
+    # Exactly one entity was attempted before the loud stop — the failing applier
     # invocation. The second entity's attach must not have run.
     kit = sandbox.kit_log()
-    deploys = [ln for ln in kit.splitlines() if ln.startswith("sidecar-patch.sh env:")]
+    deploys = _proxy_env_lines(kit)
     assert len(deploys) == 1, (
         f"a crash-loop must halt the loop, not roll on to the next entity; kit:\n{kit}"
     )
@@ -1147,8 +1366,8 @@ def test_instrument_points_kit_at_platform_collector(sandbox) -> None:
     r = sandbox.run("namespace", "travel-advisor", "instrument")
     assert r.returncode == 0, r.stderr
     kit = sandbox.kit_log()
-    sp_env = [ln for ln in kit.splitlines() if ln.startswith("sidecar-patch.sh env:")]
-    assert sp_env, f"sidecar-patch.sh must have run; kit:\n{kit}"
+    sp_env = _proxy_env_lines(kit)
+    assert sp_env, f"the proxy applier must have run; kit:\n{kit}"
     line = sp_env[-1]
     # Extract OTEL_ENDPOINT=... token.
     tok = ""
