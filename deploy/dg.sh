@@ -806,6 +806,27 @@ namespace_status() {
 # also documents the destination in the kit-invocation log.
 DG_OTEL_ENDPOINT="otel-collector.rossoctl-system.svc.cluster.local:4317"
 
+# The Kind cluster the shim bake `kind load`s the -otel image into. The kit's
+# container-runtime.sh reads KIND_CLUSTER_NAME (default `rossoctl`), but dg.sh
+# used to drive build-otel-shim.sh WITHOUT forwarding a cluster name — so on a
+# cluster NOT named `rossoctl` the load silently targeted the wrong cluster and
+# the operator's cluster never received the image (#241 review → parked on #244).
+# Resolve the operator's choice once and forward it as KIND_CLUSTER_NAME:
+#   KIND_CLUSTER_NAME (the kit's own var) wins; else the DG-wide KIND_CLUSTER
+#   (build-and-load.sh, deploy/k8s/README.md); else the historical `rossoctl`.
+# Bridging KIND_CLUSTER keeps `dg.sh instrument` and `build-and-load.sh` on the
+# SAME cluster when an operator sets only the DG-wide var. An empty value is
+# treated as unset (so `KIND_CLUSTER_NAME= dg.sh ...` still gets the default).
+resolve_kind_cluster_name() {
+    if [[ -n "${KIND_CLUSTER_NAME:-}" ]]; then
+        printf '%s' "${KIND_CLUSTER_NAME}"
+    elif [[ -n "${KIND_CLUSTER:-}" ]]; then
+        printf '%s' "${KIND_CLUSTER}"
+    else
+        printf '%s' "rossoctl"
+    fi
+}
+
 # require_vendored_kit: die loud if the VENDORED lineage-attach kit under
 # ${KIT_DIR} is missing or incomplete. This is a repo-integrity check, not a
 # user-facing "pass a path" preflight — the kit ships in this repo
@@ -829,9 +850,14 @@ require_vendored_kit() {
             || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/${s} is missing or not executable. Mutating nothing."
     done
     # Sourced / build-input files the shim bake needs: must be present (they are
-    # read, not exec'd, so an executable bit is not required).
+    # read, not exec'd, so an executable bit is not required). Both shims are
+    # build inputs — Dockerfile.otel-shim COPYs the propagate hook AND the
+    # turn-span shim (rossoctl_turnspan.py + its .pth) into the image; a checkout
+    # missing either would die mid-bake (ADR-0033 Decision 4: one image, both
+    # shims), so refuse here before ensure_envoy_config mutates anything.
     local f
-    for f in container-runtime.sh Dockerfile.otel-shim lineage-propagate-hook.py; do
+    for f in container-runtime.sh Dockerfile.otel-shim lineage-propagate-hook.py \
+             rossoctl_turnspan.py rossoctl_turnspan.pth; do
         [[ -e "${KIT_DIR}/${f}" ]] \
             || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/${f} is missing (the shim bake needs it). Mutating nothing."
     done
@@ -1121,7 +1147,12 @@ instrument_entity() {
                 # then parse the loaded ref from it. Kept as two steps (not one
                 # fragile `grep -m1 | sed` pipeline) so a SIGPIPE from an early
                 # grep exit cannot masquerade as a bake failure under pipefail.
-                bake_out="$("${kit}/build-otel-shim.sh" "${app_image}" 2>&1)" || bake_status=$?
+                # Forward the operator's cluster name so the bake's `kind load`
+                # targets the right cluster instead of the kit's `rossoctl`
+                # default (#244; see resolve_kind_cluster_name).
+                local kind_cluster
+                kind_cluster="$(resolve_kind_cluster_name)"
+                bake_out="$(KIND_CLUSTER_NAME="${kind_cluster}" "${kit}/build-otel-shim.sh" "${app_image}" 2>&1)" || bake_status=$?
                 printf '%s\n' "${bake_out}" >&2
                 otel_image="$(printf '%s\n' "${bake_out}" \
                     | sed -nE 's/.*loaded ([^ ]+) into.*/\1/p' | head -n1)"

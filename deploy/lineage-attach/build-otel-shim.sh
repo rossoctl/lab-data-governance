@@ -189,6 +189,13 @@ detect_user() {  # sets APP_UID and APP_GID (either may be given explicitly)
 # as "not found", not an abort — the clean answer is then deliberate, not the
 # accident of an uncaught ModuleNotFoundError. (Mods keep in sync with
 # Dockerfile.otel-shim's install RUN, all but -distro.)
+#
+# Either baked shim marks an already-baked image: the activation hook
+# (`_lineage_propagate`) OR the turn-span shim (`rossoctl_turnspan`). Since this
+# bake installs BOTH, checking both closes the re-bake window even if a future
+# image ever carried only one (e.g. the turn span without the hook — the
+# worse-than-baseline trap this ADR forbids): the "hook" verdict fires on either,
+# so re-baking is still refused.
 probe_instrumentation() {
   "$CONTAINER_TOOL" run --rm --network=none --entrypoint "$VENV_PYTHON" "$base_ref" -c '
 import importlib.util as u
@@ -198,7 +205,7 @@ def has(m):
 mods = ["starlette", "asgi", "fastapi", "httpx", "requests", "aiohttp_client", "urllib3", "threading"]
 found = [m for m in mods if has("opentelemetry.instrumentation." + m)]
 if found: print("instrumented:" + ",".join(found))
-elif has("_lineage_propagate"): print("hook")
+elif has("_lineage_propagate") or has("rossoctl_turnspan"): print("hook")
 else: print("clean")'
 }
 
@@ -270,8 +277,19 @@ from opentelemetry.propagate import inject
 with trace.get_tracer("attest").start_as_current_span("attest"):
     carrier = {}
     inject(carrier)
-assert "traceparent" in carrier, "propagator injects nothing: %r" % carrier'; then
-    echo "ATTESTATION FAILED for ${WRAPPER_TAG}: gate on, but the hook did not come up." >&2
+assert "traceparent" in carrier, "propagator injects nothing: %r" % carrier
+# The SECOND shim (ADR-0033 "One trace needs two shims") must be installed in
+# the SAME image: turn-span WITHOUT this activation hook fragments a turn worse
+# than the no-shim baseline, so a bake that shipped one without the other is a
+# defect. Its .pth imports the module at interpreter start (ROSSOCTL_TURNSPAN
+# default on) and, since we run with LINEAGE_PROPAGATE=1, calls install() too —
+# so the module is already in sys.modules here. Assert both that it imported and
+# that its patch entry point is present, so a COPY drop or a rename fails the
+# BUILD, not the cluster.
+assert "rossoctl_turnspan" in sys.modules, "turn-span shim (rossoctl_turnspan) did not load at startup"
+import rossoctl_turnspan
+assert callable(getattr(rossoctl_turnspan, "install", None)), "turn-span shim has no install()"'; then
+    echo "ATTESTATION FAILED for ${WRAPPER_TAG}: gate on, but a shim did not come up (activation hook and/or the turn-span shim)." >&2
     exit 4
   fi
 }

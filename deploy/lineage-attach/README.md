@@ -358,9 +358,10 @@ BAKE — once per app image                 ATTACH — once per Deployment
 | `attach-lineage-proxy.sh` | **the proxy generator** (ADR-0033) — the auth-free proxy-sidecar sibling: same `EMIT` shapes, transparent include-only egress capture, `namespace_file` (v1.7.0) |
 | `init-iptables.sh` | vendored iptables setup (envoy `redirect` + proxy `enforce-redirect`), plus the new include-only `OUTBOUND_PORTS_INCLUDE` allowlist the proxy path uses |
 | `sidecar-patch.sh` | the live applier: preconditions, then ConfigMap + patch + rollout wait; owns no YAML |
-| `Dockerfile.otel-shim` | the propagate-only layer, one recipe for every in-envelope app, instrumentors pinned to one contrib release |
-| `build-otel-shim.sh` | bakes, attests (gate off: nothing OTel-shaped loads; gate on: a `traceparent` is injected), kind-loads; refuses images it cannot safely wrap |
-| `lineage-propagate-hook.py` | the env-gated site hook the Dockerfile installs (`.pth` + module); read its docstring for the contract |
+| `Dockerfile.otel-shim` | the lineage layer, one recipe for every in-envelope app: installs BOTH shims (propagate hook + turn span), instrumentors pinned to one contrib release |
+| `build-otel-shim.sh` | bakes, attests (gate off: nothing OTel-shaped loads; gate on: a `traceparent` is injected AND the turn-span shim is importable), kind-loads; refuses images it cannot safely wrap |
+| `lineage-propagate-hook.py` | the env-gated site hook the Dockerfile installs (`.pth` + module) — activation: runs stock auto-instrumentation when `LINEAGE_PROPAGATE=1`; read its docstring for the contract |
+| `rossoctl_turnspan.py` / `.pth` | the turn-span shim (ADR-0033): one span per request scope so a turn stays on one trace-id, + an MCP tool-call re-attach. Bound to `LINEAGE_PROPAGATE` (worthless — and worse than baseline — without the activation hook); read its docstring |
 | `container-runtime.sh` | sourced helper: docker vs podman, kind load either way |
 
 ---

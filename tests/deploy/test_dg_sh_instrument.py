@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -198,6 +199,10 @@ exit 0
 _STUB_BUILD_SHIM = r"""
 if [[ -n "${KIT_LOG:-}" ]]; then
   printf 'build-otel-shim.sh argv: %s\n' "$*" >> "$KIT_LOG"
+  # Record the cluster name dg.sh forwarded (the kit's container-runtime.sh
+  # reads KIND_CLUSTER_NAME; a bare default here would be `rossoctl`). #244:
+  # dg.sh must forward the operator's cluster, not silently default.
+  printf 'build-otel-shim.sh env: KIND_CLUSTER_NAME=%s\n' "${KIND_CLUSTER_NAME:-<unset>}" >> "$KIT_LOG"
 fi
 base="${1:-}"
 if [[ "${SHIM_REFUSES:-0}" == "1" ]]; then
@@ -436,10 +441,12 @@ def sandbox(tmp_path: Path):
             _make_bin(self.kitdir, "attach-lineage.sh", _STUB_ATTACH)
             # ...plus the sourced / build-input companions require_vendored_kit
             # also insists on (build-otel-shim.sh sources container-runtime.sh and
-            # its docker build reads the Dockerfile + hook). A real vendored kit
-            # ships them; the stub must too, or the integrity check refuses.
+            # its docker build reads the Dockerfile + BOTH shims — the propagate
+            # hook and the turn-span shim, ADR-0033 D4). A real vendored kit ships
+            # them; the stub must too, or the integrity check refuses.
             for f in ("container-runtime.sh", "Dockerfile.otel-shim",
-                      "lineage-propagate-hook.py"):
+                      "lineage-propagate-hook.py", "rossoctl_turnspan.py",
+                      "rossoctl_turnspan.pth"):
                 (self.kitdir / f).write_text("# stub\n")
 
         def remove_kit_file(self, name: str) -> None:
@@ -558,7 +565,8 @@ def test_instrument_refuses_when_vendored_kit_incomplete(sandbox) -> None:
 
 @pytest.mark.parametrize(
     "missing",
-    ["container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py"],
+    ["container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py",
+     "rossoctl_turnspan.py", "rossoctl_turnspan.pth"],
 )
 def test_instrument_refuses_when_kit_companion_file_absent(sandbox, missing) -> None:
     """The integrity check covers the WHOLE surface the drive path needs, not
@@ -678,6 +686,77 @@ def test_instrument_no_sidecar_python_bakes_shim(sandbox) -> None:
     # and the attach must set the propagation switch on the app container.
     assert "APP_CONTAINER=research-agent" in kit, (
         f"the attach must flip propagation on the app container; kit log:\n{kit}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# AC (#244): dg.sh forwards the operator's Kind cluster name into the bake.
+#
+# The bake `kind load`s the -otel image via the kit's container-runtime.sh,
+# whose KIND_CLUSTER_NAME defaults to `rossoctl`. dg.sh drove the bake WITHOUT
+# forwarding a cluster name, so on any cluster NOT named `rossoctl` the load
+# targeted the wrong cluster (the #241-review gap, parked on #244). dg.sh must
+# forward the operator's cluster name (aligning on KIND_CLUSTER_NAME, matching
+# the kit) and bridge the DG-wide KIND_CLUSTER var too. The stub bake records
+# the KIND_CLUSTER_NAME it received.
+# ---------------------------------------------------------------------------
+
+
+def _bake_cluster_name(kit_log: str) -> str | None:
+    """The KIND_CLUSTER_NAME the bake stub recorded (or None if it never baked)."""
+    m = re.search(r"build-otel-shim\.sh env: KIND_CLUSTER_NAME=(\S+)", kit_log)
+    return m.group(1) if m else None
+
+
+def test_instrument_forwards_operator_cluster_name_to_bake(sandbox) -> None:
+    """KIND_CLUSTER_NAME set to a non-default cluster must reach the bake, so the
+    -otel image lands in the operator's cluster rather than defaulting to
+    `rossoctl` (#244; ADR-0033 D4)."""
+    sandbox.set_namespace({"research-agent": {"sidecar": None}})
+    r = sandbox.run(
+        "namespace", "travel-advisor", "instrument",
+        env={"KIND_CLUSTER_NAME": "my-lab", "KIND_CLUSTER": ""},
+    )
+    assert r.returncode == 0, r.stderr
+    got = _bake_cluster_name(sandbox.kit_log())
+    assert got == "my-lab", (
+        f"dg.sh must forward KIND_CLUSTER_NAME to the bake; the bake saw {got!r} "
+        f"(expected 'my-lab'). A silent default to 'rossoctl' loads the image into "
+        f"the wrong cluster."
+    )
+
+
+def test_instrument_bridges_legacy_kind_cluster_var_to_bake(sandbox) -> None:
+    """`build-and-load.sh` and the deploy docs use KIND_CLUSTER for the DG images.
+    An operator who set only KIND_CLUSTER must still have it reach the bake, so
+    the two image paths land on the SAME cluster rather than the bake defaulting
+    to `rossoctl`."""
+    sandbox.set_namespace({"research-agent": {"sidecar": None}})
+    r = sandbox.run(
+        "namespace", "travel-advisor", "instrument",
+        env={"KIND_CLUSTER": "dev-cluster", "KIND_CLUSTER_NAME": ""},
+    )
+    assert r.returncode == 0, r.stderr
+    got = _bake_cluster_name(sandbox.kit_log())
+    assert got == "dev-cluster", (
+        f"dg.sh must bridge the legacy KIND_CLUSTER var into the bake's "
+        f"KIND_CLUSTER_NAME so both image paths hit one cluster; bake saw {got!r}"
+    )
+
+
+def test_instrument_bake_cluster_name_defaults_to_rossoctl(sandbox) -> None:
+    """With neither cluster var set the historical default (`rossoctl`) is
+    preserved — the fix forwards the operator's choice without changing the
+    no-config default."""
+    sandbox.set_namespace({"research-agent": {"sidecar": None}})
+    r = sandbox.run(
+        "namespace", "travel-advisor", "instrument",
+        env={"KIND_CLUSTER": "", "KIND_CLUSTER_NAME": ""},
+    )
+    assert r.returncode == 0, r.stderr
+    got = _bake_cluster_name(sandbox.kit_log())
+    assert got == "rossoctl", (
+        f"with no cluster var set the bake must still default to 'rossoctl'; saw {got!r}"
     )
 
 
