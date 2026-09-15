@@ -295,8 +295,13 @@ if [[ "$*" == *"get"* && ( "$*" == *"configmap"* || "$*" == *" cm "* || "$*" == 
     f="$FIXDIR/cm-${cmname}-wired.json"
   fi
   if [[ -n "$cmname" && -f "$f" ]]; then
-    # A `{.data.config\.yaml}` read wants the raw config.yaml body (append reads +
-    # verifies); a `{.data}` read wants the Go-map repr (status/detection).
+    # `-o json` (whole doc) → full CM (the append reads the whole CM to preserve
+    # sibling keys); `{.data.config\.yaml}` the raw body; `{.data}` the Go-map
+    # repr. `-o jsonpath` must NOT match the full-doc branch (it contains `-o
+    # json` as a substring), hence the trailing-space / end-of-args guard.
+    if [[ "$*" == *"-o json "* || "$*" == *"-o json" || "$*" == *"-ojson "* || "$*" == *"-ojson" ]]; then
+      cat "$f"; exit 0
+    fi
     if [[ "$*" == *"config\.yaml"* || "$*" == *"config.yaml"* ]]; then
       python3 - "$f" <<'PY'
 import json, sys
@@ -318,32 +323,18 @@ PY
   exit 1
 fi
 
-# ---- create configmap --dry-run=client -o yaml (the append renders the CM) ---
-if [[ "$*" == *"create configmap"* && "$*" == *"--dry-run=client"* ]]; then
-  cmn=""; for a in "$@"; do case "$a" in authbridge-lineage-config-*) cmn="$a" ;; esac; done
-  body="$(cat)"
-  {
-    printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: travel-advisor\ndata:\n  config.yaml: |\n' "$cmn"
-    printf '%s\n' "$body" | sed 's/^/    /'
-  }
-  exit 0
-fi
-
-# ---- apply -f - (the append applies the amended CM; capture it as wired) -----
+# ---- apply -f - (the append applies the amended FULL CM; capture it as wired) -
 if [[ "$1" == "apply" && ( "$*" == *"-f -"* || "$*" == *"-f-"* ) ]]; then
   applied_f="$(mktemp)"; cat > "$applied_f"
   python3 - "$FIXDIR" "$applied_f" <<'PY'
-import json, sys, re, os
+import json, sys, os
 fixdir, applied_f = sys.argv[1], sys.argv[2]
-raw = open(applied_f).read()
-m = re.search(r"authbridge-lineage-config-[a-z0-9-]+", raw)
-if not m:
+doc = json.load(open(applied_f))   # a full ConfigMap JSON doc
+name = (doc.get("metadata") or {}).get("name", "")
+if not name:
     sys.exit(0)
-name = m.group(0)
-bm = re.search(r"config\.yaml:\s*\|?\s*\n(.*)$", raw, re.S)
-body = bm.group(1) if bm else raw
 open(os.path.join(fixdir, f"appended-{name}"), "w").close()
-json.dump({"data": {"config.yaml": body}}, open(os.path.join(fixdir, f"cm-{name}-wired.json"), "w"))
+json.dump(doc, open(os.path.join(fixdir, f"cm-{name}-wired.json"), "w"))
 PY
   rm -f "$applied_f"
   exit 0
@@ -456,6 +447,7 @@ def sandbox(tmp_path: Path):
     _STUB_SIDECAR_PATCH_PROXY = 'echo "sidecar-patch-proxy.sh stub should not run for an existing sidecar" >&2\nexit 0\n'
     _STUB_BUILD_SHIM = 'echo "build-otel-shim.sh stub" >&2\nexit 0\n'
     _STUB_ATTACH = 'echo "attach-lineage.sh stub" >&2\nexit 0\n'
+    _STUB_ATTACH_PROXY = 'echo "attach-lineage-proxy.sh stub" >&2\nexit 0\n'
 
     class _Sandbox:
         def __init__(self) -> None:
@@ -474,6 +466,7 @@ def sandbox(tmp_path: Path):
             _make_bin(kitdir, "sidecar-patch-proxy.sh", _STUB_SIDECAR_PATCH_PROXY)
             _make_bin(kitdir, "build-otel-shim.sh", _STUB_BUILD_SHIM)
             _make_bin(kitdir, "attach-lineage.sh", _STUB_ATTACH)
+            _make_bin(kitdir, "attach-lineage-proxy.sh", _STUB_ATTACH_PROXY)
             # The sourced / build-input companions require_vendored_kit checks for
             # (both shims are build inputs; ADR-0033 D4).
             for f in ("container-runtime.sh", "Dockerfile.otel-shim",

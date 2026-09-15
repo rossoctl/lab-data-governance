@@ -272,9 +272,11 @@ echo ">> lineage proxy sidecar attached to deploy/${DEPLOY} (self_id=${SELF_ID},
 exit 0
 """
 
-# attach-lineage.sh stub: present only so the kit-resolvable preflight (which
-# checks all script names) passes. Never invoked directly by dg.sh.
+# attach-lineage.sh / attach-lineage-proxy.sh stubs: present only so the
+# kit-integrity preflight (which checks every driven script + generator) passes.
+# The appliers are stubbed, so the real generators are never exec'd here.
 _STUB_ATTACH = 'echo "attach-lineage.sh stub" >&2\nexit 0\n'
+_STUB_ATTACH_PROXY = 'echo "attach-lineage-proxy.sh stub" >&2\nexit 0\n'
 
 
 _FAKE_KUBECTL = r"""
@@ -400,8 +402,14 @@ if [[ "$*" == *"get"* && ( "$*" == *"configmap"* || "$*" == *" cm "* || "$*" == 
     f="$FIXDIR/cm-${cmname}-wired.json"
   fi
   if [[ -n "$cmname" && -f "$f" ]]; then
-    # A `{.data.config\.yaml}` read wants the raw config.yaml BODY (the append
-    # path reads + verifies it); a `{.data}` read wants the Go-map repr (status).
+    # `-o json` (the WHOLE doc) wants the FULL ConfigMap (the append reads the
+    # whole CM so it preserves sibling data keys); `{.data.config\.yaml}` the raw
+    # body (legacy); `{.data}` the Go-map repr (status/detection). NB `-o jsonpath`
+    # must NOT match the `-o json` full-doc branch — hence the trailing space /
+    # end-of-args guard, since `-o jsonpath=...` contains `-o json` as a substring.
+    if [[ "$*" == *"-o json "* || "$*" == *"-o json" || "$*" == *"-ojson "* || "$*" == *"-ojson" ]]; then
+      cat "$f"; exit 0
+    fi
     if [[ "$*" == *"config\.yaml"* || "$*" == *"config.yaml"* ]]; then
       python3 - "$f" <<'PY'
 import json, sys
@@ -423,49 +431,29 @@ PY
   exit 1
 fi
 
-# ---- create configmap --dry-run=client -o yaml (the append renders the CM) ---
-# dg.sh's in-place append builds the amended CM via
-# `create configmap <n> --from-file=config.yaml=/dev/stdin --dry-run=client -o yaml`
-# then pipes it to `apply -f -`. Model that render: read the stdin body and emit a
-# ConfigMap YAML wrapping it, so the downstream apply sees a real manifest.
-if [[ "$*" == *"create configmap"* && "$*" == *"--dry-run=client"* ]]; then
-  cmn=""; for a in "$@"; do case "$a" in authbridge-lineage-config-*) cmn="$a" ;; esac; done
-  body="$(cat)"
-  {
-    printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: travel-advisor\ndata:\n  config.yaml: |\n' "$cmn"
-    # indent the body by four spaces (under the |-block).
-    printf '%s\n' "$body" | sed 's/^/    /'
-  }
-  exit 0
-fi
-
-# ---- ConfigMap write (in-place append: dg.sh applies the amended CM) ---------
-# The append renders the amended per-app CM (lineage-telemetry inserted, auth
-# left as-is) and pipes it to `kubectl apply -f -`. We CAPTURE that stdin as the
-# new wired body — an honest echo of what dg.sh actually produced, not a
-# re-synthesis — and record a marker so the verify re-read (above) reflects it.
+# ---- ConfigMap write (in-place append: dg.sh applies the amended FULL CM) ----
+# dg.sh's in-place append reads the whole CM (`get cm -o json`), amends only its
+# data.config.yaml (preserving every other data key), and pipes the FULL CM JSON
+# to `kubectl apply -f -`. We CAPTURE that stdin — an honest echo of what dg.sh
+# actually produced — store it as the wired fixture, and record a marker so the
+# verify re-read (above) reflects it.
 if [[ "$1" == "apply" && ( "$*" == *"-f -"* || "$*" == *"-f-"* ) ]]; then
   # Stash the applied manifest to a temp FILE and pass its PATH to python as argv
   # — NOT via a pipe, which would collide with the heredoc that feeds python its
   # program on stdin (a heredoc `python3 - <<PY` already occupies stdin).
   applied_f="$(mktemp)"; cat > "$applied_f"
   python3 - "$FIXDIR" "$applied_f" <<'PY'
-import json, sys, re
+import json, sys, os
 fixdir, applied_f = sys.argv[1], sys.argv[2]
-raw = open(applied_f).read()
-# The applied doc is YAML from `kubectl create configmap --dry-run=client -o yaml`.
-# Pull the CM name and the config.yaml body without a YAML lib: name from the
-# authbridge-lineage-config-<n> token, body from the `config.yaml: |`-block.
-m = re.search(r"authbridge-lineage-config-[a-z0-9-]+", raw)
-if not m:
+doc = json.load(open(applied_f))   # a full ConfigMap JSON doc
+name = (doc.get("metadata") or {}).get("name", "")
+if not name:
     sys.exit(0)
-name = m.group(0)
-bm = re.search(r"config\.yaml:\s*\|?\s*\n(.*)$", raw, re.S)
-body = bm.group(1) if bm else raw
-import os
 os.makedirs(fixdir, exist_ok=True)
 open(os.path.join(fixdir, f"appended-{name}"), "w").close()
-json.dump({"data": {"config.yaml": body}}, open(os.path.join(fixdir, f"cm-{name}-wired.json"), "w"))
+# Store the applied doc VERBATIM as the wired fixture — so the verify re-read and
+# any sibling-key assertion see exactly what dg.sh applied.
+json.dump(doc, open(os.path.join(fixdir, f"cm-{name}-wired.json"), "w"))
 PY
   rm -f "$applied_f"
   exit 0
@@ -556,6 +544,7 @@ def sandbox(tmp_path: Path):
             _make_bin(self.kitdir, "sidecar-patch-proxy.sh", _STUB_SIDECAR_PATCH_PROXY)
             _make_bin(self.kitdir, "build-otel-shim.sh", _STUB_BUILD_SHIM)
             _make_bin(self.kitdir, "attach-lineage.sh", _STUB_ATTACH)
+            _make_bin(self.kitdir, "attach-lineage-proxy.sh", _STUB_ATTACH_PROXY)
             # ...plus the sourced / build-input companions require_vendored_kit
             # also insists on (build-otel-shim.sh sources container-runtime.sh and
             # its docker build reads the Dockerfile + BOTH shims — the propagate
@@ -574,7 +563,8 @@ def sandbox(tmp_path: Path):
 
         def remove_kit(self) -> None:
             """Delete the driven scripts so the vendored-kit integrity check refuses."""
-            for s in ("sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh", "attach-lineage.sh"):
+            for s in ("sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh",
+                      "attach-lineage.sh", "attach-lineage-proxy.sh"):
                 self.remove_kit_file(s)
 
         def set_flag(self, **kw: str) -> None:
@@ -711,6 +701,33 @@ def test_instrument_refuses_when_kit_companion_file_absent(sandbox, missing) -> 
         assert m not in calls, f"a refused instrument must not {m!r}; calls={calls!r}"
 
 
+@pytest.mark.parametrize(
+    "missing",
+    ["sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh",
+     "attach-lineage.sh", "attach-lineage-proxy.sh"],
+)
+def test_instrument_refuses_when_a_driven_script_absent(sandbox, missing) -> None:
+    """The integrity preflight covers EVERY driven script — both appliers AND both
+    generators. In particular `attach-lineage-proxy.sh` (the proxy generator the
+    default no-sidecar path execs): a checkout missing it must refuse BEFORE the
+    shim bake, or the bake would build + kind-load an image and THEN the applier
+    would die on the absent generator — breaking 'refuse, mutate nothing' for the
+    default proxy path (code-review #245)."""
+    sandbox.set_namespace({"research-agent": {"sidecar": None}})
+    sandbox.remove_kit_file(missing)
+    r = sandbox.run("namespace", "travel-advisor", "instrument")
+    assert r.returncode != 0, f"a kit missing {missing} must refuse"
+    combined = (r.stdout + r.stderr).lower()
+    assert "incomplete" in combined and missing.lower() in combined, (
+        f"refusal must name the missing driven script {missing}; got:\n{combined}"
+    )
+    assert sandbox.kit_log() == "", "no kit script may run when the kit is incomplete"
+    calls = " ".join(sandbox.kubectl_calls())
+    # Crucially, nothing was built/loaded/applied — the refuse happens up front.
+    for m in ("apply", "patch", "rollout restart", "create configmap"):
+        assert m not in calls, f"a refused instrument must not {m!r}; calls={calls!r}"
+
+
 # ===========================================================================
 # AC (#241): the kit ships in-repo and `instrument` resolves it with NO cortex
 # checkout and NO env override — the whole point of vendoring.
@@ -724,7 +741,8 @@ def test_vendored_kit_ships_in_repo_and_is_executable() -> None:
     its three driven scripts are present and executable. This is the filesystem
     invariant require_vendored_kit checks — a broken checkout fails it loud."""
     assert _VENDORED_KIT.is_dir(), f"vendored kit dir must exist: {_VENDORED_KIT}"
-    for s in ("sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh", "attach-lineage.sh"):
+    for s in ("sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh",
+              "attach-lineage.sh", "attach-lineage-proxy.sh"):
         p = _VENDORED_KIT / s
         assert p.is_file(), f"vendored kit is missing {s}"
         assert os.access(p, os.X_OK), f"vendored kit script {s} is not executable"
@@ -1392,3 +1410,103 @@ def test_instrument_is_no_longer_a_stub(sandbox) -> None:
     assert "not implemented" not in combined and "stub" not in combined, (
         f"namespace instrument is a real verb as of #184; got:\n{combined}"
     )
+
+
+# ===========================================================================
+# Unit tests for the in-place append helpers (code-review #245 hardening),
+# sourced straight out of dg.sh — no cluster, no fake kubectl.
+# ===========================================================================
+
+
+def _source_and_run(func_call: str, stdin: str, env: dict | None = None):
+    """Source dg.sh's function defs and run `func_call`, piping `stdin` in.
+    dg.sh's `set -euo pipefail` and top-level code are avoided by extracting only
+    the function bodies via a marker-free `source` of the whole script with a
+    guarded main — simplest is to source and then call the function."""
+    # dg.sh runs cmd dispatch at the bottom; guard by setting a sentinel that makes
+    # the script define functions then exit before dispatch is unreachable here —
+    # instead we extract the two helper functions by name with sed and source those.
+    import subprocess
+    funcs = subprocess.run(
+        ["sed", "-nE",
+         r"/^(amend_cm_json|plugin_wired_in_cm_data|pipeline_is_enforcing)\(\)/,/^\}/p",
+         str(DG_SH)],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    script = funcs + "\n" + func_call + "\n"
+    full_env = {"PATH": os.environ["PATH"], **(env or {})}
+    return subprocess.run(["bash", "-c", script], input=stdin,
+                          capture_output=True, text=True, env=full_env)
+
+
+_FULL_CM_JSON = json.dumps({
+    "apiVersion": "v1", "kind": "ConfigMap",
+    "metadata": {"name": "authbridge-lineage-config-x", "namespace": "travel-advisor"},
+    "data": {
+        "config.yaml": "mode: proxy-sidecar\npipeline:\n  inbound:\n    plugins:\n      - name: jwt-validation\n      - name: a2a-parser\n  outbound:\n    plugins:\n      - name: a2a-parser\n",
+        "policy.rego": "package p\ndefault allow = true\n",  # a SIBLING key
+    },
+})
+
+
+def test_amend_cm_json_preserves_sibling_keys() -> None:
+    """The append amends only data.config.yaml and preserves every other data key
+    (code-review #245: an operator CM may carry a policy file alongside config)."""
+    r = _source_and_run('amend_cm_json x otel:4317', _FULL_CM_JSON)
+    assert r.returncode == 0, r.stderr
+    doc = json.loads(r.stdout)
+    assert "policy.rego" in doc["data"], "the sibling data key must survive the amend"
+    assert doc["data"]["policy.rego"] == "package p\ndefault allow = true\n", "sibling key unchanged"
+    assert "- name: lineage-telemetry" in doc["data"]["config.yaml"], "plugin appended to config.yaml"
+    # auth plugin preserved (append never strips)
+    assert "jwt-validation" in doc["data"]["config.yaml"]
+
+
+def test_amend_cm_json_refuses_flow_style_plugins() -> None:
+    """A flow-style `plugins: [ ... ]` list cannot take block-sequence items
+    appended after it without invalid YAML → amend_cm_json refuses (exit 3) rather
+    than emit a config that crash-loops the sidecar (code-review #245)."""
+    flow = json.dumps({
+        "apiVersion": "v1", "kind": "ConfigMap",
+        "metadata": {"name": "authbridge-lineage-config-x"},
+        "data": {"config.yaml": "pipeline:\n  inbound:\n    plugins: [a2a-parser, mcp-parser]\n"},
+    })
+    r = _source_and_run('amend_cm_json x otel:4317', flow)
+    assert r.returncode == 3, f"flow-style plugins must be refused (exit 3); got {r.returncode}: {r.stderr}"
+
+
+def test_amend_cm_json_idempotent_on_wired_body() -> None:
+    """A config already carrying the plugin ENTRY passes through unchanged."""
+    wired = json.dumps({
+        "apiVersion": "v1", "kind": "ConfigMap",
+        "metadata": {"name": "authbridge-lineage-config-x"},
+        "data": {"config.yaml": "pipeline:\n  inbound:\n    plugins:\n      - name: a2a-parser\n      - name: lineage-telemetry\n"},
+    })
+    r = _source_and_run('amend_cm_json x otel:4317', wired)
+    assert r.returncode == 0, r.stderr
+    doc = json.loads(r.stdout)
+    # exactly one entry — not appended twice.
+    assert doc["data"]["config.yaml"].count("- name: lineage-telemetry") == 1
+
+
+@pytest.mark.parametrize(
+    "body,wired",
+    [
+        ('map[config.yaml:plugins:\n      - name: lineage-telemetry\n]', True),
+        # a COMMENT mentioning the token is NOT a wired entry (code-review #245).
+        ('map[config.yaml:# lineage-telemetry appended by dg.sh\n      - name: a2a-parser\n]', False),
+        ('map[config.yaml:plugins:\n      - name: a2a-parser\n]', False),
+    ],
+)
+def test_plugin_wired_in_cm_data_is_entry_aware(body, wired) -> None:
+    """plugin_wired_in_cm_data matches the `name: lineage-telemetry` ENTRY, not the
+    bare token in a comment — so a comment mentioning it does not read as wired."""
+    r = _source_and_run(f'plugin_wired_in_cm_data {shlex_quote(body)}', "")
+    assert (r.returncode == 0) == wired, (
+        f"body={body!r} expected wired={wired}, got returncode={r.returncode}"
+    )
+
+
+def shlex_quote(s: str) -> str:
+    import shlex
+    return shlex.quote(s)

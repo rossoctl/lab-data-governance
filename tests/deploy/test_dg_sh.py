@@ -172,7 +172,8 @@ def sandbox(tmp_path: Path):
     # replaced --cortex-local-path when ADR-0033 vendored the kit).
     kitdir = tmp_path / "lineage-attach"
     kitdir.mkdir(parents=True)
-    for s in ("sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh", "attach-lineage.sh"):
+    for s in ("sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh",
+              "attach-lineage.sh", "attach-lineage-proxy.sh"):
         _make_bin(kitdir, s, "exit 0\n")
     # The sourced / build-input companions require_vendored_kit also checks for
     # (both shims are build inputs; ADR-0033 D4).
