@@ -572,24 +572,24 @@ def test_status_detects_injected_proxy_sidecar_from_pod(sandbox) -> None:
     )
 
 
-def test_status_injected_plugin_wired_via_pod_resolved_cm(sandbox) -> None:
+def test_status_injected_lineage_wired_via_pod_resolved_cm(sandbox) -> None:
     """Plugin detection must still work for the injected case: the pipeline CM is
     resolved from the POD's volume→configMap.name, then scanned for the plugin.
-    A wired CM → plugin=yes."""
+    A wired CM → lineage=yes."""
     sandbox.set_namespace(
         {"research-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": True}}
     )
     r = sandbox.run("namespace", "travel-advisor", "status")
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
-    assert "plugin=yes" in line, (
-        f"a wired plugin (resolved via the pod CM) must report plugin=yes; line={line!r}"
+    assert "lineage=yes" in line, (
+        f"a wired plugin (resolved via the pod CM) must report lineage=yes; line={line!r}"
     )
-    assert "plugin=no" not in line, f"must not misreport a wired plugin; line={line!r}"
+    assert "lineage=no" not in line, f"must not misreport a wired plugin; line={line!r}"
 
 
-def test_status_injected_plugin_absent_via_pod_resolved_cm(sandbox) -> None:
-    """An injected sidecar whose pod-resolved CM lacks the plugin → plugin=no."""
+def test_status_injected_lineage_absent_via_pod_resolved_cm(sandbox) -> None:
+    """An injected sidecar whose pod-resolved CM lacks the plugin → lineage=no."""
     sandbox.set_namespace(
         {"research-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": False}}
     )
@@ -597,10 +597,10 @@ def test_status_injected_plugin_absent_via_pod_resolved_cm(sandbox) -> None:
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
     assert "sidecar=present" in line and "type=proxy" in line, line
-    assert "plugin=no" in line, (
-        f"an injected sidecar with an unwired CM must report plugin=no; line={line!r}"
+    assert "lineage=no" in line, (
+        f"an injected sidecar with an unwired CM must report lineage=no; line={line!r}"
     )
-    assert "plugin=yes" not in line, line
+    assert "lineage=yes" not in line, line
 
 
 def test_status_detects_injected_envoy_sidecar_from_pod(sandbox) -> None:
@@ -630,7 +630,7 @@ def test_status_template_embedded_proxy_still_detected(sandbox) -> None:
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
     assert "sidecar=present" in line and "type=proxy" in line, line
-    assert "plugin=yes" in line, line
+    assert "lineage=yes" in line, line
 
 
 def test_status_template_embedded_envoy_still_detected(sandbox) -> None:
@@ -651,7 +651,7 @@ def test_status_no_sidecar_anywhere_reports_none(sandbox) -> None:
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "search-destinations").lower()
     assert "sidecar=none" in line and "type=none" in line, line
-    assert "plugin=no" in line, line
+    assert "lineage=no" in line, line
 
 
 # ===========================================================================
@@ -800,7 +800,7 @@ def test_instrument_no_running_pod_refuses_on_unconfirmed_none(sandbox) -> None:
 # shape the #852 kit attaches (dg.sh ~line 761). The bug (task 1): detection
 # inspected `.spec[.template.spec].containers` ONLY, never `initContainers`, so
 # an instrumented pod running `envoy-proxy` as a native sidecar was reported
-# sidecar=none/type=none/plugin=no. Detection must union the two container lists.
+# sidecar=none/type=none/lineage=no. Detection must union the two container lists.
 # ===========================================================================
 
 
@@ -825,25 +825,25 @@ def test_status_detects_native_envoy_sidecar_in_template(sandbox) -> None:
     )
 
 
-def test_status_native_envoy_plugin_wired_via_init_resolved_cm(sandbox) -> None:
+def test_status_native_envoy_lineage_wired_via_init_resolved_cm(sandbox) -> None:
     """Plugin detection must work for the native shape too: the pipeline CM is
     resolved from the initContainer sidecar's volume→configMap.name, then scanned
-    for the plugin. A wired CM → plugin=yes."""
+    for the plugin. A wired CM → lineage=yes."""
     sandbox.set_namespace(
         {"research-agent": {"template_sidecar": "envoy", "native": True, "lineage": True}}
     )
     r = sandbox.run("namespace", "travel-advisor", "status")
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
-    assert "plugin=yes" in line, (
+    assert "lineage=yes" in line, (
         f"a wired plugin (CM resolved via the init-container sidecar) must report "
-        f"plugin=yes; line={line!r}"
+        f"lineage=yes; line={line!r}"
     )
-    assert "plugin=no" not in line, f"must not misreport a wired plugin; line={line!r}"
+    assert "lineage=no" not in line, f"must not misreport a wired plugin; line={line!r}"
 
 
-def test_status_native_envoy_plugin_absent_via_init_resolved_cm(sandbox) -> None:
-    """A native envoy sidecar whose init-resolved CM lacks the plugin → plugin=no
+def test_status_native_envoy_lineage_absent_via_init_resolved_cm(sandbox) -> None:
+    """A native envoy sidecar whose init-resolved CM lacks the plugin → lineage=no
     (still sidecar=present type=envoy — the sidecar is seen, the plugin is not)."""
     sandbox.set_namespace(
         {"research-agent": {"template_sidecar": "envoy", "native": True, "lineage": False}}
@@ -852,10 +852,10 @@ def test_status_native_envoy_plugin_absent_via_init_resolved_cm(sandbox) -> None
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
     assert "sidecar=present" in line and "type=envoy" in line, line
-    assert "plugin=no" in line, (
-        f"a native sidecar with an unwired CM must report plugin=no; line={line!r}"
+    assert "lineage=no" in line, (
+        f"a native sidecar with an unwired CM must report lineage=no; line={line!r}"
     )
-    assert "plugin=yes" not in line, line
+    assert "lineage=yes" not in line, line
 
 
 def test_status_detects_native_proxy_sidecar_in_template(sandbox) -> None:

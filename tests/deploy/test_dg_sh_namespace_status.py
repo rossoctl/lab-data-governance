@@ -11,7 +11,8 @@ reports three facts per entity:
 
 - **sidecar presence** — does the pod run an AuthBridge sidecar;
 - **sidecar type** — ``proxy`` / ``envoy`` / ``none``;
-- **plugin** — is ``lineage-telemetry`` wired into its pipeline.
+- **lineage** — is ``lineage-telemetry`` wired into its pipeline
+  (reported as the ``lineage=yes/no`` token — ADR-0033 Decision 5).
 
 Detection distinguishes the injected ``authbridge-proxy`` (proxy-sidecar)
 container from ``envoy-proxy`` (envoy-sidecar), and inspects the *effective*
@@ -414,7 +415,7 @@ exit 0
 
 
 # ---------------------------------------------------------------------------
-# AC: lists each agent/tool with presence, type (proxy/envoy/none), plugin y/n
+# AC: lists each agent/tool with presence, type (proxy/envoy/none), lineage y/n
 # ---------------------------------------------------------------------------
 
 
@@ -458,34 +459,34 @@ def test_status_reports_none_type_and_no_sidecar(sandbox) -> None:
     assert "none" in line, f"no sidecar must report type none; line={line!r}"
 
 
-def test_status_reports_plugin_wired_when_present(sandbox) -> None:
+def test_status_reports_lineage_wired_when_present(sandbox) -> None:
     sandbox.set_namespace({"research-agent": {"sidecar": "proxy", "lineage": True}})
     r = sandbox.run("namespace", "travel-advisor", "status")
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
-    # Match the plugin= VERDICT token specifically. Substrings like "wired" or
+    # Match the lineage= VERDICT token specifically. Substrings like "wired" or
     # "present" are trivially true even when the verdict is wrong (both the
     # sidecar=present token and the "not wired" phrasing contain them), so a
     # 'not wired' misreport of this genuinely-wired fixture MUST fail here.
-    assert "plugin=yes" in line, (
-        f"a wired lineage-telemetry plugin must report plugin=yes; line={line!r}"
+    assert "lineage=yes" in line, (
+        f"a wired lineage-telemetry plugin must report lineage=yes; line={line!r}"
     )
-    assert "plugin=no" not in line, (
-        f"a wired plugin must NOT report plugin=no; line={line!r}"
+    assert "lineage=no" not in line, (
+        f"a wired plugin must NOT report lineage=no; line={line!r}"
     )
 
 
-def test_status_reports_plugin_absent_when_not_wired(sandbox) -> None:
+def test_status_reports_lineage_absent_when_not_wired(sandbox) -> None:
     sandbox.set_namespace({"research-agent": {"sidecar": "proxy", "lineage": False}})
     r = sandbox.run("namespace", "travel-advisor", "status")
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
-    # Match the plugin= VERDICT token specifically (see the positive test).
-    assert "plugin=no" in line, (
-        f"an unwired plugin must report plugin=no; line={line!r}"
+    # Match the lineage= VERDICT token specifically (see the positive test).
+    assert "lineage=no" in line, (
+        f"an unwired plugin must report lineage=no; line={line!r}"
     )
-    assert "plugin=yes" not in line, (
-        f"an unwired plugin must NOT report plugin=yes; line={line!r}"
+    assert "lineage=yes" not in line, (
+        f"an unwired plugin must NOT report lineage=yes; line={line!r}"
     )
 
 
@@ -504,7 +505,7 @@ def test_status_distinguishes_proxy_from_envoy_across_entities(sandbox) -> None:
     assert "envoy" in _entity_line(r.stdout, "payment-agent").lower()
 
 
-def test_status_plugin_absent_on_no_sidecar_entity(sandbox) -> None:
+def test_status_lineage_absent_on_no_sidecar_entity(sandbox) -> None:
     """A no-sidecar entity has no pipeline at all, so plugin is reported absent —
     never a crash, never a false 'wired'."""
     sandbox.set_namespace({"search-destinations": {"sidecar": None, "lineage": False}})
@@ -512,8 +513,8 @@ def test_status_plugin_absent_on_no_sidecar_entity(sandbox) -> None:
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "search-destinations").lower()
     assert "none" in line
-    assert "plugin=no" in line, (
-        f"no-sidecar entity must report plugin=no; line={line!r}"
+    assert "lineage=no" in line, (
+        f"no-sidecar entity must report lineage=no; line={line!r}"
     )
 
 
@@ -605,7 +606,7 @@ def test_status_fails_loud_when_kubectl_get_errors(sandbox) -> None:
 def test_status_fails_loud_when_configmap_read_errors(sandbox) -> None:
     """A broken API DURING THE CONFIGMAP READ (sidecar present, deployment get
     succeeds, but the pipeline-config ConfigMap get fails non-NotFound) must die
-    loud — never be silently rendered as an empty config → 'plugin=no', which is
+    loud — never be silently rendered as an empty config → 'lineage=no', which is
     indistinguishable from a legitimate NotFound. Guards get_configmap_data's
     fail-loud (finding #2)."""
     sandbox.set_namespace({"research-agent": {"sidecar": "proxy", "lineage": True}})
@@ -617,14 +618,14 @@ def test_status_fails_loud_when_configmap_read_errors(sandbox) -> None:
     combined = (r.stdout + r.stderr).lower()
     assert combined.strip(), "a failed ConfigMap read must not exit with EMPTY output"
     # Must NOT masquerade as a benign 'plugin absent' verdict.
-    assert "plugin=no" not in combined, (
-        f"a broken CM read must die, not report plugin=no; got:\n{combined}"
+    assert "lineage=no" not in combined, (
+        f"a broken CM read must die, not report lineage=no; got:\n{combined}"
     )
 
 
-def test_status_notfound_configmap_reports_plugin_absent(sandbox) -> None:
+def test_status_notfound_configmap_reports_lineage_absent(sandbox) -> None:
     """A genuine NotFound on the pipeline-config ConfigMap (a dangling volume
-    reference) is the legitimate 'plugin absent' case — reported plugin=no, NOT a
+    reference) is the legitimate 'plugin absent' case — reported lineage=no, NOT a
     crash. This is the boundary the fail-loud fix must preserve."""
     sandbox.set_namespace({"research-agent": {"sidecar": "proxy", "lineage": True}})
     sandbox.set_cm_force_notfound("authbridge-lineage-config-research-agent")
@@ -634,8 +635,8 @@ def test_status_notfound_configmap_reports_plugin_absent(sandbox) -> None:
         f"stderr={r.stderr!r}"
     )
     line = _entity_line(r.stdout, "research-agent").lower()
-    assert "plugin=no" in line, (
-        f"a NotFound pipeline ConfigMap must report plugin=no; line={line!r}"
+    assert "lineage=no" in line, (
+        f"a NotFound pipeline ConfigMap must report lineage=no; line={line!r}"
     )
 
 
@@ -668,7 +669,7 @@ def test_status_empty_namespace_is_not_an_error(sandbox) -> None:
 def _entity_line(stdout: str, entity: str) -> str:
     """Return the (first) output line mentioning ``entity``.
 
-    ``status`` prints one line per entity; the per-entity facts (type, plugin)
+    ``status`` prints one line per entity; the per-entity facts (type, lineage)
     live on that entity's own line, so tests assert against it rather than the
     whole blob to avoid cross-entity bleed.
     """

@@ -280,7 +280,10 @@ report:
 
 - **sidecar presence** — does the pod run an AuthBridge sidecar;
 - **sidecar type** — `proxy` / `envoy` / `none`;
-- **plugin** — is `lineage-telemetry` wired into its pipeline.
+- **lineage** — is `lineage-telemetry` wired into its pipeline, reported as the
+  per-entity `lineage=yes/no` token. This is the no-marker idempotency signal
+  (ADR-0033 decision 5): `instrument` places no marker, so a wired pipeline is
+  how a re-run knows an entity is already activated.
 
 Detection inspects **both** the pod-spec's `containers` and its `initContainers`:
 the kit's `envoy-proxy` is a native sidecar (an `initContainer`), so a
