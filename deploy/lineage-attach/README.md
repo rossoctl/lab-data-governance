@@ -163,6 +163,72 @@ it. A Deployment whose env you cannot touch at all has one lever left, the
 image reference: `SELF_ACTIVATE=1 ./build-otel-shim.sh <your-app>:latest` bakes
 the switch in (the image argument is required).
 
+### Proxy path: auth-free, transparent egress allowlist (ADR-0033)
+
+`attach-lineage.sh` injects an **envoy** lineage sidecar. Its sibling
+`attach-lineage-proxy.sh` injects the DEFAULT **proxy-sidecar** shape instead —
+an **auth-free, lineage-only `authbridge-proxy`** (only `lineage-telemetry` + the
+parsers; **no** `jwt-validation` / `token-exchange` / mTLS, so it never 401s the
+demo's unauthenticated MCP/A2A calls, and needs no SPIRE). This is ADR-0033
+Decision 2: a bare no-sidecar entity in a namespace that is *not*
+envoy-configured gets a proxy, not an envoy.
+
+Same generator shape as the envoy path — `EMIT=patch` / `EMIT=cm` / `EMIT=undo`,
+every input validated, stdout only:
+
+```sh
+NAME=research-agent NAMESPACE=travel-advisor EMIT=cm ./attach-lineage-proxy.sh
+NAME=research-agent NAMESPACE=travel-advisor EMIT=patch APP_CONTAINER=agent \
+  APP_IMAGE=docker.io/library/research-agent-otel:latest \
+  SIDECAR_IMAGE=<a v1.7.0 lineage-bearing authbridge tag> ./attach-lineage-proxy.sh
+```
+
+Two things differ from the envoy path, both by ADR-0033 design:
+
+- **Transparent egress capture, no relocation.** The app is *not* fronted by a
+  reverse proxy and *not* relocated to a back port (the rejected scratch-recipe
+  approach); it needs no `HTTP_PROXY`. `proxy-init` runs the vendored
+  `init-iptables.sh` in its new **include-only allowlist** mode
+  (`OUTBOUND_PORTS_INCLUDE`, default **A2A `8080` + MCP `8000`**): only those
+  dports are REDIRECTed into the proxy's transparent outbound listener (`:8082`);
+  every other port (Postgres, SMTP, the TLS LLM tunnel) stays **direct**. This is
+  the inverse of the envoy path's `OUTBOUND_PORTS_EXCLUDE` denylist and is
+  **fail-safe** — a port left off the allowlist is not handed to a proxy that
+  would break it. Widen the allowlist with `OUTBOUND_PORTS_INCLUDE=<ports>`; the
+  two knobs are mutually exclusive (opposite models).
+- **`namespace_file` is mandatory (wire contract v1.7.0 §6).** The
+  `lineage-telemetry` producer refuses to start without a `namespace` /
+  `namespace_file`, so the generated ConfigMap sets
+  `namespace_file: /var/run/secrets/kubernetes.io/serviceaccount/namespace` — the
+  pod's projected serviceaccount namespace, the one source that stays correct in
+  a config templated or copied across namespaces. A producer image older than
+  v1.7.0 rejects a config carrying this key (unknown keys are a boot error), so
+  image and config change together — hence `SIDECAR_IMAGE` must be a v1.7.0
+  lineage-bearing `authbridge` tag (the published default is refused for the same
+  crashloop reason as the envoy path).
+
+The `authbridge-proxy` is a **native sidecar** (an initContainer with
+`restartPolicy: Always` + a `startupProbe`, like the envoy path), so `proxy-init`
+programs the egress redirect and then the kubelet holds the app container until
+the proxy is listening — the demo agents resolve peers at boot with no retry, so
+a plain container would race the redirect to `0 peers`. `EMIT=undo` deletes both
+initContainers plus the runtime volume and the propagation switch. Needs
+Kubernetes ≥ 1.29 (native sidecars); older clusters fail loud.
+
+The proxy path is **egress-only**: `init-iptables.sh` in include mode
+deliberately installs **no inbound interception** (redirect mode's inbound
+catch-all would REDIRECT every inbound request to the Envoy inbound port `15124`,
+which the proxy-sidecar never binds — the app would be unreachable). The app
+serves inbound directly on its own port; each hop is still recorded once, on the
+**caller's** egress.
+
+> **Known limitation (inherited from redirect mode): IPv4 only.** The
+> `OUTBOUND_PORTS_INCLUDE` allowlist is programmed only in the IPv4 `PROXY_OUTPUT`
+> chain (redirect mode has no IPv6 branch — only `enforce-redirect` does). On a
+> dual-stack pod, an app's IPv6 A2A/MCP egress is not captured. The demo cluster
+> is IPv4, so this does not affect it; a dual-stack deployment would need the
+> include path mirrored into `ip6tables` first.
+
 ### Enrolled workloads: the namespace-ConfigMap route
 
 When the platform injects its own AuthBridge sidecar (an `AgentRuntime` CR),
@@ -264,14 +330,17 @@ sidecar can and cannot see"). Never exclude LLM, tool, peer or S3 ports.
 Script knobs: `NAME`/`DEPLOY`, `NAMESPACE` (default `team1`), `SELF_ID`, `OTEL_ENDPOINT`,
 `CAPTURE_IO`, `MAX_PAYLOAD_BYTES`, `APP_CONTAINER`, `APP_IMAGE`, `OUTBOUND_PORTS_EXCLUDE`, `SIDECAR_IMAGE`,
 `PROXY_INIT_IMAGE`, `NO_EMIT`, `EMIT`; each script's header documents its own.
+The proxy generator (`attach-lineage-proxy.sh`) replaces `OUTBOUND_PORTS_EXCLUDE`
+with `OUTBOUND_PORTS_INCLUDE` (the include-only allowlist, default `8080,8000`)
+and always emits `namespace_file`.
 
 ---
 
 ## Files
 
-Two moments, nine files. The bake happens once per image, on a laptop; the
-attach once per Deployment, against the cluster. The only thing that crosses
-between them is an image reference.
+Two moments. The bake happens once per image, on a laptop; the attach once per
+Deployment, against the cluster. The only thing that crosses between them is an
+image reference.
 
 ```
 BAKE — once per app image                 ATTACH — once per Deployment
@@ -285,7 +354,9 @@ BAKE — once per app image                 ATTACH — once per Deployment
 | file | what it is |
 |---|---|
 | `RECIPE.md` · `DESIGN.md` | the step-by-step; the reasoning, envelope and limits |
-| `attach-lineage.sh` | **the one generator** — every YAML byte of the attachment, `EMIT=patch` / `EMIT=cm`, env-driven, stdout only, every input validated or refused |
+| `attach-lineage.sh` | **the envoy generator** — every YAML byte of the envoy-sidecar attachment, `EMIT=patch` / `EMIT=cm` / `EMIT=undo`, env-driven, stdout only, every input validated or refused |
+| `attach-lineage-proxy.sh` | **the proxy generator** (ADR-0033) — the auth-free proxy-sidecar sibling: same `EMIT` shapes, transparent include-only egress capture, `namespace_file` (v1.7.0) |
+| `init-iptables.sh` | vendored iptables setup (envoy `redirect` + proxy `enforce-redirect`), plus the new include-only `OUTBOUND_PORTS_INCLUDE` allowlist the proxy path uses |
 | `sidecar-patch.sh` | the live applier: preconditions, then ConfigMap + patch + rollout wait; owns no YAML |
 | `Dockerfile.otel-shim` | the propagate-only layer, one recipe for every in-envelope app, instrumentors pinned to one contrib release |
 | `build-otel-shim.sh` | bakes, attests (gate off: nothing OTel-shaped loads; gate on: a `traceparent` is injected), kind-loads; refuses images it cannot safely wrap |
@@ -302,7 +373,9 @@ BAKE — once per app image                 ATTACH — once per Deployment
 | `envoy-proxy` restarts with `unknown plugin "lineage-telemetry"` | The published image, until a release carries the plugin. Build from this repo (RECIPE step 1); the printed back-out line meanwhile. The patch pulls `IfNotPresent`, so a node that cached an older `:latest` keeps it. |
 | Only inbound hops, never outbound | `proxy-init` did not install its iptables rules — its log. |
 | Outbound hops fragment (`lineage.parent.source=none` on the pod's outbound hops) | `traceparent` not propagating: the app container lacks `LINEAGE_PROPAGATE=1` (the patch sets it with `APP_CONTAINER`; an operator-owned Deployment needs `SELF_ACTIVATE=1`), or the call runs in a worker thread (the `threading` instrumentor is bundled), or the client library is outside the envelope. Only the entry hop dangling is expected. |
-| The app cannot reach its database / mail server after the patch | A plaintext non-HTTP port went through the outbound HTTP codec — `OUTBOUND_PORTS_EXCLUDE` it. |
+| The app cannot reach its database / mail server after the patch | A plaintext non-HTTP port went through the outbound HTTP codec — `OUTBOUND_PORTS_EXCLUDE` it (envoy path), or (proxy path) confirm it is NOT on the `OUTBOUND_PORTS_INCLUDE` allowlist. |
+| `authbridge-proxy` crashloops with a `namespace` / unknown-config error (proxy path) | The `SIDECAR_IMAGE` predates wire contract v1.7.0: either it rejects the required `namespace_file` key (image older than v1.7.0), or it lacks `lineage-telemetry` entirely (cortex #761). Use a v1.7.0 lineage-bearing `authbridge` tag. |
+| A proxy-path hop that should be captured never appears (proxy path) | Its port is not on the `OUTBOUND_PORTS_INCLUDE` allowlist (default A2A `8080` + MCP `8000`, everything else DIRECT/fail-safe). Add the port. |
 | A non-HTTP port the app *serves* stops answering after the patch | Inbound is redirected too, and there is no inbound exclusion knob; the app cannot be adopted as is (DESIGN "What the sidecar can and cannot see"). Run the printed back-out line. |
 | Nothing captured when testing | `kubectl port-forward` reaches the app on loopback and bypasses the sidecar. Drive from inside the cluster. |
 | `kind load` fails under podman | `container-runtime.sh` saves + loads an archive for podman v5; `CONTAINER_TOOL` forces a runtime, `KIND_CLUSTER_NAME` the cluster. |
