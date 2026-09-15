@@ -102,8 +102,14 @@ def test_0008_is_applied_in_the_chain(migrated_dsn: str) -> None:
     assert "0008_payload_classifications" in walked
 
 
+<<<<<<< HEAD
 def test_0015_is_applied_in_the_chain(migrated_dsn: str) -> None:
     """A fresh migrate applies 0015 (it is in the chain).
+=======
+def test_head_is_0020(migrated_dsn: str) -> None:
+    """Applying the chain to head lands on the current head revision
+    (`0020_entity_namespace`).
+>>>>>>> a16d7d0 (feat(interactions): namespace in the pod entity key; entities.namespace)
 
     This revision was `main`'s head at the time it was written (see the
     docstring on ``test_latest_migration.py::test_head_is_0017`` for how the
@@ -114,9 +120,27 @@ def test_0015_is_applied_in_the_chain(migrated_dsn: str) -> None:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
+<<<<<<< HEAD
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     walked = {rev.revision for rev in script.walk_revisions()}
     assert "0015_lineage_entities_rename" in walked
+=======
+    Renumbering is safe ONLY because these revisions had not been applied to any
+    durable database — no `alembic_version` anywhere was stamped with the old ids.
+    Renumbering an already-applied revision erases the id a live database points
+    at, leaving alembic unable to locate its position; that would require
+    hand-stamping production. Do not renumber once shipped.
+
+    The head assertion lives here (rather than in each revision's own test) so a
+    new revision moves exactly one line — the convention this file inherited from
+    `main`. The classification store this file covers is asserted structurally by
+    the tests above regardless of the head."""
+    with psycopg.connect(migrated_dsn) as conn:
+        (version,) = conn.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()
+    assert version == "0020_entity_namespace"
+>>>>>>> a16d7d0 (feat(interactions): namespace in the pod entity key; entities.namespace)
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:

@@ -26,6 +26,7 @@ export function EntitiesTable({
           <Th>Kind</Th>
           <Th screenReaderText="Pinned" />
           <Th>Display name</Th>
+          <Th>Namespace</Th>
           <Th>Detected from</Th>
         </Tr>
       </Thead>
@@ -39,6 +40,7 @@ export function EntitiesTable({
               <PinDot color={pinColor.get(`entity:${e.id}`)} />
             </Td>
             <Td dataLabel="Display name">{e.display_name}</Td>
+            <Td dataLabel="Namespace">{e.namespace ?? ''}</Td>
             <Td dataLabel="Detected from" style={{ color: 'var(--dg-color-muted)' }}>
               {e.detected_from}
             </Td>

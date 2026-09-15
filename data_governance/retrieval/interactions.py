@@ -198,6 +198,8 @@ class EntityView:
     natural_key: str
     display_name: str | None
     detected_from: str | None
+    # A pod's Kubernetes namespace (migration 0020); None when not a pod.
+    namespace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -647,7 +649,7 @@ def get_entities(trace_id: str) -> GetEntitiesResult:
         if not _derived_tables_exist(tx):
             return GetEntitiesResult()
         rows = tx.fetch_all(
-            "SELECT id::text, kind, natural_key, display_name, detected_from "
+            "SELECT id::text, kind, natural_key, display_name, detected_from, namespace "
             "FROM entities "
             "WHERE id IN (SELECT DISTINCT entity_id FROM entity_spans "
             "WHERE trace_id = %s) "
@@ -658,7 +660,7 @@ def get_entities(trace_id: str) -> GetEntitiesResult:
             entities=[
                 EntityView(
                     id=r[0], kind=r[1], natural_key=r[2],
-                    display_name=r[3], detected_from=r[4],
+                    display_name=r[3], detected_from=r[4], namespace=r[5],
                 )
                 for r in rows
             ]
