@@ -1,8 +1,15 @@
 """Orchestration + write path for the interaction risk computation engine
-(issue #101).
+(issues #101/#158).
 
-``compute_interaction_risk`` is the engine's one directly-callable entry
-point (leg-ready-consumer wiring is deferred to issue #158):
+The engine is split at the transaction boundary (issue #158):
+``prepare_interaction_risk`` is the compute half — gather evidence, reuse or
+refresh the OPA policy decision (``evidence_fingerprint`` comparison), with
+NO transaction held across the OPA HTTP round-trip — returning the write
+half as a closure that runs inside the CALLER's transaction. The leg-ready
+consumer's observer drives that pair per ready leg, so the record write
+commits atomically with the stream's cursor advance.
+``compute_interaction_risk`` remains the self-contained entry point
+(prepare + write in an own transaction):
 
     gather evidence -> reuse or refresh the OPA policy decision
     (``evidence_fingerprint`` comparison) -> aggregate -> write a new
@@ -23,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Callable
 from decimal import Decimal
 
 import psycopg
@@ -31,8 +39,14 @@ from data_governance import db
 from data_governance.risk.engine import utils
 from data_governance.risk.engine.evidence import gather_evidence
 from data_governance.risk.engine.opa import OpaClient
+from data_governance.risk.rules.rego import FALLBACK_RULE_ID
 
-__all__ = ["compute_interaction_risk"]
+__all__ = ["RecordWrite", "compute_interaction_risk", "prepare_interaction_risk"]
+
+# The write half prepare_interaction_risk returns: runs the idempotency-checked
+# risk-record insert inside the transaction the CALLER owns (the leg-ready
+# consumer's per-leg delivery transaction — issue #158).
+RecordWrite = Callable[[db.Transaction], None]
 
 _MAX_ATTEMPTS = 2
 
@@ -139,32 +153,41 @@ def _decision_params(
 
 
 def _get_or_refresh_decision(
-    tx: db.Transaction,
     *,
     interaction_id: str,
     opa_client: OpaClient,
-    legs: list[utils.LegEvidence],
-    span_ids: list[str],
-    classifications: dict,
-    caller_entity_id: str | None,
-    callee_entity_id: str | None,
+    evidence,
 ) -> utils.PolicyDecision:
     """Reuse the cached decision when the evidence fingerprint is unchanged;
-    otherwise call OPA and persist a new decision version."""
-    fingerprint = utils.fingerprint(legs, classifications)
+    otherwise call OPA and persist a new decision version.
 
-    row = tx.fetch_one(_LATEST_DECISION_SQL, (interaction_id,))
+    No transaction is held across the OPA HTTP round-trip (issue #158): the
+    cache lookup and the decision insert each run in their own short
+    transaction, with the network call in between holding nothing. The
+    decision insert commits independently of any later risk-record write —
+    deliberately: the decision is a cache keyed by evidence fingerprint, so
+    if the record write later rolls back (leg re-delivered, ADR-0007), the
+    committed decision is simply reused on the retry with no second OPA
+    call.
+    """
+    fingerprint = utils.fingerprint(
+        evidence.legs, evidence.classifications, evidence.anchor
+    )
+
+    with db.transaction() as tx:
+        row = tx.fetch_one(_LATEST_DECISION_SQL, (interaction_id,))
     if row is not None:
         stored = _row_to_stored_decision(row)
         if stored.evidence_fingerprint == fingerprint:
             return stored.decision
 
     opa_input = utils.build_opa_input(
-        legs=legs,
-        span_ids=span_ids,
-        classifications=classifications,
-        caller_entity_id=caller_entity_id,
-        callee_entity_id=callee_entity_id,
+        legs=evidence.legs,
+        span_ids=evidence.span_ids,
+        classifications=evidence.classifications,
+        caller_entity_id=evidence.caller_entity_id,
+        callee_entity_id=evidence.callee_entity_id,
+        anchor=evidence.anchor,
     )
     opa_decision = opa_client.evaluate(
         interaction_id=interaction_id,
@@ -179,14 +202,15 @@ def _get_or_refresh_decision(
         confidence=opa_decision.confidence,
         policy_version=opa_decision.policy_version,
     )
-    tx.execute(
-        _INSERT_DECISION_SQL,
-        _decision_params(
-            interaction_id=interaction_id,
-            decision=decision,
-            evidence_fingerprint=fingerprint,
-        ),
-    )
+    with db.transaction() as tx:
+        tx.execute(
+            _INSERT_DECISION_SQL,
+            _decision_params(
+                interaction_id=interaction_id,
+                decision=decision,
+                evidence_fingerprint=fingerprint,
+            ),
+        )
     return decision
 
 
@@ -230,15 +254,25 @@ def _record_params(
     decision: utils.PolicyDecision,
 ) -> tuple[dict, dict]:
     """Build the params dict for both the insert and the idempotency
-    comparison, returned together so callers can't drift them apart."""
+    comparison, returned together so callers can't drift them apart.
+
+    ``triggered_rule_ids`` carries catalog rules only: the compiled bundle's
+    fallback decision reports :data:`FALLBACK_RULE_ID` in ``triggered_rules``
+    to say "nothing fired", and storing that sentinel would make every clean
+    interaction count as a rule firing downstream (the metrics rules-fired /
+    top-rules queries unnest this column; alerts name rules from it). The
+    decision cache (``interaction_policy_decisions``) keeps OPA's answer
+    verbatim — this is the one place the sentinel is interpreted.
+    """
     legs_evidenced = utils.legs_evidenced(legs)
     classification_summary = utils.classification_summary(classifications)
     confidence = utils.quantize_confidence(decision.confidence)
+    fired_rule_ids = [r for r in decision.triggered_rules if r != FALLBACK_RULE_ID]
     normalized = {
         "risk_level": decision.risk_level,
         "enforcement_type": decision.enforcement_type,
         "policy_event_count": 1,
-        "triggered_rule_ids": sorted(decision.triggered_rules),
+        "triggered_rule_ids": sorted(fired_rule_ids),
         "legs_evidenced": legs_evidenced,
         "classification_summary": (
             json.loads(json.dumps(classification_summary, sort_keys=True, default=str))
@@ -257,7 +291,7 @@ def _record_params(
         "risk_level": decision.risk_level,
         "enforcement_type": decision.enforcement_type,
         "policy_event_count": 1,
-        "triggered_rule_ids": decision.triggered_rules,
+        "triggered_rule_ids": fired_rule_ids,
         "legs_evidenced": legs_evidenced,
         "classification_summary": json.dumps(classification_summary, default=str),
         "opa_policy_versions_used": (
@@ -268,41 +302,60 @@ def _record_params(
     return params, normalized
 
 
-def _attempt(interaction_id: str, opa_client: OpaClient) -> None:
+def prepare_interaction_risk(
+    interaction_id: str, *, opa_client: OpaClient
+) -> RecordWrite:
+    """The compute half of the engine, run with NO transaction held across
+    the OPA round-trip (issue #158): gather evidence, reuse or refresh the
+    policy decision (fingerprint comparison; the refreshed decision commits
+    in its own short transaction — see :func:`_get_or_refresh_decision`),
+    and return the *write* half as a closure.
+
+    The returned closure runs inside the CALLER's transaction — the
+    leg-ready consumer passes its per-leg delivery transaction, so the risk
+    record insert commits atomically with the stream's cursor advance
+    (ADR-0007: a write failure rolls the cursor back and the leg is
+    re-delivered, never silently skipped). The closure re-checks idempotency
+    at write time (FR-DAS-014): identical to the latest stored version ⇒ no
+    insert, no NOTIFY.
+
+    Raises whatever gathering or deciding raises —
+    :class:`~.evidence.InteractionNotFoundError`, the typed
+    :class:`~.opa.OpaError` family — the caller owns failure semantics
+    (the leg-ready observer maps these onto hold/skip; see
+    ``data_governance/risk/engine/observer.py``).
+    """
     evidence = gather_evidence(interaction_id)
 
-    with db.transaction() as tx:
-        decision = _get_or_refresh_decision(
-            tx,
-            interaction_id=interaction_id,
-            opa_client=opa_client,
-            legs=evidence.legs,
-            span_ids=evidence.span_ids,
-            classifications=evidence.classifications,
-            caller_entity_id=evidence.caller_entity_id,
-            callee_entity_id=evidence.callee_entity_id,
-        )
+    decision = _get_or_refresh_decision(
+        interaction_id=interaction_id,
+        opa_client=opa_client,
+        evidence=evidence,
+    )
 
-        params, normalized = _record_params(
-            interaction_id=evidence.interaction_id,
-            trace_id=evidence.trace_id,
-            parent_interaction_id=None,
-            caller_entity_id=evidence.caller_entity_id,
-            callee_entity_id=evidence.callee_entity_id,
-            legs=evidence.legs,
-            classifications=evidence.classifications,
-            decision=decision,
-        )
+    params, normalized = _record_params(
+        interaction_id=evidence.interaction_id,
+        trace_id=evidence.trace_id,
+        parent_interaction_id=evidence.parent_interaction_id,
+        caller_entity_id=evidence.caller_entity_id,
+        callee_entity_id=evidence.callee_entity_id,
+        legs=evidence.legs,
+        classifications=evidence.classifications,
+        decision=decision,
+    )
 
+    def write(tx: db.Transaction) -> None:
         latest_row = tx.fetch_one(_LATEST_RISK_RECORD_SQL, (interaction_id,))
         if _normalized_latest_record(latest_row) == normalized:
             return
-
         tx.execute(_INSERT_RISK_RECORD_SQL, params)
+
+    return write
 
 
 def compute_interaction_risk(interaction_id: str, *, opa_client: OpaClient) -> None:
-    """Compute and persist the current risk record for *interaction_id*.
+    """Compute and persist the current risk record for *interaction_id* —
+    the self-contained entry point (prepare + write in an own transaction).
 
     Idempotent: if the freshly-computed record is identical to the latest
     stored version, nothing is written and no NOTIFY fires. Retries once on
@@ -314,7 +367,9 @@ def compute_interaction_risk(interaction_id: str, *, opa_client: OpaClient) -> N
     last_error: psycopg.errors.UniqueViolation | None = None
     for _attempt_number in range(_MAX_ATTEMPTS):
         try:
-            _attempt(interaction_id, opa_client)
+            write = prepare_interaction_risk(interaction_id, opa_client=opa_client)
+            with db.transaction() as tx:
+                write(tx)
             return
         except psycopg.errors.UniqueViolation as exc:
             last_error = exc

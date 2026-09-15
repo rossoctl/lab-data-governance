@@ -41,11 +41,30 @@ class Evidence:
     legs: list[utils.LegEvidence]
     span_ids: list[str]
     classifications: dict[str, Verdict | object]
+    # Issue #163 additions, defaulted and last so pre-existing construction
+    # sites (and tests) remain valid.
+    parent_interaction_id: str | None = None
+    anchor: utils.AnchorFacts | None = None
 
 
 _INTERACTION_SQL = (
-    "SELECT id, trace_id, caller_entity_id, callee_entity_id "
+    "SELECT id, trace_id, caller_entity_id, callee_entity_id, "
+    "parent_interaction_id "
     "FROM interactions WHERE id = %s"
+)
+
+# The interaction's anchor (request) span, as the sidecar interactions
+# algorithm assigns it (interaction_spans.role = 'anchor'; exactly one per
+# sidecar-derived interaction). Its attributes carry the wire facts issue
+# #163 feeds into the OPA input: destination host, scheme/path, direction,
+# validated principal. Ordered by seq for determinism should a non-sidecar
+# derivation ever write more than one anchor row.
+_ANCHOR_SQL = (
+    "SELECT s.attributes "
+    "FROM interaction_spans isp "
+    "JOIN spans s ON s.trace_id = isp.trace_id AND s.span_id = isp.span_id "
+    "WHERE isp.interaction_id = %s AND isp.role = 'anchor' "
+    "ORDER BY s.seq ASC LIMIT 1"
 )
 
 _LEGS_SQL = (
@@ -89,6 +108,36 @@ def _fetch_classification(tx: db.Transaction, content_hash: str) -> Verdict | No
     )
 
 
+def _str_or_none(value: object) -> str | None:
+    """A span attribute as a non-empty string, else ``None`` — a blank or
+    non-string value is an absent fact, never a fact of its own."""
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _fetch_anchor(tx: db.Transaction, interaction_id: str) -> utils.AnchorFacts | None:
+    """The wire facts of the interaction's anchor (request) span, or ``None``
+    when the interaction has no anchor span or the anchor carries none of the
+    sidecar's ``lineage.*`` facts (a non-sidecar derivation) — honest
+    absence, mirroring the classification sentinels."""
+    row = tx.fetch_one(_ANCHOR_SQL, (interaction_id,))
+    if row is None:
+        return None
+    attributes = row[0] or {}
+    facts = utils.AnchorFacts(
+        direction=_str_or_none(attributes.get("lineage.direction")),
+        peer_host=_str_or_none(attributes.get("lineage.peer.host")),
+        self_id=_str_or_none(attributes.get("lineage.self.id")),
+        url_scheme=_str_or_none(attributes.get("url.scheme")),
+        url_path=_str_or_none(attributes.get("url.path")),
+        principal_sub=_str_or_none(attributes.get("lineage.principal.sub")),
+    )
+    if facts == utils.AnchorFacts():
+        return None
+    return facts
+
+
 def _gather_classifications(
     tx: db.Transaction, legs: list[utils.LegEvidence]
 ) -> dict[str, Verdict | object]:
@@ -123,7 +172,9 @@ def gather_evidence(interaction_id: str) -> Evidence:
             trace_id=row[1],
             caller_entity_id=row[2],
             callee_entity_id=row[3],
+            parent_interaction_id=row[4],
             legs=legs,
             span_ids=_fetch_span_ids(tx, interaction_id),
             classifications=_gather_classifications(tx, legs),
+            anchor=_fetch_anchor(tx, interaction_id),
         )
