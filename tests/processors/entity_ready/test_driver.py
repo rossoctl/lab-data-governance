@@ -36,6 +36,8 @@ The drain tests run in-process against a migrated DB (fast), mirroring
 
 from __future__ import annotations
 
+import dataclasses
+
 import threading
 import time
 
@@ -241,14 +243,27 @@ def test_no_op_rederive_is_not_re_delivered(configured_db: str) -> None:
 
 
 def test_crash_mid_entity_re_processes_from_same_cursor(
-    configured_db: str,
+    configured_db: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ADR-0007 atomicity: the cursor advance commits in the SAME transaction as
     the per-entity delivery. A crash mid-entity rolls back the cursor advance, so
     the restart re-delivers that entity from the same cursor — never skipping it.
+
+    Pinned to fail-stop (``max_item_attempts=0``). The shared loop's default is
+    now to retry a failing item and then quarantine it, which is what keeps one
+    undeliverable entity from halting the stream — but propagation is what makes
+    the rollback observable at this boundary, and re-delivery from the durable
+    cursor is precisely the property under test here.
     """
     good = _insert_entity(configured_db, natural_key="good")
     _insert_entity(configured_db, natural_key="boom")
+
+    real_spec = driver._spec
+    monkeypatch.setattr(
+        driver,
+        "_spec",
+        lambda **kw: dataclasses.replace(real_spec(**kw), max_item_attempts=0),
+    )
 
     calls: list[int] = []
 

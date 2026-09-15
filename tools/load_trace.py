@@ -173,6 +173,21 @@ def shift_rows_to_now(
     return shifted, offset
 
 
+def _remap_id_refs(value: Any, ref_map: dict[str, str]) -> Any:
+    """Deep-copy *value*, replacing every string that is exactly a key of
+    *ref_map* with its mapped id. Non-matching strings and all other scalars are
+    returned unchanged. Used by :func:`_reid_rows` to carry id references inside
+    attributes / events / links onto the new ids.
+    """
+    if isinstance(value, str):
+        return ref_map.get(value, value)
+    if isinstance(value, dict):
+        return {k: _remap_id_refs(v, ref_map) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_remap_id_refs(v, ref_map) for v in value]
+    return value
+
+
 def _reid_rows(
     rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], str]:
@@ -188,14 +203,36 @@ def _reid_rows(
     One new 32-hex ``trace_id`` is minted; every distinct ``span_id`` is mapped to a
     new 16-hex id. ``parent_id`` is remapped through the *same* map when present so
     the parent/child tree (and thus the derived interactions) is preserved; a
-    missing/empty/root parent is left as-is. All other fields are untouched. The ids
-    only need to be unique, not reproducible, so ``secrets`` supplies the randomness.
+    missing/empty/root parent is left as-is. The ids only need to be unique, not
+    reproducible, so ``secrets`` supplies the randomness.
+
+    REFERENCES TO IDS ARE REMAPPED TOO. ``span_id`` and ``parent_id`` are not the
+    only places a span id appears: instrumentation also records ids *inside*
+    ``attributes``, ``events`` and ``links`` — a link's ``span_id``/``trace_id``
+    structurally, and attributes that point at another span by id. Rewriting the
+    identity while leaving those references pointing at the old ids produces a
+    trace that is internally inconsistent, and a consumer that reads such an
+    attribute and checks it against the span's own id sees a contradiction that
+    cannot occur in real data. So every string in those three fields that is
+    *exactly* an old span id or the old trace id is remapped through the same
+    map, at any nesting depth.
+
+    The match is deliberately whole-string, never substring: ids also occur inside
+    captured payload bodies (a serialized ``traceparent``, say), and those are
+    opaque content — rewriting them would corrupt a body the store may have
+    content-addressed. A body that mentions the old trace is harmless; a
+    structural reference to it is not.
     """
     new_trace_id = secrets.token_hex(16)  # 32 lowercase hex chars
     id_map = {
         span_id: secrets.token_hex(8)  # 16 lowercase hex chars
         for span_id in {r["span_id"] for r in rows}
     }
+    # Ids referenced from within a span's fields: span ids, plus every old trace
+    # id present (normally one; a mixed-trace capture is still handled).
+    ref_map = dict(id_map)
+    ref_map.update({r["trace_id"]: new_trace_id for r in rows})
+
     reidd: list[dict[str, Any]] = []
     for row in rows:
         new_row = dict(row)
@@ -204,6 +241,9 @@ def _reid_rows(
         parent = row.get("parent_id")
         if parent:  # non-empty / non-None: remap; root stays as-is
             new_row["parent_id"] = id_map.get(parent, parent)
+        for field in ("attributes", "events", "links"):
+            if row.get(field):
+                new_row[field] = _remap_id_refs(row[field], ref_map)
         reidd.append(new_row)
     return reidd, new_trace_id
 
