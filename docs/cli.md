@@ -43,13 +43,15 @@ vendored kit** from here, in the consumer's repo.
   parenting works on **both** sidecar modes.
 - **Attach tooling** — the reviewed **kit** that wires the plugin onto a running
   Deployment (originally cortex PR **#852**, depends on #761, follows the same
-  wire contract), now **vendored into this repo** at `deploy/lineage-attach/`.
-  `dg.sh namespace instrument` drives its own local copies rather than emitting
-  its own YAML — see the `instrument` section and
+  wire contract), now **vendored into this repo** at `deploy/lineage-attach/` and
+  extended with a **proxy** applier + generator (ADR-0033). `dg.sh namespace
+  instrument` drives its own local copies rather than emitting its own YAML — see
+  the `instrument` section and
   [ADR-0033](adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md).
-  The kit is **envoy-sidecar-only**, and `instrument` acts only on **no-sidecar**
-  entities (the kit injects an envoy sidecar); an entity that already has a
-  sidecar (proxy or envoy) is skipped (ADR-0032 Decision #2, revised).
+  On a **no-sidecar** entity `instrument` injects a lineage sidecar — a
+  lineage-only **proxy** by default, **envoy** when the namespace is already
+  envoy-configured; an entity that **already has a sidecar** gets
+  `lineage-telemetry` **appended in place** (best-effort, ADR-0033 owner-split).
 - **Consumer** — this repo's `feat/interactions-sidecar-algorithm` branch reads
   those spans (wire contract **v1.6.2** — `docs/sidecar-wire-contract.md`, kept
   byte-identical with cortex; the `parent.source` tracestate/wire/none minting
@@ -135,46 +137,50 @@ VAP-protected, so we never read or set it); when `<entity>` is given, select
 just that one by `app.kubernetes.io/name` and error if it is not an agent/tool
 in the namespace. Per-entity mode detection and mutation are identical whether
 one entity or all are targeted — a named entity is simply the one-element case.
-`instrument` wires lineage onto entities that have **no sidecar**, delegating
-entirely to the cortex #852 kit. An entity that already carries a sidecar
-(proxy or envoy) is **out of scope** — `dg.sh` detects it (including a
-webhook-injected one, via the live-Pod fallback) and **skips** it, mutating
-nothing. This is the kit-only, no-sidecar prerequisite ADR-0032 records
-(revised 2026-09-10 on live evidence — see below):
+`instrument` dispatches each entity by its **current sidecar state**, all
+auto-detected, no flag (the ADR-0033 owner-split, which supersedes ADR-0032's
+kit-only no-sidecar-only contract):
 
-| Entity's current sidecar | Action | Owner |
+| Entity's current state | Action | Owner |
 |---|---|---|
-| **none** (`rossoctl.io/inject: disabled`, e.g. agent-examples demo agents) | inject a lineage sidecar (envoy-sidecar shape + `lineage-telemetry` config), and — for a Python app — bake + attach the propagate-only shim | **#852 kit** (`sidecar-patch.sh` / `build-otel-shim.sh`) |
-| **envoy-sidecar** present | **skip** — already has a sidecar; not instrumented | — |
-| **proxy-sidecar** present | **skip** — already has a sidecar; not instrumented | — |
+| **no sidecar**, namespace **not** envoy-configured (`rossoctl.io/inject: disabled`, e.g. the agent-examples demo agents) | inject a lineage-only **proxy** sidecar (auth-free, `mode: proxy-sidecar`), + for a Python app the two-shim image | **dg.sh proxy applier** (`sidecar-patch-proxy.sh` / `build-otel-shim.sh`) |
+| **no sidecar**, namespace **already** envoy-configured | inject an **envoy** lineage sidecar (`mode: envoy-sidecar` + `lineage-telemetry`), + the two-shim image | **vendored envoy applier** (`sidecar-patch.sh` / `build-otel-shim.sh`) |
+| sidecar present, **no** `lineage-telemetry` in its pipeline | **append** `lineage-telemetry` in place (auth left as-is), best-effort + verify-after-roll | `dg.sh` in-place append |
+| sidecar present, `lineage-telemetry` **already** wired | **no-op** (idempotent) | — |
 
-The **kit is envoy-sidecar-only**: `attach-lineage.sh` hardcodes
-`mode: envoy-sidecar` and its patch adds `envoy-proxy` + `proxy-init` — and as
-of the current kit (`fbff6753`) `envoy-proxy` is a **native sidecar**: an
-`initContainer` with `restartPolicy: Always` (so it is up before the app
-container and stays up for the pod's life; requires k8s >= 1.29), not an
-ordinary container.
+"Already envoy-configured" is detected from the namespace — the presence of the
+platform `envoy-config` ConfigMap — not a flag. The default for a bare, ad-hoc
+namespace (the travel_advisor demo has no `envoy-config`) is therefore the
+**proxy** sidecar: it carries only the parsers + `lineage-telemetry` — **auth-free**
+(no `jwt-validation` / `token-exchange` / mTLS), so it does not 401 the demo's
+unauthenticated calls — and captures egress transparently via an **include-only
+iptables allowlist** (A2A `8080` + MCP `8000` by default; every other port stays
+direct — fail-safe). Both injected sidecars are **native sidecars** (an
+`initContainer` with `restartPolicy: Always`, so they are up before the app
+container and stay up for the pod's life; requires k8s >= 1.29). The vendored
+envoy applier's `attach-lineage.sh` hardcodes `mode: envoy-sidecar`; the proxy
+applier's `attach-lineage-proxy.sh` emits `mode: proxy-sidecar`.
 
-**Instrumenting an existing sidecar in place.** An earlier design (ADR-0032,
-revised) *skipped* any entity that already had a sidecar, because live validation
-found in-place editing unsafe: the platform-injected proxy sidecar is the
-**enforcing** sidecar (`jwt`/`token-exchange`) and 401s the demo's unauthenticated
+**Instrumenting an existing sidecar in place.** An earlier design (ADR-0032)
+*skipped* any entity that already had a sidecar, because live validation found
+in-place editing risky: the platform-injected proxy sidecar can be the
+**enforcing** sidecar (`jwt`/`token-exchange`) that 401s the demo's unauthenticated
 MCP/A2A calls, and an in-place edit of a **webhook-injected** pipeline ConfigMap is
 **clobbered by the operator** (the per-workload CM is Deployment-owned and
 regenerated on the roll `instrument` triggers).
 
-**ADR-0033 (accepted 2026-09-14) revises this**: `instrument` re-enables an
-in-place **append** of the `lineage-telemetry` plugin to an existing sidecar's
-pipeline (leaving its auth plugins exactly as-is), as a **best-effort** step — it
-**verifies after the roll** that the plugin is actually live and **warns loudly**
-when the operator clobbered it, or when the existing pipeline is enforcing (so
-lineage will record 401s for unauthenticated callers). ADR-0033 also flips the
-injected default for a *no-sidecar* entity from envoy to a **lineage-only `proxy`
-sidecar** (envoy only when the namespace is already envoy-configured), and vendors
-the attach capability into `deploy/lineage-attach/` so `dg.sh` needs no cortex
-checkout (`--cortex-local-path` retired). See ADR-0033 for the full owner-split and
-rationale; the durable-in-place alternatives (operator-rendered / skip-injected)
-are recorded there as future work.
+**ADR-0033 (accepted 2026-09-14) revised this to the owner-split above**:
+`instrument` now **appends** the `lineage-telemetry` plugin to an existing
+sidecar's pipeline (leaving its auth plugins exactly as-is — additive, never
+strip), as a **best-effort** step. It **verifies after the roll** that the plugin
+is actually live and **warns loudly** when the operator clobbered it, or when the
+existing pipeline is enforcing (so lineage will record 401s for unauthenticated
+callers). It also flips the injected default for a *no-sidecar* entity from envoy
+to the auth-free **proxy** sidecar (envoy only when the namespace is already
+envoy-configured), and vendors the attach capability into `deploy/lineage-attach/`
+so `dg.sh` needs no cortex checkout (`--cortex-local-path` retired). See ADR-0033
+for the full rationale; the durable-in-place alternatives (operator-rendered /
+skip-injected) are recorded there as future work.
 
 The plugin points `otel_endpoint` at the platform collector
 (`otel-collector.rossoctl-system.svc.cluster.local:4317`); the existing
@@ -245,20 +251,22 @@ which reverses ADR-0032's drive-an-external-checkout arrangement).
   incompatibility (a stale kit, an ahead kit, a wrong image, config-key skew) by
   its symptom, not by guessing at versions (ADR-0032 Decision #4; see also the
   version-skew failure mode in the root `CLAUDE.md`);
-- the kit's own **six read-only preconditions** (`sidecar-patch.sh`, in order:
-  `require_deployment` (Deployment exists); `require_envoy_config` (platform
-  `envoy-config` ConfigMap in the namespace); `refuse_name_collision` (no
-  container/init-container already named `envoy-proxy`/`proxy-init`);
-  `refuse_port_collision` (no container declares 9090/15123/15124);
-  `refuse_volume_collision` (no volume already named
-  `envoy-config`/`authbridge-runtime` — volumes merge by name, so the merge
-  would silently repoint the owner's mount); `require_app_container`
-  (`APP_CONTAINER` names a real container)) are the source of truth for the
-  no-sidecar row `instrument` acts on — `dg.sh` does **not** re-implement them
-  (ADR-0032 Decision #3). (`refuse_name_collision`/`refuse_volume_collision` also
-  mean a stray attempt to attach onto an entity that already has the kit's
-  sidecar fails cleanly, but `dg.sh` never reaches the kit for an
-  already-sidecarred entity — it skips it first.)
+- the applier's own **read-only preconditions** (the envoy applier
+  `sidecar-patch.sh`, in order: `require_deployment` (Deployment exists);
+  `require_envoy_config` (platform `envoy-config` ConfigMap in the namespace);
+  `refuse_name_collision` (no container/init-container already named
+  `envoy-proxy`/`proxy-init`); `refuse_port_collision` (no container declares
+  9090/15123/15124); `refuse_volume_collision` (no volume already named
+  `envoy-config`/`authbridge-runtime` — volumes merge by name, so the merge would
+  silently repoint the owner's mount); `require_app_container` (`APP_CONTAINER`
+  names a real container)) are the source of truth for the **injected** no-sidecar
+  rows `instrument` drives — `dg.sh` does **not** re-implement them. The proxy
+  applier `sidecar-patch-proxy.sh` mirrors these for the proxy path, minus
+  `require_envoy_config` (the auth-free proxy mounts no `envoy-config`) and
+  guarding the proxy's own ports (8081/8082/9091). (These collision guards mean a
+  stray attempt to inject onto an entity that already has a sidecar would fail
+  cleanly, but `dg.sh` never reaches an applier for an already-sidecarred entity
+  — it **appends in place** instead.)
 
 There is **no `reset`** in v1. To undo, delete/redeploy the namespace's
 workloads (the natural escape hatch on a dev cluster). Activation is additive
@@ -312,12 +320,16 @@ single entity.
 ## Out of scope for v1
 
 - `reset` / un-instrument (namespace activation is one-way; ADR-0031).
-- Switching a namespace's sidecar mode (`proxy-sidecar` ↔ `envoy-sidecar`) —
-  activation never touches operator mode state; it only injects an envoy
-  lineage sidecar onto **no-sidecar** entities and skips the rest.
-- Instrumenting an entity that **already has a sidecar** (proxy or envoy) —
-  out of scope; `instrument` skips it. The supported lineage path is a bare
-  no-sidecar deploy followed by `instrument` (kit injects envoy).
+- Switching a namespace's sidecar **mode** (`proxy-sidecar` ↔ `envoy-sidecar`) of
+  an *existing* sidecar — activation never touches operator mode state. It injects
+  a sidecar onto a **no-sidecar** entity (proxy by default; envoy when the
+  namespace is already envoy-configured) and **appends** `lineage-telemetry` to an
+  existing sidecar's pipeline, but never mode-switches one already in place.
+- **Durable** in-place activation of an operator-injected sidecar — the append is
+  **best-effort**: an operator that regenerates the per-workload ConfigMap on the
+  roll clobbers it (`instrument` verifies after the roll and warns loudly rather
+  than claiming a success it did not achieve). The durable alternatives
+  (operator-rendered plugin / skip-injected) are ADR-0033 future work.
 - Any change to the cortex *producer* (the `lineage-telemetry` plugin / sidecar
   image lives in cortex); `dg.sh` drives the vendored attach kit and emits no
   YAML of its own.
@@ -332,10 +344,13 @@ single entity.
 - `deploy/patch-rossoctl-collector.sh` — the collector tee, with `--revert`
   (`RECEIVER_ENDPOINT` already defaults to the receiver's gRPC service DNS).
 - `deploy/k8s/*.yaml` — the component manifests.
-- **`deploy/lineage-attach/` (vendored from cortex PR #852)** — the producer-side
-  attach kit `namespace instrument` drives, now shipping in this repo:
-  `sidecar-patch.sh` (live applier + six read-only preconditions + a pre-apply
-  `--dry-run=server` version guard + the printed reverse-patch back-out line),
-  `attach-lineage.sh` (the generator — envoy-sidecar shape), `build-otel-shim.sh`
-  (the propagate-only Python shim). `dg.sh` emits no YAML of its own; it
-  instruments only no-sidecar entities and skips any that already have a sidecar.
+- **`deploy/lineage-attach/` (vendored from cortex PR #852, extended for ADR-0033)**
+  — the producer-side attach kit `namespace instrument` drives, now shipping in
+  this repo: `sidecar-patch.sh` (the **envoy** live applier + read-only
+  preconditions + a pre-apply `--dry-run=server` version guard + the printed
+  reverse-patch back-out line), `sidecar-patch-proxy.sh` (the **proxy** live
+  applier — its ADR-0033 sibling), `attach-lineage.sh` / `attach-lineage-proxy.sh`
+  (the envoy / proxy generators), `build-otel-shim.sh` (the two-shim bake).
+  `dg.sh` emits no YAML of its own; it injects onto no-sidecar entities (proxy by
+  default, envoy when the namespace is envoy-configured) and **appends** lineage
+  in place onto an entity that already has a sidecar.

@@ -3,18 +3,12 @@
 A deliberately SMALL set of pure-text assertions over the tracked Markdown — no
 cluster, no subprocess. Their job is to catch the code/doc divergence class that
 review keeps missing because the prose reads plausibly: the docs must present
-``dg.sh`` with the right verb surface, cross-link the design doc + BOTH ADRs, and
-describe the SHIPPED ``instrument`` contract — kit-only, no-sidecar-only (any
-existing sidecar is skipped), per ADR-0032 Decision #2 (revised). The retired
-three-row / edit-in-place table must not reappear as current behaviour.
-
-This file was trimmed on the code-review that fixed that divergence: the earlier
-version's key assertion only checked that "proxy-sidecar"/"envoy-only" *appeared*
-— which the STALE three-row text satisfied, so it passed while the docs were
-wrong. The negative assertion below (no in-place row, no egressEnforcement
-warning) is the guard that would actually have caught it. Brittle
-incidental-string / ordering checks were dropped: they gave false confidence and
-duplicate what review covers.
+``dg.sh`` with the right verb surface, cross-link the design doc + the ADRs, and
+describe the SHIPPED ``instrument`` contract — the ADR-0033 owner-split (#245):
+a no-sidecar entity is INJECTED (proxy by default, envoy when the namespace is
+already envoy-configured), and an entity that already has a sidecar is APPENDED
+to in place (best-effort) rather than skipped. The retired ADR-0032 "skip any
+existing sidecar" / no-sidecar-only text must not stand as current behaviour.
 
 These match the ``pathlib`` + ``read_text`` conventions the rest of
 ``tests/deploy/`` uses (see ``test_dg_sh_component.py``'s ``REPO_ROOT``).
@@ -32,6 +26,7 @@ K8S_README = REPO_ROOT / "deploy" / "k8s" / "README.md"
 DESIGN_DOC = REPO_ROOT / "docs" / "cli.md"
 ADR_0031 = REPO_ROOT / "docs" / "adr" / "0031-non-reversible-namespace-lineage-activation.md"
 ADR_0032 = REPO_ROOT / "docs" / "adr" / "0032-dg-sh-builds-on-cortex-lineage-attach-kit.md"
+ADR_0033 = REPO_ROOT / "docs" / "adr" / "0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md"
 
 
 # The deploy playbook = the k8s README (the file README.md points at for "the
@@ -51,7 +46,7 @@ def _read(p: Path) -> str:
 
 
 def test_design_docs_exist() -> None:
-    for p in (DESIGN_DOC, ADR_0031, ADR_0032):
+    for p in (DESIGN_DOC, ADR_0031, ADR_0032, ADR_0033):
         assert p.is_file(), f"cross-linked design doc missing: {p}"
 
 
@@ -87,50 +82,49 @@ def test_playbook_cross_links_design_doc() -> None:
     assert "cli.md" in _read(PLAYBOOK), "deploy playbook must link docs/cli.md"
 
 
-def test_playbook_cross_links_both_adrs() -> None:
-    """ADR-0031 (why non-reversible / no mode switch) AND ADR-0032 (why build on
-    the cortex kit) are both discoverable from the playbook."""
+def test_playbook_cross_links_the_adrs() -> None:
+    """ADR-0031 (why non-reversible / no mode switch) AND ADR-0033 (the vendored,
+    proxy-default owner-split that superseded ADR-0032) are both discoverable from
+    the playbook."""
     text = _read(PLAYBOOK)
     assert "0031-non-reversible-namespace-lineage-activation.md" in text, (
         "deploy playbook must link ADR-0031"
     )
-    assert "0032-dg-sh-builds-on-cortex-lineage-attach-kit.md" in text, (
-        "deploy playbook must link ADR-0032"
+    assert "0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md" in text, (
+        "deploy playbook must link ADR-0033 (the current instrument contract)"
     )
 
 
 # ---------------------------------------------------------------------------
 # The load-bearing guard: the playbook describes the SHIPPED instrument contract
-# (kit-only, no-sidecar-only; existing sidecars skipped — ADR-0032 Decision #2,
-# revised), NOT the retired three-row edit-in-place table.
+# — the ADR-0033 owner-split (#245). A no-sidecar entity is INJECTED (proxy by
+# default; envoy when the namespace is already envoy-configured); an entity that
+# ALREADY has a sidecar is APPENDED to in place (best-effort). The retired
+# ADR-0032 "skip any existing sidecar" / no-sidecar-only text must not stand.
 # ---------------------------------------------------------------------------
 
 
-def test_playbook_notes_instrument_is_no_sidecar_only_and_skips_existing() -> None:
+def test_playbook_notes_instrument_owner_split() -> None:
     text = _read(PLAYBOOK)
     low = text.lower()
-    # instrument acts on no-sidecar entities only …
-    assert "no-sidecar" in low or "no sidecar" in low, (
-        "must note instrument wires lineage onto no-sidecar entities only"
+    # The default no-sidecar injection is the PROXY sidecar …
+    assert "proxy" in low, "must document the default proxy lineage sidecar"
+    # … envoy is the alternative when the namespace is already envoy-configured.
+    assert "envoy" in low, "must name the envoy alternative"
+    # … and an existing sidecar is APPENDED to in place, not skipped.
+    assert re.search(r"append|in[- ]place", low), (
+        "must document the in-place append onto an entity that already has a sidecar"
     )
-    # … and skips any entity that already has a sidecar (proxy or envoy).
-    assert re.search(r"skip", low), (
-        "must note that an entity that already has a sidecar is skipped"
+    # The retired ADR-0032 contract must NOT stand as current behaviour: a claim
+    # that instrument acts on no-sidecar entities ONLY, or that it SKIPS any
+    # entity that already has a sidecar. (Prose explaining the HISTORY — that an
+    # earlier design skipped, now revised — is fine; a current "skips existing
+    # sidecars" / "no-sidecar only" contract is not.)
+    assert not re.search(r"no-sidecar (entities )?only|only.{0,20}no[- ]sidecar", low), (
+        "the retired no-sidecar-only contract must not stand as current behaviour "
+        "(ADR-0033 owner-split: existing sidecars are appended to, not skipped)"
     )
-    assert "proxy" in low and "envoy" in low, (
-        "must name both sidecar types (proxy/envoy) that are skipped"
-    )
-    # The retired three-row remnant must NOT reappear as CURRENT behaviour. The
-    # tell of the old table is a "-in-place" ROW label (e.g. "proxy-sidecar-in-place"
-    # / "envoy-sidecar-in-place") or a claim that instrument WARNS on
-    # egressEnforcement: none (that warning went away with the proxy row —
-    # ADR-0032 Decision #3). Prose explaining WHY an in-place edit was rejected is
-    # fine; a documented in-place row or warning path is not.
-    assert not re.search(r"-in-place|sidecar in place", low), (
-        "the retired in-place-edit row must not be documented as current behaviour "
-        "(ADR-0032 Decision #2 revised it to no-sidecar-only)"
-    )
-    assert not re.search(r"instrument\b[^.]*\bwarn", low), (
-        "the retired egressEnforcement warning path must not be documented "
-        "(ADR-0032 Decision #3: it went away with the proxy row)"
+    assert not re.search(r"skip(s|ped)?\b[^.\n]{0,60}\b(already has a sidecar|existing sidecar|proxy or envoy)", low), (
+        "the retired 'skip any existing sidecar' contract must not stand as "
+        "current behaviour (ADR-0033 appends in place)"
     )
