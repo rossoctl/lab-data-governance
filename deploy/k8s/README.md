@@ -28,7 +28,7 @@ verbs and adds namespace lineage activation:
 ./deploy/dg.sh component uninstall   # the inverse; --keep-data preserves the Postgres PVC
 
 ./deploy/dg.sh namespaces list                              # user namespaces
-./deploy/dg.sh --cortex-local-path <cortex> namespace <ns> instrument [<entity>]
+./deploy/dg.sh namespace <ns> instrument [<entity>]         # activate lineage (vendored kit)
 ./deploy/dg.sh namespace <ns> status [<entity>]             # read-only: did activation take?
 ```
 
@@ -44,10 +44,12 @@ The design and its boundary decisions live in
 [`../../docs/cli.md`](../../docs/cli.md),
 [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.md)
 (namespace activation is **non-reversible** and **mode-preserving** — no
-`reset`, no sidecar-mode switch in v1), and
+`reset`, no sidecar-mode switch in v1),
 [ADR-0032](../../docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md)
-(`instrument` drives the cortex lineage-attach kit rather than a vendored
-generator).
+(`instrument` drives the lineage-attach kit rather than emitting its own YAML),
+and [ADR-0033](../../docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md)
+(which supersedes ADR-0032: the kit is now **vendored** into
+`deploy/lineage-attach/`, retiring `--cortex-local-path`).
 
 ### Namespace lineage activation (`dg.sh namespace instrument`)
 
@@ -60,18 +62,16 @@ read-only partner `dg.sh namespace <ns> status [<entity>]` reports, per entity,
 sidecar presence, sidecar type, and whether the `lineage-telemetry` plugin is
 wired. See ADR-0031 for why.
 
-`instrument` — and **only** `instrument` — needs a cortex checkout on disk,
-passed with `--cortex-local-path <dir>` (or the `CORTEX_LOCAL_PATH` env var).
-`dg.sh` locates the lineage-attach kit under
-`<dir>/authbridge/lineage-attach/`; a missing path or an absent kit is a
-**refuse-and-mutate-nothing preflight** (it fails loud and changes nothing). The
-component verbs (`install`/`uninstall`/`status`) and `namespace status` never
-touch cortex.
+`instrument` drives the lineage-attach kit **vendored into this repo** at
+`deploy/lineage-attach/` — no cortex checkout, and no flag to point at one
+(ADR-0033 retired `--cortex-local-path`). If that vendored kit is missing or
+incomplete (a broken checkout), `instrument` is a
+**refuse-and-mutate-nothing preflight** (it fails loud and changes nothing).
 
 `instrument` wires lineage onto **no-sidecar entities only**, delegated wholesale
-to the cortex kit, which injects an envoy lineage sidecar (and, for a Python app,
-bakes the propagate-only shim). Any entity that **already has a sidecar** — proxy
-or envoy, template- or webhook-injected — is **skipped, mutating nothing**
+to the vendored kit, which injects an envoy lineage sidecar (and, for a Python
+app, bakes the propagate-only shim). Any entity that **already has a sidecar** —
+proxy or envoy, template- or webhook-injected — is **skipped, mutating nothing**
 (ADR-0032). Retrofitting lineage onto an existing sidecar is not a supported
 route: the platform's enforcing proxy sidecar 401s the demo's plain MCP/A2A
 calls, and an in-place edit of a webhook-injected (operator-owned) pipeline
@@ -95,9 +95,9 @@ trace in the UI:
 2. `./deploy/dg.sh component install`.
 3. Install the agents/tools (via the rossoctl UI, or an `agent-examples`-style
    deploy — **install only**, do not run them yet).
-4. `./deploy/dg.sh --cortex-local-path <cortex-checkout> namespace <ns> instrument`
-   on the namespace holding those workloads — the path locates the cortex
-   lineage-attach kit. (Scope to one entity by appending its
+4. `./deploy/dg.sh namespace <ns> instrument` on the namespace holding those
+   workloads — the lineage-attach kit is vendored into this repo, so there is no
+   cortex checkout to point at. (Scope to one entity by appending its
    `app.kubernetes.io/name`.)
 5. Run the agents.
 6. Observe the resulting traces in the data-governance UI at

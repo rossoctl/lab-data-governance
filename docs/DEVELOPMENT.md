@@ -62,9 +62,12 @@ uv run pytest
 The sidecar-based lineage pipeline: the AuthBridge lineage sidecar captures each
 agent turn as two facts-only spans per HTTP exchange, the interactions processor
 derives them with `INTERACTIONS_ALGORITHM=sidecar`, and the DG UI renders the
-per-request interaction forest. The producer side (the AuthBridge sidecar plugin
-+ the lineage-attach kit with its own runbook) lives in the sibling `cortex`
-repo under `authbridge/lineage-attach/`; the wire between the two is
+per-request interaction forest. The AuthBridge sidecar plugin (the producer)
+lives in the sibling `cortex` repo, while the **lineage-attach kit** that wires
+it onto a workload (originally cortex PR #852) is **vendored into this repo** at
+[`../deploy/lineage-attach/`](../deploy/lineage-attach/) — see
+[ADR-0033](adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md).
+The wire between producer and consumer is
 [`sidecar-wire-contract.md`](sidecar-wire-contract.md).
 
 ## Loading a trace or a fixture

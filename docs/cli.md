@@ -8,14 +8,13 @@ agents and tools in a namespace so their traffic shows up in the
 data-governance UI — all drivable from **one script in this repo**.
 
 The *component* lifecycle is fully self-contained here. The *namespace
-activation* step reaches into the cortex **lineage-attach kit** (PR #852,
-`authbridge/lineage-attach/`) — the producer-side attach tooling lives in
-cortex, and `dg.sh` locates it in a cortex checkout the operator points it at
-with `--cortex-local-path` (see [ADR-0032](adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md)).
-An earlier draft of this design aimed to keep `dg.sh` free of any cortex
-dependency by vendoring its own generator; that goal was **retired** — the kit
-is a reviewed, input-validating, hardened generator we should consume rather
-than re-implement (ADR-0032, Decision #1).
+activation* step drives the **lineage-attach kit** (originally cortex PR #852)
+**vendored into this repo** at `deploy/lineage-attach/` — the reviewed,
+input-validating producer-side attach tooling ships as `dg.sh`'s own local
+copies, so no cortex checkout is required for any verb
+([ADR-0033](adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md),
+which supersedes [ADR-0032](adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md)
+and retires the `--cortex-local-path` flag that pointed at an external checkout).
 
 Today (before this script):
 
@@ -30,7 +29,7 @@ Today (before this script):
 
 `dg.sh` folds the component lifecycle into three verbs
 (`install`/`uninstall`/`status`) and adds namespace activation that **drives the
-cortex kit** from here, in the consumer's repo.
+vendored kit** from here, in the consumer's repo.
 
 ## Background: how the pieces fit
 
@@ -42,14 +41,15 @@ cortex kit** from here, in the consumer's repo.
   cross-pod parenting). The plugin is registered into **both** the
   `authbridge-envoy` and `authbridge-proxy` binaries, and with 760 in, its
   parenting works on **both** sidecar modes.
-- **Attach tooling** — cortex PR **#852** (`authbridge/lineage-attach/`, depends
-  on #761, follows the same wire contract): the reviewed **kit** that wires the
-  plugin onto a running Deployment. `dg.sh namespace instrument` drives it
-  rather than emitting its own YAML — see the `instrument` section and
-  [ADR-0032](adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md). The kit is
-  **envoy-sidecar-only**, and `instrument` acts only on **no-sidecar** entities
-  (the kit injects an envoy sidecar); an entity that already has a sidecar
-  (proxy or envoy) is skipped (ADR-0032 Decision #2, revised).
+- **Attach tooling** — the reviewed **kit** that wires the plugin onto a running
+  Deployment (originally cortex PR **#852**, depends on #761, follows the same
+  wire contract), now **vendored into this repo** at `deploy/lineage-attach/`.
+  `dg.sh namespace instrument` drives its own local copies rather than emitting
+  its own YAML — see the `instrument` section and
+  [ADR-0033](adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md).
+  The kit is **envoy-sidecar-only**, and `instrument` acts only on **no-sidecar**
+  entities (the kit injects an envoy sidecar); an entity that already has a
+  sidecar (proxy or envoy) is skipped (ADR-0032 Decision #2, revised).
 - **Consumer** — this repo's `feat/interactions-sidecar-algorithm` branch reads
   those spans (wire contract **v1.6.2** — `docs/sidecar-wire-contract.md`, kept
   byte-identical with cortex; the `parent.source` tracestate/wire/none minting
@@ -73,22 +73,23 @@ dg.sh                                              # → component status (no ar
 dg.sh component  [install|uninstall|status]
 dg.sh namespaces [list]
 dg.sh namespace  <ns> [instrument|status] [<entity>]
-
-  --cortex-local-path <dir>   # (env CORTEX_LOCAL_PATH) path to a cortex checkout;
-                              # `instrument` locates the #852 kit under it. Required
-                              # for `instrument`; unused by the other verbs.
 ```
+
+There are **no global options**: the lineage-attach kit is vendored into this
+repo (`deploy/lineage-attach/`), so `instrument` needs no path to an external
+checkout. The `--cortex-local-path` / `CORTEX_LOCAL_PATH` option that pointed at
+a cortex checkout was **retired** (ADR-0033); passing it is now an unknown-option
+usage error.
 
 The optional `<entity>` on `instrument` and `status` scopes the verb to a
 single agent or tool (by `app.kubernetes.io/name`); omitted, the verb acts on
 **every** agent/tool in the namespace. An `<entity>` that does not resolve to
 an agent/tool in `<ns>` is an error (fail loud, do not no-op).
 
-`--cortex-local-path` (or `CORTEX_LOCAL_PATH`) tells `instrument` where the
-cortex lineage-attach kit lives. `dg.sh` resolves the kit under
-`<dir>/authbridge/lineage-attach/` and refuses — mutating nothing — if the path
-or the kit's scripts are absent. It is only consulted by `instrument`; the
-component verbs, `namespaces list`, and `namespace status` never touch cortex.
+`instrument` runs `dg.sh`'s own vendored kit under `deploy/lineage-attach/`
+(overridable in tests via `DG_LINEAGE_ATTACH_DIR`) and refuses — mutating
+nothing — if that vendored kit is missing or incomplete (a broken-checkout
+invariant). No verb requires a cortex checkout.
 
 ### `dg.sh component` — REVERSIBLE
 
@@ -194,18 +195,19 @@ trace and N fragments for the demo target. For an entity that instruments
 itself, the kit's bake interlock refuses the shim and `dg.sh` attaches capture
 only.
 
-**How `dg.sh` reaches the kit.** `dg.sh` resolves the kit scripts under
-`$CORTEX_LOCAL_PATH/authbridge/lineage-attach/` and calls
-`sidecar-patch.sh` / `build-otel-shim.sh` per entity, passing `NAMESPACE`,
+**How `dg.sh` reaches the kit.** `dg.sh` runs the **vendored** kit scripts under
+`deploy/lineage-attach/` (overridable in tests via `DG_LINEAGE_ATTACH_DIR`) and
+calls `sidecar-patch.sh` / `build-otel-shim.sh` per entity, passing `NAMESPACE`,
 `DEPLOY`, `SELF_ID`, `APP_CONTAINER`, `APP_IMAGE`, `SIDECAR_IMAGE`,
 `PROXY_INIT_IMAGE`, `OTEL_ENDPOINT` through the kit's documented environment
-contract. It does **not** copy or vendor the kit (ADR-0032 Decision #1).
+contract. The kit is vendored **as-is** into this repo (ADR-0033 Decision #1,
+which reverses ADR-0032's drive-an-external-checkout arrangement).
 
 **Preflights** (fail loud, never guess):
 
-- **the kit is resolvable** — `--cortex-local-path`/`CORTEX_LOCAL_PATH` is set
-  and `authbridge/lineage-attach/{attach-lineage,sidecar-patch,build-otel-shim}.sh`
-  exist under it; otherwise refuse, mutating nothing;
+- **the vendored kit is intact** — `deploy/lineage-attach/{attach-lineage,`
+  `sidecar-patch,build-otel-shim}.sh` exist and are executable; otherwise refuse,
+  mutating nothing (a broken-checkout invariant, not a missing-path error);
 - the component must be installed and the collector tee present (a `dg.sh`-side
   check the kit does not make — it points anywhere it is told);
 - a plugin-bearing sidecar image must be resolvable on the cluster — the cortex
@@ -298,8 +300,8 @@ single entity.
 2. `dg.sh component install`.
 3. Install agents/tools (via the rossoctl UI, or an `agent-examples`-style
    deploy — **install only**, do not run yet).
-4. `dg.sh --cortex-local-path <cortex-checkout> namespace <ns> instrument` on
-   the namespace holding those workloads (the path locates the #852 kit).
+4. `dg.sh namespace <ns> instrument` on the namespace holding those workloads
+   (the kit is vendored into this repo — no cortex checkout to point at).
 5. Run the agents.
 6. Observe the resulting traces in the data-governance UI
    (`http://dg.localtest.me:8080`).
@@ -313,11 +315,12 @@ single entity.
 - Instrumenting an entity that **already has a sidecar** (proxy or envoy) —
   out of scope; `instrument` skips it. The supported lineage path is a bare
   no-sidecar deploy followed by `instrument` (kit injects envoy).
-- Any change to the cortex producer or the cortex kit (plugin/image/kit live in
-  cortex; `dg.sh` drives the kit and emits no YAML of its own).
-- Vendoring or forking the #852 kit — `dg.sh` calls it from a cortex checkout
-  the operator provides (ADR-0032); keeping a copy in step with upstream is not
-  a job `dg.sh` takes on.
+- Any change to the cortex *producer* (the `lineage-telemetry` plugin / sidecar
+  image lives in cortex); `dg.sh` drives the vendored attach kit and emits no
+  YAML of its own.
+- Keeping the vendored kit forever in lock-step with cortex upstream — the copy
+  under `deploy/lineage-attach/` is owned here now (ADR-0033); it is re-synced
+  deliberately, not automatically tracked.
 
 ## Reused building blocks
 
@@ -326,8 +329,8 @@ single entity.
 - `deploy/patch-rossoctl-collector.sh` — the collector tee, with `--revert`
   (`RECEIVER_ENDPOINT` already defaults to the receiver's gRPC service DNS).
 - `deploy/k8s/*.yaml` — the component manifests.
-- **cortex `authbridge/lineage-attach/` (PR #852)** — the producer-side attach
-  kit `namespace instrument` drives, located via `--cortex-local-path`:
+- **`deploy/lineage-attach/` (vendored from cortex PR #852)** — the producer-side
+  attach kit `namespace instrument` drives, now shipping in this repo:
   `sidecar-patch.sh` (live applier + six read-only preconditions + a pre-apply
   `--dry-run=server` version guard + the printed reverse-patch back-out line),
   `attach-lineage.sh` (the generator — envoy-sidecar shape), `build-otel-shim.sh`
