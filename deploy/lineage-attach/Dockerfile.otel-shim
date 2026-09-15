@@ -1,4 +1,4 @@
-# Propagate-only OpenTelemetry shim for an uninstrumented Python app image.
+# Two-shim OpenTelemetry lineage image for an uninstrumented Python app.
 #
 # Auto-instrumentation is layered ON TOP of the app image so the app carries
 # the W3C traceparent through itself: extract on the inbound ASGI/Starlette/
@@ -6,11 +6,18 @@
 # is exported (the hook pins every exporter to `none`); the sidecar does the
 # capture. Neither the app's source nor its command is touched.
 #
-# Activation is environment, not command: a site-packages hook (`.pth` +
-# `_lineage_propagate.py`, see lineage-propagate-hook.py) runs stock
-# auto-instrumentation at interpreter start ONLY when LINEAGE_PROPAGATE=1 is
-# set — the same attach shape as JAVA_TOOL_OPTIONS / NODE_OPTIONS. Without it
-# the app runs exactly as on its base: no OpenTelemetry module loads.
+# TWO complementary shims are installed (ADR-0033 "One trace needs two shims"):
+#   * the ACTIVATION hook (`_lineage_propagate`, from lineage-propagate-hook.py):
+#     runs stock auto-instrumentation at interpreter start ONLY when
+#     LINEAGE_PROPAGATE=1 — the same attach shape as JAVA_TOOL_OPTIONS /
+#     NODE_OPTIONS. Without it the app runs exactly as on its base: no
+#     OpenTelemetry module loads.
+#   * the TURN-SPAN shim (`rossoctl_turnspan`): one span per HTTP request scope so
+#     every outbound call in a turn shares ONE trace-id, plus an MCP tool-call
+#     re-attach. Gated on ROSSOCTL_TURNSPAN (default on).
+# They ship in ONE image because the turn span WITHOUT the activation hook's
+# initialize() leaves httpx instrumentation OFF and fragments a turn WORSE than
+# the no-shim baseline. Baking both here makes that trap unreachable.
 #
 # One recipe for every app: instrumentors target libraries, and only the ones
 # the app imports activate.
@@ -75,11 +82,29 @@ RUN uv pip install --no-cache --python "${VENV_PYTHON}" --system --break-system-
 # introduced fails the BUILD instead of surfacing as an ImportError in the
 # cluster after the attach, where it would look like the sidecar's fault.
 RUN uv pip check --python "${VENV_PYTHON}" --system
-# The hook, into the same environment: `site` imports every .pth at
-# interpreter start; the module no-ops unless LINEAGE_PROPAGATE=1.
+# Install BOTH shims into the same environment (why they ship together: the file
+# header + DESIGN.md "one trace needs two shims"; the module docstrings). `site`
+# imports every .pth at interpreter start:
+#   1. the activation hook → `_lineage_propagate.py` + `zz-lineage-propagate.pth`.
+#   2. the turn-span shim   → `rossoctl_turnspan.py` + `zz-rossoctl-turnspan.pth`.
+# Both land in the interpreter's own site-packages (`${sp}` = sysconfig purelib),
+# so a non-standard venv layout still gets them.
+#
+# Ordering of the two .pth is irrelevant to correctness: `site` sources them
+# filesystem-sorted (`zz-lineage-propagate.pth` first, l < r), but both only
+# produce spans at REQUEST time, long after both .pth have run. Gate-off
+# inertness still holds because the turn span's install() short-circuits on
+# LINEAGE_PROPAGATE before importing mcp/opentelemetry (see rossoctl_turnspan.py);
+# were it not gated, an mcp-bundling image would load opentelemetry at startup and
+# fail verify_inert. Keeping the activation hook's `zz-lineage-propagate.pth` name
+# unchanged preserves the earlier image's on-disk layout.
 COPY lineage-propagate-hook.py /tmp/lineage-propagate-hook.py
+COPY rossoctl_turnspan.py /tmp/rossoctl_turnspan.py
+COPY rossoctl_turnspan.pth /tmp/rossoctl_turnspan.pth
 RUN sp="$("${VENV_PYTHON}" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
  && install -m 0644 /tmp/lineage-propagate-hook.py "${sp}/_lineage_propagate.py" \
  && printf 'import _lineage_propagate\n' > "${sp}/zz-lineage-propagate.pth" \
- && rm /tmp/lineage-propagate-hook.py
+ && install -m 0644 /tmp/rossoctl_turnspan.py "${sp}/rossoctl_turnspan.py" \
+ && install -m 0644 /tmp/rossoctl_turnspan.pth "${sp}/zz-rossoctl-turnspan.pth" \
+ && rm /tmp/lineage-propagate-hook.py /tmp/rossoctl_turnspan.py /tmp/rossoctl_turnspan.pth
 USER ${APP_UID}:${APP_GID}

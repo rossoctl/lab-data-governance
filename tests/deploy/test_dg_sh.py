@@ -174,8 +174,10 @@ def sandbox(tmp_path: Path):
     kitdir.mkdir(parents=True)
     for s in ("sidecar-patch.sh", "build-otel-shim.sh", "attach-lineage.sh"):
         _make_bin(kitdir, s, "exit 0\n")
-    # The sourced / build-input companions require_vendored_kit also checks for.
-    for f in ("container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py"):
+    # The sourced / build-input companions require_vendored_kit also checks for
+    # (both shims are build inputs; ADR-0033 D4).
+    for f in ("container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py",
+              "rossoctl_turnspan.py", "rossoctl_turnspan.pth"):
         (kitdir / f).write_text("# stub\n")
 
     class _Sandbox:

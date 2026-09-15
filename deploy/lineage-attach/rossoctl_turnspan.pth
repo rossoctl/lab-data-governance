@@ -1,0 +1,1 @@
+import os; os.environ.get('ROSSOCTL_TURNSPAN','on').lower() not in ('off','0','false','no') and __import__('rossoctl_turnspan').install()

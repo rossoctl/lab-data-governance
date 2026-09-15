@@ -105,6 +105,49 @@ logs; propagation is then off and the trace shows it (`none` on the pod's
 outbound hops), which is the
 honest failure mode. Read the hook's docstring for the full contract.
 
+### The turn-span shim: one trace needs two shims
+
+Propagation as described so far makes each *individual* outbound call carry a
+`traceparent`. It is not enough to keep one agent turn on one trace-id. Agent
+frameworks (openai-agents, google-sdk/adk, langgraph, crewai) run a turn as a
+loop of model + tool steps, and several of them spawn a fresh asyncio task per
+step. OpenTelemetry's current-span is `contextvars`-based, so a step that starts
+without an ambient span begins a **new root trace** — one agent turn then emits
+many different trace-ids (one per tool/peer/LLM call), and the sidecar faithfully
+mirrors that as N little two-span traces instead of one linked tree. Measured on
+the travel_advisor demo: the propagate-only shim plus the sidecar produced **11
+traces / 98 spans** — the fragmenting calls carry a valid-but-wrong (startup)
+`traceparent`, which the wire contract forwards byte-for-byte, so the sidecar
+cannot fix it. The correction has to happen at the **producer** of the header.
+
+That is the second shim, `rossoctl_turnspan` (its `.pth` + module ship next to
+the activation hook and are installed into the same site-packages by the same
+bake). It opens **one span at the ASGI request boundary**, seeded from the
+extracted inbound W3C context, and keeps it active for the whole request scope —
+including the SSE streaming body where the framework's detached executor task
+runs — so every outbound call in that turn inherits one trace-id. It is inserted
+framework-agnostically by patching `uvicorn.Config` (the one server both the
+a2a-sdk agents and the FastMCP tools hand their built app to); no app source is
+touched. It also patches MCP's `send_request` / `_handle_post_request`, because
+`mcp`'s client posts each tool call from a long-lived task whose contextvars
+predate the turn span — the patch snapshots the turn's W3C headers keyed by the
+JSON-RPC request id and re-attaches them around the actual POST. With both shims
+the demo collapses to **one trace / 98 spans**.
+
+The two shims are **complementary and bound to one switch**. The turn span
+without the activation hook's `initialize()` leaves httpx instrumentation OFF and
+produces **27** fragments — *worse* than the 11-fragment baseline. So
+`rossoctl_turnspan.install()` no-ops unless `LINEAGE_PROPAGATE=1` (the same
+switch the activation hook reads); the turn span cannot activate on its own. This
+also keeps an unactivated `-otel` image inert: `install()` imports `mcp` +
+`opentelemetry` to patch the MCP transport, so on an app image that bundles `mcp`
+an unconditional install would pull `opentelemetry` in at interpreter start and
+fail `build-otel-shim.sh`'s "gate off → nothing OTel loads" attestation. Baking
+both shims into one image (ADR-0033 Decision 4) makes the worse-than-baseline
+trap structurally unreachable — there is no way to deploy the turn span without
+its activation hook. `ROSSOCTL_TURNSPAN=off` is a secondary opt-out for the rare
+case the turn span itself needs disabling without dropping propagation.
+
 ### An app that already configures OpenTelemetry itself
 
 That app is outside the shim's envelope, and the bake interlock cannot see it
