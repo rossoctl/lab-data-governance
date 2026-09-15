@@ -448,8 +448,10 @@ cmd_namespaces() {
 #     (These are the exact container names the operator's injection webhook and
 #     the cortex attach kits use; distinguishing them is what ADR-0032's
 #     proxy-row-vs-kit split hinges on.)
-#   * plugin — is `lineage-telemetry` wired into the sidecar's effective
-#     pipeline. The effective pipeline is the config the sidecar mounts at
+#   * lineage — is `lineage-telemetry` wired into the sidecar's effective
+#     pipeline (surfaced as the per-entity `lineage=yes/no` token — ADR-0033
+#     decision 5, the no-marker idempotency signal). The effective pipeline is
+#     the config the sidecar mounts at
 #     /etc/authbridge (both modes mount `config.yaml` there from a ConfigMap):
 #     we resolve that container's /etc/authbridge volumeMount → the backing
 #     volume → its ConfigMap, read the ConfigMap, and look for a
@@ -702,7 +704,7 @@ namespace_status() {
         return 0
     fi
 
-    local name json type cm cm_data plugin
+    local name json type cm cm_data lineage
     while IFS= read -r name; do
         [[ -n "${name}" ]] || continue
         json="$(get_deployment_json "${ns}" "${name}")"
@@ -732,7 +734,7 @@ namespace_status() {
         fi
 
         if [[ "${type}" == "none" ]]; then
-            printf '%s\tsidecar=none\ttype=none\tplugin=no (lineage-telemetry not wired)\n' "${name}"
+            printf '%s\tsidecar=none\ttype=none\tlineage=no (lineage-telemetry not wired)\n' "${name}"
             continue
         fi
 
@@ -742,11 +744,11 @@ namespace_status() {
             cm_data="$(get_configmap_data "${ns}" "${cm}")"
         fi
         if plugin_wired_in_cm_data "${cm_data}"; then
-            plugin="yes (lineage-telemetry wired)"
+            lineage="yes (lineage-telemetry wired)"
         else
-            plugin="no (lineage-telemetry not wired)"
+            lineage="no (lineage-telemetry not wired)"
         fi
-        printf '%s\tsidecar=present\ttype=%s\tplugin=%s\n' "${name}" "${type}" "${plugin}"
+        printf '%s\tsidecar=present\ttype=%s\tlineage=%s\n' "${name}" "${type}" "${lineage}"
     done <<< "${names}"
 }
 
