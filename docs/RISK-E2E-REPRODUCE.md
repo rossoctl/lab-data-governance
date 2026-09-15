@@ -14,6 +14,29 @@ one named by the cluster short name (classifies **internal** → classified,
 `none/allow`), one carrying `Host: api.travel-partner.example:9091` (classifies
 **external** → classified, `critical/block`, rules DG-001 + DG-004).
 
+## 0 · Check the platform first
+
+Everything below assumes the rossoctl platform is installed on the cluster: the
+sidecar mounts the platform-rendered `envoy-config` ConfigMap, exports to the
+platform collector, and the DG receiver's NetworkPolicy admits traffic only from
+`rossoctl-system`. Thirty seconds now saves an afternoon later:
+
+```sh
+kubectl -n rossoctl-system get deploy otel-collector                 # the platform collector
+kubectl get cm -A --field-selector metadata.name=envoy-config        # expect team1 (and team2)
+```
+
+- No `rossoctl-system`: this is not a rossoctl kind cluster. Install the platform
+  first; nothing in this runbook works without it. This runbook was validated on
+  the platform repo at tag `v0.7.0-alpha.6`, installed with
+  `scripts/kind/setup-rossoctl.sh --with-ui --with-otel` (`--with-otel` is the
+  collector; without it there is nothing to patch in step 1). Newer main is
+  untested here; the pieces this runbook touches (`envoy-config` template,
+  collector config) were unchanged as of 2026-09-14.
+- `envoy-config` present, but in no namespace called `team1`: step 2's
+  `attach-fleet.sh` copies it into the app namespace from `team1` by default —
+  run it as `ENVOY_CONFIG_SOURCE_NS=<that-namespace> ./attach-fleet.sh`.
+
 ## 1 · Data-governance side (this repo, branch `risk`)
 
 ```sh
