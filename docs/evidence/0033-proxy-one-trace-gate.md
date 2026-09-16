@@ -84,23 +84,48 @@ With the correct v1.7.0 `authbridge-proxy` image, `instrument`:
 - The demo was therefore **never run** and no trace was produced — the gate
   fails at the *instrument* step, upstream of trace inspection.
 
-### Suspected mechanism (open — determines the fix)
+### Suspected mechanism (narrowed — code-level investigation)
 
 MCP Streamable HTTP opens a long-lived server→client SSE GET channel plus POST
-requests; `initialize()`'s reply returns on the SSE stream. The proxy's
-transparent-listener handling of that streaming channel appears not to deliver
-the reply back promptly (cortex has a dedicated
-`authlib/listener/forwardproxy/mcp_sse_repro_test.go`, and the mcp-parser carries
-a `$transport/stream` sentinel for the SSE GET — evidence this path is delicate).
-Whether this is a **tunable timeout** or a **fundamental streaming-proxy
-incompatibility** is not yet determined and is the deciding question between:
+requests; `initialize()`'s reply returns as a `text/event-stream` response. The
+cortex forward-proxy response phase (`authlib/listener/forwardproxy/server.go`,
+`Handler()` response branch ~L460–517) chooses between two SSE relay paths on the
+`Content-Type: text/event-stream` response:
+
+- **byte-for-byte `streamPassthrough`** (L494–516) — taken only when the pipeline
+  has **no** `StreamingResponder`. Its comment explicitly says re-framing "would
+  drop the event:/id:/retry: lines that generic SSE clients (e.g. an MCP
+  Streamable HTTP client) depend on. Fixes #642" — i.e. THIS is the path an MCP
+  client needs.
+- **`handleStreamingResponse` re-framing** (L488–492, via `sseframe.NewReader`) —
+  taken when the pipeline **has** `StreamingResponders`.
+
+The dg.sh-generated proxy config wires `a2a-parser`, `mcp-parser`,
+`inference-parser` on both inbound and outbound — and those parsers **are**
+`StreamingResponders`. So the payment-agent's MCP traffic takes the **re-framing**
+path, not the byte-for-byte passthrough the #642 fix added for MCP clients. The
+re-framer does flush per frame, so the exact failure (does re-framing corrupt the
+`initialize()` handshake, or is it a timeout/idle-reader interaction on the
+long-lived channel?) still needs a cortex-side packet-level repro — but the
+suspect is now specific: **the parser-carrying (StreamingResponder) pipeline
+routes MCP SSE onto the re-framing path rather than the #642 passthrough.** That
+is a cortex proxy/pipeline concern, not a dg.sh or kit concern.
+
+Whether this is a **tunable timeout** or a **fundamental re-framing
+incompatibility** is the deciding question between:
 
 - **proxy entry-hop / streaming fix** — make the proxy correctly relay MCP
   Streamable-HTTP so an outbound-initiating agent's cold-start `initialize()`
   completes; then re-run the gate; or
 - **envoy-default fallback** — for agents that initiate MCP, prefer the envoy
-  path (already measured at one trace) and reserve the proxy path for the
-  inbound-only tools / A2A hops it handles cleanly.
+  path (the earlier one-trace measurement referenced by #239 was on envoy) and
+  reserve the proxy path for the inbound-only tools / A2A hops it handles cleanly.
+  NOT re-verified this session: exercising the envoy branch needs the platform
+  `envoy-config` ConfigMap copied into the ad-hoc `travel-advisor` namespace (it
+  is rendered only into chart-managed team namespaces), which this run could not
+  do. Re-running the gate on the envoy path (copy `envoy-config` in →
+  `instrument` takes the envoy branch → demo → inspect) is the recommended next
+  measurement to confirm the fallback holds under the v1.7.0/turn-span image.
 
 ## Reproduction (short form)
 
