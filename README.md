@@ -73,7 +73,10 @@ To make DG observe a namespace, instrument its agents and tools for lineage:
 ./deploy/dg.sh namespace <ns> status           # instrumentation state of <ns>
 ```
 
-Instrumentation is one-way and mode-preserving; the reasoning is recorded in
+Instrumentation is one-way and mode-preserving. Rossoctl-managed agents/tools
+are selected by `rossoctl.io/type`, retain their enforcing sidecars and auth,
+and are converged by rolling the application shim before hot-reloading the
+proxy pipeline. `status` reports subsequent drift. The reasoning is recorded in
 [ADR-0031](docs/adr/0031-non-reversible-namespace-lineage-activation.md) and
 [ADR-0032](docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md), and the
 CLI design in [`docs/cli.md`](docs/cli.md).

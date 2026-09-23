@@ -94,7 +94,7 @@ fi
 # these skeleton-level selector-shape tests the entity has no sidecar, so a
 # minimal Deployment doc (no sidecar container) is enough and the entity is
 # classified `none` (which then tries the kit — harmless, the kit is a stub).
-if [[ "$*" == *"app.kubernetes.io/component"* ]]; then
+if [[ "$*" == *"get deployments"* ]]; then
   # NB: `-o json` is a SUBSTRING of `-o jsonpath=`, so match jsonpath FIRST
   # (the enumeration name-listing uses jsonpath; per-entity detection uses json).
   case "$*" in
@@ -178,7 +178,7 @@ def sandbox(tmp_path: Path):
     # The sourced / build-input companions require_vendored_kit also checks for
     # (both shims are build inputs; ADR-0033 D4).
     for f in ("container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py",
-              "rossoctl_turnspan.py", "rossoctl_turnspan.pth"):
+              "rossoctl_turnspan.py", "rossoctl_turnspan.pth", "reconcile-existing-proxy.py"):
         (kitdir / f).write_text("# stub\n")
 
     class _Sandbox:
@@ -448,24 +448,14 @@ def test_namespaces_list_fails_loud_when_kubectl_get_errors(sandbox) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_entity_enumeration_uses_component_selector(sandbox) -> None:
-    """The shared entity enumeration (driven here through the still-stubbed
-    `instrument` verb) uses the platform's own
-    `app.kubernetes.io/component in (agent, mcp-tool)` selector, and NEVER reads
-    the operator-reserved `rossoctl.io/type`."""
+def test_entity_enumeration_reads_deployment_labels(sandbox) -> None:
+    """The shared entity enumeration reads full Deployment labels so trusted
+    Rossoctl types can take precedence while legacy component labels remain a
+    compatibility fallback."""
     sandbox.set_kubectl(entity_out="research-agent\npayment-agent\n")
     sandbox.run("namespace", "travel-advisor", "instrument")
     calls = " ".join(sandbox.kubectl_calls())
-    assert "app.kubernetes.io/component" in calls, (
-        f"entity enumeration must use app.kubernetes.io/component; calls: "
-        f"{sandbox.kubectl_calls()!r}"
-    )
-    assert "agent" in calls and "mcp-tool" in calls, (
-        "selector must cover both agent and mcp-tool components"
-    )
-    assert "rossoctl.io/type" not in calls, (
-        "must NEVER read rossoctl.io/type (operator-reserved, VAP-protected)"
-    )
+    assert "get deployments -n travel-advisor -o json" in calls
 
 
 def test_single_entity_select_uses_name_label(sandbox) -> None:

@@ -54,6 +54,19 @@ def test_golden_rows_endpoints_and_parenting():
     assert i2.caller.natural_key == "agent:team1/weather-service"
 
 
+def test_authenticated_client_id_wins_over_subject_at_inbound_boundary():
+    """The platform-authenticated OAuth client names the caller; the human
+    subject remains span metadata and must not turn the transport caller into a
+    user entity."""
+    spans = golden.build_spans()
+    entry = next(span for span in spans if span.span_id == golden.A1)
+    entry.attributes["lineage.principal.client"] = "demo-client"
+
+    row = _rows_by_anchor(plan_trace(golden.TRACE, spans))[golden.A1]
+
+    assert row.caller.natural_key == "client:demo-client"
+
+
 def test_golden_rows_carry_the_response_span_and_seqs():
     """The plan's arrival facts: each completed row knows its response span id
     and both spans' seqs (leg seq itself is DB-owned at write time)."""

@@ -4,6 +4,16 @@ status: accepted
 
 # `dg.sh` vendors the lineage-attach capability and defaults to a proxy lineage sidecar, for a self-contained one-trace `instrument`
 
+> **Revision (issue #256, 2026-09-23):** This decision still governs bare,
+> component-labelled workloads. Trusted Rossoctl workloads carrying
+> `rossoctl.io/type=agent|tool` and an admission-injected enforcing proxy use a
+> stricter convergence flow: preflight every producer and application image,
+> roll the shimmed application first, then reconcile the freshly regenerated
+> ConfigMap and verify `/v1/pipeline` hot reload without a second rollout. Auth
+> plugins and the platform sidecar remain platform-owned. A later platform
+> reconciliation can still remove the overlay, which `dg.sh status` reports as
+> `live=no` with a reason.
+
 `dg.sh namespace <ns> instrument` activates AuthBridge-sidecar lineage on a
 namespace's agents/tools so their traffic produces the facts-only spans this
 component consumes. ADR-0032 decided `dg.sh` **drives the EXTERNAL cortex #852

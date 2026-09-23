@@ -471,7 +471,7 @@ def sandbox(tmp_path: Path):
             # (both shims are build inputs; ADR-0033 D4).
             for f in ("container-runtime.sh", "Dockerfile.otel-shim",
                       "lineage-propagate-hook.py", "rossoctl_turnspan.py",
-                      "rossoctl_turnspan.pth"):
+                      "rossoctl_turnspan.pth", "reconcile-existing-proxy.py"):
                 (kitdir / f).write_text("# stub\n")
             self._write_kubectl()
             self.set_namespace({})

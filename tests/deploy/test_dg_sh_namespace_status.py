@@ -578,15 +578,11 @@ def test_status_is_read_only(sandbox) -> None:
         )
 
 
-def test_status_uses_component_selector_and_never_reads_reserved_type(sandbox) -> None:
+def test_status_reads_deployment_labels_for_trusted_entity_selection(sandbox) -> None:
     sandbox.set_namespace({"research-agent": {"sidecar": "proxy", "lineage": True}})
     sandbox.run("namespace", "travel-advisor", "status")
     calls = " ".join(sandbox.kubectl_calls())
-    assert "app.kubernetes.io/component" in calls
-    assert "agent" in calls and "mcp-tool" in calls
-    assert "rossoctl.io/type" not in calls, (
-        "must NEVER read rossoctl.io/type (operator-reserved, VAP-protected)"
-    )
+    assert "get deployments -n travel-advisor -o json" in calls
 
 
 # ---------------------------------------------------------------------------

@@ -207,6 +207,34 @@ def test_anchor_demotion_deletes_stale_interaction_and_legs(configured_db: str):
     assert snap["spans"][golden.D2] == (I3, "connector", None)
 
 
+def test_echo_retires_unreferenced_provisional_peer_entity(configured_db: str):
+    """A peer.host tool is provisional until its inbound echo supplies the
+    namespaced workload identity. Reconciliation removes the old host:port row
+    only after the interaction and entity-span evidence point at the canonical
+    entity."""
+    dsn = configured_db
+    next_seq = golden.insert_subset(dsn, [golden.B3, golden.B4], 1)
+    cursor = drain(0)
+    provisional = "tool:weather-tool-mcp.team1.svc:8000"
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM entities WHERE natural_key = %s", (provisional,)
+        ).fetchone()[0] == 1
+
+    golden.insert_subset(dsn, [golden.D1, golden.D2], next_seq)
+    drain(cursor)
+
+    with psycopg.connect(dsn) as conn:
+        keys = {
+            row[0]
+            for row in conn.execute(
+                "SELECT natural_key FROM entities WHERE kind IN ('agent', 'tool')"
+            ).fetchall()
+        }
+    assert "tool:team1/weather-tool" in keys
+    assert provisional not in keys
+
+
 # Interleaved fake shim spans (the propagate-only HTTP shim's httpx/starlette
 # spans): stored, non-sidecar (no lineage.* attrs), sitting in the parent chain
 # as non-anchors. The derivation must be byte-identical with them present.

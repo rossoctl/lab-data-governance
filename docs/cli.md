@@ -131,12 +131,11 @@ single `<entity>` when named. **Additive-only, and it never changes a
 namespace's sidecar mode** (see ADR-0031 for why non-reversible, and why no
 mode switch).
 
-Enumerate entities by `app.kubernetes.io/component in (agent, mcp-tool)` (the
-platform's own selector — `rossoctl.io/type` is operator-reserved and
-VAP-protected, so we never read or set it); when `<entity>` is given, select
-just that one by `app.kubernetes.io/name` and error if it is not an agent/tool
-in the namespace. Per-entity mode detection and mutation are identical whether
-one entity or all are targeted — a named entity is simply the one-element case.
+Selection prefers the trusted operator label `rossoctl.io/type=agent|tool`.
+When any such Deployment exists, only that trusted set is eligible; clients,
+stores, and other workloads are excluded. A namespace with no trusted labels
+uses `app.kubernetes.io/component=agent|mcp-tool` for the legacy #239 flow.
+When `<entity>` is given, it must belong to the selected set.
 `instrument` dispatches each entity by its **current sidecar state**, all
 auto-detected, no flag (the ADR-0033 owner-split, which supersedes ADR-0032's
 kit-only no-sidecar-only contract):
@@ -181,6 +180,16 @@ envoy-configured), and vendors the attach capability into `deploy/lineage-attach
 so `dg.sh` needs no cortex checkout (`--cortex-local-path` retired). See ADR-0033
 for the full rationale; the durable-in-place alternatives (operator-rendered /
 skip-injected) are recorded there as future work.
+
+**Issue #256 supersedes the existing-sidecar sequence for trusted Rossoctl
+proxy workloads.** Before the first workload mutation, `instrument` validates
+every admitted proxy and producer catalog, validates every mounted ConfigMap,
+and builds/attests every distinct required application shim. It then updates
+only the application container image and `LINEAGE_PROPAGATE=1`, waits for
+rollout and webhook reinjection, resolves the new pod's ConfigMap, and
+canonically reconciles both pipelines while preserving JWT-validation and
+token-exchange. AuthBridge must hot reload the change and expose it from
+`/v1/pipeline`; no rollout occurs after the ConfigMap edit.
 
 The plugin points `otel_endpoint` at the platform collector
 (`otel-collector.rossoctl-system.svc.cluster.local:4317`); the existing
@@ -292,6 +301,10 @@ report:
   per-entity `lineage=yes/no` token. This is the no-marker idempotency signal
   (ADR-0033 decision 5): `instrument` places no marker, so a wired pipeline is
   how a re-run knows an entity is already activated.
+- **live** — for trusted proxy workloads, also verifies the shim image,
+  `LINEAGE_PROPAGATE=1`, admission proxy environment, pod/sidecar readiness,
+  canonical mounted ConfigMap, and live AuthBridge pipeline. Drift is shown as
+  `live=no` with the failed condition.
 
 Detection inspects **both** the pod-spec's `containers` and its `initContainers`:
 the kit's `envoy-proxy` is a native sidecar (an `initContainer`), so a

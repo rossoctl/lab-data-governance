@@ -270,12 +270,15 @@ def _callee(kinds: Kinds, req: Span, echo: Span | None) -> _Entity:
 
 
 def _caller(kinds: Kinds, req: Span, self_kind_of: dict[str, str]) -> _Entity:
-    """Caller identity from facts. Inbound: user:<principal.sub>, or the
-    anonymous client:(unknown) — the wire carries no caller address (contract
-    v1.4 removed ``lineage.peer.addr``). Outbound: this pod's self.id, of the
-    kind this trace already knows the pod to be (``_self_kinds``), else the
-    table's default."""
+    """Caller identity from facts. Inbound: the authenticated OAuth client when
+    present, otherwise user:<principal.sub>, otherwise client:(unknown).  The
+    subject remains available on the evidence span even when the client names
+    the transport caller. Outbound: this pod's self.id, of the kind this trace
+    already knows the pod to be (``_self_kinds``), else the table's default."""
     if _direction(req) == "inbound":
+        client = _attr(req, "lineage.principal.client")
+        if client:
+            return _Entity("client", str(client))
         sub = _attr(req, "lineage.principal.sub")
         if sub:
             return _Entity("user", str(sub))
@@ -571,7 +574,9 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
     ``interactions`` (legs carry no trace_id), so that delete must run while the
     stale parent rows still exist."""
     trace_id, want, anchor_ids = plan.trace_id, plan.want, plan.anchor_ids
-    # 1. entities (global, upsert-only — NEVER deleted here) + payloads.
+    # 1. entities + payloads.  Canonical pod entities are global and upserted.
+    #    A host:port agent/tool created before its inbound echo is provisional;
+    #    it is retired at the end of reconciliation once nothing references it.
     entity_id_of: dict[str, str] = {}
     for row in want.values():
         for ent in (row.caller, row.callee):
@@ -700,3 +705,20 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
                 "ON CONFLICT (trace_id, span_id, entity_id, role) DO NOTHING",
                 (entity_id_of[ent.natural_key], trace_id, row.anchor_span_id),
             )
+
+    # 7. Retire only clearly provisional agent/tool peer identities after every
+    #    trace-scoped reference has been reconciled.  The two NOT EXISTS guards
+    #    make this safe across traces and preserve evidence-only entities.  Do
+    #    not apply the host:port heuristic to service/llm rows: those are stable
+    #    endpoint identities by contract.
+    tx.execute(
+        "DELETE FROM entities e "
+        "WHERE e.namespace IS NULL "
+        "AND e.kind IN ('agent', 'tool') "
+        "AND e.natural_key ~ '^(agent|tool):[^/[:space:]]+:[0-9]+$' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM interactions i "
+        "  WHERE i.caller_entity_id = e.id OR i.callee_entity_id = e.id"
+        ") "
+        "AND NOT EXISTS (SELECT 1 FROM entity_spans es WHERE es.entity_id = e.id)"
+    )

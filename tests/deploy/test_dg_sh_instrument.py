@@ -91,12 +91,18 @@ def _deployment(
     sidecar: str | None,
     cm_name: str | None,
     image: str = "agent-examples-snp:latest",
+    trusted_type: str | None = None,
 ) -> dict:
     containers = [
         {
             "name": name,  # the app container
             "image": image,
             "ports": [{"containerPort": 8080}],
+            "env": ([
+                {"name": "HTTP_PROXY", "value": "http://127.0.0.1:8084"},
+                {"name": "HTTPS_PROXY", "value": "http://127.0.0.1:8084"},
+                {"name": "NO_PROXY", "value": "127.0.0.1,localhost"},
+            ] if trusted_type else []),
         }
     ]
     volumes: list[dict] = []
@@ -125,16 +131,19 @@ def _deployment(
             }
         )
         volumes.append({"name": "authbridge-runtime", "configMap": {"name": cm_name}})
+    labels = {
+        "app.kubernetes.io/name": name,
+        "app.kubernetes.io/component": "agent",
+    }
+    if trusted_type:
+        labels["rossoctl.io/type"] = trusted_type
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {
             "name": name,
             "namespace": "travel-advisor",
-            "labels": {
-                "app.kubernetes.io/name": name,
-                "app.kubernetes.io/component": "agent",
-            },
+            "labels": labels,
         },
         "spec": {"template": {"spec": {"containers": containers, "volumes": volumes}}},
     }
@@ -163,6 +172,10 @@ pipeline:
 # appending lineage here works, but lineage will record 401s for unauthenticated
 # callers — dg.sh must warn (ADR-0033 Decision 3). No lineage-telemetry yet.
 _CM_ENFORCING_NO_LINEAGE = """mode: proxy-sidecar
+listener:
+  forward_proxy_addr: :8084
+  reverse_proxy_addr: :8080
+  reverse_proxy_backend: http://127.0.0.1:8081
 pipeline:
   inbound:
     plugins:
@@ -289,6 +302,20 @@ esac
 if [[ "${GET_FAILS:-0}" == "1" && "$1" == "get" ]]; then
   printf '%s\n' "The connection to the server 127.0.0.1:6443 was refused" >&2
   exit 1
+fi
+
+# ---- AuthBridge admin API ---------------------------------------------------
+if [[ "$*" == *"exec"* && "$*" == *"/v1/plugins"* ]]; then
+  if [[ "${PLUGIN_CATALOG_MISSING:-0}" == "1" ]]; then
+    printf '%s' '{"plugins":[{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"}]}'
+  else
+    printf '%s' '{"plugins":[{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry"}]}'
+  fi
+  exit 0
+fi
+if [[ "$*" == *"exec"* && "$*" == *"/v1/pipeline"* ]]; then
+  printf '%s' '{"inbound":[{"name":"jwt-validation"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"travel-advisor","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}],"outbound":[{"name":"token-exchange"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"travel-advisor","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}]}'
+  exit 0
 fi
 
 # ---- component/tee preflight probes -----------------------------------------
@@ -554,6 +581,9 @@ def sandbox(tmp_path: Path):
                       "lineage-propagate-hook.py", "rossoctl_turnspan.py",
                       "rossoctl_turnspan.pth"):
                 (self.kitdir / f).write_text("# stub\n")
+            (self.kitdir / "reconcile-existing-proxy.py").write_text(
+                (REPO_ROOT / "deploy" / "lineage-attach" / "reconcile-existing-proxy.py").read_text()
+            )
 
         def remove_kit_file(self, name: str) -> None:
             """Delete one kit file so the vendored-kit integrity check refuses."""
@@ -591,7 +621,13 @@ def sandbox(tmp_path: Path):
                     }
                     (fixdir / f"cm-{cm_name}.json").write_text(json.dumps(cm_doc))
                 image = spec.get("image", "agent-examples-snp:latest")
-                dep = _deployment(name, sidecar=sidecar, cm_name=cm_name, image=image)
+                dep = _deployment(
+                    name,
+                    sidecar=sidecar,
+                    cm_name=cm_name,
+                    image=image,
+                    trusted_type=spec.get("trusted_type"),
+                )
                 items.append(dep)
                 (fixdir / f"entity-{name}.json").write_text(json.dumps({"items": [dep]}))
 
@@ -811,6 +847,71 @@ def _envoy_env_lines(kit_log: str) -> list[str]:
     # `sidecar-patch.sh` is a substring of `sidecar-patch-proxy.sh`, so match the
     # exact envoy stub prefix (which is NOT the proxy prefix).
     return [ln for ln in kit_log.splitlines() if ln.startswith("sidecar-patch.sh env:")]
+
+
+def test_trusted_proxy_rolls_app_before_hot_reloading_pipeline(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+            },
+            "demo-client": {"sidecar": None},
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    calls = sandbox.kubectl_calls()
+    patch_i = next(i for i, call in enumerate(calls) if "patch deployment/travel-advisor" in call)
+    apply_i = next(i for i, call in enumerate(calls) if call.startswith("apply -f -"))
+    assert patch_i < apply_i
+    assert not any("demo-client" in call and "patch deployment" in call for call in calls)
+    assert not any("rollout restart" in call for call in calls[apply_i + 1 :])
+    assert sandbox.kit_log().count("build-otel-shim.sh argv:") == 1
+
+
+def test_trusted_proxy_missing_producer_plugin_fails_before_mutation(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+            }
+        }
+    )
+    sandbox.set_flag(PLUGIN_CATALOG_MISSING="1")
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode != 0
+    assert "lineage-capable" in result.stderr
+    calls = "\n".join(sandbox.kubectl_calls())
+    assert "patch deployment/" not in calls
+    assert "apply -f -" not in calls
+
+
+def test_status_explains_trusted_proxy_activation_drift(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": True,
+                "trusted_type": "agent",
+            }
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "status")
+
+    assert result.returncode == 0, result.stderr
+    assert "live=no" in result.stdout
+    assert "application shim or LINEAGE_PROPAGATE missing" in result.stdout
 
 
 def test_instrument_no_sidecar_bare_ns_drives_proxy_applier(sandbox) -> None:
