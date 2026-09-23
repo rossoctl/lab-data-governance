@@ -5,6 +5,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 .ruff_cache/
+# Live e2e tier run records (tests/live): per-run evidence, never committed.
+tests/live/runs/
 build/
 dist/
 uv.lock

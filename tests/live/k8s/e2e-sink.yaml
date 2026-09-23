@@ -1,0 +1,72 @@
+# e2e-sink — the abandoned-exchange target for the live tier (tests/live).
+#
+# A TCP listener that accepts every connection and never reads or answers,
+# so a client with a timeout is the only way an exchange through it ends:
+# the demo-client sidecar sees the downstream disconnect with no response
+# and emits the response span with `lineage.outcome=abandoned` (wire
+# contract §2). The dotted `Host` the probe sends classifies the
+# destination external. A Service with no endpoints (RST → `error` with a
+# status) or a black-holed IP (host-network dependent) are both
+# non-deterministic; this is not.
+#
+# Runs the pinned app image (no new image to build or load); the
+# conftest `sink` fixture substitutes __IMAGE__ from pins.yaml, applies
+# this, and deletes it on teardown. Not attached to the lineage kit on
+# purpose: it is the far end, not a governed workload.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: e2e-sink
+  labels:
+    app.kubernetes.io/name: e2e-sink
+    app.kubernetes.io/part-of: data-governance-live-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: e2e-sink
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: e2e-sink
+        app.kubernetes.io/part-of: data-governance-live-e2e
+    spec:
+      containers:
+        - name: sink
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -c
+            - |
+              import socket, time
+              s = socket.socket()
+              s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              s.bind(("", 9091))
+              s.listen(64)
+              held = []
+              while True:
+                  conn, _ = s.accept()
+                  held.append(conn)   # accepted, never read, never answered
+                  if len(held) > 512:
+                      held.pop(0).close()
+          ports:
+            - containerPort: 9091
+          readinessProbe:
+            tcpSocket:
+              port: 9091
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: e2e-sink
+  labels:
+    app.kubernetes.io/name: e2e-sink
+    app.kubernetes.io/part-of: data-governance-live-e2e
+spec:
+  selector:
+    app.kubernetes.io/name: e2e-sink
+  ports:
+    - port: 9091
+      targetPort: 9091
