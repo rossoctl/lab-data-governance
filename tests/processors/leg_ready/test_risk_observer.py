@@ -30,6 +30,7 @@ import pytest
 
 from data_governance import db
 from data_governance.processors.leg_ready import driver
+from data_governance.risk.engine import compute
 from data_governance.risk.engine.observer import make_risk_observer
 from data_governance.risk.engine.opa import OpaDecision, OpaRequestError
 
@@ -282,3 +283,50 @@ def test_redelivery_with_unchanged_evidence_is_a_no_op(configured_db: str) -> No
 
     assert _risk_versions(configured_db, "ix-idem") == [(1, ["request"])]
     assert len(opa.calls) == 1, "unchanged evidence must not re-call OPA"
+
+
+# --- AC: a version race is interaction-scoped, not stream-scoped --------------
+
+
+def test_version_race_does_not_hold_the_legs_behind_it(
+    configured_db: str, monkeypatch
+) -> None:
+    """A lost version race is scoped to ONE interaction, so it must not stop
+    the stream the way an unreachable OPA does. The engine retries the
+    decision refresh in place; the observer never sees the collision, the
+    cursor advances past the affected leg, and the leg queued behind it is
+    delivered in the same drain.
+
+    Contrast ``test_opa_outage_holds_cursor_then_recovery_catches_up``: there
+    the condition is global, every leg behind would hit the same wall, and
+    holding is correct. Here it is neither."""
+    opa = _FakeOpaClient()
+    observer = make_risk_observer(opa)
+
+    _insert_leg(configured_db, interaction_id="ix-race", leg_type="request")
+    behind = _insert_leg(
+        configured_db, interaction_id="ix-race-behind", leg_type="request"
+    )
+
+    real_once = compute._get_or_refresh_decision_once
+    attempts = {"n": 0}
+
+    def _lose_the_first_race(**kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise psycopg.errors.UniqueViolation(
+                "duplicate key value violates unique constraint "
+                '"interaction_policy_decisions_version_uq"'
+            )
+        return real_once(**kwargs)
+
+    monkeypatch.setattr(
+        compute, "_get_or_refresh_decision_once", _lose_the_first_race
+    )
+
+    cursor = driver.drain(0, observer=observer)
+
+    assert cursor == behind, "an interaction-scoped race must not hold the stream"
+    assert _risk_versions(configured_db, "ix-race") == [(1, ["request"])]
+    assert _risk_versions(configured_db, "ix-race-behind") == [(1, ["request"])]
+    assert attempts["n"] == 3, "one loss, one retry, then the leg behind it"

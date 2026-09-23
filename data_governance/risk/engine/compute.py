@@ -21,9 +21,18 @@ Both writes (the policy decision and the risk record) allocate their next
 ``version`` in-statement (``SELECT COALESCE(MAX(version), 0) + 1 ...``)
 rather than read-then-write, so two concurrent recomputes racing on the same
 interaction collide on the table's ``UNIQUE (interaction_id, version)``
-index rather than silently double-writing the same version. On that
-collision this module retries once — re-gathering evidence and re-checking
-idempotency, since the winner's write may make the retry's write a no-op.
+index rather than silently double-writing the same version. Each collision
+is recovered where it happens, so a race never escapes the interaction it
+belongs to: ``_get_or_refresh_decision`` retries the decision refresh, and
+``compute_interaction_risk`` retries the record write. Either retry re-reads
+what the winner committed, so it reuses the cached decision rather than
+calling OPA again, and re-checks idempotency — the winner's write may make
+the second attempt a no-op.
+
+Recovering the decision race here rather than at the caller is what keeps
+the split path (issue #158) equivalent to the self-contained one: the
+leg-ready observer sees no collision, so one interaction losing a race never
+holds the stream for the unrelated legs queued behind it.
 """
 
 from __future__ import annotations
@@ -153,6 +162,39 @@ def _decision_params(
 
 
 def _get_or_refresh_decision(
+    *,
+    interaction_id: str,
+    opa_client: OpaClient,
+    evidence,
+) -> utils.PolicyDecision:
+    """:func:`_get_or_refresh_decision_once`, retried once on a
+    ``UNIQUE (interaction_id, version)`` collision from a racing concurrent
+    recompute of the same interaction.
+
+    The retry re-enters through the cache lookup, so when the winner decided
+    from the same evidence its committed decision is simply reused and OPA is
+    not called again; when the winner decided from different evidence the
+    insert takes the next version. Retrying here, rather than leaving it to
+    the caller, keeps the race contained to the one interaction it concerns:
+    the leg-ready observer never sees the collision, so unrelated legs behind
+    this one are not held (a decision race is interaction-scoped, unlike an
+    OPA outage, which is not).
+    """
+    last_error: psycopg.errors.UniqueViolation | None = None
+    for _attempt_number in range(_MAX_ATTEMPTS):
+        try:
+            return _get_or_refresh_decision_once(
+                interaction_id=interaction_id,
+                opa_client=opa_client,
+                evidence=evidence,
+            )
+        except psycopg.errors.UniqueViolation as exc:
+            last_error = exc
+            continue
+    raise last_error
+
+
+def _get_or_refresh_decision_once(
     *,
     interaction_id: str,
     opa_client: OpaClient,
@@ -369,7 +411,10 @@ def compute_interaction_risk(interaction_id: str, *, opa_client: OpaClient) -> N
     a ``UNIQUE (interaction_id, version)`` collision from a racing concurrent
     recompute — the retry re-gathers evidence and re-checks idempotency, so a
     retry that lost the race to a winner whose write already matches simply
-    becomes a no-op.
+    becomes a no-op. In practice this loop covers the *record* write:
+    :func:`_get_or_refresh_decision` already absorbs a decision-insert race
+    itself, so the split path recovers from that one without this entry
+    point.
     """
     last_error: psycopg.errors.UniqueViolation | None = None
     for _attempt_number in range(_MAX_ATTEMPTS):
