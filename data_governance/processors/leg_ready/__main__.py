@@ -7,12 +7,17 @@ schema-version check, then drives the wake-driven readiness drain loop
 the poll backstop wakes each drain) until SIGINT/SIGTERM. Pool sizing comes from
 ``DB_POOL_*`` consumed by :func:`data_governance.db.configure`.
 
-Mirrors the P-entity-ready entry point (``processors/entity_ready/__main__.py``)
-exactly, differing only in the module names, the logger, and the metrics-port env
-override — like entity-ready there is no per-item model to construct at startup. The
-downstream governance consumer (risk/lineage/PDP) is future work; until it lands,
-delivery is the drain's metric increment, so ``run`` is driven with no injected
-observer.
+Mirrors the P-entity-ready entry point (``processors/entity_ready/__main__.py``),
+differing in the module names, the logger, the metrics-port env override — and the
+downstream observer: since issue #158 this consumer IS the risk pipeline's driver.
+At startup it builds the interaction risk engine's OPA client (RISK_OPA_* config)
+and injects :func:`data_governance.risk.engine.observer.make_risk_observer`, so
+every ready leg automatically recomputes its interaction's risk record (FR-DAS-012
+conditions 1 and 2), with the engine's write committing atomically with the
+leg-ready cursor advance. ``RISK_ENGINE_OBSERVER=off`` restores the bare
+metric-increment delivery (an operational escape hatch — e.g. running the lineage
+pipeline with no OPA deployed; with the observer on and OPA unreachable the stream
+holds, by design, rather than skipping legs).
 
 Before processing any legs the entry point runs the schema-version check (issue #10,
 ADR-0002): it reads ``alembic_version.version_num`` and refuses to start if that does
@@ -116,12 +121,24 @@ def main() -> int:
         metrics_server.port,
     )
 
+    # The downstream governance consumer (issue #158): the interaction risk
+    # engine, injected as the two-phase observer. Import here (not at module
+    # top) so the bare consumer never pays the risk-engine import cost when
+    # switched off.
+    observer = None
+    if os.environ.get("RISK_ENGINE_OBSERVER", "on").lower() not in ("off", "0", "false"):
+        from data_governance.risk.engine.observer import make_risk_observer
+        from data_governance.risk.engine.opa import create_opa_client
+
+        observer = make_risk_observer(create_opa_client())
+        log.info("risk engine observer enabled (set RISK_ENGINE_OBSERVER=off to disable)")
+    else:
+        log.info("risk engine observer DISABLED via RISK_ENGINE_OBSERVER")
+
     try:
         # `dsn` drives the dedicated LISTEN connection for low-latency wake (issue
-        # #71); the drain itself still uses the pool db.configure() set up. No
-        # downstream observer is injected yet (risk/lineage/PDP are future work,
-        # ADR-0027) — delivery is the drain's metric increment.
-        driver.run(stop_event, dsn)
+        # #71); the drain itself still uses the pool db.configure() set up.
+        driver.run(stop_event, dsn, observer=observer)
     finally:
         # Stop the metrics surface (no in-flight writes) before closing the pool.
         metrics_server.stop(grace=1.0)

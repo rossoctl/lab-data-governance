@@ -20,7 +20,11 @@ import threading
 import psycopg
 import pytest
 
-from data_governance.risk.engine.compute import compute_interaction_risk
+from data_governance import db
+from data_governance.risk.engine.compute import (
+    compute_interaction_risk,
+    prepare_interaction_risk,
+)
 from data_governance.risk.engine.opa import OpaDecision
 
 _TID = "trace-cx-1"
@@ -123,7 +127,7 @@ def _policy_decision_versions(dsn: str, interaction_id: str = _IX_ID) -> list[in
 
 
 def test_first_compute_writes_version_1(seeded: str):
-    opa = _FakeOpaClient([_decision(risk_level="high")])
+    opa = _FakeOpaClient([_decision(risk_level="high", triggered_rules=["DG-001"])])
     compute_interaction_risk(_IX_ID, opa_client=opa)
 
     row = _latest_risk_row(seeded)
@@ -317,6 +321,66 @@ def test_racing_computes_collide_and_the_retry_recovers(seeded: str, monkeypatch
     assert row[1] == "high"
 
 
+def test_racing_prepares_collide_and_the_decision_retry_recovers(
+    seeded: str, monkeypatch
+):
+    """The same race as above, but on the SPLIT path the leg-ready consumer
+    actually runs (issue #158). Two concurrent ``prepare_interaction_risk``
+    calls both see no cached decision, both call OPA, and the same barrier
+    makes them submit the ``interaction_policy_decisions`` insert together.
+
+    ``compute_interaction_risk``'s retry loop is not in play here — the
+    caller holds the write half — so this proves the recovery lives low
+    enough to protect the split path on its own:
+    ``_get_or_refresh_decision`` absorbs the collision, re-enters through
+    the cache lookup, finds the winner's decision under the same evidence
+    fingerprint, and reuses it. Both callers get a usable write closure, no
+    exception escapes toward the observer, and the table holds exactly one
+    decision version."""
+    barrier = threading.Barrier(2)
+    real_execute = psycopg.Cursor.execute
+
+    def _gated_execute(self, sql, params=None, *args, **kwargs):
+        if isinstance(sql, str) and "INSERT INTO interaction_policy_decisions" in sql:
+            barrier.wait(timeout=20)
+        return real_execute(self, sql, params, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg.Cursor, "execute", _gated_execute)
+
+    errors: list[BaseException] = []
+    closures: list[object] = []
+
+    def _run() -> None:
+        try:
+            # Per-thread fake: `_FakeOpaClient` isn't thread-safe, and both
+            # racing computes are expected to produce the same decision.
+            opa = _FakeOpaClient([_decision(risk_level="high")])
+            closures.append(prepare_interaction_risk(_IX_ID, opa_client=opa))
+        except BaseException as exc:  # noqa: BLE001 - surfaced below
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_run)
+    t2 = threading.Thread(target=_run)
+    t1.start()
+    t2.start()
+    t1.join(timeout=30)
+    t2.join(timeout=30)
+
+    assert not t1.is_alive() and not t2.is_alive()
+    assert errors == [], "a lost decision race must not escape the engine"
+    assert len(closures) == 2
+    assert _policy_decision_versions(seeded) == [1]
+
+    # The write half still works after the race: running one closure writes
+    # the single expected record version.
+    with db.transaction() as tx:
+        closures[0](tx)
+    assert _all_risk_versions(seeded) == [1]
+    row = _latest_risk_row(seeded)
+    assert row is not None
+    assert row[1] == "high"
+
+
 # --- corner cases ---------------------------------------------------------------
 
 
@@ -333,3 +397,55 @@ def test_zero_legs_still_computes_a_record(configured_db: str):
     assert version == 1
     assert risk_level == "none"
     assert legs_evidenced == []
+
+
+# --- the compiled bundle's fallback rule (#173/#176) ---------------------------
+#
+# When no catalog rule fires, the compiled Rego's default decision reports
+# triggered_rules == ["0000"] (rego.FALLBACK_RULE_ID). That sentinel means
+# "nothing fired" and must not be stored as a fired rule on the risk record —
+# metrics unnest triggered_rule_ids to count rules fired, and alerts name
+# rules from it. The decision cache keeps OPA's answer verbatim.
+
+
+def _rule_columns(dsn: str, interaction_id: str = _IX_ID) -> tuple[list[str], list[str]]:
+    with psycopg.connect(dsn) as conn:
+        (record_rules,) = conn.execute(
+            "SELECT triggered_rule_ids FROM interaction_risk_records "
+            "WHERE interaction_id = %s ORDER BY version DESC LIMIT 1",
+            (interaction_id,),
+        ).fetchone()
+        (cached_rules,) = conn.execute(
+            "SELECT triggered_rules FROM interaction_policy_decisions "
+            "WHERE interaction_id = %s ORDER BY version DESC LIMIT 1",
+            (interaction_id,),
+        ).fetchone()
+    return list(record_rules), list(cached_rules)
+
+
+def test_fallback_rule_id_is_not_stored_as_a_fired_rule(seeded: str):
+    from data_governance.risk.rules.rego import FALLBACK_RULE_ID
+
+    opa = _FakeOpaClient(
+        [_decision(risk_level="none", enforcement_type="allow",
+                   triggered_rules=[FALLBACK_RULE_ID])]
+    )
+    compute_interaction_risk(_IX_ID, opa_client=opa)
+
+    record_rules, cached_rules = _rule_columns(seeded)
+    assert record_rules == [], "the fallback sentinel is not a catalog rule"
+    assert cached_rules == [FALLBACK_RULE_ID], "the decision cache keeps OPA's raw answer"
+    *_, policy_event_count = _latest_risk_row(seeded)
+    assert policy_event_count == 0, "a fallback-only decision is not a policy event"
+
+
+def test_real_rule_ids_are_stored_verbatim(seeded: str):
+    opa = _FakeOpaClient(
+        [_decision(risk_level="critical", triggered_rules=["DG-002", "DG-001"])]
+    )
+    compute_interaction_risk(_IX_ID, opa_client=opa)
+
+    record_rules, _cached = _rule_columns(seeded)
+    assert sorted(record_rules) == ["DG-001", "DG-002"]
+    *_, policy_event_count = _latest_risk_row(seeded)
+    assert policy_event_count == 1, "one evaluation, not one per fired rule"

@@ -55,7 +55,13 @@ import jsonschema
 
 from data_governance.risk.rules.catalog import ENFORCEMENT_ORDER, RISK_LEVEL_ORDER
 
-__all__ = ["compile_policy"]
+__all__ = ["FALLBACK_RULE_ID", "compile_policy"]
+
+# The rule id the compiled bundle's ``default policy_decision`` reports in
+# ``triggered_rules`` to say "no catalog rule fired". A sentinel, not a rule:
+# consumers that count fired rules (the engine's stored records) must not
+# count it.
+FALLBACK_RULE_ID = "0000"
 
 _PACKAGE = "data_governance"
 
@@ -256,7 +262,7 @@ def _fallback_decision(policy: dict[str, Any], *, mode: str) -> dict[str, Any]:
         "allowed_actions": [],
         "explanation": "No rules fired, falling back to default rule",
         "confidence": 1.0,
-        "triggered_rules": ["0000"],
+        "triggered_rules": [FALLBACK_RULE_ID],
         "rule_combining_mode": mode,
     }
 
