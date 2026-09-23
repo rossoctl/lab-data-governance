@@ -123,7 +123,7 @@ def _policy_decision_versions(dsn: str, interaction_id: str = _IX_ID) -> list[in
 
 
 def test_first_compute_writes_version_1(seeded: str):
-    opa = _FakeOpaClient([_decision(risk_level="high")])
+    opa = _FakeOpaClient([_decision(risk_level="high", triggered_rules=["DG-001"])])
     compute_interaction_risk(_IX_ID, opa_client=opa)
 
     row = _latest_risk_row(seeded)
@@ -371,6 +371,8 @@ def test_fallback_rule_id_is_not_stored_as_a_fired_rule(seeded: str):
     record_rules, cached_rules = _rule_columns(seeded)
     assert record_rules == [], "the fallback sentinel is not a catalog rule"
     assert cached_rules == [FALLBACK_RULE_ID], "the decision cache keeps OPA's raw answer"
+    *_, policy_event_count = _latest_risk_row(seeded)
+    assert policy_event_count == 0, "a fallback-only decision is not a policy event"
 
 
 def test_real_rule_ids_are_stored_verbatim(seeded: str):
@@ -381,3 +383,5 @@ def test_real_rule_ids_are_stored_verbatim(seeded: str):
 
     record_rules, _cached = _rule_columns(seeded)
     assert sorted(record_rules) == ["DG-001", "DG-002"]
+    *_, policy_event_count = _latest_risk_row(seeded)
+    assert policy_event_count == 1, "one evaluation, not one per fired rule"

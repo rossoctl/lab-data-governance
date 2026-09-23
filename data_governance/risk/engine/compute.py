@@ -263,15 +263,22 @@ def _record_params(
     top-rules queries unnest this column; alerts name rules from it). The
     decision cache (``interaction_policy_decisions``) keeps OPA's answer
     verbatim — this is the one place the sentinel is interpreted.
+
+    ``policy_event_count`` follows from the same list: the engine makes one
+    OPA call per evidence state, so a record is exactly one evaluation — 1
+    when a catalog rule fired, 0 when only the fallback did (#222's
+    definition: a policy event is an evaluation that returned at least one
+    triggered rule).
     """
     legs_evidenced = utils.legs_evidenced(legs)
     classification_summary = utils.classification_summary(classifications)
     confidence = utils.quantize_confidence(decision.confidence)
     fired_rule_ids = [r for r in decision.triggered_rules if r != FALLBACK_RULE_ID]
+    policy_event_count = 1 if fired_rule_ids else 0
     normalized = {
         "risk_level": decision.risk_level,
         "enforcement_type": decision.enforcement_type,
-        "policy_event_count": 1,
+        "policy_event_count": policy_event_count,
         "triggered_rule_ids": sorted(fired_rule_ids),
         "legs_evidenced": legs_evidenced,
         "classification_summary": (
@@ -290,7 +297,7 @@ def _record_params(
         "callee_entity_id": callee_entity_id,
         "risk_level": decision.risk_level,
         "enforcement_type": decision.enforcement_type,
-        "policy_event_count": 1,
+        "policy_event_count": policy_event_count,
         "triggered_rule_ids": fired_rule_ids,
         "legs_evidenced": legs_evidenced,
         "classification_summary": json.dumps(classification_summary, default=str),
