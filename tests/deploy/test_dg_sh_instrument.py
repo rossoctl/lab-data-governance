@@ -2,10 +2,10 @@
 
 The activation slice of ``dg.sh`` — the substantial one. It switches on lineage
 for the agents/tools in ``<ns>`` (all of them, or a single ``<entity>`` when
-named). It is **non-reversible, additive-only, and never changes a namespace's
-sidecar mode** (design: ``docs/cli.md`` § ``instrument``; ADR-0031
-non-reversible / mode-preserving; ADR-0033 vendors-the-kit + proxy-default,
-supersedes 0032).
+named). It is **non-reversible and never changes a namespace's sidecar mode**.
+The legacy path is additive-only; trusted #256 workloads canonicalize only
+DG-managed fields and preserve auth (design: ``docs/cli.md`` § ``instrument``;
+ADR-0031 and ADR-0033).
 
 **ADR-0033 owner-split (issue #245 — the behaviour flip).** ``dg.sh`` no longer
 emits its own YAML; it drives the lineage-attach kit **VENDORED into this repo**
@@ -242,6 +242,15 @@ if [[ -n "${KIT_LOG:-}" ]]; then
   printf 'build-otel-shim.sh env: KIND_CLUSTER_NAME=%s\n' "${KIND_CLUSTER_NAME:-<unset>}" >> "$KIT_LOG"
 fi
 base="${1:-}"
+if [[ "${base}" == "--attest-existing" ]]; then
+  base="${2:-}"
+  if [[ "${SHIM_ATTEST_FAILS:-0}" == "1" || "${base}" != *-otel:* && "${base}" != *-otel@* ]]; then
+    echo "ATTESTATION FAILED for ${base}: gate on, but the hook did not come up." >&2
+    exit 4
+  fi
+  echo ">> attested existing ${base}"
+  exit 0
+fi
 if [[ "${SHIM_REFUSES:-0}" == "1" ]]; then
   echo "REFUSING to bake ${base}: it already instruments httpx" >&2
   exit 3
@@ -305,6 +314,11 @@ if [[ "${GET_FAILS:-0}" == "1" && "$1" == "get" ]]; then
 fi
 
 # ---- AuthBridge admin API ---------------------------------------------------
+if [[ "$*" == *"exec"* && "$*" == *" propagates"* ]]; then
+  cat >/dev/null
+  [[ "${LIVE_SHIM_ATTEST_FAILS:-0}" != "1" ]]
+  exit
+fi
 if [[ "$*" == *"exec"* && "$*" == *"/v1/plugins"* ]]; then
   if [[ "${PLUGIN_CATALOG_MISSING:-0}" == "1" ]]; then
     printf '%s' '{"plugins":[{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"}]}'
@@ -579,7 +593,7 @@ def sandbox(tmp_path: Path):
             # them; the stub must too, or the integrity check refuses.
             for f in ("container-runtime.sh", "Dockerfile.otel-shim",
                       "lineage-propagate-hook.py", "rossoctl_turnspan.py",
-                      "rossoctl_turnspan.pth"):
+                      "rossoctl_turnspan.pth", "attest-otel-shim.py"):
                 (self.kitdir / f).write_text("# stub\n")
             (self.kitdir / "reconcile-existing-proxy.py").write_text(
                 (REPO_ROOT / "deploy" / "lineage-attach" / "reconcile-existing-proxy.py").read_text()
@@ -628,6 +642,10 @@ def sandbox(tmp_path: Path):
                     image=image,
                     trusted_type=spec.get("trusted_type"),
                 )
+                if spec.get("activated"):
+                    dep["spec"]["template"]["spec"]["containers"][0]["env"].append(
+                        {"name": "LINEAGE_PROPAGATE", "value": "1"}
+                    )
                 items.append(dep)
                 (fixdir / f"entity-{name}.json").write_text(json.dumps({"items": [dep]}))
 
@@ -647,7 +665,14 @@ def sandbox(tmp_path: Path):
                         "labels": dep["metadata"]["labels"],
                     },
                     "spec": dep["spec"]["template"]["spec"],
-                    "status": {"phase": "Running"},
+                    "status": {
+                        "phase": "Running",
+                        "conditions": [{"type": "Ready", "status": "True"}],
+                        "containerStatuses": [
+                            {"name": container["name"], "ready": True}
+                            for container in dep["spec"]["template"]["spec"]["containers"]
+                        ],
+                    },
                 }
                 (fixdir / f"pods-{name}.json").write_text(json.dumps({"items": [pod]}))
             (fixdir / "entities.json").write_text(json.dumps({"items": items}))
@@ -714,7 +739,7 @@ def test_instrument_refuses_when_vendored_kit_incomplete(sandbox) -> None:
 @pytest.mark.parametrize(
     "missing",
     ["container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py",
-     "rossoctl_turnspan.py", "rossoctl_turnspan.pth"],
+     "rossoctl_turnspan.py", "rossoctl_turnspan.pth", "attest-otel-shim.py"],
 )
 def test_instrument_refuses_when_kit_companion_file_absent(sandbox, missing) -> None:
     """The integrity check covers the WHOLE surface the drive path needs, not
@@ -871,7 +896,7 @@ def test_trusted_proxy_rolls_app_before_hot_reloading_pipeline(sandbox) -> None:
     assert patch_i < apply_i
     assert not any("demo-client" in call and "patch deployment" in call for call in calls)
     assert not any("rollout restart" in call for call in calls[apply_i + 1 :])
-    assert sandbox.kit_log().count("build-otel-shim.sh argv:") == 1
+    assert sandbox.kit_log().count("build-otel-shim.sh argv:") == 2
 
 
 def test_trusted_proxy_missing_producer_plugin_fails_before_mutation(sandbox) -> None:
@@ -896,6 +921,49 @@ def test_trusted_proxy_missing_producer_plugin_fails_before_mutation(sandbox) ->
     assert "apply -f -" not in calls
 
 
+def test_trusted_proxy_existing_otel_image_is_re_attested(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+                "image": "travel-advisor-otel:latest",
+            }
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "build-otel-shim.sh argv: --attest-existing travel-advisor-otel:latest"
+        in sandbox.kit_log()
+    )
+
+
+def test_trusted_proxy_existing_otel_image_refuses_failed_attestation(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+                "image": "misnamed-otel:latest",
+            }
+        }
+    )
+    sandbox.set_flag(SHIM_ATTEST_FAILS="1")
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode != 0
+    assert "failed preflight" in result.stderr
+    assert not any("patch deployment/" in call for call in sandbox.kubectl_calls())
+
+
 def test_status_explains_trusted_proxy_activation_drift(sandbox) -> None:
     sandbox.set_namespace(
         {
@@ -912,6 +980,27 @@ def test_status_explains_trusted_proxy_activation_drift(sandbox) -> None:
     assert result.returncode == 0, result.stderr
     assert "live=no" in result.stdout
     assert "application shim or LINEAGE_PROPAGATE missing" in result.stdout
+
+
+def test_status_attests_the_running_application_not_the_local_image(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": True,
+                "trusted_type": "agent",
+                "image": "opaque-registry.example/app:any-tag",
+                "activated": True,
+            }
+        }
+    )
+    sandbox.set_flag(LIVE_SHIM_ATTEST_FAILS="1")
+
+    result = sandbox.run("namespace", "travel-advisor", "status")
+
+    assert result.returncode == 0, result.stderr
+    assert "live=no (running application failed two-shim attestation)" in result.stdout
+    assert "--attest-existing" not in sandbox.kit_log()
 
 
 def test_instrument_no_sidecar_bare_ns_drives_proxy_applier(sandbox) -> None:

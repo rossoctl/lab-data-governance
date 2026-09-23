@@ -49,6 +49,7 @@ TURNSPAN_PY = KIT / "rossoctl_turnspan.py"
 TURNSPAN_PTH = KIT / "rossoctl_turnspan.pth"
 DOCKERFILE = KIT / "Dockerfile.otel-shim"
 BUILD_SCRIPT = KIT / "build-otel-shim.sh"
+ATTEST_SCRIPT = KIT / "attest-otel-shim.py"
 
 
 # ---------------------------------------------------------------------------
@@ -287,26 +288,39 @@ def build_script_text() -> str:
     return BUILD_SCRIPT.read_text()
 
 
+@pytest.fixture(scope="module")
+def attest_script_text() -> str:
+    return ATTEST_SCRIPT.read_text()
+
+
 def test_build_script_attestation_asserts_turnspan_importable(
-    build_script_text: str,
+    build_script_text: str, attest_script_text: str,
 ) -> None:
     """ADR-0033 Decision 4: the bake's attestation is extended to assert the
     turn-span module is importable — so a bake that silently failed to install it
     (a rename, a COPY drop) fails the BUILD, not the cluster. The assertion lives
     in the gate-ON attestation (``verify_propagates``), which runs the interpreter
     with the shim environment up."""
-    assert "rossoctl_turnspan" in build_script_text, (
-        "build-otel-shim.sh attestation must reference the turn-span module"
-    )
+    assert "attest-otel-shim.py" in build_script_text
     imports_turnspan = bool(
-        re.search(r"import\s+rossoctl_turnspan", build_script_text)
-        or re.search(r"find_spec\(\s*[\"']rossoctl_turnspan", build_script_text)
-        or re.search(r"__import__\(\s*[\"']rossoctl_turnspan", build_script_text)
+        re.search(r"import\s+rossoctl_turnspan", attest_script_text)
+        or re.search(r"find_spec\(\s*[\"']rossoctl_turnspan", attest_script_text)
+        or re.search(r"__import__\(\s*[\"']rossoctl_turnspan", attest_script_text)
     )
     assert imports_turnspan, (
         "the attestation must actually import (or find_spec) rossoctl_turnspan so "
         "a missing turn-span shim fails the bake"
     )
+
+
+def test_build_script_exposes_existing_image_attestation(
+    build_script_text: str,
+) -> None:
+    """Reruns prove image contents; an ``-otel`` suffix is never provenance."""
+    assert "--attest-existing" in build_script_text
+    attest_branch = build_script_text[build_script_text.index('"--attest-existing"') :]
+    assert "verify_inert" in attest_branch
+    assert "verify_propagates" in attest_branch
 
 
 def test_build_script_interlock_detects_the_turnspan_shim(

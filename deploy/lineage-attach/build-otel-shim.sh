@@ -7,6 +7,7 @@
 #
 # Usage:
 #   ./build-otel-shim.sh <base-image> [wrapper-tag] [venv-python] [app-uid[:gid]]
+#   ./build-otel-shim.sh --attest-existing <shim-image> [venv-python]
 #   venv-python / app-uid are escape hatches for when detection picks wrong;
 #   an explicit value is used as-is. Give app-uid as uid:gid — a bare uid
 #   still takes the gid the base image's own user resolves to.
@@ -75,6 +76,30 @@ parse_args() {
     echo "  -> give a distinct wrapper tag as arg 2 (default is <base name>-otel:latest)." >&2
     exit 3
   fi
+}
+
+resolve_local_image() {
+  local image="$1"
+  case "$image" in
+    */*) base_ref="$image" ;;
+    *)   if "$CONTAINER_TOOL" image inspect "$image" >/dev/null 2>&1; then
+           base_ref="$image"
+         else
+           base_ref="docker.io/library/${image}"
+         fi ;;
+  esac
+  if ! "$CONTAINER_TOOL" image inspect "$base_ref" >/dev/null 2>&1; then
+    echo "REFUSING to attest ${image}: ${base_ref} is not present locally (${CONTAINER_TOOL})." >&2
+    echo "  Pull or build it first, then re-run the attestation." >&2
+    exit 4
+  fi
+}
+
+parse_attest_args() {
+  local image="${1:?usage: build-otel-shim.sh --attest-existing <shim-image> [venv-python]}"
+  VENV_PYTHON="${2:-}"
+  resolve_local_image "$image"
+  WRAPPER_TAG="$base_ref"
 }
 
 # Normalize an image ref for identity comparison: strip the local-build registry
@@ -258,37 +283,19 @@ build_image() {
 # one opentelemetry module may load; gate on, the hook ran, the exporter
 # selection is explicit, and the propagator injects a traceparent.
 verify_inert() {
-  if ! "$CONTAINER_TOOL" run --rm --network=none --entrypoint "$VENV_PYTHON" "$WRAPPER_TAG" -c '
-import sys
-loaded = sorted(m for m in sys.modules if m.startswith("opentelemetry"))
-raise SystemExit("gate off, yet otel loaded: %s" % loaded if loaded else 0)'; then
+  if ! "$CONTAINER_TOOL" run --rm --network=none -i \
+      --entrypoint "$VENV_PYTHON" "$WRAPPER_TAG" - inert \
+      < "${SCRIPT_DIR}/attest-otel-shim.py"; then
     echo "ATTESTATION FAILED for ${WRAPPER_TAG}: image is not inert with the gate off." >&2
     exit 4
   fi
 }
 
 verify_propagates() {
-  if ! "$CONTAINER_TOOL" run --rm --network=none -e LINEAGE_PROPAGATE=1 --entrypoint "$VENV_PYTHON" "$WRAPPER_TAG" -c '
-import os, sys
-assert "opentelemetry.instrumentation.auto_instrumentation" in sys.modules, "hook did not run"
-assert os.environ.get("OTEL_TRACES_EXPORTER") is not None, "exporter selection not pinned"
-from opentelemetry import trace
-from opentelemetry.propagate import inject
-with trace.get_tracer("attest").start_as_current_span("attest"):
-    carrier = {}
-    inject(carrier)
-assert "traceparent" in carrier, "propagator injects nothing: %r" % carrier
-# The SECOND shim (ADR-0033 "One trace needs two shims") must be installed in
-# the SAME image: turn-span WITHOUT this activation hook fragments a turn worse
-# than the no-shim baseline, so a bake that shipped one without the other is a
-# defect. Its .pth imports the module at interpreter start (ROSSOCTL_TURNSPAN
-# default on) and, since we run with LINEAGE_PROPAGATE=1, calls install() too —
-# so the module is already in sys.modules here. Assert both that it imported and
-# that its patch entry point is present, so a COPY drop or a rename fails the
-# BUILD, not the cluster.
-assert "rossoctl_turnspan" in sys.modules, "turn-span shim (rossoctl_turnspan) did not load at startup"
-import rossoctl_turnspan
-assert callable(getattr(rossoctl_turnspan, "install", None)), "turn-span shim has no install()"'; then
+  # The shared assertion also powers dg.sh status inside the live app container.
+  if ! "$CONTAINER_TOOL" run --rm --network=none -i -e LINEAGE_PROPAGATE=1 \
+      --entrypoint "$VENV_PYTHON" "$WRAPPER_TAG" - propagates \
+      < "${SCRIPT_DIR}/attest-otel-shim.py"; then
     echo "ATTESTATION FAILED for ${WRAPPER_TAG}: gate on, but a shim did not come up (activation hook and/or the turn-span shim)." >&2
     exit 4
   fi
@@ -331,6 +338,15 @@ publish() {
 }
 
 main() {
+  if [[ "${1:-}" == "--attest-existing" ]]; then
+    shift
+    parse_attest_args "$@"        # existing image → globals
+    detect_python                  # interpreter in the existing image
+    verify_inert                   # prove the activation gate is inert
+    verify_propagates              # prove both shims and propagation
+    echo ">> attested existing ${base_ref}"
+    return 0
+  fi
   parse_args "$@"               # args + env → globals
   detect_python                 # the app's interpreter, probed (or arg 3)
   detect_user                   # uid:gid, probed (or arg 4)

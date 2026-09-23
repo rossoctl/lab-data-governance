@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Reconcile lineage into a Rossoctl-owned AuthBridge proxy ConfigMap.
 
-The platform owns the ConfigMap and all authentication plugins.  This tool
-therefore edits only the two ``pipeline.*.plugins`` sequences, preserving every
-unmanaged entry and every other ConfigMap field byte-for-byte where practical.
+The platform owns the ConfigMap and all authentication plugins. This tool
+canonicalizes the three proxy listener values and the managed parser/lineage
+entries in both ``pipeline.*.plugins`` sequences, while preserving every
+unmanaged plugin and every unrelated ConfigMap field byte-for-byte where
+practical.
 It intentionally uses only the Python standard library so ``dg.sh`` remains a
 standalone cluster-management script.
 """
@@ -23,6 +25,11 @@ MANAGED_PLUGINS = (
     "lineage-telemetry",
 )
 NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+LISTENER_VALUES = {
+    "forward_proxy_addr": ":8084",
+    "reverse_proxy_addr": ":8080",
+    "reverse_proxy_backend": "http://127.0.0.1:8081",
+}
 
 
 class ConfigError(ValueError):
@@ -85,6 +92,69 @@ def _managed_blocks(indent: int, self_id: str, otel_endpoint: str) -> list[str]:
     ]
 
 
+def _reconcile_listener(lines: list[str]) -> list[str]:
+    listener_index = next((i for i, line in enumerate(lines) if _key(line, "listener")), None)
+    if listener_index is None:
+        raise ConfigError("missing listener: section")
+    listener_indent = _indent(lines[listener_index])
+    listener_end = len(lines)
+    for cursor in range(listener_index + 1, len(lines)):
+        line = lines[cursor]
+        if line.strip() and not line.lstrip().startswith("#") and _indent(line) <= listener_indent:
+            listener_end = cursor
+            break
+    found: set[str] = set()
+    for cursor in range(listener_index + 1, listener_end):
+        line = lines[cursor]
+        for key, value in LISTENER_VALUES.items():
+            if re.match(rf"^\s*{re.escape(key)}\s*:", line):
+                if key in found:
+                    raise ConfigError(f"duplicate listener.{key}")
+                found.add(key)
+                lines[cursor] = f"{' ' * _indent(line)}{key}: {value}\n"
+    missing = set(LISTENER_VALUES) - found
+    if missing:
+        raise ConfigError(f"existing proxy config is missing listener.{sorted(missing)[0]}")
+    return lines
+
+
+def _plugin_names(lines: list[str], direction: str) -> list[str]:
+    pipeline_index = next((i for i, line in enumerate(lines) if _key(line, "pipeline")), None)
+    if pipeline_index is None:
+        raise ConfigError("missing pipeline: section")
+    pipeline_indent = _indent(lines[pipeline_index])
+    direction_index, direction_end = _section(
+        lines, direction, pipeline_index + 1, len(lines), pipeline_indent
+    )
+    plugins_index, plugins_end = _section(
+        lines, "plugins", direction_index + 1, direction_end, _indent(lines[direction_index])
+    )
+    first_item = next(
+        (
+            cursor
+            for cursor in range(plugins_index + 1, plugins_end)
+            if re.match(r"^\s*-\s+", lines[cursor])
+        ),
+        None,
+    )
+    if first_item is None:
+        return []
+    item_indent = _indent(lines[first_item])
+    item_starts = [
+        cursor
+        for cursor in range(first_item, plugins_end)
+        if re.match(rf"^ {{{item_indent}}}-\s+", lines[cursor])
+    ]
+    names: list[str] = []
+    for position, start in enumerate(item_starts):
+        end = item_starts[position + 1] if position + 1 < len(item_starts) else plugins_end
+        name = _plugin_name(lines[start:end])
+        if name is None:
+            raise ConfigError(f"unnamed plugin in pipeline.{direction}")
+        names.append(name)
+    return names
+
+
 def _reconcile_direction(
     lines: list[str], direction: str, self_id: str, otel_endpoint: str
 ) -> list[str]:
@@ -141,10 +211,8 @@ def _reconcile_direction(
 def reconcile_config(config: str, self_id: str, otel_endpoint: str) -> str:
     if not re.search(r"(?m)^mode:\s*proxy-sidecar\s*$", config):
         raise ConfigError("existing sidecar config is not mode: proxy-sidecar")
-    for required in ("forward_proxy_addr", "reverse_proxy_addr", "reverse_proxy_backend"):
-        if not re.search(rf"(?m)^\s*{required}:\s*\S+", config):
-            raise ConfigError(f"existing proxy config is missing {required}")
     lines = config.splitlines(keepends=True)
+    lines = _reconcile_listener(lines)
     lines = _reconcile_direction(lines, "inbound", self_id, otel_endpoint)
     lines = _reconcile_direction(lines, "outbound", self_id, otel_endpoint)
     return "".join(lines)
@@ -162,6 +230,53 @@ def render(args: argparse.Namespace) -> int:
     return 0
 
 
+def catalog_valid(_args: argparse.Namespace) -> int:
+    document = json.load(sys.stdin)
+    names = {plugin.get("name") for plugin in document.get("plugins") or []}
+    return 0 if set(MANAGED_PLUGINS) <= names else 1
+
+
+def pipeline_valid(args: argparse.Namespace) -> int:
+    document = json.load(sys.stdin)
+    expected = json.loads(args.expected)
+    for direction in ("inbound", "outbound"):
+        plugins = document.get(direction) or []
+        names = [plugin.get("name") for plugin in plugins]
+        if names != expected.get(direction):
+            return 1
+        try:
+            positions = [names.index(name) for name in MANAGED_PLUGINS]
+        except ValueError:
+            return 1
+        if positions != sorted(positions):
+            return 1
+        lineage = plugins[positions[-1]]
+        config = lineage.get("config") or {}
+        expected_config = {
+            "self_id": args.self_id,
+            "otel_endpoint": args.otel_endpoint,
+            "capture_io": False,
+            "namespace_file": NAMESPACE_FILE,
+        }
+        if any(config.get(key) != value for key, value in expected_config.items()):
+            return 1
+    return 0
+
+
+def pipeline_contract(_args: argparse.Namespace) -> int:
+    document = json.load(sys.stdin)
+    config = (document.get("data") or {}).get("config.yaml")
+    if not isinstance(config, str):
+        raise ConfigError("ConfigMap has no data.config.yaml string")
+    lines = config.splitlines(keepends=True)
+    contract = {
+        direction: _plugin_names(lines, direction)
+        for direction in ("inbound", "outbound")
+    }
+    json.dump(contract, sys.stdout)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -169,6 +284,15 @@ def build_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--self-id", required=True)
     render_parser.add_argument("--otel-endpoint", required=True)
     render_parser.set_defaults(func=render)
+    catalog_parser = subparsers.add_parser("catalog-valid")
+    catalog_parser.set_defaults(func=catalog_valid)
+    pipeline_parser = subparsers.add_parser("pipeline-valid")
+    pipeline_parser.add_argument("--self-id", required=True)
+    pipeline_parser.add_argument("--otel-endpoint", required=True)
+    pipeline_parser.add_argument("--expected", required=True)
+    pipeline_parser.set_defaults(func=pipeline_valid)
+    contract_parser = subparsers.add_parser("pipeline-contract")
+    contract_parser.set_defaults(func=pipeline_contract)
     return parser
 
 

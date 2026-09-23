@@ -127,9 +127,10 @@ List **user** namespaces: those labelled `rossoctl-enabled: "true"`, excluding
 ### `dg.sh namespace <ns> instrument [<entity>]` — NON-REVERSIBLE (v1)
 
 Activate lineage for the agents/tools in `<ns>` — **all** of them, or the
-single `<entity>` when named. **Additive-only, and it never changes a
-namespace's sidecar mode** (see ADR-0031 for why non-reversible, and why no
-mode switch).
+single `<entity>` when named. It never changes a namespace's sidecar mode. The
+legacy #239 path is additive-only; the trusted #256 path deliberately replaces
+the application image and canonicalizes DG-managed listener/parser/lineage
+fields while preserving platform-owned authentication plugins.
 
 Selection prefers the trusted operator label `rossoctl.io/type=agent|tool`.
 When any such Deployment exists, only that trusted set is eligible; clients,
@@ -184,11 +185,15 @@ skip-injected) are recorded there as future work.
 **Issue #256 supersedes the existing-sidecar sequence for trusted Rossoctl
 proxy workloads.** Before the first workload mutation, `instrument` validates
 every admitted proxy and producer catalog, validates every mounted ConfigMap,
-and builds/attests every distinct required application shim. It then updates
+and builds/attests every distinct required application shim (including an
+independent re-attestation when the deployed image is already shimmed; an
+`-otel` tag is not trusted as provenance). It then updates
 only the application container image and `LINEAGE_PROPAGATE=1`, waits for
 rollout and webhook reinjection, resolves the new pod's ConfigMap, and
 canonically reconciles both pipelines while preserving JWT-validation and
-token-exchange. AuthBridge must hot reload the change and expose it from
+token-exchange. Canonical state includes forward `:8084`, reverse `:8080`, and
+backend `http://127.0.0.1:8081` listener values plus exact live plugin sequences
+without duplicates. AuthBridge must hot reload the change and expose it from
 `/v1/pipeline`; no rollout occurs after the ConfigMap edit.
 
 The plugin points `otel_endpoint` at the platform collector
@@ -278,10 +283,12 @@ which reverses ADR-0032's drive-an-external-checkout arrangement).
   — it **appends in place** instead.)
 
 There is **no `reset`** in v1. To undo, delete/redeploy the namespace's
-workloads (the natural escape hatch on a dev cluster). Activation is additive
-and never mutates shared operator state (no mode switch), so there is nothing
-irreversible about the *cluster* — only that `dg.sh` does not script the
-un-wire. (For the kit-owned rows, the kit already prints a precise
+workloads (the natural escape hatch on a dev cluster). The legacy path is
+additive and never mutates shared operator state. The trusted #256 path edits
+the operator-owned per-workload ConfigMap only after rollout and confines that
+edit to canonical listener/parser/lineage fields, preserving auth and sidecar
+mode. `dg.sh` does not script either path's un-wire. (For kit-owned rows, the
+kit already prints a precise
 **reverse-patch** back-out line — a strategic merge that deletes by name exactly
 what the attach added and restores the app image it replaced, then deletes the
 ConfigMap — so a manual back-out is one printed line away. This is a reverse

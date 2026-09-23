@@ -65,12 +65,20 @@ rather than reconciling traces. Adapting flush would have required a synthetic
 bolt-on reconcile delete: more machinery than the ~120-line write path it
 replaced, entangling two write models in one function. So the algorithm keeps
 its own `_write` — trace-scoped deletes only (stale legs via a subselect on
-the trace's interactions, since legs carry no `trace_id`; `entities` is
-global, upsert-only, never deleted) — and `state.py`, `procedure.py`, and the
+the trace's interactions, since legs carry no `trace_id`; `entities` was
+originally global, upsert-only, and never deleted) — and `state.py`, `procedure.py`, and the
 graph modules are untouched, keeping streaming/graph byte-identical by
 construction. The `interaction_spans` leg_type parameterization ADR-0025
 pre-authorized inside flush turned out unnecessary: the Case-Y source brings
 its own writes and stamps leg_type there.
+
+> **Revision (issue #256, 2026-09-23):** The sidecar writer now garbage-collects
+> only unnamespaced `agent:<host>:<port>` and `tool:<host>:<port>` provisional
+> peer entities after canonical echo-backed identities replace them. Deletion
+> is reference-aware across all traces: both interaction endpoints and
+> `entity_spans` must have no remaining reference. This narrowly supersedes the
+> global upsert-only statement above; canonical namespaced entities and every
+> other entity kind remain persistent.
 
 ## Read side
 
@@ -94,6 +102,10 @@ substantive one — it is the field a view filters on.
   the ordering they cursor on, so this source feeds them unchanged.
 - Upstream `caller_inference.py` is not wired in: its orphan-server ladder
   reads `kagenti.user.id` / `peer.service` / `client.address` / `net.peer.*`,
-  none of which the wire contract emits. The sidecar's `client:(unknown)`
-  entries stem from ext_proc providing no peer address — a producer-side
-  follow-up, not a consumer-side mapping.
+  none of which the wire contract emits. For sidecar inbound traffic,
+  `lineage.principal.client` identifies the OAuth transport client as
+  `client:<OAuth-client-id>`; absent that fact the caller is honestly
+  `client:(unknown)`. `lineage.principal.sub` remains span evidence and never
+  substitutes for the client identity. OAuth IDs and network-derived IDs share
+  the existing client natural-key namespace, so equal strings intentionally
+  identify one entity.

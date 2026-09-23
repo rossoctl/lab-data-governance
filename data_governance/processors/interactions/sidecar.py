@@ -271,17 +271,14 @@ def _callee(kinds: Kinds, req: Span, echo: Span | None) -> _Entity:
 
 def _caller(kinds: Kinds, req: Span, self_kind_of: dict[str, str]) -> _Entity:
     """Caller identity from facts. Inbound: the authenticated OAuth client when
-    present, otherwise user:<principal.sub>, otherwise client:(unknown).  The
-    subject remains available on the evidence span even when the client names
-    the transport caller. Outbound: this pod's self.id, of the kind this trace
+    present, otherwise client:(unknown).  The human subject remains available
+    on the evidence span but does not name the transport caller. Outbound: this
+    pod's self.id, of the kind this trace
     already knows the pod to be (``_self_kinds``), else the table's default."""
     if _direction(req) == "inbound":
         client = _attr(req, "lineage.principal.client")
         if client:
             return _Entity("client", str(client))
-        sub = _attr(req, "lineage.principal.sub")
-        if sub:
-            return _Entity("user", str(sub))
         return _Entity("client", _UNKNOWN)
     return _self_entity(self_kind_of.get(_self_key(req), kinds.caller_kind), req)
 
@@ -363,7 +360,8 @@ class _Plan:
 def derive_trace(tx: db.Transaction, trace_id: str) -> None:
     """Reconcile one trace's interaction graph from ALL its spans. Idempotent;
     order-independent. Deletes this trace's derived rows no longer justified by
-    the current span set (trace-scoped — ``entities`` is global, upsert-only)."""
+    the current span set, then retires only globally unreferenced provisional
+    host:port agent/tool entities."""
     _write(tx, plan_trace(trace_id, _fetch_trace_spans(tx, trace_id)))
 
 

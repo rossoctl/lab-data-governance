@@ -102,3 +102,98 @@ def test_render_refuses_non_proxy_or_incomplete_listener() -> None:
         result = _run_render(config)
         assert result.returncode == 2
         assert "error:" in result.stderr
+
+
+def test_render_repairs_listener_drift() -> None:
+    result = _run_render(
+        """listener:
+  forward_proxy_addr: :9999
+  reverse_proxy_addr: :9998
+  reverse_proxy_backend: http://127.0.0.1:9997
+mode: proxy-sidecar
+pipeline:
+  inbound:
+    plugins:
+      - name: jwt-validation
+  outbound:
+    plugins:
+      - name: token-exchange
+"""
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = json.loads(result.stdout)["data"]["config.yaml"]
+    assert "forward_proxy_addr: :8084" in body
+    assert "reverse_proxy_addr: :8080" in body
+    assert "reverse_proxy_backend: http://127.0.0.1:8081" in body
+    assert ":999" not in body
+
+
+def test_pipeline_validation_requires_exact_reconciled_plugin_sequences() -> None:
+    rendered = _run_render(
+        """listener:
+  forward_proxy_addr: :8084
+  reverse_proxy_addr: :8080
+  reverse_proxy_backend: http://127.0.0.1:8081
+mode: proxy-sidecar
+pipeline:
+  inbound:
+    plugins:
+      - name: jwt-validation
+  outbound:
+    plugins:
+      - name: token-exchange
+"""
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    contract = subprocess.run(
+        ["python3", str(RECONCILER), "pipeline-contract"],
+        input=rendered.stdout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert contract.returncode == 0, contract.stderr
+    expected = json.loads(contract.stdout)
+    assert expected["inbound"] == [
+        "jwt-validation",
+        "a2a-parser",
+        "mcp-parser",
+        "inference-parser",
+        "lineage-telemetry",
+    ]
+
+    live = {
+        "inbound": [{"name": name} for name in expected["inbound"]],
+        "outbound": [{"name": name} for name in expected["outbound"]],
+    }
+    for direction in ("inbound", "outbound"):
+        live[direction][-1]["config"] = {
+            "otel_endpoint": "otel-collector.rossoctl-system.svc.cluster.local:4317",
+            "capture_io": False,
+            "self_id": "travel-advisor",
+            "namespace_file": "/var/run/secrets/kubernetes.io/serviceaccount/namespace",
+        }
+
+    command = [
+        "python3", str(RECONCILER), "pipeline-valid",
+        "--self-id", "travel-advisor",
+        "--otel-endpoint", "otel-collector.rossoctl-system.svc.cluster.local:4317",
+        "--expected", contract.stdout,
+    ]
+    valid = subprocess.run(
+        command, input=json.dumps(live), capture_output=True, text=True, check=False
+    )
+    assert valid.returncode == 0, valid.stderr
+
+    live["inbound"].insert(2, {"name": "a2a-parser"})
+    duplicate = subprocess.run(
+        command, input=json.dumps(live), capture_output=True, text=True, check=False
+    )
+    assert duplicate.returncode == 1
+
+    live["inbound"] = [item for item in live["inbound"] if item["name"] != "jwt-validation"]
+    missing_auth = subprocess.run(
+        command, input=json.dumps(live), capture_output=True, text=True, check=False
+    )
+    assert missing_auth.returncode == 1

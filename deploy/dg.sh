@@ -776,7 +776,7 @@ namespace_status() {
             lineage="no (lineage-telemetry not wired)"
         fi
         if deployment_is_trusted "${deployment_json}" && [[ "${type}" == "proxy" ]]; then
-            local live="yes" reason="live" pod_json pod_name cm_json
+            local live="yes" reason="live" pod_json pod_name cm_json app_name
             pod_json="$(get_pod_json_soft "${ns}" "${name}" || true)"
             if ! deployment_activation_valid "${deployment_json}"; then
                 live="no"; reason="application shim or LINEAGE_PROPAGATE missing"
@@ -784,6 +784,10 @@ namespace_status() {
                 live="no"; reason="admission proxy environment missing"
             elif ! pod_proxy_ready "${pod_json}"; then
                 live="no"; reason="pod or authbridge-proxy not ready"
+            elif ! app_name="$(app_container_of "${pod_json}")" || [[ -z "${app_name}" ]]; then
+                live="no"; reason="application container unresolved"
+            elif ! pod_shim_attested "${ns}" "$(pod_name_of "${pod_json}")" "${app_name}"; then
+                live="no"; reason="running application failed two-shim attestation"
             elif [[ -z "${cm}" ]]; then
                 live="no"; reason="mounted ConfigMap unresolved"
             else
@@ -792,7 +796,7 @@ namespace_status() {
                     live="no"; reason="mounted ConfigMap drifted"
                 else
                     pod_name="$(pod_name_of "${pod_json}")"
-                    if ! live_pipeline_is_canonical "${ns}" "${pod_name}" "${name}"; then
+                    if ! live_pipeline_is_canonical "${ns}" "${pod_name}" "${name}" "${cm_json}"; then
                         live="no"; reason="live pipeline has not converged"
                     fi
                 fi
@@ -917,6 +921,7 @@ require_vendored_kit() {
     local f
     for f in container-runtime.sh Dockerfile.otel-shim lineage-propagate-hook.py \
              rossoctl_turnspan.py rossoctl_turnspan.pth \
+             attest-otel-shim.py \
              reconcile-existing-proxy.py; do
         [[ -e "${KIT_DIR}/${f}" ]] \
             || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/${f} is missing (the shim bake needs it). Mutating nothing."
@@ -1086,8 +1091,26 @@ apps = [c for c in spec.get("containers", []) if c.get("name") not in {"authbrid
 if len(apps) != 1: sys.exit(1)
 app = apps[0]; env = {e.get("name"): e.get("value") for e in app.get("env", [])}
 image = app.get("image") or ""
-sys.exit(0 if ("-otel:" in image or "-otel@" in image) and env.get("LINEAGE_PROPAGATE") == "1" else 1)
+sys.exit(0 if image and env.get("LINEAGE_PROPAGATE") == "1" else 1)
 '
+}
+
+shim_image_attested() {
+    local image="$1"
+    "${KIT_DIR}/build-otel-shim.sh" --attest-existing "${image}" >/dev/null 2>&1
+}
+
+pod_shim_attested() {
+    local ns="$1" pod="$2" app="$3" interpreter
+    [[ -n "${pod}" && -n "${app}" ]] || return 1
+    for interpreter in /app/.venv/bin/python /opt/venv/bin/python python3; do
+        if kubectl -n "${ns}" exec -i "${pod}" -c "${app}" -- \
+            "${interpreter}" - propagates \
+            < "${KIT_DIR}/attest-otel-shim.py" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 pod_proxy_ready() {
@@ -1121,36 +1144,20 @@ proxy_catalog_has_lineage() {
     catalog="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
         wget -qO- http://127.0.0.1:9094/v1/plugins 2>/dev/null)" || status=$?
     [[ "${status}" -eq 0 && -n "${catalog}" ]] || return 1
-    printf '%s' "${catalog}" | python3 -c '
-import json, sys
-names = {p.get("name") for p in (json.load(sys.stdin).get("plugins") or [])}
-sys.exit(0 if {"a2a-parser", "mcp-parser", "inference-parser", "lineage-telemetry"} <= names else 1)
-'
+    printf '%s' "${catalog}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" catalog-valid
 }
 
 live_pipeline_is_canonical() {
-    local ns="$1" pod="$2" self_id="$3" body status
+    local ns="$1" pod="$2" self_id="$3" cm_json="$4" body expected status
     status=0
     body="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
         wget -qO- http://127.0.0.1:9094/v1/pipeline 2>/dev/null)" || status=$?
     [[ "${status}" -eq 0 && -n "${body}" ]] || return 1
-    printf '%s' "${body}" | python3 -c '
-import json, sys
-self_id, endpoint = sys.argv[1:]
-doc = json.load(sys.stdin)
-managed = ["a2a-parser", "mcp-parser", "inference-parser", "lineage-telemetry"]
-for direction in ("inbound", "outbound"):
-    plugins = doc.get(direction) or []
-    names = [p.get("name") for p in plugins]
-    positions = [names.index(name) for name in managed if name in names]
-    if len(positions) != len(managed) or positions != sorted(positions): sys.exit(1)
-    lineage = next(p for p in plugins if p.get("name") == "lineage-telemetry")
-    cfg = lineage.get("config") or {}
-    if cfg.get("self_id") != self_id or cfg.get("otel_endpoint") != endpoint: sys.exit(1)
-    if cfg.get("capture_io") is not False: sys.exit(1)
-    if cfg.get("namespace_file") != "/var/run/secrets/kubernetes.io/serviceaccount/namespace": sys.exit(1)
-sys.exit(0)
-' "${self_id}" "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}"
+    expected="$(printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-contract 2>/dev/null)" \
+        || return 1
+    printf '%s' "${body}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-valid \
+        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        --expected "${expected}"
 }
 
 # watch_rollout_for_crashloop <ns> <entity> <backout_line> <attach_stdout>:
@@ -1368,26 +1375,25 @@ preflight_trusted_proxies() {
         [[ -n "${app}" ]] || die "instrument: '${entity}' must have exactly one application container. Mutating nothing."
         base="$(app_image_of "${dep}" "${app}")"
         [[ -n "${base}" ]] || die "instrument: '${entity}' application image could not be resolved. Mutating nothing."
-        if [[ "${base}" == *-otel:* || "${base}" == *-otel@* ]]; then
+        cached="$(awk -F '\t' -v image="${base}" '$1 == image {print $2; exit}' "${cache_file}")"
+        if [[ -n "${cached}" ]]; then
+            shim="${cached}"
+        elif shim_image_attested "${base}"; then
             shim="${base}"
+            printf '%s\t%s\n' "${base}" "${shim}" >> "${cache_file}"
         else
-            cached="$(awk -F '\t' -v image="${base}" '$1 == image {print $2; exit}' "${cache_file}")"
-            if [[ -n "${cached}" ]]; then
-                shim="${cached}"
-            else
-                err ">> instrument: preflight baking + attesting '${base}' for trusted proxy workloads"
-                bake_status=0
-                bake_out="$(KIND_CLUSTER_NAME="$(resolve_kind_cluster_name)" \
-                    "${KIT_DIR}/build-otel-shim.sh" "${base}" 2>&1)" || bake_status=$?
-                printf '%s\n' "${bake_out}" >&2
-                [[ "${bake_status}" -eq 0 ]] \
-                    || die "instrument: required shim for '${base}' failed preflight (exit ${bake_status}); trusted existing proxies cannot downgrade to capture-only. Mutating no workloads."
-                shim="$(printf '%s\n' "${bake_out}" | sed -nE \
-                    's/.*loaded ([^ ]+) into.*/\1/p; s/.*built \+ attested ([^ ]+) .*/\1/p' | head -n1)"
-                [[ -n "${shim}" ]] \
-                    || die "instrument: shim bake for '${base}' succeeded without a parseable image reference. Mutating no workloads."
-                printf '%s\t%s\n' "${base}" "${shim}" >> "${cache_file}"
-            fi
+            err ">> instrument: preflight baking + attesting '${base}' for trusted proxy workloads"
+            bake_status=0
+            bake_out="$(KIND_CLUSTER_NAME="$(resolve_kind_cluster_name)" \
+                "${KIT_DIR}/build-otel-shim.sh" "${base}" 2>&1)" || bake_status=$?
+            printf '%s\n' "${bake_out}" >&2
+            [[ "${bake_status}" -eq 0 ]] \
+                || die "instrument: required shim for '${base}' failed preflight (exit ${bake_status}); trusted existing proxies cannot downgrade to capture-only. Mutating no workloads."
+            shim="$(printf '%s\n' "${bake_out}" | sed -nE \
+                's/.*loaded ([^ ]+) into.*/\1/p; s/.*built \+ attested ([^ ]+) .*/\1/p' | head -n1)"
+            [[ -n "${shim}" ]] \
+                || die "instrument: shim bake for '${base}' succeeded without a parseable image reference. Mutating no workloads."
+            printf '%s\t%s\n' "${base}" "${shim}" >> "${cache_file}"
         fi
         printf '%s\t%s\t%s\n' "${entity}" "${app}" "${shim}" >> "${plan_file}"
     done <<< "${names}"
@@ -1428,7 +1434,7 @@ print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image"
 
     local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-30}"
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        if live_pipeline_is_canonical "${ns}" "${pod_name}" "${entity}"; then
+        if live_pipeline_is_canonical "${ns}" "${pod_name}" "${entity}" "${amended}"; then
             err ">> instrument: '${entity}' lineage pipeline hot-reloaded and is live (no second rollout)."
             return 0
         fi

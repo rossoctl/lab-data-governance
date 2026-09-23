@@ -80,7 +80,7 @@ def _assert_golden(snap: dict) -> None:
     # The namespace column (migration 0016) mirrors what the key carries: set
     # for the two pods, NULL for the user and the LLM endpoint.
     assert snap["namespaces"] == {
-        "user:alice": None,
+        "client:(unknown)": None,
         "agent:team1/weather-service": "team1",
         "tool:team1/weather-tool": "team1",
         f"llm:{golden._LLM_HOST}/qwen2.5:7b": None,
@@ -93,7 +93,7 @@ def _assert_golden(snap: dict) -> None:
     assert snap["ix"][I4]["parent"] == I1
     # Endpoints.
     assert (snap["ix"][I1]["caller"], snap["ix"][I1]["callee"]) == (
-        "user:alice", "agent:team1/weather-service")
+        "client:(unknown)", "agent:team1/weather-service")
     assert snap["ix"][I3]["callee"] == "tool:team1/weather-tool"  # from echo self.id
     assert snap["ix"][I2]["callee"] == f"llm:{golden._LLM_HOST}/qwen2.5:7b"
     # All complete: both observed legs per interaction (8 legs total), with the
