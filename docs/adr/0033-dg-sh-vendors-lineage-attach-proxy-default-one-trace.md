@@ -12,8 +12,9 @@ status: accepted
 > ConfigMap and verify `/v1/pipeline` hot reload without a second rollout. Auth
 > plugins and the platform sidecar remain platform-owned. Existing shim images
 > are re-attested from their contents rather than trusted by an `-otel` tag;
-> listener ports/backend and the exact auth-plus-managed plugin sequences are
-> part of convergence. A later platform
+> listener ports/backend are derived from the admitted pod's platform contract,
+> and those values plus the exact auth-plus-managed plugin sequences are part of
+> convergence. A later platform
 > reconciliation can still remove the overlay, which `dg.sh status` reports as
 > `live=no` with a reason.
 

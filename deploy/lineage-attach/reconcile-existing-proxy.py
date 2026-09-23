@@ -25,13 +25,6 @@ MANAGED_PLUGINS = (
     "lineage-telemetry",
 )
 NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
-LISTENER_VALUES = {
-    "forward_proxy_addr": ":8084",
-    "reverse_proxy_addr": ":8080",
-    "reverse_proxy_backend": "http://127.0.0.1:8081",
-}
-
-
 class ConfigError(ValueError):
     """The operator ConfigMap is outside the safe reconciliation envelope."""
 
@@ -92,7 +85,7 @@ def _managed_blocks(indent: int, self_id: str, otel_endpoint: str) -> list[str]:
     ]
 
 
-def _reconcile_listener(lines: list[str]) -> list[str]:
+def _reconcile_listener(lines: list[str], listener_values: dict[str, str]) -> list[str]:
     listener_index = next((i for i, line in enumerate(lines) if _key(line, "listener")), None)
     if listener_index is None:
         raise ConfigError("missing listener: section")
@@ -106,13 +99,13 @@ def _reconcile_listener(lines: list[str]) -> list[str]:
     found: set[str] = set()
     for cursor in range(listener_index + 1, listener_end):
         line = lines[cursor]
-        for key, value in LISTENER_VALUES.items():
+        for key, value in listener_values.items():
             if re.match(rf"^\s*{re.escape(key)}\s*:", line):
                 if key in found:
                     raise ConfigError(f"duplicate listener.{key}")
                 found.add(key)
                 lines[cursor] = f"{' ' * _indent(line)}{key}: {value}\n"
-    missing = set(LISTENER_VALUES) - found
+    missing = set(listener_values) - found
     if missing:
         raise ConfigError(f"existing proxy config is missing listener.{sorted(missing)[0]}")
     return lines
@@ -208,11 +201,16 @@ def _reconcile_direction(
     return replacement
 
 
-def reconcile_config(config: str, self_id: str, otel_endpoint: str) -> str:
+def reconcile_config(
+    config: str,
+    self_id: str,
+    otel_endpoint: str,
+    listener_values: dict[str, str],
+) -> str:
     if not re.search(r"(?m)^mode:\s*proxy-sidecar\s*$", config):
         raise ConfigError("existing sidecar config is not mode: proxy-sidecar")
     lines = config.splitlines(keepends=True)
-    lines = _reconcile_listener(lines)
+    lines = _reconcile_listener(lines, listener_values)
     lines = _reconcile_direction(lines, "inbound", self_id, otel_endpoint)
     lines = _reconcile_direction(lines, "outbound", self_id, otel_endpoint)
     return "".join(lines)
@@ -224,7 +222,14 @@ def render(args: argparse.Namespace) -> int:
     config = data.get("config.yaml")
     if not isinstance(config, str):
         raise ConfigError("ConfigMap has no data.config.yaml string")
-    data["config.yaml"] = reconcile_config(config, args.self_id, args.otel_endpoint)
+    listener_values = {
+        "forward_proxy_addr": args.forward_proxy_addr,
+        "reverse_proxy_addr": args.reverse_proxy_addr,
+        "reverse_proxy_backend": args.reverse_proxy_backend,
+    }
+    data["config.yaml"] = reconcile_config(
+        config, args.self_id, args.otel_endpoint, listener_values
+    )
     document["data"] = data
     json.dump(document, sys.stdout)
     return 0
@@ -283,6 +288,9 @@ def build_parser() -> argparse.ArgumentParser:
     render_parser = subparsers.add_parser("render")
     render_parser.add_argument("--self-id", required=True)
     render_parser.add_argument("--otel-endpoint", required=True)
+    render_parser.add_argument("--forward-proxy-addr", required=True)
+    render_parser.add_argument("--reverse-proxy-addr", required=True)
+    render_parser.add_argument("--reverse-proxy-backend", required=True)
     render_parser.set_defaults(func=render)
     catalog_parser = subparsers.add_parser("catalog-valid")
     catalog_parser.set_defaults(func=catalog_valid)

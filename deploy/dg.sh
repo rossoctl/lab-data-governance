@@ -496,6 +496,19 @@ sys.exit(0 if labels.get("rossoctl.io/type") in {"agent", "tool"} else 1)
 # sidecar detection + pipeline-CM resolution when the template shows no sidecar.
 # A failed `kubectl get` is a LOUD non-zero die (mirrors get_deployment_json) —
 # never a swallowed empty. Returns the items list JSON.
+select_current_pods() {
+    python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+items = [item for item in (doc.get("items") or []) if not item.get("metadata", {}).get("deletionTimestamp")]
+def ready(item):
+    return any(c.get("type") == "Ready" and c.get("status") == "True" for c in item.get("status", {}).get("conditions", []))
+items.sort(key=lambda item: (ready(item), item.get("metadata", {}).get("creationTimestamp", "")), reverse=True)
+doc["items"] = items
+json.dump(doc, sys.stdout)
+'
+}
+
 get_pod_json() {
     local ns="$1" entity="$2"
     local out status
@@ -507,7 +520,7 @@ get_pod_json() {
     if [[ "${status}" -ne 0 ]]; then
         die "failed to read live pod for entity '${entity}' in namespace '${ns}' (kubectl get failed; see the kubectl error above)"
     fi
-    printf '%s' "${out}"
+    printf '%s' "${out}" | select_current_pods
 }
 
 # get_pod_json_soft <ns> <entity>: like get_pod_json, but a failed `kubectl get`
@@ -529,7 +542,7 @@ get_pod_json_soft() {
     if [[ "${status}" -ne 0 ]]; then
         return 1
     fi
-    printf '%s' "${out}"
+    printf '%s' "${out}" | select_current_pods
 }
 
 # pod_items_count <pod-listing-json>: print the number of Pods in a `kubectl get
@@ -792,7 +805,7 @@ namespace_status() {
                 live="no"; reason="mounted ConfigMap unresolved"
             else
                 cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json 2>/dev/null || true)"
-                if ! configmap_is_canonical "${cm_json}" "${name}"; then
+                if ! configmap_is_canonical "${cm_json}" "${name}" "${pod_json}"; then
                     live="no"; reason="mounted ConfigMap drifted"
                 else
                     pod_name="$(pod_name_of "${pod_json}")"
@@ -1061,22 +1074,58 @@ if items:
 '
 }
 
-# Proxy environment is admission-owned and must survive the application-image
-# rollout.  Check it on the admitted pod rather than the Deployment template.
-proxy_environment_valid() {
+# Print the admission-owned listener contract as three tab-separated values:
+# forward proxy address, reverse proxy address, and reverse backend. Rossoctl
+# assigns different ports to agents and tools, so derive them from the admitted
+# pod instead of assuming the agent defaults.
+proxy_listener_contract() {
     local json="$1"
     printf '%s' "${json}" | python3 -c '
 import json, sys
+from urllib.parse import urlsplit
 doc = json.load(sys.stdin); items = doc.get("items") or []
 if not items: sys.exit(1)
 spec = items[0].get("spec") or {}
 apps = [c for c in spec.get("containers", []) if c.get("name") not in {"authbridge-proxy", "envoy-proxy"}]
 if len(apps) != 1: sys.exit(1)
 env = {e.get("name"): e.get("value") for e in apps[0].get("env", [])}
-ok = env.get("HTTP_PROXY") == "http://127.0.0.1:8084" and env.get("HTTPS_PROXY") == "http://127.0.0.1:8084"
+http_proxy = env.get("HTTP_PROXY") or ""
+if http_proxy != env.get("HTTPS_PROXY"): sys.exit(1)
+try:
+    parsed = urlsplit(http_proxy)
+    forward_port = parsed.port
+except ValueError:
+    sys.exit(1)
+if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"} or not forward_port:
+    sys.exit(1)
 no_proxy = {part.strip() for part in (env.get("NO_PROXY") or "").split(",")}
-sys.exit(0 if ok and {"127.0.0.1", "localhost"} <= no_proxy else 1)
+if not {"127.0.0.1", "localhost"} <= no_proxy: sys.exit(1)
+proxy = next((c for c in spec.get("containers", []) if c.get("name") == "authbridge-proxy"), None)
+if proxy is None: sys.exit(1)
+proxy_ports = {p.get("name"): p.get("containerPort") for p in proxy.get("ports", [])}
+if proxy_ports.get("forward-proxy") != forward_port: sys.exit(1)
+reverse_port = proxy_ports.get("reverse-proxy")
+app_ports = {p.get("name"): p.get("containerPort") for p in apps[0].get("ports", [])}
+app_port = app_ports.get("http")
+if not reverse_port or not app_port: sys.exit(1)
+print(f":{forward_port}\t:{reverse_port}\thttp://127.0.0.1:{app_port}")
 '
+}
+
+proxy_environment_valid() {
+    proxy_listener_contract "$1" >/dev/null
+}
+
+render_existing_proxy_config() {
+    local cm_json="$1" self_id="$2" pod_json="$3"
+    local contract forward_addr reverse_addr reverse_backend
+    contract="$(proxy_listener_contract "${pod_json}")" || return 1
+    IFS=$'\t' read -r forward_addr reverse_addr reverse_backend <<< "${contract}"
+    printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render \
+        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        --forward-proxy-addr "${forward_addr}" \
+        --reverse-proxy-addr "${reverse_addr}" \
+        --reverse-proxy-backend "${reverse_backend}"
 }
 
 deployment_activation_valid() {
@@ -1127,9 +1176,8 @@ sys.exit(0 if ready and containers.get("authbridge-proxy") is True else 1)
 }
 
 configmap_is_canonical() {
-    local cm_json="$1" self_id="$2" rendered
-    rendered="$(printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render \
-        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" 2>/dev/null)" \
+    local cm_json="$1" self_id="$2" pod_json="$3" rendered
+    rendered="$(render_existing_proxy_config "${cm_json}" "${self_id}" "${pod_json}" 2>/dev/null)" \
         || return 1
     python3 -c '
 import json, sys
@@ -1367,8 +1415,7 @@ preflight_trusted_proxies() {
         [[ -n "${cm}" ]] || die "instrument: '${entity}' has no mounted AuthBridge ConfigMap. Mutating nothing."
         cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
             || die "instrument: could not read ConfigMap '${cm}' for '${entity}'. Mutating nothing."
-        printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render \
-            --self-id "${entity}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" >/dev/null \
+        render_existing_proxy_config "${cm_json}" "${entity}" "${pod}" >/dev/null \
             || die "instrument: '${entity}'s existing proxy ConfigMap is outside the safe #256 reconciliation envelope. Mutating nothing."
 
         app="$(app_container_of "${dep}")"
@@ -1406,7 +1453,7 @@ instrument_existing_proxy() {
     patch="$(python3 -c '
 import json, sys
 name, image = sys.argv[1:]
-print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image":image,"env":[{"name":"LINEAGE_PROPAGATE","value":"1"}]}]}}}}))
+print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image":image,"imagePullPolicy":"IfNotPresent","env":[{"name":"LINEAGE_PROPAGATE","value":"1"}]}]}}}}))
 ' "${app}" "${shim}")"
     err ">> instrument: rolling '${entity}' onto the attested application shim; platform sidecar/auth remain admission-owned"
     kubectl -n "${ns}" patch "deployment/${entity}" --type strategic -p "${patch}" \
@@ -1426,13 +1473,14 @@ print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image"
         || die "instrument: could not resolve '${entity}'s post-rollout pod/ConfigMap"
     cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
         || die "instrument: failed to read '${entity}'s post-rollout ConfigMap '${cm}'"
-    amended="$(printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render \
-        --self-id "${entity}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}")" \
+    amended="$(render_existing_proxy_config "${cm_json}" "${entity}" "${pod}")" \
         || die "instrument: failed to reconcile '${entity}'s post-rollout proxy pipeline"
     printf '%s' "${amended}" | kubectl apply -f - \
         || die "instrument: failed to apply '${entity}'s reconciled proxy ConfigMap"
 
-    local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-30}"
+    # A projected ConfigMap can take up to the kubelet sync period plus cache
+    # propagation (commonly around two minutes) to reach the mounted file.
+    local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-90}"
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
         if live_pipeline_is_canonical "${ns}" "${pod_name}" "${entity}" "${amended}"; then
             err ">> instrument: '${entity}' lineage pipeline hot-reloaded and is live (no second rollout)."

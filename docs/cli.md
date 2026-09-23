@@ -191,10 +191,12 @@ independent re-attestation when the deployed image is already shimmed; an
 only the application container image and `LINEAGE_PROPAGATE=1`, waits for
 rollout and webhook reinjection, resolves the new pod's ConfigMap, and
 canonically reconciles both pipelines while preserving JWT-validation and
-token-exchange. Canonical state includes forward `:8084`, reverse `:8080`, and
-backend `http://127.0.0.1:8081` listener values plus exact live plugin sequences
+token-exchange. Canonical state derives the forward proxy, reverse proxy, and
+application backend listener values from the admitted pod (Rossoctl uses
+different contracts for agents and tools), plus exact live plugin sequences
 without duplicates. AuthBridge must hot reload the change and expose it from
-`/v1/pipeline`; no rollout occurs after the ConfigMap edit.
+`/v1/pipeline`; verification allows up to three minutes for Kubernetes
+ConfigMap projection, and no rollout occurs after the ConfigMap edit.
 
 The plugin points `otel_endpoint` at the platform collector
 (`otel-collector.rossoctl-system.svc.cluster.local:4317`); the existing

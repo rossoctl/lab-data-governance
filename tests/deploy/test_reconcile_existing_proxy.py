@@ -11,7 +11,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RECONCILER = REPO_ROOT / "deploy" / "lineage-attach" / "reconcile-existing-proxy.py"
 
 
-def _run_render(config: str) -> subprocess.CompletedProcess[str]:
+def _run_render(
+    config: str,
+    *,
+    forward_proxy_addr: str = ":8084",
+    reverse_proxy_addr: str = ":8080",
+    reverse_proxy_backend: str = "http://127.0.0.1:8081",
+) -> subprocess.CompletedProcess[str]:
     document = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
@@ -27,6 +33,12 @@ def _run_render(config: str) -> subprocess.CompletedProcess[str]:
             "travel-advisor",
             "--otel-endpoint",
             "otel-collector.rossoctl-system.svc.cluster.local:4317",
+            "--forward-proxy-addr",
+            forward_proxy_addr,
+            "--reverse-proxy-addr",
+            reverse_proxy_addr,
+            "--reverse-proxy-backend",
+            reverse_proxy_backend,
         ],
         input=json.dumps(document),
         capture_output=True,
@@ -84,6 +96,12 @@ spiffe:
             "travel-advisor",
             "--otel-endpoint",
             "otel-collector.rossoctl-system.svc.cluster.local:4317",
+            "--forward-proxy-addr",
+            ":8084",
+            "--reverse-proxy-addr",
+            ":8080",
+            "--reverse-proxy-backend",
+            "http://127.0.0.1:8081",
         ],
         input=result.stdout,
         capture_output=True,
@@ -127,6 +145,33 @@ pipeline:
     assert "reverse_proxy_addr: :8080" in body
     assert "reverse_proxy_backend: http://127.0.0.1:8081" in body
     assert ":999" not in body
+
+
+def test_render_uses_the_live_tool_listener_contract() -> None:
+    result = _run_render(
+        """listener:
+  forward_proxy_addr: :9999
+  reverse_proxy_addr: :9998
+  reverse_proxy_backend: http://127.0.0.1:9997
+mode: proxy-sidecar
+pipeline:
+  inbound:
+    plugins:
+      - name: jwt-validation
+  outbound:
+    plugins:
+      - name: token-exchange
+""",
+        forward_proxy_addr=":8081",
+        reverse_proxy_addr=":8000",
+        reverse_proxy_backend="http://127.0.0.1:8001",
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = json.loads(result.stdout)["data"]["config.yaml"]
+    assert "forward_proxy_addr: :8081" in body
+    assert "reverse_proxy_addr: :8000" in body
+    assert "reverse_proxy_backend: http://127.0.0.1:8001" in body
 
 
 def test_pipeline_validation_requires_exact_reconciled_plugin_sequences() -> None:

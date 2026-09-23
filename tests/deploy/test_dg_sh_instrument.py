@@ -93,14 +93,17 @@ def _deployment(
     image: str = "agent-examples-snp:latest",
     trusted_type: str | None = None,
 ) -> dict:
+    app_port = 8001 if trusted_type == "tool" else 8081 if trusted_type == "agent" else 8080
+    reverse_proxy_port = 8000 if trusted_type == "tool" else 8080
+    forward_proxy_port = 8081 if trusted_type == "tool" else 8084
     containers = [
         {
             "name": name,  # the app container
             "image": image,
-            "ports": [{"containerPort": 8080}],
+            "ports": [{"name": "http", "containerPort": app_port}],
             "env": ([
-                {"name": "HTTP_PROXY", "value": "http://127.0.0.1:8084"},
-                {"name": "HTTPS_PROXY", "value": "http://127.0.0.1:8084"},
+                {"name": "HTTP_PROXY", "value": f"http://127.0.0.1:{forward_proxy_port}"},
+                {"name": "HTTPS_PROXY", "value": f"http://127.0.0.1:{forward_proxy_port}"},
                 {"name": "NO_PROXY", "value": "127.0.0.1,localhost"},
             ] if trusted_type else []),
         }
@@ -112,6 +115,10 @@ def _deployment(
                 "name": "authbridge-proxy",
                 "image": "ghcr.io/rossoctl/cortex/authbridge:lineage",
                 "args": ["--config", "/etc/authbridge/config.yaml"],
+                "ports": [
+                    {"name": "reverse-proxy", "containerPort": reverse_proxy_port},
+                    {"name": "forward-proxy", "containerPort": forward_proxy_port},
+                ],
                 "volumeMounts": [
                     {"name": "authbridge-runtime", "mountPath": "/etc/authbridge"}
                 ],
@@ -186,6 +193,20 @@ pipeline:
     plugins:
       - name: token-exchange
       - name: a2a-parser
+"""
+
+_CM_TOOL_ENFORCING_NO_LINEAGE = """mode: proxy-sidecar
+listener:
+  forward_proxy_addr: :8081
+  reverse_proxy_addr: :8000
+  reverse_proxy_backend: http://127.0.0.1:8001
+pipeline:
+  inbound:
+    plugins:
+      - name: jwt-validation
+  outbound:
+    plugins:
+      - name: token-exchange
 """
 
 
@@ -328,7 +349,12 @@ if [[ "$*" == *"exec"* && "$*" == *"/v1/plugins"* ]]; then
   exit 0
 fi
 if [[ "$*" == *"exec"* && "$*" == *"/v1/pipeline"* ]]; then
-  printf '%s' '{"inbound":[{"name":"jwt-validation"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"travel-advisor","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}],"outbound":[{"name":"token-exchange"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"travel-advisor","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}]}'
+  self_id="travel-advisor"
+  for a in "$@"; do
+    case "$a" in *-abc123) self_id="${a%-abc123}" ;; esac
+  done
+  body='{"inbound":[{"name":"jwt-validation"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"__SELF__","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}],"outbound":[{"name":"token-exchange"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"__SELF__","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}]}'
+  printf '%s' "${body//__SELF__/${self_id}}"
   exit 0
 fi
 
@@ -624,7 +650,11 @@ def sandbox(tmp_path: Path):
                     if spec.get("lineage"):
                         data = _CM_WITH_LINEAGE
                     elif spec.get("enforcing"):
-                        data = _CM_ENFORCING_NO_LINEAGE
+                        data = (
+                            _CM_TOOL_ENFORCING_NO_LINEAGE
+                            if spec.get("trusted_type") == "tool"
+                            else _CM_ENFORCING_NO_LINEAGE
+                        )
                     else:
                         data = _CM_WITHOUT_LINEAGE
                     cm_doc = {
@@ -674,7 +704,16 @@ def sandbox(tmp_path: Path):
                         ],
                     },
                 }
-                (fixdir / f"pods-{name}.json").write_text(json.dumps({"items": [pod]}))
+                pod_items = [pod]
+                if spec.get("stale_pod"):
+                    stale = json.loads(json.dumps(pod))
+                    stale["metadata"]["name"] = f"{name}-old123"
+                    stale["metadata"]["deletionTimestamp"] = "2026-09-23T00:00:00Z"
+                    stale["metadata"]["creationTimestamp"] = "2026-09-22T00:00:00Z"
+                    stale["spec"]["containers"][0]["env"] = []
+                    pod["metadata"]["creationTimestamp"] = "2026-09-23T00:00:00Z"
+                    pod_items.insert(0, stale)
+                (fixdir / f"pods-{name}.json").write_text(json.dumps({"items": pod_items}))
             (fixdir / "entities.json").write_text(json.dumps({"items": items}))
 
         def kubectl_calls(self) -> list[str]:
@@ -897,6 +936,48 @@ def test_trusted_proxy_rolls_app_before_hot_reloading_pipeline(sandbox) -> None:
     assert not any("demo-client" in call and "patch deployment" in call for call in calls)
     assert not any("rollout restart" in call for call in calls[apply_i + 1 :])
     assert sandbox.kit_log().count("build-otel-shim.sh argv:") == 2
+
+
+def test_trusted_tool_accepts_the_platform_tool_proxy_port_contract(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "charge-card": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "tool",
+            }
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    assert any(
+        "patch deployment/charge-card" in call for call in sandbox.kubectl_calls()
+    )
+    patch_call = next(
+        call for call in sandbox.kubectl_calls() if "patch deployment/charge-card" in call
+    )
+    assert '"imagePullPolicy": "IfNotPresent"' in patch_call
+
+
+def test_trusted_proxy_ignores_a_terminating_old_pod(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+                "stale_pod": True,
+            }
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_trusted_proxy_missing_producer_plugin_fails_before_mutation(sandbox) -> None:
