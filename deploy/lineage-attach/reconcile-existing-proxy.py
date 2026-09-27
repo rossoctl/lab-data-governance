@@ -13,20 +13,34 @@ standalone cluster-management script.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import re
 import sys
 
 
-MANAGED_PLUGINS = (
+PARSER_PLUGINS = (
     "a2a-parser",
     "mcp-parser",
     "inference-parser",
-    "lineage-telemetry",
 )
+LINEAGE_PLUGIN = "lineage-telemetry"
+MANAGED_PLUGINS = (*PARSER_PLUGINS, LINEAGE_PLUGIN)
 NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+
 class ConfigError(ValueError):
     """The operator ConfigMap is outside the safe reconciliation envelope."""
+
+
+@dataclass(frozen=True)
+class _PluginBlocks:
+    """Locations and indentation of one pipeline direction's plugin blocks."""
+
+    first_item: int
+    section_end: int
+    item_indent: int
+    ranges: tuple[tuple[int, int], ...]
 
 
 def _indent(line: str) -> int:
@@ -73,10 +87,8 @@ def _managed_blocks(indent: int, self_id: str, otel_endpoint: str) -> list[str]:
     child = " " * (indent + 2)
     config = " " * (indent + 4)
     return [
-        f"{pad}- name: a2a-parser\n",
-        f"{pad}- name: mcp-parser\n",
-        f"{pad}- name: inference-parser\n",
-        f"{pad}- name: lineage-telemetry\n",
+        *(f"{pad}- name: {name}\n" for name in PARSER_PLUGINS),
+        f"{pad}- name: {LINEAGE_PLUGIN}\n",
         f"{child}config:\n",
         f'{config}otel_endpoint: "{otel_endpoint}"\n',
         f"{config}capture_io: false\n",
@@ -111,7 +123,7 @@ def _reconcile_listener(lines: list[str], listener_values: dict[str, str]) -> li
     return lines
 
 
-def _plugin_names(lines: list[str], direction: str) -> list[str]:
+def _plugin_blocks(lines: list[str], direction: str) -> _PluginBlocks:
     pipeline_index = next((i for i, line in enumerate(lines) if _key(line, "pipeline")), None)
     if pipeline_index is None:
         raise ConfigError("missing pipeline: section")
@@ -131,16 +143,34 @@ def _plugin_names(lines: list[str], direction: str) -> list[str]:
         None,
     )
     if first_item is None:
-        return []
+        return _PluginBlocks(
+            first_item=plugins_index + 1,
+            section_end=plugins_end,
+            item_indent=_indent(lines[plugins_index]) + 2,
+            ranges=(),
+        )
     item_indent = _indent(lines[first_item])
     item_starts = [
         cursor
         for cursor in range(first_item, plugins_end)
         if re.match(rf"^ {{{item_indent}}}-\s+", lines[cursor])
     ]
+    ranges = tuple(
+        (
+            start,
+            item_starts[position + 1]
+            if position + 1 < len(item_starts)
+            else plugins_end,
+        )
+        for position, start in enumerate(item_starts)
+    )
+    return _PluginBlocks(first_item, plugins_end, item_indent, ranges)
+
+
+def _plugin_names(lines: list[str], direction: str) -> list[str]:
+    section = _plugin_blocks(lines, direction)
     names: list[str] = []
-    for position, start in enumerate(item_starts):
-        end = item_starts[position + 1] if position + 1 < len(item_starts) else plugins_end
+    for start, end in section.ranges:
         name = _plugin_name(lines[start:end])
         if name is None:
             raise ConfigError(f"unnamed plugin in pipeline.{direction}")
@@ -151,53 +181,16 @@ def _plugin_names(lines: list[str], direction: str) -> list[str]:
 def _reconcile_direction(
     lines: list[str], direction: str, self_id: str, otel_endpoint: str
 ) -> list[str]:
-    pipeline_index = next((i for i, line in enumerate(lines) if _key(line, "pipeline")), None)
-    if pipeline_index is None:
-        raise ConfigError("missing pipeline: section")
-    pipeline_indent = _indent(lines[pipeline_index])
-    pipeline_end = len(lines)
-    for cursor in range(pipeline_index + 1, len(lines)):
-        line = lines[cursor]
-        if line.strip() and not line.lstrip().startswith("#") and _indent(line) <= pipeline_indent:
-            pipeline_end = cursor
-            break
-
-    direction_index, direction_end = _section(
-        lines, direction, pipeline_index + 1, pipeline_end, pipeline_indent
-    )
-    direction_indent = _indent(lines[direction_index])
-    plugins_index, plugins_end = _section(
-        lines, "plugins", direction_index + 1, direction_end, direction_indent
-    )
-    plugins_indent = _indent(lines[plugins_index])
-
-    first_item = None
-    item_indent = None
-    for cursor in range(plugins_index + 1, plugins_end):
-        match = re.match(r"^(\s*)-\s+", lines[cursor])
-        if match:
-            first_item = cursor
-            item_indent = len(match.group(1))
-            break
-    if first_item is None or item_indent is None:
-        first_item = plugins_index + 1
-        item_indent = plugins_indent + 2
-
-    item_starts = [
-        cursor
-        for cursor in range(first_item, plugins_end)
-        if re.match(rf"^ {{{item_indent}}}-\s+", lines[cursor])
-    ]
+    section = _plugin_blocks(lines, direction)
     preserved: list[str] = []
-    if item_starts:
-        for position, block_start in enumerate(item_starts):
-            block_end = item_starts[position + 1] if position + 1 < len(item_starts) else plugins_end
-            block = lines[block_start:block_end]
-            if _plugin_name(block) not in MANAGED_PLUGINS:
-                preserved.extend(block)
+    for block_start, block_end in section.ranges:
+        block = lines[block_start:block_end]
+        if _plugin_name(block) not in MANAGED_PLUGINS:
+            preserved.extend(block)
 
-    replacement = lines[:first_item] + preserved + _managed_blocks(item_indent, self_id, otel_endpoint)
-    replacement.extend(lines[plugins_end:])
+    replacement = lines[: section.first_item] + preserved
+    replacement.extend(_managed_blocks(section.item_indent, self_id, otel_endpoint))
+    replacement.extend(lines[section.section_end :])
     return replacement
 
 

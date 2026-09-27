@@ -78,7 +78,7 @@ are selected by `rossoctl.io/type`, retain their enforcing sidecars and auth,
 and are converged by rolling the application shim before hot-reloading the
 proxy pipeline. `status` reports subsequent drift. The reasoning is recorded in
 [ADR-0031](docs/adr/0031-non-reversible-namespace-lineage-activation.md) and
-[ADR-0032](docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md), and the
+[ADR-0033](docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md), and the
 CLI design in [`docs/cli.md`](docs/cli.md).
 
 ### 3. Worked example: the travel-advisor demo
