@@ -74,17 +74,15 @@ def turnspan_text() -> str:
     return TURNSPAN_PY.read_text()
 
 
-def test_turnspan_pth_activates_the_module_env_gated() -> None:
+def test_turnspan_pth_loads_the_module_and_calls_install() -> None:
     """The ``.pth`` is the attach mechanism: ``site`` executes it at interpreter
-    start and it must import + ``install()`` the module — env-gated on
-    ``ROSSOCTL_TURNSPAN`` so an operator can switch it off (belt-and-suspenders;
-    the module also guards internally)."""
+    start and must import + ``install()`` the module. The module itself gates
+    activation on ``LINEAGE_PROPAGATE``."""
     pth = TURNSPAN_PTH.read_text()
     assert "rossoctl_turnspan" in pth, ".pth must import the rossoctl_turnspan module"
     assert "install" in pth, ".pth must call the module's install() at startup"
-    assert "ROSSOCTL_TURNSPAN" in pth, (
-        ".pth must honour the ROSSOCTL_TURNSPAN opt-out so the turn span can be "
-        "disabled without rebuilding the image"
+    assert "ROSSOCTL_TURNSPAN" not in pth, (
+        "turn-span has no independent activation switch"
     )
 
 
@@ -168,28 +166,15 @@ def test_turnspan_install_is_bound_to_the_activation_switch(turnspan_text: str) 
     assert "LINEAGE_PROPAGATE" in turnspan_text, (
         "the turn span must bind to LINEAGE_PROPAGATE (the activation switch)"
     )
-    # With activation ON but the opt-out set, install() is still a no-op (the
-    # ROSSOCTL_TURNSPAN escape hatch), and still imports no opentelemetry.
-    prog = (
-        "import sys, rossoctl_turnspan\n"
-        "rossoctl_turnspan.install()\n"
-        "otel = [m for m in sys.modules if m.startswith('opentelemetry')]\n"
-        "assert not otel, otel\n"
-        "print('OK')\n"
-    )
-    r = _run_turnspan(
-        turnspan_text, prog, env={"LINEAGE_PROPAGATE": "1", "ROSSOCTL_TURNSPAN": "off"}
-    )
-    assert r.returncode == 0, (
-        f"ROSSOCTL_TURNSPAN=off must keep install() a no-op even when activated; "
-        f"stderr:\n{r.stderr}"
+    assert "ROSSOCTL_TURNSPAN" not in turnspan_text, (
+        "turn-span must always activate together with LINEAGE_PROPAGATE"
     )
 
 
 def _run_turnspan(turnspan_text: str, prog: str, env: dict) -> subprocess.CompletedProcess:
     """Run ``prog`` in a bare interpreter with the vendored turn-span module on
-    PYTHONPATH and ONLY the given env (plus PATH) — no ambient LINEAGE_PROPAGATE /
-    ROSSOCTL_TURNSPAN leaks in."""
+    PYTHONPATH and ONLY the given env (plus PATH) — no ambient
+    LINEAGE_PROPAGATE leaks in."""
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "rossoctl_turnspan.py").write_text(turnspan_text)
         run_env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": d}

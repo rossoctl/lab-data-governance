@@ -17,6 +17,14 @@ status: accepted
 > convergence. A later platform
 > reconciliation can still remove the overlay, which `dg.sh status` reports as
 > `live=no` with a reason.
+>
+> The accepted authenticated travel-advisor configuration always enables the
+> propagation and turn-span shims together with `LINEAGE_PROPAGATE=1`; there is
+> no independent turn-span switch. A fresh rootless-cluster run on 2026-09-27
+> produced one causal trace with 98 spans, four canonical namespaced agents, six
+> invoked canonical namespaced tools, and the authenticated caller
+> `client:travel-advisor-demo-client`, while preserving the platform auth
+> plugins. This is the final accepted configuration and result.
 
 `dg.sh namespace <ns> instrument` activates AuthBridge-sidecar lineage on a
 namespace's agents/tools so their traffic produces the facts-only spans this

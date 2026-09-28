@@ -1079,16 +1079,18 @@ if items:
 # assigns different ports to agents and tools, so derive them from the admitted
 # pod instead of assuming the agent defaults.
 proxy_listener_contract() {
-    local json="$1"
+    local json="$1" app
+    app="$(app_container_of "${json}")"
+    [[ -n "${app}" ]] || return 1
     printf '%s' "${json}" | python3 -c '
 import json, sys
 from urllib.parse import urlsplit
 doc = json.load(sys.stdin); items = doc.get("items") or []
 if not items: sys.exit(1)
 spec = items[0].get("spec") or {}
-apps = [c for c in spec.get("containers", []) if c.get("name") not in {"authbridge-proxy", "envoy-proxy"}]
-if len(apps) != 1: sys.exit(1)
-env = {e.get("name"): e.get("value") for e in apps[0].get("env", [])}
+app = next((c for c in spec.get("containers", []) if c.get("name") == sys.argv[1]), None)
+if app is None: sys.exit(1)
+env = {e.get("name"): e.get("value") for e in app.get("env", [])}
 http_proxy = env.get("HTTP_PROXY") or ""
 if http_proxy != env.get("HTTPS_PROXY"): sys.exit(1)
 try:
@@ -1105,11 +1107,11 @@ if proxy is None: sys.exit(1)
 proxy_ports = {p.get("name"): p.get("containerPort") for p in proxy.get("ports", [])}
 if proxy_ports.get("forward-proxy") != forward_port: sys.exit(1)
 reverse_port = proxy_ports.get("reverse-proxy")
-app_ports = {p.get("name"): p.get("containerPort") for p in apps[0].get("ports", [])}
+app_ports = {p.get("name"): p.get("containerPort") for p in app.get("ports", [])}
 app_port = app_ports.get("http")
 if not reverse_port or not app_port: sys.exit(1)
 print(f":{forward_port}\t:{reverse_port}\thttp://127.0.0.1:{app_port}")
-'
+' "${app}"
 }
 
 proxy_environment_valid() {
@@ -1129,19 +1131,21 @@ render_existing_proxy_config() {
 }
 
 deployment_activation_valid() {
-    local json="$1"
+    local json="$1" app
+    app="$(app_container_of "${json}")"
+    [[ -n "${app}" ]] || return 1
     printf '%s' "${json}" | python3 -c '
 import json, sys
 doc = json.load(sys.stdin); items = doc.get("items")
 if items is None: items = [doc]
 if not items: sys.exit(1)
 spec = ((items[0].get("spec") or {}).get("template") or {}).get("spec") or {}
-apps = [c for c in spec.get("containers", []) if c.get("name") not in {"authbridge-proxy", "envoy-proxy"}]
-if len(apps) != 1: sys.exit(1)
-app = apps[0]; env = {e.get("name"): e.get("value") for e in app.get("env", [])}
+app = next((c for c in spec.get("containers", []) if c.get("name") == sys.argv[1]), None)
+if app is None: sys.exit(1)
+env = {e.get("name"): e.get("value") for e in app.get("env", [])}
 image = app.get("image") or ""
 sys.exit(0 if image and env.get("LINEAGE_PROPAGATE") == "1" else 1)
-'
+' "${app}"
 }
 
 shim_image_attested() {

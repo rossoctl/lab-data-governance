@@ -307,9 +307,11 @@ def _self_kinds(reqs: dict[str, Span]) -> dict[str, str]:
     egress — a weather tool fetching a forecast over http, a booking tool
     delegating over a2a — would otherwise be minted twice, ``tool:X`` for what
     it serves and ``agent:X`` for what it calls (seen live 2026-09-01). Read off
-    the whole trace, so any arrival order gives the same plan; the stored
-    ``entities`` row minted under a partial trace is not withdrawn (global,
-    upsert-only — ADR-0030), only re-pointed away from.
+    the whole trace, so any arrival order gives the same plan. A host:port
+    agent/tool entity minted under a partial trace is retired after reconciliation
+    only when no interaction or entity-span evidence anywhere still references
+    it; all canonical and non-agent/tool entities remain global and upsert-only
+    (ADR-0030's issue-#256 revision).
     """
     served: dict[str, set[str]] = {}
     sent: dict[str, set[str]] = {}
