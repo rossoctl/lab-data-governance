@@ -44,31 +44,16 @@ data_governance/
     migrations/       # Alembic migrations (raw SQL, no ORM — ADR-0002)
       env.py
       versions/
-  api/                # /api/* (UI-facing) and /risk/* (governance-facing) REST surfaces
-  retrieval/          # Typed read path: spans, interactions/entities, payloads, risk
   processors/
     otlp_receiver/    # P-otel-receiver (Layer 2 + transport, grown over many issues)
-    interactions/     # P-interactions (streaming/graph/sidecar algorithms — see CONTEXT.md)
-    classification/   # P-classification (NER-based payload sensitivity)
-    data_lineage/      # P-data-lineage (intra-trace content provenance)
-    leg_ready/         # Leg-readiness gate + risk-engine trigger — see data_governance/risk/README.md
-    risk/
-      trace_trigger/  # Trace-risk recompute processor — see data_governance/risk/README.md
-  risk/               # Risk engine, rule catalog/OPA compiler, /risk/* routes — see data_governance/risk/README.md
-ui/                   # React SPA served by the UI backend (ADR-0019)
 tests/
   db/
     test_db.py        # Layer 1 tests against real Postgres
     test_migrations.py # Baseline migration + migrate CLI tests
-  risk/, processors/, deploy/, api/, retrieval/  # component-scoped test suites
-docs/                 # PROJECT.md, ADRs, cross-repo runbooks
+docs/                 # PROJECT.md, ADRs
 alembic.ini
 pyproject.toml
 ```
-
-The risk sub-component (rule catalog, OPA-based policy compute, leg/trace risk
-records, `/risk/*` API) has its own README:
-[`data_governance/risk/README.md`](data_governance/risk/README.md).
 
 ## Tooling
 
