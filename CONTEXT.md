@@ -900,6 +900,10 @@ and `error_count`. Computed at query time alongside the **Listing root**;
 present on both the `GET /api/traces` collection rows and the
 `GET /api/traces/{tid}` singular. Backed by the `TraceCounts` retrieval type.
 
+> The terms below describe the risk engine's data model. For the engine's
+> architecture, pipeline, OPA integration, and API, see
+> [`data_governance/risk/README.md`](data_governance/risk/README.md).
+
 **Interaction risk record** / **Trace risk record**:
 The **risk engine**'s versioned verdict on one **Interaction** or one **Trace**,
 written by the risk-compute processors (not `P-interactions`) into
