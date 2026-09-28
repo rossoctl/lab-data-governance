@@ -1,4 +1,4 @@
-"""Tests for migration 0013 — ``lineage_metadata.entity_path`` renamed to ``entities``.
+"""Tests for migration 0015 — ``lineage_metadata.entity_path`` renamed to ``entities``.
 
 The human-owned spec (``docs/data_lineage_alg.md`` "Lineage metadata") redefined
 the third element of the metadata triple as an **unordered set**: "the set of
@@ -19,8 +19,8 @@ What carries design weight here:
 - **Everything else about the column is untouched** — still ``TEXT[]``, still NOT
   NULL, still defaulting to ``'{}'``. Postgres has no set type, so the array stays
   the representation; what changed is that its order means nothing.
-- **Reversible.** The downgrade renames back, so rolling back to 0012 leaves a
-  schema 0012-era code can still read.
+- **Reversible.** The downgrade renames back, so rolling back to 0014 leaves a
+  schema 0014-era code can still read.
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ def test_0015_is_applied_in_the_chain(migrated_dsn: str) -> None:
 def test_downgrade_restores_the_old_name_and_upgrade_renames_back(
     pg_dsn: str, monkeypatch
 ) -> None:
-    """upgrade -> downgrade(0012) -> upgrade round-trips the NAME while carrying the
+    """upgrade -> downgrade(0014) -> upgrade round-trips the NAME while carrying the
     ROWS through untouched. A rename that quietly dropped a governance claim's
     contents would be a far worse bug than the misleading name it fixed."""
     from alembic import command

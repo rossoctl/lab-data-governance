@@ -3,12 +3,12 @@
 #
 # Third sibling of the P-interactions (70-interactions.yaml) and P-classification
 # (80-classification.yaml) drainers, and shaped like the first: it drains the
-# `interaction_legs` stream by `seq` — woken by migration 0010's
+# `interaction_legs` stream by `seq` — woken by migration 0012's
 # `dg_legs_inserted` NOTIFY channel, with the periodic poll as the correctness
 # backstop — and writes the derived intra-trace data lineage:
-# `lineage_metadata` (migration 0011, one row per payload-bearing leg, keyed
+# `lineage_metadata` (migration 0013, one row per payload-bearing leg, keyed
 # `(interaction_id, leg_type)`; its third element renamed to `entities` by
-# migration 0013 / ADR-0028 D10) plus `lineage_trace_status` (migration 0012,
+# migration 0015 / ADR-0028 D10) plus `lineage_trace_status` (migration 0014,
 # one row per trace recording `complete` vs `partial` coverage — ADR-0028 D6).
 # It advances its OWN durable cursor in `processor_state` (the `data_lineage`
 # row), independent of the `interactions` and `classification` cursors
