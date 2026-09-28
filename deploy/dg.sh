@@ -872,7 +872,8 @@ require_vendored_kit() {
     # turn-span shim (rossoctl_turnspan.py + its .pth) into the image; a checkout
     # missing either would die mid-bake, so refuse before cluster mutation.
     local f
-    for f in container-runtime.sh Dockerfile.otel-shim lineage-propagate-hook.py \
+    for f in container-runtime.sh Dockerfile.otel-shim otel-instrumentors.txt \
+             lineage-propagate-hook.py \
              rossoctl_turnspan.py rossoctl_turnspan.pth \
              attest-otel-shim.py \
              reconcile-existing-proxy.py; do

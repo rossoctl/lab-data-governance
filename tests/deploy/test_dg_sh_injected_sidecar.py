@@ -441,6 +441,7 @@ def sandbox(tmp_path: Path):
             # The sourced / build-input companions require_vendored_kit checks for
             # (both shims are build inputs; ADR-0033 D4).
             for f in ("container-runtime.sh", "Dockerfile.otel-shim",
+                      "otel-instrumentors.txt",
                       "lineage-propagate-hook.py", "rossoctl_turnspan.py",
                       "rossoctl_turnspan.pth", "attest-otel-shim.py",
                       "reconcile-existing-proxy.py"):

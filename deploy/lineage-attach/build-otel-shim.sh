@@ -202,7 +202,7 @@ detect_user() {  # sets APP_UID and APP_GID (either may be given explicitly)
 }
 
 # The interlock asks exactly "would wrapping DOUBLE-instrument?": is any of the
-# eight instrumentors this shim installs already present? Not the
+# instrumentors in otel-instrumentors.txt already present? Not the
 # `opentelemetry.instrumentation` namespace (a transitive dep of anything
 # OTel-adjacent, no library instrumentation in it) and not a dormant SDK
 # (a2a-sdk ships one on every stock agent) — neither is a refusal signal. An
@@ -211,8 +211,8 @@ detect_user() {  # sets APP_UID and APP_GID (either may be given explicitly)
 # stdout, exit 0 whenever the probe actually RAN inside the image. find_spec is
 # wrapped per-module so a missing opentelemetry.instrumentation namespace reads
 # as "not found", not an abort — the clean answer is then deliberate, not the
-# accident of an uncaught ModuleNotFoundError. (Mods keep in sync with
-# Dockerfile.otel-shim's install RUN, all but -distro.)
+# accident of an uncaught ModuleNotFoundError. The manifest is also consumed by
+# Dockerfile.otel-shim's install RUN, so install and probe cannot diverge.
 #
 # Either baked shim marks an already-baked image: the activation hook
 # (`_lineage_propagate`) OR the turn-span shim (`rossoctl_turnspan`). Since this
@@ -221,16 +221,30 @@ detect_user() {  # sets APP_UID and APP_GID (either may be given explicitly)
 # worse-than-baseline trap this ADR forbids): the "hook" verdict fires on either,
 # so re-baking is still refused.
 probe_instrumentation() {
+  local modules="" package module extra
+  while read -r package module extra; do
+    [ -n "$package" ] || continue
+    case "$package" in \#*) continue ;; esac
+    if [ -z "$module" ] || [ -n "$extra" ]; then
+      echo "invalid instrumentor manifest row: ${package} ${module} ${extra}" >&2
+      return 1
+    fi
+    modules="${modules}${modules:+,}${module}"
+  done < "${SCRIPT_DIR}/otel-instrumentors.txt"
+  [ -n "$modules" ] || {
+    echo "instrumentor manifest is empty: ${SCRIPT_DIR}/otel-instrumentors.txt" >&2
+    return 1
+  }
   "$CONTAINER_TOOL" run --rm --network=none --entrypoint "$VENV_PYTHON" "$base_ref" -c '
-import importlib.util as u
+import importlib.util as u, sys
 def has(m):
     try: return u.find_spec(m) is not None
     except ModuleNotFoundError: return False
-mods = ["starlette", "asgi", "fastapi", "httpx", "requests", "aiohttp_client", "urllib3", "threading"]
+mods = sys.argv[1].split(",")
 found = [m for m in mods if has("opentelemetry.instrumentation." + m)]
 if found: print("instrumented:" + ",".join(found))
 elif has("_lineage_propagate") or has("rossoctl_turnspan"): print("hook")
-else: print("clean")'
+else: print("clean")' "$modules"
 }
 
 # The interlock asks exactly "would wrapping DOUBLE-instrument?". A guard whose

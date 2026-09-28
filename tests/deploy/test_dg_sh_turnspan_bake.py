@@ -50,6 +50,7 @@ TURNSPAN_PTH = KIT / "rossoctl_turnspan.pth"
 DOCKERFILE = KIT / "Dockerfile.otel-shim"
 BUILD_SCRIPT = KIT / "build-otel-shim.sh"
 ATTEST_SCRIPT = KIT / "attest-otel-shim.py"
+INSTRUMENTOR_MANIFEST = KIT / "otel-instrumentors.txt"
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +208,23 @@ def test_dockerfile_still_installs_the_propagate_hook(dockerfile_text: str) -> N
     assert "_lineage_propagate.py" in dockerfile_text, (
         "Dockerfile must still install the hook as _lineage_propagate.py"
     )
+
+
+def test_instrumentor_manifest_drives_install_and_interlock(
+    dockerfile_text: str, build_script_text: str
+) -> None:
+    """One manifest owns both installed distributions and probed modules."""
+    rows = [
+        line.split()
+        for line in INSTRUMENTOR_MANIFEST.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert rows and all(len(row) == 2 for row in rows)
+    assert "otel-instrumentors.txt" in dockerfile_text
+    assert "otel-instrumentors.txt" in build_script_text
+    for package, module in rows:
+        assert f"opentelemetry-instrumentation-{package}" not in dockerfile_text
+        assert f'"{module}"' not in build_script_text
 
 
 def test_dockerfile_installs_the_turnspan_shim(dockerfile_text: str) -> None:

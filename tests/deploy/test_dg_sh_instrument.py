@@ -492,6 +492,7 @@ def sandbox(tmp_path: Path):
             # hook and the turn-span shim, ADR-0033 D4). A real vendored kit ships
             # them; the stub must too, or the integrity check refuses.
             for f in ("container-runtime.sh", "Dockerfile.otel-shim",
+                      "otel-instrumentors.txt",
                       "lineage-propagate-hook.py", "rossoctl_turnspan.py",
                       "rossoctl_turnspan.pth", "attest-otel-shim.py"):
                 (self.kitdir / f).write_text("# stub\n")
@@ -649,7 +650,8 @@ def test_instrument_refuses_when_vendored_kit_incomplete(sandbox) -> None:
 
 @pytest.mark.parametrize(
     "missing",
-    ["container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py",
+    ["container-runtime.sh", "Dockerfile.otel-shim", "otel-instrumentors.txt",
+     "lineage-propagate-hook.py",
      "rossoctl_turnspan.py", "rossoctl_turnspan.pth", "attest-otel-shim.py"],
 )
 def test_instrument_refuses_when_kit_companion_file_absent(sandbox, missing) -> None:
