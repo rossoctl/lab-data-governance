@@ -116,5 +116,8 @@ and the expected trace shape) lives with the `agent-examples` project.
 - [`docs/PROJECT.md`](docs/PROJECT.md) — full architecture.
 - [`docs/sidecar-wire-contract.md`](docs/sidecar-wire-contract.md) — the
   producer↔DG wire format.
+- [`data_governance/risk/README.md`](data_governance/risk/README.md) — the
+  risk sub-component: evidence gathering, OPA policy decisions, the
+  `/risk/*` API, and how to run/test it.
 - [`CONTEXT.md`](CONTEXT.md) and [`docs/adr/`](docs/adr/) — the domain glossary
   and architecture decision records.

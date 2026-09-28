@@ -312,7 +312,9 @@ The Risk UI is a second top-level section inside this same SPA (not a separate
 app), added by issue #165 to make the read-only `/risk/*` backend (metrics,
 interactions, traces, rules — issues #106/#107/#109/#111/#113) reachable. Only
 the client, routing shell, and shared presentational primitives ship in #165;
-#166–#168 build the actual dashboard/trace-detail/rules views on top.
+#166–#168 build the actual dashboard/trace-detail/rules views on top. For the
+`/risk/*` backend itself — the risk engine, OPA integration, and API routes —
+see [`data_governance/risk/README.md`](../data_governance/risk/README.md).
 
 ### Top-level nav
 
