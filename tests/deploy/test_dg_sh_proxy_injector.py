@@ -8,9 +8,10 @@ scripts to ``deploy/lineage-attach/``:
   ``undo`` to attach an **auth-free, lineage-only** ``authbridge-proxy`` sidecar
   (only ``lineage-telemetry`` + the parsers — NO ``jwt-validation`` /
   ``token-exchange``, so it does not 401 the demo's unauthenticated MCP/A2A
-  calls). The proxy captures the app's egress **transparently** — no reverse
-  proxy, no app-port relocation, no ``HTTP_PROXY`` — via the include-only
-  iptables path below. Its generated ConfigMap MUST supply ``namespace_file``
+  calls). The app is not relocated: proxy-aware plaintext HTTP uses the local
+  forward listener through ``HTTP_PROXY``/``http_proxy``, while the include-only
+  transparent path catches clients that ignore those variables. Its generated
+  ConfigMap MUST supply ``namespace_file``
   (wire contract v1.7.0 §6: the ``lineage-telemetry`` producer refuses to start
   without a ``namespace`` / ``namespace_file``).
 
@@ -559,16 +560,22 @@ def test_patch_app_container_untouched_without_app_container() -> None:
     )
 
 
-def test_patch_app_container_gets_propagation_switch() -> None:
-    out = emit(
-        "patch",
+def test_patch_app_container_uses_http_aware_forward_proxy() -> None:
+    """The transparent listener is a raw TCP tunnel and cannot extract the
+    request traceparent. Plain HTTP A2A/MCP calls therefore need the local
+    forward listener; the transparent allowlist remains the fallback for
+    clients that ignore proxy environment variables."""
+    spec = _load_patch(
         NAME="research-agent",
         APP_CONTAINER="agent",
         APP_IMAGE="docker.io/library/research-agent-otel:latest",
-        SIDECAR_IMAGE="ghcr.io/rossoctl/cortex/authbridge:lineage-test",
-    )
-    assert "LINEAGE_PROPAGATE" in out, "APP_CONTAINER must switch propagation on"
-    assert "research-agent-otel:latest" in out, "APP_IMAGE must land on the app container"
+    )["spec"]["template"]["spec"]
+    app = next(c for c in spec["containers"] if c["name"] == "agent")
+    env = {entry["name"]: entry["value"] for entry in app["env"]}
+    assert env["LINEAGE_PROPAGATE"] == "1"
+    assert env["HTTP_PROXY"] == "http://127.0.0.1:8081"
+    assert env["http_proxy"] == "http://127.0.0.1:8081"
+    assert app["image"] == "docker.io/library/research-agent-otel:latest"
 
 
 def test_undo_is_the_inverse_of_patch() -> None:
@@ -590,6 +597,23 @@ def test_undo_is_the_inverse_of_patch() -> None:
     assert vol_deletes["authbridge-runtime"].get("$patch") == "delete"
     # Without APP_CONTAINER, no containers list is touched.
     assert "containers" not in spec, "undo must not touch containers when no app container was attached"
+
+
+def test_undo_removes_forward_proxy_environment() -> None:
+    import json
+
+    spec = json.loads(
+        emit(
+            "undo",
+            NAME="research-agent",
+            APP_CONTAINER="agent",
+            RESTORE_IMAGE="docker.io/library/research-agent:latest",
+        )
+    )["spec"]["template"]["spec"]
+    app = spec["containers"][0]
+    env_deletes = {entry["name"]: entry for entry in app["env"]}
+    assert env_deletes.keys() == {"LINEAGE_PROPAGATE", "HTTP_PROXY", "http_proxy"}
+    assert all(entry.get("$patch") == "delete" for entry in env_deletes.values())
 
 
 def test_no_emit_drops_the_lineage_plugin() -> None:
