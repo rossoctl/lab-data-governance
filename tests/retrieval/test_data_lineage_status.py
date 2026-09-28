@@ -5,7 +5,7 @@ the per-leg metadata. The ``{"legs": [...]}`` envelope #118 shaped exists for
 exactly this: the status is a whole-trace fact and has nowhere to live on a leg.
 
 Still a **pure lookup** (ADR-0028 D7): the status is read from
-``lineage_trace_status`` (migration 0012), never recomputed here from the presence
+``lineage_trace_status`` (migration 0014), never recomputed here from the presence
 of a payload gap. Two copies of the cutoff rule — one in the traversal, one in the
 read's SQL — is the drift this table's existence avoids.
 
