@@ -55,4 +55,49 @@ describe('RiskDistributionBar', () => {
     expect(screen.getByLabelText(/critical: 0 \(0%\)/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/none: 0 \(0%\)/i)).toBeInTheDocument();
   });
+
+  // Regression: issue #255. A highly uneven distribution (one tiny segment,
+  // one dominant one) used to wrap onto a second row because the flex row
+  // could wrap and each non-zero segment carried a fixed `min-width` floor
+  // that, summed, overflowed 100% of the container. The bar must stay a
+  // single row for ANY distribution.
+  it('keeps the bar on a single row (never wraps) even for an uneven distribution', () => {
+    render(
+      <RiskDistributionBar
+        // 2.9% critical vs 97.1% none — the exact shape from issue #255.
+        distribution={distribution({ critical: 29, high: 0, medium: 0, low: 0, none: 971, total: 1000 })}
+      />,
+    );
+    const bar = screen.getByTestId('risk-distribution-bar');
+    // PatternFly renders `flexWrap={{ default: 'nowrap' }}` as `pf-m-nowrap`.
+    expect(bar.className).toContain('pf-m-nowrap');
+  });
+
+  it('does not force a per-segment min-width that can overflow the row', () => {
+    render(
+      <RiskDistributionBar
+        distribution={distribution({ critical: 29, high: 0, medium: 0, low: 0, none: 971, total: 1000 })}
+      />,
+    );
+    // No segment column may pin an absolute minimum width (a `rem`/`px`/`em`
+    // floor) — that floor is what pushed the summed widths past 100% and
+    // wrapped the row. A `min-width` of 0 is fine (it only *permits* shrink).
+    for (const segment of screen.getAllByTestId('risk-distribution-segment')) {
+      const minWidth = segment.style.minWidth;
+      expect(minWidth).not.toMatch(/\d\s*(rem|px|em)/);
+    }
+  });
+
+  it('sizes each column by its percentage share via flex-basis', () => {
+    render(
+      <RiskDistributionBar
+        distribution={distribution({ critical: 29, high: 0, medium: 0, low: 0, none: 971, total: 1000 })}
+      />,
+    );
+    const [critical, , , , none] = screen.getAllByTestId('risk-distribution-segment');
+    expect(critical.style.flexBasis).toBe('2.9%');
+    expect(none.style.flexBasis).toBe('97.1%');
+    // Columns must be allowed to shrink so the summed basis never overflows.
+    expect(critical.style.flexShrink).toBe('1');
+  });
 });

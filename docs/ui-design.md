@@ -369,6 +369,28 @@ the map still resolves via a fallback instead of failing to compile):
 `.dg-ent-pill` class (`global.css`, a generic 1px border + 2px radius, no
 entity-specific semantics) rather than adding a near-duplicate class.
 
+### Risk-distribution bar — single-row invariant (issue #255)
+
+`RiskDistributionBar` (dashboard, FR-DAS-050) renders the five severity levels
+as one horizontal stacked bar: each level is a column — its coloured chunk on
+top, its `count (pct%)` legend label beneath — sized to its share of the total.
+
+**The bar is always a single row, for any distribution.** An earlier version
+sized each column by `width: {pct}%` and pinned every non-zero segment to
+`min-width: 2.5rem` for legibility, inside a wrap-enabled flex row. For an
+uneven split — e.g. one critical trace against everything else (2.9% vs
+97.1%) — those `2.5rem` floors summed past 100% of the container, and the row,
+being allowed to wrap, broke onto a second line (the bug in #255).
+
+The fix keeps the row `nowrap` and sizes each column by `flex-basis: {pct}%`
+with `flex-shrink: 1` and `min-width: 0`, so the columns always fit within
+100% no matter how lopsided the split. A tiny non-zero segment stays visible
+because the small `min-width` floor now lives on the coloured **chunk** (the
+inner `div`), not the flex column — it can overflow its own narrow column
+harmlessly rather than widening the column and forcing a wrap. Each column
+clips its contents (`overflow: hidden`) so the legend label's intrinsic text
+width never dictates the column width either.
+
 ### Shared components
 
 | Component | Purpose |
