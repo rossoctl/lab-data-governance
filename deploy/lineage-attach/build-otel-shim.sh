@@ -28,6 +28,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/container-runtime.sh"
 
+# Resolve the spelling the local engine knows for an image. Registry-qualified
+# references are already unambiguous. For a bare reference, preserve a local
+# build when the engine has one; otherwise use the registry spelling that
+# Docker and Podman assign to Docker Hub library images.
+resolve_local_image_ref() {
+  local image="$1"
+  case "$image" in
+    */*) printf '%s' "$image" ;;
+    *)   if "$CONTAINER_TOOL" image inspect "$image" >/dev/null 2>&1; then
+           printf '%s' "$image"
+         else
+           printf 'docker.io/library/%s' "$image"
+         fi ;;
+  esac
+}
+
 parse_args() {
   BASE_IMAGE="${1:?usage: build-otel-shim.sh <base-image> [wrapper-tag] [venv-python] [app-uid[:gid]]}"
   # default wrapper tag: <base name>-otel:latest (tag or digest stripped)
@@ -47,14 +63,7 @@ parse_args() {
   # first — podman keeps a local build as localhost/<name>, docker as
   # docker.io/library/<name> — and only a name the engine does not have is
   # taken to mean docker.io/library/<name>.
-  case "$BASE_IMAGE" in
-    */*) base_ref="$BASE_IMAGE" ;;
-    *)   if "$CONTAINER_TOOL" image inspect "$BASE_IMAGE" >/dev/null 2>&1; then
-           base_ref="$BASE_IMAGE"
-         else
-           base_ref="docker.io/library/${BASE_IMAGE}"
-         fi ;;
-  esac
+  base_ref="$(resolve_local_image_ref "$BASE_IMAGE")"
   # Every probe below inspects or runs the image; say so once instead of
   # surfacing the engine's own "no such object".
   if ! "$CONTAINER_TOOL" image inspect "$base_ref" >/dev/null 2>&1; then
@@ -78,27 +87,15 @@ parse_args() {
   fi
 }
 
-resolve_local_image() {
-  local image="$1"
-  case "$image" in
-    */*) base_ref="$image" ;;
-    *)   if "$CONTAINER_TOOL" image inspect "$image" >/dev/null 2>&1; then
-           base_ref="$image"
-         else
-           base_ref="docker.io/library/${image}"
-         fi ;;
-  esac
+parse_attest_args() {
+  local image="${1:?usage: build-otel-shim.sh --attest-existing <shim-image> [venv-python]}"
+  VENV_PYTHON="${2:-}"
+  base_ref="$(resolve_local_image_ref "$image")"
   if ! "$CONTAINER_TOOL" image inspect "$base_ref" >/dev/null 2>&1; then
     echo "REFUSING to attest ${image}: ${base_ref} is not present locally (${CONTAINER_TOOL})." >&2
     echo "  Pull or build it first, then re-run the attestation." >&2
     exit 4
   fi
-}
-
-parse_attest_args() {
-  local image="${1:?usage: build-otel-shim.sh --attest-existing <shim-image> [venv-python]}"
-  VENV_PYTHON="${2:-}"
-  resolve_local_image "$image"
   WRAPPER_TAG="$base_ref"
 }
 

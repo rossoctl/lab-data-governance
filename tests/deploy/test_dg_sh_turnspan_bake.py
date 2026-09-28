@@ -326,6 +326,20 @@ def test_build_script_exposes_existing_image_attestation(
     assert "verify_propagates" in attest_branch
 
 
+def test_build_script_reuses_local_image_resolution(build_script_text: str) -> None:
+    """Bake and attest paths share one bare-image normalization cascade."""
+    helper = re.search(
+        r"resolve_local_image_ref\(\)\s*\{.*?\n\}",
+        build_script_text,
+        flags=re.DOTALL,
+    )
+    assert helper, "build script must define one local-image resolver"
+    assert build_script_text.count('base_ref="$(resolve_local_image_ref') == 2
+    outside_helper = build_script_text.replace(helper.group(0), "")
+    assert 'case "$BASE_IMAGE" in' not in outside_helper
+    assert 'case "$image" in' not in outside_helper
+
+
 def test_build_script_interlock_detects_the_turnspan_shim(
     build_script_text: str,
 ) -> None:
