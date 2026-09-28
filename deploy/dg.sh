@@ -910,57 +910,55 @@ instrument_preflight() {
 }
 
 
+# app_container_query <deployment-or-pod-json> <query> [<container-name>]:
+# normalize either a Deployment, Pod, or list document to one PodSpec and query
+# its application container. Keeping that normalization here prevents the name
+# and image accessors from drifting apart.
+app_container_query() {
+    local json="$1" query="$2" cname="${3:-}"
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+query, cname = sys.argv[1:]
+def podspec(item):
+    spec = item.get("spec") or {}
+    if item.get("kind") == "Pod" or "containers" in spec:
+        return spec
+    return (spec.get("template") or {}).get("spec") or {}
+doc = json.load(sys.stdin)
+items = doc.get("items")
+if items is None:
+    items = [doc] if doc.get("kind") in ("Deployment", "Pod") else []
+if not items:
+    sys.exit(0)
+spec = podspec(items[0])
+containers = spec.get("containers") or []
+if query == "sole-app-name":
+    sidecars = {"authbridge-proxy", "envoy-proxy"}
+    apps = [c for c in containers if c.get("name") not in sidecars]
+    if len(apps) == 1:
+        print(apps[0].get("name") or "")
+elif query == "image-by-name":
+    for container in containers:
+        if container.get("name") == cname:
+            print(container.get("image") or "")
+            break
+else:
+    raise SystemExit(f"unknown app-container query: {query}")
+' "${query}" "${cname}"
+}
+
 # app_container_of <deployment-or-pod-json>: print the app container's name — the
 # sole non-sidecar container in the pod spec (excludes authbridge-proxy /
 # envoy-proxy). Accepts a Pod doc as well as a Deployment. Empty if it cannot be
 # determined unambiguously.
 app_container_of() {
-    local json="$1"
-    printf '%s' "${json}" | python3 -c '
-import json, sys
-def podspec(item):
-    spec = item.get("spec") or {}
-    if item.get("kind") == "Pod" or "containers" in spec:
-        return spec
-    return (spec.get("template") or {}).get("spec") or {}
-doc = json.load(sys.stdin)
-items = doc.get("items")
-if items is None:
-    items = [doc] if doc.get("kind") in ("Deployment", "Pod") else []
-if not items:
-    sys.exit(0)
-spec = podspec(items[0])
-sidecars = {"authbridge-proxy", "envoy-proxy"}
-apps = [c for c in (spec.get("containers") or []) if c.get("name") not in sidecars]
-if len(apps) == 1:
-    print(apps[0].get("name") or "")
-'
+    app_container_query "$1" "sole-app-name"
 }
 
 # app_image_of <deployment-or-pod-json> <container-name>: print that container's
 # image. Accepts a Pod doc as well as a Deployment.
 app_image_of() {
-    local json="$1" cname="$2"
-    printf '%s' "${json}" | python3 -c '
-import json, sys
-cname = sys.argv[1]
-def podspec(item):
-    spec = item.get("spec") or {}
-    if item.get("kind") == "Pod" or "containers" in spec:
-        return spec
-    return (spec.get("template") or {}).get("spec") or {}
-doc = json.load(sys.stdin)
-items = doc.get("items")
-if items is None:
-    items = [doc] if doc.get("kind") in ("Deployment", "Pod") else []
-if not items:
-    sys.exit(0)
-spec = podspec(items[0])
-for c in (spec.get("containers") or []):
-    if c.get("name") == cname:
-        print(c.get("image") or "")
-        break
-' "${cname}"
+    app_container_query "$1" "image-by-name" "$2"
 }
 
 pod_name_of() {
