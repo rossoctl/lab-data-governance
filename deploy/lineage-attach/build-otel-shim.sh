@@ -144,9 +144,8 @@ detect_python() {  # sets VENV_PYTHON (validates it when given explicitly)
       echo "REFUSING to bake ${base_ref}: no runnable Python found." >&2
       echo "  Probed: ${candidates[*]}" >&2
       echo "  The image is outside the shim envelope (non-Python, or an unusual layout)." >&2
-      echo "  -> pass the interpreter explicitly as arg 3, or attach the sidecar only:" >&2
-      echo "     DEPLOY=<deployment> ./sidecar-patch.sh   (still captures every HTTP hop," >&2
-      echo "     but pairing under concurrency needs the app to propagate on its own)" >&2
+      echo "  -> pass the interpreter explicitly as arg 3; Data Governance cannot" >&2
+      echo "     activate one-trace lineage without an attested application shim." >&2
       exit 3
     fi
     echo ">> detected app python: ${VENV_PYTHON}"
@@ -331,7 +330,7 @@ publish() {
   else
     echo ">> NOTE: the -otel image is INERT — it runs exactly like its base until a"
     echo ">>       Deployment sets LINEAGE_PROPAGATE=1 in the app container's env"
-    echo ">>       (attach-lineage.sh does this). Deploy it without that env and you"
+    echo ">>       (dg.sh instrument does this). Deploy it without that env and you"
     echo ">>       simply get the base image's behavior: no propagation, and the trace"
     echo ">>       fragments at this pod, visibly (lineage.parent.source=none on its outbound hops)."
   fi

@@ -43,83 +43,31 @@ performs the load-bearing `rollout restart` for you.
 The design and its boundary decisions live in
 [`../../docs/cli.md`](../../docs/cli.md),
 [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.md)
-(namespace activation is **non-reversible** and **mode-preserving** — no
-`reset`, no sidecar-mode switch in v1),
+(namespace activation is non-reversible),
 [ADR-0032](../../docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md)
-(`instrument` drives the lineage-attach kit rather than emitting its own YAML),
-and [ADR-0033](../../docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md)
-(which supersedes ADR-0032: the kit is now **vendored** into
-`deploy/lineage-attach/`, retiring `--cortex-local-path`).
+(the retired sidecar-attachment design), and
+[ADR-0033](../../docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md)
+(the current existing-proxy contract).
 
 ### Namespace lineage activation (`dg.sh namespace instrument`)
 
-`dg.sh namespace <ns> instrument [<entity>]` switches on lineage telemetry for
-the agents/tools in a namespace (all of them, or the single named `<entity>`),
-so their traffic produces the facts-only spans the interactions processor
-consumes. It is **additive-only and never switches a namespace's sidecar mode**,
-and it is **non-reversible in v1** (to undo, delete/redeploy the workloads); its
-read-only partner `dg.sh namespace <ns> status [<entity>]` reports, per entity,
-sidecar presence, sidecar type, and whether the `lineage-telemetry` plugin is
-wired. See ADR-0031 for why.
+`dg.sh namespace <ns> instrument [<entity>]` activates lineage for Rossoctl-managed agents and tools. Every selected workload must already have a trusted `rossoctl.io/type` label and an admitted `authbridge-proxy` sidecar. Data Governance never injects or replaces a sidecar.
 
-`instrument` drives the lineage-attach kit **vendored into this repo** at
-`deploy/lineage-attach/` — no cortex checkout, and no flag to point at one
-(ADR-0033 retired `--cortex-local-path`). If that vendored kit is missing or
-incomplete (a broken checkout), `instrument` is a
-**refuse-and-mutate-nothing preflight** (it fails loud and changes nothing).
+The command validates the complete namespace before mutation: running pods, proxy environment, plugin catalog, admission-owned ConfigMaps, and attested two-shim images. Bare, Envoy, or otherwise nonconforming workloads fail closed with guidance to deploy or import them through Rossoctl.
 
-`instrument` dispatches each targeted entity by its **current sidecar state**,
-all auto-detected, no flag (the ADR-0033 owner-split):
+After preflight, it rolls each application onto the shim image with `LINEAGE_PROPAGATE=1`, reconciles the newly admitted AuthBridge ConfigMap while preserving authentication, and verifies the live hot-reloaded pipeline.
 
-| Entity's current state | Action |
-| --- | --- |
-| no sidecar, namespace **not** envoy-configured | inject a lineage-only **proxy** sidecar (auth-free) + the two-shim image |
-| no sidecar, namespace **already** envoy-configured | inject an **envoy** lineage sidecar + the two-shim image |
-| sidecar present, **no** `lineage-telemetry` in its pipeline | **append** `lineage-telemetry` in place (auth left as-is), best-effort with verify-after-roll |
-| sidecar present, `lineage-telemetry` **already** wired | **no-op** (idempotent) |
+`dg.sh namespace <ns> status [<entity>]` is read-only. It may report `sidecar=none` diagnostically, but that state cannot be instrumented.
 
-The default for a bare, no-sidecar entity is the **auth-free proxy** sidecar: it
-carries only `lineage-telemetry` + the parsers, so it does not 401 the demo's
-unauthenticated MCP/A2A calls, and captures egress transparently via an
-include-only iptables allowlist (A2A `8080` + MCP `8000` by default; every other
-port stays direct). "Already envoy-configured" is detected from the namespace —
-the presence of the platform `envoy-config` ConfigMap — and routes to the
-vendored envoy applier instead. For a Python app either injection also bakes +
-attaches the two-shim image (`LINEAGE_PROPAGATE=1`) so a run collapses to one
-trace rather than N fragments.
-
-Where an entity **already has a sidecar**, `instrument` **appends**
-`lineage-telemetry` to its pipeline in place (leaving its auth plugins exactly
-as-is — additive, never strip) as a **best-effort** step: it **verifies after the
-roll** that the plugin is live and **warns loudly** if the operator clobbered the
-(operator-owned) ConfigMap on the roll, or if the existing pipeline is enforcing
-(so lineage will record 401s for unauthenticated callers). See ADR-0033 for the
-full owner-split, and ADR-0031 for why activation stays additive and one-way.
-
-This `dg.sh namespace instrument` no-sidecar path is the **productized form of
-the ad-hoc lineage-attach recipe** the root `CLAUDE.md` § 3a and
-`LINEAGE-PROXY-SIDECAR-RECIPE.md` document (the hand-run `instrument-one.sh`
-loop): where a namespace's agents/tools ship with no sidecar, `dg.sh`
-**supersedes** that manual recipe for the productized flow.
+See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.md), [ADR-0033](../../docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md), and [the CLI guide](../../docs/cli.md).
 
 ### End-to-end operator scenario
 
-The full flow, in one place — from a bare rossoctl cluster to observing the
-trace in the UI:
-
-1. Install rossoctl on the cluster.
-2. `./deploy/dg.sh component install`.
-3. Install the agents/tools (via the rossoctl UI, or an `agent-examples`-style
-   deploy — **install only**, do not run them yet).
-4. `./deploy/dg.sh namespace <ns> instrument` on the namespace holding those
-   workloads — the lineage-attach kit is vendored into this repo, so there is no
-   cortex checkout to point at. (Scope to one entity by appending its
-   `app.kubernetes.io/name`.)
-5. Run the agents.
-6. Observe the resulting traces in the data-governance UI at
-   **<http://dg.localtest.me:8080/>** (see "UI access via the rossoctl shared
-   Gateway" below). Confirm activation took with
-   `./deploy/dg.sh namespace <ns> status`.
+1. Install Rossoctl and the Data Governance component.
+2. Deploy/import agents and tools through the Rossoctl UI or CLI.
+3. Run `./deploy/dg.sh namespace <ns> instrument`.
+4. Run the agents.
+5. Verify with `./deploy/dg.sh namespace <ns> status` and the Data Governance UI.
 
 ## Topology summary
 

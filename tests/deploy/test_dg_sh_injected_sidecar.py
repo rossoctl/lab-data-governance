@@ -1,27 +1,9 @@
-"""Behavioural tests for dg.sh detecting a WEBHOOK-INJECTED pod-level sidecar.
+"""Tests for read-only detection of webhook-injected sidecars.
 
-The platform injection WEBHOOK can attach the AuthBridge `authbridge-proxy`
-sidecar (e.g. when the rossoctl UI adds an agent). The webhook injects at the
-POD level: the admitted Pod gets the sidecar container, but the owning
-Deployment's `.spec.template.spec.containers` stays clean (app container only).
-
-dg.sh's original sidecar detection was ENTIRELY Deployment-template based, so for
-a webhook-injected sidecar it saw the clean template, returned `none`, and
-reported `sidecar=none` for a workload whose live Pod is in fact running
-`authbridge-proxy`. These tests pin the fix: detection FALLS BACK to the live Pod
-when the Deployment template shows no sidecar, and resolves the sidecar's
-pipeline ConfigMap from the Pod spec in that case. This detection matters for
-`instrument` too — under the ADR-0033 owner-split (#245) its role is to SEE an
-injected sidecar so `instrument` routes the entity correctly: an injected sidecar
-WITHOUT lineage is APPENDED to in place (best-effort, verify-after-roll), one
-already carrying lineage is a NO-OP — never a SECOND sidecar injected onto an
-entity that already has one.
-
-Same harness as ``test_dg_sh_namespace_status.py`` /
-``test_dg_sh_instrument.py``: the real script runs as a subprocess with a **fake
-``kubectl``** on a synthetic ``PATH`` — no live cluster. The fake here ALSO
-serves ``kubectl get pods ... -o json`` so a workload can carry a sidecar in its
-live Pod but not in its Deployment template (the injected case).
+Admission adds AuthBridge to the Pod, not the Deployment template. Status must
+therefore fall back to the live Pod and resolve its pipeline ConfigMap there.
+These tests do not exercise sidecar injection; Data Governance only instruments
+existing, trusted Rossoctl proxies.
 """
 
 from __future__ import annotations
@@ -439,15 +421,8 @@ def sandbox(tmp_path: Path):
         if src and Path(tool).name not in _CONTROLLED:
             (sysdir / tool).symlink_to(src)
 
-    # A stub kit so the instrument-path integrity check resolves. Under the
-    # ADR-0033 owner-split (#245) an entity that ALREADY has a sidecar is NOT
-    # injected — it is APPENDED to in place (dg.sh's own edit), so neither applier
-    # runs for the injected cases here; the stubs shout if they wrongly run.
-    _STUB_SIDECAR_PATCH = 'echo "sidecar-patch.sh stub should not run for an existing sidecar" >&2\nexit 0\n'
-    _STUB_SIDECAR_PATCH_PROXY = 'echo "sidecar-patch-proxy.sh stub should not run for an existing sidecar" >&2\nexit 0\n'
+    # A stub kit so status and instrument-path setup can resolve.
     _STUB_BUILD_SHIM = 'echo "build-otel-shim.sh stub" >&2\nexit 0\n'
-    _STUB_ATTACH = 'echo "attach-lineage.sh stub" >&2\nexit 0\n'
-    _STUB_ATTACH_PROXY = 'echo "attach-lineage-proxy.sh stub" >&2\nexit 0\n'
 
     class _Sandbox:
         def __init__(self) -> None:
@@ -462,11 +437,7 @@ def sandbox(tmp_path: Path):
             self.envflags: dict[str, str] = {}
             _make_bin(bindir, "docker", "exit 0\n")
             _make_bin(bindir, "podman", "exit 0\n")
-            _make_bin(kitdir, "sidecar-patch.sh", _STUB_SIDECAR_PATCH)
-            _make_bin(kitdir, "sidecar-patch-proxy.sh", _STUB_SIDECAR_PATCH_PROXY)
             _make_bin(kitdir, "build-otel-shim.sh", _STUB_BUILD_SHIM)
-            _make_bin(kitdir, "attach-lineage.sh", _STUB_ATTACH)
-            _make_bin(kitdir, "attach-lineage-proxy.sh", _STUB_ATTACH_PROXY)
             # The sourced / build-input companions require_vendored_kit checks for
             # (both shims are build inputs; ADR-0033 D4).
             for f in ("container-runtime.sh", "Dockerfile.otel-shim",
@@ -748,131 +719,6 @@ def test_status_pod_read_failure_does_not_abort_other_entities(sandbox) -> None:
 
 
 # ===========================================================================
-# instrument: an injected-only sidecar is DETECTED (pod fallback) and, under the
-# ADR-0033 owner-split (#245), APPENDED to in place when it lacks lineage (or a
-# no-op when it is already wired). The pod fallback exists so an injected sidecar
-# is SEEN — never so a SECOND sidecar is injected onto an entity that has one.
-# ===========================================================================
-
-
-def _cm_applied(sandbox, entity: str) -> bool:
-    """True if dg.sh applied the amended per-app CM for <entity> (the in-place
-    append). The fake kubectl records an `appended-<cm>` marker on `apply -f -`."""
-    return (sandbox.fixdir / f"appended-authbridge-lineage-config-{entity}").exists()
-
-
-def test_instrument_injected_proxy_no_lineage_appends_in_place(sandbox) -> None:
-    """An entity whose proxy sidecar is ONLY in the live Pod (webhook-injected,
-    clean Deployment template) and lacks lineage-telemetry must be DETECTED via
-    the pod fallback and APPENDED to in place (ADR-0033 Decision 3): the CM is
-    re-applied with the plugin and the workload rolled. Neither kit APPLIER runs
-    (this is dg.sh's own in-place edit); the run exits 0."""
-    sandbox.set_namespace(
-        {"legacy-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": False}}
-    )
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode == 0, r.stderr
-    # Neither applier ran — the append is dg.sh's own edit.
-    assert "stub should not run" not in (r.stdout + r.stderr), (
-        f"an injected sidecar must be appended in place, not driven through an applier; "
-        f"got:\n{r.stdout}\n{r.stderr}"
-    )
-    assert _cm_applied(sandbox, "legacy-agent"), (
-        f"the injected proxy without lineage must be appended in place; calls={sandbox.kubectl_calls()!r}"
-    )
-    combined = (r.stdout + r.stderr).lower()
-    assert "append" in combined or "in place" in combined or "in-place" in combined, (
-        f"the in-place append must be reported; got:\n{combined}"
-    )
-
-
-def test_instrument_injected_proxy_lineage_wired_is_noop(sandbox) -> None:
-    """An injected proxy sidecar that ALREADY has lineage-telemetry wired → no-op
-    (idempotent, origin-agnostic). Nothing is mutated; the run exits 0."""
-    sandbox.set_namespace(
-        {"legacy-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": True}}
-    )
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode == 0, r.stderr
-    calls = " ".join(sandbox.kubectl_calls())
-    for m in ("apply", "rollout restart", "edit", "replace", "delete"):
-        assert m not in calls, (
-            f"an already-wired injected sidecar must mutate nothing; found {m!r} in calls={calls!r}"
-        )
-    assert not _cm_applied(sandbox, "legacy-agent"), "an already-wired sidecar must not re-apply the CM"
-    combined = (r.stdout + r.stderr).lower()
-    assert "no-op" in combined or ("already" in combined and ("wired" in combined or "lineage" in combined)), (
-        f"an already-wired injected sidecar must be reported as an idempotent no-op; got:\n{combined}"
-    )
-
-
-def test_instrument_injected_proxy_pod_read_failure_dies_loud(sandbox) -> None:
-    """The mutating `instrument` verb must NOT proceed on a pod-read failure: the
-    injected-sidecar fallback there uses the loud-die get_pod_json, so a
-    transient/RBAC failure of the pod probe halts loud rather than silently
-    misclassifying the entity as no-sidecar and WRONGLY instrumenting it (the
-    kit would inject a second sidecar onto an entity that already has one). The
-    deployment template shows no sidecar, so the fallback IS reached."""
-    sandbox.set_namespace(
-        {"legacy-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": False}}
-    )
-    sandbox.set_pod_get_fails(True)  # breaks ONLY the pod read
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode != 0, (
-        f"a pod-read failure in the instrument fallback must die loud; stdout={r.stdout!r}"
-    )
-    combined = (r.stdout + r.stderr).lower()
-    assert combined.strip(), "a failed pod read must not exit with EMPTY output"
-
-
-def test_instrument_injected_proxy_does_not_drive_an_applier(sandbox) -> None:
-    """An injected-proxy entity already has a sidecar → it is appended to in place,
-    NOT injected. NEITHER applier (envoy sidecar-patch.sh nor proxy
-    sidecar-patch-proxy.sh) may be invoked for it (guards against the pod-fallback
-    misclassifying it as no-sidecar → injecting a SECOND sidecar)."""
-    sandbox.set_namespace(
-        {"legacy-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": False}}
-    )
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode == 0, r.stderr
-    # Either applier stub prints to stderr if it ever wrongly runs.
-    assert "stub should not run" not in (r.stdout + r.stderr), (
-        f"an injected sidecar must NOT drive either applier; got:\n{r.stdout}\n{r.stderr}"
-    )
-
-
-def test_instrument_no_running_pod_refuses_on_unconfirmed_none(sandbox) -> None:
-    """A template that shows NO sidecar and has NO Running pod to confirm it must
-    make `instrument` refuse and mutate nothing. get_pod_json returns exit 0 with
-    {"items":[]} when the Deployment is scaled to 0 (or just-applied), and
-    detect_sidecar_type prints 'none' for an empty listing too — so trusting that
-    'none' would attach a SECOND sidecar onto an entity that actually carries a
-    webhook-injected one (visible only once a Pod is admitted). The instrument
-    path must distinguish an EMPTY pod read from a CONFIRMED no-sidecar read and
-    die loud on the former."""
-    sandbox.set_namespace(
-        {"legacy-agent": {"template_sidecar": None, "no_pod": True}}
-    )
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode != 0, (
-        f"instrument must refuse on an unconfirmed 'none' (no Running pod); stdout={r.stdout!r}"
-    )
-    combined = (r.stdout + r.stderr).lower()
-    assert "no running pod" in combined or "no pod" in combined, (
-        f"the refusal must explain there is no Running pod to confirm from; got:\n{combined}"
-    )
-    # Nothing mutated, and the kit was never driven.
-    calls = " ".join(sandbox.kubectl_calls())
-    for m in ("apply", "patch", "rollout restart", "edit", "replace", "delete"):
-        assert m not in calls, (
-            f"a refused (unconfirmed-none) entity must mutate nothing; found {m!r} in calls={calls!r}"
-        )
-    assert "stub should not run" not in (r.stdout + r.stderr) and (
-        "build-otel-shim.sh stub" not in (r.stdout + r.stderr)
-    ), f"the kit must NOT be driven on an unconfirmed 'none'; got:\n{r.stdout}\n{r.stderr}"
-
-
-# ===========================================================================
 # status: a NATIVE sidecar — an initContainer (restartPolicy: Always), the
 # shape the #852 kit attaches (dg.sh ~line 761). The bug (task 1): detection
 # inspected `.spec[.template.spec].containers` ONLY, never `initContainers`, so
@@ -973,33 +819,4 @@ def test_status_proxy_init_alone_is_not_a_sidecar(sandbox) -> None:
     line = _entity_line(r.stdout, "search-destinations").lower()
     assert "sidecar=none" in line and "type=none" in line, (
         f"a lone proxy-init init container is NOT a sidecar; line={line!r}"
-    )
-
-
-# ===========================================================================
-# instrument: a native envoy sidecar ALREADY carrying lineage is DETECTED (via
-# the initContainers union) and treated as an idempotent NO-OP — instrument must
-# not re-inject or re-append onto an already-wired, already-instrumented entity
-# (ADR-0033 Decision 5). Guards the idempotency of a re-run.
-# ===========================================================================
-
-
-def test_instrument_native_envoy_wired_is_noop(sandbox) -> None:
-    """An entity already carrying a native envoy sidecar (kit-attached, in the
-    template's initContainers) WITH lineage-telemetry wired must be DETECTED and
-    treated as a NO-OP — no applier is driven and nothing is mutated. Guards the
-    idempotency of a re-run of `instrument` on an already-instrumented namespace."""
-    sandbox.set_namespace(
-        {"research-agent": {"template_sidecar": "envoy", "native": True, "lineage": True}}
-    )
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode == 0, r.stderr
-    assert "stub should not run" not in (r.stdout + r.stderr), (
-        f"an already-wired (native envoy) entity must NOT be re-driven through an "
-        f"applier; got:\n{r.stdout}\n{r.stderr}"
-    )
-    assert not _cm_applied(sandbox, "research-agent"), "an already-wired entity must not re-apply the CM"
-    combined = (r.stdout + r.stderr).lower()
-    assert "no-op" in combined or ("already" in combined and ("wired" in combined or "lineage" in combined)), (
-        f"a wired native-envoy entity must be reported as an idempotent no-op; got:\n{combined}"
     )

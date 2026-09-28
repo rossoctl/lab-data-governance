@@ -527,10 +527,9 @@ get_pod_json() {
 # is NON-fatal — it prints nothing and returns non-zero (leaving the caller's
 # prior verdict standing) instead of dying. This is the READ-ONLY status verb's
 # fallback probe: a transient/RBAC failure of the pod read must NOT abort the
-# whole best-effort diagnostic (which, before webhook-injected detection, simply
-# printed sidecar=none and moved on). It mirrors crashloop_detected's rule that a
-# failed pod probe is inconclusive, not proof. The mutating `instrument` verb
-# keeps get_pod_json's loud die — there, a probe we cannot trust must halt.
+# whole best-effort diagnostic. A failed pod probe is inconclusive, not proof.
+# The mutating `instrument` verb keeps get_pod_json's loud die — there, a probe
+# we cannot trust must halt.
 get_pod_json_soft() {
     local ns="$1" entity="$2"
     local out status
@@ -548,10 +547,7 @@ get_pod_json_soft() {
 # pod_items_count <pod-listing-json>: print the number of Pods in a `kubectl get
 # pods -o json` listing (the length of .items). Used to distinguish a pod read
 # that AUTHORITATIVELY shows no sidecar (>=1 Running pod, none of them carrying a
-# sidecar) from one that is simply EMPTY (0 Running pods) — for the latter,
-# detect_sidecar_type prints 'none' too, but that 'none' is unconfirmed and must
-# not be trusted on the mutating instrument path (a webhook-injected sidecar is
-# visible only on a live Pod). Takes the JSON as $1.
+# sidecar) from one that is simply EMPTY (0 Running pods). Takes the JSON as $1.
 pod_items_count() {
     local json="$1"
     printf '%s' "${json}" | python3 -c '
@@ -824,50 +820,11 @@ namespace_status() {
 
 # --- namespace <ns> instrument [<entity>] -- NON-REVERSIBLE activation (#184) --
 #
-# Activate lineage for the agents/tools in <ns> — all of them, or the single
-# <entity> when named. Additive-only, and it NEVER changes a namespace's sidecar
-# mode (ADR-0031).
-#
-# ┌─ ADR-0033 (accepted 2026-09-14) supersedes ADR-0032. The owner split below is ┐
-# │ the CURRENT behaviour (issue #245 rewired instrument_entity to it — the       │
-# │ one-trace epic step: vendor kit #241 → detection #242/#243 → turnspan bake     │
-# │ #244 → THIS owner-split rewire #245). All auto-detected, no flag:             │
-# │                                                                              │
-# │  | current state                          | action              | owner    | │
-# │  |----------------------------------------|---------------------|----------| │
-# │  | no sidecar, ns NOT envoy-configured    | inject lineage-only | dg.sh    | │
-# │  |                                        | PROXY sidecar       | proxy    | │
-# │  |                                        | (+ two-shim image)  | applier  | │
-# │  | no sidecar, ns already envoy-configured| inject envoy lineage| vendored | │
-# │  |                                        | sidecar (+ two-shim)| envoy    | │
-# │  | sidecar present, no lineage-telemetry  | APPEND lineage-     | dg.sh    | │
-# │  |                                        | telemetry in place  | in-place | │
-# │  |                                        | (best-effort)       | append   | │
-# │  | sidecar present, lineage-telemetry on  | no-op (idempotent)  | —        | │
-# │                                                                              │
-# │ Implemented by instrument_entity's dispatch (below): ns_is_envoy_configured  │
-# │ chooses the no-sidecar owner; drive_proxy_attach / drive_kit_attach inject;   │
-# │ append_lineage_in_place does the best-effort in-place append + verify.        │
-# └──────────────────────────────────────────────────────────────────────────────┘
-#
-# Under ADR-0033 the injected proxy is AUTH-FREE (lineage-only — not the enforcing
-# token-exchange proxy, which 401s the demo), captures egress via transparent
-# iptables in INCLUDE-ONLY allowlist mode (A2A 8080 + MCP 8000 by default; every
-# other port passes through direct), and — like every producer under wire contract
-# v1.7.0 — supplies the workload `namespace` (via namespace_file) or the plugin
-# refuses to start. The in-place append keeps the sidecar's auth AS-IS and verifies
-# after the roll, warning loudly on an operator clobber or an enforcing-401 case.
-#
-# Guard LAYERS, complementary (kept from ADR-0032 decision 4):
-#   * the attach path runs `kubectl patch --dry-run=server` BEFORE any write — a
-#     pre-apply guard that rejects a bad merge / admission / RBAC / cluster < 1.29;
-#   * dg.sh watches the rollout the attach triggers and detects a crash-looping
-#     sidecar (the `unknown plugin "lineage-telemetry"` / DisallowUnknownFields
-#     boot-crash surfaces as CrashLoopBackOff within seconds) — the POST-apply
-#     failure the dry-run cannot see. On a failed rollout / crash-loop dg.sh
-#     dumps the sidecar log, surfaces the PRINTED back-out line verbatim (a
-#     reverse-patch, NOT a rollout undo — a native sidecar makes a whole-revision
-#     undo restore too much), fails loud, and does NOT proceed to the next entity.
+# Activate lineage for Rossoctl-managed agents/tools in <ns>. Every target must
+# already have the trusted Rossoctl identity label and an admitted AuthBridge
+# proxy. Bare workloads fail during the transaction preflight, before any image,
+# Deployment, or ConfigMap mutation, with guidance to deploy/import them through
+# Rossoctl first. Data Governance never creates or replaces a sidecar.
 
 # The platform collector the component tee carries to the receiver — the kit's
 # own OTEL_ENDPOINT default too, so passing it is a no-op belt-and-braces that
@@ -902,35 +859,18 @@ resolve_kind_cluster_name() {
 # missing --cortex-local-path (ADR-0033: the kit is vendored, retired the flag).
 # Mutates nothing.
 #
-# We check the WHOLE surface the drive path actually needs, not just the three
-# entry scripts: build-otel-shim.sh sources container-runtime.sh and its docker
-# build reads Dockerfile.otel-shim + lineage-propagate-hook.py. Checking only the
-# executables would let a partial checkout PASS the preflight and then die
-# mid-bake — after ensure_envoy_config may already have mutated the cluster —
-# which would break this preflight's "refuse, mutate nothing" promise.
+# Check the complete shim-build and existing-proxy reconciliation surface before
+# doing any cluster mutation.
 require_vendored_kit() {
     [[ -d "${KIT_DIR}" ]] \
         || die "the vendored lineage-attach kit is missing (expected ${KIT_DIR}); this is a broken checkout — the kit ships in deploy/lineage-attach/. Mutating nothing."
-    # Driven scripts: must be present AND executable. Both appliers ship — the
-    # envoy applier (sidecar-patch.sh) and the ADR-0033 proxy applier
-    # (sidecar-patch-proxy.sh) the owner-split's default no-sidecar row drives —
-    # AND both generators the appliers exec (attach-lineage.sh for envoy,
-    # attach-lineage-proxy.sh for proxy). Checking only the envoy generator would
-    # let a checkout missing the proxy generator PASS this preflight and then die
-    # mid-attach — after bake_shim_for has already built + kind-loaded an image,
-    # breaking the "refuse, mutate nothing" promise for the default proxy path.
-    local s
-    for s in sidecar-patch.sh sidecar-patch-proxy.sh build-otel-shim.sh \
-             attach-lineage.sh attach-lineage-proxy.sh; do
-        [[ -x "${KIT_DIR}/${s}" ]] \
-            || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/${s} is missing or not executable. Mutating nothing."
-    done
+    [[ -x "${KIT_DIR}/build-otel-shim.sh" ]] \
+        || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/build-otel-shim.sh is missing or not executable. Mutating nothing."
     # Sourced / build-input files the shim bake needs: must be present (they are
     # read, not exec'd, so an executable bit is not required). Both shims are
     # build inputs — Dockerfile.otel-shim COPYs the propagate hook AND the
     # turn-span shim (rossoctl_turnspan.py + its .pth) into the image; a checkout
-    # missing either would die mid-bake (ADR-0033 Decision 4: one image, both
-    # shims), so refuse here before ensure_envoy_config mutates anything.
+    # missing either would die mid-bake, so refuse before cluster mutation.
     local f
     for f in container-runtime.sh Dockerfile.otel-shim lineage-propagate-hook.py \
              rossoctl_turnspan.py rossoctl_turnspan.pth \
@@ -959,9 +899,7 @@ component_installed() {
 }
 
 # instrument_preflight: the dg.sh-side checks the kit does not make — component
-# installed + collector tee wired. Both fail loud, mutating nothing. (The kit's
-# own six read-only preconditions run inside sidecar-patch.sh per entity — we do
-# NOT re-implement them; ADR-0032 decision 3.)
+# installed + collector tee wired. Both fail loud, mutating nothing.
 instrument_preflight() {
     component_installed \
         || die "the data-governance component is not installed (namespace ${DG_NAMESPACE} absent) — run 'dg.sh component install' first; mutating nothing"
@@ -970,45 +908,6 @@ instrument_preflight() {
     fi
 }
 
-# ensure_envoy_config <ns>: the kit's envoy sidecar mounts the platform
-# `envoy-config` ConfigMap and its `require_envoy_config` precondition REQUIRES
-# it in the target namespace — but the kit never CREATES it. The rossoctl Helm
-# chart renders `envoy-config` only into the namespaces it manages (team1/team2,
-# rossoctl-system); an ad-hoc, kubectl-applied namespace (the travel_advisor
-# demo) never got it. Since `dg.sh instrument` is what enrolls such a namespace
-# for lineage, it OWNS provisioning envoy-config there so `instrument` is
-# self-sufficient on any rossoctl-enabled namespace (issue #184). envoy-config is
-# namespace-agnostic, so we copy it verbatim from a chart-managed source ns.
-# Idempotent: a no-op when the target already has it. We NEVER fabricate an
-# envoy.yaml — if the target lacks it and no source is found, refuse loud.
-ensure_envoy_config() {
-    local ns="$1"
-    # Already present in the target ns → nothing to do.
-    if kubectl -n "${ns}" get cm envoy-config >/dev/null 2>&1; then
-        return 0
-    fi
-    # Discover a chart-managed source ns: the explicit override, else the Helm
-    # release namespace, else any namespace that carries envoy-config.
-    local src="${ENVOY_CONFIG_SOURCE_NS:-}"
-    if [[ -z "${src}" ]]; then
-        if kubectl -n "${DG_COLLECTOR_NAMESPACE}" get cm envoy-config >/dev/null 2>&1; then
-            src="${DG_COLLECTOR_NAMESPACE}"
-        else
-            src="$(kubectl get cm envoy-config --all-namespaces \
-                     -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)"
-        fi
-    fi
-    [[ -n "${src}" ]] \
-        || die "instrument: '${ns}' is missing the platform 'envoy-config' ConfigMap (the kit's envoy sidecar mounts it) and no chart-managed source namespace has one to copy from. Install the rossoctl platform (which renders envoy-config), or set ENVOY_CONFIG_SOURCE_NS=<ns>. Mutating nothing."
-    err ">> instrument: '${ns}' lacks the platform envoy-config ConfigMap; copying it from '${src}' (namespace-agnostic)."
-    local body
-    body="$(kubectl -n "${src}" get cm envoy-config -o jsonpath='{.data.envoy\.yaml}' 2>/dev/null || true)"
-    [[ -n "${body}" ]] \
-        || die "instrument: source namespace '${src}' has an envoy-config ConfigMap with no 'envoy.yaml' key — refusing to copy an empty config. Mutating nothing."
-    printf '%s' "${body}" \
-        | kubectl -n "${ns}" create configmap envoy-config --from-file=envoy.yaml=/dev/stdin \
-        || die "instrument: failed to create the envoy-config ConfigMap in '${ns}' (copied from '${src}')."
-}
 
 # app_container_of <deployment-or-pod-json>: print the app container's name — the
 # sole non-sidecar container in the pod spec (excludes authbridge-proxy /
@@ -1218,180 +1117,6 @@ live_pipeline_is_canonical() {
 # PRINTED back-out line verbatim, and die loud — halting the whole run so we do
 # NOT proceed to the next entity. $4 is captured so we can echo the kit's own
 # output back to the operator when we fail after a rollout the kit reported OK.
-crashloop_detected() {
-    local ns="$1" entity="$2"
-    # A crash-looping sidecar shows CrashLoopBackOff in the pods of the entity.
-    # BOTH injected sidecars — the envoy `envoy-proxy` and the proxy
-    # `authbridge-proxy` — attach as NATIVE sidecars (initContainers with
-    # restartPolicy: Always), so their waiting-state reason is reported under
-    # `.status.initContainerStatuses`, NOT `.status.containerStatuses`. Range BOTH
-    # lists or the fast crash-loop guard is blind to the very sidecars it guards
-    # (code-review #245).
-    local out status
-    status=0
-    out="$(kubectl -n "${ns}" get pods \
-        -l "app.kubernetes.io/name=${entity}" \
-        -o 'jsonpath={range .items[*].status.initContainerStatuses[*]}{.state.waiting.reason}{"\n"}{end}{range .items[*].status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}' 2>/dev/null)" || status=$?
-    if [[ "${status}" -ne 0 ]]; then
-        # A failed pod probe is not proof of health; treat as inconclusive (not a
-        # crash) — the rollout status is the primary signal. Return non-crash.
-        return 1
-    fi
-    case "${out}" in
-        *CrashLoopBackOff*|*RunContainerError*|*CreateContainerError*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# fail_with_backout <ns> <entity> <sidecar-container> <backout_line>: dump the
-# sidecar log, surface the kit's back-out line, and die loud. Used on any
-# post-apply failure (crash-loop, or the kit's own rollout wait returning error).
-fail_with_backout() {
-    local ns="$1" entity="$2" container="$3" backout="$4"
-    err ">> instrument: attach FAILED for '${entity}' in '${ns}' — the ${container} sidecar did not come up healthy."
-    err ">> instrument: ${container} container log follows:"
-    kubectl -n "${ns}" logs "deploy/${entity}" -c "${container}" 2>&1 | sed 's/^/    /' >&2 || true
-    if [[ -n "${backout}" ]]; then
-        err ">> instrument: back out with the kit's printed reverse-patch line:"
-        # Surface the kit's OWN back-out line verbatim (a reverse-patch, NOT a
-        # rollout undo — ADR-0032 decision 4).
-        err "    ${backout}"
-    fi
-    die "instrument halted at '${entity}' (crash-looping / failed rollout); did NOT proceed to the remaining entities"
-}
-
-# drive_kit_attach <kit> <ns> <entity> <app_container> <app_image>:
-# run the kit's sidecar-patch.sh for a kit-owned row (no-sidecar / envoy). When
-# <app_container> is non-empty the attach flips propagation on it (APP_CONTAINER
-# + APP_IMAGE); empty means capture-only. We capture the kit's stdout so we can
-# (a) surface its printed back-out line on a failure, and (b) detect a
-# crash-loop after it returns. The kit's own --dry-run=server guard runs inside
-# it (pre-apply); our crash-loop watch runs after (post-apply).
-drive_kit_attach() {
-    local kit="$1" ns="$2" entity="$3" app_container="$4" app_image="$5"
-    local out status backout
-    err ">> instrument: attaching lineage sidecar to '${entity}' via the #852 kit (sidecar-patch.sh)"
-    status=0
-    # NOTE: DEPLOY/NAMESPACE/SELF_ID/APP_CONTAINER are read by sidecar-patch.sh
-    # itself; APP_IMAGE/OTEL_ENDPOINT/SIDECAR_IMAGE/PROXY_INIT_IMAGE are inherited
-    # by attach-lineage.sh. SIDECAR_IMAGE/PROXY_INIT_IMAGE are passed THROUGH from
-    # the environment (the operator supplies the locally-built plugin-bearing
-    # tags until the cortex PRs land) — we do not default them here.
-    # OUTBOUND_PORTS_EXCLUDE is passed THROUGH too (explicitly, so it is not a
-    # mere accident of env inheritance): the envoy sidecar's proxy-init redirects
-    # ALL outbound ports into envoy, which speaks HTTP — so an app's plaintext
-    # NON-HTTP egress (Postgres 5432, SMTP 1025, an object store) must be excluded
-    # or it breaks. The kit reads it and hands it to proxy-init; dg.sh does not
-    # guess a port list (empty = the kit default), the operator passes what their
-    # tools need (issue #184).
-    out="$(
-        DEPLOY="${entity}" \
-        NAMESPACE="${ns}" \
-        SELF_ID="${entity}" \
-        APP_CONTAINER="${app_container}" \
-        APP_IMAGE="${app_image}" \
-        OTEL_ENDPOINT="${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
-        OUTBOUND_PORTS_EXCLUDE="${OUTBOUND_PORTS_EXCLUDE:-}" \
-        "${kit}/sidecar-patch.sh" 2>&1
-    )" || status=$?
-    # Echo the kit's output to the operator regardless of outcome.
-    printf '%s\n' "${out}"
-    # The back-out line the kit prints (before its rollout wait, so present even
-    # on a failed wait): capture it verbatim to surface on any failure.
-    backout="$(printf '%s\n' "${out}" | grep -m1 '^>> back out:' || true)"
-
-    if [[ "${status}" -ne 0 ]]; then
-        # The kit's rollout wait (or an apply) failed — a post-apply failure the
-        # dry-run could not catch. Surface the back-out line + sidecar log.
-        fail_with_backout "${ns}" "${entity}" "envoy-proxy" "${backout}"
-    fi
-    # The kit reported success; still watch for a crash-loop the rollout status
-    # may have missed (a pod that started, then crash-looped).
-    if crashloop_detected "${ns}" "${entity}"; then
-        fail_with_backout "${ns}" "${entity}" "envoy-proxy" "${backout}"
-    fi
-    err ">> instrument: '${entity}' attached (kit-owned row)."
-}
-
-# ns_is_envoy_configured <ns>: 0 (true) if the namespace already carries the
-# platform `envoy-config` ConfigMap, 1 (false) if it is a genuine NotFound. This
-# is the ADR-0033 owner-split discriminator for a no-sidecar entity: an
-# envoy-configured namespace takes the ENVOY branch (the vendored envoy applier,
-# which mounts envoy-config); a bare namespace — the ad-hoc travel_advisor demo,
-# which has no envoy-config — takes the PROXY branch (auth-free, mounts none).
-# It never PROVISIONS envoy-config: absence is a routing signal, not a gap to
-# fill (the proxy path needs none). Any non-NotFound kubectl failure dies loud
-# rather than silently routing to proxy on an unreadable cluster.
-ns_is_envoy_configured() {
-    local ns="$1"
-    local out status errfile
-    status=0
-    errfile="$(mktemp)"
-    out="$(kubectl -n "${ns}" get configmap envoy-config -o name 2>"${errfile}")" || status=$?
-    if [[ "${status}" -eq 0 && -n "${out}" ]]; then
-        rm -f "${errfile}"
-        return 0
-    fi
-    local msg
-    msg="$(cat "${errfile}")"
-    rm -f "${errfile}"
-    if [[ "${status}" -ne 0 && "${msg}" != *"NotFound"* ]]; then
-        die "instrument: failed to probe the 'envoy-config' ConfigMap in namespace '${ns}' (needed to choose the proxy/envoy sidecar): ${msg}"
-    fi
-    return 1
-}
-
-# bake_shim_for <kit> <ns> <entity> <json>: bake the two-shim -otel image for a
-# Python app and print, on FD 3, two lines — the app container name and the baked
-# -otel image ref (both empty for a capture-only attach). Shared by the proxy and
-# envoy no-sidecar branches (ADR-0033: both inject the two-shim image). A
-# self-instrumenting / non-Python app is refused the shim by the kit's bake
-# interlock (exit 3) → capture-only; a genuinely broken bake (exit 4 / other)
-# dies loud rather than silently dropping propagation.
-bake_shim_for() {
-    local kit="$1" ns="$2" entity="$3" json="$4"
-    local app_container app_image otel_image bake_status bake_out
-    app_container="$(app_container_of "${json}")"
-    app_image=""
-    if [[ -n "${app_container}" ]]; then
-        app_image="$(app_image_of "${json}" "${app_container}")"
-    fi
-    local shim_container="" shim_image=""
-    if [[ -n "${app_container}" && -n "${app_image}" ]]; then
-        err ">> instrument: baking the two-shim image for '${entity}' (build-otel-shim.sh ${app_image})"
-        bake_status=0
-        local kind_cluster
-        kind_cluster="$(resolve_kind_cluster_name)"
-        bake_out="$(KIND_CLUSTER_NAME="${kind_cluster}" "${kit}/build-otel-shim.sh" "${app_image}" 2>&1)" || bake_status=$?
-        printf '%s\n' "${bake_out}" >&2
-        # Parse the loaded/built image ref from the bake's success line. Match BOTH
-        # forms build-otel-shim.sh prints: the normal `loaded <ref> into kind ...`
-        # and the NO_KIND_LOAD=1 `built + attested <ref> (kind load skipped ...)`
-        # form — otherwise a successful skip-load bake (an operator with
-        # NO_KIND_LOAD=1 in the environment) would parse no ref and die as a false
-        # "no image ref" failure (code-review #245).
-        otel_image="$(printf '%s\n' "${bake_out}" \
-            | sed -nE 's/.*loaded ([^ ]+) into.*/\1/p; s/.*built \+ attested ([^ ]+) .*/\1/p' \
-            | head -n1)"
-        if [[ "${bake_status}" -eq 3 ]]; then
-            err ">> instrument: shim refused by the kit's bake interlock for '${entity}' (exit 3: self-instrumenting / non-Python) — attaching CAPTURE-ONLY"
-            shim_container=""
-            shim_image=""
-        elif [[ "${bake_status}" -ne 0 ]]; then
-            die "instrument: the two-shim image for '${entity}' failed to build (build-otel-shim.sh exited ${bake_status}) — this is NOT the exit-3 bake interlock: the shim is broken (attestation failed, or a build error), so it cannot be treated as an intentional downgrade. Refusing to attach a lineage sidecar that would lose trace-context propagation. Fix the shim bake (see the build-otel-shim.sh output above) and re-run."
-        elif [[ -z "${otel_image}" ]]; then
-            die "instrument: the two-shim image for '${entity}' reported success but no loaded image ref could be parsed from build-otel-shim.sh output (above). Refusing to attach a sidecar that would lose trace-context propagation."
-        else
-            shim_container="${app_container}"
-            shim_image="${otel_image}"
-        fi
-    fi
-    printf '%s\n%s\n' "${shim_container}" "${shim_image}" >&3
-}
-
-# preflight_trusted_proxies <ns> <newline-names> <plan-file>: validate every
-# Rossoctl-owned proxy and bake/attest every distinct base image before changing
-# a Deployment or ConfigMap.  The plan is entity<TAB>container<TAB>shim image.
 preflight_trusted_proxies() {
     local ns="$1" names="$2" plan_file="$3"
     : > "${plan_file}"
@@ -1402,13 +1127,13 @@ preflight_trusted_proxies() {
         [[ -n "${entity}" ]] || continue
         dep="$(get_deployment_json "${ns}" "${entity}")"
         deployment_is_trusted "${dep}" \
-            || die "instrument: '${entity}' lost its trusted rossoctl.io/type label during preflight; mutating nothing"
+            || die "instrument: '${entity}' is not a Rossoctl-managed workload. Deploy or import agents/tools through Rossoctl so admission supplies the trusted identity label and AuthBridge sidecar, then retry. Mutating nothing."
         pod="$(get_pod_json "${ns}" "${entity}")"
         [[ "$(pod_items_count "${pod}")" -gt 0 ]] \
             || die "instrument: '${entity}' has no Running pod; cannot verify its admitted platform proxy. Mutating nothing."
         type="$(detect_sidecar_type "${pod}")"
         [[ "${type}" == "proxy" ]] \
-            || die "instrument: trusted Rossoctl workload '${entity}' requires an existing proxy sidecar (found '${type}'); Envoy is not accepted by #256. Mutating nothing."
+            || die "instrument: trusted Rossoctl workload '${entity}' requires an admitted AuthBridge proxy sidecar (found '${type}'). Redeploy it through Rossoctl with proxy mode enabled, then retry. Mutating nothing."
         proxy_environment_valid "${pod}" \
             || die "instrument: '${entity}' does not have the platform HTTP_PROXY/HTTPS_PROXY/NO_PROXY contract. Mutating nothing."
         pod_name="$(pod_name_of "${pod}")"
@@ -1495,316 +1220,11 @@ print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image"
     die "instrument: '${entity}' ConfigMap was reconciled but /v1/pipeline did not converge after hot reload; no second rollout was performed"
 }
 
-# drive_proxy_attach <kit> <ns> <entity> <app_container> <app_image>: the PROXY
-# counterpart of drive_kit_attach — run the vendored proxy applier
-# (sidecar-patch-proxy.sh) for the no-sidecar / NOT-envoy-configured row. Forwards
-# OUTBOUND_PORTS_INCLUDE (the include-only allowlist), never the envoy path's
-# EXCLUDE denylist. Captures the applier's stdout to surface its printed
-# reverse-patch back-out line on a failure and to watch for a crash-loop after it
-# returns; the sidecar container is authbridge-proxy.
-drive_proxy_attach() {
-    local kit="$1" ns="$2" entity="$3" app_container="$4" app_image="$5"
-    local out status backout
-    err ">> instrument: attaching AUTH-FREE lineage PROXY sidecar to '${entity}' (sidecar-patch-proxy.sh)"
-    status=0
-    out="$(
-        DEPLOY="${entity}" \
-        NAMESPACE="${ns}" \
-        SELF_ID="${entity}" \
-        APP_CONTAINER="${app_container}" \
-        APP_IMAGE="${app_image}" \
-        OTEL_ENDPOINT="${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
-        OUTBOUND_PORTS_INCLUDE="${OUTBOUND_PORTS_INCLUDE:-}" \
-        "${kit}/sidecar-patch-proxy.sh" 2>&1
-    )" || status=$?
-    printf '%s\n' "${out}"
-    backout="$(printf '%s\n' "${out}" | grep -m1 '^>> back out:' || true)"
-    if [[ "${status}" -ne 0 ]]; then
-        fail_with_backout "${ns}" "${entity}" "authbridge-proxy" "${backout}"
-    fi
-    if crashloop_detected "${ns}" "${entity}"; then
-        fail_with_backout "${ns}" "${entity}" "authbridge-proxy" "${backout}"
-    fi
-    err ">> instrument: '${entity}' attached (proxy row)."
-}
-
-# amend_cm_json: read the sidecar's FULL ConfigMap JSON (`kubectl get cm -o json`)
-# on stdin and print it back with `- name: lineage-telemetry` (+ its namespace_file
-# config, v1.7.0) appended to every block-style `plugins:` list in the config.yaml
-# key that lacks it — leaving auth plugins EXACTLY as-is (append, never strip;
-# ADR-0033 Decision 3 / ADR-0031 additive) and PRESERVING every other data key the
-# operator's CM carries (we amend only data["config.yaml"], never replace the CM).
-# Pure stdlib (json only — dg.sh never depends on pyyaml at runtime): a
-# line-oriented insert after each `plugins:` block, matched by the block's indent.
-#
-# Robustness rules (code-review #245):
-#   * Idempotent + comment-safe: the "already wired" short-circuit and the
-#     per-block skip match an actual list ENTRY (`- name: lineage-telemetry`),
-#     NOT the bare token in a comment / config string.
-#   * Flow-style refused: a `plugins: [ ... ]` (inline/flow list) cannot take
-#     block-sequence items appended after it without producing invalid YAML, so
-#     we REFUSE (exit 3) rather than emit a config that would crash the sidecar.
-# Exit: 0 amended (or already-wired no-op), 3 refused (flow-style / no plugins:).
-amend_cm_json() {
-    local self_id="$1" otel_endpoint="$2"
-    SELF_ID="${self_id}" OTEL_ENDPOINT="${otel_endpoint}" python3 -c '
-import json, os, re, sys
-self_id = os.environ.get("SELF_ID", "")
-otel = os.environ.get("OTEL_ENDPOINT", "")
-doc = json.load(sys.stdin)
-data = doc.get("data") or {}
-body = data.get("config.yaml")
-if body is None:
-    sys.stderr.write("config.yaml key absent from the ConfigMap\n")
-    sys.exit(3)
-
-# An actual list entry, at any indent: `- name: lineage-telemetry` (optionally
-# quoted). This is what "already wired" means — NOT the token in a comment.
-entry_re = re.compile(r"^\s*-\s+name:\s*[\x22\x27]?lineage-telemetry[\x22\x27]?\s*$")
-lines = body.splitlines()
-if any(entry_re.match(ln) for ln in lines):
-    # Already wired → pass the whole CM through unchanged (idempotent no-op).
-    json.dump(doc, sys.stdout)
-    sys.exit(0)
-
-# Refuse a flow-style plugins list — appending block items after it is malformed.
-for ln in lines:
-    m = re.match(r"^(\s*)plugins:\s*(\S.*)$", ln)
-    if m and m.group(2).strip() not in ("", "[]"):
-        sys.stderr.write("flow-style plugins list is not appendable in place\n")
-        sys.exit(3)
-
-out = []
-i, n = 0, len(lines)
-appended = False
-while i < n:
-    ln = lines[i]
-    out.append(ln)
-    m = re.match(r"^(\s*)plugins:\s*$", ln)
-    if not m:
-        i += 1
-        continue
-    key_indent = len(m.group(1))
-    item_indent = key_indent + 2
-    # copy the existing block-sequence items (lines more-indented than the key)…
-    j = i + 1
-    while j < n:
-        nxt = lines[j]
-        if nxt.strip() == "":
-            out.append(nxt); j += 1; continue
-        if (len(nxt) - len(nxt.lstrip())) <= key_indent:
-            break
-        out.append(nxt); j += 1
-    # …then append our entry at the block item indent.
-    pad = " " * item_indent
-    cpad = pad + "  "
-    out.append(f"{pad}- name: lineage-telemetry")
-    out.append(f"{cpad}config:")
-    out.append(f"{cpad}  otel_endpoint: \x22{otel}\x22")
-    out.append(f"{cpad}  self_id: \x22{self_id}\x22")
-    out.append(f"{cpad}  namespace_file: \x22/var/run/secrets/kubernetes.io/serviceaccount/namespace\x22")
-    appended = True
-    i = j
-if not appended:
-    sys.stderr.write("no block-style plugins: list found to append into\n")
-    sys.exit(3)
-data["config.yaml"] = "\n".join(out) + "\n"
-doc["data"] = data
-json.dump(doc, sys.stdout)
-sys.exit(0)
-'
-}
-
-# pipeline_is_enforcing: 0 (true) if the config.yaml on stdin carries an auth
-# plugin (jwt-validation / token-exchange) — meaning lineage appended to it will
-# record 401s for unauthenticated callers (ADR-0033 Decision 3 warning).
-pipeline_is_enforcing() {
-    local body
-    body="$(cat)"
-    case "${body}" in
-        *jwt-validation*|*token-exchange*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# append_lineage_in_place <ns> <entity> <json> <cm> <type>: ADR-0033 Decision 3.
-# An entity that ALREADY has a sidecar whose pipeline lacks lineage-telemetry:
-# APPEND the plugin in place (auth left as-is), roll, then VERIFY after the roll
-# that the plugin is actually live in the running sidecar's pipeline — warn
-# loudly when the operator clobbered the (operator-owned) CM on the roll, rather
-# than reporting a success we did not achieve. Best-effort ("try (ii) first").
-append_lineage_in_place() {
-    local ns="$1" entity="$2" json="$3" cm="$4" type="$5"
-    err ">> instrument: '${entity}' already has a ${type} sidecar without lineage-telemetry — appending it in place (best-effort, verify-after-roll)."
-
-    # Read the sidecar's CURRENT ConfigMap in FULL (as JSON) so the append amends
-    # only its config.yaml value and PRESERVES every other data key an
-    # operator-owned CM may carry — never rebuild the CM from config.yaml alone
-    # (that would silently drop sibling keys; code-review #245).
-    local cm_json status
-    status=0
-    cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json 2>/dev/null)" || status=$?
-    if [[ "${status}" -ne 0 || -z "${cm_json}" ]]; then
-        die "instrument: could not read the current pipeline ConfigMap '${cm}' for '${entity}' — refusing to blind-write an append. Mutating nothing for this entity."
-    fi
-
-    # Warn on an enforcing pipeline: appending lineage there is legal, but lineage
-    # will record 401s for the demo's unauthenticated callers — a property of that
-    # pipeline, not something appending lineage can fix.
-    local body
-    body="$(printf '%s' "${cm_json}" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("data") or {}).get("config.yaml",""))')"
-    if printf '%s' "${body}" | pipeline_is_enforcing; then
-        err ">> instrument: WARNING — '${entity}'s sidecar pipeline carries an auth plugin (jwt-validation / token-exchange). Lineage will record 401s for unauthenticated MCP/A2A callers; appending lineage does not change that. Leaving auth AS-IS (append, never strip)."
-    fi
-
-    # Amend the full CM (config.yaml only; other keys preserved) and apply it. A
-    # flow-style plugins list or an absent block-style list is refused (exit 3) —
-    # a blind append there would emit invalid YAML that crash-loops the sidecar.
-    local amended amend_status
-    amend_status=0
-    amended="$(printf '%s' "${cm_json}" | amend_cm_json "${entity}" "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}")" || amend_status=$?
-    if [[ "${amend_status}" -eq 3 ]]; then
-        die "instrument: cannot safely append lineage-telemetry to '${entity}'s pipeline — its config.yaml has no block-style 'plugins:' list to append into (a flow-style '[ ... ]' list, or an unexpected shape). Refusing to write YAML that would crash-loop the sidecar. Wire lineage into that sidecar's config by hand, or redeploy the entity without a sidecar and re-run. Mutating nothing for this entity."
-    elif [[ "${amend_status}" -ne 0 ]]; then
-        die "instrument: failed to build the amended pipeline ConfigMap for '${entity}' (amend_cm_json exited ${amend_status}). Mutating nothing for this entity."
-    fi
-    printf '%s' "${amended}" | kubectl apply -f - \
-        || die "instrument: failed to apply the amended pipeline ConfigMap '${cm}' for '${entity}'. Mutating nothing further for this entity."
-
-    # Roll the workload so the sidecar reloads the amended pipeline, then wait.
-    kubectl -n "${ns}" rollout restart "deploy/${entity}" \
-        || die "instrument: failed to roll '${entity}' after appending lineage. The CM was amended; a manual rollout is needed."
-    kubectl -n "${ns}" rollout status "deploy/${entity}" --timeout=180s \
-        || err ">> instrument: WARNING — rollout of '${entity}' did not complete in time; verify below may be premature."
-
-    # VERIFY after the roll: re-read the RUNNING sidecar's CM (resolved from the
-    # live Pod, which is where a webhook-injected/operator-owned sidecar mounts
-    # it) and confirm lineage-telemetry is actually wired. If it is gone, the
-    # operator regenerated (clobbered) the CM on the roll — warn loudly.
-    local pod_json live_cm live_data
-    pod_json="$(get_pod_json "${ns}" "${entity}")"
-    live_cm="$(sidecar_config_cm "${pod_json}")"
-    [[ -n "${live_cm}" ]] || live_cm="${cm}"
-    live_data="$(get_configmap_data "${ns}" "${live_cm}")"
-    if plugin_wired_in_cm_data "${live_data}"; then
-        err ">> instrument: '${entity}' — lineage-telemetry verified live in the sidecar pipeline (in-place append succeeded)."
-    else
-        err ">> instrument: WARNING — after the roll, lineage-telemetry is NOT wired in '${entity}'s running sidecar. The per-workload ConfigMap is operator-owned and was CLOBBERED (regenerated without the plugin) on the roll. The append did not durably take. Durable in-place activation (operator-rendered plugin, or a dg.sh-injected sidecar instead) is future work — see ADR-0033 Decision 3."
-    fi
-}
-
-# instrument_entity <kit> <ns> <entity>: dispatch one entity through the ADR-0033
-# owner-split (all auto-detected, no flag). Reuses #183 sidecar detection
-# (detect_sidecar_type) + the #183/#242 pipeline detection (sidecar_config_cm +
-# plugin_wired_in_cm_data). Rows:
-#   no sidecar, ns NOT envoy-configured  → inject lineage-only PROXY (drive_proxy_attach)
-#   no sidecar, ns already envoy-config'd → inject ENVOY (drive_kit_attach)
-#   sidecar present, no lineage-telemetry → APPEND in place (append_lineage_in_place)
-#   sidecar present, lineage-telemetry on → no-op (idempotent, ADR-0033 D5)
-instrument_entity() {
-    local kit="$1" ns="$2" entity="$3"
-    local json type
-    json="$(get_deployment_json "${ns}" "${entity}")"
-    type="$(detect_sidecar_type "${json}")"
-
-    # Fall back to the live Pod when the Deployment TEMPLATE shows no sidecar — a
-    # webhook-injected sidecar exists only in the admitted Pod. The fallback's
-    # sole purpose here is DETECTION: if the Pod carries a sidecar, classify from
-    # the Pod doc so an injected sidecar is correctly SEEN (→ skipped below),
-    # instead of being misclassified 'none' and wrongly instrumented (the kit
-    # would inject a SECOND sidecar onto an entity that already has one).
-    #
-    # CRITICAL: a template 'none' is only safe to act on once a live Pod CONFIRMS
-    # it. detect_sidecar_type prints 'none' both for a Pod that genuinely has no
-    # sidecar AND for an EMPTY listing (0 Running pods — Deployment scaled to 0,
-    # or just-applied and not yet admitted). The latter 'none' is unconfirmed: a
-    # webhook-injected sidecar would only appear once a Pod is admitted, so
-    # trusting it here would inject a SECOND sidecar. On the mutating instrument
-    # path we therefore REFUSE when the template shows no sidecar and there is no
-    # Running pod to confirm from — fail loud, mutate nothing (matches the verb's
-    # fail-loud posture; the read-only `status` verb tolerates this via the soft
-    # probe and simply reports the unconfirmed template verdict).
-    if [[ "${type}" == "none" ]]; then
-        local pod_json pod_type pod_count
-        pod_json="$(get_pod_json "${ns}" "${entity}")"
-        pod_count="$(pod_items_count "${pod_json}")"
-        if [[ "${pod_count}" -eq 0 ]]; then
-            die "instrument: '${entity}' in '${ns}' shows no sidecar in its Deployment template and has no Running pod to confirm that from. A webhook-injected sidecar is visible only on an admitted Pod, so instrumenting now could attach a SECOND sidecar. Scale the Deployment up (or wait for its pods to be Running) and re-run — refusing to instrument on an unconfirmed 'none'."
-        fi
-        pod_type="$(detect_sidecar_type "${pod_json}")"
-        if [[ "${pod_type}" != "none" ]]; then
-            json="${pod_json}"
-            type="${pod_type}"
-        fi
-    fi
-
-    case "${type}" in
-        none)
-            # No sidecar → INJECT one. ADR-0033 Decision 2 owner-split: default to
-            # the auth-free lineage-only PROXY sidecar (which mounts no envoy-config
-            # and does not 401 the demo's unauthenticated calls), choosing ENVOY
-            # only when the namespace is ALREADY envoy-configured (the platform
-            # envoy-config CM is present). Either way, for a Python app bake + attach
-            # the two-shim image (LINEAGE_PROPAGATE=1) — the difference between one
-            # trace and N fragments.
-            #
-            # DECIDE THE OWNER FIRST — before the slow, image-mutating bake — so the
-            # envoy-config probe (and, on the envoy branch, ensure_envoy_config's
-            # fast-fail on a genuinely missing prerequisite) run before any docker
-            # build / kind load, not after. ns_is_envoy_configured is read once here.
-            local envoy_branch=0
-            if ns_is_envoy_configured "${ns}"; then
-                envoy_branch=1
-                # The namespace is already set up for envoy — the vendored envoy
-                # applier mounts the present envoy-config CM. ensure_envoy_config is
-                # a defensive no-op here (the CM is present by construction), kept
-                # to fail loud in the unlikely race where it vanished between reads.
-                ensure_envoy_config "${ns}"
-            fi
-            local shim_container shim_image
-            # bake_shim_for prints two lines (container, image) on FD 3; capture
-            # them via a process substitution — a die() inside it still halts the
-            # run (under `set -euo pipefail` the aborted `read` fails the compound).
-            { read -r shim_container; read -r shim_image; } < <(
-                bake_shim_for "${kit}" "${ns}" "${entity}" "${json}" 3>&1 1>&2
-            )
-            if [[ "${envoy_branch}" -eq 1 ]]; then
-                drive_kit_attach "${kit}" "${ns}" "${entity}" "${shim_container}" "${shim_image}"
-            else
-                # Bare, ad-hoc namespace (the travel_advisor demo) — the PROXY path.
-                drive_proxy_attach "${kit}" "${ns}" "${entity}" "${shim_container}" "${shim_image}"
-            fi
-            ;;
-        proxy|envoy)
-            # Already has a sidecar. ADR-0033 Decisions 3 & 5: if lineage-telemetry
-            # is ALREADY wired in its pipeline → no-op (idempotent, origin-agnostic,
-            # the no-marker re-run signal). Otherwise → APPEND lineage-telemetry in
-            # place (auth left as-is), best-effort with verify-after-roll.
-            local cm cm_data
-            cm="$(sidecar_config_cm "${json}")"
-            cm_data=""
-            if [[ -n "${cm}" ]]; then
-                cm_data="$(get_configmap_data "${ns}" "${cm}")"
-            fi
-            if plugin_wired_in_cm_data "${cm_data}"; then
-                err ">> instrument: '${entity}' already has a ${type} sidecar with lineage-telemetry wired — no-op (idempotent)."
-                return 0
-            fi
-            if [[ -z "${cm}" ]]; then
-                die "instrument: '${entity}' has a ${type} sidecar but no resolvable pipeline ConfigMap to append lineage-telemetry into — refusing to blind-write. Mutating nothing for this entity."
-            fi
-            append_lineage_in_place "${ns}" "${entity}" "${json}" "${cm}" "${type}"
-            ;;
-        *)
-            die "instrument: could not classify the sidecar of '${entity}' in '${ns}' (got '${type}')"
-            ;;
-    esac
-}
 
 # namespace_instrument <ns> [<entity>]: the non-reversible activation verb. Runs
 # the dg.sh-side preflights (vendored kit intact, component installed, tee
-# wired), enumerates the targeted entities (loud on a bad <entity>), and drives
-# each through the decision table. A crash-loop on any entity halts the whole run.
+# wired), enumerates the targeted entities (loud on a bad <entity>), validates
+# the complete Rossoctl/AuthBridge transaction, and only then mutates workloads.
 namespace_instrument() {
     local ns="$1"
     local entity="${2:-}"
@@ -1827,35 +1247,18 @@ namespace_instrument() {
         return 0
     fi
 
-    # A trusted Rossoctl namespace uses the #256 transaction: all producer,
-    # ConfigMap, proxy-environment, and image checks (including all shim builds)
-    # complete before the first workload mutation.  Legacy component-labelled
-    # namespaces retain ADR-0033's per-entity owner split.
-    local first_name first_json trusted=0 plan_file
-    first_name="$(printf '%s\n' "${names}" | head -n1)"
-    first_json="$(get_deployment_json "${ns}" "${first_name}")"
-    if deployment_is_trusted "${first_json}"; then
-        trusted=1
-    fi
-    if [[ "${trusted}" -eq 1 ]]; then
-        plan_file="$(mktemp)"
-        preflight_trusted_proxies "${ns}" "${names}" "${plan_file}"
-        while IFS=$'\t' read -r name app shim; do
-            [[ -n "${name}" ]] || continue
-            instrument_existing_proxy "${ns}" "${name}" "${app}" "${shim}"
-        done < "${plan_file}"
-        rm -f "${plan_file}"
-        err ">> instrument: done for trusted proxy namespace '${ns}'."
-        return 0
-    fi
-
-    local name app shim
-    while IFS= read -r name; do
+    # All checks and shim builds finish before the first workload mutation.
+    # This preflight also refuses bare and non-Rossoctl workloads.
+    local plan_file name app shim
+    plan_file="$(mktemp)"
+    preflight_trusted_proxies "${ns}" "${names}" "${plan_file}"
+    while IFS=$'\t' read -r name app shim; do
         [[ -n "${name}" ]] || continue
-        instrument_entity "${KIT_DIR}" "${ns}" "${name}"
-    done <<< "${names}"
+        instrument_existing_proxy "${ns}" "${name}" "${app}" "${shim}"
+    done < "${plan_file}"
+    rm -f "${plan_file}"
 
-    err ">> instrument: done for namespace '${ns}'."
+    err ">> instrument: done for trusted proxy namespace '${ns}'."
 }
 
 # --- namespace <ns> [instrument|status] [<entity>] -------------------------
