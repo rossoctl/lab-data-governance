@@ -108,6 +108,19 @@ def test_turnspan_module_has_the_reviewed_surface(turnspan_text: str) -> None:
     )
 
 
+def test_turnspan_mcp_request_id_adapter(turnspan_text: str) -> None:
+    """The version-sensitive MCP envelope traversal has one tested seam."""
+    prog = (
+        "from types import SimpleNamespace as N\n"
+        "from rossoctl_turnspan import _mcp_request_id\n"
+        "ctx = N(session_message=N(message=N(root=N(id=42))))\n"
+        "assert _mcp_request_id(ctx) == 42\n"
+        "assert _mcp_request_id(N()) is None\n"
+    )
+    result = _run_turnspan(turnspan_text, prog, env={})
+    assert result.returncode == 0, result.stderr
+
+
 def test_turnspan_module_is_failsafe(turnspan_text: str) -> None:
     """A shim that rides inside the app must never take the app down. Every patch
     site is wrapped so a missing/renamed internal degrades to a transparent

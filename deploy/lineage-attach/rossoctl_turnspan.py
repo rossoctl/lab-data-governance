@@ -131,6 +131,19 @@ def install():
 _mcp_carriers: "dict[object, dict]" = {}
 
 
+def _mcp_request_id(ctx):
+    """Read a request ID from MCP's private transport message envelope.
+
+    MCP has changed this nesting between releases. Keep that version-sensitive
+    knowledge at one seam so the transport wrapper only deals with propagation.
+    Missing layers deliberately resolve to ``None`` and preserve pass-through.
+    """
+    session_message = getattr(ctx, "session_message", None)
+    message = getattr(session_message, "message", None)
+    root = getattr(message, "root", None)
+    return getattr(root, "id", None)
+
+
 def _install_mcp_propagation():
     """Carry the current turn's traceparent onto MCP streamable-HTTP tool calls.
 
@@ -184,9 +197,7 @@ def _install_mcp_propagation():
     async def _handle_post_request(self, ctx):
         token = None
         try:
-            root = getattr(getattr(ctx, "session_message", None), "message", None)
-            root = getattr(root, "root", None)
-            rid = getattr(root, "id", None)
+            rid = _mcp_request_id(ctx)
             carrier = _mcp_carriers.pop(rid, None) if rid is not None else None
             if carrier:
                 turn_ctx = extract(carrier)
