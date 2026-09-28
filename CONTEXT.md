@@ -143,8 +143,12 @@ it is *not* the input to `Entity.kind = service` identity. Always qualify.
 The stable, kind-specific identity string for an **Entity**. One row per
 `(kind, natural_key)` in `entities`. Format per kind:
 - `user` → `user:<kagenti.user.id>`
-- `client` → `client:<host-or-ip>` (preferring `peer.service`, then
-  `client.address` host, then `client.address` IP)
+- `client` → `client:<identity>`: sidecar inbound traffic uses the authenticated
+  OAuth `lineage.principal.client` value when present and `client:(unknown)`
+  when absent (a human `lineage.principal.sub` remains evidence, not caller
+  identity); other derivations use host-or-IP, preferring `peer.service`, then
+  `client.address` host, then `client.address` IP. These sources intentionally
+  share the client natural-key namespace, so equal values denote one client.
 - `agent` → `agent:(<project_name>,<canonical_service_name>)`
 - `tool` (in-process) →
   `tool:<owning_agent_natural_key>:<tool_name>`
@@ -453,6 +457,13 @@ unresolved-LLM orphan case, generalised: ADR-0011 supersedes ADR-0007's
 fields are never edited in place — host-fill-in for an
 `llm:(unknown)/MODEL` happens by per-interaction retarget onto a
 distinct `llm:<host>/<model>` row, not by mutating the unresolved row.
+
+Issue #256 adds one narrow hard-delete exception for the sidecar algorithm:
+unnamespaced `agent:<host>:<port>` and `tool:<host>:<port>` peer identities are
+provisional transport artifacts. After a trace reconcile they are deleted only
+when no interaction endpoint and no `entity_spans` evidence row anywhere still
+references them. Namespaced canonical workload entities and every other entity
+kind retain the normal persistent lifecycle.
 
 **P-interactions**:
 The processor that reads stored **Spans** and derives **Entities**,

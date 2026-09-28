@@ -4,6 +4,28 @@ status: accepted
 
 # `dg.sh` vendors the lineage-attach capability and defaults to a proxy lineage sidecar, for a self-contained one-trace `instrument`
 
+> **Revision (issue #256, 2026-09-23):** This decision still governs bare,
+> component-labelled workloads. Trusted Rossoctl workloads carrying
+> `rossoctl.io/type=agent|tool` and an admission-injected enforcing proxy use a
+> stricter convergence flow: preflight every producer and application image,
+> roll the shimmed application first, then reconcile the freshly regenerated
+> ConfigMap and verify `/v1/pipeline` hot reload without a second rollout. Auth
+> plugins and the platform sidecar remain platform-owned. Existing shim images
+> are re-attested from their contents rather than trusted by an `-otel` tag;
+> listener ports/backend are derived from the admitted pod's platform contract,
+> and those values plus the exact auth-plus-managed plugin sequences are part of
+> convergence. A later platform
+> reconciliation can still remove the overlay, which `dg.sh status` reports as
+> `live=no` with a reason.
+>
+> The accepted authenticated travel-advisor configuration always enables the
+> propagation and turn-span shims together with `LINEAGE_PROPAGATE=1`; there is
+> no independent turn-span switch. A fresh rootless-cluster run on 2026-09-27
+> produced one causal trace with 98 spans, four canonical namespaced agents, six
+> invoked canonical namespaced tools, and the authenticated caller
+> `client:travel-advisor-demo-client`, while preserving the platform auth
+> plugins. This is the final accepted configuration and result.
+
 `dg.sh namespace <ns> instrument` activates AuthBridge-sidecar lineage on a
 namespace's agents/tools so their traffic produces the facts-only spans this
 component consumes. ADR-0032 decided `dg.sh` **drives the EXTERNAL cortex #852
@@ -26,8 +48,11 @@ because the sidecar work alone does not collapse the demo's fragments into one
 trace (see the "One trace needs two shims" section).
 
 This **supersedes ADR-0032**. ADR-0031 (non-reversible, mode-preserving) stays
-accepted with a revision note: in-place activation appends a plugin but is still
-purely additive — it never removes, replaces, or mode-switches a sidecar.
+accepted for the legacy path: its in-place activation appends a plugin and
+never removes, replaces, or mode-switches a sidecar. Issue #256 supersedes only
+that additive claim for trusted Rossoctl proxies: it may replace the application
+image and canonicalize DG-managed listener/parser/lineage fields, but it still
+never changes sidecar mode or removes/replaces platform-owned auth plugins.
 
 ## Context
 
@@ -224,10 +249,12 @@ observable (ADR-0031 decision 2).
   on the **proxy** sidecar shows one trace (not the 11-fragment baseline) with
   every entity `detected_from='sidecar lineage span'`. If it does not, the design
   bends (a proxy entry-hop fix, or an envoy-default fallback) rather than shipping.
-- ADR-0031's two decisions survive: activation is still additive (append, never
-  remove/replace, never mode-switch) and still non-reversible in v1. Its Decision
-  1 wording ("never edits an existing sidecar") is refined by this ADR's Decision
-  3 — appending a plugin to an existing pipeline is an edit, but an additive one.
+- For the legacy #239 path, ADR-0031's two decisions survive: activation is
+  additive (append, never remove/replace, never mode-switch) and non-reversible
+  in v1. Its Decision 1 wording ("never edits an existing sidecar") is refined
+  by this ADR's Decision 3 — appending a plugin is an edit, but an additive one.
+  The trusted #256 exception is scoped above: it remains mode-preserving and
+  auth-preserving while replacing only its application/DG-managed fields.
 
 ## Alternatives considered
 

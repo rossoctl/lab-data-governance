@@ -14,7 +14,7 @@
 #     OpenTelemetry module loads.
 #   * the TURN-SPAN shim (`rossoctl_turnspan`): one span per HTTP request scope so
 #     every outbound call in a turn shares ONE trace-id, plus an MCP tool-call
-#     re-attach. Gated on ROSSOCTL_TURNSPAN (default on).
+#     re-attach. It activates together with LINEAGE_PROPAGATE.
 # They ship in ONE image because the turn span WITHOUT the activation hook's
 # initialize() leaves httpx instrumentation OFF and fragments a turn WORSE than
 # the no-shim baseline. Baking both here makes that trap unreachable.

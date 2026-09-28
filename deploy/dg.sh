@@ -76,9 +76,9 @@ DG_TEE_PIPELINE="traces/data_governance"
 DG_COLLECTOR_NAMESPACE="${COLLECTOR_NAMESPACE:-rossoctl-system}"
 DG_COLLECTOR_CONFIGMAP="${COLLECTOR_CONFIGMAP:-otel-collector-config}"
 
-# The platform's own selector for agents/tools. rossoctl.io/type is
-# operator-reserved and VAP-protected, so dg.sh NEVER reads or sets it.
-ENTITY_COMPONENT_SELECTOR='app.kubernetes.io/component in (agent, mcp-tool)'
+# Trusted Rossoctl workloads are selected by the operator-owned type label.  A
+# legacy component-label fallback keeps the #239 bare-namespace workflow usable
+# where no trusted labels exist; it is never mixed with a trusted selection.
 # Namespace label marking a user (rossoctl-enabled) namespace.
 NS_ENABLED_SELECTOR='rossoctl-enabled=true'
 
@@ -184,31 +184,29 @@ enumerate_entities() {
     [[ -n "${ns}" ]] || die "enumerate_entities: namespace is required"
     require_kubectl
 
-    local selector="${ENTITY_COMPONENT_SELECTOR}"
-    if [[ -n "${entity}" ]]; then
-        # Single-entity select: the component selector AND the name label.
-        selector="${selector},app.kubernetes.io/name=${entity}"
-    fi
-
-    # A failed `kubectl get` (unreachable/RBAC-denied API) is a loud, non-zero
-    # exit carrying kubectl's own diagnostic — NOT a swallowed empty result that
-    # would masquerade as 'no agents/tools in the namespace'. Capture stdout, let
-    # kubectl's stderr pass through (never 2>/dev/null it), check status.
     local raw status
     status=0
-    raw="$(kubectl get deployments -n "${ns}" \
-        -l "${selector}" \
-        -o 'jsonpath={range .items[*]}{.metadata.labels.app\.kubernetes\.io/name}{"\n"}{end}')" \
-        || status=$?
+    raw="$(kubectl get deployments -n "${ns}" -o json)" || status=$?
     if [[ "${status}" -ne 0 ]]; then
         die "failed to list agents/tools in namespace '${ns}' (kubectl get deployments failed; see the kubectl error above)"
     fi
 
     local names
-    names="$(printf '%s' "${raw}" | awk 'NF' | sort -u)"
+    names="$(printf '%s' "${raw}" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+items = doc.get("items") or []
+trusted = [item for item in items if (item.get("metadata", {}).get("labels", {}).get("rossoctl.io/type") in {"agent", "tool"})]
+selected = trusted or [item for item in items if (item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") in {"agent", "mcp-tool"})]
+only = sys.argv[1]
+names = sorted({item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name") for item in selected})
+for name in names:
+    if name and (not only or name == only):
+        print(name)
+' "${entity}")"
 
     if [[ -n "${entity}" && -z "${names}" ]]; then
-        die "entity '${entity}' is not an agent/tool (app.kubernetes.io/component in agent,mcp-tool) in namespace '${ns}'"
+        die "entity '${entity}' is not a trusted Rossoctl agent/tool (or legacy component-labelled entity) in namespace '${ns}'"
     fi
     printf '%s' "${names}"
     [[ -n "${names}" ]] && printf '\n'
@@ -468,12 +466,27 @@ get_deployment_json() {
     local out status
     status=0
     out="$(kubectl get deployments -n "${ns}" \
-        -l "${ENTITY_COMPONENT_SELECTOR},app.kubernetes.io/name=${entity}" \
+        -l "app.kubernetes.io/name=${entity}" \
         -o json)" || status=$?
     if [[ "${status}" -ne 0 ]]; then
         die "failed to read deployment for entity '${entity}' in namespace '${ns}' (kubectl get failed; see the kubectl error above)"
     fi
     printf '%s' "${out}"
+}
+
+# deployment_is_trusted <deployment-json>: true only for operator-labelled
+# Rossoctl agents/tools.  The label is read-only input; dg.sh never writes it.
+deployment_is_trusted() {
+    local json="$1"
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+items = doc.get("items")
+if items is None:
+    items = [doc]
+labels = (items[0].get("metadata", {}).get("labels", {}) if items else {})
+sys.exit(0 if labels.get("rossoctl.io/type") in {"agent", "tool"} else 1)
+'
 }
 
 # get_pod_json <ns> <entity>: print the live Pod listing JSON for a single entity
@@ -483,6 +496,19 @@ get_deployment_json() {
 # sidecar detection + pipeline-CM resolution when the template shows no sidecar.
 # A failed `kubectl get` is a LOUD non-zero die (mirrors get_deployment_json) —
 # never a swallowed empty. Returns the items list JSON.
+select_current_pods() {
+    python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+items = [item for item in (doc.get("items") or []) if not item.get("metadata", {}).get("deletionTimestamp")]
+def ready(item):
+    return any(c.get("type") == "Ready" and c.get("status") == "True" for c in item.get("status", {}).get("conditions", []))
+items.sort(key=lambda item: (ready(item), item.get("metadata", {}).get("creationTimestamp", "")), reverse=True)
+doc["items"] = items
+json.dump(doc, sys.stdout)
+'
+}
+
 get_pod_json() {
     local ns="$1" entity="$2"
     local out status
@@ -494,7 +520,7 @@ get_pod_json() {
     if [[ "${status}" -ne 0 ]]; then
         die "failed to read live pod for entity '${entity}' in namespace '${ns}' (kubectl get failed; see the kubectl error above)"
     fi
-    printf '%s' "${out}"
+    printf '%s' "${out}" | select_current_pods
 }
 
 # get_pod_json_soft <ns> <entity>: like get_pod_json, but a failed `kubectl get`
@@ -516,7 +542,7 @@ get_pod_json_soft() {
     if [[ "${status}" -ne 0 ]]; then
         return 1
     fi
-    printf '%s' "${out}"
+    printf '%s' "${out}" | select_current_pods
 }
 
 # pod_items_count <pod-listing-json>: print the number of Pods in a `kubectl get
@@ -717,10 +743,11 @@ namespace_status() {
         return 0
     fi
 
-    local name json type cm cm_data lineage
+    local name json deployment_json type cm cm_data lineage
     while IFS= read -r name; do
         [[ -n "${name}" ]] || continue
-        json="$(get_deployment_json "${ns}" "${name}")"
+        deployment_json="$(get_deployment_json "${ns}" "${name}")"
+        json="${deployment_json}"
         type="$(detect_sidecar_type "${json}")"
 
         # Fall back to the live Pod when the Deployment TEMPLATE shows no sidecar:
@@ -761,7 +788,37 @@ namespace_status() {
         else
             lineage="no (lineage-telemetry not wired)"
         fi
-        printf '%s\tsidecar=present\ttype=%s\tlineage=%s\n' "${name}" "${type}" "${lineage}"
+        if deployment_is_trusted "${deployment_json}" && [[ "${type}" == "proxy" ]]; then
+            local live="yes" reason="live" pod_json pod_name cm_json app_name
+            pod_json="$(get_pod_json_soft "${ns}" "${name}" || true)"
+            if ! deployment_activation_valid "${deployment_json}"; then
+                live="no"; reason="application shim or LINEAGE_PROPAGATE missing"
+            elif ! proxy_environment_valid "${pod_json}"; then
+                live="no"; reason="admission proxy environment missing"
+            elif ! pod_proxy_ready "${pod_json}"; then
+                live="no"; reason="pod or authbridge-proxy not ready"
+            elif ! app_name="$(app_container_of "${pod_json}")" || [[ -z "${app_name}" ]]; then
+                live="no"; reason="application container unresolved"
+            elif ! pod_shim_attested "${ns}" "$(pod_name_of "${pod_json}")" "${app_name}"; then
+                live="no"; reason="running application failed two-shim attestation"
+            elif [[ -z "${cm}" ]]; then
+                live="no"; reason="mounted ConfigMap unresolved"
+            else
+                cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json 2>/dev/null || true)"
+                if ! configmap_is_canonical "${cm_json}" "${name}" "${pod_json}"; then
+                    live="no"; reason="mounted ConfigMap drifted"
+                else
+                    pod_name="$(pod_name_of "${pod_json}")"
+                    if ! live_pipeline_is_canonical "${ns}" "${pod_name}" "${name}" "${cm_json}"; then
+                        live="no"; reason="live pipeline has not converged"
+                    fi
+                fi
+            fi
+            printf '%s\tsidecar=present\ttype=%s\tlineage=%s\tlive=%s (%s)\n' \
+                "${name}" "${type}" "${lineage}" "${live}" "${reason}"
+        else
+            printf '%s\tsidecar=present\ttype=%s\tlineage=%s\n' "${name}" "${type}" "${lineage}"
+        fi
     done <<< "${names}"
 }
 
@@ -876,7 +933,9 @@ require_vendored_kit() {
     # shims), so refuse here before ensure_envoy_config mutates anything.
     local f
     for f in container-runtime.sh Dockerfile.otel-shim lineage-propagate-hook.py \
-             rossoctl_turnspan.py rossoctl_turnspan.pth; do
+             rossoctl_turnspan.py rossoctl_turnspan.pth \
+             attest-otel-shim.py \
+             reconcile-existing-proxy.py; do
         [[ -e "${KIT_DIR}/${f}" ]] \
             || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/${f} is missing (the shim bake needs it). Mutating nothing."
     done
@@ -1002,6 +1061,155 @@ for c in (spec.get("containers") or []):
         print(c.get("image") or "")
         break
 ' "${cname}"
+}
+
+pod_name_of() {
+    local json="$1"
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+items = doc.get("items") or []
+if items:
+    print(items[0].get("metadata", {}).get("name", ""))
+'
+}
+
+# Print the admission-owned listener contract as three tab-separated values:
+# forward proxy address, reverse proxy address, and reverse backend. Rossoctl
+# assigns different ports to agents and tools, so derive them from the admitted
+# pod instead of assuming the agent defaults.
+proxy_listener_contract() {
+    local json="$1" app
+    app="$(app_container_of "${json}")"
+    [[ -n "${app}" ]] || return 1
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+from urllib.parse import urlsplit
+doc = json.load(sys.stdin); items = doc.get("items") or []
+if not items: sys.exit(1)
+spec = items[0].get("spec") or {}
+app = next((c for c in spec.get("containers", []) if c.get("name") == sys.argv[1]), None)
+if app is None: sys.exit(1)
+env = {e.get("name"): e.get("value") for e in app.get("env", [])}
+http_proxy = env.get("HTTP_PROXY") or ""
+if http_proxy != env.get("HTTPS_PROXY"): sys.exit(1)
+try:
+    parsed = urlsplit(http_proxy)
+    forward_port = parsed.port
+except ValueError:
+    sys.exit(1)
+if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"} or not forward_port:
+    sys.exit(1)
+no_proxy = {part.strip() for part in (env.get("NO_PROXY") or "").split(",")}
+if not {"127.0.0.1", "localhost"} <= no_proxy: sys.exit(1)
+proxy = next((c for c in spec.get("containers", []) if c.get("name") == "authbridge-proxy"), None)
+if proxy is None: sys.exit(1)
+proxy_ports = {p.get("name"): p.get("containerPort") for p in proxy.get("ports", [])}
+if proxy_ports.get("forward-proxy") != forward_port: sys.exit(1)
+reverse_port = proxy_ports.get("reverse-proxy")
+app_ports = {p.get("name"): p.get("containerPort") for p in app.get("ports", [])}
+app_port = app_ports.get("http")
+if not reverse_port or not app_port: sys.exit(1)
+print(f":{forward_port}\t:{reverse_port}\thttp://127.0.0.1:{app_port}")
+' "${app}"
+}
+
+proxy_environment_valid() {
+    proxy_listener_contract "$1" >/dev/null
+}
+
+render_existing_proxy_config() {
+    local cm_json="$1" self_id="$2" pod_json="$3"
+    local contract forward_addr reverse_addr reverse_backend
+    contract="$(proxy_listener_contract "${pod_json}")" || return 1
+    IFS=$'\t' read -r forward_addr reverse_addr reverse_backend <<< "${contract}"
+    printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render \
+        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        --forward-proxy-addr "${forward_addr}" \
+        --reverse-proxy-addr "${reverse_addr}" \
+        --reverse-proxy-backend "${reverse_backend}"
+}
+
+deployment_activation_valid() {
+    local json="$1" app
+    app="$(app_container_of "${json}")"
+    [[ -n "${app}" ]] || return 1
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin); items = doc.get("items")
+if items is None: items = [doc]
+if not items: sys.exit(1)
+spec = ((items[0].get("spec") or {}).get("template") or {}).get("spec") or {}
+app = next((c for c in spec.get("containers", []) if c.get("name") == sys.argv[1]), None)
+if app is None: sys.exit(1)
+env = {e.get("name"): e.get("value") for e in app.get("env", [])}
+image = app.get("image") or ""
+sys.exit(0 if image and env.get("LINEAGE_PROPAGATE") == "1" else 1)
+' "${app}"
+}
+
+shim_image_attested() {
+    local image="$1"
+    "${KIT_DIR}/build-otel-shim.sh" --attest-existing "${image}" >/dev/null 2>&1
+}
+
+pod_shim_attested() {
+    local ns="$1" pod="$2" app="$3" interpreter
+    [[ -n "${pod}" && -n "${app}" ]] || return 1
+    for interpreter in /app/.venv/bin/python /opt/venv/bin/python python3; do
+        if kubectl -n "${ns}" exec -i "${pod}" -c "${app}" -- \
+            "${interpreter}" - propagates \
+            < "${KIT_DIR}/attest-otel-shim.py" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+pod_proxy_ready() {
+    local json="$1"
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+items = json.load(sys.stdin).get("items") or []
+if not items: sys.exit(1)
+pod = items[0]
+ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in (pod.get("status", {}).get("conditions") or []))
+containers = {c.get("name"): c.get("ready") for c in (pod.get("status", {}).get("containerStatuses") or [])}
+sys.exit(0 if ready and containers.get("authbridge-proxy") is True else 1)
+'
+}
+
+configmap_is_canonical() {
+    local cm_json="$1" self_id="$2" pod_json="$3" rendered
+    rendered="$(render_existing_proxy_config "${cm_json}" "${self_id}" "${pod_json}" 2>/dev/null)" \
+        || return 1
+    python3 -c '
+import json, sys
+current, rendered = (json.loads(value) for value in sys.argv[1:])
+sys.exit(0 if current.get("data", {}).get("config.yaml") == rendered.get("data", {}).get("config.yaml") else 1)
+' "${cm_json}" "${rendered}"
+}
+
+proxy_catalog_has_lineage() {
+    local ns="$1" pod="$2" catalog status
+    status=0
+    catalog="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
+        wget -qO- http://127.0.0.1:9094/v1/plugins 2>/dev/null)" || status=$?
+    [[ "${status}" -eq 0 && -n "${catalog}" ]] || return 1
+    printf '%s' "${catalog}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" catalog-valid
+}
+
+live_pipeline_is_canonical() {
+    local ns="$1" pod="$2" self_id="$3" cm_json="$4" body expected status
+    status=0
+    body="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
+        wget -qO- http://127.0.0.1:9094/v1/pipeline 2>/dev/null)" || status=$?
+    [[ "${status}" -eq 0 && -n "${body}" ]] || return 1
+    expected="$(printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-contract 2>/dev/null)" \
+        || return 1
+    printf '%s' "${body}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-valid \
+        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        --expected "${expected}"
 }
 
 # watch_rollout_for_crashloop <ns> <entity> <backout_line> <attach_stdout>:
@@ -1179,6 +1387,112 @@ bake_shim_for() {
         fi
     fi
     printf '%s\n%s\n' "${shim_container}" "${shim_image}" >&3
+}
+
+# preflight_trusted_proxies <ns> <newline-names> <plan-file>: validate every
+# Rossoctl-owned proxy and bake/attest every distinct base image before changing
+# a Deployment or ConfigMap.  The plan is entity<TAB>container<TAB>shim image.
+preflight_trusted_proxies() {
+    local ns="$1" names="$2" plan_file="$3"
+    : > "${plan_file}"
+    local cache_file
+    cache_file="$(mktemp)"
+    local entity dep pod type pod_name cm cm_json app base cached shim bake_out bake_status
+    while IFS= read -r entity; do
+        [[ -n "${entity}" ]] || continue
+        dep="$(get_deployment_json "${ns}" "${entity}")"
+        deployment_is_trusted "${dep}" \
+            || die "instrument: '${entity}' lost its trusted rossoctl.io/type label during preflight; mutating nothing"
+        pod="$(get_pod_json "${ns}" "${entity}")"
+        [[ "$(pod_items_count "${pod}")" -gt 0 ]] \
+            || die "instrument: '${entity}' has no Running pod; cannot verify its admitted platform proxy. Mutating nothing."
+        type="$(detect_sidecar_type "${pod}")"
+        [[ "${type}" == "proxy" ]] \
+            || die "instrument: trusted Rossoctl workload '${entity}' requires an existing proxy sidecar (found '${type}'); Envoy is not accepted by #256. Mutating nothing."
+        proxy_environment_valid "${pod}" \
+            || die "instrument: '${entity}' does not have the platform HTTP_PROXY/HTTPS_PROXY/NO_PROXY contract. Mutating nothing."
+        pod_name="$(pod_name_of "${pod}")"
+        [[ -n "${pod_name}" ]] || die "instrument: could not resolve the live pod for '${entity}'. Mutating nothing."
+        proxy_catalog_has_lineage "${ns}" "${pod_name}" \
+            || die "instrument: '${entity}'s AuthBridge image does not advertise the a2a-parser, mcp-parser, inference-parser, and lineage-telemetry plugins. Deploy a lineage-capable Cortex proxy image first; mutating nothing."
+        cm="$(sidecar_config_cm "${pod}")"
+        [[ -n "${cm}" ]] || die "instrument: '${entity}' has no mounted AuthBridge ConfigMap. Mutating nothing."
+        cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
+            || die "instrument: could not read ConfigMap '${cm}' for '${entity}'. Mutating nothing."
+        render_existing_proxy_config "${cm_json}" "${entity}" "${pod}" >/dev/null \
+            || die "instrument: '${entity}'s existing proxy ConfigMap is outside the safe #256 reconciliation envelope. Mutating nothing."
+
+        app="$(app_container_of "${dep}")"
+        [[ -n "${app}" ]] || die "instrument: '${entity}' must have exactly one application container. Mutating nothing."
+        base="$(app_image_of "${dep}" "${app}")"
+        [[ -n "${base}" ]] || die "instrument: '${entity}' application image could not be resolved. Mutating nothing."
+        cached="$(awk -F '\t' -v image="${base}" '$1 == image {print $2; exit}' "${cache_file}")"
+        if [[ -n "${cached}" ]]; then
+            shim="${cached}"
+        elif shim_image_attested "${base}"; then
+            shim="${base}"
+            printf '%s\t%s\n' "${base}" "${shim}" >> "${cache_file}"
+        else
+            err ">> instrument: preflight baking + attesting '${base}' for trusted proxy workloads"
+            bake_status=0
+            bake_out="$(KIND_CLUSTER_NAME="$(resolve_kind_cluster_name)" \
+                "${KIT_DIR}/build-otel-shim.sh" "${base}" 2>&1)" || bake_status=$?
+            printf '%s\n' "${bake_out}" >&2
+            [[ "${bake_status}" -eq 0 ]] \
+                || die "instrument: required shim for '${base}' failed preflight (exit ${bake_status}); trusted existing proxies cannot downgrade to capture-only. Mutating no workloads."
+            shim="$(printf '%s\n' "${bake_out}" | sed -nE \
+                's/.*loaded ([^ ]+) into.*/\1/p; s/.*built \+ attested ([^ ]+) .*/\1/p' | head -n1)"
+            [[ -n "${shim}" ]] \
+                || die "instrument: shim bake for '${base}' succeeded without a parseable image reference. Mutating no workloads."
+            printf '%s\t%s\n' "${base}" "${shim}" >> "${cache_file}"
+        fi
+        printf '%s\t%s\t%s\n' "${entity}" "${app}" "${shim}" >> "${plan_file}"
+    done <<< "${names}"
+    rm -f "${cache_file}"
+}
+
+instrument_existing_proxy() {
+    local ns="$1" entity="$2" app="$3" shim="$4"
+    local patch
+    patch="$(python3 -c '
+import json, sys
+name, image = sys.argv[1:]
+print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image":image,"imagePullPolicy":"IfNotPresent","env":[{"name":"LINEAGE_PROPAGATE","value":"1"}]}]}}}}))
+' "${app}" "${shim}")"
+    err ">> instrument: rolling '${entity}' onto the attested application shim; platform sidecar/auth remain admission-owned"
+    kubectl -n "${ns}" patch "deployment/${entity}" --type strategic -p "${patch}" \
+        || die "instrument: failed to patch the application container for '${entity}'"
+    kubectl -n "${ns}" rollout status "deployment/${entity}" --timeout=180s \
+        || die "instrument: rollout of '${entity}' did not become ready"
+
+    local pod pod_name cm cm_json amended
+    pod="$(get_pod_json "${ns}" "${entity}")"
+    [[ "$(detect_sidecar_type "${pod}")" == "proxy" ]] \
+        || die "instrument: '${entity}' lost its platform proxy after rollout"
+    proxy_environment_valid "${pod}" \
+        || die "instrument: '${entity}' lost its platform proxy environment after rollout"
+    pod_name="$(pod_name_of "${pod}")"
+    cm="$(sidecar_config_cm "${pod}")"
+    [[ -n "${pod_name}" && -n "${cm}" ]] \
+        || die "instrument: could not resolve '${entity}'s post-rollout pod/ConfigMap"
+    cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
+        || die "instrument: failed to read '${entity}'s post-rollout ConfigMap '${cm}'"
+    amended="$(render_existing_proxy_config "${cm_json}" "${entity}" "${pod}")" \
+        || die "instrument: failed to reconcile '${entity}'s post-rollout proxy pipeline"
+    printf '%s' "${amended}" | kubectl apply -f - \
+        || die "instrument: failed to apply '${entity}'s reconciled proxy ConfigMap"
+
+    # A projected ConfigMap can take up to the kubelet sync period plus cache
+    # propagation (commonly around two minutes) to reach the mounted file.
+    local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-90}"
+    for ((attempt=1; attempt<=max_attempts; attempt++)); do
+        if live_pipeline_is_canonical "${ns}" "${pod_name}" "${entity}" "${amended}"; then
+            err ">> instrument: '${entity}' lineage pipeline hot-reloaded and is live (no second rollout)."
+            return 0
+        fi
+        sleep 2
+    done
+    die "instrument: '${entity}' ConfigMap was reconciled but /v1/pipeline did not converge after hot reload; no second rollout was performed"
 }
 
 # drive_proxy_attach <kit> <ns> <entity> <app_container> <app_image>: the PROXY
@@ -1513,7 +1827,29 @@ namespace_instrument() {
         return 0
     fi
 
-    local name
+    # A trusted Rossoctl namespace uses the #256 transaction: all producer,
+    # ConfigMap, proxy-environment, and image checks (including all shim builds)
+    # complete before the first workload mutation.  Legacy component-labelled
+    # namespaces retain ADR-0033's per-entity owner split.
+    local first_name first_json trusted=0 plan_file
+    first_name="$(printf '%s\n' "${names}" | head -n1)"
+    first_json="$(get_deployment_json "${ns}" "${first_name}")"
+    if deployment_is_trusted "${first_json}"; then
+        trusted=1
+    fi
+    if [[ "${trusted}" -eq 1 ]]; then
+        plan_file="$(mktemp)"
+        preflight_trusted_proxies "${ns}" "${names}" "${plan_file}"
+        while IFS=$'\t' read -r name app shim; do
+            [[ -n "${name}" ]] || continue
+            instrument_existing_proxy "${ns}" "${name}" "${app}" "${shim}"
+        done < "${plan_file}"
+        rm -f "${plan_file}"
+        err ">> instrument: done for trusted proxy namespace '${ns}'."
+        return 0
+    fi
+
+    local name app shim
     while IFS= read -r name; do
         [[ -n "${name}" ]] || continue
         instrument_entity "${KIT_DIR}" "${ns}" "${name}"

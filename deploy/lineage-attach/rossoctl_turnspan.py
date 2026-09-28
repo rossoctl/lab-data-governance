@@ -33,9 +33,6 @@ from __future__ import annotations
 
 import os
 
-# Opt-out escape hatch (belt-and-suspenders; the pth already guards on it).
-_DISABLED = os.environ.get("ROSSOCTL_TURNSPAN", "on").lower() in ("off", "0", "false", "no")
-
 # The turn span is BOUND to the propagate hook's activation switch. Rationale
 # (ADR-0033 "One trace needs two shims"): a turn span WITHOUT the activation
 # hook's initialize() — i.e. httpx instrumentation OFF — fragments a turn WORSE
@@ -92,11 +89,11 @@ def install():
     leaves the app untouched (propagation still works, just possibly-fragmented
     — never worse than before).
 
-    No-op unless LINEAGE_PROPAGATE=1 (the propagate hook's activation switch) and
-    ROSSOCTL_TURNSPAN is not opted out: the turn span is worthless — and worse
-    than baseline — without the activation hook, and gating here keeps an
-    unactivated -otel image fully inert (no mcp/opentelemetry import at startup)."""
-    if _DISABLED or not _ACTIVATED:
+    No-op unless LINEAGE_PROPAGATE=1 (the propagate hook's activation switch):
+    the turn span is worthless — and worse than baseline — without the activation
+    hook, and gating here keeps an unactivated -otel image fully inert (no
+    mcp/opentelemetry import at startup)."""
+    if not _ACTIVATED:
         return
     try:
         import uvicorn

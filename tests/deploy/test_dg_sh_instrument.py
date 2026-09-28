@@ -2,10 +2,10 @@
 
 The activation slice of ``dg.sh`` — the substantial one. It switches on lineage
 for the agents/tools in ``<ns>`` (all of them, or a single ``<entity>`` when
-named). It is **non-reversible, additive-only, and never changes a namespace's
-sidecar mode** (design: ``docs/cli.md`` § ``instrument``; ADR-0031
-non-reversible / mode-preserving; ADR-0033 vendors-the-kit + proxy-default,
-supersedes 0032).
+named). It is **non-reversible and never changes a namespace's sidecar mode**.
+The legacy path is additive-only; trusted #256 workloads canonicalize only
+DG-managed fields and preserve auth (design: ``docs/cli.md`` § ``instrument``;
+ADR-0031 and ADR-0033).
 
 **ADR-0033 owner-split (issue #245 — the behaviour flip).** ``dg.sh`` no longer
 emits its own YAML; it drives the lineage-attach kit **VENDORED into this repo**
@@ -91,12 +91,21 @@ def _deployment(
     sidecar: str | None,
     cm_name: str | None,
     image: str = "agent-examples-snp:latest",
+    trusted_type: str | None = None,
 ) -> dict:
+    app_port = 8001 if trusted_type == "tool" else 8081 if trusted_type == "agent" else 8080
+    reverse_proxy_port = 8000 if trusted_type == "tool" else 8080
+    forward_proxy_port = 8081 if trusted_type == "tool" else 8084
     containers = [
         {
             "name": name,  # the app container
             "image": image,
-            "ports": [{"containerPort": 8080}],
+            "ports": [{"name": "http", "containerPort": app_port}],
+            "env": ([
+                {"name": "HTTP_PROXY", "value": f"http://127.0.0.1:{forward_proxy_port}"},
+                {"name": "HTTPS_PROXY", "value": f"http://127.0.0.1:{forward_proxy_port}"},
+                {"name": "NO_PROXY", "value": "127.0.0.1,localhost"},
+            ] if trusted_type else []),
         }
     ]
     volumes: list[dict] = []
@@ -106,6 +115,10 @@ def _deployment(
                 "name": "authbridge-proxy",
                 "image": "ghcr.io/rossoctl/cortex/authbridge:lineage",
                 "args": ["--config", "/etc/authbridge/config.yaml"],
+                "ports": [
+                    {"name": "reverse-proxy", "containerPort": reverse_proxy_port},
+                    {"name": "forward-proxy", "containerPort": forward_proxy_port},
+                ],
                 "volumeMounts": [
                     {"name": "authbridge-runtime", "mountPath": "/etc/authbridge"}
                 ],
@@ -125,16 +138,19 @@ def _deployment(
             }
         )
         volumes.append({"name": "authbridge-runtime", "configMap": {"name": cm_name}})
+    labels = {
+        "app.kubernetes.io/name": name,
+        "app.kubernetes.io/component": "agent",
+    }
+    if trusted_type:
+        labels["rossoctl.io/type"] = trusted_type
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {
             "name": name,
             "namespace": "travel-advisor",
-            "labels": {
-                "app.kubernetes.io/name": name,
-                "app.kubernetes.io/component": "agent",
-            },
+            "labels": labels,
         },
         "spec": {"template": {"spec": {"containers": containers, "volumes": volumes}}},
     }
@@ -163,6 +179,10 @@ pipeline:
 # appending lineage here works, but lineage will record 401s for unauthenticated
 # callers — dg.sh must warn (ADR-0033 Decision 3). No lineage-telemetry yet.
 _CM_ENFORCING_NO_LINEAGE = """mode: proxy-sidecar
+listener:
+  forward_proxy_addr: :8084
+  reverse_proxy_addr: :8080
+  reverse_proxy_backend: http://127.0.0.1:8081
 pipeline:
   inbound:
     plugins:
@@ -173,6 +193,20 @@ pipeline:
     plugins:
       - name: token-exchange
       - name: a2a-parser
+"""
+
+_CM_TOOL_ENFORCING_NO_LINEAGE = """mode: proxy-sidecar
+listener:
+  forward_proxy_addr: :8081
+  reverse_proxy_addr: :8000
+  reverse_proxy_backend: http://127.0.0.1:8001
+pipeline:
+  inbound:
+    plugins:
+      - name: jwt-validation
+  outbound:
+    plugins:
+      - name: token-exchange
 """
 
 
@@ -229,6 +263,15 @@ if [[ -n "${KIT_LOG:-}" ]]; then
   printf 'build-otel-shim.sh env: KIND_CLUSTER_NAME=%s\n' "${KIND_CLUSTER_NAME:-<unset>}" >> "$KIT_LOG"
 fi
 base="${1:-}"
+if [[ "${base}" == "--attest-existing" ]]; then
+  base="${2:-}"
+  if [[ "${SHIM_ATTEST_FAILS:-0}" == "1" || "${base}" != *-otel:* && "${base}" != *-otel@* ]]; then
+    echo "ATTESTATION FAILED for ${base}: gate on, but the hook did not come up." >&2
+    exit 4
+  fi
+  echo ">> attested existing ${base}"
+  exit 0
+fi
 if [[ "${SHIM_REFUSES:-0}" == "1" ]]; then
   echo "REFUSING to bake ${base}: it already instruments httpx" >&2
   exit 3
@@ -289,6 +332,30 @@ esac
 if [[ "${GET_FAILS:-0}" == "1" && "$1" == "get" ]]; then
   printf '%s\n' "The connection to the server 127.0.0.1:6443 was refused" >&2
   exit 1
+fi
+
+# ---- AuthBridge admin API ---------------------------------------------------
+if [[ "$*" == *"exec"* && "$*" == *" propagates"* ]]; then
+  cat >/dev/null
+  [[ "${LIVE_SHIM_ATTEST_FAILS:-0}" != "1" ]]
+  exit
+fi
+if [[ "$*" == *"exec"* && "$*" == *"/v1/plugins"* ]]; then
+  if [[ "${PLUGIN_CATALOG_MISSING:-0}" == "1" ]]; then
+    printf '%s' '{"plugins":[{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"}]}'
+  else
+    printf '%s' '{"plugins":[{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry"}]}'
+  fi
+  exit 0
+fi
+if [[ "$*" == *"exec"* && "$*" == *"/v1/pipeline"* ]]; then
+  self_id="travel-advisor"
+  for a in "$@"; do
+    case "$a" in *-abc123) self_id="${a%-abc123}" ;; esac
+  done
+  body='{"inbound":[{"name":"jwt-validation"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"__SELF__","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}],"outbound":[{"name":"token-exchange"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"__SELF__","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}]}'
+  printf '%s' "${body//__SELF__/${self_id}}"
+  exit 0
 fi
 
 # ---- component/tee preflight probes -----------------------------------------
@@ -552,8 +619,11 @@ def sandbox(tmp_path: Path):
             # them; the stub must too, or the integrity check refuses.
             for f in ("container-runtime.sh", "Dockerfile.otel-shim",
                       "lineage-propagate-hook.py", "rossoctl_turnspan.py",
-                      "rossoctl_turnspan.pth"):
+                      "rossoctl_turnspan.pth", "attest-otel-shim.py"):
                 (self.kitdir / f).write_text("# stub\n")
+            (self.kitdir / "reconcile-existing-proxy.py").write_text(
+                (REPO_ROOT / "deploy" / "lineage-attach" / "reconcile-existing-proxy.py").read_text()
+            )
 
         def remove_kit_file(self, name: str) -> None:
             """Delete one kit file so the vendored-kit integrity check refuses."""
@@ -580,7 +650,11 @@ def sandbox(tmp_path: Path):
                     if spec.get("lineage"):
                         data = _CM_WITH_LINEAGE
                     elif spec.get("enforcing"):
-                        data = _CM_ENFORCING_NO_LINEAGE
+                        data = (
+                            _CM_TOOL_ENFORCING_NO_LINEAGE
+                            if spec.get("trusted_type") == "tool"
+                            else _CM_ENFORCING_NO_LINEAGE
+                        )
                     else:
                         data = _CM_WITHOUT_LINEAGE
                     cm_doc = {
@@ -591,7 +665,17 @@ def sandbox(tmp_path: Path):
                     }
                     (fixdir / f"cm-{cm_name}.json").write_text(json.dumps(cm_doc))
                 image = spec.get("image", "agent-examples-snp:latest")
-                dep = _deployment(name, sidecar=sidecar, cm_name=cm_name, image=image)
+                dep = _deployment(
+                    name,
+                    sidecar=sidecar,
+                    cm_name=cm_name,
+                    image=image,
+                    trusted_type=spec.get("trusted_type"),
+                )
+                if spec.get("activated"):
+                    dep["spec"]["template"]["spec"]["containers"][0]["env"].append(
+                        {"name": "LINEAGE_PROPAGATE", "value": "1"}
+                    )
                 items.append(dep)
                 (fixdir / f"entity-{name}.json").write_text(json.dumps({"items": [dep]}))
 
@@ -611,9 +695,25 @@ def sandbox(tmp_path: Path):
                         "labels": dep["metadata"]["labels"],
                     },
                     "spec": dep["spec"]["template"]["spec"],
-                    "status": {"phase": "Running"},
+                    "status": {
+                        "phase": "Running",
+                        "conditions": [{"type": "Ready", "status": "True"}],
+                        "containerStatuses": [
+                            {"name": container["name"], "ready": True}
+                            for container in dep["spec"]["template"]["spec"]["containers"]
+                        ],
+                    },
                 }
-                (fixdir / f"pods-{name}.json").write_text(json.dumps({"items": [pod]}))
+                pod_items = [pod]
+                if spec.get("stale_pod"):
+                    stale = json.loads(json.dumps(pod))
+                    stale["metadata"]["name"] = f"{name}-old123"
+                    stale["metadata"]["deletionTimestamp"] = "2026-09-23T00:00:00Z"
+                    stale["metadata"]["creationTimestamp"] = "2026-09-22T00:00:00Z"
+                    stale["spec"]["containers"][0]["env"] = []
+                    pod["metadata"]["creationTimestamp"] = "2026-09-23T00:00:00Z"
+                    pod_items.insert(0, stale)
+                (fixdir / f"pods-{name}.json").write_text(json.dumps({"items": pod_items}))
             (fixdir / "entities.json").write_text(json.dumps({"items": items}))
 
         def kubectl_calls(self) -> list[str]:
@@ -678,7 +778,7 @@ def test_instrument_refuses_when_vendored_kit_incomplete(sandbox) -> None:
 @pytest.mark.parametrize(
     "missing",
     ["container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py",
-     "rossoctl_turnspan.py", "rossoctl_turnspan.pth"],
+     "rossoctl_turnspan.py", "rossoctl_turnspan.pth", "attest-otel-shim.py"],
 )
 def test_instrument_refuses_when_kit_companion_file_absent(sandbox, missing) -> None:
     """The integrity check covers the WHOLE surface the drive path needs, not
@@ -811,6 +911,177 @@ def _envoy_env_lines(kit_log: str) -> list[str]:
     # `sidecar-patch.sh` is a substring of `sidecar-patch-proxy.sh`, so match the
     # exact envoy stub prefix (which is NOT the proxy prefix).
     return [ln for ln in kit_log.splitlines() if ln.startswith("sidecar-patch.sh env:")]
+
+
+def test_trusted_proxy_rolls_app_before_hot_reloading_pipeline(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+            },
+            "demo-client": {"sidecar": None},
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    calls = sandbox.kubectl_calls()
+    patch_i = next(i for i, call in enumerate(calls) if "patch deployment/travel-advisor" in call)
+    apply_i = next(i for i, call in enumerate(calls) if call.startswith("apply -f -"))
+    assert patch_i < apply_i
+    assert not any("demo-client" in call and "patch deployment" in call for call in calls)
+    assert not any("rollout restart" in call for call in calls[apply_i + 1 :])
+    assert sandbox.kit_log().count("build-otel-shim.sh argv:") == 2
+
+
+def test_trusted_tool_accepts_the_platform_tool_proxy_port_contract(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "charge-card": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "tool",
+            }
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    assert any(
+        "patch deployment/charge-card" in call for call in sandbox.kubectl_calls()
+    )
+    patch_call = next(
+        call for call in sandbox.kubectl_calls() if "patch deployment/charge-card" in call
+    )
+    assert '"imagePullPolicy": "IfNotPresent"' in patch_call
+
+
+def test_trusted_proxy_ignores_a_terminating_old_pod(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+                "stale_pod": True,
+            }
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_trusted_proxy_missing_producer_plugin_fails_before_mutation(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+            }
+        }
+    )
+    sandbox.set_flag(PLUGIN_CATALOG_MISSING="1")
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode != 0
+    assert "lineage-capable" in result.stderr
+    calls = "\n".join(sandbox.kubectl_calls())
+    assert "patch deployment/" not in calls
+    assert "apply -f -" not in calls
+
+
+def test_trusted_proxy_existing_otel_image_is_re_attested(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+                "image": "travel-advisor-otel:latest",
+            }
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "build-otel-shim.sh argv: --attest-existing travel-advisor-otel:latest"
+        in sandbox.kit_log()
+    )
+
+
+def test_trusted_proxy_existing_otel_image_refuses_failed_attestation(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+                "image": "misnamed-otel:latest",
+            }
+        }
+    )
+    sandbox.set_flag(SHIM_ATTEST_FAILS="1")
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode != 0
+    assert "failed preflight" in result.stderr
+    assert not any("patch deployment/" in call for call in sandbox.kubectl_calls())
+
+
+def test_status_explains_trusted_proxy_activation_drift(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": True,
+                "trusted_type": "agent",
+            }
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "status")
+
+    assert result.returncode == 0, result.stderr
+    assert "live=no" in result.stdout
+    assert "application shim or LINEAGE_PROPAGATE missing" in result.stdout
+
+
+def test_status_attests_the_running_application_not_the_local_image(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": True,
+                "trusted_type": "agent",
+                "image": "opaque-registry.example/app:any-tag",
+                "activated": True,
+            }
+        }
+    )
+    sandbox.set_flag(LIVE_SHIM_ATTEST_FAILS="1")
+
+    result = sandbox.run("namespace", "travel-advisor", "status")
+
+    assert result.returncode == 0, result.stderr
+    assert "live=no (running application failed two-shim attestation)" in result.stdout
+    assert "--attest-existing" not in sandbox.kit_log()
 
 
 def test_instrument_no_sidecar_bare_ns_drives_proxy_applier(sandbox) -> None:

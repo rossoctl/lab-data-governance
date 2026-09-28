@@ -127,16 +127,16 @@ List **user** namespaces: those labelled `rossoctl-enabled: "true"`, excluding
 ### `dg.sh namespace <ns> instrument [<entity>]` — NON-REVERSIBLE (v1)
 
 Activate lineage for the agents/tools in `<ns>` — **all** of them, or the
-single `<entity>` when named. **Additive-only, and it never changes a
-namespace's sidecar mode** (see ADR-0031 for why non-reversible, and why no
-mode switch).
+single `<entity>` when named. It never changes a namespace's sidecar mode. The
+legacy #239 path is additive-only; the trusted #256 path deliberately replaces
+the application image and canonicalizes DG-managed listener/parser/lineage
+fields while preserving platform-owned authentication plugins.
 
-Enumerate entities by `app.kubernetes.io/component in (agent, mcp-tool)` (the
-platform's own selector — `rossoctl.io/type` is operator-reserved and
-VAP-protected, so we never read or set it); when `<entity>` is given, select
-just that one by `app.kubernetes.io/name` and error if it is not an agent/tool
-in the namespace. Per-entity mode detection and mutation are identical whether
-one entity or all are targeted — a named entity is simply the one-element case.
+Selection prefers the trusted operator label `rossoctl.io/type=agent|tool`.
+When any such Deployment exists, only that trusted set is eligible; clients,
+stores, and other workloads are excluded. A namespace with no trusted labels
+uses `app.kubernetes.io/component=agent|mcp-tool` for the legacy #239 flow.
+When `<entity>` is given, it must belong to the selected set.
 `instrument` dispatches each entity by its **current sidecar state**, all
 auto-detected, no flag (the ADR-0033 owner-split, which supersedes ADR-0032's
 kit-only no-sidecar-only contract):
@@ -145,8 +145,9 @@ kit-only no-sidecar-only contract):
 |---|---|---|
 | **no sidecar**, namespace **not** envoy-configured (`rossoctl.io/inject: disabled`, e.g. the agent-examples demo agents) | inject a lineage-only **proxy** sidecar (auth-free, `mode: proxy-sidecar`), + for a Python app the two-shim image | **dg.sh proxy applier** (`sidecar-patch-proxy.sh` / `build-otel-shim.sh`) |
 | **no sidecar**, namespace **already** envoy-configured | inject an **envoy** lineage sidecar (`mode: envoy-sidecar` + `lineage-telemetry`), + the two-shim image | **vendored envoy applier** (`sidecar-patch.sh` / `build-otel-shim.sh`) |
-| sidecar present, **no** `lineage-telemetry` in its pipeline | **append** `lineage-telemetry` in place (auth left as-is), best-effort + verify-after-roll | `dg.sh` in-place append |
-| sidecar present, `lineage-telemetry` **already** wired | **no-op** (idempotent) | — |
+| trusted Rossoctl **proxy sidecar present** | roll the attested application shim, then reconcile DG-managed listener/parser/lineage fields in the newly admitted ConfigMap; preserve auth and verify hot reload | **dg.sh #256 reconciler** |
+| legacy sidecar present, **no** `lineage-telemetry` in its pipeline | **append** `lineage-telemetry` in place (auth left as-is), best-effort + verify-after-roll | `dg.sh` legacy in-place append |
+| legacy sidecar present, `lineage-telemetry` **already** wired | **no-op** (idempotent) | — |
 
 "Already envoy-configured" is detected from the namespace — the presence of the
 platform `envoy-config` ConfigMap — not a flag. The default for a bare, ad-hoc
@@ -161,7 +162,7 @@ container and stay up for the pod's life; requires k8s >= 1.29). The vendored
 envoy applier's `attach-lineage.sh` hardcodes `mode: envoy-sidecar`; the proxy
 applier's `attach-lineage-proxy.sh` emits `mode: proxy-sidecar`.
 
-**Instrumenting an existing sidecar in place.** An earlier design (ADR-0032)
+**Legacy existing-sidecar activation.** An earlier design (ADR-0032)
 *skipped* any entity that already had a sidecar, because live validation found
 in-place editing risky: the platform-injected proxy sidecar can be the
 **enforcing** sidecar (`jwt`/`token-exchange`) that 401s the demo's unauthenticated
@@ -169,8 +170,9 @@ MCP/A2A calls, and an in-place edit of a **webhook-injected** pipeline ConfigMap
 **clobbered by the operator** (the per-workload CM is Deployment-owned and
 regenerated on the roll `instrument` triggers).
 
-**ADR-0033 (accepted 2026-09-14) revised this to the owner-split above**:
-`instrument` now **appends** the `lineage-telemetry` plugin to an existing
+**ADR-0033 (accepted 2026-09-14) revised this to the legacy owner-split above**:
+for component-labelled workloads, `instrument` **appends** the
+`lineage-telemetry` plugin to an existing
 sidecar's pipeline (leaving its auth plugins exactly as-is — additive, never
 strip), as a **best-effort** step. It **verifies after the roll** that the plugin
 is actually live and **warns loudly** when the operator clobbered it, or when the
@@ -181,6 +183,22 @@ envoy-configured), and vendors the attach capability into `deploy/lineage-attach
 so `dg.sh` needs no cortex checkout (`--cortex-local-path` retired). See ADR-0033
 for the full rationale; the durable-in-place alternatives (operator-rendered /
 skip-injected) are recorded there as future work.
+
+**Issue #256 supersedes the existing-sidecar sequence for trusted Rossoctl
+proxy workloads.** Before the first workload mutation, `instrument` validates
+every admitted proxy and producer catalog, validates every mounted ConfigMap,
+and builds/attests every distinct required application shim (including an
+independent re-attestation when the deployed image is already shimmed; an
+`-otel` tag is not trusted as provenance). It then updates
+only the application container image and `LINEAGE_PROPAGATE=1`, waits for
+rollout and webhook reinjection, resolves the new pod's ConfigMap, and
+canonically reconciles both pipelines while preserving JWT-validation and
+token-exchange. Canonical state derives the forward proxy, reverse proxy, and
+application backend listener values from the admitted pod (Rossoctl uses
+different contracts for agents and tools), plus exact live plugin sequences
+without duplicates. AuthBridge must hot reload the change and expose it from
+`/v1/pipeline`; verification allows up to three minutes for Kubernetes
+ConfigMap projection, and no rollout occurs after the ConfigMap edit.
 
 The plugin points `otel_endpoint` at the platform collector
 (`otel-collector.rossoctl-system.svc.cluster.local:4317`); the existing
@@ -269,10 +287,12 @@ which reverses ADR-0032's drive-an-external-checkout arrangement).
   — it **appends in place** instead.)
 
 There is **no `reset`** in v1. To undo, delete/redeploy the namespace's
-workloads (the natural escape hatch on a dev cluster). Activation is additive
-and never mutates shared operator state (no mode switch), so there is nothing
-irreversible about the *cluster* — only that `dg.sh` does not script the
-un-wire. (For the kit-owned rows, the kit already prints a precise
+workloads (the natural escape hatch on a dev cluster). The legacy path is
+additive and never mutates shared operator state. The trusted #256 path edits
+the operator-owned per-workload ConfigMap only after rollout and confines that
+edit to canonical listener/parser/lineage fields, preserving auth and sidecar
+mode. `dg.sh` does not script either path's un-wire. (For kit-owned rows, the
+kit already prints a precise
 **reverse-patch** back-out line — a strategic merge that deletes by name exactly
 what the attach added and restores the app image it replaced, then deletes the
 ConfigMap — so a manual back-out is one printed line away. This is a reverse
@@ -292,6 +312,10 @@ report:
   per-entity `lineage=yes/no` token. This is the no-marker idempotency signal
   (ADR-0033 decision 5): `instrument` places no marker, so a wired pipeline is
   how a re-run knows an entity is already activated.
+- **live** — for trusted proxy workloads, also verifies the shim image,
+  `LINEAGE_PROPAGATE=1`, admission proxy environment, pod/sidecar readiness,
+  canonical mounted ConfigMap, and live AuthBridge pipeline. Drift is shown as
+  `live=no` with the failed condition.
 
 Detection inspects **both** the pod-spec's `containers` and its `initContainers`:
 the kit's `envoy-proxy` is a native sidecar (an `initContainer`), so a
@@ -325,14 +349,17 @@ single entity.
   a sidecar onto a **no-sidecar** entity (proxy by default; envoy when the
   namespace is already envoy-configured) and **appends** `lineage-telemetry` to an
   existing sidecar's pipeline, but never mode-switches one already in place.
-- **Durable** in-place activation of an operator-injected sidecar — the append is
-  **best-effort**: an operator that regenerates the per-workload ConfigMap on the
-  roll clobbers it (`instrument` verifies after the roll and warns loudly rather
-  than claiming a success it did not achieve). The durable alternatives
-  (operator-rendered plugin / skip-injected) are ADR-0033 future work.
+- **Durable** in-place activation of an operator-injected sidecar. The legacy
+  component-labelled path remains a best-effort append. The trusted #256 path
+  reconciles the newly admitted ConfigMap after the application rollout and
+  reports later operator drift through `status`, but the overlay remains
+  non-durable because a subsequent platform reconciliation can replace it. The
+  durable alternatives (operator-rendered plugin / skip-injected) are ADR-0033
+  future work.
 - Any change to the cortex *producer* (the `lineage-telemetry` plugin / sidecar
-  image lives in cortex); `dg.sh` drives the vendored attach kit and emits no
-  YAML of its own.
+  image lives in cortex). The no-sidecar paths delegate YAML generation to the
+  vendored kit; for trusted existing proxies, `dg.sh` renders and applies only
+  the DG-managed fields in the platform-owned ConfigMap.
 - Keeping the vendored kit forever in lock-step with cortex upstream — the copy
   under `deploy/lineage-attach/` is owned here now (ADR-0033); it is re-synced
   deliberately, not automatically tracked.
@@ -351,6 +378,7 @@ single entity.
   reverse-patch back-out line), `sidecar-patch-proxy.sh` (the **proxy** live
   applier — its ADR-0033 sibling), `attach-lineage.sh` / `attach-lineage-proxy.sh`
   (the envoy / proxy generators), `build-otel-shim.sh` (the two-shim bake).
-  `dg.sh` emits no YAML of its own; it injects onto no-sidecar entities (proxy by
-  default, envoy when the namespace is envoy-configured) and **appends** lineage
-  in place onto an entity that already has a sidecar.
+  For no-sidecar entities, `dg.sh` delegates YAML generation to these appliers
+  (proxy by default, envoy when the namespace is envoy-configured). For trusted
+  existing proxies, its #256 reconciler renders and applies the DG-managed
+  listener/parser/lineage fields while preserving platform-owned auth plugins.

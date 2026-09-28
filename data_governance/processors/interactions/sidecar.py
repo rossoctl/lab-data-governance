@@ -270,15 +270,15 @@ def _callee(kinds: Kinds, req: Span, echo: Span | None) -> _Entity:
 
 
 def _caller(kinds: Kinds, req: Span, self_kind_of: dict[str, str]) -> _Entity:
-    """Caller identity from facts. Inbound: user:<principal.sub>, or the
-    anonymous client:(unknown) — the wire carries no caller address (contract
-    v1.4 removed ``lineage.peer.addr``). Outbound: this pod's self.id, of the
-    kind this trace already knows the pod to be (``_self_kinds``), else the
-    table's default."""
+    """Caller identity from facts. Inbound: the authenticated OAuth client when
+    present, otherwise client:(unknown).  The human subject remains available
+    on the evidence span but does not name the transport caller. Outbound: this
+    pod's self.id, of the kind this trace
+    already knows the pod to be (``_self_kinds``), else the table's default."""
     if _direction(req) == "inbound":
-        sub = _attr(req, "lineage.principal.sub")
-        if sub:
-            return _Entity("user", str(sub))
+        client = _attr(req, "lineage.principal.client")
+        if client:
+            return _Entity("client", str(client))
         return _Entity("client", _UNKNOWN)
     return _self_entity(self_kind_of.get(_self_key(req), kinds.caller_kind), req)
 
@@ -307,9 +307,11 @@ def _self_kinds(reqs: dict[str, Span]) -> dict[str, str]:
     egress — a weather tool fetching a forecast over http, a booking tool
     delegating over a2a — would otherwise be minted twice, ``tool:X`` for what
     it serves and ``agent:X`` for what it calls (seen live 2026-09-01). Read off
-    the whole trace, so any arrival order gives the same plan; the stored
-    ``entities`` row minted under a partial trace is not withdrawn (global,
-    upsert-only — ADR-0030), only re-pointed away from.
+    the whole trace, so any arrival order gives the same plan. A host:port
+    agent/tool entity minted under a partial trace is retired after reconciliation
+    only when no interaction or entity-span evidence anywhere still references
+    it; all canonical and non-agent/tool entities remain global and upsert-only
+    (ADR-0030's issue-#256 revision).
     """
     served: dict[str, set[str]] = {}
     sent: dict[str, set[str]] = {}
@@ -360,7 +362,8 @@ class _Plan:
 def derive_trace(tx: db.Transaction, trace_id: str) -> None:
     """Reconcile one trace's interaction graph from ALL its spans. Idempotent;
     order-independent. Deletes this trace's derived rows no longer justified by
-    the current span set (trace-scoped — ``entities`` is global, upsert-only)."""
+    the current span set, then retires only globally unreferenced provisional
+    host:port agent/tool entities."""
     _write(tx, plan_trace(trace_id, _fetch_trace_spans(tx, trace_id)))
 
 
@@ -571,7 +574,9 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
     ``interactions`` (legs carry no trace_id), so that delete must run while the
     stale parent rows still exist."""
     trace_id, want, anchor_ids = plan.trace_id, plan.want, plan.anchor_ids
-    # 1. entities (global, upsert-only — NEVER deleted here) + payloads.
+    # 1. entities + payloads.  Canonical pod entities are global and upserted.
+    #    A host:port agent/tool created before its inbound echo is provisional;
+    #    it is retired at the end of reconciliation once nothing references it.
     entity_id_of: dict[str, str] = {}
     for row in want.values():
         for ent in (row.caller, row.callee):
@@ -700,3 +705,20 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
                 "ON CONFLICT (trace_id, span_id, entity_id, role) DO NOTHING",
                 (entity_id_of[ent.natural_key], trace_id, row.anchor_span_id),
             )
+
+    # 7. Retire only clearly provisional agent/tool peer identities after every
+    #    trace-scoped reference has been reconciled.  The two NOT EXISTS guards
+    #    make this safe across traces and preserve evidence-only entities.  Do
+    #    not apply the host:port heuristic to service/llm rows: those are stable
+    #    endpoint identities by contract.
+    tx.execute(
+        "DELETE FROM entities e "
+        "WHERE e.namespace IS NULL "
+        "AND e.kind IN ('agent', 'tool') "
+        "AND e.natural_key ~ '^(agent|tool):[^/[:space:]]+:[0-9]+$' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM interactions i "
+        "  WHERE i.caller_entity_id = e.id OR i.callee_entity_id = e.id"
+        ") "
+        "AND NOT EXISTS (SELECT 1 FROM entity_spans es WHERE es.entity_id = e.id)"
+    )

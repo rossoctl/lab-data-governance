@@ -145,8 +145,9 @@ an unconditional install would pull `opentelemetry` in at interpreter start and
 fail `build-otel-shim.sh`'s "gate off → nothing OTel loads" attestation. Baking
 both shims into one image (ADR-0033 Decision 4) makes the worse-than-baseline
 trap structurally unreachable — there is no way to deploy the turn span without
-its activation hook. `ROSSOCTL_TURNSPAN=off` is a secondary opt-out for the rare
-case the turn span itself needs disabling without dropping propagation.
+its activation hook. `LINEAGE_PROPAGATE=1` therefore enables both propagation
+and turn-span behavior as one proven configuration, with no separate turn-span
+switch.
 
 ### An app that already configures OpenTelemetry itself
 
