@@ -13,55 +13,46 @@ and is tested.
 
 ```mermaid
 flowchart TB
-    subgraph upstream["Upstream (P-interactions)"]
-        legs[("interaction_legs")]
-        payloads[("payload_classifications")]
+    legs[("interaction_legs")]
+    payloads[("payload_classifications")]
+
+    LEGREADY["leg_ready processor"]
+
+    subgraph engine["risk engine"]
+        EVID["evidence gathering"]
+        COMP["risk computation"]
+        OPAC["OPA client"]
     end
 
-    subgraph legready["leg_ready processor"]
-        LRD["driver.py\ncontiguous-prefix drain\nby leg seq"]
-    end
+    OPA["OPA server\n(pinned openpolicyagent/opa:1.19.0)"]
+    BUNDLE["opa-policy ConfigMap\n(compiled rule catalog)"]
 
-    subgraph engine["risk engine (in-process, called by leg_ready)"]
-        OBS["observer.py\nObserver"]
-        EVID["evidence.py\ngather_evidence"]
-        COMP["compute.py\nprepare_interaction_risk\nevidence fingerprint\nreuse-or-refresh decision"]
-        OPAC["opa.py\nOpaClient.evaluate"]
-        UTIL["utils.py\nbuild_opa_input\nAnchorFacts"]
-    end
-
-    OPA["OPA server\n(pinned openpolicyagent/opa:1.19.0)\nPOST /v1/data/data_governance/policy_decision"]
-    BUNDLE["opa-policy ConfigMap\ncompiled from rules_source.json\nvia rules/rego.py + rules/compile.py"]
-
-    IRR[("interaction_risk_records")]
     IPD[("interaction_policy_decisions")]
+    IRR[("interaction_risk_records")]
 
-    subgraph tracetrigger["risk.trace_trigger processor"]
-        TTD["driver.py\ndrain by interaction_risk_records.seq\n(NOTIFY dg_interaction_risk_written)"]
-        TCOMP["trace_compute.py\ncompute_trace_risk\ntrace_aggregate.py"]
-    end
+    TRACETRIGGER["risk.trace_trigger processor"]
 
     TRR[("trace_risk_records")]
 
     subgraph api["/risk/* API (data_governance.risk.api)"]
-        RROUTES["risk_routes.py\n/risk/interactions*\n/risk/traces*"]
-        RULES["rules_routes.py\n/risk/rules*"]
-        METRICS["metrics_routes.py\n/risk/metrics/*"]
+        RROUTES["/risk/interactions*\n/risk/traces*"]
+        RULES["/risk/rules*"]
+        METRICS["/risk/metrics/*"]
     end
 
     UI["Risk UI\n(ui/src/pages/risk)"]
 
-    legs --> LRD
-    payloads --> LRD
-    LRD --> OBS --> EVID --> COMP
+    legs --> LEGREADY
+    payloads --> LEGREADY
+    LEGREADY --> EVID --> COMP
     EVID --> legs
     EVID --> payloads
-    COMP --> UTIL --> OPAC
+    COMP --> OPAC
     OPAC <-->|HTTP| OPA
     BUNDLE -.->|mounted at /policies| OPA
     COMP --> IPD
     COMP --> IRR
-    IRR -->|pg_notify| TTD --> TCOMP --> TRR
+    IRR -->|pg_notify| TRACETRIGGER --> TRR
 
     IRR --> RROUTES
     TRR --> RROUTES
@@ -71,6 +62,11 @@ flowchart TB
     RROUTES --> UI
     RULES --> UI
     METRICS --> UI
+
+    classDef component fill:#f9e79f,stroke:#b7950b,color:#000
+    classDef enginebox fill:#d7bde2,stroke:#76448a,color:#000
+    class LEGREADY,TRACETRIGGER,OPA,BUNDLE,UI component
+    class EVID,COMP,OPAC enginebox
 ```
 
 **Pipeline, in order:**
