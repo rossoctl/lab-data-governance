@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from typing import Any
 
 from data_governance import db
@@ -43,6 +44,18 @@ from .procedure import (
 _SELECT_COLS = ", ".join(_COLUMNS)
 
 _UNKNOWN = "(unknown)"
+
+# The only shape a Kubernetes namespace can have (RFC 1123 label) — the producer
+# refuses to start on any other, so a present value that fails this is a
+# contract violation, not data.
+_DNS_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
+
+
+def _ident_key(namespace: str | None, ident: str) -> str:
+    """The identity half of a natural key: ``namespace/ident`` for a pod,
+    ``ident`` for everything without a namespace. One place, because the
+    trace-local maps (``_self_kinds``) and the persisted key must agree."""
+    return f"{namespace}/{ident}" if namespace else ident
 
 
 def classify(req_span: Span) -> Kinds:
@@ -103,6 +116,44 @@ def _require_self_id(span: Span) -> str:
     return str(self_id)
 
 
+def _self_namespace(span: Span) -> str | None:
+    """``lineage.self.namespace`` (contract v1.7, on both spans): the pod's
+    Kubernetes namespace, the other half of its identity — ``self.id`` alone
+    welds a same-named workload in two namespaces onto one entity. A v1.7
+    producer refuses to start without one, so on its spans the fact is always
+    present. It is absent only on spans a pre-v1.7 producer emitted, which
+    are stored and replayable: those key the entity the way v1.6 did, without
+    a namespace. That is honest absence, not a guess — the consumer never
+    infers a namespace from ``peer.host``, a SPIFFE path, or anything else.
+
+    Present but not a DNS label — empty, padded, or any other shape — is not
+    absence: the producer refuses to start on such a value, so one on the
+    wire is a contract violation, and folding it into "absent" would re-weld
+    the pod onto the un-namespaced row. Die loudly instead, as a missing
+    ``self.id`` does ("no mechanism may guess")."""
+    ns = _attr(span, "lineage.self.namespace")
+    if ns is None:
+        return None
+    if not isinstance(ns, str) or not _DNS_LABEL.match(ns):
+        raise ValueError(
+            f"span {span.span_id}: lineage.self.namespace={ns!r} is not a DNS "
+            "label — producer contract violation (v1.7 refuses to start on one)"
+        )
+    return ns
+
+
+def _self_entity(kind: str, span: Span) -> _Entity:
+    """The entity this span's own pod is: ``self.id`` under ``self.namespace``."""
+    return _Entity(kind, _require_self_id(span), _self_namespace(span))
+
+
+def _self_key(span: Span) -> str:
+    """One string per pod for the trace-local maps (``_self_kinds``): the same
+    ``namespace/id`` composition the natural key uses, so two same-named pods
+    in different namespaces never share a verdict."""
+    return _ident_key(_self_namespace(span), _require_self_id(span))
+
+
 # ---------------------------------------------------------------------------
 # Row construction (pure)
 # ---------------------------------------------------------------------------
@@ -118,12 +169,26 @@ class _Payload:
 
 @dataclasses.dataclass
 class _Entity:
+    """One graph participant. ``namespace`` is set only for entities that ARE
+    a pod (identified by ``lineage.self.id``); a user, an anonymous client, an
+    LLM endpoint, or an un-sidecared callee named by ``peer.host`` has none.
+
+    ``natural_key`` is the identity: the ``entities`` UNIQUE column and the
+    input to ``_entity_id`` (uuid5), so the namespace sits INSIDE it —
+    ``agent:team2/weather-service`` — and not only in the ``namespace``
+    column, which alone could never split two rows (migration 0020)."""
+
     kind: str
     ident: str
+    namespace: str | None = None
+
+    @property
+    def ident_key(self) -> str:
+        return _ident_key(self.namespace, self.ident)
 
     @property
     def natural_key(self) -> str:
-        return f"{self.kind}:{self.ident}"
+        return f"{self.kind}:{self.ident_key}"
 
 
 @dataclasses.dataclass
@@ -184,10 +249,12 @@ def _outcome_error(resp: Span | None) -> bool | None:
     return bool(resp.error) if resp.error is not None else None
 
 
-def _callee(kinds: Kinds, req: Span, echo_self_id: str | None) -> _Entity:
+def _callee(kinds: Kinds, req: Span, echo: Span | None) -> _Entity:
     """Callee identity from facts. LLM: {peer.host}/{inference.model}. Inbound
-    entry: this pod's self.id. Outbound: the callee's echoed self.id when the
-    callee-side inbound exists, else peer.host."""
+    entry: this pod's (namespace, self.id). Outbound: the callee pod's own
+    (namespace, self.id) read off its echo span when the callee-side inbound
+    exists, else peer.host — which carries the namespace only when the caller
+    used an FQDN, and the consumer does not resolve a short host into one."""
     if kinds.callee_kind == "llm":
         # peer.host is contract-conditional ("when present") and inference.model
         # comes from a parsed body that may be absent — (unknown) is the honest
@@ -196,9 +263,10 @@ def _callee(kinds: Kinds, req: Span, echo_self_id: str | None) -> _Entity:
         model = str(_attr(req, "inference.model") or _UNKNOWN)
         return _Entity("llm", f"{host}/{model}")
     if _direction(req) == "inbound":
-        return _Entity(kinds.callee_kind, _require_self_id(req))
-    ident = echo_self_id or str(_attr(req, "lineage.peer.host") or _UNKNOWN)
-    return _Entity(kinds.callee_kind, ident)
+        return _self_entity(kinds.callee_kind, req)
+    if echo is not None:
+        return _self_entity(kinds.callee_kind, echo)
+    return _Entity(kinds.callee_kind, str(_attr(req, "lineage.peer.host") or _UNKNOWN))
 
 
 def _caller(kinds: Kinds, req: Span, self_kind_of: dict[str, str]) -> _Entity:
@@ -212,13 +280,12 @@ def _caller(kinds: Kinds, req: Span, self_kind_of: dict[str, str]) -> _Entity:
         if sub:
             return _Entity("user", str(sub))
         return _Entity("client", _UNKNOWN)
-    self_id = _require_self_id(req)
-    return _Entity(self_kind_of.get(self_id, kinds.caller_kind), self_id)
+    return _self_entity(self_kind_of.get(_self_key(req), kinds.caller_kind), req)
 
 
 def _self_kinds(reqs: dict[str, Span]) -> dict[str, str]:
-    """What each ``lineage.self.id`` in this trace IS. One verdict per pod, from
-    the pod's own traffic, applied where that pod is the *caller* of an outbound
+    """What each pod (``namespace/self.id``) in this trace IS. One verdict per
+    pod, from the pod's own traffic, applied where that pod is the *caller* of an outbound
     exchange (``_caller``). The callee side keeps the kind table's protocol kind:
     an echoing callee served that same protocol, so the two agree for a2a, mcp
     and inference — but not for plain http, where the outbound row says
@@ -247,19 +314,19 @@ def _self_kinds(reqs: dict[str, Span]) -> dict[str, str]:
     served: dict[str, set[str]] = {}
     sent: dict[str, set[str]] = {}
     for s in reqs.values():
-        self_id = _attr(s, "lineage.self.id")
-        if not self_id:
+        if not _attr(s, "lineage.self.id"):
             continue
+        key = _self_key(s)
         if _direction(s) == "inbound":
-            served.setdefault(str(self_id), set()).add(classify(s).callee_kind)
+            served.setdefault(key, set()).add(classify(s).callee_kind)
         else:
-            sent.setdefault(str(self_id), set()).add(_protocol(s))
+            sent.setdefault(key, set()).add(_protocol(s))
     verdict: dict[str, str] = {}
-    for self_id, kinds in served.items():
-        verdict[self_id] = next(iter(kinds)) if len(kinds) == 1 else "agent"
-    for self_id, protocols in sent.items():
-        if self_id not in verdict and protocols & {"a2a", "mcp"}:
-            verdict[self_id] = "agent"
+    for pod, kinds in served.items():
+        verdict[pod] = next(iter(kinds)) if len(kinds) == 1 else "agent"
+    for pod, protocols in sent.items():
+        if pod not in verdict and protocols & {"a2a", "mcp"}:
+            verdict[pod] = "agent"
     return verdict
 
 
@@ -375,15 +442,13 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
     # "echo" — the inbound request whose nearest anchor is this outbound (the
     # caller sidecar's tracestate stamp parents the echo under the outbound
     # request span; wire contract v1.5).
-    echo_self_of: dict[str, str] = {}
+    echo_of: dict[str, Span] = {}
     for sid, s in reqs.items():
         if sid in anchor_ids or _direction(s) != "inbound":
             continue
         owner = _nearest_anchor(sid)
-        if owner in outbound_ids and owner not in echo_self_of:
-            self_id = _attr(s, "lineage.self.id")
-            if self_id:
-                echo_self_of[owner] = str(self_id)
+        if owner in outbound_ids and owner not in echo_of and _attr(s, "lineage.self.id"):
+            echo_of[owner] = s
 
     self_kind_of = _self_kinds(reqs)
 
@@ -405,7 +470,7 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
             anchor_span_id=aid,
             parent_anchor_span_id=parent_anchor,
             caller=_caller(kinds, req, self_kind_of),
-            callee=_callee(kinds, req, echo_self_of.get(aid)),
+            callee=_callee(kinds, req, echo_of.get(aid)),
             started_at=req.started_at,
             ended_at=(resp.ended_at or resp.started_at) if resp is not None else None,
             error=_outcome_error(resp),
@@ -436,7 +501,8 @@ def _upsert_entity(tx: db.Transaction, ent: _Entity, seq: int) -> str:
     eid = _entity_id(ent.natural_key)
     tx.execute(
         "INSERT INTO entities (id, kind, natural_key, display_name, project_name, "
-        "detected_from, seq, original_seq) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+        "namespace, detected_from, seq, original_seq) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
         # seq is deliberately NOT in the update list: this algorithm re-derives
         # the whole trace on every arriving span, and the entity_ready stream
         # (ADR-0027) reads ``entities WHERE seq > cursor``. Taking the new seq
@@ -446,8 +512,9 @@ def _upsert_entity(tx: db.Transaction, ent: _Entity, seq: int) -> str:
         # BELOW the cursor. Leaving seq exactly as inserted keeps first
         # detection monotone and delivered exactly once.
         "ON CONFLICT (natural_key) DO UPDATE SET display_name = EXCLUDED.display_name, "
-        "detected_from = EXCLUDED.detected_from",
-        (eid, ent.kind, ent.natural_key, ent.ident, None, "sidecar lineage span", seq, seq),
+        "namespace = EXCLUDED.namespace, detected_from = EXCLUDED.detected_from",
+        (eid, ent.kind, ent.natural_key, ent.ident, None, ent.namespace,
+         "sidecar lineage span", seq, seq),
     )
     return eid
 
@@ -528,7 +595,9 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
             (
                 row.interaction_id, trace_id,
                 entity_id_of[row.caller.natural_key], entity_id_of[row.callee.natural_key],
-                f"{row.caller.ident} → {row.callee.ident}",
+                # Namespace-qualified: the two pods this change tells apart
+                # must read apart here too, not only in natural_key.
+                f"{row.caller.ident_key} → {row.callee.ident_key}",
             ),
         )
     for row in want.values():

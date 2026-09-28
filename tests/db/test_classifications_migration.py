@@ -119,6 +119,22 @@ def test_0015_is_applied_in_the_chain(migrated_dsn: str) -> None:
     assert "0015_lineage_entities_rename" in walked
 
 
+def test_0020_is_applied_in_the_chain(migrated_dsn: str) -> None:
+    """A fresh migrate applies 0020 (it is in the chain).
+
+    This revision was `main`'s head at the time it was written, numbered 0020
+    and re-parented onto `risk`'s 0019 on merge (see the revision's own
+    docstring, and ``test_latest_migration.py::test_head_is_0020``). The head
+    assertion lives solely in that file; this test only pins reachability, the
+    convention this file already follows for 0008/0015."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    walked = {rev.revision for rev in script.walk_revisions()}
+    assert "0020_entity_namespace" in walked
+
+
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
     """upgrade -> downgrade(0007) -> upgrade cleanly removes and re-adds the
     payload_classifications table. Downgrade stops one revision below this one —

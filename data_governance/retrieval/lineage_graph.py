@@ -223,6 +223,9 @@ class LineageGraphEntityView:
     kind: str | None
     display_name: str | None
     hops: int
+    # A pod's Kubernetes namespace (wire contract v1.7, migration 0020); None for
+    # a non-pod entity. Two same-named pods now differ here, not only in the key.
+    namespace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -844,8 +847,8 @@ def _fetch_legs(tx: db.Transaction, trace_id: str) -> list[tuple]:
 
 def _fetch_entities(
     tx: db.Transaction, entity_ids: list[str]
-) -> dict[str, tuple[str | None, str | None, str | None]]:
-    """``entity_id -> (natural_key, kind, display_name)`` for *entity_ids*.
+) -> dict[str, tuple[str | None, str | None, str | None, str | None]]:
+    """``entity_id -> (natural_key, kind, display_name, namespace)`` for *entity_ids*.
 
     Entities are cross-trace stable and carry no ``trace_id`` (ADR-0013), so this is
     keyed by id alone — the trace scoping already happened when the walk chose which
@@ -857,11 +860,11 @@ def _fetch_entities(
         return {}
     placeholders = ", ".join(["%s"] * len(entity_ids))
     rows = tx.fetch_all(
-        f"SELECT id::text, natural_key, kind::text, display_name "
+        f"SELECT id::text, natural_key, kind::text, display_name, namespace "
         f"FROM entities WHERE id IN ({placeholders})",
         entity_ids,
     )
-    return {r[0]: (r[1], r[2], r[3]) for r in rows}
+    return {r[0]: (r[1], r[2], r[3], r[4]) for r in rows}
 
 
 def get_lineage_graph(
@@ -980,10 +983,11 @@ def get_lineage_graph(
         entities = [
             LineageGraphEntityView(
                 id=eid,
-                natural_key=metadata.get(eid, (None, None, None))[0],
-                kind=metadata.get(eid, (None, None, None))[1],
-                display_name=metadata.get(eid, (None, None, None))[2],
+                natural_key=metadata.get(eid, (None, None, None, None))[0],
+                kind=metadata.get(eid, (None, None, None, None))[1],
+                display_name=metadata.get(eid, (None, None, None, None))[2],
                 hops=depth,
+                namespace=metadata.get(eid, (None, None, None, None))[3],
             )
             # Sorted by distance, then id — a stable order for a set whose
             # membership, not sequence, is the answer.
@@ -1043,7 +1047,7 @@ def get_lineage_summary(trace_id: str) -> GetLineageSummaryResult:
         kinds = sorted(TARGET_KINDS)
         placeholders = ", ".join(["%s"] * len(kinds))
         destination_rows = tx.fetch_all(
-            f"SELECT id::text, natural_key, kind::text, display_name "
+            f"SELECT id::text, natural_key, kind::text, display_name, namespace "
             f"FROM entities "
             f"WHERE kind::text IN ({placeholders}) "
             f"  AND id IN (SELECT DISTINCT entity_id FROM entity_spans "
@@ -1059,6 +1063,7 @@ def get_lineage_summary(trace_id: str) -> GetLineageSummaryResult:
                     natural_key=r[1],
                     kind=r[2],
                     display_name=r[3],
+                    namespace=r[4],
                     # A destination is not the result of a walk, so there is no
                     # distance to report. Zero rather than a nullable field: this
                     # list is "entities of the trace declared targets", a membership

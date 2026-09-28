@@ -36,6 +36,7 @@ I4 = _interaction_id(golden.TRACE, golden.B5)
 def _snapshot(dsn: str) -> dict:
     with psycopg.connect(dsn) as conn:
         entities = {r[0] for r in conn.execute("SELECT natural_key FROM entities").fetchall()}
+        namespaces = dict(conn.execute("SELECT natural_key, namespace FROM entities").fetchall())
         ix: dict[str, dict] = {
             r[0]: {"caller": r[1], "callee": r[2], "parent": r[3], "legs": {}}
             for r in conn.execute(
@@ -71,11 +72,19 @@ def _snapshot(dsn: str) -> dict:
         payloads = conn.execute("SELECT count(*) FROM interaction_payloads").fetchone()[0]
         entity_spans = conn.execute("SELECT count(*) FROM entity_spans").fetchone()[0]
     return {"entities": entities, "ix": ix, "spans": spans, "roles": roles,
-            "payloads": payloads, "entity_spans": entity_spans}
+            "payloads": payloads, "entity_spans": entity_spans, "namespaces": namespaces}
 
 
 def _assert_golden(snap: dict) -> None:
     assert snap["entities"] == golden.ENTITIES
+    # The namespace column (migration 0016) mirrors what the key carries: set
+    # for the two pods, NULL for the user and the LLM endpoint.
+    assert snap["namespaces"] == {
+        "user:alice": None,
+        "agent:team1/weather-service": "team1",
+        "tool:team1/weather-tool": "team1",
+        f"llm:{golden._LLM_HOST}/qwen2.5:7b": None,
+    }
     assert set(snap["ix"]) == {I1, I2, I3, I4}
     # All four parented under the entry; the entry is the root.
     assert snap["ix"][I1]["parent"] is None
@@ -84,8 +93,8 @@ def _assert_golden(snap: dict) -> None:
     assert snap["ix"][I4]["parent"] == I1
     # Endpoints.
     assert (snap["ix"][I1]["caller"], snap["ix"][I1]["callee"]) == (
-        "user:alice", "agent:weather-service")
-    assert snap["ix"][I3]["callee"] == "tool:weather-tool"  # from echo self.id
+        "user:alice", "agent:team1/weather-service")
+    assert snap["ix"][I3]["callee"] == "tool:team1/weather-tool"  # from echo self.id
     assert snap["ix"][I2]["callee"] == f"llm:{golden._LLM_HOST}/qwen2.5:7b"
     # All complete: both observed legs per interaction (8 legs total), with the
     # request leg carrying no verdict (the wire has no request-side outcome)
@@ -193,7 +202,7 @@ def test_anchor_demotion_deletes_stale_interaction_and_legs(configured_db: str):
     assert orphan_legs == 0
     # The outbound interaction owns the exchange now, enriched by the echo.
     assert set(snap["ix"]) == {I3}
-    assert snap["ix"][I3]["callee"] == "tool:weather-tool"
+    assert snap["ix"][I3]["callee"] == "tool:team1/weather-tool"
     assert snap["spans"][golden.D1] == (I3, "connector", None)
     assert snap["spans"][golden.D2] == (I3, "connector", None)
 
@@ -228,7 +237,7 @@ def test_bridge_variant_identical(configured_db: str):
     # bridge; the two bridge spans are connectors, so 12 interaction_spans total.
     assert snap["entities"] == golden.ENTITIES
     assert set(snap["ix"]) == {I1, I2, I3, I4}
-    assert snap["ix"][I3]["callee"] == "tool:weather-tool"
+    assert snap["ix"][I3]["callee"] == "tool:team1/weather-tool"
     assert snap["ix"][I3]["parent"] == I1
     assert snap["payloads"] == 7
     assert snap["roles"]["anchor"] == 4

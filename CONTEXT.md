@@ -1,6 +1,6 @@
 # Data Governance
 
-The data-governance extension of Kagenti: ingests OTEL spans from Kagenti agents,
+The data-governance extension of rossoctl: ingests OTEL spans from rossoctl agents,
 tools, and services, stores them verbatim in Postgres, and exposes typed retrieval
 for a UI and future processors. v1 is span-shaped only — semantic concepts
 (interactions, lineage, classifications) are deliberately deferred.
@@ -119,8 +119,8 @@ functions (Layer 2): `write_span` (receiver), `get_spans` (UI backend
 processor's storage operations. See ADR-0005.
 
 **Entity**:
-A participant in a Kagenti **Interaction**. One of seven kinds: `user`
-(interacts with an agent via the Kagenti UI), `client` (invokes an agent
+A participant in a rossoctl **Interaction**. One of seven kinds: `user`
+(interacts with an agent via the rossoctl UI), `client` (invokes an agent
 from outside the platform with no platform-stamped user identity), `agent`,
 `tool` (in-process, hosted by an agent), `tool` (deployed as its own
 service, e.g. an MCP server — same kind, distinguished by natural-key
@@ -159,6 +159,18 @@ The stable, kind-specific identity string for an **Entity**. One row per
   its last attached interaction retargets away. Per ADR-0011.)
 - `service` → `service:<hostname>` (port out of scope for v2)
 
+Under the `sidecar` algorithm (ADR-0030, wire contract §7) the formats above
+give way to the sidecar's facts: an entity that IS a pod — an `agent` or
+deployed `tool` identified by `lineage.self.id` — is keyed
+`<kind>:<lineage.self.namespace>/<lineage.self.id>`, and its namespace is
+stored again in `entities.namespace` (migration 0020) so it can be read
+without parsing the key. The namespace sits *inside* the key because the key
+is what the row id hashes and what `UNIQUE` guards: a column alone could not
+split `team1/weather-service` from `team2/weather-service`. A `user`, an
+anonymous `client`, an `llm` endpoint and an un-sidecared callee named by
+`peer.host` have no namespace; a pod whose spans predate contract v1.7 keys
+without one (absence recorded, never guessed).
+
 **Canonical service name**:
 A **Span**'s `service.name` with its `openinference.project.name` stripped
 as a prefix (with optional trailing `-` or `_` separator), if both
@@ -171,7 +183,7 @@ are distinct entities.
 **Caller inference rule**:
 The processor-side rule by which `P-interactions` derives **Entity** identity
 (kind + natural key) from a **Span**'s attributes. Hybrid by design: prefer
-Kagenti platform-stamped attributes (`kagenti.*`) when present, fall back to
+rossoctl platform-stamped attributes (`kagenti.*`) when present, fall back to
 generic OTEL / OpenInference attributes (HTTP server attributes,
 `client.address`, `user_agent`, `peer.service`, `service.name`, OpenInference
 LLM/tool keys). External callers/services with no richer evidence are

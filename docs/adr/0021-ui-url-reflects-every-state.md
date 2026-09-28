@@ -40,7 +40,7 @@ resolve client-side).
 
 - **Tab = path segment, filter/selection = query param.** The tab is a
   first-class sub-resource of a trace (its own path segment, `/spans` | `/flow`),
-  matching how `kagenti/ui-v2` models sub-views (`/sandbox/graph`,
+  matching how `rossoctl/ui-v2` models sub-views (`/sandbox/graph`,
   `/sandbox/files/...`). The window, orphan filter, and row selection are
   refinements *of* a view, so they are query params (matching ui-v2's
   `?session=`, `?path=`). This mirrors the repo's own precedent rather than

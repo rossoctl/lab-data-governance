@@ -113,6 +113,10 @@ export interface Entity {
   natural_key: string;
   display_name: string;
   detected_from: string;
+  /** A pod's Kubernetes namespace (wire contract v1.7, migration 0020); null
+   * for a user, an anonymous client, an LLM endpoint or a peer.host fallback,
+   * and absent on servers older than 0016. Optional so older fixtures type. */
+  namespace?: string | null;
 }
 
 /** One temporal half of an interaction (ADR-0025): a request or a response. */
@@ -351,8 +355,11 @@ export type ToolSubtype = 'in-framework' | 'deployed';
  * Distinguish the two tool flavours purely by natural-key shape (no schema
  * field). A tool deployed as its own MCP service is exactly
  * `tool:(<project>,<service>)` — a single parenthesised tuple with nothing
- * after the closing paren. Everything else under `tool:` is in-framework
- * (hosted by an agent), including `tool:(unknown):<name>` (trailing `:<name>`).
+ * after the closing paren — or, under the sidecar algorithm (wire contract
+ * v1.7), `tool:<namespace>/<self.id>`: a pod, named by its Kubernetes
+ * namespace (a DNS label) and its identity, which never contains `/`.
+ * Everything else under `tool:` is in-framework (hosted by an agent),
+ * including `tool:(unknown):<name>` (trailing `:<name>`).
  * Returns null for non-tool entities or non-`tool:` keys.
  */
 export function toolSubtype(entity: Pick<Entity, 'kind' | 'natural_key'> | null): ToolSubtype | null {
@@ -360,6 +367,7 @@ export function toolSubtype(entity: Pick<Entity, 'kind' | 'natural_key'> | null)
   const nk = entity.natural_key || '';
   if (!nk.startsWith('tool:')) return null;
   if (/^tool:\([^)]*\)$/.test(nk)) return 'deployed';
+  if (/^tool:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\/[^/]+$/.test(nk)) return 'deployed';
   return 'in-framework';
 }
 

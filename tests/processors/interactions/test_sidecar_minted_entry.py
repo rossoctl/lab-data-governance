@@ -90,4 +90,4 @@ def test_unstamped_entry_fragments_into_one_root_per_outbound_call():
     rows = _rows(plan)
     roots = sorted(aid for aid, r in rows.items() if r.parent_anchor_span_id is None)
     assert roots == sorted(golden.ANCHORS)  # 4 rows, 4 roots — the entry welds nothing
-    assert rows[golden.B3].callee.natural_key == "tool:weather-tool"  # the echo still folds
+    assert rows[golden.B3].callee.natural_key == "tool:team1/weather-tool"  # the echo still folds
