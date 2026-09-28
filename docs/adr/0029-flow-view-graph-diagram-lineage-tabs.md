@@ -60,9 +60,11 @@ ADR-0020 rejected a view with two specific properties. Neither holds here.
   (Two numbers that circulated while this was being written are wrong and are
   corrected here rather than left to propagate: the cost is not "~388kB of JS and
   ~130kB of CSS" — the CSS figure was over 3x the built size — and **dagre is not a
-  dependency at all**, transitive or otherwise. It is absent from `package.json` and
-  from the chunk's sourcemap. See the layout note under *Considered alternatives*,
-  which is the reason: this branch does its own layout.)
+  direct dependency, and layout is not delegated to it** — `lib/graph.ts` does its
+  own layered assignment. (`@dagrejs/dagre` is present in `package-lock.json` as a
+  transitive dependency of `@patternfly/react-topology`, but nothing in this branch
+  calls it.) See the layout note under *Considered alternatives*, which is the
+  reason: this branch does its own layout.)
 
   The **Interaction diagram carries no new dependency at all** — it is hand-rolled
   SVG (`InteractionDiagram.tsx:183` records the choice and specifically declines
