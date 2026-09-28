@@ -2,7 +2,7 @@
 
 The data-governance UI moves from hand-written HTML + vanilla JS (served as
 static files by the Starlette backend under `/ui/`) to a React 18 + TypeScript
-single-page app built with Vite, adopting the platform's `kagenti/ui-v2`
+single-page app built with Vite, adopting the platform's `rossoctl/ui-v2`
 stack: PatternFly, TanStack Query, React Router, and `@xyflow/react` + dagre
 for graph views.
 
@@ -59,7 +59,7 @@ that serves `/api/` — one image, one Deployment, one origin, no nginx.
   `index.html`, `trace_tree.html`, `recent_traces_logic.js`,
   `trace_tree_logic.js`, and `execution_flow_logic.js` are deleted from source
   control. React source lives at `data-governance/ui/` (mirroring
-  `platform/kagenti/ui-v2/`); `data_governance/api/ui/` becomes a build-output
+  `rossoctl/ui-v2`); `data_governance/api/ui/` becomes a build-output
   target.
 - **`/ui/` routing is restructured, `/api/` is untouched.** ADR-0017's
   `/api/`-JSON / `/ui/`-pages+assets namespacing is preserved: `/` still 302s

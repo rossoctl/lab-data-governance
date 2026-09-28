@@ -11,9 +11,9 @@ from __future__ import annotations
 import psycopg
 
 
-def test_head_is_0019(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on the current head revision (0019 —
-    the interaction-risk seq cursor column, issue #164, chained after 0018).
+def test_head_is_0020(migrated_dsn: str) -> None:
+    """Applying the chain to head lands on the current head revision (0020 —
+    ``entities.namespace``, chained after 0019).
 
     The chain is LINEAR. Merging `main`'s lineage chain (0012-0015) into this
     branch produced two heads, since this branch's own 0012/0013 (DAS risk
@@ -23,14 +23,12 @@ def test_head_is_0019(migrated_dsn: str) -> None:
     ``0016_das_risk_tables``'s docstring) — the same fix `main` applied to its
     own lineage-chain collision when it renumbered 0012-0015.
 
-    0019 is the second application of that same fix. #164's cursor column and
-    #102's trace aggregation-mode columns were written concurrently on
-    separate branches, both numbering 0018 off the 0017_policy_decisions
-    parent. ``0018_trace_aggregation_modes`` reached `risk` first, so #164's
-    revision was renumbered 0018 -> 0019 and re-parented onto it. The two
-    migrations touch disjoint tables (``interaction_risk_records`` vs
-    ``trace_risk_records``), so the order between them carries no meaning —
-    only linearity does.
+    0019 was the second application of that same fix (#164's cursor column
+    re-parented onto 0018_trace_aggregation_modes). 0020 is the third: `main`'s
+    ``entities.namespace`` column was written on `main` at 0020, numbered past
+    its own head (0015) specifically so this merge only needs one line changed
+    — its ``down_revision`` re-parented onto this branch's 0019 (see the
+    revision's own docstring).
 
     This is the one canonical head-revision assertion (mirrors
     ``test_classifications_migration.py::test_head_is_0015`` on `main` before
@@ -40,4 +38,4 @@ def test_head_is_0019(migrated_dsn: str) -> None:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0019_interaction_risk_seq"
+    assert version == "0020_entity_namespace"

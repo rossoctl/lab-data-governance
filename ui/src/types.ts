@@ -262,6 +262,8 @@ export interface LineageGraphEntity {
   natural_key: string | null;
   kind: string | null;
   display_name: string | null;
+  /** A pod's Kubernetes namespace (wire contract v1.7); null for non-pods. */
+  namespace?: string | null;
   hops: number;
 }
 

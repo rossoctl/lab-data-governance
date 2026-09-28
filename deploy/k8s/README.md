@@ -16,6 +16,95 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `80-classification.yaml`      | `Deployment` for the P-classification processor (no Service) |
 | `90-data-lineage.yaml`        | `Deployment` for the P-data-lineage processor (no Service)  |
 
+## Primary entry point: `deploy/dg.sh`
+
+The recommended way to drive this deployment is the **`deploy/dg.sh`**
+cluster-management script. It folds the whole component lifecycle into three
+verbs and adds namespace lineage activation:
+
+```sh
+./deploy/dg.sh component install     # build + kind-load + apply + collector tee + rollout
+./deploy/dg.sh component status      # deployments present/ready + is the tee wired
+./deploy/dg.sh component uninstall   # the inverse; --keep-data preserves the Postgres PVC
+
+./deploy/dg.sh namespaces list                              # user namespaces
+./deploy/dg.sh --cortex-local-path <cortex> namespace <ns> instrument [<entity>]
+./deploy/dg.sh namespace <ns> status [<entity>]             # read-only: did activation take?
+```
+
+`dg.sh component install` **wraps the underlying steps documented in the rest
+of this file** — `build-and-load.sh` → `kubectl apply -f deploy/k8s/` →
+`patch-rossoctl-collector.sh` (the tee) → `rollout restart` + `rollout status`.
+The raw steps remain here so you can drive them individually; `dg.sh` is the
+primary path, not a replacement that hides them. `component install` is
+idempotent (pass `--no-build` when the images are already loaded), and it
+performs the load-bearing `rollout restart` for you.
+
+The design and its boundary decisions live in
+[`../../docs/cli.md`](../../docs/cli.md),
+[ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.md)
+(namespace activation is **non-reversible** and **mode-preserving** — no
+`reset`, no sidecar-mode switch in v1), and
+[ADR-0032](../../docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md)
+(`instrument` drives the cortex lineage-attach kit rather than a vendored
+generator).
+
+### Namespace lineage activation (`dg.sh namespace instrument`)
+
+`dg.sh namespace <ns> instrument [<entity>]` switches on lineage telemetry for
+the agents/tools in a namespace (all of them, or the single named `<entity>`),
+so their traffic produces the facts-only spans the interactions processor
+consumes. It is **additive-only and never switches a namespace's sidecar mode**,
+and it is **non-reversible in v1** (to undo, delete/redeploy the workloads); its
+read-only partner `dg.sh namespace <ns> status [<entity>]` reports, per entity,
+sidecar presence, sidecar type, and whether the `lineage-telemetry` plugin is
+wired. See ADR-0031 for why.
+
+`instrument` — and **only** `instrument` — needs a cortex checkout on disk,
+passed with `--cortex-local-path <dir>` (or the `CORTEX_LOCAL_PATH` env var).
+`dg.sh` locates the lineage-attach kit under
+`<dir>/authbridge/lineage-attach/`; a missing path or an absent kit is a
+**refuse-and-mutate-nothing preflight** (it fails loud and changes nothing). The
+component verbs (`install`/`uninstall`/`status`) and `namespace status` never
+touch cortex.
+
+`instrument` wires lineage onto **no-sidecar entities only**, delegated wholesale
+to the cortex kit, which injects an envoy lineage sidecar (and, for a Python app,
+bakes the propagate-only shim). Any entity that **already has a sidecar** — proxy
+or envoy, template- or webhook-injected — is **skipped, mutating nothing**
+(ADR-0032). Retrofitting lineage onto an existing sidecar is not a supported
+route: the platform's enforcing proxy sidecar 401s the demo's plain MCP/A2A
+calls, and an in-place edit of a webhook-injected (operator-owned) pipeline
+ConfigMap is clobbered on the next roll — see ADR-0032 for the live-validation
+findings behind this revision. Because the only wiring path is the kit's
+no-sidecar inject, there is no `egressEnforcement` warning: proxy entities are
+never touched.
+
+This `dg.sh namespace instrument` no-sidecar path is the **productized form of
+the ad-hoc lineage-attach recipe** the root `CLAUDE.md` § 3a and
+`LINEAGE-PROXY-SIDECAR-RECIPE.md` document (the hand-run `instrument-one.sh`
+loop): where a namespace's agents/tools ship with no sidecar, `dg.sh`
+**supersedes** that manual recipe for the productized flow.
+
+### End-to-end operator scenario
+
+The full flow, in one place — from a bare rossoctl cluster to observing the
+trace in the UI:
+
+1. Install rossoctl on the cluster.
+2. `./deploy/dg.sh component install`.
+3. Install the agents/tools (via the rossoctl UI, or an `agent-examples`-style
+   deploy — **install only**, do not run them yet).
+4. `./deploy/dg.sh --cortex-local-path <cortex-checkout> namespace <ns> instrument`
+   on the namespace holding those workloads — the path locates the cortex
+   lineage-attach kit. (Scope to one entity by appending its
+   `app.kubernetes.io/name`.)
+5. Run the agents.
+6. Observe the resulting traces in the data-governance UI at
+   **<http://dg.localtest.me:8080/>** (see "UI access via the rossoctl shared
+   Gateway" below). Confirm activation took with
+   `./deploy/dg.sh namespace <ns> status`.
+
 ## Topology summary
 
 - **Receiver Deployment.** 2 replicas. Init container runs
@@ -145,7 +234,17 @@ init container drives both conditions to true.
 
 For an existing cluster where the manifests are already applied and you
 just want the receiver / UI / interactions processor to pick up new code
-from `main`:
+from `main`, the primary path is `dg.sh component install` — it is
+idempotent and re-runs the build + apply + tee + rollout for you:
+
+```sh
+git pull --ff-only
+./deploy/dg.sh component install       # add --no-build if the images are already loaded
+```
+
+This supersedes the manual re-deploy dance for everyday use (and matches the
+root `CLAUDE.md` redeploy procedure). The equivalent raw sequence — kept here
+for when you need to drive the steps individually — is:
 
 ```sh
 git pull --ff-only

@@ -140,6 +140,9 @@ describe('toolSubtype', () => {
   it('reads deployed vs in-framework from the natural-key shape', () => {
     // Deployed tool = its own MCP service: exactly tool:(<project>,<service>).
     expect(toolSubtype(entity('tool', 'tool:(proj,svc)'))).toBe('deployed');
+    // sidecar algorithm, wire contract v1.7: a pod keyed namespace/self.id
+    expect(toolSubtype(entity('tool', 'tool:team2/weather-tool'))).toBe('deployed');
+    expect(toolSubtype(entity('tool', 'tool:weather-tool'))).toBe('in-framework'); // pre-v1.7 / peer.host fallback
     // In-framework tool hosted by an agent: trailing :<name> segment.
     expect(toolSubtype(entity('tool', 'tool:agent:(a,b):search'))).toBe('in-framework');
     // tool:(unknown):name is in-framework, NOT deployed (trailing :name).

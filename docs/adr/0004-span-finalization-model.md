@@ -57,7 +57,7 @@ values stand.
 
 - **First-writer-wins with documented assumption.** Rejected: we'd
   be encoding an assumption about senders we don't fully control.
-  Future Kagenti instrumentations (different language SDKs, new
+  Future rossoctl instrumentations (different language SDKs, new
   agent frameworks) may early-flush by default, and a silent-data-loss
   failure mode is exactly the wrong place to be lenient.
 - **Naive UPSERT.** Rejected: every retry advances seq, polluting

@@ -95,7 +95,7 @@ out when these rules fire on real spans:
   are entity-kind ladder extensions.
 - **The five anchor rules are stable across v2.** Future additions
   expected only when new instrumentation conventions emerge
-  (e.g., a Kagenti-stamped `kagenti.span.kind = anchor` would be a
+  (e.g., a rossoctl-stamped `kagenti.span.kind = anchor` would be a
   sixth rule).
 - **The MCP-deployed-tool + in-process-tool case is naturally
   expressible** — the cross-service rule and the openinference-tool

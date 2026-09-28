@@ -393,6 +393,7 @@ export function FlowTables({
       sectionTitle: 'Entity',
       fields: [
         ['display_name', e.display_name],
+        ['namespace', e.namespace ?? ''],
         ['kind', e.kind],
         ['natural_key', e.natural_key],
         ['entity_id', e.id],
