@@ -165,16 +165,12 @@ def sandbox(tmp_path: Path):
             (sysdir / tool).symlink_to(src)
 
     # A stub lineage-attach kit, so the enumeration-shape tests can drive the
-    # (now-real, #184) `instrument` verb past its vendored-kit integrity check.
-    # The stubs succeed and no-op; these #181 tests assert only the shared
-    # enumeration selector shape, not the kit's behaviour (that is #184's file).
+    # real `instrument` verb past its vendored-kit integrity check.
     # dg.sh is pointed at it via DG_LINEAGE_ATTACH_DIR (the test seam that
     # replaced --cortex-local-path when ADR-0033 vendored the kit).
     kitdir = tmp_path / "lineage-attach"
     kitdir.mkdir(parents=True)
-    for s in ("sidecar-patch.sh", "sidecar-patch-proxy.sh", "build-otel-shim.sh",
-              "attach-lineage.sh", "attach-lineage-proxy.sh"):
-        _make_bin(kitdir, s, "exit 0\n")
+    _make_bin(kitdir, "build-otel-shim.sh", "exit 0\n")
     # The sourced / build-input companions require_vendored_kit also checks for
     # (both shims are build inputs; ADR-0033 D4).
     for f in ("container-runtime.sh", "Dockerfile.otel-shim", "lineage-propagate-hook.py",
