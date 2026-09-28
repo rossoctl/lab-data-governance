@@ -80,9 +80,10 @@ all auto-detected, no flag (the ADR-0033 owner-split):
 
 The default for a bare, no-sidecar entity is the **auth-free proxy** sidecar: it
 carries only `lineage-telemetry` + the parsers, so it does not 401 the demo's
-unauthenticated MCP/A2A calls, and captures egress transparently via an
-include-only iptables allowlist (A2A `8080` + MCP `8000` by default; every other
-port stays direct). "Already envoy-configured" is detected from the namespace —
+unauthenticated MCP/A2A calls. `HTTP_PROXY`/`http_proxy` routes plaintext HTTP
+through its parsing listener; an include-only iptables allowlist (A2A `8080` +
+MCP `8000` by default) catches clients that ignore proxy env while every other
+port stays direct. "Already envoy-configured" is detected from the namespace —
 the presence of the platform `envoy-config` ConfigMap — and routes to the
 vendored envoy applier instead. For a Python app either injection also bakes +
 attaches the two-shim image (`LINEAGE_PROPAGATE=1`) so a run collapses to one

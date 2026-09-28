@@ -163,7 +163,7 @@ it. A Deployment whose env you cannot touch at all has one lever left, the
 image reference: `SELF_ACTIVATE=1 ./build-otel-shim.sh <your-app>:latest` bakes
 the switch in (the image argument is required).
 
-### Proxy path: auth-free, transparent egress allowlist (ADR-0033)
+### Proxy path: auth-free HTTP forwarding + transparent fallback (ADR-0033)
 
 `attach-lineage.sh` injects an **envoy** lineage sidecar. Its sibling
 `attach-lineage-proxy.sh` injects the DEFAULT **proxy-sidecar** shape instead —
@@ -185,17 +185,22 @@ NAME=research-agent NAMESPACE=travel-advisor EMIT=patch APP_CONTAINER=agent \
 
 Two things differ from the envoy path, both by ADR-0033 design:
 
-- **Transparent egress capture, no relocation.** The app is *not* fronted by a
-  reverse proxy and *not* relocated to a back port (the rejected scratch-recipe
-  approach); it needs no `HTTP_PROXY`. `proxy-init` runs the vendored
-  `init-iptables.sh` in its new **include-only allowlist** mode
+- **HTTP-aware egress capture, with transparent fallback and no relocation.**
+  The app is *not* fronted by a reverse proxy and *not* relocated to a back
+  port. Its container receives `HTTP_PROXY`/`http_proxy` pointing at the local
+  forward listener (`127.0.0.1:8081`), allowing the proxy to parse plaintext
+  A2A/MCP and extract `traceparent`. `proxy-init` also runs in the vendored
+  **include-only allowlist** mode
   (`OUTBOUND_PORTS_INCLUDE`, default **A2A `8080` + MCP `8000`**): only those
   dports are REDIRECTed into the proxy's transparent outbound listener (`:8082`);
   every other port (Postgres, SMTP, the TLS LLM tunnel) stays **direct**. This is
   the inverse of the envoy path's `OUTBOUND_PORTS_EXCLUDE` denylist and is
   **fail-safe** — a port left off the allowlist is not handed to a proxy that
-  would break it. Widen the allowlist with `OUTBOUND_PORTS_INCLUDE=<ports>`; the
-  two knobs are mutually exclusive (opposite models).
+  would break it. This transparent path catches clients that ignore proxy env;
+  because it is a raw TCP tunnel, it preserves connectivity but cannot itself
+  parse payloads or join the HTTP trace. Widen the fallback allowlist with
+  `OUTBOUND_PORTS_INCLUDE=<ports>`; the two knobs are mutually exclusive
+  (opposite models).
 - **`namespace_file` is mandatory (wire contract v1.7.0 §6).** The
   `lineage-telemetry` producer refuses to start without a `namespace` /
   `namespace_file`, so the generated ConfigMap sets
@@ -212,7 +217,7 @@ The `authbridge-proxy` is a **native sidecar** (an initContainer with
 programs the egress redirect and then the kubelet holds the app container until
 the proxy is listening — the demo agents resolve peers at boot with no retry, so
 a plain container would race the redirect to `0 peers`. `EMIT=undo` deletes both
-initContainers plus the runtime volume and the propagation switch. Needs
+initContainers plus the runtime volume, propagation switch, and proxy env. Needs
 Kubernetes ≥ 1.29 (native sidecars); older clusters fail loud.
 
 The proxy path is **egress-only**: `init-iptables.sh` in include mode
@@ -355,7 +360,7 @@ BAKE — once per app image                 ATTACH — once per Deployment
 |---|---|
 | `RECIPE.md` · `DESIGN.md` | the step-by-step; the reasoning, envelope and limits |
 | `attach-lineage.sh` | **the envoy generator** — every YAML byte of the envoy-sidecar attachment, `EMIT=patch` / `EMIT=cm` / `EMIT=undo`, env-driven, stdout only, every input validated or refused |
-| `attach-lineage-proxy.sh` | **the proxy generator** (ADR-0033) — the auth-free proxy-sidecar sibling: same `EMIT` shapes, transparent include-only egress capture, `namespace_file` (v1.7.0) |
+| `attach-lineage-proxy.sh` | **the proxy generator** (ADR-0033) — the auth-free proxy-sidecar sibling: same `EMIT` shapes, HTTP-aware forwarding + transparent include-only fallback, `namespace_file` (v1.7.0) |
 | `init-iptables.sh` | vendored iptables setup (envoy `redirect` + proxy `enforce-redirect`), plus the new include-only `OUTBOUND_PORTS_INCLUDE` allowlist the proxy path uses |
 | `sidecar-patch.sh` | the live applier: preconditions, then ConfigMap + patch + rollout wait; owns no YAML |
 | `Dockerfile.otel-shim` | the lineage layer, one recipe for every in-envelope app: installs BOTH shims (propagate hook + turn span), instrumentors pinned to one contrib release |

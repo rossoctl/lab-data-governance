@@ -9,8 +9,8 @@
 #                         regular container (the proxy-sidecar is NOT a native
 #                         initContainer — it is not gating the app the way envoy
 #                         does), one runtime-config volume — and, with
-#                         APP_CONTAINER, the propagation switch on the app's own
-#                         container.
+#                         APP_CONTAINER, the propagation + local HTTP proxy
+#                         switches on the app's own container.
 #   EMIT=cm               the per-app plugin ConfigMap the sidecar mounts
 #                         (mode: proxy-sidecar, parser chain + lineage-telemetry).
 #   EMIT=undo             the reverse of the patch: one line of strategic-merge
@@ -31,8 +31,9 @@
 # include-only allowlist mode: proxy-init REDIRECTs ONLY the A2A (8080) + MCP
 # (8000) egress into the proxy's transparent outbound listener (8082), and leaves
 # every other port (Postgres, SMTP, the TLS LLM tunnel) direct — fail-safe. The
-# app container is NOT relocated and needs no HTTP_PROXY: this is the ADR-0033
-# transparent design, not the rejected reverse-proxy-relocation prototype.
+# app container is NOT relocated. Plain HTTP uses the local forward listener via
+# HTTP_PROXY so the proxy can parse the request and preserve its traceparent. The
+# transparent allowlist remains a fallback for clients that ignore proxy env.
 #
 # Propagation: capture alone cannot attribute an app's outbound calls to the
 # inbound that caused them — only code inside the request can carry the trace
@@ -121,7 +122,7 @@ validate_port_list() {
 
 parse_inputs() {
   # Knobs of the rejected reverse-proxy-relocation prototype (FRONT_PORT /
-  # BACK_PORT / HTTP_PROXY): a caller passing one is running the scratch recipe,
+  # BACK_PORT): a caller passing one is running the scratch recipe,
   # not this ADR-0033 transparent generator — refuse loudly rather than ignore.
   local stale
   for stale in FRONT_PORT BACK_PORT FWD_PORT DROP_OPAQUE DROP_MCP_MGMT; do
@@ -247,9 +248,11 @@ build_plugin_entry() {
 }
 
 build_app_patch() {
-  # The propagation switch. `containers` and `env` both merge by name, so this
-  # sets exactly LINEAGE_PROPAGATE (and the image, if given) on the owner's
-  # container and nothing else. This is the ONLY thing the patch adds under
+  # The propagation and HTTP-aware proxy switches. `containers` and `env` both
+  # merge by name, so this sets only these variables (and the image, if given)
+  # on the owner's container. Both proxy spellings are intentional: Python HTTP
+  # clients differ in which one they honor. HTTPS remains direct. This is the
+  # ONLY thing the patch adds under
   # `containers:` — the sidecar is a native initContainer now (see emit_patch),
   # so the app stays the pod's sole regular container.
   app_patch=""
@@ -262,7 +265,9 @@ build_app_patch() {
     fi
     app_patch="${app_patch}
           env:
-            - { name: LINEAGE_PROPAGATE, value: \"1\" }"
+            - { name: LINEAGE_PROPAGATE, value: \"1\" }
+            - { name: HTTP_PROXY, value: \"http://127.0.0.1:8081\" }
+            - { name: http_proxy, value: \"http://127.0.0.1:8081\" }"
   fi
 }
 
@@ -277,7 +282,8 @@ sidecar_container() {  # the AUTH-FREE authbridge-proxy NATIVE sidecar (8-space 
         # the outbound redirect so the proxy's own re-originated egress is not
         # captured into a loop. Egress reaches it transparently on 8082 (the
         # include-only iptables REDIRECT target); the forward proxy on 8081 is
-        # distinct and idle here (no HTTP_PROXY). Mounts ONLY the runtime config
+        # used by proxy-aware plaintext HTTP clients so parsers can observe the
+        # request and its traceparent. Mounts ONLY the runtime config
         # — no envoy-config, no shared-data/SPIRE volumes.
         #
         # A NATIVE sidecar (initContainer + restartPolicy: Always), for the same
@@ -467,7 +473,7 @@ emit_undo() {
   if [ -n "$APP_CONTAINER" ]; then
     local app='{"name":"'"${APP_CONTAINER}"'"'
     [ -z "$RESTORE_IMAGE" ] || app="${app},\"image\":\"${RESTORE_IMAGE}\""
-    app="${app},\"env\":[{\"name\":\"LINEAGE_PROPAGATE\",\"\$patch\":\"delete\"}]}"
+    app="${app},\"env\":[{\"name\":\"LINEAGE_PROPAGATE\",\"\$patch\":\"delete\"},{\"name\":\"HTTP_PROXY\",\"\$patch\":\"delete\"},{\"name\":\"http_proxy\",\"\$patch\":\"delete\"}]}"
     app_containers=',"containers":['"${app}"']'
   fi
   printf '{"spec":{"template":{"spec":{"initContainers":[{"name":"proxy-init","$patch":"delete"},{"name":"authbridge-proxy","$patch":"delete"}]%s,"volumes":[{"name":"authbridge-runtime","$patch":"delete"}]}}}}\n' \
@@ -486,7 +492,7 @@ main() {
   [ $# -eq 0 ] || { echo "error: attach-lineage-proxy.sh takes no arguments — every input is an environment variable (see the header)" >&2; exit 2; }
   parse_inputs        # every knob: read, default, validate — all refusals live here
   build_plugin_entry  # the lineage-telemetry pipeline entry (empty under NO_EMIT=1)
-  build_app_patch     # optional propagation switch on the app's own container
+  build_app_patch     # optional propagation + HTTP proxy switches on the app
   emit                # dispatch: patch | cm | undo
 }
 main "$@"

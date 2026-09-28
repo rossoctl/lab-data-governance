@@ -1,6 +1,6 @@
 # ADR-0033 acceptance gate — live proxy one-trace measurement (#246)
 
-**Status: FAIL (gate not passed) — the design must bend before the epic ships.**
+**Status: PASS after proxy-init + forward-proxy corrections.**
 Date: 2026-09-15. Cluster: long-lived Kind `rossoctl` (podman provider), k8s v1.35.0.
 
 This is the [ADR-0033](../adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md)
@@ -13,9 +13,52 @@ The 1-trace result had only ever been measured on an *envoy* sidecar. ADR-0033
 called out that "the proxy entry-hop mint may fold the inbound hop differently"
 and that a gate failure "reshapes the design (a proxy entry-hop fix, or an
 envoy-default fallback) — not something to paper over." **This run found a
-different, earlier failure: the proxy sidecar cannot be attached to an
-outbound-MCP-initiating agent at all — its app crash-loops before the demo can
-run.**
+different, earlier failure: the proxy sidecar could not initially be attached to
+an outbound-MCP-initiating agent. The follow-up below identifies and fixes the
+actual cause and records the passing gate.
+
+## Resolution and passing rerun (2026-09-16)
+
+The SSE hypothesis below was disproved by reducing the reproduction to MCP
+initialization against a bare versus instrumented server. The client succeeded
+against the bare server and timed out only after the target was instrumented.
+The target's `proxy-init` log then exposed the cause: the image did not implement
+the vendored `OUTBOUND_PORTS_INCLUDE` contract, so `MODE=redirect` continued into
+its Envoy inbound setup and redirected every inbound request to `15124`—a port
+that `authbridge-proxy` does not bind.
+
+The Cortex fix adds the egress-only allowlist path to `proxy-init`: allowlisted
+outbound ports are redirected to `PROXY_PORT`, all other outbound ports return
+direct, and Envoy's inbound chains are skipped. A network-namespace regression
+test covers the emitted rules and rejects conflicting include/exclude settings.
+With the rebuilt image, proxy-init logged:
+
+```text
+Including outbound port 8080 for redirection (allowlist mode)
+Including outbound port 8000 for redirection (allowlist mode)
+Skipping inbound interception (egress-only: OUTBOUND_PORTS_INCLUDE set; no inbound listener to redirect to)
+```
+
+The same OpenAI Agents MCP initialization then completed successfully. A second
+finding was that transparent `:8082` is intentionally a raw TCP tunnel, so it
+cannot parse plaintext HTTP or extract `traceparent`. The injector now also sets
+`HTTP_PROXY` and `http_proxy` to `http://127.0.0.1:8081` on every instrumented
+app container. The HTTP-aware forward listener handles A2A/MCP; the transparent
+allowlist remains the fallback for clients that ignore proxy environment
+variables. MCP initialization through the parser-bearing forward listener also
+completed, disproving the proposed SSE re-framing fault.
+
+After a clean DB wipe and a demo run from `demo-client`, the result was:
+
+```text
+trace c0b95b6ef4b1a235b81ba4e97bc8b332: 40 spans (the only trace)
+entities: sidecar lineage span = 13
+interactions: 20
+demo: Booking ID BK-2B0716; Authorization Code AUTH-8E6F12
+```
+
+Therefore issue #246's one-trace and provenance acceptance gate passes with both
+parts of the correction applied.
 
 ## What was exercised
 
@@ -84,7 +127,7 @@ With the correct v1.7.0 `authbridge-proxy` image, `instrument`:
 - The demo was therefore **never run** and no trace was produced — the gate
   fails at the *instrument* step, upstream of trace inspection.
 
-### Suspected mechanism (narrowed — code-level investigation)
+### Superseded hypothesis (disproved by the reduced reproduction)
 
 MCP Streamable HTTP opens a long-lived server→client SSE GET channel plus POST
 requests; `initialize()`'s reply returns as a `text/event-stream` response. The
@@ -150,10 +193,8 @@ bash deploy/dg.sh namespace travel-advisor instrument
 
 ## Verdict
 
-The ADR-0033 proxy one-trace gate is **NOT passed**. The proxy sidecar breaks the
-cold-start outbound-MCP connect for `openai_agents` agents, so the demo cannot
-run on an all-proxy instrumentation. Per ADR-0033 the design bends — a proxy
-MCP-streaming fix or an envoy-default fallback — before epic #239 ships. This
-run also surfaced two blocking prerequisites that must be addressed regardless:
-the host netlink-buffer requirement and the v1.7.0 sidecar-image source (with the
-RECIPE.md doc gap pointing at the envoy image for the proxy path).
+The ADR-0033 proxy one-trace gate is **passed** after correcting the proxy-init
+image contract and routing plaintext HTTP through the proxy's parsing listener.
+The earlier SSE diagnosis was a false lead caused by the dead Envoy inbound
+redirect. The host netlink-buffer requirement and the v1.7.0 sidecar-image
+source remain deployment prerequisites.

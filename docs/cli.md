@@ -153,9 +153,11 @@ platform `envoy-config` ConfigMap — not a flag. The default for a bare, ad-hoc
 namespace (the travel_advisor demo has no `envoy-config`) is therefore the
 **proxy** sidecar: it carries only the parsers + `lineage-telemetry` — **auth-free**
 (no `jwt-validation` / `token-exchange` / mTLS), so it does not 401 the demo's
-unauthenticated calls — and captures egress transparently via an **include-only
-iptables allowlist** (A2A `8080` + MCP `8000` by default; every other port stays
-direct — fail-safe). Both injected sidecars are **native sidecars** (an
+unauthenticated calls. Plain HTTP uses its local forward listener through
+`HTTP_PROXY`/`http_proxy`, which lets the parsers observe A2A/MCP and preserve
+their trace context. An **include-only iptables allowlist** (A2A `8080` + MCP
+`8000` by default) remains as a transparent fallback for clients that ignore
+proxy env; every other port stays direct. Both injected sidecars are **native sidecars** (an
 `initContainer` with `restartPolicy: Always`, so they are up before the app
 container and stay up for the pod's life; requires k8s >= 1.29). The vendored
 envoy applier's `attach-lineage.sh` hardcodes `mode: envoy-sidecar`; the proxy

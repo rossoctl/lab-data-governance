@@ -128,9 +128,12 @@ already writes its `NAMESPACE`; the new proxy path and the in-place append must
 match it, or the producer boot-crashes (caught by the crash-loop watch, but
 avoided by construction).
 
-The injected proxy captures the app's egress via **transparent iptables in
-include-only (allowlist) mode**: only the HTTP hops the proxy can parse — **A2A
-`8080` and MCP `8000`** by default — are redirected into it; every other port
+The injected proxy captures parseable plaintext HTTP via its local forward
+listener: the app container receives `HTTP_PROXY` and `http_proxy` pointing to
+`127.0.0.1:8081`, so A2A/MCP requests reach the HTTP-aware pipeline with their
+`traceparent`. Transparent iptables in **include-only (allowlist) mode** remains
+as a fallback for clients that ignore proxy environment variables: **A2A `8080`
+and MCP `8000`** by default are redirected into its raw tunnel; every other port
 (Postgres, SMTP, object store, the LLM `:443` TLS tunnel) passes through
 untouched. This is the inverse of the kit's `OUTBOUND_PORTS_EXCLUDE` denylist and
 is **fail-safe**: a port not on the allowlist stays direct (correct) rather than
@@ -243,9 +246,9 @@ observable (ADR-0031 decision 2).
   demo: 401s the unauthenticated MCP/A2A calls unless a full Keycloak/routes setup
   is stood up, which the demo does not need and the lineage flow does not require.
 - **Egress capture via HTTP_PROXY + app port relocation** (the scratch
-  proxy-sidecar recipe) — rejected in favor of transparent iptables: relocation
-  is Deployment surgery and only captures proxy-aware clients; the allowlist
-  captures the parseable hops transparently and leaves everything else direct.
+  proxy-sidecar recipe) — relocation remains rejected. The final shape uses the
+  forward proxy cooperatively without relocating the app, plus transparent
+  allowlist capture as a fallback for clients that ignore proxy env.
 - **Egress capture via the kit's existing exclude denylist** — rejected: the
   per-app "remember to exclude every non-HTTP port or it breaks" footgun; the
   allowlist is fail-safe.
