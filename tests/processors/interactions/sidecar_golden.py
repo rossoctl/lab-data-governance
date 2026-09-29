@@ -119,7 +119,7 @@ _T0 = dt.datetime(2026, 7, 21, 12, 0, 0, tzinfo=dt.timezone.utc)
 
 # Expected derived entities (natural keys).
 ENTITIES = {
-    "user:alice",
+    "client:(unknown)",
     "agent:team1/weather-service",  # a pod: namespace/self.id (contract v1.7, §7)
     "tool:team1/weather-tool",
     f"llm:{_LLM_HOST}/qwen2.5:7b",

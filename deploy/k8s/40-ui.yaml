@@ -83,6 +83,10 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: DATABASE_URL
               value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+            # Default-on listing policy. The spans remain stored and directly
+            # addressable; only CONNECT-only rows in GET /api/traces are hidden.
+            - name: DG_FF_HIDE_CONNECT_ONLY_TRACES
+              value: "true"
           ports:
             - name: http
               containerPort: 8080

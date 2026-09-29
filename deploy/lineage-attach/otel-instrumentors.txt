@@ -1,0 +1,9 @@
+# Package suffix                         Python module suffix
+starlette                                starlette
+asgi                                     asgi
+fastapi                                  fastapi
+httpx                                    httpx
+requests                                 requests
+aiohttp-client                           aiohttp_client
+urllib3                                  urllib3
+threading                                threading

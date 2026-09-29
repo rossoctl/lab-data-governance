@@ -7,20 +7,12 @@
 #
 # Authoritative design: docs/cli.md
 # Decision records:     docs/adr/0031-non-reversible-namespace-lineage-activation.md
-#                       docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md
+#                       docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md
 #
 # ---------------------------------------------------------------------------
-# THIS SLICE (issue #181): skeleton + shared cluster helpers.
-#
-#   * command-grammar dispatch,
-#   * `namespaces list` (the one verb that WORKS this ticket),
-#   * the shared helpers the later verbs reuse (entity enumeration,
-#     user-namespace filter, preflight primitives),
-#   * parse + carry the `--cortex-local-path` global (consumed only by the
-#     later `namespace instrument` verb, #184).
-#
-# The `component` and `namespace instrument|status` verbs are recognised but
-# stubbed here; later tickets fill them in.
+# `namespace instrument` drives the lineage-attach kit VENDORED into this repo
+# at deploy/lineage-attach/ (ADR-0033 decision 1, supersedes ADR-0032). No
+# cortex checkout is required for any verb; the extension stands alone.
 # ---------------------------------------------------------------------------
 #
 # Grammar:
@@ -29,11 +21,6 @@
 #   dg.sh component  [install|uninstall|status]
 #   dg.sh namespaces [list]
 #   dg.sh namespace  <ns> [instrument|status] [<entity>]
-#
-#   --cortex-local-path <dir>   # (env CORTEX_LOCAL_PATH) path to a cortex
-#                               # checkout; `instrument` locates the #852 kit
-#                               # under it. Required for `instrument`; unused by
-#                               # the other verbs.
 #
 # Fail-loud posture: every preflight and every unresolved input is a loud,
 # non-zero exit — never a silent no-op.
@@ -51,6 +38,12 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_AND_LOAD="${DG_BUILD_AND_LOAD:-${SCRIPT_DIR}/build-and-load.sh}"
 PATCH_COLLECTOR="${DG_PATCH_COLLECTOR:-${SCRIPT_DIR}/patch-rossoctl-collector.sh}"
 K8S_DIR="${DG_K8S_DIR:-${SCRIPT_DIR}/k8s}"
+# The lineage-attach kit is VENDORED into this repo (deploy/lineage-attach/) so
+# `instrument` needs no cortex checkout (ADR-0033 decision 1, supersedes 0032's
+# external --cortex-local-path arrangement). dg.sh shells out to its own local
+# copies. Tests override the dir via DG_LINEAGE_ATTACH_DIR to point at a fake
+# stub kit — the same override pattern as DG_BUILD_AND_LOAD / DG_K8S_DIR above.
+KIT_DIR="${DG_LINEAGE_ATTACH_DIR:-${SCRIPT_DIR}/lineage-attach}"
 
 # The data-governance component's own resources.
 DG_NAMESPACE="data-governance"
@@ -83,15 +76,11 @@ DG_TEE_PIPELINE="traces/data_governance"
 DG_COLLECTOR_NAMESPACE="${COLLECTOR_NAMESPACE:-rossoctl-system}"
 DG_COLLECTOR_CONFIGMAP="${COLLECTOR_CONFIGMAP:-otel-collector-config}"
 
-# The platform's own selector for agents/tools. rossoctl.io/type is
-# operator-reserved and VAP-protected, so dg.sh NEVER reads or sets it.
-ENTITY_COMPONENT_SELECTOR='app.kubernetes.io/component in (agent, mcp-tool)'
+# Trusted Rossoctl workloads are selected by the operator-owned type label.  A
+# legacy component-label fallback keeps the #239 bare-namespace workflow usable
+# where no trusted labels exist; it is never mixed with a trusted selection.
 # Namespace label marking a user (rossoctl-enabled) namespace.
 NS_ENABLED_SELECTOR='rossoctl-enabled=true'
-
-# --cortex-local-path / CORTEX_LOCAL_PATH is a GLOBAL option: parsed here,
-# carried for the later `instrument` verb, consumed by no verb in this slice.
-CORTEX_LOCAL_PATH="${CORTEX_LOCAL_PATH:-}"
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -109,11 +98,6 @@ Usage:
   ${PROG} component  [install|uninstall|status]
   ${PROG} namespaces [list]
   ${PROG} namespace  <ns> [instrument|status] [<entity>]
-
-Global options:
-  --cortex-local-path <dir>   Path to a cortex checkout (env CORTEX_LOCAL_PATH);
-                              locates the lineage-attach kit for 'instrument'.
-                              Required for 'instrument'; unused by other verbs.
 EOF
 }
 
@@ -200,31 +184,29 @@ enumerate_entities() {
     [[ -n "${ns}" ]] || die "enumerate_entities: namespace is required"
     require_kubectl
 
-    local selector="${ENTITY_COMPONENT_SELECTOR}"
-    if [[ -n "${entity}" ]]; then
-        # Single-entity select: the component selector AND the name label.
-        selector="${selector},app.kubernetes.io/name=${entity}"
-    fi
-
-    # A failed `kubectl get` (unreachable/RBAC-denied API) is a loud, non-zero
-    # exit carrying kubectl's own diagnostic — NOT a swallowed empty result that
-    # would masquerade as 'no agents/tools in the namespace'. Capture stdout, let
-    # kubectl's stderr pass through (never 2>/dev/null it), check status.
     local raw status
     status=0
-    raw="$(kubectl get deployments -n "${ns}" \
-        -l "${selector}" \
-        -o 'jsonpath={range .items[*]}{.metadata.labels.app\.kubernetes\.io/name}{"\n"}{end}')" \
-        || status=$?
+    raw="$(kubectl get deployments -n "${ns}" -o json)" || status=$?
     if [[ "${status}" -ne 0 ]]; then
         die "failed to list agents/tools in namespace '${ns}' (kubectl get deployments failed; see the kubectl error above)"
     fi
 
     local names
-    names="$(printf '%s' "${raw}" | awk 'NF' | sort -u)"
+    names="$(printf '%s' "${raw}" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+items = doc.get("items") or []
+trusted = [item for item in items if (item.get("metadata", {}).get("labels", {}).get("rossoctl.io/type") in {"agent", "tool"})]
+selected = trusted or [item for item in items if (item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") in {"agent", "mcp-tool"})]
+only = sys.argv[1]
+names = sorted({item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name") for item in selected})
+for name in names:
+    if name and (not only or name == only):
+        print(name)
+' "${entity}")"
 
     if [[ -n "${entity}" && -z "${names}" ]]; then
-        die "entity '${entity}' is not an agent/tool (app.kubernetes.io/component in agent,mcp-tool) in namespace '${ns}'"
+        die "entity '${entity}' is not a trusted Rossoctl agent/tool (or legacy component-labelled entity) in namespace '${ns}'"
     fi
     printf '%s' "${names}"
     [[ -n "${names}" ]] && printf '\n'
@@ -464,8 +446,10 @@ cmd_namespaces() {
 #     (These are the exact container names the operator's injection webhook and
 #     the cortex attach kits use; distinguishing them is what ADR-0032's
 #     proxy-row-vs-kit split hinges on.)
-#   * plugin — is `lineage-telemetry` wired into the sidecar's effective
-#     pipeline. The effective pipeline is the config the sidecar mounts at
+#   * lineage — is `lineage-telemetry` wired into the sidecar's effective
+#     pipeline (surfaced as the per-entity `lineage=yes/no` token — ADR-0033
+#     decision 5, the no-marker idempotency signal). The effective pipeline is
+#     the config the sidecar mounts at
 #     /etc/authbridge (both modes mount `config.yaml` there from a ConfigMap):
 #     we resolve that container's /etc/authbridge volumeMount → the backing
 #     volume → its ConfigMap, read the ConfigMap, and look for a
@@ -482,12 +466,27 @@ get_deployment_json() {
     local out status
     status=0
     out="$(kubectl get deployments -n "${ns}" \
-        -l "${ENTITY_COMPONENT_SELECTOR},app.kubernetes.io/name=${entity}" \
+        -l "app.kubernetes.io/name=${entity}" \
         -o json)" || status=$?
     if [[ "${status}" -ne 0 ]]; then
         die "failed to read deployment for entity '${entity}' in namespace '${ns}' (kubectl get failed; see the kubectl error above)"
     fi
     printf '%s' "${out}"
+}
+
+# deployment_is_trusted <deployment-json>: true only for operator-labelled
+# Rossoctl agents/tools.  The label is read-only input; dg.sh never writes it.
+deployment_is_trusted() {
+    local json="$1"
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+items = doc.get("items")
+if items is None:
+    items = [doc]
+labels = (items[0].get("metadata", {}).get("labels", {}) if items else {})
+sys.exit(0 if labels.get("rossoctl.io/type") in {"agent", "tool"} else 1)
+'
 }
 
 # get_pod_json <ns> <entity>: print the live Pod listing JSON for a single entity
@@ -497,6 +496,19 @@ get_deployment_json() {
 # sidecar detection + pipeline-CM resolution when the template shows no sidecar.
 # A failed `kubectl get` is a LOUD non-zero die (mirrors get_deployment_json) —
 # never a swallowed empty. Returns the items list JSON.
+select_current_pods() {
+    python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+items = [item for item in (doc.get("items") or []) if not item.get("metadata", {}).get("deletionTimestamp")]
+def ready(item):
+    return any(c.get("type") == "Ready" and c.get("status") == "True" for c in item.get("status", {}).get("conditions", []))
+items.sort(key=lambda item: (ready(item), item.get("metadata", {}).get("creationTimestamp", "")), reverse=True)
+doc["items"] = items
+json.dump(doc, sys.stdout)
+'
+}
+
 get_pod_json() {
     local ns="$1" entity="$2"
     local out status
@@ -508,17 +520,16 @@ get_pod_json() {
     if [[ "${status}" -ne 0 ]]; then
         die "failed to read live pod for entity '${entity}' in namespace '${ns}' (kubectl get failed; see the kubectl error above)"
     fi
-    printf '%s' "${out}"
+    printf '%s' "${out}" | select_current_pods
 }
 
 # get_pod_json_soft <ns> <entity>: like get_pod_json, but a failed `kubectl get`
 # is NON-fatal — it prints nothing and returns non-zero (leaving the caller's
 # prior verdict standing) instead of dying. This is the READ-ONLY status verb's
 # fallback probe: a transient/RBAC failure of the pod read must NOT abort the
-# whole best-effort diagnostic (which, before webhook-injected detection, simply
-# printed sidecar=none and moved on). It mirrors crashloop_detected's rule that a
-# failed pod probe is inconclusive, not proof. The mutating `instrument` verb
-# keeps get_pod_json's loud die — there, a probe we cannot trust must halt.
+# whole best-effort diagnostic. A failed pod probe is inconclusive, not proof.
+# The mutating `instrument` verb keeps get_pod_json's loud die — there, a probe
+# we cannot trust must halt.
 get_pod_json_soft() {
     local ns="$1" entity="$2"
     local out status
@@ -530,16 +541,13 @@ get_pod_json_soft() {
     if [[ "${status}" -ne 0 ]]; then
         return 1
     fi
-    printf '%s' "${out}"
+    printf '%s' "${out}" | select_current_pods
 }
 
 # pod_items_count <pod-listing-json>: print the number of Pods in a `kubectl get
 # pods -o json` listing (the length of .items). Used to distinguish a pod read
 # that AUTHORITATIVELY shows no sidecar (>=1 Running pod, none of them carrying a
-# sidecar) from one that is simply EMPTY (0 Running pods) — for the latter,
-# detect_sidecar_type prints 'none' too, but that 'none' is unconfirmed and must
-# not be trusted on the mutating instrument path (a webhook-injected sidecar is
-# visible only on a live Pod). Takes the JSON as $1.
+# sidecar) from one that is simply EMPTY (0 Running pods). Takes the JSON as $1.
 pod_items_count() {
     local json="$1"
     printf '%s' "${json}" | python3 -c '
@@ -669,14 +677,27 @@ for v in spec.get("volumes") or []:
 }
 
 # plugin_wired_in_cm_data <cm-data-json>: 0 (true) if the ConfigMap data carries
-# a `lineage-telemetry` plugin entry, 1 (false) otherwise. The data is the map of
-# ConfigMap keys → file contents (jsonpath {.data}); the pipeline lives in
-# config.yaml as `- name: lineage-telemetry`, so we scan every value.
+# a `lineage-telemetry` plugin ENTRY, 1 (false) otherwise. The data is the map of
+# ConfigMap keys → file contents (jsonpath {.data}); the pipeline lists it as
+# `- name: lineage-telemetry`, so we match the `name:` ENTRY form, NOT the bare
+# token — a comment or descriptive string mentioning "lineage-telemetry" must not
+# read as wired (code-review #245: substring match caused false idempotency).
 plugin_wired_in_cm_data() {
     local data="$1"
     [[ -n "${data}" ]] || return 1
     printf '%s' "${data}" | python3 -c '
-import json, sys
+import json, re, sys
+# The plugin ENTRY: `name: lineage-telemetry` (optionally quoted), as opposed to
+# the bare token in a comment / config string. Whitespace-tolerant so it matches
+# both real config.yaml and the flattened Go-map {.data} repr some kubectl
+# versions print. A leading `#` comment marker on the same segment is excluded.
+entry_re = re.compile(r"name:\s*[\x22\x27]?lineage-telemetry[\x22\x27]?")
+def has_entry(text):
+    for seg in re.split(r"[\r\n]", text):
+        code = seg.split("#", 1)[0]  # drop trailing comment
+        if entry_re.search(code):
+            return True
+    return False
 raw = sys.stdin.read().strip()
 if not raw:
     sys.exit(1)
@@ -684,12 +705,12 @@ try:
     data = json.loads(raw)
 except Exception:
     # jsonpath {.data} of a plain map may already be a python-ish repr on some
-    # kubectl versions; fall back to a substring scan of the raw text.
-    sys.exit(0 if "lineage-telemetry" in raw else 1)
+    # kubectl versions; fall back to scanning the raw text for the entry form.
+    sys.exit(0 if has_entry(raw) else 1)
 if not isinstance(data, dict):
     sys.exit(1)
 for v in data.values():
-    if isinstance(v, str) and "lineage-telemetry" in v:
+    if isinstance(v, str) and has_entry(v):
         sys.exit(0)
 sys.exit(1)
 '
@@ -718,10 +739,11 @@ namespace_status() {
         return 0
     fi
 
-    local name json type cm cm_data plugin
+    local name json deployment_json type cm cm_data lineage
     while IFS= read -r name; do
         [[ -n "${name}" ]] || continue
-        json="$(get_deployment_json "${ns}" "${name}")"
+        deployment_json="$(get_deployment_json "${ns}" "${name}")"
+        json="${deployment_json}"
         type="$(detect_sidecar_type "${json}")"
 
         # Fall back to the live Pod when the Deployment TEMPLATE shows no sidecar:
@@ -748,7 +770,7 @@ namespace_status() {
         fi
 
         if [[ "${type}" == "none" ]]; then
-            printf '%s\tsidecar=none\ttype=none\tplugin=no (lineage-telemetry not wired)\n' "${name}"
+            printf '%s\tsidecar=none\ttype=none\tlineage=no (lineage-telemetry not wired)\n' "${name}"
             continue
         fi
 
@@ -758,70 +780,106 @@ namespace_status() {
             cm_data="$(get_configmap_data "${ns}" "${cm}")"
         fi
         if plugin_wired_in_cm_data "${cm_data}"; then
-            plugin="yes (lineage-telemetry wired)"
+            lineage="yes (lineage-telemetry wired)"
         else
-            plugin="no (lineage-telemetry not wired)"
+            lineage="no (lineage-telemetry not wired)"
         fi
-        printf '%s\tsidecar=present\ttype=%s\tplugin=%s\n' "${name}" "${type}" "${plugin}"
+        if deployment_is_trusted "${deployment_json}" && [[ "${type}" == "proxy" ]]; then
+            local live="yes" reason="live" pod_json pod_name cm_json app_name
+            pod_json="$(get_pod_json_soft "${ns}" "${name}" || true)"
+            if ! deployment_activation_valid "${deployment_json}"; then
+                live="no"; reason="application shim or LINEAGE_PROPAGATE missing"
+            elif ! proxy_environment_valid "${pod_json}"; then
+                live="no"; reason="admission proxy environment missing"
+            elif ! pod_proxy_ready "${pod_json}"; then
+                live="no"; reason="pod or authbridge-proxy not ready"
+            elif ! app_name="$(app_container_of "${pod_json}")" || [[ -z "${app_name}" ]]; then
+                live="no"; reason="application container unresolved"
+            elif ! pod_shim_attested "${ns}" "$(pod_name_of "${pod_json}")" "${app_name}"; then
+                live="no"; reason="running application failed two-shim attestation"
+            elif [[ -z "${cm}" ]]; then
+                live="no"; reason="mounted ConfigMap unresolved"
+            else
+                cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json 2>/dev/null || true)"
+                if ! configmap_is_canonical "${cm_json}" "${name}" "${pod_json}"; then
+                    live="no"; reason="mounted ConfigMap drifted"
+                else
+                    pod_name="$(pod_name_of "${pod_json}")"
+                    if ! live_pipeline_is_canonical "${ns}" "${pod_name}" "${name}" "${cm_json}"; then
+                        live="no"; reason="live pipeline has not converged"
+                    fi
+                fi
+            fi
+            printf '%s\tsidecar=present\ttype=%s\tlineage=%s\tlive=%s (%s)\n' \
+                "${name}" "${type}" "${lineage}" "${live}" "${reason}"
+        else
+            printf '%s\tsidecar=present\ttype=%s\tlineage=%s\n' "${name}" "${type}" "${lineage}"
+        fi
     done <<< "${names}"
 }
 
 # --- namespace <ns> instrument [<entity>] -- NON-REVERSIBLE activation (#184) --
 #
-# Activate lineage for the agents/tools in <ns> — all of them, or the single
-# <entity> when named. Additive-only, and it NEVER changes a namespace's sidecar
-# mode (ADR-0031). Per targeted entity, the least mutation that works, with the
-# owner split ADR-0032 records:
-#
-#   | current sidecar        | action                                | owner   |
-#   |------------------------|---------------------------------------|---------|
-#   | none                   | inject envoy lineage sidecar (+ shim  | #852    |
-#   |                        | for a Python app)                     | kit     |
-#   | envoy-sidecar in place | add lineage-telemetry to its pipeline | #852    |
-#   |                        | in place                              | kit     |
-#   | proxy-sidecar in place | add lineage-telemetry to its pipeline | dg.sh's |
-#   |                        | in place                              | OWN edit|
-#
-# The #852 kit is envoy-sidecar-only (its ConfigMap hardcodes mode: envoy-sidecar;
-# its patch adds envoy-proxy as a NATIVE sidecar — an initContainer with
-# restartPolicy: Always, k8s >= 1.29 — plus proxy-init). So the first two rows
-# are the kit's job (sidecar-patch.sh) and the proxy row stays dg.sh's own.
-#
-# Two guard LAYERS, complementary (ADR-0032 decision 4):
-#   * the kit runs `kubectl patch --dry-run=server` BEFORE any write — its own
-#     pre-apply "version guard" that rejects a bad merge / admission / RBAC /
-#     cluster < 1.29;
-#   * dg.sh watches the rollout the attach triggers and detects a crash-looping
-#     sidecar (the `unknown plugin "lineage-telemetry"` / DisallowUnknownFields
-#     boot-crash surfaces as CrashLoopBackOff within seconds) — the POST-apply
-#     failure the dry-run cannot see. On a failed rollout / crash-loop dg.sh
-#     dumps the sidecar log, surfaces the kit's PRINTED back-out line verbatim
-#     (a reverse-patch, NOT a rollout undo — envoy-proxy is a native sidecar, so
-#     a whole-revision undo restores too much), fails loud, and does NOT proceed
-#     to the next entity.
+# Activate lineage for Rossoctl-managed agents/tools in <ns>. Every target must
+# already have the trusted Rossoctl identity label and an admitted AuthBridge
+# proxy. Bare workloads fail during the transaction preflight, before any image,
+# Deployment, or ConfigMap mutation, with guidance to deploy/import them through
+# Rossoctl first. Data Governance never creates or replaces a sidecar.
 
 # The platform collector the component tee carries to the receiver — the kit's
 # own OTEL_ENDPOINT default too, so passing it is a no-op belt-and-braces that
 # also documents the destination in the kit-invocation log.
 DG_OTEL_ENDPOINT="otel-collector.rossoctl-system.svc.cluster.local:4317"
 
-# resolve_kit_dir: echo the lineage-attach kit directory under CORTEX_LOCAL_PATH,
-# or die loud if the path is unset / the kit's scripts are absent. Mutates
-# nothing (ADR-0032: resolve the kit, do not guess). The three scripts that must
-# exist are the kit's documented surface: sidecar-patch.sh (live applier),
-# build-otel-shim.sh (the propagate-only shim), attach-lineage.sh (the generator).
-resolve_kit_dir() {
-    [[ -n "${CORTEX_LOCAL_PATH}" ]] \
-        || die "instrument needs the cortex lineage-attach kit: pass --cortex-local-path <dir> (or set CORTEX_LOCAL_PATH) pointing at a cortex checkout"
-    local kit="${CORTEX_LOCAL_PATH%/}/authbridge/lineage-attach"
-    [[ -d "${kit}" ]] \
-        || die "cortex lineage-attach kit not found under '${CORTEX_LOCAL_PATH}' (expected ${kit}); mutating nothing"
-    local s
-    for s in sidecar-patch.sh build-otel-shim.sh attach-lineage.sh; do
-        [[ -x "${kit}/${s}" ]] \
-            || die "cortex lineage-attach kit is incomplete: ${kit}/${s} is missing or not executable; mutating nothing"
+# The Kind cluster the shim bake `kind load`s the -otel image into. The kit's
+# container-runtime.sh reads KIND_CLUSTER_NAME (default `rossoctl`), but dg.sh
+# used to drive build-otel-shim.sh WITHOUT forwarding a cluster name — so on a
+# cluster NOT named `rossoctl` the load silently targeted the wrong cluster and
+# the operator's cluster never received the image (#241 review → parked on #244).
+# Resolve the operator's choice once and forward it as KIND_CLUSTER_NAME:
+#   KIND_CLUSTER_NAME (the kit's own var) wins; else the DG-wide KIND_CLUSTER
+#   (build-and-load.sh, deploy/k8s/README.md); else the historical `rossoctl`.
+# Bridging KIND_CLUSTER keeps `dg.sh instrument` and `build-and-load.sh` on the
+# SAME cluster when an operator sets only the DG-wide var. An empty value is
+# treated as unset (so `KIND_CLUSTER_NAME= dg.sh ...` still gets the default).
+resolve_kind_cluster_name() {
+    if [[ -n "${KIND_CLUSTER_NAME:-}" ]]; then
+        printf '%s' "${KIND_CLUSTER_NAME}"
+    elif [[ -n "${KIND_CLUSTER:-}" ]]; then
+        printf '%s' "${KIND_CLUSTER}"
+    else
+        printf '%s' "rossoctl"
+    fi
+}
+
+# require_vendored_kit: die loud if the VENDORED lineage-attach kit under
+# ${KIT_DIR} is missing or incomplete. This is a repo-integrity check, not a
+# user-facing "pass a path" preflight — the kit ships in this repo
+# (deploy/lineage-attach/), so an absent file means a broken checkout, not a
+# missing --cortex-local-path (ADR-0033: the kit is vendored, retired the flag).
+# Mutates nothing.
+#
+# Check the complete shim-build and existing-proxy reconciliation surface before
+# doing any cluster mutation.
+require_vendored_kit() {
+    [[ -d "${KIT_DIR}" ]] \
+        || die "the vendored lineage-attach kit is missing (expected ${KIT_DIR}); this is a broken checkout — the kit ships in deploy/lineage-attach/. Mutating nothing."
+    [[ -x "${KIT_DIR}/build-otel-shim.sh" ]] \
+        || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/build-otel-shim.sh is missing or not executable. Mutating nothing."
+    # Sourced / build-input files the shim bake needs: must be present (they are
+    # read, not exec'd, so an executable bit is not required). Both shims are
+    # build inputs — Dockerfile.otel-shim COPYs the propagate hook AND the
+    # turn-span shim (rossoctl_turnspan.py + its .pth) into the image; a checkout
+    # missing either would die mid-bake, so refuse before cluster mutation.
+    local f
+    for f in container-runtime.sh Dockerfile.otel-shim otel-instrumentors.txt \
+             lineage-propagate-hook.py \
+             rossoctl_turnspan.py rossoctl_turnspan.pth \
+             attest-otel-shim.py \
+             reconcile-existing-proxy.py; do
+        [[ -e "${KIT_DIR}/${f}" ]] \
+            || die "the vendored lineage-attach kit is incomplete: ${KIT_DIR}/${f} is missing (the shim bake needs it). Mutating nothing."
     done
-    printf '%s' "${kit}"
 }
 
 # component_installed: 0 (true) if the data-governance namespace is present,
@@ -842,9 +900,7 @@ component_installed() {
 }
 
 # instrument_preflight: the dg.sh-side checks the kit does not make — component
-# installed + collector tee wired. Both fail loud, mutating nothing. (The kit's
-# own six read-only preconditions run inside sidecar-patch.sh per entity — we do
-# NOT re-implement them; ADR-0032 decision 3.)
+# installed + collector tee wired. Both fail loud, mutating nothing.
 instrument_preflight() {
     component_installed \
         || die "the data-governance component is not installed (namespace ${DG_NAMESPACE} absent) — run 'dg.sh component install' first; mutating nothing"
@@ -853,44 +909,42 @@ instrument_preflight() {
     fi
 }
 
-# ensure_envoy_config <ns>: the kit's envoy sidecar mounts the platform
-# `envoy-config` ConfigMap and its `require_envoy_config` precondition REQUIRES
-# it in the target namespace — but the kit never CREATES it. The rossoctl Helm
-# chart renders `envoy-config` only into the namespaces it manages (team1/team2,
-# rossoctl-system); an ad-hoc, kubectl-applied namespace (the travel_advisor
-# demo) never got it. Since `dg.sh instrument` is what enrolls such a namespace
-# for lineage, it OWNS provisioning envoy-config there so `instrument` is
-# self-sufficient on any rossoctl-enabled namespace (issue #184). envoy-config is
-# namespace-agnostic, so we copy it verbatim from a chart-managed source ns.
-# Idempotent: a no-op when the target already has it. We NEVER fabricate an
-# envoy.yaml — if the target lacks it and no source is found, refuse loud.
-ensure_envoy_config() {
-    local ns="$1"
-    # Already present in the target ns → nothing to do.
-    if kubectl -n "${ns}" get cm envoy-config >/dev/null 2>&1; then
-        return 0
-    fi
-    # Discover a chart-managed source ns: the explicit override, else the Helm
-    # release namespace, else any namespace that carries envoy-config.
-    local src="${ENVOY_CONFIG_SOURCE_NS:-}"
-    if [[ -z "${src}" ]]; then
-        if kubectl -n "${DG_COLLECTOR_NAMESPACE}" get cm envoy-config >/dev/null 2>&1; then
-            src="${DG_COLLECTOR_NAMESPACE}"
-        else
-            src="$(kubectl get cm envoy-config --all-namespaces \
-                     -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)"
-        fi
-    fi
-    [[ -n "${src}" ]] \
-        || die "instrument: '${ns}' is missing the platform 'envoy-config' ConfigMap (the kit's envoy sidecar mounts it) and no chart-managed source namespace has one to copy from. Install the rossoctl platform (which renders envoy-config), or set ENVOY_CONFIG_SOURCE_NS=<ns>. Mutating nothing."
-    err ">> instrument: '${ns}' lacks the platform envoy-config ConfigMap; copying it from '${src}' (namespace-agnostic)."
-    local body
-    body="$(kubectl -n "${src}" get cm envoy-config -o jsonpath='{.data.envoy\.yaml}' 2>/dev/null || true)"
-    [[ -n "${body}" ]] \
-        || die "instrument: source namespace '${src}' has an envoy-config ConfigMap with no 'envoy.yaml' key — refusing to copy an empty config. Mutating nothing."
-    printf '%s' "${body}" \
-        | kubectl -n "${ns}" create configmap envoy-config --from-file=envoy.yaml=/dev/stdin \
-        || die "instrument: failed to create the envoy-config ConfigMap in '${ns}' (copied from '${src}')."
+
+# app_container_query <deployment-or-pod-json> <query> [<container-name>]:
+# normalize either a Deployment, Pod, or list document to one PodSpec and query
+# its application container. Keeping that normalization here prevents the name
+# and image accessors from drifting apart.
+app_container_query() {
+    local json="$1" query="$2" cname="${3:-}"
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+query, cname = sys.argv[1:]
+def podspec(item):
+    spec = item.get("spec") or {}
+    if item.get("kind") == "Pod" or "containers" in spec:
+        return spec
+    return (spec.get("template") or {}).get("spec") or {}
+doc = json.load(sys.stdin)
+items = doc.get("items")
+if items is None:
+    items = [doc] if doc.get("kind") in ("Deployment", "Pod") else []
+if not items:
+    sys.exit(0)
+spec = podspec(items[0])
+containers = spec.get("containers") or []
+if query == "sole-app-name":
+    sidecars = {"authbridge-proxy", "envoy-proxy"}
+    apps = [c for c in containers if c.get("name") not in sidecars]
+    if len(apps) == 1:
+        print(apps[0].get("name") or "")
+elif query == "image-by-name":
+    for container in containers:
+        if container.get("name") == cname:
+            print(container.get("image") or "")
+            break
+else:
+    raise SystemExit(f"unknown app-container query: {query}")
+' "${query}" "${cname}"
 }
 
 # app_container_of <deployment-or-pod-json>: print the app container's name — the
@@ -898,52 +952,162 @@ ensure_envoy_config() {
 # envoy-proxy). Accepts a Pod doc as well as a Deployment. Empty if it cannot be
 # determined unambiguously.
 app_container_of() {
-    local json="$1"
-    printf '%s' "${json}" | python3 -c '
-import json, sys
-def podspec(item):
-    spec = item.get("spec") or {}
-    if item.get("kind") == "Pod" or "containers" in spec:
-        return spec
-    return (spec.get("template") or {}).get("spec") or {}
-doc = json.load(sys.stdin)
-items = doc.get("items")
-if items is None:
-    items = [doc] if doc.get("kind") in ("Deployment", "Pod") else []
-if not items:
-    sys.exit(0)
-spec = podspec(items[0])
-sidecars = {"authbridge-proxy", "envoy-proxy"}
-apps = [c for c in (spec.get("containers") or []) if c.get("name") not in sidecars]
-if len(apps) == 1:
-    print(apps[0].get("name") or "")
-'
+    app_container_query "$1" "sole-app-name"
 }
 
 # app_image_of <deployment-or-pod-json> <container-name>: print that container's
 # image. Accepts a Pod doc as well as a Deployment.
 app_image_of() {
-    local json="$1" cname="$2"
+    app_container_query "$1" "image-by-name" "$2"
+}
+
+pod_name_of() {
+    local json="$1"
     printf '%s' "${json}" | python3 -c '
 import json, sys
-cname = sys.argv[1]
-def podspec(item):
-    spec = item.get("spec") or {}
-    if item.get("kind") == "Pod" or "containers" in spec:
-        return spec
-    return (spec.get("template") or {}).get("spec") or {}
 doc = json.load(sys.stdin)
-items = doc.get("items")
-if items is None:
-    items = [doc] if doc.get("kind") in ("Deployment", "Pod") else []
-if not items:
-    sys.exit(0)
-spec = podspec(items[0])
-for c in (spec.get("containers") or []):
-    if c.get("name") == cname:
-        print(c.get("image") or "")
-        break
-' "${cname}"
+items = doc.get("items") or []
+if items:
+    print(items[0].get("metadata", {}).get("name", ""))
+'
+}
+
+# Print the admission-owned listener contract as three tab-separated values:
+# forward proxy address, reverse proxy address, and reverse backend. Rossoctl
+# assigns different ports to agents and tools, so derive them from the admitted
+# pod instead of assuming the agent defaults.
+proxy_listener_contract() {
+    local json="$1" app
+    app="$(app_container_of "${json}")"
+    [[ -n "${app}" ]] || return 1
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+from urllib.parse import urlsplit
+doc = json.load(sys.stdin); items = doc.get("items") or []
+if not items: sys.exit(1)
+spec = items[0].get("spec") or {}
+app = next((c for c in spec.get("containers", []) if c.get("name") == sys.argv[1]), None)
+if app is None: sys.exit(1)
+env = {e.get("name"): e.get("value") for e in app.get("env", [])}
+http_proxy = env.get("HTTP_PROXY") or ""
+if http_proxy != env.get("HTTPS_PROXY"): sys.exit(1)
+try:
+    parsed = urlsplit(http_proxy)
+    forward_port = parsed.port
+except ValueError:
+    sys.exit(1)
+if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"} or not forward_port:
+    sys.exit(1)
+no_proxy = {part.strip() for part in (env.get("NO_PROXY") or "").split(",")}
+if not {"127.0.0.1", "localhost"} <= no_proxy: sys.exit(1)
+proxy = next((c for c in spec.get("containers", []) if c.get("name") == "authbridge-proxy"), None)
+if proxy is None: sys.exit(1)
+proxy_ports = {p.get("name"): p.get("containerPort") for p in proxy.get("ports", [])}
+if proxy_ports.get("forward-proxy") != forward_port: sys.exit(1)
+reverse_port = proxy_ports.get("reverse-proxy")
+app_ports = {p.get("name"): p.get("containerPort") for p in app.get("ports", [])}
+app_port = app_ports.get("http")
+if not reverse_port or not app_port: sys.exit(1)
+print(f":{forward_port}\t:{reverse_port}\thttp://127.0.0.1:{app_port}")
+' "${app}"
+}
+
+proxy_environment_valid() {
+    proxy_listener_contract "$1" >/dev/null
+}
+
+render_existing_proxy_config() {
+    local cm_json="$1" self_id="$2" pod_json="$3"
+    local contract forward_addr reverse_addr reverse_backend
+    contract="$(proxy_listener_contract "${pod_json}")" || return 1
+    IFS=$'\t' read -r forward_addr reverse_addr reverse_backend <<< "${contract}"
+    printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render \
+        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        --forward-proxy-addr "${forward_addr}" \
+        --reverse-proxy-addr "${reverse_addr}" \
+        --reverse-proxy-backend "${reverse_backend}"
+}
+
+deployment_activation_valid() {
+    local json="$1" app
+    app="$(app_container_of "${json}")"
+    [[ -n "${app}" ]] || return 1
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin); items = doc.get("items")
+if items is None: items = [doc]
+if not items: sys.exit(1)
+spec = ((items[0].get("spec") or {}).get("template") or {}).get("spec") or {}
+app = next((c for c in spec.get("containers", []) if c.get("name") == sys.argv[1]), None)
+if app is None: sys.exit(1)
+env = {e.get("name"): e.get("value") for e in app.get("env", [])}
+image = app.get("image") or ""
+sys.exit(0 if image and env.get("LINEAGE_PROPAGATE") == "1" else 1)
+' "${app}"
+}
+
+shim_image_attested() {
+    local image="$1"
+    "${KIT_DIR}/build-otel-shim.sh" --attest-existing "${image}" >/dev/null 2>&1
+}
+
+pod_shim_attested() {
+    local ns="$1" pod="$2" app="$3" interpreter
+    [[ -n "${pod}" && -n "${app}" ]] || return 1
+    for interpreter in /app/.venv/bin/python /opt/venv/bin/python python3; do
+        if kubectl -n "${ns}" exec -i "${pod}" -c "${app}" -- \
+            "${interpreter}" - propagates \
+            < "${KIT_DIR}/attest-otel-shim.py" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+pod_proxy_ready() {
+    local json="$1"
+    printf '%s' "${json}" | python3 -c '
+import json, sys
+items = json.load(sys.stdin).get("items") or []
+if not items: sys.exit(1)
+pod = items[0]
+ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in (pod.get("status", {}).get("conditions") or []))
+containers = {c.get("name"): c.get("ready") for c in (pod.get("status", {}).get("containerStatuses") or [])}
+sys.exit(0 if ready and containers.get("authbridge-proxy") is True else 1)
+'
+}
+
+configmap_is_canonical() {
+    local cm_json="$1" self_id="$2" pod_json="$3" rendered
+    rendered="$(render_existing_proxy_config "${cm_json}" "${self_id}" "${pod_json}" 2>/dev/null)" \
+        || return 1
+    python3 -c '
+import json, sys
+current, rendered = (json.loads(value) for value in sys.argv[1:])
+sys.exit(0 if current.get("data", {}).get("config.yaml") == rendered.get("data", {}).get("config.yaml") else 1)
+' "${cm_json}" "${rendered}"
+}
+
+proxy_catalog_has_lineage() {
+    local ns="$1" pod="$2" catalog status
+    status=0
+    catalog="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
+        wget -qO- http://127.0.0.1:9094/v1/plugins 2>/dev/null)" || status=$?
+    [[ "${status}" -eq 0 && -n "${catalog}" ]] || return 1
+    printf '%s' "${catalog}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" catalog-valid
+}
+
+live_pipeline_is_canonical() {
+    local ns="$1" pod="$2" self_id="$3" cm_json="$4" body expected status
+    status=0
+    body="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
+        wget -qO- http://127.0.0.1:9094/v1/pipeline 2>/dev/null)" || status=$?
+    [[ "${status}" -eq 0 && -n "${body}" ]] || return 1
+    expected="$(printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-contract 2>/dev/null)" \
+        || return 1
+    printf '%s' "${body}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-valid \
+        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        --expected "${expected}"
 }
 
 # watch_rollout_for_crashloop <ns> <entity> <backout_line> <attach_stdout>:
@@ -952,221 +1116,114 @@ for c in (spec.get("containers") or []):
 # PRINTED back-out line verbatim, and die loud — halting the whole run so we do
 # NOT proceed to the next entity. $4 is captured so we can echo the kit's own
 # output back to the operator when we fail after a rollout the kit reported OK.
-crashloop_detected() {
-    local ns="$1" entity="$2"
-    # A crash-looping sidecar shows CrashLoopBackOff in the pods of the entity.
-    local out status
-    status=0
-    out="$(kubectl -n "${ns}" get pods \
-        -l "app.kubernetes.io/name=${entity}" \
-        -o 'jsonpath={range .items[*].status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}' 2>/dev/null)" || status=$?
-    if [[ "${status}" -ne 0 ]]; then
-        # A failed pod probe is not proof of health; treat as inconclusive (not a
-        # crash) — the rollout status is the primary signal. Return non-crash.
-        return 1
-    fi
-    case "${out}" in
-        *CrashLoopBackOff*|*RunContainerError*|*CreateContainerError*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
+preflight_trusted_proxies() {
+    local ns="$1" names="$2" plan_file="$3"
+    : > "${plan_file}"
+    local cache_file
+    cache_file="$(mktemp)"
+    local entity dep pod type pod_name cm cm_json app base cached shim bake_out bake_status
+    while IFS= read -r entity; do
+        [[ -n "${entity}" ]] || continue
+        dep="$(get_deployment_json "${ns}" "${entity}")"
+        deployment_is_trusted "${dep}" \
+            || die "instrument: '${entity}' is not a Rossoctl-managed workload. Deploy or import agents/tools through Rossoctl so admission supplies the trusted identity label and AuthBridge sidecar, then retry. Mutating nothing."
+        pod="$(get_pod_json "${ns}" "${entity}")"
+        [[ "$(pod_items_count "${pod}")" -gt 0 ]] \
+            || die "instrument: '${entity}' has no Running pod; cannot verify its admitted platform proxy. Mutating nothing."
+        type="$(detect_sidecar_type "${pod}")"
+        [[ "${type}" == "proxy" ]] \
+            || die "instrument: trusted Rossoctl workload '${entity}' requires an admitted AuthBridge proxy sidecar (found '${type}'). Redeploy it through Rossoctl with proxy mode enabled, then retry. Mutating nothing."
+        proxy_environment_valid "${pod}" \
+            || die "instrument: '${entity}' does not have the platform HTTP_PROXY/HTTPS_PROXY/NO_PROXY contract. Mutating nothing."
+        pod_name="$(pod_name_of "${pod}")"
+        [[ -n "${pod_name}" ]] || die "instrument: could not resolve the live pod for '${entity}'. Mutating nothing."
+        proxy_catalog_has_lineage "${ns}" "${pod_name}" \
+            || die "instrument: '${entity}'s AuthBridge image does not advertise the a2a-parser, mcp-parser, inference-parser, and lineage-telemetry plugins. Deploy a lineage-capable Cortex proxy image first; mutating nothing."
+        cm="$(sidecar_config_cm "${pod}")"
+        [[ -n "${cm}" ]] || die "instrument: '${entity}' has no mounted AuthBridge ConfigMap. Mutating nothing."
+        cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
+            || die "instrument: could not read ConfigMap '${cm}' for '${entity}'. Mutating nothing."
+        render_existing_proxy_config "${cm_json}" "${entity}" "${pod}" >/dev/null \
+            || die "instrument: '${entity}'s existing proxy ConfigMap is outside the safe #256 reconciliation envelope. Mutating nothing."
 
-# fail_with_backout <ns> <entity> <sidecar-container> <backout_line>: dump the
-# sidecar log, surface the kit's back-out line, and die loud. Used on any
-# post-apply failure (crash-loop, or the kit's own rollout wait returning error).
-fail_with_backout() {
-    local ns="$1" entity="$2" container="$3" backout="$4"
-    err ">> instrument: attach FAILED for '${entity}' in '${ns}' — the ${container} sidecar did not come up healthy."
-    err ">> instrument: ${container} container log follows:"
-    kubectl -n "${ns}" logs "deploy/${entity}" -c "${container}" 2>&1 | sed 's/^/    /' >&2 || true
-    if [[ -n "${backout}" ]]; then
-        err ">> instrument: back out with the kit's printed reverse-patch line:"
-        # Surface the kit's OWN back-out line verbatim (a reverse-patch, NOT a
-        # rollout undo — ADR-0032 decision 4).
-        err "    ${backout}"
-    fi
-    die "instrument halted at '${entity}' (crash-looping / failed rollout); did NOT proceed to the remaining entities"
-}
-
-# drive_kit_attach <kit> <ns> <entity> <app_container> <app_image>:
-# run the kit's sidecar-patch.sh for a kit-owned row (no-sidecar / envoy). When
-# <app_container> is non-empty the attach flips propagation on it (APP_CONTAINER
-# + APP_IMAGE); empty means capture-only. We capture the kit's stdout so we can
-# (a) surface its printed back-out line on a failure, and (b) detect a
-# crash-loop after it returns. The kit's own --dry-run=server guard runs inside
-# it (pre-apply); our crash-loop watch runs after (post-apply).
-drive_kit_attach() {
-    local kit="$1" ns="$2" entity="$3" app_container="$4" app_image="$5"
-    local out status backout
-    err ">> instrument: attaching lineage sidecar to '${entity}' via the #852 kit (sidecar-patch.sh)"
-    status=0
-    # NOTE: DEPLOY/NAMESPACE/SELF_ID/APP_CONTAINER are read by sidecar-patch.sh
-    # itself; APP_IMAGE/OTEL_ENDPOINT/SIDECAR_IMAGE/PROXY_INIT_IMAGE are inherited
-    # by attach-lineage.sh. SIDECAR_IMAGE/PROXY_INIT_IMAGE are passed THROUGH from
-    # the environment (the operator supplies the locally-built plugin-bearing
-    # tags until the cortex PRs land) — we do not default them here.
-    # OUTBOUND_PORTS_EXCLUDE is passed THROUGH too (explicitly, so it is not a
-    # mere accident of env inheritance): the envoy sidecar's proxy-init redirects
-    # ALL outbound ports into envoy, which speaks HTTP — so an app's plaintext
-    # NON-HTTP egress (Postgres 5432, SMTP 1025, an object store) must be excluded
-    # or it breaks. The kit reads it and hands it to proxy-init; dg.sh does not
-    # guess a port list (empty = the kit default), the operator passes what their
-    # tools need (issue #184).
-    out="$(
-        DEPLOY="${entity}" \
-        NAMESPACE="${ns}" \
-        SELF_ID="${entity}" \
-        APP_CONTAINER="${app_container}" \
-        APP_IMAGE="${app_image}" \
-        OTEL_ENDPOINT="${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
-        OUTBOUND_PORTS_EXCLUDE="${OUTBOUND_PORTS_EXCLUDE:-}" \
-        "${kit}/sidecar-patch.sh" 2>&1
-    )" || status=$?
-    # Echo the kit's output to the operator regardless of outcome.
-    printf '%s\n' "${out}"
-    # The back-out line the kit prints (before its rollout wait, so present even
-    # on a failed wait): capture it verbatim to surface on any failure.
-    backout="$(printf '%s\n' "${out}" | grep -m1 '^>> back out:' || true)"
-
-    if [[ "${status}" -ne 0 ]]; then
-        # The kit's rollout wait (or an apply) failed — a post-apply failure the
-        # dry-run could not catch. Surface the back-out line + sidecar log.
-        fail_with_backout "${ns}" "${entity}" "envoy-proxy" "${backout}"
-    fi
-    # The kit reported success; still watch for a crash-loop the rollout status
-    # may have missed (a pod that started, then crash-looped).
-    if crashloop_detected "${ns}" "${entity}"; then
-        fail_with_backout "${ns}" "${entity}" "envoy-proxy" "${backout}"
-    fi
-    err ">> instrument: '${entity}' attached (kit-owned row)."
-}
-
-# instrument_entity <kit> <ns> <entity>: dispatch one entity through the decision
-# table. Reuses #183 sidecar detection (detect_sidecar_type).
-instrument_entity() {
-    local kit="$1" ns="$2" entity="$3"
-    local json type
-    json="$(get_deployment_json "${ns}" "${entity}")"
-    type="$(detect_sidecar_type "${json}")"
-
-    # Fall back to the live Pod when the Deployment TEMPLATE shows no sidecar — a
-    # webhook-injected sidecar exists only in the admitted Pod. The fallback's
-    # sole purpose here is DETECTION: if the Pod carries a sidecar, classify from
-    # the Pod doc so an injected sidecar is correctly SEEN (→ skipped below),
-    # instead of being misclassified 'none' and wrongly instrumented (the kit
-    # would inject a SECOND sidecar onto an entity that already has one).
-    #
-    # CRITICAL: a template 'none' is only safe to act on once a live Pod CONFIRMS
-    # it. detect_sidecar_type prints 'none' both for a Pod that genuinely has no
-    # sidecar AND for an EMPTY listing (0 Running pods — Deployment scaled to 0,
-    # or just-applied and not yet admitted). The latter 'none' is unconfirmed: a
-    # webhook-injected sidecar would only appear once a Pod is admitted, so
-    # trusting it here would inject a SECOND sidecar. On the mutating instrument
-    # path we therefore REFUSE when the template shows no sidecar and there is no
-    # Running pod to confirm from — fail loud, mutate nothing (matches the verb's
-    # fail-loud posture; the read-only `status` verb tolerates this via the soft
-    # probe and simply reports the unconfirmed template verdict).
-    if [[ "${type}" == "none" ]]; then
-        local pod_json pod_type pod_count
-        pod_json="$(get_pod_json "${ns}" "${entity}")"
-        pod_count="$(pod_items_count "${pod_json}")"
-        if [[ "${pod_count}" -eq 0 ]]; then
-            die "instrument: '${entity}' in '${ns}' shows no sidecar in its Deployment template and has no Running pod to confirm that from. A webhook-injected sidecar is visible only on an admitted Pod, so instrumenting now could attach a SECOND sidecar. Scale the Deployment up (or wait for its pods to be Running) and re-run — refusing to instrument on an unconfirmed 'none'."
+        app="$(app_container_of "${dep}")"
+        [[ -n "${app}" ]] || die "instrument: '${entity}' must have exactly one application container. Mutating nothing."
+        base="$(app_image_of "${dep}" "${app}")"
+        [[ -n "${base}" ]] || die "instrument: '${entity}' application image could not be resolved. Mutating nothing."
+        cached="$(awk -F '\t' -v image="${base}" '$1 == image {print $2; exit}' "${cache_file}")"
+        if [[ -n "${cached}" ]]; then
+            shim="${cached}"
+        elif shim_image_attested "${base}"; then
+            shim="${base}"
+            printf '%s\t%s\n' "${base}" "${shim}" >> "${cache_file}"
+        else
+            err ">> instrument: preflight baking + attesting '${base}' for trusted proxy workloads"
+            bake_status=0
+            bake_out="$(KIND_CLUSTER_NAME="$(resolve_kind_cluster_name)" \
+                "${KIT_DIR}/build-otel-shim.sh" "${base}" 2>&1)" || bake_status=$?
+            printf '%s\n' "${bake_out}" >&2
+            [[ "${bake_status}" -eq 0 ]] \
+                || die "instrument: required shim for '${base}' failed preflight (exit ${bake_status}); trusted existing proxies cannot downgrade to capture-only. Mutating no workloads."
+            shim="$(printf '%s\n' "${bake_out}" | sed -nE \
+                's/.*loaded ([^ ]+) into.*/\1/p; s/.*built \+ attested ([^ ]+) .*/\1/p' | head -n1)"
+            [[ -n "${shim}" ]] \
+                || die "instrument: shim bake for '${base}' succeeded without a parseable image reference. Mutating no workloads."
+            printf '%s\t%s\n' "${base}" "${shim}" >> "${cache_file}"
         fi
-        pod_type="$(detect_sidecar_type "${pod_json}")"
-        if [[ "${pod_type}" != "none" ]]; then
-            json="${pod_json}"
-            type="${pod_type}"
-        fi
-    fi
+        printf '%s\t%s\t%s\n' "${entity}" "${app}" "${shim}" >> "${plan_file}"
+    done <<< "${names}"
+    rm -f "${cache_file}"
+}
 
-    case "${type}" in
-        none)
-            # No sidecar → the kit injects an envoy lineage sidecar. That sidecar
-            # mounts the platform envoy-config CM, which the kit REQUIRES but does
-            # not create — so ensure it exists in this namespace first (dg.sh owns
-            # provisioning it for an ad-hoc namespace; #184). Done here (only for a
-            # kit-bound entity, and before the slow shim bake) so an all-skipped
-            # namespace never needs envoy-config, and a genuinely missing one fails
-            # loud before we bake anything. Idempotent across entities.
-            ensure_envoy_config "${ns}"
-            # For a Python app also bake + attach the propagate-only shim
-            # (LINEAGE_PROPAGATE=1 via APP_CONTAINER/APP_IMAGE) — the difference
-            # between one trace and N fragments. A self-instrumenting app is
-            # refused the shim by the kit's bake interlock (exit 3) → capture-only.
-            local app_container app_image otel_image bake_status
-            app_container="$(app_container_of "${json}")"
-            app_image=""
-            if [[ -n "${app_container}" ]]; then
-                app_image="$(app_image_of "${json}" "${app_container}")"
-            fi
-            local shim_container="" shim_image="" bake_out
-            if [[ -n "${app_container}" && -n "${app_image}" ]]; then
-                err ">> instrument: baking the propagate-only shim for '${entity}' (build-otel-shim.sh ${app_image})"
-                bake_status=0
-                # Capture the bake's combined output, echo it for the operator,
-                # then parse the loaded ref from it. Kept as two steps (not one
-                # fragile `grep -m1 | sed` pipeline) so a SIGPIPE from an early
-                # grep exit cannot masquerade as a bake failure under pipefail.
-                bake_out="$("${kit}/build-otel-shim.sh" "${app_image}" 2>&1)" || bake_status=$?
-                printf '%s\n' "${bake_out}" >&2
-                otel_image="$(printf '%s\n' "${bake_out}" \
-                    | sed -nE 's/.*loaded ([^ ]+) into.*/\1/p' | head -n1)"
-                # The kit uses DISTINCT exit codes (build-otel-shim.sh header):
-                #   3 = image REFUSED (bake interlock: self-instrumenting /
-                #       already-baked / non-runnable-Python / base missing) — the
-                #       ONLY sanctioned capture-only case (#184 re-scope decision 5).
-                #   4 = ATTESTATION FAILED (verify_inert / verify_propagates) — the
-                #       shim was built but does not actually propagate.
-                #   other non-zero = a Docker build error, etc.
-                # A genuinely broken shim (exit 4 / other) is NOT decoration we can
-                # drop: it is the difference between one trace and N fragments, so
-                # halt loud rather than silently attach capture-only. Only exit 3
-                # legitimately downgrades to capture-only.
-                if [[ "${bake_status}" -eq 3 ]]; then
-                    # Bake interlock refused (self-instrumenting app, or outside
-                    # the shim envelope). Capture-only, NOT a failure.
-                    err ">> instrument: shim refused by the kit's bake interlock for '${entity}' (exit 3: self-instrumenting / non-Python) — attaching CAPTURE-ONLY"
-                    shim_container=""
-                    shim_image=""
-                elif [[ "${bake_status}" -ne 0 ]]; then
-                    # exit 4 (attestation) / any other non-zero → genuinely broken.
-                    die "instrument: the propagate-only shim for '${entity}' failed to build (build-otel-shim.sh exited ${bake_status}) — this is NOT the exit-3 bake interlock: the shim is broken (attestation failed, or a build error), so it cannot be treated as an intentional downgrade. Refusing to attach a lineage sidecar that would lose trace-context propagation. Fix the shim bake (see the build-otel-shim.sh output above) and re-run."
-                elif [[ -z "${otel_image}" ]]; then
-                    # Exit 0 but nothing loadable parsed out: the bake claimed
-                    # success yet produced no ref to attach. Fail loud rather than
-                    # silently drop propagation.
-                    die "instrument: the propagate-only shim for '${entity}' reported success but no loaded image ref could be parsed from build-otel-shim.sh output (above). Refusing to attach a sidecar that would lose trace-context propagation."
-                else
-                    shim_container="${app_container}"
-                    shim_image="${otel_image}"
-                fi
-            fi
-            drive_kit_attach "${kit}" "${ns}" "${entity}" "${shim_container}" "${shim_image}"
-            ;;
-        proxy|envoy)
-            # Already has a sidecar → OUT OF SCOPE. instrument only wires lineage
-            # onto entities with NO sidecar, via the #852 kit (ADR-0032, revised
-            # to a kit-only, no-sidecar prerequisite). Retrofitting an existing
-            # sidecar is not a supported route: an in-place edit of an
-            # operator-owned (webhook-injected) pipeline CM is clobbered on the
-            # next roll, and the platform's enforcing sidecar 401s the demo — see
-            # docs/proposals/with-sidecar-live-validation-findings.md. Skip and
-            # continue; mutate nothing.
-            err ">> instrument: '${entity}' already has a ${type} sidecar — skipping."
-            err "   instrument only wires lineage onto entities with NO sidecar (via the #852 kit)."
+instrument_existing_proxy() {
+    local ns="$1" entity="$2" app="$3" shim="$4"
+    local patch
+    patch="$(python3 -c '
+import json, sys
+name, image = sys.argv[1:]
+print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image":image,"imagePullPolicy":"IfNotPresent","env":[{"name":"LINEAGE_PROPAGATE","value":"1"}]}]}}}}))
+' "${app}" "${shim}")"
+    err ">> instrument: rolling '${entity}' onto the attested application shim; platform sidecar/auth remain admission-owned"
+    kubectl -n "${ns}" patch "deployment/${entity}" --type strategic -p "${patch}" \
+        || die "instrument: failed to patch the application container for '${entity}'"
+    kubectl -n "${ns}" rollout status "deployment/${entity}" --timeout=180s \
+        || die "instrument: rollout of '${entity}' did not become ready"
+
+    local pod pod_name cm cm_json amended
+    pod="$(get_pod_json "${ns}" "${entity}")"
+    [[ "$(detect_sidecar_type "${pod}")" == "proxy" ]] \
+        || die "instrument: '${entity}' lost its platform proxy after rollout"
+    proxy_environment_valid "${pod}" \
+        || die "instrument: '${entity}' lost its platform proxy environment after rollout"
+    pod_name="$(pod_name_of "${pod}")"
+    cm="$(sidecar_config_cm "${pod}")"
+    [[ -n "${pod_name}" && -n "${cm}" ]] \
+        || die "instrument: could not resolve '${entity}'s post-rollout pod/ConfigMap"
+    cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
+        || die "instrument: failed to read '${entity}'s post-rollout ConfigMap '${cm}'"
+    amended="$(render_existing_proxy_config "${cm_json}" "${entity}" "${pod}")" \
+        || die "instrument: failed to reconcile '${entity}'s post-rollout proxy pipeline"
+    printf '%s' "${amended}" | kubectl apply -f - \
+        || die "instrument: failed to apply '${entity}'s reconciled proxy ConfigMap"
+
+    # A projected ConfigMap can take up to the kubelet sync period plus cache
+    # propagation (commonly around two minutes) to reach the mounted file.
+    local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-90}"
+    for ((attempt=1; attempt<=max_attempts; attempt++)); do
+        if live_pipeline_is_canonical "${ns}" "${pod_name}" "${entity}" "${amended}"; then
+            err ">> instrument: '${entity}' lineage pipeline hot-reloaded and is live (no second rollout)."
             return 0
-            ;;
-        *)
-            die "instrument: could not classify the sidecar of '${entity}' in '${ns}' (got '${type}')"
-            ;;
-    esac
+        fi
+        sleep 2
+    done
+    die "instrument: '${entity}' ConfigMap was reconciled but /v1/pipeline did not converge after hot reload; no second rollout was performed"
 }
+
 
 # namespace_instrument <ns> [<entity>]: the non-reversible activation verb. Runs
-# the dg.sh-side preflights (kit resolvable, component installed, tee wired),
-# enumerates the targeted entities (loud on a bad <entity>), and drives each
-# through the decision table. A crash-loop on any entity halts the whole run.
+# the dg.sh-side preflights (vendored kit intact, component installed, tee
+# wired), enumerates the targeted entities (loud on a bad <entity>), validates
+# the complete Rossoctl/AuthBridge transaction, and only then mutates workloads.
 namespace_instrument() {
     local ns="$1"
     local entity="${2:-}"
@@ -1175,9 +1232,8 @@ namespace_instrument() {
     command -v python3 >/dev/null 2>&1 \
         || die "'python3' is required for sidecar detection (namespace instrument); install it"
 
-    # Preflight 1: the kit must be resolvable (refuse, mutate nothing).
-    local kit
-    kit="$(resolve_kit_dir)"
+    # Preflight 1: the vendored kit must be intact (refuse, mutate nothing).
+    require_vendored_kit
 
     # Preflight 2: the consumer side must be up (component installed + tee wired).
     instrument_preflight
@@ -1190,13 +1246,18 @@ namespace_instrument() {
         return 0
     fi
 
-    local name
-    while IFS= read -r name; do
+    # All checks and shim builds finish before the first workload mutation.
+    # This preflight also refuses bare and non-Rossoctl workloads.
+    local plan_file name app shim
+    plan_file="$(mktemp)"
+    preflight_trusted_proxies "${ns}" "${names}" "${plan_file}"
+    while IFS=$'\t' read -r name app shim; do
         [[ -n "${name}" ]] || continue
-        instrument_entity "${kit}" "${ns}" "${name}"
-    done <<< "${names}"
+        instrument_existing_proxy "${ns}" "${name}" "${app}" "${shim}"
+    done < "${plan_file}"
+    rm -f "${plan_file}"
 
-    err ">> instrument: done for namespace '${ns}'."
+    err ">> instrument: done for trusted proxy namespace '${ns}'."
 }
 
 # --- namespace <ns> [instrument|status] [<entity>] -------------------------
@@ -1234,17 +1295,6 @@ main() {
     # GLOBAL position are a usage error.
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --cortex-local-path)
-                [[ $# -ge 2 ]] || usage_error "--cortex-local-path requires a <dir> argument"
-                CORTEX_LOCAL_PATH="$2"
-                export CORTEX_LOCAL_PATH
-                shift 2
-                ;;
-            --cortex-local-path=*)
-                CORTEX_LOCAL_PATH="${1#*=}"
-                export CORTEX_LOCAL_PATH
-                shift
-                ;;
             -h|--help)
                 usage
                 exit 0
