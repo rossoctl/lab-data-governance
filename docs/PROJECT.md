@@ -491,7 +491,8 @@ detail — the contract is pinned here so deployments can rely on it.
   this API.
 - **Shape: typed methods only.** The 95%-path method is
   `get_spans(cursor, limit, trace_id, span_id, parent_id, time_from,
-  time_to, root_only: bool, order: "asc" | "desc" | None = None)
+  time_to, root_only: bool, order: "asc" | "desc" | None = None,
+  hide_connect_only_traces: bool = False)
   -> GetSpansResult`. All filter parameters default to `None`/`False`;
   the method returns spans within the given window, cursored on `seq`.
   When `trace_id` is set the result is restricted to that trace; when
