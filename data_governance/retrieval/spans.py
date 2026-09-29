@@ -651,7 +651,10 @@ def _listing_roots_paginated(
                 }}'::jsonb,
                 FALSE
               )
-              AND r.attributes ->> 'lineage.exchange.id' = r.span_id
+              AND COALESCE(
+                r.attributes ->> 'lineage.exchange.id' = r.span_id,
+                FALSE
+              )
               AND NOT EXISTS (
                 SELECT 1
                 FROM spans member
