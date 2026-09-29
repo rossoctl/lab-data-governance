@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 
+import pytest
+
 from data_governance.retrieval import get_spans
 
 
@@ -157,6 +159,110 @@ def test_connect_method_without_full_signature_remains_visible(raw_conn):
     result = get_spans(root_only=True, hide_connect_only_traces=True)
 
     assert [span.trace_id for span in result.spans] == ["generic-connect"]
+
+
+@pytest.mark.parametrize(
+    "missing_attribute",
+    [
+        "http.method",
+        "url.scheme",
+        "lineage.role",
+        "lineage.direction",
+        "lineage.parent.source",
+        "lineage.exchange.id",
+    ],
+)
+def test_each_connect_signature_attribute_is_required(
+    raw_conn,
+    missing_attribute: str,
+):
+    attributes = _connect_request("request")
+    del attributes[missing_attribute]
+    _insert(
+        raw_conn,
+        trace_id=f"missing-{missing_attribute}",
+        span_id="request",
+        parent_id=None,
+        started_at=dt.datetime(2026, 9, 29, 10, tzinfo=UTC),
+        attributes=attributes,
+        resource_attributes=_COMPONENT,
+    )
+
+    result = get_spans(root_only=True, hide_connect_only_traces=True)
+
+    assert [span.trace_id for span in result.spans] == [
+        f"missing-{missing_attribute}"
+    ]
+
+
+def test_connect_signature_requires_authbridge_component(raw_conn):
+    _insert(
+        raw_conn,
+        trace_id="missing-component",
+        span_id="request",
+        parent_id=None,
+        started_at=dt.datetime(2026, 9, 29, 10, tzinfo=UTC),
+        attributes=_connect_request("request"),
+    )
+
+    result = get_spans(root_only=True, hide_connect_only_traces=True)
+
+    assert [span.trace_id for span in result.spans] == ["missing-component"]
+
+
+def test_connect_exchange_id_must_identify_root_span(raw_conn):
+    _insert(
+        raw_conn,
+        trace_id="wrong-exchange-id",
+        span_id="request",
+        parent_id=None,
+        started_at=dt.datetime(2026, 9, 29, 10, tzinfo=UTC),
+        attributes=_connect_request("different-span"),
+        resource_attributes=_COMPONENT,
+    )
+
+    result = get_spans(root_only=True, hide_connect_only_traces=True)
+
+    assert [span.trace_id for span in result.spans] == ["wrong-exchange-id"]
+
+
+def test_orphan_connect_listing_root_remains_visible(raw_conn):
+    _insert(
+        raw_conn,
+        trace_id="orphan-connect",
+        span_id="request",
+        parent_id="missing-parent",
+        started_at=dt.datetime(2026, 9, 29, 10, tzinfo=UTC),
+        attributes=_connect_request("request"),
+        resource_attributes=_COMPONENT,
+    )
+
+    result = get_spans(root_only=True, hide_connect_only_traces=True)
+
+    assert [span.trace_id for span in result.spans] == ["orphan-connect"]
+
+
+def test_connect_only_filter_does_not_depend_on_span_count(raw_conn):
+    started_at = dt.datetime(2026, 9, 29, 10, tzinfo=UTC)
+    _insert_connect_pair(
+        raw_conn,
+        trace_id="three-span-connect",
+        request_id="request",
+        started_at=started_at,
+    )
+    _insert(
+        raw_conn,
+        trace_id="three-span-connect",
+        span_id="additional-evidence",
+        parent_id="request",
+        started_at=started_at + dt.timedelta(microseconds=2),
+        attributes={"lineage.exchange.id": "request"},
+        resource_attributes=_COMPONENT,
+    )
+
+    result = get_spans(root_only=True, hide_connect_only_traces=True)
+
+    assert result.spans == []
 
 
 def test_connect_span_nested_in_application_trace_remains_visible(raw_conn):
