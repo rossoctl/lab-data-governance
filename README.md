@@ -109,8 +109,8 @@ and the expected trace shape) lives with the `agent-examples` project.
 - `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE` — connection-pool sizing (default 1 / 10).
 - `DB_POOL_TIMEOUT` — seconds to wait for a connection from the pool before
   raising `PoolTimeout` (default 30).
-- `DG_FF_HIDE_CONNECT_ONLY_TRACES` — when true (the default), omit standalone
-  AuthBridge CONNECT tunnel traces from `GET /api/traces`. Their spans remain
+- `DG_FF_HIDE_CONNECT_ONLY_TRACES` — when true (the default), omit each
+  **Standalone CONNECT trace** from `GET /api/traces`. Its spans remain
   stored and directly accessible. Accepted values are `true/1/yes/on` and
   `false/0/no/off`; any other configured value prevents API startup.
 
