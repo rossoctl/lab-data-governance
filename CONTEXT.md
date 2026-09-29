@@ -32,6 +32,12 @@ beyond the shared id; "tree shape" is derived from `parent_id` links at query
 time.
 _Avoid_: "request", "session" — those imply semantics v1 does not assign.
 
+**Standalone CONNECT trace**:
+A **Trace** consisting only of an opaque outbound CONNECT tunnel exchange that
+arrived without causal context. It proves that a TCP tunnel to a destination was
+attempted, but cannot reveal the HTTP operations or payloads carried inside that
+tunnel. It is transport evidence rather than application activity.
+
 **Listing root**:
 The one **Span** chosen to represent a **Trace** in a UI listing row. Defined as
 the trace's earliest **Real root** if one exists, otherwise its earliest
@@ -894,7 +900,9 @@ anchored on its current **Listing root**. Is the element type of the
 singular: `{trace_id, listing_root, counts, in_time_window}`, where
 `listing_root` is the anchor **Span**, `counts` is its **Trace counts**,
 and `in_time_window` reports whether the anchor is **In-window**. The
-collection and singular return the identical shape.
+collection and singular return the identical shape. Collection membership may
+omit a **Standalone CONNECT trace** under the deployment's default visibility
+policy; the singular resource remains addressable when its `trace_id` is known.
 Eventually consistent: the listing root, and therefore the row's display
 fields, may change as late spans arrive or **Finalization** advances a
 span's `seq`. Identity is `trace_id`; everything else is derived. The UI

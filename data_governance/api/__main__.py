@@ -24,7 +24,11 @@ import uvicorn
 
 from data_governance import db
 
-from . import DEFAULT_PORT, build_app
+from . import DEFAULT_HIDE_CONNECT_ONLY_TRACES, DEFAULT_PORT, build_app
+
+
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 def _int_env(name: str, default: int) -> int:
@@ -37,6 +41,24 @@ def _int_env(name: str, default: int) -> int:
     except ValueError:
         sys.stderr.write(f"{name} is not a valid integer: {raw!r}\n")
         return default
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    """Parse a strict boolean environment variable.
+
+    An unset variable uses *default*. A present but unrecognized value is a
+    startup error rather than silently changing trace visibility.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in _TRUE_VALUES:
+        return True
+    if normalized in _FALSE_VALUES:
+        return False
+    accepted = "1/true/yes/on or 0/false/no/off"
+    raise ValueError(f"{name} must be {accepted}, got {raw!r}")
 
 
 def main() -> int:
@@ -54,13 +76,24 @@ def main() -> int:
         )
         return 2
 
+    try:
+        hide_connect_only_traces = _bool_env(
+            "DG_FF_HIDE_CONNECT_ONLY_TRACES",
+            DEFAULT_HIDE_CONNECT_ONLY_TRACES,
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
+
     db.configure(dsn)
 
     host = os.environ.get("API_HOST", "0.0.0.0")
     port = _int_env("API_PORT", DEFAULT_PORT)
 
     config = uvicorn.Config(
-        app=build_app(),
+        app=build_app(
+            hide_connect_only_traces=hide_connect_only_traces,
+        ),
         host=host,
         port=port,
         log_level=os.environ.get("LOG_LEVEL", "info").lower(),
@@ -73,6 +106,10 @@ def main() -> int:
     # background thread sidesteps that and matches receiver __main__.
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
+    log.info(
+        "DG_FF_HIDE_CONNECT_ONLY_TRACES=%s",
+        "true" if hide_connect_only_traces else "false",
+    )
     log.info("UI backend listening on %s:%d", host, port)
 
     stop_event = threading.Event()
