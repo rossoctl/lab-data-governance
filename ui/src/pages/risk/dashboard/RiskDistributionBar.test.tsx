@@ -29,10 +29,35 @@ describe('RiskDistributionBar', () => {
     expect(levels).toEqual(['critical', 'high', 'medium', 'low', 'none']);
   });
 
-  it('renders five legend entries in severity order (critical first, none last)', () => {
+  it('renders a legend entry only for each non-zero level, in severity order', () => {
+    // Fixture is all non-zero, so all five appear, critical first.
     render(<RiskDistributionBar distribution={distribution()} />);
     const levels = screen.getAllByTestId('risk-distribution-legend-item').map((el) => el.dataset.level);
     expect(levels).toEqual(['critical', 'high', 'medium', 'low', 'none']);
+  });
+
+  it('omits legend entries for zero-count levels (only non-zero levels shown)', () => {
+    // The reported 30-day case: only critical and none have any records.
+    render(
+      <RiskDistributionBar
+        distribution={distribution({ critical: 29, high: 0, medium: 0, low: 0, none: 971, total: 1000 })}
+      />,
+    );
+    const levels = screen.getAllByTestId('risk-distribution-legend-item').map((el) => el.dataset.level);
+    expect(levels).toEqual(['critical', 'none']);
+    // The zero-count levels are absent from the legend entirely.
+    expect(screen.queryByText(/High: 0/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Medium: 0/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Low: 0/)).not.toBeInTheDocument();
+  });
+
+  it('renders no legend entries at all for an all-zero distribution', () => {
+    render(
+      <RiskDistributionBar
+        distribution={distribution({ critical: 0, high: 0, medium: 0, low: 0, none: 0, total: 0 })}
+      />,
+    );
+    expect(screen.queryAllByTestId('risk-distribution-legend-item')).toHaveLength(0);
   });
 
   it('gives each segment an accessible label carrying both count and percentage', () => {

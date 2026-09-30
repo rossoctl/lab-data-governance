@@ -403,6 +403,13 @@ narrow — never clipped, never hidden. Each entry is content-sized, so its full
 both rows being severity-ordered, each legend entry still sits roughly beneath
 its chunk.
 
+**Only non-zero levels get a legend entry.** A level with a `0` count is
+omitted from the legend rather than shown as `Level: 0 (0%)` — e.g. a 30-day
+window with only critical and none records shows exactly those two entries,
+not five. The bar still renders all five chunks (a zero-count level is a
+zero-width, invisible chunk); it is only the legend that is filtered. An
+all-zero window therefore renders an empty legend row.
+
 ### Shared components
 
 | Component | Purpose |

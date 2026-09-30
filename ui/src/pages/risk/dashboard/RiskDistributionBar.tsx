@@ -46,6 +46,13 @@ const LEVEL_TITLE: Record<string, string> = {
  * to the next line only when the card itself is too narrow — never clipped,
  * never hidden. In the common even-distribution case, both rows being
  * severity-ordered, each legend entry still sits roughly beneath its chunk.
+ *
+ * Legend content: only levels with a **non-zero count** get a legend entry
+ * (per the reported 30-day case — a critical/none-only window should show
+ * just those two, not five entries three of which read `: 0 (0%)`). The bar
+ * itself still renders all five chunks; a zero-count level is simply a
+ * zero-width (invisible) chunk with no legend entry. An all-zero window
+ * therefore renders an empty legend row.
  */
 export function RiskDistributionBar({ distribution }: RiskDistributionBarProps) {
   const segments = distributionSegments(distribution);
@@ -93,7 +100,9 @@ export function RiskDistributionBar({ distribution }: RiskDistributionBarProps) 
           className="pf-v5-u-mt-sm"
           data-testid="risk-distribution-legend"
         >
-          {segments.map((segment) => (
+          {segments
+            .filter((segment) => segment.count > 0)
+            .map((segment) => (
             <FlexItem
               key={segment.level}
               data-testid="risk-distribution-legend-item"
