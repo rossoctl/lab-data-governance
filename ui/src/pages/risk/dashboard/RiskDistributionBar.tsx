@@ -20,24 +20,32 @@ const LEVEL_TITLE: Record<string, string> = {
  * come from `distributionSegments` (already zero-division-guarded), so an
  * all-zero window renders five zero-width segments rather than `NaN%`.
  *
- * Each segment is its own column — the coloured bar chunk on top, that
- * segment's legend label directly beneath it — rather than one bar row with
- * a separate legend row below, so a label always sits under the chunk it
- * describes instead of in an unrelated flex-wrapped line.
+ * Layout: a single-row coloured bar on top, and a separate legend row beneath
+ * it — NOT one legend label glued under each chunk.
  *
- * Single-row invariant (issue #255): the row is `nowrap` and each column is
- * sized by `flexBasis: {pct}%` with shrink allowed and no fixed `min-width`
- * floor. A previous version pinned every non-zero segment to `min-width:
- * 2.5rem`; for an uneven split (e.g. 2.9% vs 97.1%) those floors summed past
- * 100% of the container, and — the row being wrap-enabled — the bar broke
- * onto a second row. Proportional flex-basis with shrink keeps every column
- * within 100% regardless of how lopsided the distribution is, so the bar is
- * always a single row. A tiny non-zero segment stays visible because its
- * coloured chunk carries a small `min-width`; that floor lives on the chunk,
- * not the flex column, so it can overflow its own column harmlessly instead
- * of widening the column and forcing a wrap. The legend label is clipped
- * within its column (`overflow: hidden`) so its intrinsic text width never
- * dictates the column width either.
+ * Single-row invariant (issue #255): the bar row is `nowrap` and each chunk
+ * is sized by `flexBasis: {pct}%` with shrink allowed and no fixed `min-width`
+ * floor on its flex column. A pre-#255 version pinned every non-zero segment
+ * to `min-width: 2.5rem`; for an uneven split (e.g. 2.9% vs 97.1%) those
+ * floors summed past 100% of the container and the (then wrap-enabled) bar
+ * broke onto a second row. Proportional flex-basis with shrink keeps every
+ * chunk within 100% regardless of how lopsided the distribution is, so the
+ * bar is always a single row. A tiny non-zero chunk stays visible because its
+ * coloured block carries a small `min-width`; that floor lives on the block,
+ * not the flex column, so it overflows its own column harmlessly instead of
+ * forcing a wrap.
+ *
+ * Legend placement (issue #255 follow-up): the #255 fix originally kept each
+ * label glued under its chunk and clipped it (`overflow: hidden`) so text
+ * width couldn't widen the column — but that hid the label of any chunk too
+ * narrow to hold it (the Critical entry vanished under a 2.9% chunk). The
+ * requirement is "under the corresponding part of the bar when there's room,
+ * otherwise laid out left-to-right in severity order so every entry stays
+ * visible." A separate legend row satisfies both: it is a wrap-enabled flex
+ * in severity order, so entries read left-to-right (critical first) and drop
+ * to the next line only when the card itself is too narrow — never clipped,
+ * never hidden. In the common even-distribution case, both rows being
+ * severity-ordered, each legend entry still sits roughly beneath its chunk.
  */
 export function RiskDistributionBar({ distribution }: RiskDistributionBarProps) {
   const segments = distributionSegments(distribution);
@@ -48,7 +56,7 @@ export function RiskDistributionBar({ distribution }: RiskDistributionBarProps) 
       <CardBody>
         <Flex
           spaceItems={{ default: 'spaceItemsNone' }}
-          alignItems={{ default: 'alignItemsFlexStart' }}
+          alignItems={{ default: 'alignItemsCenter' }}
           flexWrap={{ default: 'nowrap' }}
           fullWidth={{ default: 'fullWidth' }}
           data-testid="risk-distribution-bar"
@@ -76,7 +84,22 @@ export function RiskDistributionBar({ distribution }: RiskDistributionBarProps) 
                   minWidth: segment.pct > 0 ? '0.25rem' : undefined,
                 }}
               />
-              <Label color={colorForRiskLevel(segment.level)} isCompact className="pf-v5-u-mt-sm">
+            </FlexItem>
+          ))}
+        </Flex>
+        <Flex
+          spaceItems={{ default: 'spaceItemsSm' }}
+          alignItems={{ default: 'alignItemsCenter' }}
+          className="pf-v5-u-mt-sm"
+          data-testid="risk-distribution-legend"
+        >
+          {segments.map((segment) => (
+            <FlexItem
+              key={segment.level}
+              data-testid="risk-distribution-legend-item"
+              data-level={segment.level}
+            >
+              <Label color={colorForRiskLevel(segment.level)} isCompact>
                 {LEVEL_TITLE[segment.level]}: {segment.count} ({segment.pct}%)
               </Label>
             </FlexItem>

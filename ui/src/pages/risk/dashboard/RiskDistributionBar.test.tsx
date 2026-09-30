@@ -23,17 +23,16 @@ describe('RiskDistributionBar', () => {
     expect(screen.getByText('Risk Distribution')).toBeInTheDocument();
   });
 
-  it('renders five segments in severity order (critical first, none last)', () => {
+  it('renders five bar chunks in severity order (critical first, none last)', () => {
     render(<RiskDistributionBar distribution={distribution()} />);
-    const labels = screen.getAllByTestId('risk-distribution-segment').map((el) => el.dataset.level);
-    expect(labels).toEqual(['critical', 'high', 'medium', 'low', 'none']);
+    const levels = screen.getAllByTestId('risk-distribution-segment').map((el) => el.dataset.level);
+    expect(levels).toEqual(['critical', 'high', 'medium', 'low', 'none']);
   });
 
-  it("nests each segment's legend label directly under that segment's bar chunk", () => {
+  it('renders five legend entries in severity order (critical first, none last)', () => {
     render(<RiskDistributionBar distribution={distribution()} />);
-    const [criticalSegment] = screen.getAllByTestId('risk-distribution-segment');
-    const label = screen.getByText(/Critical: 2 \(2%\)/);
-    expect(criticalSegment).toContainElement(label);
+    const levels = screen.getAllByTestId('risk-distribution-legend-item').map((el) => el.dataset.level);
+    expect(levels).toEqual(['critical', 'high', 'medium', 'low', 'none']);
   });
 
   it('gives each segment an accessible label carrying both count and percentage', () => {
@@ -79,16 +78,17 @@ describe('RiskDistributionBar', () => {
         distribution={distribution({ critical: 29, high: 0, medium: 0, low: 0, none: 971, total: 1000 })}
       />,
     );
-    // No segment column may pin an absolute minimum width (a `rem`/`px`/`em`
-    // floor) — that floor is what pushed the summed widths past 100% and
-    // wrapped the row. A `min-width` of 0 is fine (it only *permits* shrink).
+    // No bar chunk may pin an absolute minimum width (a `rem`/`px`/`em` floor)
+    // on its flex column — that floor is what pushed the summed widths past
+    // 100% and wrapped the row. A `min-width` of 0 is fine (it only *permits*
+    // shrink).
     for (const segment of screen.getAllByTestId('risk-distribution-segment')) {
       const minWidth = segment.style.minWidth;
       expect(minWidth).not.toMatch(/\d\s*(rem|px|em)/);
     }
   });
 
-  it('sizes each column by its percentage share via flex-basis', () => {
+  it('sizes each bar chunk by its percentage share via flex-basis', () => {
     render(
       <RiskDistributionBar
         distribution={distribution({ critical: 29, high: 0, medium: 0, low: 0, none: 971, total: 1000 })}
@@ -99,5 +99,45 @@ describe('RiskDistributionBar', () => {
     expect(none.style.flexBasis).toBe('97.1%');
     // Columns must be allowed to shrink so the summed basis never overflows.
     expect(critical.style.flexShrink).toBe('1');
+  });
+
+  // Issue #255 follow-up: with the bar clipped to a single row, a tiny chunk
+  // (e.g. 2.9% critical) is too narrow to hold its own legend text, so a
+  // legend glued *under* each chunk clipped the Critical entry out of sight.
+  // The legend must instead be its own row where every entry stays fully
+  // visible, laid out left-to-right in severity order, so nothing is lost no
+  // matter how narrow a chunk is.
+  it('keeps every legend entry visible (never clipped) for an uneven distribution', () => {
+    render(
+      <RiskDistributionBar
+        distribution={distribution({ critical: 29, high: 0, medium: 0, low: 0, none: 971, total: 1000 })}
+      />,
+    );
+    // The Critical legend entry — under the 2.9% chunk it would be clipped —
+    // is present with its full text, and its container is not overflow-hidden.
+    const critical = screen
+      .getAllByTestId('risk-distribution-legend-item')
+      .find((el) => el.dataset.level === 'critical');
+    expect(critical).toBeDefined();
+    expect(critical).toHaveTextContent(/Critical: 29/);
+    expect(critical!.style.overflow).not.toBe('hidden');
+  });
+
+  it('lays the legend out as its own wrap-enabled row, decoupled from chunk widths', () => {
+    render(
+      <RiskDistributionBar
+        distribution={distribution({ critical: 29, high: 0, medium: 0, low: 0, none: 971, total: 1000 })}
+      />,
+    );
+    const legend = screen.getByTestId('risk-distribution-legend');
+    // The legend row wraps (default PF Flex wrap) rather than clipping to one
+    // line, so entries flow left-to-right and drop to the next line only when
+    // the card itself is too narrow — never hidden.
+    expect(legend.className).not.toContain('pf-m-nowrap');
+    // No legend entry is sized by the bar's percentages; each is content-sized.
+    for (const item of screen.getAllByTestId('risk-distribution-legend-item')) {
+      expect(item.style.flexBasis).toBe('');
+      expect(item.style.width).toBe('');
+    }
   });
 });
