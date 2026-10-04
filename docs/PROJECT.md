@@ -491,7 +491,8 @@ detail — the contract is pinned here so deployments can rely on it.
   this API.
 - **Shape: typed methods only.** The 95%-path method is
   `get_spans(cursor, limit, trace_id, span_id, parent_id, time_from,
-  time_to, root_only: bool, order: "asc" | "desc" | None = None)
+  time_to, root_only: bool, order: "asc" | "desc" | None = None,
+  hide_connect_only_traces: bool = False)
   -> GetSpansResult`. All filter parameters default to `None`/`False`;
   the method returns spans within the given window, cursored on `seq`.
   When `trace_id` is set the result is restricted to that trace; when
@@ -542,12 +543,12 @@ detail — the contract is pinned here so deployments can rely on it.
   services is reflected in the result — OTEL itself doesn't solve
   this and v1 doesn't paper over it.
 - **Receiver stays semantically unaware.** The receiver and the retrieval
-  library do not interpret span semantics (trace boundaries beyond
-  `trace_id` grouping, payload-shaped attribute keys). The retrieval
-  library does compute listing-root identity (real root vs orphan
-  fallback) on demand for `root_only=True` — this is the one piece of
-  span-relationship logic in v1, deliberately localized to the
-  retrieval API and documented above.
+  library generally do not interpret span semantics (trace boundaries beyond
+  `trace_id` grouping, payload-shaped attribute keys). The retrieval library
+  computes listing-root identity (real root vs orphan fallback) on demand for
+  `root_only=True`. Its multi-trace listing path can also omit **Standalone
+  CONNECT traces** for the UI backend; that policy is explicitly selected by
+  the caller and never affects ingestion or single-trace reads.
 - **Cursor encoding is path-shaped.** The REST `cursor` parameter is
   always a `seq BIGINT` from a returned `Span`. Postgres `ctid` and
   `xmin` were considered and rejected: `ctid` is unstable across
@@ -687,6 +688,17 @@ the **listing root** of a trace with in-window activity, applying the
 and ADR-0001. The entry's `counts` carries `{total, in_window, error_count}`
 for the row's display, and `in_time_window` flags whether the anchor is in
 window. The UI's default page size is **20** rows.
+
+By default, `DG_FF_HIDE_CONNECT_ONLY_TRACES=true` omits a **Standalone CONNECT
+trace** from this collection. The predicate requires an unparented AuthBridge
+lineage-telemetry root carrying `http.method=CONNECT`, `url.scheme=tcp`,
+`lineage.role=request`, `lineage.direction=outbound`, and
+`lineage.parent.source=none`; every span in the trace must carry the root's
+`lineage.exchange.id`. The filter runs before ordering and `limit`, so hidden
+rows do not consume page capacity. It never uses span count and does not hide a
+trace containing another exchange. Setting the flag to false restores the full
+listing after an API restart. Storage, `GET /api/traces/{tid}`, and all
+trace-scoped sub-resources remain unchanged.
 
 The UI (flattening each entry to a row of the `listing_root` span fields plus
 the entry's `trace_id` / `in_time_window`, with `counts` stashed by

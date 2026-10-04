@@ -74,6 +74,7 @@ __all__ = ["SpansApiServer", "build_app"]
 _UI_DIR = Path(__file__).parent / "ui"
 
 DEFAULT_PORT = 8080
+DEFAULT_HIDE_CONNECT_ONLY_TRACES = True
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +200,8 @@ async def _traces_handler(request: Request) -> Response:
     Was ``GET /spans?root_only=true&time_from&time_to``. Returns
     ``{"traces": [TraceListingEntry]}`` — the trace-shaped feed the
     recent-traces view reads. ``time_from`` / ``time_to`` still window the
-    listing-root selection; the library ``get_spans`` is unchanged underneath.
+    listing-root selection. The process-wide feature flag controls whether
+    standalone CONNECT traces participate in this collection.
     """
     params = request.query_params
     try:
@@ -211,6 +213,7 @@ async def _traces_handler(request: Request) -> Response:
             time_from=time_from,
             time_to=time_to,
             root_only=True,
+            hide_connect_only_traces=request.app.state.hide_connect_only_traces,
             **kwargs,
         )
     except ValueError as exc:
@@ -671,8 +674,11 @@ async def _payload_handler(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
-def build_app() -> Starlette:
-    """Build and return the Starlette application."""
+def build_app(
+    *,
+    hide_connect_only_traces: bool = DEFAULT_HIDE_CONNECT_ONLY_TRACES,
+) -> Starlette:
+    """Build the Starlette application with process-wide listing policy."""
     routes: list = [
         Route("/healthz", endpoint=_healthz_handler, methods=["GET"]),
         Route("/api/traces", endpoint=_traces_handler, methods=["GET"]),
@@ -769,7 +775,9 @@ def build_app() -> Starlette:
         ),
         Route("/", endpoint=_root_redirect_handler, methods=["GET"]),
     ]
-    return Starlette(routes=routes)
+    app = Starlette(routes=routes)
+    app.state.hide_connect_only_traces = hide_connect_only_traces
+    return app
 
 
 # ---------------------------------------------------------------------------
@@ -789,15 +797,19 @@ class SpansApiServer:
         *,
         host: str = "0.0.0.0",
         port: int = DEFAULT_PORT,
+        hide_connect_only_traces: bool = DEFAULT_HIDE_CONNECT_ONLY_TRACES,
     ) -> None:
         self.host = host
         self.port = port
+        self.hide_connect_only_traces = hide_connect_only_traces
         self._server: object | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         config = uvicorn.Config(
-            app=build_app(),
+            app=build_app(
+                hide_connect_only_traces=self.hide_connect_only_traces,
+            ),
             host=self.host,
             port=self.port,
             log_level="warning",

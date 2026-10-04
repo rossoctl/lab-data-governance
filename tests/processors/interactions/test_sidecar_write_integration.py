@@ -80,7 +80,7 @@ def _assert_golden(snap: dict) -> None:
     # The namespace column (migration 0016) mirrors what the key carries: set
     # for the two pods, NULL for the user and the LLM endpoint.
     assert snap["namespaces"] == {
-        "user:alice": None,
+        "client:(unknown)": None,
         "agent:team1/weather-service": "team1",
         "tool:team1/weather-tool": "team1",
         f"llm:{golden._LLM_HOST}/qwen2.5:7b": None,
@@ -93,7 +93,7 @@ def _assert_golden(snap: dict) -> None:
     assert snap["ix"][I4]["parent"] == I1
     # Endpoints.
     assert (snap["ix"][I1]["caller"], snap["ix"][I1]["callee"]) == (
-        "user:alice", "agent:team1/weather-service")
+        "client:(unknown)", "agent:team1/weather-service")
     assert snap["ix"][I3]["callee"] == "tool:team1/weather-tool"  # from echo self.id
     assert snap["ix"][I2]["callee"] == f"llm:{golden._LLM_HOST}/qwen2.5:7b"
     # All complete: both observed legs per interaction (8 legs total), with the
@@ -205,6 +205,34 @@ def test_anchor_demotion_deletes_stale_interaction_and_legs(configured_db: str):
     assert snap["ix"][I3]["callee"] == "tool:team1/weather-tool"
     assert snap["spans"][golden.D1] == (I3, "connector", None)
     assert snap["spans"][golden.D2] == (I3, "connector", None)
+
+
+def test_echo_retires_unreferenced_provisional_peer_entity(configured_db: str):
+    """A peer.host tool is provisional until its inbound echo supplies the
+    namespaced workload identity. Reconciliation removes the old host:port row
+    only after the interaction and entity-span evidence point at the canonical
+    entity."""
+    dsn = configured_db
+    next_seq = golden.insert_subset(dsn, [golden.B3, golden.B4], 1)
+    cursor = drain(0)
+    provisional = "tool:weather-tool-mcp.team1.svc:8000"
+    with psycopg.connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM entities WHERE natural_key = %s", (provisional,)
+        ).fetchone()[0] == 1
+
+    golden.insert_subset(dsn, [golden.D1, golden.D2], next_seq)
+    drain(cursor)
+
+    with psycopg.connect(dsn) as conn:
+        keys = {
+            row[0]
+            for row in conn.execute(
+                "SELECT natural_key FROM entities WHERE kind IN ('agent', 'tool')"
+            ).fetchall()
+        }
+    assert "tool:team1/weather-tool" in keys
+    assert provisional not in keys
 
 
 # Interleaved fake shim spans (the propagate-only HTTP shim's httpx/starlette

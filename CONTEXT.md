@@ -32,6 +32,12 @@ beyond the shared id; "tree shape" is derived from `parent_id` links at query
 time.
 _Avoid_: "request", "session" — those imply semantics v1 does not assign.
 
+**Standalone CONNECT trace**:
+A **Trace** consisting only of an opaque outbound CONNECT tunnel exchange that
+arrived without causal context. It proves that a TCP tunnel to a destination was
+attempted, but cannot reveal the HTTP operations or payloads carried inside that
+tunnel. It is transport evidence rather than application activity.
+
 **Listing root**:
 The one **Span** chosen to represent a **Trace** in a UI listing row. Defined as
 the trace's earliest **Real root** if one exists, otherwise its earliest
@@ -143,8 +149,12 @@ it is *not* the input to `Entity.kind = service` identity. Always qualify.
 The stable, kind-specific identity string for an **Entity**. One row per
 `(kind, natural_key)` in `entities`. Format per kind:
 - `user` → `user:<kagenti.user.id>`
-- `client` → `client:<host-or-ip>` (preferring `peer.service`, then
-  `client.address` host, then `client.address` IP)
+- `client` → `client:<identity>`: sidecar inbound traffic uses the authenticated
+  OAuth `lineage.principal.client` value when present and `client:(unknown)`
+  when absent (a human `lineage.principal.sub` remains evidence, not caller
+  identity); other derivations use host-or-IP, preferring `peer.service`, then
+  `client.address` host, then `client.address` IP. These sources intentionally
+  share the client natural-key namespace, so equal values denote one client.
 - `agent` → `agent:(<project_name>,<canonical_service_name>)`
 - `tool` (in-process) →
   `tool:<owning_agent_natural_key>:<tool_name>`
@@ -453,6 +463,13 @@ unresolved-LLM orphan case, generalised: ADR-0011 supersedes ADR-0007's
 fields are never edited in place — host-fill-in for an
 `llm:(unknown)/MODEL` happens by per-interaction retarget onto a
 distinct `llm:<host>/<model>` row, not by mutating the unresolved row.
+
+Issue #256 adds one narrow hard-delete exception for the sidecar algorithm:
+unnamespaced `agent:<host>:<port>` and `tool:<host>:<port>` peer identities are
+provisional transport artifacts. After a trace reconcile they are deleted only
+when no interaction endpoint and no `entity_spans` evidence row anywhere still
+references them. Namespaced canonical workload entities and every other entity
+kind retain the normal persistent lifecycle.
 
 **P-interactions**:
 The processor that reads stored **Spans** and derives **Entities**,
@@ -886,7 +903,9 @@ anchored on its current **Listing root**. Is the element type of the
 singular: `{trace_id, listing_root, counts, in_time_window}`, where
 `listing_root` is the anchor **Span**, `counts` is its **Trace counts**,
 and `in_time_window` reports whether the anchor is **In-window**. The
-collection and singular return the identical shape.
+collection and singular return the identical shape. Collection membership may
+omit a **Standalone CONNECT trace** under the deployment's default visibility
+policy; the singular resource remains addressable when its `trace_id` is known.
 Eventually consistent: the listing root, and therefore the row's display
 fields, may change as late spans arrive or **Finalization** advances a
 span's `seq`. Identity is `trace_id`; everything else is derived. The UI
