@@ -1,10 +1,23 @@
 # PR #267: proxy-mode acceptance evidence and current limits
 
 Recorded on 2026-10-04 from the retained 2026-09-28 fresh-cluster logs,
-read-only checks, and two new live runs on `kind-epic239-proxy-e2e`. Both post-fix
-single-client demos passed the one-causal-trace structural checks. Issue #246's
-full acceptance gate remains open: lineage status is still `partial`, and the
-concurrent-client scenario has not been rerun with the new shim.
+read-only checks, two single-client live runs, and a concurrent two-client run
+on `kind-epic239-proxy-e2e`. The post-fix demos passed the one-causal-trace
+structural checks, and the concurrent run kept both client turns in separate
+traces. `lineage_trace_status` is recorded as a diagnostic, not a pass/fail
+criterion for issue #246. The full fresh-deploy acceptance record remains open:
+the post-fix runs reused an existing namespace, while the retained fresh-cluster
+logs lack exact invocations for some setup/recovery steps.
+
+## Acceptance boundary
+
+The proxy one-trace gate checks the authenticated demo, causal trace structure,
+canonical client/agent/tool identities, and sidecar-derived evidence. It does
+not check whether `lineage_trace_status` is `complete`, `partial`, or absent.
+ADR-0028 D6 defines `partial` as a data-lineage coverage warning rather than
+an error. The post-fix single-client and concurrent structural checks below
+pass; a fully recorded fresh deploy → instrument → demo → inspect loop remains
+to be captured for issue #246.
 
 ## Post-fix PR #267 deploy → instrument → demo, 2026-10-04
 
@@ -92,6 +105,46 @@ The earlier anomalous 72-span concurrent trace had only four
 companion. This rerun therefore produced the same 76-span shape as the older
 sequential controls, rather than repeating that concurrent attribution error.
 
+### Concurrent two-client replay after the MCP carrier fix
+
+At 2026-10-04 12:48:19 UTC, with all 11 agent/tool workloads reporting
+`type=proxy lineage=yes live=yes`, two demo processes were started together in
+the existing `demo-client` and `demo-client-b` pods. The running
+`travel-advisor` image was checked to contain the request-metadata MCP carrier
+fix. An initial read-only probe using `/app/.venv/bin/python` failed because
+that interpreter path was absent; retrying with `python3` confirmed the fix.
+The first process ran `kubectl -n travel-advisor exec deploy/demo-client --
+python3 /app/app/demo.py`. The second ran the same demo in
+`deploy/demo-client-b` with `kubectl exec -i`; its distinct
+`demo-client-b-oauth` Secret values were passed through stdin to a short Python
+bootstrap that set the three `OAUTH_*` environment variables in that process.
+No Deployment or Secret was changed, and no credential value was logged. The
+pre-run database watermark was `MAX(spans.seq)=1292`.
+
+Both processes exited 0 with distinct A2A context IDs. Both printed
+`TaskState.input_required`, booking `BK-3E638E`, and authorization
+`AUTH-8E6F12`, matching the prior single-client demo output. An initial
+read-only SQL query used the obsolete `interactions.error` column and returned
+an error; a corrected query over the new spans, interactions, entities, and
+lineage status returned:
+
+| Client identity | A2A context ID | Causal trace ID | Spans | Interactions | Roots | Span errors | Missing span/interaction parents | Lineage status |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `client:travel-advisor-demo-client` | `e2d94a6dd79a428188ca8838b18a1d6d` | `e5e2256d72047e7f3887b84f5934aa17` | 76 | 21 | 1 | 0 | 0 / 0 | `partial` |
+| `client:travel-advisor-demo-client-b` | `7cd6255439de4e31a361e0af1099d79c` | `b68fabcace8e0679196c6339faaca465` | 76 | 21 | 1 | 0 | 0 / 0 | `partial` |
+
+The trace windows overlapped from approximately 12:48:20 to 12:49:12 UTC. Each
+trace contained its own context ID and OAuth client, four canonical namespaced
+agents, six invoked canonical namespaced tools, and three services. All 14
+entities in each trace had `detected_from='sidecar lineage span'`. Each trace
+had its own `booking-agent` → `create-booking` MCP observations and
+`create-booking` → `payment-agent` edge; neither carried the other client's
+context ID. This live replay did not reproduce the earlier cross-linking. The
+new-span window also contained 21 separate outbound CONNECT tunnel traces
+(seven one-span and 14 two-span traces), with no other HTTP method in those
+traces. The two `partial` lineage statuses are diagnostic and do not affect
+the one-trace verdict.
+
 ## Fresh-cluster deploy → instrument → demo, 2026-09-28
 
 The retained `script` logs include timestamps, output, and exit codes. They do
@@ -158,10 +211,10 @@ tools, and three services. All 14 had `detected_from='sidecar lineage span'`.
 read-only `bash deploy/dg.sh namespace travel-advisor status` also exited 0 with
 all 11 workloads `type=proxy lineage=yes live=yes`.
 
-Zero span errors do not make these traces fully healthy: their lineage status
-is `partial`. The sequential run notes also record repeated downstream peer
-session IDs and duplicated final summaries. These observations are separate
-from the MCP carrier collision fixed in PR #267.
+Their `partial` status records incomplete data-lineage coverage, not a failed
+one-trace outcome. The sequential run notes also record repeated downstream
+peer session IDs and duplicated final summaries. These observations are
+separate from the MCP carrier collision fixed in PR #267.
 
 ## Concurrent baseline and post-fix boundary
 
@@ -177,6 +230,6 @@ the first transport consumed the second turn's carrier, and the second lost it.
 
 After the code fix, a non-mutating probe using the deployed `mcp==1.27.0` SDK
 and the patched shim showed each of those two sessions carrying its own W3C
-traceparent. The new live image and sequential demo above verify the one-trace
-path, but do not repeat the two-client collision scenario. Issue #246 remains
-open; this record does not mark its full acceptance checklist complete.
+traceparent. The live concurrent replay above likewise produced two intact,
+separate causal traces. The complete fresh-deploy command record required by
+issue #246 remains open; the stored lineage statuses do not affect that gate.
