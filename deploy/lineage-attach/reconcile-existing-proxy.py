@@ -51,26 +51,40 @@ def _key(line: str, name: str) -> bool:
     return bool(re.match(rf"^\s*{re.escape(name)}:\s*(?:#.*)?$", line.rstrip("\n")))
 
 
+def _section_end(
+    lines: list[str],
+    start: int,
+    end: int,
+    indent: int,
+    *,
+    allow_indentless_items: bool = False,
+) -> int:
+    """Find the next sibling, allowing YAML's indentationless list form."""
+    for cursor in range(start, end):
+        candidate = lines[cursor]
+        indentless_item = bool(
+            allow_indentless_items
+            and _indent(candidate) == indent
+            and candidate.lstrip().startswith("- ")
+        )
+        if (
+            candidate.strip()
+            and not candidate.lstrip().startswith("#")
+            and _indent(candidate) <= indent
+            and not indentless_item
+        ):
+            return cursor
+    return end
+
+
 def _section(lines: list[str], name: str, start: int, end: int, parent_indent: int) -> tuple[int, int]:
     for index in range(start, end):
         line = lines[index]
         if _indent(line) > parent_indent and _key(line, name):
             indent = _indent(line)
-            section_end = end
-            for cursor in range(index + 1, end):
-                candidate = lines[cursor]
-                indentless_item = bool(
-                    _indent(candidate) == indent and candidate.lstrip().startswith("- ")
-                )
-                if (
-                    candidate.strip()
-                    and not candidate.lstrip().startswith("#")
-                    and _indent(candidate) <= indent
-                    and not indentless_item
-                ):
-                    section_end = cursor
-                    break
-            return index, section_end
+            return index, _section_end(
+                lines, index + 1, end, indent, allow_indentless_items=True
+            )
     raise ConfigError(f"missing {name}: section")
 
 
@@ -102,12 +116,7 @@ def _reconcile_listener(lines: list[str], listener_values: dict[str, str]) -> li
     if listener_index is None:
         raise ConfigError("missing listener: section")
     listener_indent = _indent(lines[listener_index])
-    listener_end = len(lines)
-    for cursor in range(listener_index + 1, len(lines)):
-        line = lines[cursor]
-        if line.strip() and not line.lstrip().startswith("#") and _indent(line) <= listener_indent:
-            listener_end = cursor
-            break
+    listener_end = _section_end(lines, listener_index + 1, len(lines), listener_indent)
     found: set[str] = set()
     for cursor in range(listener_index + 1, listener_end):
         line = lines[cursor]
