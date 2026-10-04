@@ -1,8 +1,8 @@
 # PR #267: proxy-mode acceptance evidence and current limits
 
 Recorded on 2026-10-04 from the retained 2026-09-28 fresh-cluster logs,
-read-only checks, and a new live run on `kind-epic239-proxy-e2e`. The post-fix
-single-client demo passed the one-causal-trace structural checks. Issue #246's
+read-only checks, and two new live runs on `kind-epic239-proxy-e2e`. Both post-fix
+single-client demos passed the one-causal-trace structural checks. Issue #246's
 full acceptance gate remains open: lineage status is still `partial`, and the
 concurrent-client scenario has not been rerun with the new shim.
 
@@ -72,6 +72,25 @@ FROM entities e JOIN (
   WHERE trace_id = '951413ab0c80b6b90c43a3b160fc9b29'
 ) seen ON seen.entity_id = e.id ORDER BY e.kind, e.natural_key;
 ```
+
+### Warm-pod rerun
+
+The same deployed pods ran a second `APP=travel_advisor bash run-demo.sh`
+without another rollout. Immediately before it, `SELECT COALESCE(MAX(seq),0)
+FROM spans` returned `1196`. The demo exited 0 with fresh context
+`94db5b0c6deb45d1a0a80bae9f39467a`. Read-only SQL using `seq > 1196`
+linked that context to trace `08e27b57b8faaae6d6d813cbab5db650`: **76
+spans, one root, zero span errors, zero missing parents, and 21 interactions**.
+Its stored lineage status was again `partial`.
+
+The cold first run had 28 `tools/list` spans, eight `create_booking` spans,
+and four `get-flights` → MinIO HTTP spans. The warm rerun had **8, 8, and 2**
+respectively; all other 58 spans were unchanged. The 20-span reduction in
+`tools/list` is consistent with tool discovery after the earlier fresh rollout.
+The earlier anomalous 72-span concurrent trace had only four
+`create_booking` spans, with the other call attributed to its 80-span
+companion. This rerun therefore produced the same 76-span shape as the older
+sequential controls, rather than repeating that concurrent attribution error.
 
 ## Fresh-cluster deploy → instrument → demo, 2026-09-28
 

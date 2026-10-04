@@ -13,11 +13,13 @@ and error.”
 
 The [current evidence record](../evidence/0267-proxy-acceptance-current.md)
 lists the retained fresh-cluster commands and errors, the five pre-run
-sequential traces, and a new live run from PR commit `094f7cf`. The new
-single-client demo produced one causal trace with 98 spans, 27 interactions,
-one real root, no missing parents or span errors, and 14 canonical entities,
-all detected from sidecar lineage spans. Its stored lineage status remains
-`partial`; four separate standalone CONNECT traces had only request spans.
+sequential traces, and two new live runs from PR commit `094f7cf`. The first
+new demo, immediately after rollout, produced one causal trace with 98 spans,
+27 interactions, one real root, no missing parents or span errors, and 14
+canonical entities, all detected from sidecar lineage spans. A warm-pod rerun
+produced one 76-span trace with 21 interactions and the same intact root and
+parent structure. Both stored lineage statuses remain `partial`; four separate
+standalone CONNECT traces in the first run had only request spans.
 The concurrent-client scenario has not been repeated with the live PR shim.
 Issue #246's full acceptance checklist remains open.
 
