@@ -89,7 +89,7 @@ Per ADR-0002/0005 the DDL is hand-written ``op.execute(...)`` — no SQLAlchemy 
 models.
 
 Revision ID: 0012_legs_notify_trigger
-Revises: 0009_interaction_legs
+Revises: 0011_drop_leg_original_seq
 Create Date: 2026-07-28
 """
 

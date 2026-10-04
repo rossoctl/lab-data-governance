@@ -123,9 +123,9 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   data_governance.db.migrate` to head (ADR-0002). A DB consumer with **no
   Service and no container ports** — and, unlike both siblings, no Prometheus
   `/metrics` surface at all (issue #117 ships no counters). It drains
-  `interaction_legs` by `seq`, woken by migration 0010's `dg_legs_inserted`
-  NOTIFY channel, and writes `lineage_metadata` (migration 0011/0013) plus
-  `lineage_trace_status` (migration 0012), advancing its own `processor_state`
+  `interaction_legs` by `seq`, woken by migration 0012's `dg_legs_inserted`
+  NOTIFY channel, and writes `lineage_metadata` (migration 0013) plus
+  `lineage_trace_status` (migration 0014), advancing its own `processor_state`
   cursor (the `data_lineage` row). Single replica for the same no-inter-pod-lock
   reason, `maxSurge:0` rollout; a brief overlap is safe because each derivation
   is a deterministic function of committed state written entirely inside the
@@ -245,7 +245,7 @@ previous image.
 That is harmless for an additive migration (a new table or column an old
 reader never selects). It is **not** harmless for a rename or a drop: the
 old code keeps selecting a column that no longer exists and its reads fail
-outright. This happened with migration 0013, which renamed
+outright. This happened with migration 0015, which renamed
 `lineage_metadata.entity_path` to `entities` — applying only
 `90-data-lineage.yaml` moved the schema to head while the API pod still
 queried `entity_path`, and every lineage read returned

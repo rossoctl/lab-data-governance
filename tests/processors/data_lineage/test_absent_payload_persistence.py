@@ -73,7 +73,7 @@ def _leg(
 ) -> None:
     """Write (or rewrite) one leg. A ``None`` hash is an ABSENT payload — the D6
     gap. Rewriting re-allocates ``seq`` from the sequence, exactly as
-    P-interactions' in-place re-derivation does (migration 0010's trigger covers
+    P-interactions' in-place re-derivation does (migration 0012's trigger covers
     UPDATE for this reason).
 
     ``original_seq`` was dropped from ``interaction_legs`` by

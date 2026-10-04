@@ -804,8 +804,11 @@ declared per-entity taxonomy table; reading it is **deferred**, so today the ans
 is `Entity.kind` defaults — `tool` ✓, `llm` ✗, `agent` ✗ — in the same one named
 place as the **Accumulating entity** predicate
 (`processors/data_lineage/memory.py`), because the same deferred table supplies
-both. The taxonomy's other two columns have no consumer: `target` is unread, and
-`location` (internal/external) is a placeholder with no v1 semantics.
+both. Of the taxonomy's other two columns: `target` is unread **by the
+derivation** — no operation or traversal branch consults it — but does back the
+read-path `list destinations` (`processors/data_lineage/memory.py`'s
+`is_entity_target`, `TARGET_KINDS`; `retrieval/lineage_graph.py`); `location`
+(internal/external) is a placeholder with no v1 semantics.
 _Avoid_: inferring source-hood from a tool's name, description or payload sizes —
 considered and rejected (only one of eight tools in the live corpus even carries
 `tool.description`). The accepted cost is that a pass-through delegation tool
