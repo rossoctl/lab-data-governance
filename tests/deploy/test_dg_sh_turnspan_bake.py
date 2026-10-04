@@ -108,15 +108,84 @@ def test_turnspan_module_has_the_reviewed_surface(turnspan_text: str) -> None:
     )
 
 
-def test_turnspan_mcp_request_id_adapter(turnspan_text: str) -> None:
-    """The version-sensitive MCP envelope traversal has one tested seam."""
-    prog = (
-        "from types import SimpleNamespace as N\n"
-        "from rossoctl_turnspan import _mcp_request_id\n"
-        "ctx = N(session_message=N(message=N(root=N(id=42))))\n"
-        "assert _mcp_request_id(ctx) == 42\n"
-        "assert _mcp_request_id(N()) is None\n"
-    )
+def test_turnspan_mcp_sessions_keep_separate_carriers(turnspan_text: str) -> None:
+    """Two sessions may use the same JSON-RPC ID and the same metadata input.
+
+    The transport must still receive the trace context from its own request.
+    """
+    prog = """
+import asyncio
+import contextvars
+import sys
+from types import ModuleType, SimpleNamespace
+
+trace = contextvars.ContextVar("trace", default=None)
+
+def module(name):
+    result = ModuleType(name)
+    sys.modules[name] = result
+    return result
+
+module("mcp")
+module("mcp.shared")
+message = module("mcp.shared.message")
+session = module("mcp.shared.session")
+module("mcp.client")
+http = module("mcp.client.streamable_http")
+otel = module("opentelemetry")
+propagate = module("opentelemetry.propagate")
+context = module("opentelemetry.context")
+otel.context = context
+
+class ClientMessageMetadata:
+    def __init__(self):
+        self.resumption_token = "keep-me"
+
+class BaseSession:
+    def __init__(self):
+        self._request_id = 0
+
+    async def send_request(self, request, result_type=None, timeout=None, metadata=None):
+        self.sent = SimpleNamespace(metadata=metadata, request_id=self._request_id)
+
+class StreamableHTTPTransport:
+    def __init__(self):
+        self.seen = []
+
+    async def _handle_post_request(self, ctx):
+        self.seen.append(trace.get())
+
+message.ClientMessageMetadata = ClientMessageMetadata
+session.BaseSession = BaseSession
+http.StreamableHTTPTransport = StreamableHTTPTransport
+propagate.inject = lambda carrier: carrier.update(traceparent=trace.get())
+propagate.extract = lambda carrier: carrier["traceparent"]
+context.attach = trace.set
+context.detach = trace.reset
+
+import rossoctl_turnspan
+rossoctl_turnspan._install_mcp_propagation()
+
+async def check():
+    first, second = BaseSession(), BaseSession()
+    shared = ClientMessageMetadata()
+    trace.set("turn-A")
+    await first.send_request(None, metadata=shared)
+    trace.set("turn-B")
+    await second.send_request(None, None, None, shared)
+    trace.set(None)
+    transport = StreamableHTTPTransport()
+    await transport._handle_post_request(first.sent)
+    await transport._handle_post_request(second.sent)
+    assert first.sent.request_id == second.sent.request_id == 0
+    assert transport.seen == ["turn-A", "turn-B"]
+    assert first.sent.metadata is not second.sent.metadata
+    assert first.sent.metadata.resumption_token == "keep-me"
+    assert shared.resumption_token == "keep-me"
+    assert not hasattr(shared, "_rossoctl_trace_carrier")
+
+asyncio.run(check())
+"""
     result = _run_turnspan(turnspan_text, prog, env={})
     assert result.returncode == 0, result.stderr
 
