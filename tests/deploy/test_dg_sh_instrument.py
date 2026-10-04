@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.deploy.fake_configmap_kubectl import CONFIGMAP_KUBECTL
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DG_SH = REPO_ROOT / "deploy" / "dg.sh"
@@ -330,80 +332,7 @@ if [[ "$*" == *"get"* && "$*" == *"envoy-config"* ]]; then
   exit 1
 fi
 
-# ---- ConfigMap fetch (in-place append read + verify + status-style detection) -
-if [[ "$*" == *"get"* && ( "$*" == *"configmap"* || "$*" == *" cm "* || "$*" == *" cm"* ) ]]; then
-  cmname=""; prev=""
-  for a in "$@"; do
-    case "$prev" in configmap|cm|configmaps) cmname="$a"; break ;; esac
-    prev="$a"
-  done
-  f="$FIXDIR/cm-${cmname}.json"
-  # After an in-place append writes the CM, a "$FIXDIR/appended-${cmname}" marker
-  # records that the wired body is now live — UNLESS POD_CLOBBER=1, which models
-  # the operator reverting the operator-owned CM on the roll (verify then sees the
-  # OLD, unwired body and dg.sh must warn on the clobber).
-  wired_marker="$FIXDIR/appended-${cmname}"
-  if [[ -f "$wired_marker" && "${POD_CLOBBER:-0}" != "1" ]]; then
-    f="$FIXDIR/cm-${cmname}-wired.json"
-  fi
-  if [[ -n "$cmname" && -f "$f" ]]; then
-    # `-o json` (the WHOLE doc) wants the FULL ConfigMap (the append reads the
-    # whole CM so it preserves sibling data keys); `{.data.config\.yaml}` the raw
-    # body (legacy); `{.data}` the Go-map repr (status/detection). NB `-o jsonpath`
-    # must NOT match the `-o json` full-doc branch — hence the trailing space /
-    # end-of-args guard, since `-o jsonpath=...` contains `-o json` as a substring.
-    if [[ "$*" == *"-o json "* || "$*" == *"-o json" || "$*" == *"-ojson "* || "$*" == *"-ojson" ]]; then
-      cat "$f"; exit 0
-    fi
-    if [[ "$*" == *"config\.yaml"* || "$*" == *"config.yaml"* ]]; then
-      python3 - "$f" <<'PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-sys.stdout.write((doc.get("data") or {}).get("config.yaml", ""))
-PY
-      exit 0
-    fi
-    python3 - "$f" <<'PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-data = doc.get("data") or {}
-inner = " ".join(f"{k}:{v}" for k, v in data.items())
-sys.stdout.write("map[" + inner + "]")
-PY
-    exit 0
-  fi
-  printf '%s\n' "Error from server (NotFound): configmaps \"${cmname}\" not found" >&2
-  exit 1
-fi
-
-# ---- ConfigMap write (in-place append: dg.sh applies the amended FULL CM) ----
-# dg.sh's in-place append reads the whole CM (`get cm -o json`), amends only its
-# data.config.yaml (preserving every other data key), and pipes the FULL CM JSON
-# to `kubectl apply -f -`. We CAPTURE that stdin — an honest echo of what dg.sh
-# actually produced — store it as the wired fixture, and record a marker so the
-# verify re-read (above) reflects it.
-if [[ "$1" == "apply" && ( "$*" == *"-f -"* || "$*" == *"-f-"* ) ]]; then
-  # Stash the applied manifest to a temp FILE and pass its PATH to python as argv
-  # — NOT via a pipe, which would collide with the heredoc that feeds python its
-  # program on stdin (a heredoc `python3 - <<PY` already occupies stdin).
-  applied_f="$(mktemp)"; cat > "$applied_f"
-  python3 - "$FIXDIR" "$applied_f" <<'PY'
-import json, sys, os
-fixdir, applied_f = sys.argv[1], sys.argv[2]
-doc = json.load(open(applied_f))   # a full ConfigMap JSON doc
-name = (doc.get("metadata") or {}).get("name", "")
-if not name:
-    sys.exit(0)
-os.makedirs(fixdir, exist_ok=True)
-open(os.path.join(fixdir, f"appended-{name}"), "w").close()
-# Store the applied doc VERBATIM as the wired fixture — so the verify re-read and
-# any sibling-key assertion see exactly what dg.sh applied.
-json.dump(doc, open(os.path.join(fixdir, f"cm-{name}-wired.json"), "w"))
-PY
-  rm -f "$applied_f"
-  exit 0
-fi
-
+""" + CONFIGMAP_KUBECTL + r"""
 # ---- Deployment listing ------------------------------------------------------
 if [[ "$*" == *"get"* && ( "$*" == *"deployment"* || "$*" == *"deploy"* ) ]]; then
   ent=""

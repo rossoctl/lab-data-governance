@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.deploy.fake_configmap_kubectl import CONFIGMAP_KUBECTL
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DG_SH = REPO_ROOT / "deploy" / "dg.sh"
@@ -255,73 +257,7 @@ if [[ "$*" == *"get"* && "$*" == *"authbridge-runtime-config"* ]]; then
   printf '%s' "${EGRESS_ENFORCEMENT:-enforce}"; exit 0
 fi
 
-# ---- ConfigMap fetch ---------------------------------------------------------
-if [[ "$*" == *"get"* && ( "$*" == *"configmap"* || "$*" == *" cm "* || "$*" == *" cm"* ) ]]; then
-  cmname=""; prev=""
-  for a in "$@"; do
-    case "$prev" in configmap|cm|configmaps) cmname="$a"; break ;; esac
-    prev="$a"
-  done
-  if [[ "$cmname" == "$CM_FORCE_NOTFOUND" ]]; then
-    printf '%s\n' "Error from server (NotFound): configmaps \"${cmname}\" not found" >&2
-    exit 1
-  fi
-  if [[ "${CM_GET_FAILS:-0}" == "1" ]]; then
-    printf '%s\n' "Error from server (InternalError): an error on the server (\"\") has prevented the request from succeeding" >&2
-    exit 1
-  fi
-  f="$FIXDIR/cm-${cmname}.json"
-  # After an in-place append writes the CM, an `appended-<cm>` marker records that
-  # the wired body is now live — unless POD_CLOBBER=1 (the operator reverted it).
-  if [[ -f "$FIXDIR/appended-${cmname}" && "${POD_CLOBBER:-0}" != "1" ]]; then
-    f="$FIXDIR/cm-${cmname}-wired.json"
-  fi
-  if [[ -n "$cmname" && -f "$f" ]]; then
-    # `-o json` (whole doc) → full CM (the append reads the whole CM to preserve
-    # sibling keys); `{.data.config\.yaml}` the raw body; `{.data}` the Go-map
-    # repr. `-o jsonpath` must NOT match the full-doc branch (it contains `-o
-    # json` as a substring), hence the trailing-space / end-of-args guard.
-    if [[ "$*" == *"-o json "* || "$*" == *"-o json" || "$*" == *"-ojson "* || "$*" == *"-ojson" ]]; then
-      cat "$f"; exit 0
-    fi
-    if [[ "$*" == *"config\.yaml"* || "$*" == *"config.yaml"* ]]; then
-      python3 - "$f" <<'PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-sys.stdout.write((doc.get("data") or {}).get("config.yaml", ""))
-PY
-      exit 0
-    fi
-    python3 - "$f" <<'PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-data = doc.get("data") or {}
-inner = " ".join(f"{k}:{v}" for k, v in data.items())
-sys.stdout.write("map[" + inner + "]")
-PY
-    exit 0
-  fi
-  printf '%s\n' "Error from server (NotFound): configmaps \"${cmname}\" not found" >&2
-  exit 1
-fi
-
-# ---- apply -f - (the append applies the amended FULL CM; capture it as wired) -
-if [[ "$1" == "apply" && ( "$*" == *"-f -"* || "$*" == *"-f-"* ) ]]; then
-  applied_f="$(mktemp)"; cat > "$applied_f"
-  python3 - "$FIXDIR" "$applied_f" <<'PY'
-import json, sys, os
-fixdir, applied_f = sys.argv[1], sys.argv[2]
-doc = json.load(open(applied_f))   # a full ConfigMap JSON doc
-name = (doc.get("metadata") or {}).get("name", "")
-if not name:
-    sys.exit(0)
-open(os.path.join(fixdir, f"appended-{name}"), "w").close()
-json.dump(doc, open(os.path.join(fixdir, f"cm-{name}-wired.json"), "w"))
-PY
-  rm -f "$applied_f"
-  exit 0
-fi
-
+""" + CONFIGMAP_KUBECTL + r"""
 # ---- Pod fetch (INJECTED-sidecar detection) ----------------------------------
 # `kubectl get pods -n <ns> -l app.kubernetes.io/name=<entity> --field-selector=status.phase=Running -o json`
 # Tested BEFORE the deployment branch because "pods" and "deploy" are distinct
