@@ -1,28 +1,31 @@
 package data_governance
 
 triggered_rules contains "DG-001" if {
-    input.event_type == "external_sharing"
-    some _DG_001_item_0 in input.data_items
+    some flow in input.flows
+    flow.event_type == "external_sharing"
+    some _DG_001_item_0 in flow.data_items
     every t in ["PII"] { t in _DG_001_item_0.regulatory_tags }
-    some _DG_001_dest_0 in input.data_destinations
+    some _DG_001_dest_0 in flow.data_destinations
     every c in ["external"] { c in _DG_001_dest_0.data_destination_categories }
     _DG_001_dest_0.data_destination_trust_level == "UNTRUSTED_EXTERNAL"
 }
 
 triggered_rules contains "DG-002" if {
-    input.event_type == "external_sharing"
-    some _DG_002_item_0 in input.data_items
+    some flow in input.flows
+    flow.event_type == "external_sharing"
+    some _DG_002_item_0 in flow.data_items
     every t in ["PHI"] { t in _DG_002_item_0.regulatory_tags }
-    some _DG_002_dest_0 in input.data_destinations
+    some _DG_002_dest_0 in flow.data_destinations
     every c in ["external"] { c in _DG_002_dest_0.data_destination_categories }
     _DG_002_dest_0.data_destination_trust_level == "UNTRUSTED_EXTERNAL"
 }
 
 triggered_rules contains "DG-004" if {
-    input.event_type == "external_sharing"
-    some _DG_004_item_0 in input.data_items
+    some flow in input.flows
+    flow.event_type == "external_sharing"
+    some _DG_004_item_0 in flow.data_items
     _DG_004_item_0.classification_level == "RESTRICTED"
-    some _DG_004_dest_0 in input.data_destinations
+    some _DG_004_dest_0 in flow.data_destinations
     every c in ["external"] { c in _DG_004_dest_0.data_destination_categories }
     _DG_004_dest_0.data_destination_trust_level == "UNTRUSTED_EXTERNAL"
 }

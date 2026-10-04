@@ -86,17 +86,17 @@ def test_a_rule_with_no_match_fields_always_fires():
 
 def test_event_type_emits_an_equality_clause():
     rego = _compile(_policy([_rule("R-1", event_type="external_sharing")]))
-    assert 'input.event_type == "external_sharing"' in rego
+    assert 'flow.event_type == "external_sharing"' in rego
 
 
 def test_data_count_emits_a_threshold_clause():
     rego = _compile(_policy([_rule("R-1", data_count=5)]))
-    assert "input.data_count >= 5" in rego
+    assert "flow.data_count >= 5" in rego
 
 
 def test_requested_actions_emits_a_subset_clause():
     rego = _compile(_policy([_rule("R-1", requested_actions=["send", "write"])]))
-    assert "input.requested_actions" in rego
+    assert "flow.requested_actions" in rego
     assert '["send", "write"]' in rego
     assert "every v in" in rego
 
@@ -105,14 +105,14 @@ def test_accessing_user_username_emits_an_equality_clause():
     rego = _compile(
         _policy([_rule("R-1", accessing_user={"username": "alice"})])
     )
-    assert 'input.accessing_user.username == "alice"' in rego
+    assert 'flow.accessing_user.username == "alice"' in rego
 
 
 def test_accessing_user_roles_emits_a_subset_clause():
     rego = _compile(
         _policy([_rule("R-1", accessing_user={"user_roles": ["admin"]})])
     )
-    assert "input.accessing_user.user_roles" in rego
+    assert "flow.accessing_user.user_roles" in rego
     assert '["admin"]' in rego
 
 
@@ -120,7 +120,7 @@ def test_data_items_classification_level_emits_an_equality_clause():
     rego = _compile(
         _policy([_rule("R-1", data_items=[{"classification_level": "RESTRICTED"}])])
     )
-    assert "some" in rego and "input.data_items" in rego
+    assert "some" in rego and "flow.data_items" in rego
     assert '.classification_level == "RESTRICTED"' in rego
 
 
@@ -160,7 +160,7 @@ def test_multiple_data_items_each_get_their_own_existential_clause():
             ]
         )
     )
-    assert rego.count("in input.data_items") == 2
+    assert rego.count("in flow.data_items") == 2
 
 
 def test_data_destinations_categories_emits_a_subset_clause():
@@ -169,7 +169,7 @@ def test_data_destinations_categories_emits_a_subset_clause():
             [_rule("R-1", data_destinations=[{"data_destination_categories": ["external"]}])]
         )
     )
-    assert "input.data_destinations" in rego
+    assert "flow.data_destinations" in rego
     assert ".data_destination_categories" in rego
 
 
@@ -193,7 +193,7 @@ def test_data_sources_categories_emits_a_subset_clause():
     rego = _compile(
         _policy([_rule("R-1", data_sources=[{"data_source_categories": ["internal"]}])])
     )
-    assert "input.data_sources" in rego
+    assert "flow.data_sources" in rego
     assert ".data_source_categories" in rego
 
 
@@ -201,7 +201,7 @@ def test_processing_agents_name_emits_an_equality_clause():
     rego = _compile(
         _policy([_rule("R-1", processing_agents=[{"agent_name": "tool-x"}])])
     )
-    assert "input.processing_agents" in rego
+    assert "flow.processing_agents" in rego
     assert '.agent_name == "tool-x"' in rego
 
 
@@ -221,12 +221,12 @@ def test_absent_match_fields_emit_no_clause_for_them():
     proving the compiler reads presence, not some implicit always-there
     template."""
     rego = _compile(_policy([_rule("R-1", event_type="external_sharing")]))
-    assert "input.data_items" not in rego
-    assert "input.data_destinations" not in rego
-    assert "input.data_sources" not in rego
-    assert "input.requested_actions" not in rego
-    assert "input.accessing_user" not in rego
-    assert "input.processing_agents" not in rego
+    assert "flow.data_items" not in rego
+    assert "flow.data_destinations" not in rego
+    assert "flow.data_sources" not in rego
+    assert "flow.requested_actions" not in rego
+    assert "flow.accessing_user" not in rego
+    assert "flow.processing_agents" not in rego
 
 
 # --- unsupported fields --------------------------------------------------
@@ -336,7 +336,7 @@ def test_string_values_are_emitted_via_json_dumps_and_cannot_break_out():
     rego = _compile(_policy([_rule("R-1", event_type='weird"value\\here')]))
     assert '"weird\\"value\\\\here"' in rego
     # No unescaped quote broke the clause into two statements.
-    assert 'input.event_type == "weird\\"value\\\\here"' in rego
+    assert 'flow.event_type == "weird\\"value\\\\here"' in rego
 
 
 # --- schema validation ----------------------------------------------------
@@ -361,3 +361,27 @@ def test_validate_false_skips_schema_validation():
     bare_policy = _policy([_rule("R-1")])
     rego = compile_policy(bare_policy, validate=False)
     assert "package data_governance" in rego
+
+
+# --- one flow per rule (#271) ---------------------------------------------------
+
+
+def test_every_clause_of_a_rule_reads_the_same_flow():
+    """The input holds one flow per leg. A rule binds one flow and reads all
+    of its fields from it, so data in one flow and a destination in another
+    never add up to a match."""
+    rego = _compile(
+        _policy(
+            [
+                _rule(
+                    "R-1",
+                    event_type="external_sharing",
+                    data_items=[{"regulatory_tags": ["PII"]}],
+                    data_destinations=[{"data_destination_categories": ["external"]}],
+                )
+            ]
+        )
+    )
+    block = rego[rego.index('triggered_rules contains "R-1"') :].split("\n}\n")[0]
+    assert block.count("some flow in input.flows") == 1
+    assert "input." not in block.replace("some flow in input.flows", "")

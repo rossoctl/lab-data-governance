@@ -263,6 +263,12 @@ def test_fingerprint_returns_a_string():
 # a real OPA call.
 
 
+def _only_flow(payload: dict) -> dict:
+    """The single flow of a one-leg exchange's input."""
+    (flow,) = payload["flows"].values()
+    return flow
+
+
 def test_build_opa_input_validates_against_the_schema():
     legs = [_leg("request"), _leg("response", payload_hash="h2")]
     classifications = {"request": _verdict(), "response": utils.PENDING}
@@ -309,8 +315,8 @@ def test_build_opa_input_data_items_carry_one_entity_per_finding():
         caller_entity_id=None,
         callee_entity_id=None,
     )
-    assert len(payload["data_items"]) == 1
-    entities = payload["data_items"][0]["entities"]
+    assert len(_only_flow(payload)["data_items"]) == 1
+    entities = _only_flow(payload)["data_items"][0]["entities"]
     assert [e["entity_type"] for e in entities] == ["SSN", "PN"]
     assert entities[0]["start"] == 0
     assert entities[0]["end"] == 11
@@ -337,7 +343,7 @@ def test_build_opa_input_non_id_identifier_type_omits_data_type():
         caller_entity_id=None,
         callee_entity_id=None,
     )
-    entity = payload["data_items"][0]["entities"][0]
+    entity = _only_flow(payload)["data_items"][0]["entities"][0]
     assert "data_type" not in entity
     _opa_input_validator().validate(payload)
 
@@ -352,7 +358,7 @@ def test_build_opa_input_data_item_carries_the_leg_verdict_summary():
         caller_entity_id=None,
         callee_entity_id=None,
     )
-    item = payload["data_items"][0]
+    item = _only_flow(payload)["data_items"][0]
     assert item["classification_level"] == "RESTRICTED"
     assert item["primary_domain"] == "finance"
     assert item["regulatory_tags"] == ["PII"]
@@ -370,7 +376,7 @@ def test_build_opa_input_identity_bundle_leg_lists_a_bundle_name():
         caller_entity_id=None,
         callee_entity_id=None,
     )
-    assert payload["data_items"][0]["identity_bundles"] == ["identity_bundle"]
+    assert _only_flow(payload)["data_items"][0]["identity_bundles"] == ["identity_bundle"]
 
 
 def test_build_opa_input_pending_leg_produces_no_data_item():
@@ -383,7 +389,7 @@ def test_build_opa_input_pending_leg_produces_no_data_item():
         caller_entity_id=None,
         callee_entity_id=None,
     )
-    assert payload["data_items"] == []
+    assert _only_flow(payload)["data_items"] == []
 
 
 def test_build_opa_input_no_payload_leg_produces_no_data_item():
@@ -396,7 +402,7 @@ def test_build_opa_input_no_payload_leg_produces_no_data_item():
         caller_entity_id=None,
         callee_entity_id=None,
     )
-    assert payload["data_items"] == []
+    assert _only_flow(payload)["data_items"] == []
 
 
 def test_build_opa_input_requested_actions_reflect_legs_evidenced():
@@ -409,25 +415,28 @@ def test_build_opa_input_requested_actions_reflect_legs_evidenced():
         caller_entity_id=None,
         callee_entity_id=None,
     )
-    assert payload["requested_actions"] == ["send", "receive"]
+    assert {leg: flow["requested_actions"] for leg, flow in payload["flows"].items()} == {
+        "request": ["send"],
+        "response": ["receive"],
+    }
 
 
-def test_build_opa_input_no_legs_means_no_requested_actions():
+def test_build_opa_input_no_legs_means_no_flows():
     payload = utils.build_opa_input(
         legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
     )
-    assert payload["requested_actions"] == []
+    assert payload["flows"] == {}
 
 
 def test_build_opa_input_processing_agents_from_caller_and_callee():
     payload = utils.build_opa_input(
-        legs=[],
+        legs=[_leg("request")],
         span_ids=[],
         classifications={},
         caller_entity_id="agent:a",
         callee_entity_id="agent:b",
     )
-    assert payload["processing_agents"] == [
+    assert _only_flow(payload)["processing_agents"] == [
         {"agent_name": "agent:a"},
         {"agent_name": "agent:b"},
     ]
@@ -438,20 +447,24 @@ def test_build_opa_input_omits_processing_agents_entirely_when_both_entity_ids_a
     an empty list, matching the rest of this module's "absent means absent"
     convention (e.g. classification_summary's missing-leg behaviour)."""
     payload = utils.build_opa_input(
-        legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
+        legs=[_leg("request")],
+        span_ids=[],
+        classifications={},
+        caller_entity_id=None,
+        callee_entity_id=None,
     )
-    assert "processing_agents" not in payload
+    assert "processing_agents" not in _only_flow(payload)
 
 
 def test_build_opa_input_includes_only_the_known_entity_id_when_one_is_none():
     payload = utils.build_opa_input(
-        legs=[],
+        legs=[_leg("request")],
         span_ids=[],
         classifications={},
         caller_entity_id="agent:a",
         callee_entity_id=None,
     )
-    assert payload["processing_agents"] == [{"agent_name": "agent:a"}]
+    assert _only_flow(payload)["processing_agents"] == [{"agent_name": "agent:a"}]
 
 
 def test_build_opa_input_never_carries_unmapped_fields():
@@ -480,7 +493,7 @@ def test_build_opa_input_never_carries_unmapped_fields():
         "observed_operational_intent",
         "accessing_user",
     ):
-        assert absent_key not in payload
+        assert absent_key not in _only_flow(payload)
 
 
 # --- destination URL whitelist classification (issue #163) ------------------
@@ -565,7 +578,7 @@ def test_matches_internal_whitelist_rejects_attacker_controlled_suffix():
 
 def _anchor_payload(**anchor_kwargs):
     return utils.build_opa_input(
-        legs=[],
+        legs=[_leg("request")],
         span_ids=[],
         classifications={},
         caller_entity_id=None,
@@ -582,7 +595,7 @@ def test_build_opa_input_destination_matching_whitelist_is_internal(monkeypatch)
     payload = _anchor_payload(
         peer_host="svc.corp.internal", url_scheme="https", url_path="/x"
     )
-    assert payload["data_destinations"] == [
+    assert _only_flow(payload)["data_destinations"] == [
         {
             "data_destination_name": "svc.corp.internal",
             "data_destination_categories": ["internal"],
@@ -590,7 +603,7 @@ def test_build_opa_input_destination_matching_whitelist_is_internal(monkeypatch)
             "data_destination_trust_level": "UNKNOWN",
         }
     ]
-    assert payload["event_type"] == "internal_sharing"
+    assert _only_flow(payload)["event_type"] == "internal_sharing"
     _opa_input_validator().validate(payload)
 
 
@@ -600,14 +613,14 @@ def test_build_opa_input_destination_not_matching_whitelist_is_external(monkeypa
         ["*.corp.internal"],
     )
     payload = _anchor_payload(peer_host="evil.example.com")
-    assert payload["data_destinations"] == [
+    assert _only_flow(payload)["data_destinations"] == [
         {
             "data_destination_name": "evil.example.com",
             "data_destination_categories": ["external"],
             "data_destination_trust_level": "UNTRUSTED_EXTERNAL",
         }
     ]
-    assert payload["event_type"] == "external_sharing"
+    assert _only_flow(payload)["event_type"] == "external_sharing"
     _opa_input_validator().validate(payload)
 
 
@@ -618,7 +631,7 @@ def test_build_opa_input_destination_with_empty_whitelist_defaults_external(
         "data_governance.risk.engine.utils.INTERNAL_URL_WHITELIST_PATTERNS", []
     )
     payload = _anchor_payload(peer_host="svc.corp.internal")
-    assert payload["data_destinations"][0]["data_destination_categories"] == ["external"]
+    assert _only_flow(payload)["data_destinations"][0]["data_destination_categories"] == ["external"]
 
 
 def test_trust_level_for_category_maps_public_to_untrusted_public():
@@ -639,7 +652,92 @@ def test_build_opa_input_no_anchor_omits_data_destinations():
     interaction whose anchor span carries no wire facts (or has no anchor at
     all) must not fabricate a category."""
     payload = utils.build_opa_input(
-        legs=[], span_ids=[], classifications={}, caller_entity_id=None, callee_entity_id=None
+        legs=[_leg("request")],
+        span_ids=[],
+        classifications={},
+        caller_entity_id=None,
+        callee_entity_id=None,
     )
-    assert "data_destinations" not in payload
-    assert "event_type" not in payload
+    assert "data_destinations" not in _only_flow(payload)
+    assert "event_type" not in _only_flow(payload)
+
+
+# --- build_opa_input: one flow per leg (#271) --------------------------------
+
+
+def _both_legs_payload(**anchor_kwargs):
+    return utils.build_opa_input(
+        legs=[_leg("request"), _leg("response", payload_hash="h2")],
+        span_ids=[],
+        classifications={
+            "request": _verdict(sensitivity_level="PUBLIC", regulatory_tags=[]),
+            "response": _verdict(),
+        },
+        caller_entity_id="agent:a",
+        callee_entity_id=None,
+        anchor=utils.AnchorFacts(**anchor_kwargs),
+        internal_patterns=["*.svc"],
+    )
+
+
+def test_build_opa_input_each_leg_is_a_flow_carrying_only_its_own_data():
+    payload = _both_legs_payload(
+        direction="outbound", peer_host="api.partner.example", self_id="agent-a"
+    )
+    request, response = payload["flows"]["request"], payload["flows"]["response"]
+    assert [item["regulatory_tags"] for item in request["data_items"]] == [[]]
+    assert [item["regulatory_tags"] for item in response["data_items"]] == [["PII"]]
+    _opa_input_validator().validate(payload)
+
+
+def test_build_opa_input_response_flow_swaps_source_and_destination():
+    payload = _both_legs_payload(
+        direction="outbound", peer_host="api.partner.example", self_id="agent-a"
+    )
+    request, response = payload["flows"]["request"], payload["flows"]["response"]
+
+    assert request["data_sources"] == [
+        {"data_source_name": "agent-a", "data_source_categories": ["internal"]}
+    ]
+    assert request["data_destinations"][0]["data_destination_name"] == "api.partner.example"
+    assert request["data_destinations"][0]["data_destination_categories"] == ["external"]
+    assert request["event_type"] == "external_sharing"
+
+    assert response["data_sources"] == [
+        {"data_source_name": "api.partner.example", "data_source_categories": ["external"]}
+    ]
+    assert response["data_destinations"] == [
+        {
+            "data_destination_name": "agent-a",
+            "data_destination_categories": ["internal"],
+            "data_destination_trust_level": "UNKNOWN",
+        }
+    ]
+    assert response["event_type"] == "data_import"
+
+
+def test_build_opa_input_internal_exchange_is_internal_sharing_both_ways():
+    payload = _both_legs_payload(
+        direction="outbound", peer_host="records-tool.team2.svc", self_id="agent-a"
+    )
+    assert {leg: flow["event_type"] for leg, flow in payload["flows"].items()} == {
+        "request": "internal_sharing",
+        "response": "internal_sharing",
+    }
+
+
+def test_build_opa_input_inbound_caller_is_not_named_so_its_end_is_omitted():
+    """Inbound facts name the workload that was reached, not who reached it.
+    The request flow has a destination and no source; the response flow has a
+    source and no destination, hence no event type either."""
+    payload = _both_legs_payload(
+        direction="inbound", peer_host="10.96.47.165:8080", self_id="agent-a"
+    )
+    request, response = payload["flows"]["request"], payload["flows"]["response"]
+    assert "data_sources" not in request
+    assert request["data_destinations"][0]["data_destination_name"] == "agent-a"
+    assert request["event_type"] == "internal_sharing"
+    assert response["data_sources"][0]["data_source_name"] == "agent-a"
+    assert "data_destinations" not in response
+    assert "event_type" not in response
+    _opa_input_validator().validate(payload)

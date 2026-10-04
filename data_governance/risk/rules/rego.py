@@ -9,11 +9,12 @@ evaluate at ``POST /v1/data/data_governance/policy_decision``
 
 Each rule becomes a ``triggered_rules contains "<rule_id>" if { ... }``
 block whose body is the rule's structural predicate — a rule is a *sparse*
-instance of the same shape as the OPA runtime input
+instance of the same shape as one flow of the OPA runtime input
 (``schema/opa_input.schema.json``, sharing ``$defs`` with
-``policy.schema.json``), so "does this rule match this input" is "is the
-rule's sparse subset of fields satisfied by the input's concrete values,"
-field by field. A rule field that is absent contributes no clause — it does
+``policy.schema.json``). The input holds one flow per leg of the exchange
+(#271), so "does this rule match this input" is "does some one flow's
+concrete values satisfy the rule's sparse subset of fields," field by
+field. A rule field that is absent contributes no clause — it does
 not mean "match anything," it means "this rule does not constrain that
 axis."
 
@@ -96,7 +97,7 @@ def _rule_var(rule_id: str, suffix: str, index: int) -> str:
     rule body to resolve to the same value, so two entries of the same field
     type on one rule must get distinct variable names: without *index*, a
     rule with two ``data_items[]`` entries would emit ``some _R_1_item in
-    input.data_items`` twice under the identical name, which Rego reads as
+    flow.data_items`` twice under the identical name, which Rego reads as
     "one single item satisfies both entries simultaneously" rather than the
     intended "some item satisfies entry 1 and some (possibly different) item
     satisfies entry 2."
@@ -106,17 +107,17 @@ def _rule_var(rule_id: str, suffix: str, index: int) -> str:
 
 
 def _scalar_clause(field: str, value: Any) -> str:
-    return f"input.{field} == {_lit(value)}"
+    return f"flow.{field} == {_lit(value)}"
 
 
 def _set_subset_clause(input_field: str, required: list[Any]) -> str:
-    """``required`` (a rule-side list) must be a subset of ``input.<field>``
+    """``required`` (a rule-side list) must be a subset of ``flow.<field>``
     (an input-side list) — every rule-listed value must appear in the
     input's list, but the input may carry additional values the rule does
     not care about."""
     var = f"_{input_field}_set"
     return (
-        f"{var} := {{v | some v in input.{input_field}}}\n"
+        f"{var} := {{v | some v in flow.{input_field}}}\n"
         f"    every v in {_lit(required)} {{ v in {var} }}"
     )
 
@@ -125,7 +126,7 @@ def _data_item_clause(rule_id: str, item: dict[str, Any], index: int) -> str:
     """One ``data_items[]`` entry: matched if *some* input data item
     satisfies every field the rule specifies on this entry."""
     var = _rule_var(rule_id, "item", index)
-    lines = [f"some {var} in input.data_items"]
+    lines = [f"some {var} in flow.data_items"]
     if "classification_level" in item:
         lines.append(f"{var}.classification_level == {_lit(item['classification_level'])}")
     if "primary_domain" in item:
@@ -145,7 +146,7 @@ def _data_destination_clause(
     """One ``data_destinations[]`` entry: matched if *some* input
     destination satisfies every field the rule specifies on this entry."""
     var = _rule_var(rule_id, "dest", index)
-    lines = [f"some {var} in input.data_destinations"]
+    lines = [f"some {var} in flow.data_destinations"]
     if "data_destination_categories" in destination:
         cats = _lit(destination["data_destination_categories"])
         lines.append(f"every c in {cats} {{ c in {var}.data_destination_categories }}")
@@ -160,7 +161,7 @@ def _data_destination_clause(
 def _data_source_clause(rule_id: str, source: dict[str, Any], index: int) -> str:
     """Mirror of :func:`_data_destination_clause` for ``data_sources[]``."""
     var = _rule_var(rule_id, "src", index)
-    lines = [f"some {var} in input.data_sources"]
+    lines = [f"some {var} in flow.data_sources"]
     if "data_source_categories" in source:
         cats = _lit(source["data_source_categories"])
         lines.append(f"every c in {cats} {{ c in {var}.data_source_categories }}")
@@ -169,7 +170,7 @@ def _data_source_clause(rule_id: str, source: dict[str, Any], index: int) -> str
 
 def _processing_agent_clause(rule_id: str, agent: dict[str, Any], index: int) -> str:
     var = _rule_var(rule_id, "agent", index)
-    lines = [f"some {var} in input.processing_agents"]
+    lines = [f"some {var} in flow.processing_agents"]
     if "agent_name" in agent:
         lines.append(f"{var}.agent_name == {_lit(agent['agent_name'])}")
     if "agent_trust_level" in agent:
@@ -183,7 +184,7 @@ def _accessing_user_clause(user: dict[str, Any]) -> list[str]:
         clauses.append(_scalar_clause("accessing_user.username", user["username"]))
     if "user_roles" in user:
         roles = _lit(user["user_roles"])
-        clauses.append(f"every r in {roles} {{ r in input.accessing_user.user_roles }}")
+        clauses.append(f"every r in {roles} {{ r in flow.accessing_user.user_roles }}")
     return clauses
 
 
@@ -204,7 +205,7 @@ def _rule_predicate_clauses(rule: dict[str, Any]) -> list[str]:
         clauses.append(_scalar_clause("event_type", rule["event_type"]))
 
     if "data_count" in rule:
-        clauses.append(f"input.data_count >= {_lit(rule['data_count'])}")
+        clauses.append(f"flow.data_count >= {_lit(rule['data_count'])}")
 
     if "requested_actions" in rule:
         clauses.append(_set_subset_clause("requested_actions", rule["requested_actions"]))
@@ -230,15 +231,19 @@ def _rule_predicate_clauses(rule: dict[str, Any]) -> list[str]:
 
 
 def _rule_block(rule: dict[str, Any]) -> str:
-    """One ``triggered_rules contains "<id>" if { ... }`` block. A rule with
-    no predicate clauses at all (every match field absent) always fires —
-    that is what the schema's all-optional match fields mean structurally,
-    though no shipped rule is actually shapeless like this."""
+    """One ``triggered_rules contains "<id>" if { ... }`` block. Every clause
+    reads the same ``flow``, bound once by ``some flow in input.flows`` (which
+    walks the flows of both legs, whatever their keys): the rule fires when
+    one flow satisfies all of it, never when one flow
+    supplies the data and another the destination. A rule with no predicate
+    clauses at all (every match field absent) always fires — that is what the
+    schema's all-optional match fields mean structurally, though no shipped
+    rule is actually shapeless like this."""
     clauses = _rule_predicate_clauses(rule)
     rule_id_literal = _lit(rule["rule_id"])
     if not clauses:
         return f"triggered_rules contains {rule_id_literal} if {{\n    true\n}}"
-    body = "\n    ".join(clauses)
+    body = "\n    ".join(["some flow in input.flows", *clauses])
     return f"triggered_rules contains {rule_id_literal} if {{\n    {body}\n}}"
 
 
