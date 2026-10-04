@@ -85,10 +85,12 @@ class TurnSpanMiddleware:
 
 
 def install():
-    """Patch uvicorn.Config so every server started in this interpreter wraps
-    its ASGI app in TurnSpanMiddleware. Idempotent and fail-safe: any error
-    leaves the app untouched (propagation still works, just possibly-fragmented
-    — never worse than before).
+    """Patch uvicorn.Config.load so every server wraps its resolved ASGI app.
+
+    Uvicorn resolves import strings and app factories in load(), after Config's
+    constructor runs. Wrapping the loaded app also covers those entrypoints.
+    Idempotent and fail-safe: any error leaves the app untouched (propagation
+    still works, just possibly-fragmented — never worse than before).
 
     No-op unless LINEAGE_PROPAGATE=1 (the propagate hook's activation switch):
     the turn span is worthless — and worse than baseline — without the activation
@@ -102,22 +104,20 @@ def install():
         return
     if getattr(uvicorn.Config, "_rossoctl_turnspan_patched", False):
         return
-    _orig_init = uvicorn.Config.__init__
+    _orig_load = uvicorn.Config.load
 
-    def _patched_init(self, app, *args, **kwargs):
+    def _patched_load(self):
+        _orig_load(self)
         try:
-            if app is not None and not isinstance(app, TurnSpanMiddleware):
-                # app may be an ASGI callable or an import string; only wrap
-                # callables (import strings are resolved by uvicorn later — the
-                # common in-process case here always passes a built app object).
-                if callable(app):
-                    app = TurnSpanMiddleware(app)
+            if not isinstance(self.app, TurnSpanMiddleware) and not isinstance(
+                self.loaded_app, TurnSpanMiddleware
+            ):
+                self.loaded_app = TurnSpanMiddleware(self.loaded_app)
         except Exception:
             pass
-        _orig_init(self, app, *args, **kwargs)
 
     try:
-        uvicorn.Config.__init__ = _patched_init
+        uvicorn.Config.load = _patched_load
         uvicorn.Config._rossoctl_turnspan_patched = True
     except Exception:
         pass

@@ -108,6 +108,47 @@ def test_turnspan_module_has_the_reviewed_surface(turnspan_text: str) -> None:
     )
 
 
+def test_turnspan_wraps_resolved_uvicorn_apps(turnspan_text: str) -> None:
+    """Object, import-string, and factory entrypoints each get one turn span."""
+    prog = '''
+from pathlib import Path
+
+Path("turnspan_fixture_app.py").write_text("""
+async def app(scope, receive, send):
+    pass
+
+def factory():
+    return app
+""")
+
+import uvicorn
+import rossoctl_turnspan
+from turnspan_fixture_app import app
+
+rossoctl_turnspan.install()
+patched_load = uvicorn.Config.load
+rossoctl_turnspan.install()
+assert uvicorn.Config.load is patched_load
+
+for target, factory in (
+    (app, False),
+    ("turnspan_fixture_app:app", False),
+    ("turnspan_fixture_app:factory", True),
+):
+    config = uvicorn.Config(target, factory=factory, lifespan="off", proxy_headers=False)
+    config.load()
+    assert isinstance(config.loaded_app, rossoctl_turnspan.TurnSpanMiddleware)
+    assert config.loaded_app.app is app
+
+wrapped = rossoctl_turnspan.TurnSpanMiddleware(app)
+config = uvicorn.Config(wrapped, lifespan="off", proxy_headers=False)
+config.load()
+assert config.loaded_app is wrapped
+'''
+    result = _run_turnspan(turnspan_text, prog, env={"LINEAGE_PROPAGATE": "1"})
+    assert result.returncode == 0, result.stderr
+
+
 def test_turnspan_mcp_sessions_keep_separate_carriers(turnspan_text: str) -> None:
     """Two sessions may use the same JSON-RPC ID and the same metadata input.
 

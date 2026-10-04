@@ -2,7 +2,7 @@
 
 Status: updated 2026-10-04. This document records the Spec-axis findings from
 the review of `feat/239-one-trace-epic` against epic #239 and issues #240–#246
-and #256. Findings 1 and 2 have updates below; findings 3 and 4 remain for
+and #256. Findings 1, 2, and 4 have updates below; finding 3 remains for
 discussion.
 
 ## 1. Acceptance evidence now records the observed results (gate still open)
@@ -47,16 +47,12 @@ proxy. Discussion should determine whether enumeration must use the union of
 trusted and legacy candidates before trusted-proxy preflight rejects invalid
 members.
 
-## 4. Import-string Uvicorn applications receive no turn span (P2)
+## 4. Import-string Uvicorn applications now receive a turn span (originally P2)
 
-The `uvicorn.Config.__init__` patch in
-`deploy/lineage-attach/rossoctl_turnspan.py` wraps callable application objects
-but deliberately leaves import strings untouched. With the common
-`uvicorn module:app` form, Uvicorn resolves the application after this hook and
-runs it without `TurnSpanMiddleware`. Propagation remains active, but one turn
-can fragment into multiple traces, despite #244 requiring the startup hook to
-create the turn span.
-
-Discussion should cover wrapping after `Config.load()` resolves import strings,
-including Uvicorn factory mode, and adding behavioral coverage for both callable
-and import-string applications.
+The original `uvicorn.Config.__init__` patch wrapped callable application
+objects but skipped `uvicorn module:app` strings, which Uvicorn resolves later.
+The shim now patches `Config.load()` and wraps the resolved ASGI app. A focused
+test and a non-mutating probe against the deployed Uvicorn 0.44.0 runtime cover
+app objects, import strings, factories, and already-wrapped apps. Each gets
+exactly one `TurnSpanMiddleware`. A full post-fix live acceptance run remains
+pending under issue #246.
