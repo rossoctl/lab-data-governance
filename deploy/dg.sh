@@ -1119,40 +1119,60 @@ live_pipeline_is_canonical() {
         --expected "${expected}"
 }
 
-# watch_rollout_for_crashloop <ns> <entity> <backout_line> <attach_stdout>:
-# after an attach, detect a crash-looping sidecar. On a crash-loop (or the
-# already-known failed attach) dump the sidecar container log, surface the kit's
-# PRINTED back-out line verbatim, and die loud — halting the whole run so we do
-# NOT proceed to the next entity. $4 is captured so we can echo the kit's own
-# output back to the operator when we fail after a rollout the kit reported OK.
+# resolve_admitted_proxy <ns> <entity> <preflight|post-rollout> <snapshot-var>:
+# validate the selected Running pod's admitted proxy and mounted ConfigMap,
+# then fill the caller's associative array with pod, pod_name, and cm_json.
+# Both phases need the same platform-owned contract; the phase only changes the
+# diagnostic and whether we can promise that no workload was mutated.
+resolve_admitted_proxy() {
+    local ns="$1" entity="$2" phase="$3"
+    local -n snapshot="$4"
+    local note="" pod type pod_name cm cm_json
+    case "${phase}" in
+        preflight) note=" Mutating nothing." ;;
+        post-rollout) ;;
+        *) die "resolve_admitted_proxy: invalid phase '${phase}'" ;;
+    esac
+
+    pod="$(get_pod_json "${ns}" "${entity}")"
+    [[ "$(pod_items_count "${pod}")" -gt 0 ]] \
+        || die "instrument: '${entity}' has no Running pod during ${phase}; cannot verify its admitted platform proxy.${note}"
+    type="$(detect_sidecar_type "${pod}")"
+    [[ "${type}" == "proxy" ]] \
+        || die "instrument: '${entity}' requires an admitted AuthBridge proxy sidecar during ${phase} (found '${type}'). Redeploy it through Rossoctl with proxy mode enabled, then retry.${note}"
+    proxy_environment_valid "${pod}" \
+        || die "instrument: '${entity}' does not have the platform HTTP_PROXY/HTTPS_PROXY/NO_PROXY contract during ${phase}.${note}"
+    pod_name="$(pod_name_of "${pod}")"
+    [[ -n "${pod_name}" ]] \
+        || die "instrument: could not resolve the live pod for '${entity}' during ${phase}.${note}"
+    cm="$(sidecar_config_cm "${pod}")"
+    [[ -n "${cm}" ]] \
+        || die "instrument: '${entity}' has no mounted AuthBridge ConfigMap during ${phase}.${note}"
+    cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
+        || die "instrument: could not read ConfigMap '${cm}' for '${entity}' during ${phase}.${note}"
+
+    snapshot[pod]="${pod}"
+    snapshot[pod_name]="${pod_name}"
+    snapshot[cm_json]="${cm_json}"
+}
+
 preflight_trusted_proxies() {
     local ns="$1" names="$2" plan_file="$3"
     : > "${plan_file}"
     local cache_file
     cache_file="$(mktemp)"
-    local entity dep pod type pod_name cm cm_json app base cached shim bake_out bake_status
+    local entity dep app base cached shim bake_out bake_status
+    local -A proxy=()
     while IFS= read -r entity; do
         [[ -n "${entity}" ]] || continue
+        proxy=()
         dep="$(get_deployment_json "${ns}" "${entity}")"
         deployment_is_trusted "${dep}" \
             || die "instrument: '${entity}' is not a Rossoctl-managed workload. Deploy or import agents/tools through Rossoctl so admission supplies the trusted identity label and AuthBridge sidecar, then retry. Mutating nothing."
-        pod="$(get_pod_json "${ns}" "${entity}")"
-        [[ "$(pod_items_count "${pod}")" -gt 0 ]] \
-            || die "instrument: '${entity}' has no Running pod; cannot verify its admitted platform proxy. Mutating nothing."
-        type="$(detect_sidecar_type "${pod}")"
-        [[ "${type}" == "proxy" ]] \
-            || die "instrument: trusted Rossoctl workload '${entity}' requires an admitted AuthBridge proxy sidecar (found '${type}'). Redeploy it through Rossoctl with proxy mode enabled, then retry. Mutating nothing."
-        proxy_environment_valid "${pod}" \
-            || die "instrument: '${entity}' does not have the platform HTTP_PROXY/HTTPS_PROXY/NO_PROXY contract. Mutating nothing."
-        pod_name="$(pod_name_of "${pod}")"
-        [[ -n "${pod_name}" ]] || die "instrument: could not resolve the live pod for '${entity}'. Mutating nothing."
-        proxy_catalog_has_lineage "${ns}" "${pod_name}" \
+        resolve_admitted_proxy "${ns}" "${entity}" preflight proxy
+        proxy_catalog_has_lineage "${ns}" "${proxy[pod_name]}" \
             || die "instrument: '${entity}'s AuthBridge image does not advertise the a2a-parser, mcp-parser, inference-parser, and lineage-telemetry plugins. Deploy a lineage-capable Cortex proxy image first; mutating nothing."
-        cm="$(sidecar_config_cm "${pod}")"
-        [[ -n "${cm}" ]] || die "instrument: '${entity}' has no mounted AuthBridge ConfigMap. Mutating nothing."
-        cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
-            || die "instrument: could not read ConfigMap '${cm}' for '${entity}'. Mutating nothing."
-        render_existing_proxy_config "${cm_json}" "${entity}" "${pod}" >/dev/null \
+        render_existing_proxy_config "${proxy[cm_json]}" "${entity}" "${proxy[pod]}" >/dev/null \
             || die "instrument: '${entity}'s existing proxy ConfigMap is outside the safe #256 reconciliation envelope. Mutating nothing."
 
         app="$(app_container_of "${dep}")"
@@ -1198,19 +1218,10 @@ print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image"
     kubectl -n "${ns}" rollout status "deployment/${entity}" --timeout=180s \
         || die "instrument: rollout of '${entity}' did not become ready"
 
-    local pod pod_name cm cm_json amended
-    pod="$(get_pod_json "${ns}" "${entity}")"
-    [[ "$(detect_sidecar_type "${pod}")" == "proxy" ]] \
-        || die "instrument: '${entity}' lost its platform proxy after rollout"
-    proxy_environment_valid "${pod}" \
-        || die "instrument: '${entity}' lost its platform proxy environment after rollout"
-    pod_name="$(pod_name_of "${pod}")"
-    cm="$(sidecar_config_cm "${pod}")"
-    [[ -n "${pod_name}" && -n "${cm}" ]] \
-        || die "instrument: could not resolve '${entity}'s post-rollout pod/ConfigMap"
-    cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
-        || die "instrument: failed to read '${entity}'s post-rollout ConfigMap '${cm}'"
-    amended="$(render_existing_proxy_config "${cm_json}" "${entity}" "${pod}")" \
+    local -A proxy=()
+    local amended
+    resolve_admitted_proxy "${ns}" "${entity}" post-rollout proxy
+    amended="$(render_existing_proxy_config "${proxy[cm_json]}" "${entity}" "${proxy[pod]}")" \
         || die "instrument: failed to reconcile '${entity}'s post-rollout proxy pipeline"
     printf '%s' "${amended}" | kubectl apply -f - \
         || die "instrument: failed to apply '${entity}'s reconciled proxy ConfigMap"
@@ -1219,7 +1230,7 @@ print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image"
     # propagation (commonly around two minutes) to reach the mounted file.
     local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-90}"
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        if live_pipeline_is_canonical "${ns}" "${pod_name}" "${entity}" "${amended}"; then
+        if live_pipeline_is_canonical "${ns}" "${proxy[pod_name]}" "${entity}" "${amended}"; then
             err ">> instrument: '${entity}' lineage pipeline hot-reloaded and is live (no second rollout)."
             return 0
         fi
