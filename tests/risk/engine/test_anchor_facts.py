@@ -50,7 +50,7 @@ def _category(host: str) -> str:
     *host*, exercised through the public surface rather than a private
     helper."""
     anchor = utils.AnchorFacts(direction="outbound", peer_host=host)
-    payload = utils.build_opa_input(**_BASE, anchor=anchor, internal_patterns=_PATTERNS)
+    payload = _request_flow(anchor=anchor, internal_patterns=_PATTERNS)
     (categories,) = [d["data_destination_categories"] for d in payload["data_destinations"]]
     (category,) = categories
     return category
@@ -99,15 +99,21 @@ def test_an_empty_whitelist_makes_every_dotted_host_external() -> None:
     # #178's safer default: absent configuration, nothing is trusted. The
     # dotless structural rule still applies.
     anchor = utils.AnchorFacts(direction="outbound", peer_host="records-tool.team2.svc")
-    payload = utils.build_opa_input(**_BASE, anchor=anchor, internal_patterns=[])
+    payload = _request_flow(anchor=anchor, internal_patterns=[])
     (dest,) = payload["data_destinations"]
     assert dest["data_destination_categories"] == ["external"]
 
 
 # --- build_opa_input: the new fields -----------------------------------------
 
-_BASE = dict(legs=[], span_ids=[], classifications={}, caller_entity_id=None,
-             callee_entity_id=None)
+_BASE = dict(legs=[utils.LegEvidence(leg_type="request")], span_ids=[], classifications={},
+             caller_entity_id=None, callee_entity_id=None)
+
+
+def _request_flow(**kwargs) -> dict:
+    """The one flow ``build_opa_input`` emits for a request-only exchange."""
+    (flow,) = utils.build_opa_input(**_BASE, **kwargs)["flows"].values()
+    return flow
 
 
 def test_outbound_external_destination_maps_fully() -> None:
@@ -118,7 +124,7 @@ def test_outbound_external_destination_maps_fully() -> None:
         url_scheme="https",
         url_path="/ingest",
     )
-    payload = utils.build_opa_input(**_BASE, anchor=anchor, internal_patterns=_PATTERNS)
+    payload = _request_flow(anchor=anchor, internal_patterns=_PATTERNS)
     (dest,) = payload["data_destinations"]
     assert dest == {
         "data_destination_name": "partner.example.com:443",
@@ -135,7 +141,7 @@ def test_outbound_internal_destination_has_unknown_trust_level() -> None:
         direction="outbound", peer_host="records-tool.team2.svc:8000",
         self_id="priorauth-intake", url_scheme="http", url_path="/mcp",
     )
-    payload = utils.build_opa_input(**_BASE, anchor=anchor, internal_patterns=_PATTERNS)
+    payload = _request_flow(anchor=anchor, internal_patterns=_PATTERNS)
     (dest,) = payload["data_destinations"]
     assert dest["data_destination_categories"] == ["internal"]
     assert dest["data_destination_trust_level"] == "UNKNOWN", (
@@ -151,7 +157,7 @@ def test_inbound_destination_is_self_and_principal_maps_to_user() -> None:
         direction="inbound", peer_host="priorauth-intake.team2.svc:8000",
         self_id="priorauth-intake", principal_sub="alice",
     )
-    payload = utils.build_opa_input(**_BASE, anchor=anchor, internal_patterns=_PATTERNS)
+    payload = _request_flow(anchor=anchor, internal_patterns=_PATTERNS)
     (dest,) = payload["data_destinations"]
     assert dest["data_destination_name"] == "priorauth-intake"
     assert dest["data_destination_categories"] == ["internal"]
@@ -168,7 +174,7 @@ def test_inbound_clusterip_reached_address_is_still_internal() -> None:
         direction="inbound", peer_host="10.96.47.165:8080",
         self_id="a2a-contact-extractor",
     )
-    payload = utils.build_opa_input(**_BASE, anchor=anchor, internal_patterns=_PATTERNS)
+    payload = _request_flow(anchor=anchor, internal_patterns=_PATTERNS)
     (dest,) = payload["data_destinations"]
     assert dest["data_destination_name"] == "a2a-contact-extractor"
     assert dest["data_destination_categories"] == ["internal"]
@@ -177,14 +183,14 @@ def test_inbound_clusterip_reached_address_is_still_internal() -> None:
 
 
 def test_absent_anchor_omits_every_new_field() -> None:
-    payload = utils.build_opa_input(**_BASE, anchor=None)
+    payload = _request_flow(anchor=None)
     for key in ("data_destinations", "event_type", "accessing_user"):
         assert key not in payload
 
 
 def test_anchor_without_destination_fact_omits_destinations() -> None:
     anchor = utils.AnchorFacts(direction="outbound", principal_sub=None)
-    payload = utils.build_opa_input(**_BASE, anchor=anchor, internal_patterns=_PATTERNS)
+    payload = _request_flow(anchor=anchor, internal_patterns=_PATTERNS)
     assert "data_destinations" not in payload
     assert "event_type" not in payload
 

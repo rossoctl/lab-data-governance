@@ -120,14 +120,18 @@ def test_pii_to_untrusted_external_fires_the_block_rule(opa_client, opa_base_url
     decision = _evaluate(
         opa_base_url,
         {
-            "event_type": "external_sharing",
-            "data_items": [{"regulatory_tags": ["PII"]}],
-            "data_destinations": [
-                {
-                    "data_destination_categories": ["external"],
-                    "data_destination_trust_level": "UNTRUSTED_EXTERNAL",
+            "flows": {
+                "request": {
+                    "event_type": "external_sharing",
+                    "data_items": [{"regulatory_tags": ["PII"]}],
+                    "data_destinations": [
+                        {
+                            "data_destination_categories": ["external"],
+                            "data_destination_trust_level": "UNTRUSTED_EXTERNAL",
+                        }
+                    ],
                 }
-            ],
+            }
         },
     )
     assert decision.risk_level == "critical"
@@ -140,7 +144,7 @@ def test_no_matching_rule_falls_back_to_allow(opa_client, opa_base_url):
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
-    decision = _evaluate(opa_base_url, {"event_type": "internal_view"})
+    decision = _evaluate(opa_base_url, {"flows": {"request": {"event_type": "internal_view"}}})
     assert decision.risk_level == "none"
     assert decision.enforcement_type == "allow"
     assert decision.triggered_rules == ["0000"]
@@ -187,7 +191,7 @@ def test_most_restrictive_picks_the_more_severe_of_two_firing_rules(
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
-    decision = _evaluate(opa_base_url, {"event_type": "x"})
+    decision = _evaluate(opa_base_url, {"flows": {"request": {"event_type": "x"}}})
     assert decision.risk_level == "critical"
     assert decision.enforcement_type == "block"
     assert sorted(decision.triggered_rules) == ["HIGH-1", "LOW-1"]
@@ -230,7 +234,7 @@ def test_most_restrictive_combines_independent_axis_winners(opa_client, opa_base
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
-    decision = _evaluate(opa_base_url, {"event_type": "x"})
+    decision = _evaluate(opa_base_url, {"flows": {"request": {"event_type": "x"}}})
     assert decision.risk_level == "critical"
     assert decision.enforcement_type == "block"
     assert decision.allowed_actions == ["redact"]
@@ -248,7 +252,7 @@ def test_first_fires_picks_the_catalog_order_winner_regardless_of_severity(
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
-    decision = _evaluate(opa_base_url, {"event_type": "x"})
+    decision = _evaluate(opa_base_url, {"flows": {"request": {"event_type": "x"}}})
     # LOW-1 is listed first in _two_rule_policy, so first_fires must return
     # its (less severe) decision even though HIGH-1 also fired.
     assert decision.risk_level == "low"
@@ -296,11 +300,15 @@ def test_rule_with_two_data_items_entries_requires_two_distinct_items(
     decision = _evaluate(
         opa_base_url,
         {
-            "event_type": "x",
-            "data_items": [
-                {"classification_level": "RESTRICTED"},
-                {"classification_level": "CONFIDENTIAL"},
-            ],
+            "flows": {
+                "request": {
+                    "event_type": "x",
+                    "data_items": [
+                        {"classification_level": "RESTRICTED"},
+                        {"classification_level": "CONFIDENTIAL"},
+                    ],
+                }
+            }
         },
     )
     assert decision.triggered_rules == ["TWO-ITEM-1"]
@@ -320,8 +328,12 @@ def test_rule_with_two_data_items_entries_does_not_fire_for_a_single_matching_it
     decision = _evaluate(
         opa_base_url,
         {
-            "event_type": "x",
-            "data_items": [{"classification_level": "RESTRICTED"}],
+            "flows": {
+                "request": {
+                    "event_type": "x",
+                    "data_items": [{"classification_level": "RESTRICTED"}],
+                }
+            }
         },
     )
     assert decision.triggered_rules == ["0000"]
@@ -370,7 +382,7 @@ def test_opa_response_parses_through_the_real_opa_client_unchanged(
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
-    decision = _evaluate(opa_base_url, {"event_type": "x"})
+    decision = _evaluate(opa_base_url, {"flows": {"request": {"event_type": "x"}}})
     assert decision.risk_level == "high"
     assert decision.enforcement_type == "block"
     assert decision.allowed_actions == ["redact"]
@@ -401,7 +413,7 @@ def test_fallback_decision_conforms_to_opa_output_schema(opa_client):
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
-    result = _raw_policy_decision(opa_client, {"event_type": "internal_view"})
+    result = _raw_policy_decision(opa_client, {"flows": {"request": {"event_type": "internal_view"}}})
     _opa_output_validator().validate(result)
 
 
@@ -410,7 +422,7 @@ def test_most_restrictive_combined_decision_conforms_to_opa_output_schema(opa_cl
     put_response = _put_policy(opa_client, rego)
     assert put_response.status_code == 200, put_response.text
 
-    result = _raw_policy_decision(opa_client, {"event_type": "x"})
+    result = _raw_policy_decision(opa_client, {"flows": {"request": {"event_type": "x"}}})
     _opa_output_validator().validate(result)
 
 
@@ -439,7 +451,7 @@ def _exfil_opa_input(peer_host: str) -> dict[str, Any]:
     return utils.build_opa_input(
         legs=[],
         span_ids=[],
-        classifications={"p1": verdict},
+        classifications={"request": verdict},
         caller_entity_id="priorauth-clinical",
         callee_entity_id=None,
         anchor=utils.AnchorFacts(
@@ -486,3 +498,128 @@ def test_engine_input_internal_control_arm_falls_back(opa_client, opa_base_url):
     assert decision.risk_level == "none"
     assert decision.enforcement_type == "allow"
     assert decision.triggered_rules == [FALLBACK_RULE_ID]
+
+
+# --- which way the data travels (#271) ------------------------------------------
+#
+# One exchange, two legs: the request carries data caller -> callee, the
+# response carries data callee -> caller. A "sent to an external destination"
+# rule must look at the request only.
+
+
+def _leg_opa_input(*, request_tags: list[str], response_tags: list[str]) -> dict[str, Any]:
+    """The engine's input for an outbound call to an external peer whose two
+    legs carry the given regulatory tags (``[]`` = a clean payload)."""
+    from data_governance.processors.classification.verdict import Verdict
+    from data_governance.risk.engine import utils
+
+    def verdict(tags: list[str]) -> Verdict:
+        return Verdict(
+            sensitivity_level="CONFIDENTIAL" if tags else "PUBLIC",
+            regulatory_tags=tags,
+            contains_identity_bundle=False,
+            is_personalized=bool(tags),
+            primary_domain="travel",
+            findings=[],
+            model_version=1,
+        )
+
+    return utils.build_opa_input(
+        legs=[
+            utils.LegEvidence(leg_type="request", payload_hash="h-request"),
+            utils.LegEvidence(leg_type="response", payload_hash="h-response"),
+        ],
+        span_ids=[],
+        classifications={
+            "request": verdict(request_tags),
+            "response": verdict(response_tags),
+        },
+        caller_entity_id="booking-agent",
+        callee_entity_id=None,
+        anchor=utils.AnchorFacts(
+            direction="outbound", peer_host="api.partner.example:443", url_scheme="https",
+            url_path="/v1/bookings/search", self_id="booking-agent",
+        ),
+        internal_patterns=["*.svc.cluster.local", "*.svc"],
+    )
+
+
+@pytest.mark.opa
+def test_pii_sent_to_an_external_peer_is_blocked(opa_client, opa_base_url):
+    from data_governance.risk.rules import catalog
+
+    put_response = _put_policy(opa_client, compile_policy(catalog.load_rules_source()))
+    assert put_response.status_code == 200, put_response.text
+
+    decision = _evaluate(opa_base_url, _leg_opa_input(request_tags=["PII"], response_tags=[]))
+    assert decision.enforcement_type == "block"
+    assert decision.triggered_rules == ["DG-001"]
+
+
+@pytest.mark.opa
+def test_pii_returned_by_an_external_peer_is_not_scored_as_sent(opa_client, opa_base_url):
+    from data_governance.risk.rules import catalog
+    from data_governance.risk.rules.rego import FALLBACK_RULE_ID
+
+    put_response = _put_policy(opa_client, compile_policy(catalog.load_rules_source()))
+    assert put_response.status_code == 200, put_response.text
+
+    decision = _evaluate(opa_base_url, _leg_opa_input(request_tags=[], response_tags=["PII"]))
+    assert decision.enforcement_type == "allow"
+    assert decision.triggered_rules == [FALLBACK_RULE_ID]
+
+
+@pytest.mark.opa
+def test_a_data_source_rule_sees_what_an_external_peer_returned(opa_client, opa_base_url):
+    """The response stays visible to the policy: a rule on where data came
+    FROM fires on the response and not on the request."""
+    policy = _policy(
+        [
+            _rule(
+                "R-SRC",
+                data_items=[{"regulatory_tags": ["PII"]}],
+                data_sources=[{"data_source_categories": ["external"]}],
+                rule_decision={
+                    "risk_level": "low", "enforcement_type": "log_only",
+                    "explanation": "PII received from an external source.", "confidence": 0.9,
+                },
+            )
+        ]
+    )
+    put_response = _put_policy(opa_client, compile_policy(policy, validate=False))
+    assert put_response.status_code == 200, put_response.text
+
+    returned = _evaluate(opa_base_url, _leg_opa_input(request_tags=[], response_tags=["PII"]))
+    assert returned.triggered_rules == ["R-SRC"]
+
+    sent = _evaluate(opa_base_url, _leg_opa_input(request_tags=["PII"], response_tags=[]))
+    assert sent.triggered_rules != ["R-SRC"]
+
+
+@pytest.mark.opa
+def test_a_policy_can_address_each_leg_by_name(opa_client):
+    """The flows are keyed by leg, so Rego can relate the two legs of one
+    exchange. The JSON rule language has no syntax for such a rule yet; this
+    one is written by hand, to pin what the engine's input makes possible."""
+    rego = """package data_governance
+
+linked if {
+    some sent in input.flows.request.data_items
+    "PII" in sent.regulatory_tags
+    some returned in input.flows.response.data_items
+    "PHI" in returned.regulatory_tags
+}
+"""
+    put_response = _put_policy(opa_client, rego)
+    assert put_response.status_code == 200, put_response.text
+
+    def linked(**tags: list[str]) -> bool:
+        response = opa_client.post(
+            "/v1/data/data_governance/linked", json={"input": _leg_opa_input(**tags)}
+        )
+        response.raise_for_status()
+        return response.json().get("result", False)
+
+    assert linked(request_tags=["PII"], response_tags=["PHI"]) is True
+    assert linked(request_tags=["PII"], response_tags=[]) is False
+    assert linked(request_tags=[], response_tags=["PHI"]) is False

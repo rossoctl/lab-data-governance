@@ -292,48 +292,95 @@ def _category(host: str, internal_patterns: list[str]) -> str:
     )
 
 
-def _destination(anchor: AnchorFacts, internal_patterns: list[str]) -> dict[str, Any] | None:
-    """The interaction's ``data_destinations`` entry, from the anchor facts.
+@dataclasses.dataclass(frozen=True)
+class _Endpoint:
+    """One end of an exchange, as far as the anchor facts name it."""
 
-    The destination of an exchange is its callee: outbound, the peer host the
-    sidecar called; inbound, the sidecar's own workload (named by its
-    ``self_id``, categorised by the address it was reached on when present).
-    Category comes from :func:`_category`; the trust level is derived from
-    that same category via :func:`_trust_level_for_category` (``external``
-    -> ``UNTRUSTED_EXTERNAL``, anything else — including ``internal``, which
-    the MVP whitelist never distinguishes further — -> ``UNKNOWN``, which
-    the policy's ``trust_level_category`` mapping groups with the untrusted
-    levels rather than guessing a ``TRUSTED_*`` value). A full URL is
-    composed only when the producer emitted a scheme (the contract's own
-    no-guessing rule). Returns ``None`` when the facts name no destination
-    at all.
+    name: str
+    category: str
+    url: str | None = None
+
+
+def _endpoints(
+    anchor: AnchorFacts, internal_patterns: list[str]
+) -> tuple[_Endpoint | None, _Endpoint | None]:
+    """The exchange's ``(caller, callee)``, from the anchor facts. An end the
+    facts do not name is ``None`` and is omitted downstream (honest absence).
+
+    Outbound, the caller is the sidecar's own workload and the callee is the
+    peer host it called, categorised by :func:`_category`. Inbound, the
+    callee is the sidecar's own workload and the caller is not named: inbound
+    ``peer.host`` is the address the workload was REACHED on, not where the
+    call came from.
+
+    The sidecar'd workload itself is in-cluster by construction — a
+    structural fact, not a whitelist question. (The whitelist would misread
+    it: the reached-on address is often a raw ClusterIP, which no hostname
+    pattern can recognise — observed live as DG-001 false-positives on
+    ordinary in-cluster a2a calls.) A full URL is composed only when the
+    producer emitted a scheme (the contract's own no-guessing rule).
     """
-    if anchor.direction == "outbound":
-        name = anchor.peer_host
-    else:
-        name = anchor.self_id or anchor.peer_host
-    if name is None:
-        return None
-    if anchor.direction == "inbound":
-        # An inbound exchange's destination is the sidecar'd workload itself,
-        # which is in-cluster by construction — a structural fact, not a
-        # whitelist question. (The whitelist would misread it: inbound
-        # `peer.host` is the address the workload was REACHED on, often a
-        # raw ClusterIP, which no hostname pattern can recognise — observed
-        # live as DG-001 false-positives on ordinary in-cluster a2a calls.)
-        category = "internal"
-    else:
-        category = _category(anchor.peer_host or name, internal_patterns)
-    destination: dict[str, Any] = {
-        "data_destination_name": name,
-        "data_destination_categories": [category],
-    }
+    url = None
     if anchor.url_scheme and anchor.peer_host:
-        destination["data_destination_url"] = (
-            f"{anchor.url_scheme}://{anchor.peer_host}{anchor.url_path or ''}"
+        url = f"{anchor.url_scheme}://{anchor.peer_host}{anchor.url_path or ''}"
+
+    if anchor.direction == "outbound":
+        caller = _Endpoint(anchor.self_id, "internal") if anchor.self_id else None
+        callee = (
+            _Endpoint(anchor.peer_host, _category(anchor.peer_host, internal_patterns), url)
+            if anchor.peer_host
+            else None
         )
-    destination["data_destination_trust_level"] = _trust_level_for_category(category)
+        return caller, callee
+
+    name = anchor.self_id or anchor.peer_host
+    if name is None:
+        return None, None
+    category = (
+        "internal"
+        if anchor.direction == "inbound"
+        else _category(anchor.peer_host or name, internal_patterns)
+    )
+    return None, _Endpoint(name, category, url)
+
+
+def _data_source(endpoint: _Endpoint) -> dict[str, Any]:
+    source: dict[str, Any] = {
+        "data_source_name": endpoint.name,
+        "data_source_categories": [endpoint.category],
+    }
+    if endpoint.url is not None:
+        source["data_source_url"] = endpoint.url
+    return source
+
+
+def _data_destination(endpoint: _Endpoint) -> dict[str, Any]:
+    """A flow's ``data_destinations`` entry. The trust level is derived from
+    the category via :func:`_trust_level_for_category` (``external`` ->
+    ``UNTRUSTED_EXTERNAL``, anything else — including ``internal``, which the
+    MVP whitelist never distinguishes further — -> ``UNKNOWN``, which the
+    policy's ``trust_level_category`` mapping groups with the untrusted
+    levels rather than guessing a ``TRUSTED_*`` value)."""
+    destination: dict[str, Any] = {
+        "data_destination_name": endpoint.name,
+        "data_destination_categories": [endpoint.category],
+    }
+    if endpoint.url is not None:
+        destination["data_destination_url"] = endpoint.url
+    destination["data_destination_trust_level"] = _trust_level_for_category(endpoint.category)
     return destination
+
+
+def _event_type(source: _Endpoint | None, destination: _Endpoint | None) -> str | None:
+    """What kind of event a flow is, from where its data goes and comes from.
+    ``None`` (omitted) when the destination is not known."""
+    if destination is None:
+        return None
+    if destination.category == "external":
+        return "external_sharing"
+    if source is not None and source.category == "external":
+        return "data_import"
+    return "internal_sharing"
 
 
 def build_opa_input(
@@ -350,70 +397,86 @@ def build_opa_input(
     to ``opa_input.schema.json`` (which shares ``policy.schema.json``'s
     ``$defs`` so the two stay in sync).
 
-    *anchor* carries the interaction's request-span wire facts (issue #163),
-    the evidence source #178 anticipated when it added a placeholder
-    ``destination_url`` parameter "until issue #163's evidence-gathering
-    wiring lands". From the anchor this maps ``data_destinations``
-    (name/url/category, plus a category-derived trust level —
-    ``UNTRUSTED_EXTERNAL`` on external, ``UNKNOWN`` otherwise),
-    ``event_type`` (``external_sharing`` vs ``internal_sharing``, decided by
-    the destination's category), and ``accessing_user`` (the validated
-    inbound principal; ``user_roles`` is ``[]`` because the schema requires
-    the key and no roles fact exists — an empty list reads as "no roles
-    known", which is the honest value).
+    The input is ``{"flows": {"request": {...}, "response": {...}}}``: one
+    flow per leg, keyed by leg, because the two legs of an exchange carry data
+    in opposite directions (#271). The request flow carries the request's
+    data from the caller to the callee; the response flow carries the
+    response's data from the callee back to the caller. Each
+    flow states its own ``data_items``, ``data_sources``,
+    ``data_destinations``, ``event_type`` and ``requested_actions``
+    (``send`` / ``receive``), so a rule that reads "this data, to that
+    destination" is matched against data that actually travelled there.
+    A leg that is not evidenced has no flow. The key lets a policy address a
+    leg by name (``input.flows.response``) when it needs to relate the two.
+
+    *anchor* carries the interaction's request-span wire facts (issue #163);
+    :func:`_endpoints` reads the exchange's caller and callee from it.
+    ``event_type`` comes from :func:`_event_type`, and ``accessing_user`` is
+    the validated inbound principal (``user_roles`` is ``[]`` because the
+    schema requires the key and no roles fact exists — an empty list reads as
+    "no roles known", which is the honest value). ``accessing_user`` and
+    ``processing_agents`` describe the interaction, so every flow carries
+    them.
 
     Category comes from #178's wildcard hostname whitelist
     (:func:`matches_internal_whitelist` over *internal_patterns*, defaulting
     to the configured ``RISK_INTERNAL_URL_WHITELIST_PATTERNS``); Rego never
     sees a URL, only the computed category. **MVP-only**, per #178: a single
-    wildcard-hostname whitelist collapses every destination to one of two
+    wildcard-hostname whitelist collapses every endpoint to one of two
     categories, and this will be treated more holistically (richer
     categories, trust levels, per-destination config) in a future version.
 
-    Every field this module has no source data for (``data_sources``,
-    ``data_lineage``, ``scope``, the five intent strings — and each of the
-    above when its facts are absent) is omitted entirely — the schema
-    requires nothing, and an omitted field reads honestly as "unknown" where
-    a defaulted-null or empty value would read as a confident (but wrong)
-    declaration to a policy author. ``span_ids`` has no corresponding
-    top-level field in the schema; it identifies the OTEL evidence behind
-    this payload but carries no rule-relevant content of its own.
+    Every field this module has no source data for (``data_lineage``,
+    ``scope``, the five intent strings — and each of the above when its
+    facts are absent) is omitted entirely — the schema requires nothing, and
+    an omitted field reads honestly as "unknown" where a defaulted-null or
+    empty value would read as a confident (but wrong) declaration to a policy
+    author. ``span_ids`` has no corresponding field in the schema; it
+    identifies the OTEL evidence behind this payload but carries no
+    rule-relevant content of its own.
     """
     if internal_patterns is None:
         internal_patterns = INTERNAL_URL_WHITELIST_PATTERNS
-    data_items = [
-        _verdict_to_data_item(verdict)
-        for verdict in classifications.values()
-        if isinstance(verdict, Verdict)
-    ]
-    payload: dict[str, Any] = {
-        "data_items": data_items,
-        "requested_actions": [
-            _LEG_TYPE_TO_ACTION[leg_type] for leg_type in legs_evidenced(legs)
-        ],
-    }
+    caller, callee = (
+        _endpoints(anchor, internal_patterns) if anchor is not None else (None, None)
+    )
+
+    interaction: dict[str, Any] = {}
     processing_agents = [
         {"agent_name": entity_id}
         for entity_id in (caller_entity_id, callee_entity_id)
         if entity_id is not None
     ]
     if processing_agents:
-        payload["processing_agents"] = processing_agents
-    if anchor is not None:
-        destination = _destination(anchor, internal_patterns)
+        interaction["processing_agents"] = processing_agents
+    if anchor is not None and anchor.principal_sub is not None:
+        interaction["accessing_user"] = {
+            "username": anchor.principal_sub,
+            "user_roles": [],
+        }
+
+    present = {*legs_evidenced(legs), *classifications}
+    flows: dict[str, Any] = {}
+    for leg_type in _LEG_ORDER:
+        if leg_type not in present:
+            continue
+        source, destination = (caller, callee) if leg_type == "request" else (callee, caller)
+        verdict = classifications.get(leg_type)
+        flow: dict[str, Any] = {
+            "data_items": (
+                [_verdict_to_data_item(verdict)] if isinstance(verdict, Verdict) else []
+            ),
+            "requested_actions": [_LEG_TYPE_TO_ACTION[leg_type]],
+        }
+        if source is not None:
+            flow["data_sources"] = [_data_source(source)]
         if destination is not None:
-            payload["data_destinations"] = [destination]
-            payload["event_type"] = (
-                "external_sharing"
-                if "external" in destination["data_destination_categories"]
-                else "internal_sharing"
-            )
-        if anchor.principal_sub is not None:
-            payload["accessing_user"] = {
-                "username": anchor.principal_sub,
-                "user_roles": [],
-            }
-    return payload
+            flow["data_destinations"] = [_data_destination(destination)]
+        event_type = _event_type(source, destination)
+        if event_type is not None:
+            flow["event_type"] = event_type
+        flows[leg_type] = {**flow, **interaction}
+    return {"flows": flows}
 
 
 def _normalize_for_fingerprint(
