@@ -68,8 +68,8 @@ To make DG observe a namespace, instrument its agents and tools for lineage:
 
 ```sh
 ./deploy/dg.sh namespaces list                 # namespaces DG can instrument
-./deploy/dg.sh namespace <ns> instrument       # instrument every entity in <ns>
-./deploy/dg.sh namespace <ns> instrument <e>   # instrument a single entity
+./deploy/dg.sh namespace <ns> instrument       # instrument trusted agents/tools in <ns>
+./deploy/dg.sh namespace <ns> instrument <e>   # instrument one trusted entity
 ./deploy/dg.sh namespace <ns> status           # instrumentation state of <ns>
 ```
 

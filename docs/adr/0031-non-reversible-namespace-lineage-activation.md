@@ -12,11 +12,13 @@ sidecar. It preserves authentication and sidecar ownership, adds the two-shim
 application image, and reconciles the existing proxy pipeline.
 
 The command has no reset operation. Reversal is performed by redeploying the
-workload through Rossoctl. A workload without the trusted Rossoctl identity or
-proxy sidecar is rejected before mutation.
+workload through Rossoctl. An explicitly named workload without the trusted
+Rossoctl identity is rejected before mutation. Namespace-wide instrumentation
+selects only trusted workloads, then rejects any selected workload without the
+expected proxy sidecar before mutation.
 
-`status` remains read-only and reports the observed state, including
-`sidecar=none` when applicable.
+`status` remains read-only and reports trusted and legacy component-labelled
+workloads, including `sidecar=none` when applicable.
 
 ## Consequences
 

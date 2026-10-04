@@ -760,6 +760,34 @@ def test_trusted_proxy_rolls_app_before_hot_reloading_pipeline(sandbox) -> None:
     assert sandbox.kit_log().count("build-otel-shim.sh argv:") == 2
 
 
+def test_mixed_namespace_instruments_trusted_and_reports_legacy(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "travel-advisor": {
+                "sidecar": "proxy",
+                "lineage": False,
+                "enforcing": True,
+                "trusted_type": "agent",
+            },
+            "research-agent": {"sidecar": None},
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    calls = sandbox.kubectl_calls()
+    assert any("patch deployment/travel-advisor" in call for call in calls)
+    assert not any("patch deployment/research-agent" in call for call in calls)
+    assert not any("get pods" in call and "research-agent" in call for call in calls)
+    assert sandbox.kit_log().count("build-otel-shim.sh argv:") == 2
+
+    status = sandbox.run("namespace", "travel-advisor", "status")
+    assert status.returncode == 0, status.stderr
+    assert "travel-advisor\tsidecar=present" in status.stdout
+    assert "research-agent\tsidecar=none" in status.stdout
+
+
 def test_trusted_tool_accepts_the_platform_tool_proxy_port_contract(sandbox) -> None:
     sandbox.set_namespace(
         {
@@ -909,11 +937,23 @@ def test_status_attests_the_running_application_not_the_local_image(sandbox) -> 
 def test_instrument_refuses_non_rossoctl_workload_before_mutation(sandbox) -> None:
     sandbox.set_namespace({"research-agent": {"sidecar": None}})
 
-    result = sandbox.run("namespace", "travel-advisor", "instrument")
+    result = sandbox.run("namespace", "travel-advisor", "instrument", "research-agent")
 
     assert result.returncode != 0
+    assert "not a trusted Rossoctl agent/tool" in result.stderr
     assert "Deploy or import agents/tools through Rossoctl" in result.stderr
     calls = "\n".join(sandbox.kubectl_calls())
     assert "patch deployment/" not in calls
     assert "apply -f -" not in calls
+    assert sandbox.kit_log() == ""
+
+
+def test_legacy_only_namespace_has_no_trusted_instrumentation_targets(sandbox) -> None:
+    sandbox.set_namespace({"research-agent": {"sidecar": None}})
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    assert "no trusted Rossoctl agents/tools found" in result.stderr
+    assert not any("patch deployment/" in call for call in sandbox.kubectl_calls())
     assert sandbox.kit_log() == ""

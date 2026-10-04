@@ -5,7 +5,8 @@ cluster, no subprocess. Their job is to catch the code/doc divergence class that
 review keeps missing because the prose reads plausibly: the docs must present
 ``dg.sh`` with the right verb surface, cross-link the design doc + the ADRs, and
 describe the shipped ``instrument`` contract: only existing, trusted Rossoctl
-AuthBridge proxies are reconciled; bare workloads fail closed before mutation.
+AuthBridge proxies are selected; explicitly named bare workloads fail before
+mutation.
 
 These match the ``pathlib`` + ``read_text`` conventions the rest of
 ``tests/deploy/`` uses (see ``test_dg_sh_component.py``'s ``REPO_ROOT``).

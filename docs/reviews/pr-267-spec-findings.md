@@ -2,8 +2,7 @@
 
 Status: updated 2026-10-04. This document records the Spec-axis findings from
 the review of `feat/239-one-trace-epic` against epic #239 and issues #240–#246
-and #256. Findings 1, 2, and 4 have updates below; finding 3 remains for
-discussion.
+and #256. Findings 1, 2, and 4 have updates below; finding 3 was withdrawn.
 
 ## 1. Acceptance evidence now records the observed results (gate still open)
 
@@ -33,19 +32,15 @@ using the deployed `mcp==1.27.0` SDK showed two sessions with the same ID each
 kept its own traceparent. A full post-fix live acceptance run is still pending;
 see the [evidence record](../evidence/0267-proxy-acceptance-current.md).
 
-## 3. Mixed namespaces can bypass fail-closed preflight (P1)
+## 3. Mixed-namespace finding withdrawn
 
-`enumerate_entities` in `deploy/dg.sh` currently selects `trusted or legacy`.
-When at least one trusted Rossoctl Deployment exists, legacy component-labelled
-agent/tool Deployments are omitted entirely. Instrumentation can therefore
-mutate the trusted workloads without detecting a bare workload in the same
-namespace.
-
-Epic #239 says to preflight all workloads before the first mutation and to fail
-closed when a workload was not deployed through Rossoctl or lacks the expected
-proxy. Discussion should determine whether enumeration must use the union of
-trusted and legacy candidates before trusted-proxy preflight rejects invalid
-members.
+Issue #256 scopes instrumentation to workloads with a trusted
+`rossoctl.io/type=agent|tool` label. Its fail-closed preflight applies to all
+selected trusted workloads, not every legacy component-labelled Deployment in
+the namespace. A bare legacy workload beside a trusted one does not veto
+instrumentation. The earlier finding incorrectly treated it as a required
+veto. Instrumentation now selects only trusted workloads, while read-only
+`status` lists both trusted and legacy-labelled candidates for diagnosis.
 
 ## 4. Import-string Uvicorn applications now receive a turn span (originally P2)
 

@@ -76,9 +76,8 @@ DG_TEE_PIPELINE="traces/data_governance"
 DG_COLLECTOR_NAMESPACE="${COLLECTOR_NAMESPACE:-rossoctl-system}"
 DG_COLLECTOR_CONFIGMAP="${COLLECTOR_CONFIGMAP:-otel-collector-config}"
 
-# Trusted Rossoctl workloads are selected by the operator-owned type label.  A
-# legacy component-label fallback keeps the #239 bare-namespace workflow usable
-# where no trusted labels exist; it is never mixed with a trusted selection.
+# Instrumentation selects workloads by the operator-owned type label. Read-only
+# status also includes legacy component-labelled workloads for diagnostics.
 # Namespace label marking a user (rossoctl-enabled) namespace.
 NS_ENABLED_SELECTOR='rossoctl-enabled=true'
 
@@ -175,13 +174,18 @@ list_user_namespaces() {
     done
 }
 
-# enumerate_entities <ns> [<entity>]: print the agent/tool names in <ns> one per
-# line. With <entity>, restrict to that single name (app.kubernetes.io/name) and
-# error loud if it does not resolve to an agent/tool in <ns>. Requires kubectl.
+# enumerate_entities <ns> <instrument|status> [<entity>]: print the agent/tool
+# names in <ns> one per line. Instrumentation selects only trusted Rossoctl
+# workloads; status also includes legacy component-labelled workloads. With
+# <entity>, restrict to that app.kubernetes.io/name and fail loud if it does not
+# resolve under the requested mode. Requires kubectl.
 enumerate_entities() {
     local ns="$1"
-    local entity="${2:-}"
+    local mode="$2"
+    local entity="${3:-}"
     [[ -n "${ns}" ]] || die "enumerate_entities: namespace is required"
+    [[ "${mode}" == "instrument" || "${mode}" == "status" ]] \
+        || die "enumerate_entities: invalid selection mode '${mode}'"
     require_kubectl
 
     local raw status
@@ -196,17 +200,22 @@ enumerate_entities() {
 import json, sys
 doc = json.load(sys.stdin)
 items = doc.get("items") or []
-trusted = [item for item in items if (item.get("metadata", {}).get("labels", {}).get("rossoctl.io/type") in {"agent", "tool"})]
-selected = trusted or [item for item in items if (item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") in {"agent", "mcp-tool"})]
-only = sys.argv[1]
+mode, only = sys.argv[1:]
+selected = [item for item in items if (
+    item.get("metadata", {}).get("labels", {}).get("rossoctl.io/type") in {"agent", "tool"}
+    or (mode == "status" and item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") in {"agent", "mcp-tool"})
+)]
 names = sorted({item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name") for item in selected})
 for name in names:
     if name and (not only or name == only):
         print(name)
-' "${entity}")"
+' "${mode}" "${entity}")"
 
     if [[ -n "${entity}" && -z "${names}" ]]; then
-        die "entity '${entity}' is not a trusted Rossoctl agent/tool (or legacy component-labelled entity) in namespace '${ns}'"
+        if [[ "${mode}" == "instrument" ]]; then
+            die "entity '${entity}' is not a trusted Rossoctl agent/tool in namespace '${ns}'. Deploy or import agents/tools through Rossoctl, then retry. Mutating nothing."
+        fi
+        die "entity '${entity}' is not a Rossoctl agent/tool or legacy component-labelled entity in namespace '${ns}'"
     fi
     printf '%s' "${names}"
     [[ -n "${names}" ]] && printf '\n'
@@ -731,7 +740,7 @@ namespace_status() {
 
     # Enumerate up front so a bad <entity> fails loud before any per-entity work.
     local names
-    names="$(enumerate_entities "${ns}" "${entity}")"
+    names="$(enumerate_entities "${ns}" status "${entity}")"
 
     if [[ -z "${names}" ]]; then
         # Zero agents/tools is a legitimate empty result, not an error.
@@ -822,9 +831,9 @@ namespace_status() {
 #
 # Activate lineage for Rossoctl-managed agents/tools in <ns>. Every target must
 # already have the trusted Rossoctl identity label and an admitted AuthBridge
-# proxy. Bare workloads fail during the transaction preflight, before any image,
-# Deployment, or ConfigMap mutation, with guidance to deploy/import them through
-# Rossoctl first. Data Governance never creates or replaces a sidecar.
+# proxy. An explicitly named bare workload is rejected during selection, before
+# any image, Deployment, or ConfigMap mutation, with guidance to deploy/import it
+# through Rossoctl first. Data Governance never creates or replaces a sidecar.
 
 # The platform collector the component tee carries to the receiver — the kit's
 # own OTEL_ENDPOINT default too, so passing it is a no-op belt-and-braces that
@@ -1240,14 +1249,14 @@ namespace_instrument() {
 
     # Enumerate up front so a bad <entity> fails loud before any mutation.
     local names
-    names="$(enumerate_entities "${ns}" "${entity}")"
+    names="$(enumerate_entities "${ns}" instrument "${entity}")"
     if [[ -z "${names}" ]]; then
-        err "namespace ${ns}: no agents/tools found — nothing to instrument"
+        err "namespace ${ns}: no trusted Rossoctl agents/tools found — nothing to instrument"
         return 0
     fi
 
     # All checks and shim builds finish before the first workload mutation.
-    # This preflight also refuses bare and non-Rossoctl workloads.
+    # The trusted-label check here remains defense in depth.
     local plan_file name app shim
     plan_file="$(mktemp)"
     preflight_trusted_proxies "${ns}" "${names}" "${plan_file}"

@@ -51,13 +51,13 @@ The design and its boundary decisions live in
 
 ### Namespace lineage activation (`dg.sh namespace instrument`)
 
-`dg.sh namespace <ns> instrument [<entity>]` activates lineage for Rossoctl-managed agents and tools. Every selected workload must already have a trusted `rossoctl.io/type` label and an admitted `authbridge-proxy` sidecar. Data Governance never injects or replaces a sidecar.
+`dg.sh namespace <ns> instrument [<entity>]` activates lineage for Rossoctl-managed agents and tools. Namespace-wide instrumentation selects only workloads with a trusted `rossoctl.io/type=agent|tool` label; an explicitly named untrusted workload is rejected. Every selected workload must have an admitted `authbridge-proxy` sidecar. Data Governance never injects or replaces a sidecar.
 
-The command validates the complete namespace before mutation: running pods, proxy environment, plugin catalog, admission-owned ConfigMaps, and attested two-shim images. Bare, Envoy, or otherwise nonconforming workloads fail closed with guidance to deploy or import them through Rossoctl.
+The command validates all selected workloads before mutation: running pods, proxy environment, plugin catalog, admission-owned ConfigMaps, and attested two-shim images. Bare, legacy component-labelled workloads are skipped in namespace-wide instrumentation and remain visible in read-only `status`. A selected workload with an Envoy or otherwise nonconforming proxy fails closed before mutation.
 
 After preflight, it rolls each application onto the shim image with `LINEAGE_PROPAGATE=1`, reconciles the newly admitted AuthBridge ConfigMap while preserving authentication, and verifies the live hot-reloaded pipeline.
 
-`dg.sh namespace <ns> status [<entity>]` is read-only. It may report `sidecar=none` diagnostically, but that state cannot be instrumented.
+`dg.sh namespace <ns> status [<entity>]` is read-only and includes trusted and legacy component-labelled agents/tools. It may report `sidecar=none` diagnostically, but that state cannot be instrumented.
 
 See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.md), [ADR-0033](../../docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md), and [the CLI guide](../../docs/cli.md).
 

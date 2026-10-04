@@ -8,10 +8,10 @@ This ticket is the **skeleton + shared cluster helpers** slice of ``dg.sh``
 - ``namespaces list`` — the one verb that WORKS this ticket: prints exactly the
   user namespaces (labelled ``rossoctl-enabled=true``, minus ``kube-*`` and
   ``*-system``);
-- the shared helpers the later verbs reuse — entity enumeration
-  (``app.kubernetes.io/component in (agent, mcp-tool)``, optional single-entity
-  select by ``app.kubernetes.io/name``, loud error on a name that does not
-  resolve), never touching the operator-reserved ``rossoctl.io/type``;
+- the shared helpers the later verbs reuse — trusted entity enumeration for
+  instrumentation, legacy component-labelled entities for read-only status,
+  optional single-entity select by ``app.kubernetes.io/name``, and a loud error
+  on a name that does not resolve;
 - preflight primitives — ``kubectl`` reachable, a container tool detected
   (matching ``build-and-load.sh`` conventions), reported loudly when missing.
 
@@ -112,7 +112,8 @@ names = [n for n in sys.argv[1].split("\n") if n.strip()]
 items = [{{
     "apiVersion": "apps/v1", "kind": "Deployment",
     "metadata": {{"name": n, "labels": {{"app.kubernetes.io/name": n,
-                                        "app.kubernetes.io/component": "agent"}}}},
+                                        "app.kubernetes.io/component": "agent",
+                                        "rossoctl.io/type": "agent"}}}},
     "spec": {{"template": {{"spec": {{"containers": [{{"name": n, "image": "x:latest"}}],
                                     "volumes": []}}}}}},
 }} for n in names]
@@ -447,9 +448,8 @@ def test_namespaces_list_fails_loud_when_kubectl_get_errors(sandbox) -> None:
 
 
 def test_entity_enumeration_reads_deployment_labels(sandbox) -> None:
-    """The shared entity enumeration reads full Deployment labels so trusted
-    Rossoctl types can take precedence while legacy component labels remain a
-    compatibility fallback."""
+    """The shared entity enumeration reads full Deployment labels to select
+    trusted Rossoctl workloads for instrumentation."""
     sandbox.set_kubectl(entity_out="research-agent\npayment-agent\n")
     sandbox.run("namespace", "travel-advisor", "instrument")
     calls = " ".join(sandbox.kubectl_calls())
@@ -457,8 +457,7 @@ def test_entity_enumeration_reads_deployment_labels(sandbox) -> None:
 
 
 def test_single_entity_select_uses_name_label(sandbox) -> None:
-    """A named <entity> is selected by `app.kubernetes.io/name` (driven here
-    through the still-stubbed `instrument` verb)."""
+    """A named <entity> is selected by `app.kubernetes.io/name`."""
     sandbox.set_kubectl(entity_out="research-agent\n")
     sandbox.run("namespace", "travel-advisor", "instrument", "research-agent")
     calls = " ".join(sandbox.kubectl_calls())
@@ -470,8 +469,7 @@ def test_single_entity_select_uses_name_label(sandbox) -> None:
 
 def test_named_entity_not_found_is_loud_error(sandbox) -> None:
     """A named entity that resolves to nothing is a loud error, not a no-op
-    (driven here through the still-stubbed `instrument` verb, which enumerates
-    up front so a bad <entity> fails loud even in the stub)."""
+    (instrument enumerates up front so a bad <entity> fails loud)."""
     sandbox.set_kubectl(entity_out="")  # nothing matches the name
     r = sandbox.run("namespace", "travel-advisor", "instrument", "nope-agent")
     assert r.returncode != 0, "unresolved named entity must fail loud"
