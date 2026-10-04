@@ -1,34 +1,37 @@
 # PR #267 spec-review findings
 
-Status: deferred for discussion. This document records the Spec-axis findings
-from the review of `feat/239-one-trace-epic` against epic #239 and issues
-#240–#246 and #256. It does not resolve or accept any finding.
+Status: updated 2026-10-04. This document records the Spec-axis findings from
+the review of `feat/239-one-trace-epic` against epic #239 and issues #240–#246
+and #256. Findings 1 and 2 have updates below; findings 3 and 4 remain for
+discussion.
 
-## 1. Full live-acceptance record is incomplete (P1)
+## 1. Acceptance evidence now records the observed results (gate still open)
 
 Issue #246 requires the proxy-mode acceptance run to verify one causal trace,
 one real root, canonical client/agent/tool identities, and
 `detected_from='sidecar lineage span'`, and to “record every command, result,
 and error.”
 
-The PR body records the successful aggregate result—98 spans, 27 interactions,
-four agents, six invoked tools, the authenticated client, and no failed lineage
-outcomes—but the branch contains only the worked-example recipe in `README.md`.
-Issue #246's checklist remains open, and its only issue comment records the
-earlier failed run. The reproducible command-by-command successful run and its
-errors are therefore not attached to the implementation or acceptance issue.
+The [current evidence record](../evidence/0267-proxy-acceptance-current.md) now
+lists the retained fresh-cluster command results and errors, the current
+read-only database checks, and the pre-fix concurrent failure. It distinguishes
+the PR body's historical 98-span / 27-interaction claim (whose raw query output
+was not retained) from the five current sequential traces: 76 spans, 21
+interactions, one root, 14 entities, zero span errors, and a `partial`
+lineage status each. The MCP fix has passed a real-SDK collision probe, but no
+post-fix full live gate has been run. Issue #246's checklist remains open; the
+record does not claim that its remaining acceptance work has passed.
 
-## 2. Concurrent MCP sessions can cross-wire trace contexts (P1)
+## 2. Concurrent MCP session collision fixed in the shim (originally P1)
 
-`deploy/lineage-attach/rossoctl_turnspan.py` stores W3C carriers in the
-process-global `_mcp_carriers` map using only a JSON-RPC request ID as the key.
-Request IDs are unique within a session, not across independent `BaseSession`
-instances. Two concurrent sessions that use the same ID can overwrite or
-consume each other's carrier, joining a tool call to the wrong turn or
-fragmenting its trace. That conflicts with #239's one-causal-trace goal.
-
-Discussion should cover a key that includes session or transport identity and
-a behavioral test with interleaved sessions that reuse the same request ID.
+The original `deploy/lineage-attach/rossoctl_turnspan.py` stored W3C carriers
+in a process-global map keyed only by JSON-RPC request ID. IDs are unique only
+within an MCP session, and a pre-fix two-client run plus real-SDK reproducer
+observed wrong turn attribution. Commit `d799c1a` places the carrier on the
+individual request's transport metadata instead. The focused test and a probe
+using the deployed `mcp==1.27.0` SDK showed two sessions with the same ID each
+kept its own traceparent. A full post-fix live acceptance run is still pending;
+see the [evidence record](../evidence/0267-proxy-acceptance-current.md).
 
 ## 3. Mixed namespaces can bypass fail-closed preflight (P1)
 
