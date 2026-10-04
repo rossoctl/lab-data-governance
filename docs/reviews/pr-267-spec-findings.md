@@ -11,15 +11,15 @@ one real root, canonical client/agent/tool identities, and
 `detected_from='sidecar lineage span'`, and to “record every command, result,
 and error.”
 
-The [current evidence record](../evidence/0267-proxy-acceptance-current.md) now
-lists the retained fresh-cluster command results and errors, the current
-read-only database checks, and the pre-fix concurrent failure. It distinguishes
-the PR body's historical 98-span / 27-interaction claim (whose raw query output
-was not retained) from the five current sequential traces: 76 spans, 21
-interactions, one root, 14 entities, zero span errors, and a `partial`
-lineage status each. The MCP fix has passed a real-SDK collision probe, but no
-post-fix full live gate has been run. Issue #246's checklist remains open; the
-record does not claim that its remaining acceptance work has passed.
+The [current evidence record](../evidence/0267-proxy-acceptance-current.md)
+lists the retained fresh-cluster commands and errors, the five pre-run
+sequential traces, and a new live run from PR commit `094f7cf`. The new
+single-client demo produced one causal trace with 98 spans, 27 interactions,
+one real root, no missing parents or span errors, and 14 canonical entities,
+all detected from sidecar lineage spans. Its stored lineage status remains
+`partial`; four separate standalone CONNECT traces had only request spans.
+The concurrent-client scenario has not been repeated with the live PR shim.
+Issue #246's full acceptance checklist remains open.
 
 ## 2. Concurrent MCP session collision fixed in the shim (originally P1)
 
@@ -29,8 +29,9 @@ within an MCP session, and a pre-fix two-client run plus real-SDK reproducer
 observed wrong turn attribution. Commit `d799c1a` places the carrier on the
 individual request's transport metadata instead. The focused test and a probe
 using the deployed `mcp==1.27.0` SDK showed two sessions with the same ID each
-kept its own traceparent. A full post-fix live acceptance run is still pending;
-see the [evidence record](../evidence/0267-proxy-acceptance-current.md).
+kept its own traceparent. A post-fix single-client live demo passed the
+one-trace structural checks; a live concurrent replay is still pending. See
+the [evidence record](../evidence/0267-proxy-acceptance-current.md).
 
 ## 3. Mixed-namespace finding withdrawn
 
@@ -49,5 +50,5 @@ objects but skipped `uvicorn module:app` strings, which Uvicorn resolves later.
 The shim now patches `Config.load()` and wraps the resolved ASGI app. A focused
 test and a non-mutating probe against the deployed Uvicorn 0.44.0 runtime cover
 app objects, import strings, factories, and already-wrapped apps. Each gets
-exactly one `TurnSpanMiddleware`. A full post-fix live acceptance run remains
-pending under issue #246.
+exactly one `TurnSpanMiddleware`. The single-client live demo now passed the
+one-trace structural checks; issue #246's full acceptance gate remains open.

@@ -1,8 +1,77 @@
 # PR #267: proxy-mode acceptance evidence and current limits
 
-Recorded on 2026-10-04 from the retained 2026-09-28 fresh-cluster logs and
-read-only checks of `kind-epic239-proxy-e2e`. This is the evidence available for
-epic #239 / issue #246. It does **not** claim a passing post-fix end-to-end gate.
+Recorded on 2026-10-04 from the retained 2026-09-28 fresh-cluster logs,
+read-only checks, and a new live run on `kind-epic239-proxy-e2e`. The post-fix
+single-client demo passed the one-causal-trace structural checks. Issue #246's
+full acceptance gate remains open: lineage status is still `partial`, and the
+concurrent-client scenario has not been rerun with the new shim.
+
+## Post-fix PR #267 deploy → instrument → demo, 2026-10-04
+
+The Data Governance PR worktree was at signed-off commit `094f7cf`.
+`pyproject.toml` matched the existing checkout, and its lockfile passed
+`uv lock --check --offline`. The unchanged classification image was kept at
+`sha256:2bf62bbc…`; the receiver/UI/interactions/data-lineage shared image
+was rebuilt from the PR at `sha256:b5406959…`.
+
+| Command or operation | Observed result |
+| --- | --- |
+| `uv lock --check --offline --project .` and `UV_CACHE_DIR=/tmp/pr267-uv-cache uv lock --check --offline --project .` | The first check exited 2 because the sandbox could not create a temporary file under the host uv cache. The retry using a writable temporary cache exited 0 and resolved 83 packages. |
+| `podman build -f Containerfile --build-arg 'APP_VERSION=094f7cf (2026-10-04)' -t data-governance/receiver:latest .` | Exited 0; shared PR image `sha256:b5406959…`. Tagged it for receiver/UI and loaded both names into `epic239-proxy-e2e` with `kind load docker-image` (exit 0). Kind failed a fast retag of the UI alias, then loaded that alias successfully. |
+| `KIND_CLUSTER=epic239-proxy-e2e bash deploy/dg.sh component install` | Interrupted before any Kubernetes apply while rebuilding the unchanged classification image's large runtime environment. The shared PR image had already been loaded. This was an operator interruption, not a failed application build. |
+| `KIND_CLUSTER=epic239-proxy-e2e bash deploy/dg.sh component install --no-build` | Exited 0; applied PR manifests, confirmed the existing `traces/data_governance` collector tee, and rolled receiver, UI, and interactions. `dg.sh component status` reported all deployments ready and tee wired. The three rolled deployments used image `sha256:b5406959…`. |
+| `kubectl -n data-governance rollout restart deployment/data-governance-data-lineage` and `rollout status` | Exited 0; data-lineage also picked up shared PR image `sha256:b5406959…`. `dg.sh` does not include it in its install restart set. |
+| `python3 /tmp/pr267-reset-demo-workloads.py` (temporary operator script) | It checked the Kind context and all 11 trusted Deployment labels, then restored each app container to its existing `registry.cr-system.svc.cluster.local:5000/agent-examples-snp:latest` base image and removed the old `LINEAGE_PROPAGATE` env entry using a strategic patch. All 11 sequential rollouts exited 0. The following instrumentation would therefore bake the PR shim rather than reattest the old `-otel` image. Sidecars and stores were left in place. |
+| `KIND_CLUSTER=epic239-proxy-e2e bash deploy/dg.sh namespace travel-advisor instrument` | Exited 0; one PR two-shim image was built, attested, and loaded as `sha256:6e781fdb…`. All 11 trusted workloads rolled onto it, and each AuthBridge lineage pipeline hot-reloaded and passed the live check. |
+| `KIND_CLUSTER=epic239-proxy-e2e bash deploy/dg.sh namespace travel-advisor status` | Exited 0; all 11 rows reported `type=proxy lineage=yes live=yes`. Running agent/tool pods all used shim image `sha256:6e781fdb…`. |
+| `SELECT COALESCE(MAX(seq),0) FROM spans` before the demo | Returned `1074`; subsequent SQL used `seq > 1074` to separate this run from earlier data. No database wipe was performed. |
+| `APP=travel_advisor bash run-demo.sh` | Exited 0 from the external `demo-client`. It printed fresh A2A context `be90ead21fa44252a4ee39e917516bd7`, booking `BK-3E638E`, authorization `AUTH-8E6F12`, `TaskState.input_required`, and a duplicated final summary. |
+| Read-only SQL on the fresh trace | Context `be90ead21fa44252a4ee39e917516bd7` appears on causal trace `951413ab0c80b6b90c43a3b160fc9b29`: **98 distinct spans, one real root, no missing span parents, zero error spans, 27 interactions, one interaction root, and no missing interaction parents**. |
+| `GET /api/traces?limit=30` from the running DG UI container | The causal trace was listed first. None of the 12 fresh standalone CONNECT trace IDs appeared in the recent-traces feed. |
+
+The causal trace contains the external client, all four agents, six invoked
+tools, and three services: **14 entities**, each with
+`detected_from='sidecar lineage span'`. It has ten distinct workload
+`lineage.self.id` values. `send-notification` was deployed and instrumented
+but not remotely invoked. The stored `lineage_trace_status` is `partial`.
+
+The observation window contained **118 spans across 13 trace IDs**. The other
+12 traces were standalone `CONNECT` observations to the LLM gateway,
+PostgreSQL, and MailHog, all with `lineage.parent.source=none`; eight had
+request/response pairs and four had only a request span when checked. They are
+not branches of the 98-span causal trace. This sequential run does not verify
+the concurrent MCP-session fix under live cluster traffic.
+
+The key read-only database check used the pre-run `seq=1074` boundary and
+the fresh context ID to identify the workflow trace. Its structural counts
+can be repeated with:
+
+```sql
+SELECT trace_id, COUNT(*) AS spans,
+       COUNT(*) FILTER (WHERE parent_id IS NULL) AS roots,
+       COUNT(*) FILTER (WHERE error IS TRUE) AS errors
+FROM spans WHERE seq > 1074 GROUP BY trace_id ORDER BY spans DESC;
+SELECT COUNT(*) AS missing_span_parents FROM spans s
+WHERE s.trace_id = '951413ab0c80b6b90c43a3b160fc9b29'
+  AND s.parent_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM spans p
+                  WHERE p.trace_id = s.trace_id AND p.span_id = s.parent_id);
+SELECT COUNT(*) AS interactions,
+       COUNT(*) FILTER (WHERE parent_interaction_id IS NULL) AS roots
+FROM interactions WHERE trace_id = '951413ab0c80b6b90c43a3b160fc9b29';
+SELECT COUNT(*) AS missing_interaction_parents FROM interactions i
+WHERE i.trace_id = '951413ab0c80b6b90c43a3b160fc9b29'
+  AND i.parent_interaction_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM interactions p
+                  WHERE p.trace_id = i.trace_id AND p.id = i.parent_interaction_id);
+SELECT status FROM lineage_trace_status
+WHERE trace_id = '951413ab0c80b6b90c43a3b160fc9b29';
+SELECT e.kind, e.namespace, e.natural_key, e.detected_from
+FROM entities e JOIN (
+  SELECT DISTINCT entity_id FROM entity_spans
+  WHERE trace_id = '951413ab0c80b6b90c43a3b160fc9b29'
+) seen ON seen.entity_id = e.id ORDER BY e.kind, e.natural_key;
+```
 
 ## Fresh-cluster deploy → instrument → demo, 2026-09-28
 
@@ -32,10 +101,10 @@ logs above do not include the SQL output behind those counts, and that trace is
 no longer in the current database after later resets. Treat those figures as a
 historical report, not as independently rechecked results of this log set.
 
-## Current database check, 2026-10-04
+## Pre-run database check, 2026-10-04
 
-The existing cluster still contains five sequential single-client control runs
-from 2026-09-29. The following read-only query was run inside
+Before the new live run, the cluster contained five sequential single-client
+control runs from 2026-09-29. The following read-only query was run inside
 `statefulset/data-governance-postgres` with
 `psql -U data_governance -d data_governance`:
 
@@ -66,7 +135,7 @@ zero `error=true` spans, and `lineage_status=partial`**. In the first trace,
 joining `entities` through `entity_spans` returned one client
 (`travel-advisor-demo-client`), four namespaced agents, six namespaced invoked
 tools, and three services. All 14 had `detected_from='sidecar lineage span'`.
-`send-notification` was deployed but was not among the invoked tools. A fresh
+`send-notification` was deployed but was not among the invoked tools. A pre-run
 read-only `bash deploy/dg.sh namespace travel-advisor status` also exited 0 with
 all 11 workloads `type=proxy lineage=yes live=yes`.
 
@@ -89,6 +158,6 @@ the first transport consumed the second turn's carrier, and the second lost it.
 
 After the code fix, a non-mutating probe using the deployed `mcp==1.27.0` SDK
 and the patched shim showed each of those two sessions carrying its own W3C
-traceparent. The shim has **not** been baked into a new live image or subjected
-to a post-fix full deploy → instrument → demo → inspect run. Issue #246 remains
-open; this record does not mark its acceptance checklist complete.
+traceparent. The new live image and sequential demo above verify the one-trace
+path, but do not repeat the two-client collision scenario. Issue #246 remains
+open; this record does not mark its full acceptance checklist complete.
