@@ -14,6 +14,11 @@ Never branch off another in-progress feature branch unless the user explicitly a
 
 Always commit with `git commit -s` (Developer Certificate of Origin sign-off). This repo requires the `Signed-off-by` trailer on every commit.
 
+## Running tests in this workspace
+
+Use `.venv/bin/pytest` from this repository root. The bare `pytest` command is
+not on this workspace's `PATH`.
+
 ## Agent skills
 
 ### Issue tracker

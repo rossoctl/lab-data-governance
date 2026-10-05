@@ -19,6 +19,7 @@
 #
 #   dg.sh                                                 # → component status
 #   dg.sh component  [install|uninstall|status]
+#   dg.sh component  install [--no-build|--reuse-classification]
 #   dg.sh namespaces [list]
 #   dg.sh namespace  <ns> [instrument|status] [<entity>]
 #
@@ -47,24 +48,19 @@ KIT_DIR="${DG_LINEAGE_ATTACH_DIR:-${SCRIPT_DIR}/lineage-attach}"
 
 # The data-governance component's own resources.
 DG_NAMESPACE="data-governance"
-# The load-bearing deployments to rollout-restart on install (manifests pin
-# :latest with imagePullPolicy: IfNotPresent, so `apply` alone will NOT cycle
-# pods onto a freshly-loaded image — the restart is the documented, easy-to-
-# forget step; root CLAUDE.md § 1).
+# All deployments running images built by build-and-load.sh. Their manifests
+# pin :latest with imagePullPolicy: IfNotPresent, so `apply` alone will NOT
+# cycle pods onto a freshly-loaded image. Every one must restart on install.
 DG_ROLLOUT_DEPLOYMENTS=(
-    data-governance-receiver
-    data-governance-ui
-    data-governance-interactions
-)
-# All component workload deployments (the superset the --keep-data teardown
-# deletes individually while preserving the Postgres PVC).
-DG_ALL_DEPLOYMENTS=(
     data-governance-receiver
     data-governance-ui
     data-governance-interactions
     data-governance-classification
     data-governance-data-lineage
 )
+# The --keep-data teardown deletes these deployments individually while
+# preserving the Postgres PVC.
+DG_ALL_DEPLOYMENTS=("${DG_ROLLOUT_DEPLOYMENTS[@]}")
 # The UI ingress edge lives partly in rossoctl-system (the HTTPRoute) and partly
 # in data-governance (the ReferenceGrant permitting the cross-namespace edge).
 DG_HTTPROUTE_NAME="data-governance-ui"
@@ -95,6 +91,7 @@ ${PROG} — data-governance cluster management
 Usage:
   ${PROG}                                        # component status
   ${PROG} component  [install|uninstall|status]
+  ${PROG} component  install [--no-build|--reuse-classification]
   ${PROG} namespaces [list]
   ${PROG} namespace  <ns> [instrument|status] [<entity>]
 EOF
@@ -205,10 +202,22 @@ selected = [item for item in items if (
     item.get("metadata", {}).get("labels", {}).get("rossoctl.io/type") in {"agent", "tool"}
     or (mode == "status" and item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") in {"agent", "mcp-tool"})
 )]
-names = sorted({item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name") for item in selected})
+priorities = {}
+for item in selected:
+    labels = item.get("metadata", {}).get("labels", {})
+    name = labels.get("app.kubernetes.io/name")
+    if not name or (only and name != only):
+        continue
+    rank = 0 if labels.get("rossoctl.io/type") == "tool" else 1
+    priorities[name] = min(priorities.get(name, rank), rank)
+# Namespace-wide mutation brings tools up before agents that call them.
+# Keep status output alphabetic for stable diagnostics.
+if mode == "instrument":
+    names = sorted(priorities, key=lambda name: (priorities[name], name))
+else:
+    names = sorted(priorities)
 for name in names:
-    if name and (not only or name == only):
-        print(name)
+    print(name)
 ' "${mode}" "${entity}")"
 
     if [[ -n "${entity}" && -z "${names}" ]]; then
@@ -249,13 +258,16 @@ tee_is_wired() {
 # --- component install -----------------------------------------------------
 
 component_install() {
-    local no_build=0
+    local no_build=0 reuse_classification=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --no-build) no_build=1; shift ;;
+            --reuse-classification) reuse_classification=1; shift ;;
             *) usage_error "unknown component install option: '$1'" ;;
         esac
     done
+    [[ "${no_build}" -eq 0 || "${reuse_classification}" -eq 0 ]] \
+        || usage_error "--no-build and --reuse-classification cannot be combined"
 
     require_kubectl
 
@@ -266,7 +278,9 @@ component_install() {
         [[ -x "${BUILD_AND_LOAD}" ]] \
             || die "build-and-load helper not found or not executable: ${BUILD_AND_LOAD}"
         err ">> component install: building + loading images (${BUILD_AND_LOAD})"
-        "${BUILD_AND_LOAD}" \
+        local -a build_options=()
+        [[ "${reuse_classification}" -eq 1 ]] && build_options+=(--reuse-classification)
+        "${BUILD_AND_LOAD}" "${build_options[@]}" \
             || die "image build+load failed (${BUILD_AND_LOAD}); aborting install"
     fi
 
@@ -286,14 +300,16 @@ component_install() {
     # 4. rollout restart + status the load-bearing deployments (the
     #    :latest/IfNotPresent cycle step — apply alone will not pick up a fresh
     #    image).
-    err ">> component install: rolling the receiver/ui/interactions deployments"
-    local d
+    err ">> component install: rolling all five data-governance deployments"
+    local d timeout
     for d in "${DG_ROLLOUT_DEPLOYMENTS[@]}"; do
         kubectl -n "${DG_NAMESPACE}" rollout restart "deployment/${d}" \
             || die "rollout restart deployment/${d} failed"
     done
     for d in "${DG_ROLLOUT_DEPLOYMENTS[@]}"; do
-        kubectl -n "${DG_NAMESPACE}" rollout status "deployment/${d}" --timeout=120s \
+        timeout=120s
+        [[ "${d}" == data-governance-classification ]] && timeout=180s
+        kubectl -n "${DG_NAMESPACE}" rollout status "deployment/${d}" --timeout="${timeout}" \
             || die "rollout status deployment/${d} did not become ready"
     done
 

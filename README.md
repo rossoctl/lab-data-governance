@@ -51,6 +51,13 @@ and the collector tee), and instruments a namespace's agents/tools for lineage.
 ./deploy/dg.sh component uninstall   # the inverse (add --keep-data to keep the PVC)
 ```
 
+On a Podman-backed Kind cluster, set `CONTAINER_TOOL=podman` and
+`KIND_EXPERIMENTAL_PROVIDER=podman`. If the classification image is already
+cached on the host, use
+`./deploy/dg.sh component install --reuse-classification` to load it into a
+fresh Kind node while rebuilding only the shared receiver/UI image. The
+command checks that the cached image exists before starting the build.
+
 `component install` is idempotent; add `--no-build` to skip the image build when
 only manifests changed. It performs a `rollout restart` for you — this is
 **load-bearing and easy to forget**: the manifests pin `:latest` with
@@ -76,7 +83,9 @@ To make DG observe a namespace, instrument its agents and tools for lineage:
 Instrumentation is one-way and mode-preserving. Rossoctl-managed agents/tools
 are selected by `rossoctl.io/type`, retain their enforcing sidecars and auth,
 and are converged by rolling the application shim before hot-reloading the
-proxy pipeline. `status` reports subsequent drift. The reasoning is recorded in
+proxy pipeline. Namespace-wide activation completes all preflight checks, then
+rolls tools before agents, alphabetically within each group. `status` reports
+subsequent drift. The reasoning is recorded in
 [ADR-0031](docs/adr/0031-non-reversible-namespace-lineage-activation.md) and
 [ADR-0033](docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md), and the
 CLI design in [`docs/cli.md`](docs/cli.md).
