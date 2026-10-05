@@ -689,6 +689,35 @@ def test_trusted_proxy_rolls_app_before_hot_reloading_pipeline(sandbox) -> None:
     assert sandbox.kit_log().count("build-otel-shim.sh argv:") == 2
 
 
+def test_namespace_instrument_rolls_tools_before_agents(sandbox) -> None:
+    sandbox.set_namespace(
+        {
+            "a-agent": {
+                "sidecar": "proxy", "enforcing": True, "trusted_type": "agent",
+            },
+            "b-tool": {
+                "sidecar": "proxy", "enforcing": True, "trusted_type": "tool",
+            },
+            "c-agent": {
+                "sidecar": "proxy", "enforcing": True, "trusted_type": "agent",
+            },
+            "d-tool": {
+                "sidecar": "proxy", "enforcing": True, "trusted_type": "tool",
+            },
+        }
+    )
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    patches = [
+        call.split("patch deployment/", 1)[1].split()[0]
+        for call in sandbox.kubectl_calls()
+        if "patch deployment/" in call
+    ]
+    assert patches == ["b-tool", "d-tool", "a-agent", "c-agent"]
+
+
 def test_mixed_namespace_instruments_trusted_and_reports_legacy(sandbox) -> None:
     sandbox.set_namespace(
         {

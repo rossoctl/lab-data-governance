@@ -202,10 +202,22 @@ selected = [item for item in items if (
     item.get("metadata", {}).get("labels", {}).get("rossoctl.io/type") in {"agent", "tool"}
     or (mode == "status" and item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/component") in {"agent", "mcp-tool"})
 )]
-names = sorted({item.get("metadata", {}).get("labels", {}).get("app.kubernetes.io/name") for item in selected})
+priorities = {}
+for item in selected:
+    labels = item.get("metadata", {}).get("labels", {})
+    name = labels.get("app.kubernetes.io/name")
+    if not name or (only and name != only):
+        continue
+    rank = 0 if labels.get("rossoctl.io/type") == "tool" else 1
+    priorities[name] = min(priorities.get(name, rank), rank)
+# Namespace-wide mutation brings tools up before agents that call them.
+# Keep status output alphabetic for stable diagnostics.
+if mode == "instrument":
+    names = sorted(priorities, key=lambda name: (priorities[name], name))
+else:
+    names = sorted(priorities)
 for name in names:
-    if name and (not only or name == only):
-        print(name)
+    print(name)
 ' "${mode}" "${entity}")"
 
     if [[ -n "${entity}" && -z "${names}" ]]; then

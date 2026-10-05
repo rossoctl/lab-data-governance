@@ -48,6 +48,8 @@ instrumentation selects every agent/tool with a trusted
 `rossoctl.io/type=agent|tool` label in the namespace. A namespace with no
 trusted agents/tools has nothing to instrument. An explicitly named untrusted
 entity fails loudly, with guidance to deploy or import it through Rossoctl.
+For namespace-wide activation, the command validates every target first and
+then processes tools before agents, alphabetically within each group.
 
 Only the real Rossoctl deployment shape is supported. Every selected entity
 must have:
