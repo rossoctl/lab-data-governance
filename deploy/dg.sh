@@ -19,6 +19,7 @@
 #
 #   dg.sh                                                 # → component status
 #   dg.sh component  [install|uninstall|status]
+#   dg.sh component  install [--no-build|--reuse-classification]
 #   dg.sh namespaces [list]
 #   dg.sh namespace  <ns> [instrument|status] [<entity>]
 #
@@ -90,6 +91,7 @@ ${PROG} — data-governance cluster management
 Usage:
   ${PROG}                                        # component status
   ${PROG} component  [install|uninstall|status]
+  ${PROG} component  install [--no-build|--reuse-classification]
   ${PROG} namespaces [list]
   ${PROG} namespace  <ns> [instrument|status] [<entity>]
 EOF
@@ -244,13 +246,16 @@ tee_is_wired() {
 # --- component install -----------------------------------------------------
 
 component_install() {
-    local no_build=0
+    local no_build=0 reuse_classification=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --no-build) no_build=1; shift ;;
+            --reuse-classification) reuse_classification=1; shift ;;
             *) usage_error "unknown component install option: '$1'" ;;
         esac
     done
+    [[ "${no_build}" -eq 0 || "${reuse_classification}" -eq 0 ]] \
+        || usage_error "--no-build and --reuse-classification cannot be combined"
 
     require_kubectl
 
@@ -261,7 +266,9 @@ component_install() {
         [[ -x "${BUILD_AND_LOAD}" ]] \
             || die "build-and-load helper not found or not executable: ${BUILD_AND_LOAD}"
         err ">> component install: building + loading images (${BUILD_AND_LOAD})"
-        "${BUILD_AND_LOAD}" \
+        local -a build_options=()
+        [[ "${reuse_classification}" -eq 1 ]] && build_options+=(--reuse-classification)
+        "${BUILD_AND_LOAD}" "${build_options[@]}" \
             || die "image build+load failed (${BUILD_AND_LOAD}); aborting install"
     fi
 

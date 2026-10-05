@@ -8,6 +8,7 @@ Governance component and activating lineage on Rossoctl-managed workloads.
 ```text
 dg.sh                                              # component status
 dg.sh component  [install|uninstall|status]
+dg.sh component  install [--no-build|--reuse-classification]
 dg.sh namespaces [list]
 dg.sh namespace  <ns> [instrument|status] [<entity>]
 ```
@@ -19,7 +20,11 @@ are vendored in `deploy/lineage-attach/`; no Cortex checkout is required.
 
 `dg.sh component install` builds and loads the images, applies the Kubernetes
 resources, wires the platform collector tee, and rolls the component workloads.
-Use `--no-build` only when the required images are already loaded.
+Use `--no-build` only when the required images are already loaded. Use
+`--reuse-classification` when the classification image is in the local container
+cache: the script builds and loads the shared receiver/UI image, then loads the
+cached classification image into Kind without rebuilding its model or fetching
+git-LFS weights. The options cannot be combined.
 
 `dg.sh component uninstall` reverts the collector tee and removes the component.
 It deletes the namespace and PVC by default; `--keep-data` preserves the PVC.

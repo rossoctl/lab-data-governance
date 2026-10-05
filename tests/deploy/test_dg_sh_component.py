@@ -281,6 +281,14 @@ def test_component_install_no_build_skips_build(sandbox) -> None:
     assert "rollout restart" in kubectl, "--no-build still rolls"
 
 
+def test_component_install_forwards_cached_classification_option(sandbox) -> None:
+    r = sandbox.run("component", "install", "--reuse-classification")
+
+    assert r.returncode == 0, r.stderr
+    assert "build-and-load.sh --reuse-classification" in sandbox.script_calls()
+    assert any("rollout restart" in call for call in sandbox.kubectl_calls())
+
+
 def test_component_install_idempotent_no_duplicate_tee(sandbox) -> None:
     """Re-running install is not an error and does not double-wire the tee.
 

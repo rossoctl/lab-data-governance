@@ -24,6 +24,7 @@ verbs and adds namespace lineage activation:
 
 ```sh
 ./deploy/dg.sh component install     # build + kind-load + apply + collector tee + rollout
+./deploy/dg.sh component install --reuse-classification  # reuse cached model image
 ./deploy/dg.sh component status      # deployments present/ready + is the tee wired
 ./deploy/dg.sh component uninstall   # the inverse; --keep-data preserves the Postgres PVC
 
@@ -39,6 +40,9 @@ The raw steps remain here so you can drive them individually; `dg.sh` is the
 primary path, not a replacement that hides them. `component install` is
 idempotent (pass `--no-build` when the images are already loaded), and it
 performs the load-bearing `rollout restart` for you.
+Pass `--reuse-classification` to build/load the shared image while loading an
+already cached classification image into a fresh Kind cluster without rebuilding
+or pushing it. The script fails before building if that cached image is absent.
 
 The design and its boundary decisions live in
 [`../../docs/cli.md`](../../docs/cli.md),
@@ -157,6 +161,7 @@ The `deploy/build-and-load.sh` helper does both steps in one shot:
 
 ```sh
 ./deploy/build-and-load.sh
+./deploy/build-and-load.sh --reuse-classification  # cache must contain classification image
 ```
 
 It builds the image from `Containerfile` (multi-stage `uv sync --frozen`
@@ -168,6 +173,9 @@ weights and builds + loads the separate P-classification image
 (issue #79 / ADR-0022 — the fat torch + baked-weights image, distinct from
 the slim shared image). Override the cluster name with `KIND_CLUSTER=...` and
 the tag with `IMAGE_TAG=...` if needed.
+With `--reuse-classification`, it verifies the local cached image, skips the
+classification build and git-LFS fetch, and loads that image into the selected
+Kind cluster alongside the newly built shared image.
 
 > **git-LFS required.** The classification image bakes a ~500 MB git-LFS model
 > artifact; `build-and-load.sh` runs `git lfs pull` before building so the real
