@@ -47,24 +47,19 @@ KIT_DIR="${DG_LINEAGE_ATTACH_DIR:-${SCRIPT_DIR}/lineage-attach}"
 
 # The data-governance component's own resources.
 DG_NAMESPACE="data-governance"
-# The load-bearing deployments to rollout-restart on install (manifests pin
-# :latest with imagePullPolicy: IfNotPresent, so `apply` alone will NOT cycle
-# pods onto a freshly-loaded image — the restart is the documented, easy-to-
-# forget step; root CLAUDE.md § 1).
+# All deployments running images built by build-and-load.sh. Their manifests
+# pin :latest with imagePullPolicy: IfNotPresent, so `apply` alone will NOT
+# cycle pods onto a freshly-loaded image. Every one must restart on install.
 DG_ROLLOUT_DEPLOYMENTS=(
-    data-governance-receiver
-    data-governance-ui
-    data-governance-interactions
-)
-# All component workload deployments (the superset the --keep-data teardown
-# deletes individually while preserving the Postgres PVC).
-DG_ALL_DEPLOYMENTS=(
     data-governance-receiver
     data-governance-ui
     data-governance-interactions
     data-governance-classification
     data-governance-data-lineage
 )
+# The --keep-data teardown deletes these deployments individually while
+# preserving the Postgres PVC.
+DG_ALL_DEPLOYMENTS=("${DG_ROLLOUT_DEPLOYMENTS[@]}")
 # The UI ingress edge lives partly in rossoctl-system (the HTTPRoute) and partly
 # in data-governance (the ReferenceGrant permitting the cross-namespace edge).
 DG_HTTPROUTE_NAME="data-governance-ui"
@@ -286,14 +281,16 @@ component_install() {
     # 4. rollout restart + status the load-bearing deployments (the
     #    :latest/IfNotPresent cycle step — apply alone will not pick up a fresh
     #    image).
-    err ">> component install: rolling the receiver/ui/interactions deployments"
-    local d
+    err ">> component install: rolling all five data-governance deployments"
+    local d timeout
     for d in "${DG_ROLLOUT_DEPLOYMENTS[@]}"; do
         kubectl -n "${DG_NAMESPACE}" rollout restart "deployment/${d}" \
             || die "rollout restart deployment/${d} failed"
     done
     for d in "${DG_ROLLOUT_DEPLOYMENTS[@]}"; do
-        kubectl -n "${DG_NAMESPACE}" rollout status "deployment/${d}" --timeout=120s \
+        timeout=120s
+        [[ "${d}" == data-governance-classification ]] && timeout=180s
+        kubectl -n "${DG_NAMESPACE}" rollout status "deployment/${d}" --timeout="${timeout}" \
             || die "rollout status deployment/${d} did not become ready"
     done
 

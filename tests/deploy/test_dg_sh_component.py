@@ -10,7 +10,7 @@ activation).
 - **install** (idempotent): build+kind-load via ``deploy/build-and-load.sh``
   (``--no-build`` to skip) → ``kubectl apply -f deploy/k8s/`` →
   ``deploy/patch-rossoctl-collector.sh`` (the tee) → ``rollout restart`` +
-  ``rollout status`` of receiver/ui/interactions.
+  ``rollout status`` of receiver/ui/interactions/classification/data-lineage.
 - **uninstall**: ``patch-rossoctl-collector.sh --revert`` → delete the
   ``rossoctl-system`` HTTPRoute + the ``data-governance`` ReferenceGrant →
   ``kubectl delete namespace data-governance`` (takes the PVC). ``--keep-data``
@@ -241,17 +241,28 @@ def test_component_install_drives_full_pipeline(sandbox) -> None:
     assert "rollout status" in kubectl, "install must wait via rollout status"
 
 
-def test_component_install_rollout_targets_receiver_ui_interactions(sandbox) -> None:
+def test_component_install_rollout_targets_every_built_image(sandbox) -> None:
     r = sandbox.run("component", "install")
     assert r.returncode == 0, r.stderr
     restart_calls = [c for c in sandbox.kubectl_calls() if "rollout restart" in c]
-    joined = " ".join(restart_calls)
+    status_calls = [c for c in sandbox.kubectl_calls() if "rollout status" in c]
     for dep in (
         "data-governance-receiver",
         "data-governance-ui",
         "data-governance-interactions",
+        "data-governance-classification",
+        "data-governance-data-lineage",
     ):
-        assert dep in joined, f"rollout restart must cycle {dep}; got {restart_calls!r}"
+        assert any(f"deployment/{dep}" in call for call in restart_calls), (
+            f"rollout restart must cycle {dep}; got {restart_calls!r}"
+        )
+        assert any(f"deployment/{dep}" in call for call in status_calls), (
+            f"rollout status must wait for {dep}; got {status_calls!r}"
+        )
+    assert any(
+        "deployment/data-governance-classification --timeout=180s" in call
+        for call in status_calls
+    )
 
 
 def test_component_install_no_build_skips_build(sandbox) -> None:
