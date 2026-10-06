@@ -23,10 +23,13 @@ themselves rewritten in place when P-interactions re-derives a trace — which i
 migration 0012's NOTIFY trigger covers UPDATE as well as INSERT. Insert-if-absent
 would freeze the first, most partial answer.
 
-**The drain has two arms** (:func:`_drain_spec`, issue #137). The cursor arm is the
-standard ``seq > cursor`` drain. The second arm exists because that cursor can never
-revisit a leg it has already passed, and three things can leave such a leg's lineage
-wrong or absent:
+**The drain has three arms** (:func:`_drain_spec`, issues #137 and #279). The cursor
+arm handles new legs with ``seq > cursor``. The durable dirty-trace queue replays
+traces when a parent, endpoint, payload or occurrence time is corrected, or a leg
+is deleted, without a new leg ``seq``; migration 0021 also queues existing traces for a causal-order
+backfill. The stale sweep handles an entity that lands after its leg was consumed.
+All three use the same whole-trace derivation; only the cursor arm advances the
+ingestion cursor. Earlier reasons for the non-cursored arms include:
 
 - P-interactions preserves a leg's ``seq`` across a re-derive (replay determinism), so
   a leg **rewritten in place** sits behind the cursor and the 0012 wake finds nothing
@@ -39,10 +42,10 @@ wrong or absent:
 - A re-derive can **retarget** a leg's caller/callee under an unchanged payload, so the
   stored lineage names the wrong entity.
 
-:func:`_fetch_stale_traces` detects all three and re-derives the trace. That arm never
-advances the cursor (the legs it finds are below it by definition), so the durable
-cursor stays monotonic; the predicate is its durable state instead, which is what makes
-it crash-safe without one.
+The queue records corrections directly. :func:`_fetch_stale_traces` additionally
+detects missing rows and payload/producer drift, including changes from older
+deployments. Its predicates and the queue generation provide crash-safe state
+without rewinding the cursor.
 
 **Upserting alone is not enough once a derivation can get SHORTER** (ADR-0028 D6's
 absent-payload cutoff, issue #120). So for a leg whose trace has legs to derive,
@@ -52,8 +55,8 @@ membership, never by ``seq >= stop``), and the trace-level status in
 ``lineage_trace_status`` (migration 0014). Why the delete exists and why its scoping
 must be set membership: ADR-0028 D9. All three writes share the loop's one
 transaction, so a trace's metadata and its coverage claim can never disagree. A
-trace we cannot see yet gets none of the three — no status row, which is how
-*unknown* is expressed (ADR-0028 D6).
+trace with no remaining legs has no new derived rows and has any previous status
+row removed; absence is how *unknown* is expressed (ADR-0028 D6).
 
 **Trace scoping needs a join.** ``interaction_legs`` has no ``trace_id`` (ADR-0025
 puts identity on the parent), so both the arriving leg's trace and the trace's legs
@@ -120,8 +123,11 @@ def load_trace(tx: db.Transaction, trace_id: str) -> tuple[list[Leg], dict[str, 
 
     The join through ``interactions`` is what scopes the read to one trace and what
     supplies the caller/callee identity the traversal routes on (ADR-0025 keeps both
-    on the parent). Ordering is by leg ``seq`` — the only execution order the schema
-    offers, since the parent row has no ``seq``.
+    on the parent). Parent links and occurrence times also feed the traversal's
+    causal ordering; SQL row order has no execution meaning. Key-share locks keep
+    these rows alive until the derived writes commit. A concurrent reconciliation
+    deletion then runs its cleanup trigger afterward, so it cannot leave orphaned
+    lineage rows written after the deletion.
 
     Payload *content* is loaded separately by :func:`load_payloads` — it is needed
     only to feed the matcher, and the default matcher reads neither argument, so
@@ -130,10 +136,13 @@ def load_trace(tx: db.Transaction, trace_id: str) -> tuple[list[Leg], dict[str, 
     """
     rows = tx.fetch_all(
         "SELECT l.interaction_id, l.leg_type::text, l.seq, "
-        "       i.caller_entity_id, i.callee_entity_id, l.payload_hash "
+        "       i.caller_entity_id, i.callee_entity_id, l.payload_hash, "
+        "       i.parent_interaction_id, l.occurred_at "
         "FROM interaction_legs l "
         "JOIN interactions i ON i.id = l.interaction_id "
-        "WHERE i.trace_id = %s ORDER BY l.seq ASC",
+        "WHERE i.trace_id = %s "
+        "ORDER BY l.interaction_id, l.leg_type "
+        "FOR KEY SHARE OF l, i",
         (trace_id,),
     )
     legs = [
@@ -144,6 +153,8 @@ def load_trace(tx: db.Transaction, trace_id: str) -> tuple[list[Leg], dict[str, 
             caller_entity_id=r[3],
             callee_entity_id=r[4],
             payload_hash=r[5],
+            parent_interaction_id=r[6],
+            occurred_at=r[7],
         )
         for r in rows
     ]
@@ -203,16 +214,16 @@ def process_leg(tx: db.Transaction, leg: ArrivingLeg, matcher: Matcher) -> None:
     trace exactly the derivation's output — no more, so a shrinking derivation
     genuinely shrinks the answer.
 
-    A trace with no legs yet takes none of the three (see the early return below).
+    A trace with no legs clears its previous coverage claim, if any: after
+    reconciliation deletes its last leg, an old ``complete`` claim is false.
     """
     legs, entities = load_trace(tx, leg.trace_id)
     if not legs:
-        # Deliberately writes NO status row: nothing was derived, so there is
-        # nothing to claim. Do NOT "complete" this branch — absence of the row is
-        # how the schema says *unknown*, and a `complete` here would assert full
-        # coverage of a trace whose legs have not landed (ADR-0028 D6 "Reading the
-        # status"). Note this is not the empty-TRACE case the traversal calls
-        # complete; it is the trace we cannot see yet.
+        # An earlier derivation may have covered legs that were later deleted.
+        # The deletion triggers remove those legs' metadata; remove the old
+        # coverage claim too. A trace we cannot see must read as unknown, never
+        # as complete (ADR-0028 D6 "Reading the status").
+        tx.execute("DELETE FROM lineage_trace_status WHERE trace_id = %s", (leg.trace_id,))
         return
     result = traversal.derive_trace_lineage(
         legs,
@@ -253,8 +264,8 @@ def _delete_stale(
     moves as payloads arrive and legs are rewritten, so rows written under an earlier,
     longer derivation do not occupy any predictable ``seq`` range relative to the
     current stop. Set membership — "not in ``derived_keys``" — is the only correct
-    condition, and it additionally removes rows whose leg has vanished from the trace
-    entirely.
+    condition. Delete triggers handle rows whose leg or interaction has vanished
+    before this join can see them.
 
     (A rewritten leg KEEPS its ``seq`` — ``interactions/state.py`` preserves it for
     replay determinism, which is the whole reason :func:`_fetch_stale_traces` has to
@@ -295,20 +306,29 @@ def _upsert_status(
     shadow it. Why the status is persisted here rather than derived on read:
     ADR-0028 D8 (migration 0014).
 
-    ``stopped_at_seq`` is written as NULL for a complete trace, which the table's
-    CHECK constraint pairs with the status so a half-written claim ("partial, but I
-    won't say from where") cannot be stored.
+    ``stopped_at_seq`` identifies the cutoff leg by its durable ingestion cursor;
+    ``prefix_leg_keys`` holds the causal prefix used for missing-row recovery.
+    A complete trace writes NULL and an empty prefix. The table's CHECK pairs
+    the status with ``stopped_at_seq``.
 
     Only ever called for a trace that actually derived something — see
     :func:`process_leg`'s early return, which leaves the row absent on purpose so
     the read reports *unknown*.
     """
     tx.execute(
-        "INSERT INTO lineage_trace_status (trace_id, status, stopped_at_seq) "
-        "VALUES (%s, %s, %s) "
+        "INSERT INTO lineage_trace_status "
+        "(trace_id, status, stopped_at_seq, prefix_leg_keys) "
+        "VALUES (%s, %s, %s, %s) "
         "ON CONFLICT (trace_id) DO UPDATE SET "
-        "status = EXCLUDED.status, stopped_at_seq = EXCLUDED.stopped_at_seq",
-        (trace_id, str(result.status), result.stopped_at_seq),
+        "status = EXCLUDED.status, stopped_at_seq = EXCLUDED.stopped_at_seq, "
+        "prefix_leg_keys = EXCLUDED.prefix_leg_keys",
+        (
+            trace_id,
+            str(result.status),
+            result.stopped_at_seq,
+            [f"{iid}:{leg_type}" for iid, leg_type in result.prefix_leg_keys]
+            if result.status == traversal.LineageStatus.PARTIAL else [],
+        ),
     )
 
 
@@ -454,10 +474,9 @@ def _fetch_stale_traces(tx: db.Transaction, cursor: int, limit: int) -> list[str
          without this guard the trace spins. Excepting it costs nothing: the moment the
          entity lands, ``p`` resolves and the leg is eligible again — the recovery path
          is the join, not a stored flag.
-       - ``l.seq <= s.stopped_at_seq`` (note ``<=``, not ``<``) — the cutoff leg itself
-         must stay eligible once its payload lands, because it is exactly the leg whose
-         arrival lifts the truncation. Excluding it strands a repaired trace ``partial``
-         forever with every payload present.
+       - Causal-prefix membership in ``s.prefix_leg_keys`` — a row absent after the
+         cutoff is expected, while a missing row before it needs replay. The prefix
+         includes the cutoff leg, whose late payload can lift the truncation.
 
        All three are pinned: ``test_a_d6_truncated_trace_is_not_flagged_as_missing_rows``,
        ``test_a_never_arriving_producer_does_not_spin_the_stale_pass``, and
@@ -517,11 +536,9 @@ def _fetch_stale_traces(tx: db.Transaction, cursor: int, limit: int) -> list[str
     racing: a leg still ahead of the cursor is arm 1's, exclusively, exactly as
     before.
 
-    A ``lineage_metadata`` row whose *leg* has been deleted still has nothing to
-    compare against, so this arm cannot see it and it survives until something else
-    re-derives that trace (:func:`_delete_stale` would then remove it). Latent rather
-    than live — nothing in P-interactions hard-deletes a leg today, the flush only
-    upserts — so it is left alone deliberately.
+    A ``lineage_metadata`` row whose leg was deleted has nothing to compare against
+    in this scan. Migration 0021 handles that case at deletion time: the trigger
+    removes the row and queues its old trace before the interaction can disappear.
 
     Returns distinct trace ids, not legs: :func:`process_leg` re-derives a whole
     trace, so two stale legs in one trace are one unit of work. ``LIMIT`` bounds the
@@ -546,12 +563,9 @@ def _fetch_stale_traces(tx: db.Transaction, cursor: int, limit: int) -> list[str
     one where nothing is stale at all. Predicates 2 and 3 widened it further: the scan
     is now over ``interaction_legs`` (all legs, not just the ones with metadata) plus a
     lookup of each leg's producing ``entities`` row and two array containment tests per
-    row. Same order of magnitude, more constant factor. Acceptable at lab scale and
-    strictly better than serving stale or absent lineage; against real traffic this
-    wants a cheaper
-    trigger (a dirty-trace queue written by the same statement that rewrites the leg,
-    or a generated column the predicate can index). Recorded as an open item on issue
-    #137 rather than guessed at here.
+    row. The dirty-trace queue now handles interaction and leg corrections directly,
+    but this scan still catches entities that arrive without another leg write.
+    Replacing that remaining scan needs an entity-aware invalidation path.
     """
     rows = tx.fetch_all(
         "SELECT i.trace_id FROM interaction_legs l "
@@ -563,10 +577,8 @@ def _fetch_stale_traces(tx: db.Transaction, cursor: int, limit: int) -> list[str
         # actually consumed, so it is the one to compare against.
         "LEFT JOIN entities p ON p.id = CASE l.leg_type "
         "  WHEN 'request' THEN i.caller_entity_id ELSE i.callee_entity_id END "
-        # The trace's recorded D6 cutoff, if it has one, bounding predicate 2 to the
-        # region where a missing row is unexplained. `<= stopped_at_seq` and NOT `<`:
-        # the cutoff leg itself is the one whose late payload lifts the truncation, so
-        # excluding it would strand a repaired trace `partial` forever.
+        # The trace's D6 status bounds predicate 2 to the causal prefix where a
+        # missing row is unexplained. The prefix includes its cutoff leg.
         "LEFT JOIN lineage_trace_status s ON s.trace_id = i.trace_id "
         # Every branch after the first is guarded by `m.interaction_id IS NOT NULL`.
         # Under the LEFT join an absent row makes `m.payload_hash` NULL, and
@@ -577,7 +589,9 @@ def _fetch_stale_traces(tx: db.Transaction, cursor: int, limit: int) -> list[str
         "WHERE (m.interaction_id IS NULL AND l.seq <= %s "
         "       AND l.payload_hash IS NOT NULL "
         "       AND p.natural_key IS NOT NULL "
-        "       AND (s.stopped_at_seq IS NULL OR l.seq <= s.stopped_at_seq)) "
+        "       AND (s.stopped_at_seq IS NULL OR "
+        "            (l.interaction_id::text || ':' || l.leg_type::text) "
+        "            = ANY(s.prefix_leg_keys))) "
         "   OR (m.interaction_id IS NOT NULL AND ("
         "        m.payload_hash IS DISTINCT FROM l.payload_hash "
         "     OR (p.natural_key IS NOT NULL "
@@ -630,6 +644,43 @@ def _redrive_stale(
     return len(trace_ids)
 
 
+def _fetch_dirty_traces(tx: db.Transaction, limit: int) -> list[tuple[str, int]]:
+    """Read the oldest queued corrections and their current generations.
+
+    A later correction may replace a generation while a trace is being derived.
+    The consumer only removes the generation it actually read, so the newer one
+    remains queued for another pass.
+    """
+    rows = tx.fetch_all(
+        "SELECT trace_id, generation FROM data_lineage_dirty_traces "
+        "ORDER BY generation LIMIT %s",
+        (limit,),
+    )
+    return [(str(trace_id), int(generation)) for trace_id, generation in rows]
+
+
+def _redrive_dirty(spec: _driver.StreamSpec[ArrivingLeg], limit: int) -> int:
+    """Rebuild queued traces without changing the ingestion cursor."""
+    with db.transaction() as tx:
+        queued = _fetch_dirty_traces(tx, limit)
+    for trace_id, generation in queued:
+        with db.transaction() as tx:
+            spec.process_item(tx, ArrivingLeg(trace_id=trace_id, seq=0))
+        # Remove the generation after the derivation commits. This lets a
+        # concurrent reconciler finish a leg deletion once our key-share locks
+        # release, without a queue-row/leg-row lock cycle. A crash here causes
+        # an idempotent replay; a newer generation survives the conditional delete.
+        with db.transaction() as tx:
+            tx.execute(
+                "DELETE FROM data_lineage_dirty_traces "
+                "WHERE trace_id = %s AND generation = %s",
+                (trace_id, generation),
+            )
+    if queued:
+        log.info("data-lineage re-derived %d queued trace(s)", len(queued))
+    return len(queued)
+
+
 def _spec(matcher: Matcher | None = None) -> _driver.StreamSpec[ArrivingLeg]:
     """Build the data-lineage stream spec for the shared loop.
 
@@ -659,40 +710,24 @@ def read_cursor(tx: db.Transaction) -> int:
 
 
 def _drain_spec(spec: _driver.StreamSpec[ArrivingLeg], cursor: int) -> int:
-    """The two-arm drain, in ``_driver.DrainFn`` shape so ``_driver.run`` can invoke
-    it on each wake (the same seam the leg-readiness consumer uses for its
-    non-monotonic advance — issue #123).
+    """Drain new legs, queued trace corrections, then the stale-row sweep.
 
-    Arm 1 is the standard cursor drain, unchanged: new legs past *cursor*, one
-    transaction each, cursor advancing with the write.
-
-    Arm 2 (:func:`_redrive_stale`) catches legs the cursor can never reach again
-    because they were rewritten in place under a preserved ``seq`` (issue #137). It
-    returns no cursor, and this function returns arm 1's — so the durable cursor
-    stays monotonic no matter what arm 2 does.
-
-    Order matters: arm 1 first, so a leg that is *both* new and stale is handled by
-    the cursor arm and arm 2 then finds nothing left to do for it.
-
-    Arm 2 is handed arm 1's **post-drain** cursor, not the one this function was
-    called with. That is what makes its missing-row predicate see a leg arm 1 consumed
-    on *this* wake and skipped (an entity that had not landed): with the pre-drain
-    cursor such a leg would sit above the threshold and neither arm would own it until
-    some later wake moved the cursor past it. Passing the advanced value costs nothing
-    in the common case, where every consumed leg did produce a row.
+    The first arm advances the ingestion cursor. The other arms rebuild traces
+    without moving it, since their legs may already be behind that cursor. The
+    stale sweep receives the post-drain cursor so it can see a leg skipped by the
+    first arm on this wake after its producer entity lands.
     """
     cursor = _driver.drain(spec, cursor)
+    _redrive_dirty(spec, _DRAIN_BATCH)
     _redrive_stale(spec, cursor, _DRAIN_BATCH)
     return cursor
 
 
 def drain(cursor: int, matcher: Matcher | None = None) -> int:
-    """Process every leg past *cursor*, one transaction per leg (each re-deriving
-    that leg's whole trace), then re-derive any trace whose stored lineage no longer
-    matches its legs' payloads (issue #137).
+    """Process new legs, queued corrections and stale traces.
 
     Returns the new cursor (the seq of the last leg processed, or *cursor* if none).
-    The stale-re-derivation arm never moves the cursor — see :func:`_drain_spec`."""
+    The correction and stale arms never move it — see :func:`_drain_spec`."""
     return _drain_spec(_spec(matcher), cursor)
 
 
@@ -700,8 +735,7 @@ def run(stop_event: threading.Event, dsn: str, matcher: Matcher | None = None) -
     """Wake-driven drain loop over the ``interaction_legs`` stream. Returns when
     *stop_event* is set. See :func:`_driver.run`.
 
-    Passes the two-arm :func:`_drain_spec` through ``_driver.run``'s ``drain_fn``
-    seam so each wake also sweeps for rewritten legs (issue #137). Migration 0012's
-    trigger covers UPDATE, so a re-derive does wake us; the poll backstop bounds the
-    latency if a notification is missed."""
+    Passes :func:`_drain_spec` through ``_driver.run``'s ``drain_fn`` seam so each
+    wake also drains corrected traces and the stale-row sweep. Migration 0021
+    notifies on causal-input corrections; polling bounds missed notifications."""
     _driver.run(_spec(matcher), stop_event, dsn, drain_fn=_drain_spec)

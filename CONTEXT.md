@@ -90,7 +90,7 @@ split by seam into typed submodules re-exported from its root: `spans`
 their span-evidence sub-reads), and `payloads` (a content-addressed **Payload**
 read that inlines the **Classification** verdict — `get_payload`). Each returns
 frozen dataclasses; the REST layer maps them mechanically to the wire, so all
-derivation (leg **Duration**, aggregated `error`, chronological ordering, the
+derivation (leg **Duration**, aggregated `error`, **Causal leg order**, the
 nullable-classification eventual-consistency shape, the not-yet-migrated empty
 shape) lives behind the interface, not in the HTTP handlers. Future processors
 that need bespoke SQL still use the db module directly alongside the retrieval
@@ -102,7 +102,7 @@ sibling to the span-only `get_spans` and part of the same **Retrieval API**
 package (`data_governance.retrieval.interactions`). Exposes
 `get_interactions(trace_id)` (parent identity rows with their nested
 **Interaction leg**s, computed leg **Duration** and aggregated `error`, span
-and anchor counts, ordered by the request leg's `occurred_at`),
+and anchor counts, ordered by the request leg's **Causal leg order** position),
 `get_entities(trace_id)` (the **Entities** the processor recorded provenance
 for in the trace, reached via the trace-scoped `entity_spans`), and the
 per-row span-evidence sub-reads `get_interaction_spans` /
@@ -253,14 +253,15 @@ merely by convention.
   `parent_interaction_id`, `caller_entity_id`, `callee_entity_id`, `summary`.
   Both legs necessarily share these — a response is the return value of the
   caller→callee call, not a new callee→caller call. The parent has **no `seq`**
-  and is not independently cursorable (identity is immutable once decided); it
-  is a join target for identity.
+  and is not independently cursorable; corrections to its identity are visible
+  through trace-scoped reads and correction handling.
 - **On the leg** (`interaction_legs`): `leg_type`, `occurred_at` (the request
   leg's is the call-start time, the response leg's the completion time),
   `payload_hash` (request vs response body), `error`, and its own `seq`
-  (no `original_seq` — issue #133). Each leg finalizes independently and advances its own `seq` —
-  this per-leg cursor is the mechanism that lets a stream consumer see "response
-  landed" as a distinct event from "request sent". `interaction_legs_seq`
+  (no `original_seq` — issue #133). Each leg gets its own durable ingestion `seq`
+  on insertion; in-place corrections preserve it. This per-leg cursor lets a
+  stream consumer see "response landed" separately from "request sent".
+  `interaction_legs_seq`
   replaces the retired `interactions_seq` as the cursorable stream.
 The **Interaction tree** (`parent_interaction_id`) and the unique span-ownership
 invariant (ADR-0011) both key on the parent `interaction_id`, not on the leg —
@@ -283,6 +284,13 @@ A leg becomes actionable for a governance consumer only at **Leg readiness**
 (written *and* its payload, if any, classified) — see that term and ADR-0027;
 "leg written" and "leg ready" are different instants for a payload-bearing leg.
 
+**Causal leg order**:
+The trace-local order of currently known **Interaction legs**: a parent's request
+precedes a child's request, each request precedes its own response, and occurrence
+time orders otherwise ready legs. Reconciliation can change this order while each
+leg's ingestion `seq` remains fixed (ADR-0034).
+_Avoid_: treating `seq` as the trace's execution step.
+
 **Leg provenance** (derived vs. observed):
 Whether an **Interaction leg**'s timing is independently observed or projected
 from a single span. This varies by which P-interactions algorithm wrote the legs:
@@ -303,11 +311,16 @@ from a single span. This varies by which P-interactions algorithm wrote the legs
   (`ProductionRows.legs_by_ix`), so the response leg's `occurred_at`/`error`/
   `payload_hash` come from the **responding endpoint's own span** — for an A2A
   delegation the responding agent's wrapper span, distinct from the request's
-  call-site span. Each leg's `seq` is its edge's `order`, so request-before-
-  response and nested-call LIFO ordering survive into the schema even when the
-  two edges happen to share one anchor span. The parent stays oriented
+  call-site span. Each leg's ingestion `seq` is its edge's `order` within this
+  graph projection, preserving request-before-response and nested-call LIFO
+  order there; cross-service ordering is derived separately by ADR-0034. The parent stays oriented
   caller→callee (see "Interaction leg" — orientation is on the parent, not the
   leg); only the leg's timing/payload/error/`seq` are per-leg.
+  A tool inferred solely from an LLM's message attributes has no observed tool
+  execution time. Its output-side request and synthetic response are projected
+  to the LLM completion boundary; an input-only replay is projected to the LLM
+  request boundary. When the inferred peer resolves to an independently observed
+  tool span, that observed span keeps its own request/response timing.
 
 - **Sidecar algorithm — fully observed legs (Case-Y, ADR-0030).** The
   AuthBridge sidecar source emits a request span and a response span as two
@@ -320,10 +333,12 @@ from a single span. This varies by which P-interactions algorithm wrote the legs
   response leg IS the in-flight signal — never fabricated.
 
 Consumers reading a `response` leg's `occurred_at` as "when the response
-actually happened" are correct for the graph's observed-style and the sidecar's
-observed legs, and approximately correct (= call return time) for the streaming
-algorithm's derived ones. The split into legs is a **boundary projection**: the
-verified `--scramble`-gated streaming algorithm holds one interaction
+actually happened" are correct for the graph's and sidecar's observed legs,
+and approximately correct (= call return time) for the streaming algorithm's
+derived ones. For an inferred tool, it marks the LLM message boundary where
+the call was evidenced; the tool's duration is not observed. The split into
+legs is a **boundary projection**: the verified `--scramble`-gated streaming
+algorithm holds one interaction
 internally and is unchanged (ADR-0025); the graph algorithm owns its per-leg
 projection in `graph_adapter`; the sidecar algorithm owns its own write path
 (`sidecar._write`, ADR-0030 — its whole-trace reconcile needs trace-scoped
@@ -700,18 +715,18 @@ within one **Trace** — served by
 `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph` with a **required**
 `direction` of `fanin` or `fanout` **and a required `source`** (a **Data source**
 natural key, as listed by the summary read) — ADR-0028 D14; edge rule in D15.
-Arriving at `A` at sequence position `s`, a hop `A → B` is followed iff the trace has
+Arriving at `A` at causal position `s`, a hop `A → B` is followed iff the trace has
 an **Interaction leg** whose *per-leg* direction runs `A → B`, that leg has a derived
 **Lineage metadata** row, the traced `source` is a **member of that row's
-`data_sources`**, and the leg's `seq` is strictly later than `s` (`fanout`) or earlier
-(`fanin`). The trace supplies the candidate edges, the metadata supplies whether *this
-source's* lineage actually flowed along them, and `seq` supplies which edges are
+`data_sources`**, and the leg's **Causal leg order** position is strictly later than
+`s` (`fanout`) or earlier (`fanin`). The trace supplies the candidate edges, the metadata supplies whether *this
+source's* lineage actually flowed along them, and causal position supplies which edges are
 eligible and in what order. So the walk ends where **that source's** provenance ends,
 not where the call graph does. The source is held *constant* for the whole walk (it is
 the thing being traced), and the membership test is a **read** of the stored set — no
 matching or inference happens at read time (ADR-0028 D7). Reports the traversed legs as
 well as the reached entities (the route, so the answer can be drawn), each entity's
-fewest `hops` along a *seq-and-source-respecting* path, and a three-valued `state` —
+fewest `hops` along a causal-and-source-respecting path, and a three-valued `state` —
 `derived` / `pending` / `no-adjacent`. Multi-source fanin/fanout is **deferred** by the
 spec ("Given multiple sources - semantics are not clear"), so the read takes exactly
 one; an *unknown* source is a valid empty answer (`no-adjacent`), never a 404, while a
@@ -729,10 +744,10 @@ simply *lacks* the traced source is deliberately **not** on `pending_frontier`: 
 settled "no", where an undelivered leg is "ask again later", and merging the two would
 send a caller back to poll forever. Also avoid assuming `fanin` is just `fanout` with the
 edges reversed — the reversal alone is a no-op on a trace's (symmetric) request+response
-edge set, and what actually separates upstream from downstream is `seq`. Finally avoid
+edge set, and what actually separates upstream from downstream is causal position. Finally avoid
 reading a large `fanout` as thorough tracing: under the trivial matcher every leg inherits
 every upstream source, so the *source* rule prunes little and these reads inherit matcher
-quality exactly as the triple does. (The `seq` rule prunes regardless of matcher quality,
+quality exactly as the triple does. (The causal-order rule prunes regardless of matcher quality,
 being a fact about the trace's own ordering.)
 
 **Lineage metadata**:
@@ -761,14 +776,15 @@ byte-identical, which is serialization, not sequence.
 Whether a **Trace**'s derived **Data lineage** covers the whole trace, recorded
 per trace in `lineage_trace_status` as `complete` or `partial` plus the
 `stopped_at_seq` a partial one stopped at (ADR-0028 D6/D8). When an **Interaction
-leg**'s payload is absent, lineage is derived only up to that leg in leg-`seq`
-order — a positional prefix — and the trace is `partial`. The flag exists to
+leg**'s payload is absent, lineage is derived only up to that leg in **Causal leg order**
+— a positional prefix — and the trace is `partial`. The stop value identifies the
+cutoff leg by its ingestion `seq`; it is not a numeric prefix boundary. The flag exists to
 prevent one specific failure: a governance consumer reading a truncated prefix as
 the **complete** set of **Data source**s. So it travels with the lineage
 everywhere the lineage is served (the `data-lineage` API envelope, a warning at
 the top of the **Flow view**). Three values, not two: *absence* of the status row
-means **unknown** — the eventual-consistency window before **P-data-lineage** has
-reached the trace.
+means **unknown** — before **P-data-lineage** has reached the trace, or after
+reconciliation removes its last leg.
 _Avoid_: collapsing **unknown** into `complete` (ADR-0028 D6 "Reading the status" —
 they are opposite claims, and defaulting the absent value is the live trap). Also
 avoid reading `partial` as an error, or as a statement about *why* the payload is
@@ -877,9 +893,9 @@ plus an upsert, so re-deriving converges rather than duplicating. Because a
 re-derivation can also get *shorter* (a payload goes absent), the derived rows a
 re-derivation no longer covers are **deleted** as well, so the persisted lineage
 of a trace is exactly the derivation's output. `interaction_legs` carries no
-`trace_id`, so the trace is reached by joining through `interactions`. Recovery is
-the established one: truncate `lineage_metadata` and `lineage_trace_status`, reset
-the cursor to 0, re-drain.
+`trace_id`, so the trace is reached by joining through `interactions`. A durable
+dirty-trace queue replays parent, endpoint and leg corrections without moving the
+ingestion cursor; migration 0021 invalidates old lineage and queues its backfill.
 
 **Flow view**:
 The UI surface that renders one **Trace**'s derived **Interaction**/**Entity**
@@ -940,7 +956,7 @@ present on both the `GET /api/traces` collection rows and the
   **Transformation**s. A leg with no payload gets no row.
 - A payload's **Data lineage** is derived from the payloads inbound to the
   producing **Entity** — requests inbound to the callee, responses inbound to the
-  caller, from **Interaction legs** of lower `seq` in the same **Trace**. How many
+  caller, from causally earlier **Interaction legs** in the same **Trace**. How many
   of those an entity retains is decided by whether it is an **Accumulating
   entity**; whether that set is *empty* is what selects `init` / `merge`. A
   **Source entity** adds itself to the result's `data_sources` on top of what it

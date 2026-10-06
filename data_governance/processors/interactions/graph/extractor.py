@@ -95,6 +95,7 @@ class Interaction:
     # delegation — so consumers sort by `order` ALONE. Copied from
     # `EntityEdge.order`.
     order: int = 0
+    inferred_tool_phase: str | None = None
 
 
 @dataclasses.dataclass
@@ -337,6 +338,7 @@ def _derive_interactions(
             response_payload_hash=resp_hash,
             summary=f"{caller_label} → {callee_label}",
             order=ee.order,
+            inferred_tool_phase=ee.inferred_tool_phase,
         ))
 
         # One evidence row per interaction: the anchor span. (error / timing /

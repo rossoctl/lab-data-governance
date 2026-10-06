@@ -377,6 +377,14 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
         placeholder (it never survives to a consumer)."""
         call_edge = EntityEdge.make(src_eid, dst_eid, order=call_order)
         _anchor_and_payload(call_edge, src.id, tgt.id)
+        if "_tool_call_arguments" in src.attributes:
+            # A replay can leave the input-side source node as the survivor,
+            # while Step 2.d's merged call band correctly names the output
+            # side as the origin of the logical call.
+            if call_order > 0:
+                call_edge.inferred_tool_phase = "output"
+            elif call_order < 0:
+                call_edge.inferred_tool_phase = "input"
         entity_graph.edges.append(call_edge)
         # Response leg — formed structurally at Step 3.b (not carried from 2.c).
         resp_edge = EntityEdge.make(dst_eid, src_eid, order=resp_order)

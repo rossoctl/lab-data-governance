@@ -326,7 +326,7 @@ describe('FlowTables', () => {
     expect(onSelectionChange).toHaveBeenLastCalledWith(null);
   });
 
-  it('flat view lists each leg as its own row, ordered by seq, ignoring the tree', async () => {
+  it('flat view lists each leg as its own row, ignoring the tree', async () => {
     mockFetch();
     renderWithProviders(
       <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
@@ -335,7 +335,8 @@ describe('FlowTables', () => {
     // Tree view first: one interaction row, no per-leg breakdown.
     expect(screen.queryByLabelText('Interactions (flat)')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('tab', { name: 'Flat' }));
-    // The single interaction's two legs become two rows in seq order.
+    // The single interaction's two legs become two rows; this older-server
+    // fixture omits leg_order, so the fallback follows ingest seq.
     const flat = await screen.findByLabelText('Interactions (flat)');
     const body = within(flat).getAllByRole('row').slice(1); // drop the header row
     expect(body).toHaveLength(2);
@@ -372,7 +373,7 @@ describe('FlowTables', () => {
     // One tab row, TWO tabs. `Interaction diagram`, `Execution Flow` and `Lineage` were
     // three more tabs in this row until they were promoted to top-level views beside
     // `Span tree` (`TraceDetailPage`'s ViewKey) and addressed by path segment. What is
-    // left is the two renderings of ONE row set — indented by parent, or flat by seq —
+    // left is the two renderings of ONE row set — indented by parent, or flat in causal order —
     // which is a genuine sub-choice of "the tables" rather than a peer of the pictures.
     const row = screen.getByRole('tablist');
     expect(within(row).getAllByRole('tab').map((t) => t.textContent)).toEqual(['Tree', 'Flat']);
@@ -1554,6 +1555,55 @@ describe('FlowTables', () => {
     expect(colorOf(body[0], 'i1')).toBeTruthy();
   });
 
+  it('uses the backend leg order for both the Tree and Flat tables', async () => {
+    const child = {
+      ...INTERACTIONS[0], id: 'child', parent_interaction_id: 'parent',
+      caller_entity_id: 'e2', callee_entity_id: 'e1', span_count: 1,
+      legs: [{ ...INTERACTIONS[0].legs[0], seq: 1 }],
+    };
+    const parent = {
+      ...INTERACTIONS[0], id: 'parent', parent_interaction_id: null,
+      span_count: 9,
+      legs: [{ ...INTERACTIONS[0].legs[0], seq: 9 }],
+    };
+    const responseOnly = {
+      ...INTERACTIONS[0], id: 'response-only', parent_interaction_id: null,
+      span_count: 5,
+      legs: [{ ...INTERACTIONS[0].legs[1], seq: 2 }],
+    };
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return {
+        ok: true, status: 200, json: async () => ({
+          interactions: [child, responseOnly, parent],
+          leg_order: [
+            { interaction_id: 'parent', leg_type: 'request' },
+            { interaction_id: 'response-only', leg_type: 'response' },
+            { interaction_id: 'child', leg_type: 'request' },
+          ],
+        }),
+      };
+      if (url.endsWith('/entities')) return {
+        ok: true, status: 200, json: async () => ({ entities: ENTITIES }),
+      };
+      return { ok: true, status: 200, json: async () => ({ legs: [] }) };
+    });
+
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    const tree = await screen.findByLabelText('Interactions');
+    const treeRows = within(tree).getAllByRole('row').slice(1);
+    expect(treeRows.map((row) => within(row).getAllByRole('cell').at(-1)?.textContent)).toEqual([
+      '9 (1 anchor)', '5 (1 anchor)', '1 (1 anchor)',
+    ]);
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Flat' }));
+    const flat = await screen.findByLabelText('Interactions (flat)');
+    const flatRows = within(flat).getAllByRole('row').slice(1);
+    expect(flatRows.map((row) => within(row).getAllByRole('cell')[0].textContent)).toEqual(['1', '2', '3']);
+    expect(flatRows.map((row) => within(row).getAllByRole('cell')[1].textContent)).toEqual(['9', '2', '1']);
+  });
+
   it('flat view draws no connector line for a single-leg interaction (response in flight)', async () => {
     // One interaction with only a request leg — no partner, so no line.
     const SINGLE = [
@@ -2311,8 +2361,8 @@ describe('FlowTables', () => {
     );
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toMatch(/incomplete/i);
-    // The stop position is named, so the reader knows where the picture ends
-    // rather than only that it does.
+    // The cutoff leg's ingest id is named, so the reader can find it in the
+    // Flat table and follow later legs in causal order.
     expect(alert.textContent).toMatch(/2/);
   });
 

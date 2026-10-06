@@ -243,6 +243,10 @@ class EntityEdge:
     node rather than re-derivable from the LLM span's own facts. When None the
     extractor derives the payload from the anchor span's `SpanFacts` as usual.
 
+    `inferred_tool_phase` records whether an inferred tool call originated on
+    the LLM span's input or output. The final call band identifies the origin
+    after a replay has merged into its output call.
+
     `order` is seeded from the originating interaction base-graph edge (see
     `Edge.order`, the Step 2.c intra-turn band) and then OVERWRITTEN by
     `_order_execution_walk` with a TRUE GLOBAL ORDINAL (ADR-0026 Step 3.b point 2):
@@ -255,6 +259,7 @@ class EntityEdge:
     to_node_id: str
     span_ids: list[str] = dataclasses.field(default_factory=list)
     req_payload: tuple[str, Any] | None = None
+    inferred_tool_phase: str | None = None
     order: int = 0
 
     @staticmethod

@@ -1097,7 +1097,7 @@ body {
 /* The scroll container. `overflow: auto` — NOT a `width: 100%` SVG — so a wide
    trace SCROLLS rather than being shrunk to illegibility or silently clipped:
    the arrows are the content, and a 12-participant diagram squeezed into the
-   panel width would have its seq tags collide into a smear. The fill and border
+   panel width would have its step tags collide into a smear. The fill and border
    match `.dg-graph-surface` so the two visual tabs read as the same kind of
    canvas. All tokens, no raw hex. */
 .dg-seq-scroll {

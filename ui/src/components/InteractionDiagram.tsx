@@ -8,7 +8,7 @@ import {
 
 import { deriveSequenceDiagram, type MessageSpec } from '../lib/sequenceDiagram';
 import { kindColorVar } from '../lib/entityKind';
-import type { Entity, Interaction } from '../types';
+import type { Entity, Interaction, LegOrderKey } from '../types';
 
 /**
  * Layout metrics, in SVG user units (= px at scale 1).
@@ -45,7 +45,7 @@ function rowY(row: number): number {
 }
 
 /**
- * One message row: the arrow, its `seq` tag, its hover title and its click target.
+ * One message row: the arrow, its causal step tag, its hover title and click target.
  *
  * A `<g>` per message rather than one flat list of paths, so the whole row —
  * arrow, tag and an invisible full-width hit strip — is one focusable, clickable
@@ -88,9 +88,10 @@ function MessageRow({
       // a mouse. Enter and Space both activate, as a native button would.
       role="button"
       tabIndex={0}
-      aria-label={`Seq ${msg.seq}, ${msg.legType}: ${msg.title}`}
+      aria-label={`Step ${msg.step}, ingest seq ${msg.seq}, ${msg.legType}: ${msg.title}`}
       data-testid="dg-seq-message"
       data-seq={msg.seq}
+      data-step={msg.step}
       data-message-key={msg.key}
       onClick={onSelect}
       onKeyDown={(e) => {
@@ -101,9 +102,9 @@ function MessageRow({
       }}
     >
       {/* The interaction's summary plus which leg this is — the hover text, now
-          that the visible label is the compact seq number. Same text the graph's
+          that the visible label is the compact step number. Same text the graph's
           edge titles carry. */}
-      <title>{`#${msg.seq} ${msg.legType} — ${msg.title}`}</title>
+      <title>{`Step ${msg.step} · ingest seq ${msg.seq} · ${msg.legType} — ${msg.title}`}</title>
       {/* The full-width hit strip. `pointer-events: all` because a transparent
           fill is not hit-testable by default, and `fill="transparent"` rather than
           `fill-opacity: 0` so the selected-row tint (global.css) can override it. */}
@@ -153,7 +154,7 @@ function MessageRow({
           <polygon points={headAt(x2, x2 > x1 ? 1 : -1, y)} fill={colour} />
         </>
       )}
-      {/* The visible `seq`, sitting just above the arrow's midpoint (or just right
+      {/* The visible causal step, sitting just above the arrow's midpoint (or just right
           of a self-loop). Muted via CSS for the same reason the graph's edge tags
           are: the ordinal is a reference a reader looks up, not the content. */}
       <text
@@ -171,7 +172,7 @@ function MessageRow({
 /**
  * The Interaction diagram: a UML-style **sequence diagram** of a trace's
  * **Interaction legs** — entities as vertical lifelines across the top, one
- * horizontal arrow per leg, ordered top-to-bottom by the trace-wide leg `seq`.
+ * horizontal arrow per leg, ordered top-to-bottom by the trace's causal leg order.
  *
  * The fourth presentation of the same two reads the Interaction flow tables hold,
  * and specifically the FLAT list's own rows: the arrow set comes from
@@ -205,11 +206,13 @@ function MessageRow({
 export function InteractionDiagram({
   entities,
   interactions,
+  legOrder = [],
   selectedId,
   onSelect,
 }: {
   entities: readonly Entity[];
   interactions: readonly Interaction[];
+  legOrder?: readonly LegOrderKey[];
   /** The selected INTERACTION's id — legs have no selection of their own. */
   selectedId: string | null;
   /**
@@ -220,8 +223,8 @@ export function InteractionDiagram({
   onSelect: (ix: Interaction) => void;
 }) {
   const spec = useMemo(
-    () => deriveSequenceDiagram(entities, interactions),
-    [entities, interactions],
+    () => deriveSequenceDiagram(entities, interactions, legOrder),
+    [entities, interactions, legOrder],
   );
   const ixById = useMemo(() => {
     const m = new Map<string, Interaction>();

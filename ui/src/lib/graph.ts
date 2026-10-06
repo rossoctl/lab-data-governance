@@ -14,8 +14,8 @@
  * Flat view lists, in the same order: it consumes `flatLegRows` directly rather
  * than re-walking `interactions`, so the two views can never disagree about what
  * a leg is or what order legs happened in. A completed interaction therefore
- * contributes TWO edges pointing opposite ways — `A→B` at the request's `seq` and
- * `B→A` at the response's — because that is what actually happened on the wire
+ * contributes TWO edges pointing opposite ways — `A→B` for the request and
+ * `B→A` for the response — because that is what actually happened on the wire
  * (ADR-0025), and a single caller→callee arrow silently asserted that a response
  * either did not exist or did not travel.
  *
@@ -29,7 +29,7 @@
  * anything left in the component is effectively uncovered — which is the reason
  * this split is the repo's rule and not a preference.
  */
-import { flatLegRows, legDirection, type Entity, type Interaction } from './flow';
+import { flatLegRows, legDirection, type Entity, type Interaction, type LegOrderKey } from './flow';
 
 /** One graph node: an **Entity**, positioned by the layout not by us. */
 export interface GraphNodeSpec {
@@ -57,12 +57,12 @@ export interface GraphNodeSpec {
    *
    * WHY THIS IS DERIVATION AND NOT LAYOUT. The ORDER is a fact about the trace —
    * "who did the trace touch, and when did each first appear" — and it is
-   * exactly as testable as `seq` is. The pixels are a rendering choice. Keeping
+   * supplied by the backend's `leg_order`. The pixels are a rendering choice. Keeping
    * the order here means the graph and any future view of it read the same
    * walk, and means the walk is covered by the pure tests in graph.test.ts
    * rather than by something that would have to measure an SVG.
    *
-   * THE WALK. The edges (already sorted by the trace-wide leg `seq` — see
+   * THE WALK. The edges (already sorted by the trace's causal leg order — see
    * `edges`) are visited in order and each edge contributes its `source` then
    * its `target`; the first sighting of an id claims the next free slot. Source
    * before target within one edge because that is the direction the leg
@@ -165,14 +165,15 @@ export interface GraphEdgeSpec {
   /** The leg's destination for THIS leg's direction. Never null (see dropped). */
   target: string;
   /**
-   * The edge's visible label: this leg's `seq`, as a string. A leg has exactly
-   * one `seq` (the trace-wide leg ordering the Flat view sorts on), so the label
-   * is a single number and stays legible on a short arrow — which is the reason
+   * The edge's visible label: its one-based causal step. It is a compact number
+   * that stays legible on a short arrow — which is the reason
    * the interaction's prose `summary` moved to `title` instead of being the
    * label.
    */
   label: string;
-  /** The leg's `seq` itself, for ordering and for tests that assert on a number. */
+  /** One-based position in the backend's causal order. */
+  step: number;
+  /** The leg's durable ingestion `seq`, retained as metadata. */
   seq: number;
   /** The interaction's `summary` (falling back to its id), for the tooltip. */
   title: string;
@@ -242,7 +243,7 @@ export interface DroppedInteraction {
 /** The whole derived graph: what the view renders, plus what it must disclose. */
 export interface GraphSpec {
   nodes: GraphNodeSpec[];
-  /** One per leg, ordered by the trace-wide leg `seq`. */
+  /** One per leg, ordered by the backend's trace-local causal order. */
   edges: GraphEdgeSpec[];
   /** Interactions with an unresolved participant; never silently discarded. */
   dropped: DroppedInteraction[];
@@ -328,7 +329,7 @@ function pairKey(a: string, b: string): string {
  * self-edge is drawn as a loop on the node instead (see `isSelfCall`), so it
  * needs no horizontal room.
  *
- * DETERMINISM. `requestEdges` arrives in `seq` order and is iterated in that
+ * DETERMINISM. `requestEdges` arrives in causal order and is iterated in that
  * order, and `max` is order-independent anyway, so the assignment is a pure
  * function of the input with no Map/Set iteration-order dependence beyond
  * insertion.
@@ -380,7 +381,7 @@ function assignColumns(
  * `column` (call depth along request legs) and `row` (chronological position
  * within that column) — so the view can place a node with arithmetic and no
  * layout algorithm of its own. Every LEG of every
- * interaction with BOTH endpoints resolved becomes an edge, in `seq` order; the
+ * interaction with BOTH endpoints resolved becomes an edge, in causal order; the
  * interactions whose endpoints are unresolved are reported in `dropped`. An
  * endpoint naming an entity that is not in `entities` is also dropped — a
  * dangling source/target would make the topology model invalid, and an entity the
@@ -390,6 +391,7 @@ function assignColumns(
 export function deriveGraph(
   entities: readonly Entity[],
   interactions: readonly Interaction[],
+  legOrder: readonly LegOrderKey[] = [],
 ): GraphSpec {
   const byId = new Map<string, Entity>();
   for (const e of entities) byId.set(e.id, e);
@@ -435,7 +437,7 @@ export function deriveGraph(
 
   // THE reuse point: the Flat view's own row derivation, not a second walk of
   // `interactions`. It already flattens interactions to legs and sorts them by
-  // the trace-wide `seq`, which is exactly the edge set and exactly the edge
+  // backend's trace-local causal order, which is exactly the edge set and edge
   // order this view wants — so the graph's arrows and the Flat table's rows are
   // the same list, guaranteed, rather than by coincidence.
   //
@@ -443,7 +445,7 @@ export function deriveGraph(
   // therefore exactly one edge: there is no response leg to invent, so no phantom
   // return arrow is drawn for a call still in flight.
   const edges: GraphEdgeSpec[] = [];
-  for (const { ix, leg } of flatLegRows(interactions)) {
+  for (const { ix, leg, step } of flatLegRows(interactions, legOrder)) {
     if (!drawable.has(ix.id)) continue; // already reported once, in `dropped`
     // The per-leg swap, shared with FlatLegsTable (flow.legDirection): a request
     // flows caller → callee, a response flows back callee → caller.
@@ -458,7 +460,8 @@ export function deriveGraph(
       legType: leg.leg_type,
       source: from,
       target: to,
-      label: String(leg.seq),
+      label: String(step),
+      step,
       seq: leg.seq,
       title: ix.summary || ix.id,
       // This leg's own error, tri-state: only an explicit `true` is a failure.
@@ -471,7 +474,7 @@ export function deriveGraph(
 
   // FIRST-ENCOUNTER ORDER (see GraphNodeSpec.encounterIndex). Built AFTER the
   // edges, and from them, rather than from `entities` or `interactions`: the
-  // edges are the seq-ordered list of what the graph actually draws, so a slot is
+  // edges are the causally ordered list of what the graph actually draws, so a slot is
   // only ever handed to an entity the reader can see arrive.
   //
   // Source before target within one edge: the leg travelled that way, so its
@@ -582,7 +585,7 @@ export function deriveGraph(
   // both at depth 1, and B was encountered first, so B is row 0 and C is row 1 —
   // B is ABOVE C. See GraphNodeSpec.row.
   //
-  // Sorted by `encounterIndex` and not by `seq`: a node has no single seq (it
+  // Sorted by `encounterIndex` and not by a leg position: a node has no single step (it
   // participates in many legs) whereas its first encounter is exactly one number,
   // and it is already the trace-order fact this module derives. The isolated
   // group's `encounterIndex` falls back to `entities` order, which is the API's

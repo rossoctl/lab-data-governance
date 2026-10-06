@@ -51,6 +51,7 @@ from data_governance.retrieval import Span
 
 from . import caller_inference as ci
 from . import procedure
+from .graph.adapters import Kind, extract_facts
 from .graph.extractor import ExtractResult
 from .graph.graph import EntityNode
 
@@ -71,10 +72,11 @@ class LegRow:
     its own anchor span and its own global ``order``. The streaming algorithm has
     no such per-leg data — it does NOT populate ``legs_by_ix`` and ``state.flush``
     falls back to its ``_legs_of`` derived-leg projection, so streaming output is
-    byte-identical. See ``ProductionRows.legs_by_ix``."""
+    byte-identical. Inferred tool calls with no observed tool span project their
+    leg times to the LLM message boundary. See ``ProductionRows.legs_by_ix``."""
 
     leg_type: str  # 'request' | 'response'
-    occurred_at: Any  # request leg = request edge started_at; response = its own ended_at
+    occurred_at: Any  # edge time, or LLM boundary for an inferred tool
     payload_hash: str | None
     error: bool | None
     seq: int  # the edge's global execution ordinal (`order`) — request < its response
@@ -596,6 +598,31 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             )
         )
 
+        # Inferred tool calls have no independently observed execution span.
+        # Output-side calls are known at the originating LLM completion;
+        # input-side replays are known at its request boundary. Their phase
+        # survives in the request edge after Step 2.d resolves any replay.
+        phase = req_leg.pi.inferred_tool_phase if req_leg is not None else None
+        if phase is not None and (
+            anchor_span is None or extract_facts(anchor_span).kind != Kind.LLM
+        ):
+            # An inferred peer can fold into an observed tool whose own span
+            # then anchors this exchange. Its measured time takes precedence.
+            phase = None
+        inferred_tool_time = None
+        if phase is not None:
+            assert anchor_span is not None
+            inferred_tool_time = (
+                anchor_span.ended_at if phase == "output" else anchor_span.started_at
+            )
+        # A response on a distinct tool span is independently observed.
+        project_inferred_response = (
+            phase is not None
+            and req_leg is not None
+            and resp_leg is not None
+            and resp_leg.anchor_span_id == req_leg.anchor_span_id
+        )
+
         # Per-leg rows (ADR-0025): each leg carries its OWN edge's data, so the
         # response leg reflects the responding endpoint's own anchor span — its
         # `ended_at` (genuinely distinct from the request edge's for an A2A
@@ -610,7 +637,10 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             legs.append(
                 LegRow(
                     leg_type="request",
-                    occurred_at=req_leg.pi.started_at,
+                    occurred_at=(
+                        inferred_tool_time if phase is not None
+                        else req_leg.pi.started_at
+                    ),
                     payload_hash=req_hash,
                     error=req_leg.pi.error,
                     seq=req_leg.pi.order,
@@ -620,7 +650,10 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             legs.append(
                 LegRow(
                     leg_type="response",
-                    occurred_at=resp_leg.pi.ended_at,
+                    occurred_at=(
+                        inferred_tool_time if project_inferred_response
+                        else resp_leg.pi.ended_at
+                    ),
                     payload_hash=resp_hash,
                     error=resp_leg.pi.error,
                     seq=resp_leg.pi.order,

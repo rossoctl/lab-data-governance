@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import psycopg
 
-from data_governance import db
+from data_governance import db, retrieval
 from data_governance.matching import MatchResult
 from data_governance.processors.data_lineage import driver
 
@@ -41,12 +41,14 @@ def _payload(conn: psycopg.Connection, content_hash: str) -> None:
 
 
 def _interaction(
-    conn: psycopg.Connection, *, ix_id: str, trace_id: str, caller: str, callee: str
+    conn: psycopg.Connection, *, ix_id: str, trace_id: str, caller: str, callee: str,
+    parent_id: str | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO interactions (id, trace_id, caller_entity_id, callee_entity_id, "
-        "summary) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
-        (ix_id, trace_id, caller, callee, f"{caller} -> {callee}"),
+        "summary, parent_interaction_id) VALUES (%s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (id) DO NOTHING",
+        (ix_id, trace_id, caller, callee, f"{caller} -> {callee}", parent_id),
     )
 
 
@@ -56,6 +58,7 @@ def _leg(
     ix_id: str,
     leg_type: str,
     payload_hash: str,
+    occurred_at: str | None = None,
 ) -> None:
     # `interaction_legs.original_seq` was dropped in 0011_drop_leg_original_seq
     # (issue #133): a leg's `seq` is DB-owned and never mutates on re-derive, so the
@@ -66,10 +69,10 @@ def _leg(
     _payload(conn, payload_hash)
     conn.execute(
         "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-        "payload_hash, error) VALUES (%s, %s, now(), %s, false) "
+        "payload_hash, error) VALUES (%s, %s, COALESCE(%s::timestamptz, now()), %s, false) "
         "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
         "payload_hash = EXCLUDED.payload_hash, seq = nextval('interaction_legs_seq')",
-        (ix_id, leg_type, payload_hash),
+        (ix_id, leg_type, occurred_at, payload_hash),
     )
 
 
@@ -145,6 +148,282 @@ def test_drain_writes_one_row_per_leg_and_advances_the_cursor(configured_db: str
         ("ix_al2", "response"),
         ("ix_ua", "response"),
     }
+
+
+def test_late_parent_restores_the_clients_lineage_to_an_already_derived_child(
+    configured_db: str,
+) -> None:
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="client", kind="client", natural_key="client:traveler")
+        _entity(conn, eid="agent", kind="agent", natural_key="agent:advisor")
+        _entity(conn, eid="tool", kind="tool", natural_key="tool:weather")
+        _interaction(
+            conn, ix_id="child", trace_id=TRACE, caller="agent", callee="tool",
+            parent_id="parent",
+        )
+        _leg(
+            conn, ix_id="child", leg_type="request", payload_hash="child-body",
+            occurred_at="2026-01-01T00:00:01Z",
+        )
+        conn.commit()
+
+    cursor = driver.drain(0)
+    before = retrieval.get_data_lineage(TRACE)
+    assert before.legs[0].lineage is not None
+    assert before.legs[0].lineage.data_sources == ["agent:advisor"]
+
+    with psycopg.connect(configured_db) as conn:
+        _interaction(conn, ix_id="parent", trace_id=TRACE, caller="client", callee="agent")
+        _leg(
+            conn, ix_id="parent", leg_type="request", payload_hash="parent-body",
+            occurred_at="2026-01-01T00:00:10Z",
+        )
+        conn.commit()
+
+    driver.drain(cursor)
+    after = retrieval.get_data_lineage(TRACE)
+    assert [(leg.interaction_id, leg.leg_type) for leg in after.legs] == [
+        ("parent", "request"), ("child", "request"),
+    ]
+    child_lineage = after.legs[1].lineage
+    assert child_lineage is not None
+    assert child_lineage.data_sources == ["client:traveler"]
+
+
+def test_deleting_a_parent_leg_rederives_retained_lineage_and_clears_coverage(
+    configured_db: str,
+) -> None:
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="client", kind="client", natural_key="client:traveler")
+        _entity(conn, eid="agent", kind="agent", natural_key="agent:advisor")
+        _entity(conn, eid="tool", kind="tool", natural_key="tool:weather")
+        _interaction(conn, ix_id="parent", trace_id=TRACE, caller="client", callee="agent")
+        _interaction(
+            conn, ix_id="child", trace_id=TRACE, caller="agent", callee="tool",
+            parent_id="parent",
+        )
+        _leg(
+            conn, ix_id="parent", leg_type="request", payload_hash="parent-body",
+            occurred_at="2026-01-01T00:00:00Z",
+        )
+        _leg(
+            conn, ix_id="child", leg_type="request", payload_hash="child-body",
+            occurred_at="2026-01-01T00:00:01Z",
+        )
+        conn.commit()
+
+    cursor = driver.drain(0)
+    assert _rows(configured_db)[("child", "request")]["data_sources"] == ["client:traveler"]
+
+    # Sidecar reconciliation removes the legs before the interaction. No
+    # retained leg changes its seq, payload, or endpoint in this shrink case.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("DELETE FROM interaction_legs WHERE interaction_id = 'parent'")
+        conn.execute("DELETE FROM interactions WHERE id = 'parent'")
+        conn.commit()
+
+    assert driver.drain(cursor) == cursor
+    rows = _rows(configured_db)
+    assert set(rows) == {("child", "request")}
+    assert rows[("child", "request")]["data_sources"] == ["agent:advisor"]
+    assert retrieval.get_data_lineage(TRACE).status == "complete"
+
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("DELETE FROM interaction_legs WHERE interaction_id = 'child'")
+        conn.execute("DELETE FROM interactions WHERE id = 'child'")
+        conn.commit()
+
+    assert driver.drain(cursor) == cursor
+    assert _rows(configured_db) == {}
+    assert retrieval.get_data_lineage(TRACE).status is None
+
+
+def test_a_causally_earlier_parent_recovers_before_a_lower_seq_payload_gap(
+    configured_db: str,
+) -> None:
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="agent", kind="agent", natural_key="agent:advisor")
+        _entity(conn, eid="tool", kind="tool", natural_key="tool:weather")
+        _interaction(
+            conn, ix_id="child", trace_id=TRACE, caller="agent", callee="tool",
+            parent_id="parent",
+        )
+        _interaction(conn, ix_id="parent", trace_id=TRACE, caller="client", callee="agent")
+        conn.execute(
+            "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
+            "payload_hash) VALUES ('child', 'request', '2026-01-01T00:00:01Z', NULL)"
+        )
+        _leg(
+            conn, ix_id="parent", leg_type="request", payload_hash="parent-body",
+            occurred_at="2026-01-01T00:00:10Z",
+        )
+        conn.commit()
+
+    cursor = driver.drain(0)
+    before = retrieval.get_data_lineage(TRACE)
+    assert before.status == "partial"
+    assert before.legs[0].interaction_id == "parent"
+    assert before.legs[0].lineage is None  # the producer entity has not landed
+
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="client", kind="client", natural_key="client:traveler")
+        conn.commit()
+
+    driver.drain(cursor)
+    after = retrieval.get_data_lineage(TRACE)
+    assert after.status == "partial"
+    assert after.stopped_at_seq == before.stopped_at_seq
+    assert after.legs[0].lineage is not None
+    assert after.legs[0].lineage.data_sources == ["client:traveler"]
+    assert after.legs[1].lineage is None
+
+
+def test_parent_reconciliation_rederives_lineage_without_a_new_leg_seq(
+    configured_db: str,
+) -> None:
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="client", kind="client", natural_key="client:traveler")
+        _entity(conn, eid="agent", kind="agent", natural_key="agent:advisor")
+        _entity(conn, eid="tool", kind="tool", natural_key="tool:weather")
+        _interaction(conn, ix_id="child", trace_id=TRACE, caller="agent", callee="tool")
+        _interaction(conn, ix_id="parent", trace_id=TRACE, caller="client", callee="agent")
+        _leg(
+            conn, ix_id="child", leg_type="request", payload_hash="child-body",
+            occurred_at="2026-01-01T00:00:01Z",
+        )
+        _leg(
+            conn, ix_id="parent", leg_type="request", payload_hash="parent-body",
+            occurred_at="2026-01-01T00:00:10Z",
+        )
+        conn.commit()
+
+    cursor = driver.drain(0)
+    before = retrieval.get_data_lineage(TRACE)
+    assert before.legs[0].interaction_id == "child"
+    assert before.legs[0].lineage is not None
+    assert before.legs[0].lineage.data_sources == ["agent:advisor"]
+
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE interactions SET parent_interaction_id = 'parent' WHERE id = 'child'"
+        )
+        conn.commit()
+
+    assert driver.drain(cursor) == cursor
+    after = retrieval.get_data_lineage(TRACE)
+    assert [leg.interaction_id for leg in after.legs] == ["parent", "child"]
+    assert after.legs[1].lineage is not None
+    assert after.legs[1].lineage.data_sources == ["client:traveler"]
+
+
+def test_timing_correction_rederives_lineage_without_a_new_leg_seq(
+    configured_db: str,
+) -> None:
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="client", kind="client", natural_key="client:traveler")
+        _entity(conn, eid="agent", kind="agent", natural_key="agent:advisor")
+        _entity(conn, eid="tool", kind="tool", natural_key="tool:weather")
+        _interaction(conn, ix_id="outbound", trace_id=TRACE, caller="agent", callee="tool")
+        _interaction(conn, ix_id="inbound", trace_id=TRACE, caller="client", callee="agent")
+        _leg(
+            conn, ix_id="outbound", leg_type="request", payload_hash="tool-body",
+            occurred_at="2026-01-01T00:00:01Z",
+        )
+        _leg(
+            conn, ix_id="inbound", leg_type="request", payload_hash="client-body",
+            occurred_at="2026-01-01T00:00:10Z",
+        )
+        (seq_before,) = conn.execute(
+            "SELECT seq FROM interaction_legs WHERE interaction_id = 'outbound'"
+        ).fetchone()
+        conn.commit()
+
+    cursor = driver.drain(0)
+    before = retrieval.get_data_lineage(TRACE)
+    outbound_before = next(leg for leg in before.legs if leg.interaction_id == "outbound")
+    assert outbound_before.lineage is not None
+    assert outbound_before.lineage.data_sources == ["agent:advisor"]
+
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE interaction_legs SET occurred_at = '2026-01-01T00:00:20Z' "
+            "WHERE interaction_id = 'outbound' AND leg_type = 'request'"
+        )
+        (seq_after,) = conn.execute(
+            "SELECT seq FROM interaction_legs WHERE interaction_id = 'outbound'"
+        ).fetchone()
+        conn.commit()
+    assert seq_after == seq_before
+
+    assert driver.drain(cursor) == cursor
+    after = retrieval.get_data_lineage(TRACE)
+    assert [leg.interaction_id for leg in after.legs] == ["inbound", "outbound"]
+    outbound_after = after.legs[1]
+    assert outbound_after.lineage is not None
+    assert outbound_after.lineage.data_sources == ["client:traveler"]
+
+
+def test_a_new_correction_during_replay_keeps_the_trace_queued(
+    configured_db: str, monkeypatch,
+) -> None:
+    with psycopg.connect(configured_db) as conn:
+        _entity(conn, eid="client", kind="client", natural_key="client:traveler")
+        _entity(conn, eid="agent", kind="agent", natural_key="agent:advisor")
+        _entity(conn, eid="tool", kind="tool", natural_key="tool:weather")
+        _interaction(conn, ix_id="outbound", trace_id=TRACE, caller="agent", callee="tool")
+        _interaction(conn, ix_id="inbound", trace_id=TRACE, caller="client", callee="agent")
+        _leg(
+            conn, ix_id="outbound", leg_type="request", payload_hash="tool-body",
+            occurred_at="2026-01-01T00:00:01Z",
+        )
+        _leg(
+            conn, ix_id="inbound", leg_type="request", payload_hash="client-body",
+            occurred_at="2026-01-01T00:00:10Z",
+        )
+        conn.commit()
+    cursor = driver.drain(0)
+
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE interaction_legs SET occurred_at = '2026-01-01T00:00:05Z' "
+            "WHERE interaction_id = 'outbound' AND leg_type = 'request'"
+        )
+        conn.commit()
+
+    original_process = driver.process_leg
+    corrected = False
+
+    def process_then_correct(tx, leg, matcher):
+        nonlocal corrected
+        original_process(tx, leg, matcher)
+        if leg.seq == 0 and not corrected:
+            corrected = True
+            with psycopg.connect(configured_db) as conn:
+                conn.execute(
+                    "UPDATE interaction_legs SET occurred_at = '2026-01-01T00:00:20Z' "
+                    "WHERE interaction_id = 'outbound' AND leg_type = 'request'"
+                )
+                conn.commit()
+
+    monkeypatch.setattr(driver, "process_leg", process_then_correct)
+    assert driver.drain(cursor) == cursor
+    with psycopg.connect(configured_db) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM data_lineage_dirty_traces WHERE trace_id = %s",
+            (TRACE,),
+        ).fetchone() == (1,)
+
+    monkeypatch.setattr(driver, "process_leg", original_process)
+    assert driver.drain(cursor) == cursor
+    after = retrieval.get_data_lineage(TRACE)
+    outbound = next(leg for leg in after.legs if leg.interaction_id == "outbound")
+    assert outbound.lineage is not None
+    assert outbound.lineage.data_sources == ["client:traveler"]
+    with psycopg.connect(configured_db) as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM data_lineage_dirty_traces WHERE trace_id = %s",
+            (TRACE,),
+        ).fetchone() == (0,)
 
 
 def test_drain_uses_its_own_cursor_row(configured_db: str) -> None:

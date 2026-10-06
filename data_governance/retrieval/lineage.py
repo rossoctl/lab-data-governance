@@ -56,6 +56,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from data_governance import db
+from data_governance.interaction_order import LegOrderEvent, order_legs
 
 __all__ = [
     "DataLineageLegView",
@@ -89,8 +90,8 @@ class DataLineageView:
        writes it sorted so a re-derivation is byte-identical; that is
        serialization, not meaning. An origin's set is legitimately empty.
 
-    ``seq`` is the row's own cursor value (sourced from the leg it describes), so
-    a consumer can tell a re-derivation apart from the original.
+    ``seq`` is the leg's durable ingestion cursor. It is preserved across
+    re-derivation and does not identify the leg's causal position.
     """
 
     data_sources: list[str]
@@ -128,7 +129,7 @@ class GetDataLineageResult:
     - ``"complete"`` — every leg of the trace had a payload; the lineage below is
       the whole set of sources.
     - ``"partial"`` — derivation stopped at the first leg with an absent payload,
-      whose leg ``seq`` is ``stopped_at_seq``. **The lineage is a prefix, not the
+      whose ingestion ``seq`` is ``stopped_at_seq``. **The lineage is a causal prefix, not the
       leg list**: every leg is still in ``legs``, but those from the gap on carry
       ``lineage=None``. Reading the prefix as the full source set is the failure
       D6's flag prevents.
@@ -214,7 +215,7 @@ def _trace_status(tx: db.Transaction, trace_id: str) -> tuple[str | None, int | 
 
 def get_data_lineage(trace_id: str) -> GetDataLineageResult:
     """Read the persisted **Data lineage metadata** for every **Interaction
-    leg** of *trace_id*, in leg ``seq`` order.
+    leg** of *trace_id*, in the trace's causal leg order.
 
     A pure lookup (ADR-0028 D7). Legs are driven off ``interaction_legs`` and
     ``lineage_metadata`` is LEFT JOINed on, so a leg whose lineage has not been
@@ -225,8 +226,9 @@ def get_data_lineage(trace_id: str) -> GetDataLineageResult:
 
     The trace's ``status`` / ``stopped_at_seq`` (ADR-0028 D6) come back alongside.
     Note the query below has **no ``seq`` filter**: a ``"partial"`` trace still
-    returns every leg, and it is the *lineage* that is a prefix (``None`` from
-    ``stopped_at_seq`` on). ``status=None`` is *unknown*, never ``complete``.
+    returns every leg, and it is the *lineage* that is a causal prefix (``None``
+    at and after the cutoff leg in that order). ``status=None`` is *unknown*,
+    never ``complete``.
     """
     with db.transaction() as tx:
         if not _lineage_tables_exist(tx):
@@ -236,26 +238,38 @@ def get_data_lineage(trace_id: str) -> GetDataLineageResult:
         rows = tx.fetch_all(
             "SELECT l.interaction_id::text, l.leg_type::text, l.payload_hash, "
             "       m.data_sources, m.source_transformations, m.entities, "
-            "       m.seq "
+            "       m.seq, l.seq, l.occurred_at, i.parent_interaction_id "
             "FROM interaction_legs l "
             "JOIN interactions i ON i.id = l.interaction_id "
             "LEFT JOIN lineage_metadata m "
             "  ON m.interaction_id = l.interaction_id "
             " AND m.leg_type = l.leg_type "
-            "WHERE i.trace_id = %s "
-            # Leg seq is the only execution order the schema offers (the parent
-            # interactions row has no seq) — ADR-0025/ADR-0028 D6 both reason in
-            # it, so the lineage list reads in the order it was derived.
-            "ORDER BY l.seq ASC",
+            "WHERE i.trace_id = %s",
             (trace_id,),
         )
+        position = {
+            (key.interaction_id, key.leg_type): index
+            for index, key in enumerate(
+                order_legs(
+                    LegOrderEvent(
+                        interaction_id=r[0],
+                        leg_type=r[1],
+                        parent_interaction_id=r[9],
+                        occurred_at=r[8],
+                        seq=r[7],
+                    )
+                    for r in rows
+                )
+            )
+        }
+        rows.sort(key=lambda r: position[(r[0], r[1])])
         return GetDataLineageResult(
             legs=[
                 DataLineageLegView(
                     interaction_id=r[0],
                     leg_type=r[1],
                     payload_hash=r[2],
-                    lineage=_lineage_view(r[3:]),
+                    lineage=_lineage_view(r[3:7]),
                 )
                 for r in rows
             ],

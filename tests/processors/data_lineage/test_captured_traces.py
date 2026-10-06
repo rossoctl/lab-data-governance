@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 
 from data_governance import db
+from data_governance.interaction_order import LegOrderEvent, order_legs
 from data_governance.matching import MatchResult
 from data_governance.processors.data_lineage import driver, traversal
 from data_governance.processors.interactions import graph_driver
@@ -55,8 +56,8 @@ def _run_pipeline(name: str) -> str:
 
 
 def _lineage(trace_id: str) -> dict[tuple[str, str], dict]:
-    """The persisted lineage rows of *trace_id*, joined to the leg's seq and the
-    producing entity so the assertions can talk in execution order."""
+    """The persisted lineage rows of *trace_id*, joined to the producer and
+    ingestion seq. Assertions select execution order through :func:`_derived`."""
     with db.transaction() as tx:
         rows = tx.fetch_all(
             "SELECT lm.interaction_id, lm.leg_type::text, lm.data_sources, "
@@ -102,6 +103,7 @@ class DerivedLeg:
     """
 
     seq: int
+    position: int
     interaction_id: str
     leg_type: str
     caller: str
@@ -113,7 +115,7 @@ class DerivedLeg:
 
 
 def _derived(trace_id: str) -> list[DerivedLeg]:
-    """Every leg of *trace_id* with its derived op and inbound set, in ``seq`` order.
+    """Every leg of *trace_id* with its derived op and inbound set in causal order.
 
     Re-derived through the pure traversal over exactly the persisted rows the driver
     read, so both the op *choice* and its *inputs* are observable (the table stores
@@ -121,6 +123,20 @@ def _derived(trace_id: str) -> list[DerivedLeg]:
     with db.transaction() as tx:
         legs, entities = driver.load_trace(tx, trace_id)
     result = traversal.derive_trace_lineage(legs, entities, matcher=_match_always)
+    ordered_keys = order_legs(
+        LegOrderEvent(
+            interaction_id=leg.interaction_id,
+            leg_type=leg.leg_type,
+            parent_interaction_id=leg.parent_interaction_id,
+            occurred_at=leg.occurred_at,
+            seq=leg.seq,
+        )
+        for leg in legs
+    )
+    position = {
+        (key.interaction_id, key.leg_type): index
+        for index, key in enumerate(ordered_keys)
+    }
     out = []
     for leg in legs:
         entry = result.legs.get((leg.interaction_id, leg.leg_type))
@@ -131,6 +147,7 @@ def _derived(trace_id: str) -> list[DerivedLeg]:
         out.append(
             DerivedLeg(
                 seq=leg.seq,
+                position=position[(leg.interaction_id, leg.leg_type)],
                 interaction_id=leg.interaction_id,
                 leg_type=leg.leg_type,
                 caller=caller,
@@ -142,22 +159,21 @@ def _derived(trace_id: str) -> list[DerivedLeg]:
                 inbound=tuple(entry.inbound_payloads),
             )
         )
-    return sorted(out, key=lambda d: d.seq)
+    return sorted(out, key=lambda d: d.position)
 
 
 def _payloads_of(legs: list[DerivedLeg]) -> tuple[str, ...]:
-    """The payload hashes *legs* carry, in ``seq`` order — how an expected inbound
+    """The payload hashes *legs* carry, in causal order — how an expected inbound
     set is spelled here.
 
     Inbound sets are compared as payload *sequences* because that is what the
-    traversal reports, but they are *specified* as "these prior legs, in seq order":
-    the spec's own language (D1: "in an interaction with lower sequence"), and the
-    only form that stays readable against a captured trace's 64-hex hashes. It is no
-    weaker than pinning literals — the legs are named individually and their order
-    is fixed — and it keeps duplicates honest: two distinct priors carrying
+    traversal reports, but they are *specified* as "these prior legs, in causal order"
+    by the current D1 rule. That form stays readable against a captured trace's
+    64-hex hashes and is no weaker than pinning literals: the legs are named
+    individually in a fixed order. It also keeps duplicates honest: two priors carrying
     byte-identical content appear twice, which is exactly the ``patent_agent_II``
     regression ``test_traversal.py`` pins by hand."""
-    ordered = sorted(legs, key=lambda d: d.seq)
+    ordered = sorted(legs, key=lambda d: d.position)
     # An absent payload would truncate the trace (D6), so a leg the traversal
     # derived always has one — assert it rather than silently comparing a None.
     assert all(leg.payload_hash is not None for leg in ordered), ordered
@@ -167,7 +183,7 @@ def _payloads_of(legs: list[DerivedLeg]) -> tuple[str, ...]:
 def _priors_of(entity: str, produced: DerivedLeg, trace: list[DerivedLeg]) -> list[DerivedLeg]:
     """The legs of *trace* whose payloads are inbound to *entity* before it produced
     *produced* — **ADR-0028 D1 transcribed**, and the single place these tests express
-    it: "a payload is inbound to entity E iff, in a leg with lower ``seq``, E is the
+    it: "a payload is inbound to entity E iff, in an earlier causal leg, E is the
     callee and the payload is the request, OR E is the caller and the payload is the
     response".
 
@@ -181,7 +197,7 @@ def _priors_of(entity: str, produced: DerivedLeg, trace: list[DerivedLeg]) -> li
     return [
         leg
         for leg in trace
-        if leg.seq < produced.seq
+        if leg.position < produced.position
         and (
             (leg.leg_type == "response" and leg.caller == entity)
             or (leg.leg_type == "request" and leg.callee == entity)
@@ -268,7 +284,7 @@ def test_canonical_trace_agent_inbound_accumulates_exactly_its_priors(
     """**The load-bearing half of the acceptance criterion.** The op *names* above
     would read the same if the ops had run on the wrong inputs, so pin the inputs:
     for every leg the agent produces, its inbound set must be **exactly the payloads
-    of the response legs it received earlier, in seq order** — nothing more, nothing
+    of the response legs it received earlier, in causal order** — nothing more, nothing
     fewer, in that order.
 
     That single expectation is D1 and D2 together, and it fails if either breaks:
@@ -375,12 +391,10 @@ def test_canonical_trace_tool_results_flow_into_the_agents_answer(
     trace_id = _run_pipeline("travel_agent_III")
     rows = _lineage(trace_id)
 
-    agent_legs = sorted(
-        (r["seq"], key)
-        for key, r in rows.items()
-        if r["producer"].startswith("agent:")
-    )
-    final = rows[agent_legs[-1][1]]
+    agent_legs = [
+        leg for leg in _derived(trace_id) if leg.producer.startswith("agent:")
+    ]
+    final = rows[(agent_legs[-1].interaction_id, agent_legs[-1].leg_type)]
 
     assert final["data_sources"], "the answer must trace to at least one source"
     # It passed through the LLM and at least one tool.
@@ -413,12 +427,10 @@ def test_canonical_trace_answer_roots_at_every_tool_that_fired(
     }
     assert tools_that_produced, "sanity: the reference trace has tool legs"
 
-    agent_legs = sorted(
-        (r["seq"], key)
-        for key, r in rows.items()
-        if r["producer"].startswith("agent:")
-    )
-    final = rows[agent_legs[-1][1]]
+    agent_legs = [
+        leg for leg in _derived(trace_id) if leg.producer.startswith("agent:")
+    ]
+    final = rows[(agent_legs[-1].interaction_id, agent_legs[-1].leg_type)]
 
     assert tools_that_produced <= set(final["data_sources"]), (
         tools_that_produced - set(final["data_sources"])
@@ -493,7 +505,7 @@ def test_patent_agent_multitool_trace_merges_after_the_first_outbound(
     inferred from (``test_traversal.py``
     ``test_two_priors_with_identical_payloads_are_two_priors``). The agent's inbound
     sets therefore contain repeated hashes on purpose; asserting them as "the prior
-    response legs, in seq order" keeps that visible, where a hash-set comparison
+    response legs, in causal order" keeps that visible, where a hash-set comparison
     would silently accept a collapsed form that loses one of the agent's priors."""
     trace_id = _run_pipeline("patent_agent_II")
     derived = _derived(trace_id)
@@ -541,10 +553,13 @@ def test_patent_agent_replay_trace_accumulates_sources_monotonically(
     trace_id = _run_pipeline("patent_agent_I")
     rows = _lineage(trace_id)
 
-    agent_legs = sorted(
-        (r["seq"], key) for key, r in rows.items() if r["producer"].startswith("agent:")
-    )
-    sources = [set(rows[key]["data_sources"]) for _, key in agent_legs]
+    agent_legs = [
+        leg for leg in _derived(trace_id) if leg.producer.startswith("agent:")
+    ]
+    sources = [
+        set(rows[(leg.interaction_id, leg.leg_type)]["data_sources"])
+        for leg in agent_legs
+    ]
     assert len(sources) >= 2, agent_legs
     for earlier, later in zip(sources, sources[1:]):
         assert earlier <= later, (earlier, later)
