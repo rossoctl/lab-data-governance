@@ -16,6 +16,14 @@ crash mid-item commits nothing and the restart re-processes from the same cursor
 "one item, one transaction, cursor advances with the write" contract is the
 load-bearing invariant every consumer inherits.
 
+That recovery rule assumes the failure is transient. If it is not — if the item
+itself is undeliverable — re-processing from the same cursor is an infinite
+crash loop, and because the cursor never advances the stream stops for *every*
+later item too, not just the bad one. So an item that keeps failing for a
+non-connection reason is quarantined after ``max_item_attempts``: logged with
+its seq and stepped over. Connection-class failures are never quarantined —
+those mean the database is unreachable, not that the item is bad.
+
 The loop wakes on two signals (issue #71): a Postgres ``LISTEN`` notification on
 the stream's channel (fired by an insert trigger when new rows land), and a
 periodic poll timeout as the backstop. Both lead to the same action — drain
@@ -48,6 +56,12 @@ T = TypeVar("T")
 DEFAULT_POLL_SECONDS = 5.0
 DEFAULT_BATCH_SIZE = 500
 
+# How many times :func:`drain` attempts a single item before quarantining it.
+# More than one because some non-connection failures are genuinely transient
+# (serialization failure, deadlock detected) and clear on an immediate retry;
+# a deterministically bad item burns all its attempts and is stepped over.
+DEFAULT_MAX_ITEM_ATTEMPTS = 3
+
 
 @dataclasses.dataclass(frozen=True)
 class StreamSpec(Generic[T]):
@@ -70,6 +84,10 @@ class StreamSpec(Generic[T]):
             cursor after ``process_item`` succeeds.
         poll_seconds: idle sleep between drains / max LISTEN wait per iteration.
         batch_size: how many items to read per drain batch.
+        max_item_attempts: how many times :func:`drain` attempts one item before
+            quarantining it (logging it and stepping the cursor past it) so the
+            stream keeps moving. ``0`` restores fail-stop: the first failure
+            propagates and the processor exits. See :func:`drain`.
     """
 
     notify_channel: str
@@ -79,6 +97,7 @@ class StreamSpec(Generic[T]):
     item_seq: Callable[[T], int]
     poll_seconds: float = DEFAULT_POLL_SECONDS
     batch_size: int = DEFAULT_BATCH_SIZE
+    max_item_attempts: int = DEFAULT_MAX_ITEM_ATTEMPTS
 
 
 def read_cursor(tx: db.Transaction, processor_name: str) -> int:
@@ -104,12 +123,78 @@ def advance_cursor(tx: db.Transaction, processor_name: str, seq: int) -> None:
     )
 
 
+def _process_one(spec: StreamSpec[T], item: T) -> None:
+    """Run one item's procedure and cursor advance in a single transaction,
+    retrying up to ``spec.max_item_attempts`` times; quarantine on exhaustion.
+
+    Three outcomes, and the distinction between them is the point:
+
+    * **connection-class failure** (``db.is_connection_error``) — re-raised
+      immediately, unretried. The stream is not making progress because the
+      database is unreachable, not because this item is bad; that must surface
+      as it always has, not be mistaken for a poison item and skipped.
+    * **other failure, attempts remain** — retried in a fresh transaction. Some
+      non-connection failures are transient (serialization failure, deadlock
+      detected) and clear on the next attempt.
+    * **other failure, attempts exhausted** — quarantined: logged at ERROR with
+      the traceback and the item's seq, and the cursor stepped past it in its
+      own transaction so the stream resumes.
+
+    Quarantine drops the item's derived output. That is a real loss and the log
+    line says so — but the alternative it replaces is worse: before this, one
+    undeliverable item halted the processor permanently, because the cursor
+    could not advance past it and the restart re-read the very same item. One
+    bad item cost every *later* item too, across every trace.
+    """
+    attempts = max(1, spec.max_item_attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            with db.transaction() as tx:
+                spec.process_item(tx, item)
+                advance_cursor(tx, spec.processor_name, spec.item_seq(item))
+            return
+        except Exception as exc:  # noqa: BLE001 — classified immediately below
+            if db.is_connection_error(exc) or spec.max_item_attempts <= 0:
+                raise
+            if attempt < attempts:
+                log.warning(
+                    "%s processor: item seq=%d failed (attempt %d/%d), retrying: %s",
+                    spec.processor_name,
+                    spec.item_seq(item),
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                continue
+            log.error(
+                "%s processor: item seq=%d failed %d/%d attempts — QUARANTINED. "
+                "Its derived output is dropped and the cursor steps past it so "
+                "the stream keeps moving; fix the cause and re-ingest to recover.",
+                spec.processor_name,
+                spec.item_seq(item),
+                attempts,
+                attempts,
+                exc_info=True,
+            )
+
+    # Quarantine: the item's own transaction rolled back, so the cursor advance
+    # is a separate commit. Nothing derived from the item is written.
+    with db.transaction() as tx:
+        advance_cursor(tx, spec.processor_name, spec.item_seq(item))
+
+
 def drain(spec: StreamSpec[T], cursor: int) -> int:
     """Process every item past *cursor*, one transaction per item. Returns the
     new cursor (the seq of the last item processed, or *cursor* if none).
 
     Each item is processed AND its cursor advance committed in the same
     transaction, so a crash mid-item commits nothing (ADR-0007).
+
+    An item that fails repeatedly for a non-connection reason is quarantined
+    rather than propagated, so one bad item cannot halt the stream forever —
+    see :func:`_process_one`. Connection-class failures still propagate
+    unchanged. Set ``spec.max_item_attempts = 0`` for the previous fail-stop
+    behaviour.
     """
     while True:
         # Read the next batch in its own short transaction; each item is then
@@ -119,9 +204,7 @@ def drain(spec: StreamSpec[T], cursor: int) -> int:
         if not batch:
             return cursor
         for item in batch:
-            with db.transaction() as tx:
-                spec.process_item(tx, item)
-                advance_cursor(tx, spec.processor_name, spec.item_seq(item))
+            _process_one(spec, item)
             cursor = spec.item_seq(item)
         if len(batch) < spec.batch_size:
             return cursor

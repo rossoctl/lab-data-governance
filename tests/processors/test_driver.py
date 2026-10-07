@@ -71,7 +71,7 @@ def _fetch_seqs(tx: db.Transaction, cursor: int, limit: int) -> list[tuple[str, 
     ]
 
 
-def _make_spec(process=None) -> _driver.StreamSpec:
+def _make_spec(process=None, **kwargs) -> _driver.StreamSpec:
     def _record(tx: db.Transaction, item: tuple[str, int]) -> None:
         # Trivial derived write: mark the span processed by setting its name.
         tx.execute("UPDATE spans SET name = 'seen' WHERE span_id = %s", (item[0],))
@@ -82,6 +82,7 @@ def _make_spec(process=None) -> _driver.StreamSpec:
         fetch_batch=_fetch_seqs,
         process_item=process or _record,
         item_seq=lambda item: item[1],
+        **kwargs,
     )
 
 
@@ -131,7 +132,9 @@ def test_cursor_advance_is_atomic_with_the_write(configured_db: str) -> None:
         if item[0] == "boom":
             raise RuntimeError("crash mid-item")
 
-    spec = _make_spec(process=_process)
+    # max_item_attempts=0 is the fail-stop mode: the first failure propagates,
+    # which is what makes the rollback observable at this boundary.
+    spec = _make_spec(process=_process, max_item_attempts=0)
     with db.transaction() as tx:
         cursor = _driver.read_cursor(tx, _TOY_NAME)
     with pytest.raises(RuntimeError, match="crash mid-item"):
@@ -173,3 +176,94 @@ def test_run_falls_back_to_poll_when_listen_unavailable(
         stop.set()
         t.join(timeout=10)
         assert not t.is_alive()
+
+
+# --- poison items must not halt the stream --------------------------------
+#
+# Before quarantine, an item whose procedure raised deterministically stopped
+# the processor for good: the cursor could not advance past it, so every
+# restart re-read the same item and died again, and no *later* item was ever
+# processed either. These tests pin the three behaviours that replaces.
+
+
+def test_poison_item_is_quarantined_and_the_stream_continues(
+    configured_db: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A deterministically failing item is stepped over after its attempts are
+    spent, and the items behind it still get processed."""
+    good = _insert_min_span(configured_db, span_id="good")
+    boom = _insert_min_span(configured_db, span_id="boom")
+    after = _insert_min_span(configured_db, span_id="after")
+
+    def _process(tx: db.Transaction, item: tuple[str, int]) -> None:
+        if item[0] == "boom":
+            raise ValueError("undeliverable item")
+        tx.execute("UPDATE spans SET name = 'seen' WHERE span_id = %s", (item[0],))
+
+    spec = _make_spec(process=_process)
+    with db.transaction() as tx:
+        cursor = _driver.read_cursor(tx, _TOY_NAME)
+    with caplog.at_level("ERROR"):
+        new_cursor = _driver.drain(spec, cursor)
+
+    assert new_cursor == after, "the drain must reach past the poison item"
+    assert _toy_cursor(configured_db) == after
+
+    with psycopg.connect(configured_db) as conn:
+        names = dict(
+            conn.execute(
+                "SELECT span_id, name FROM spans WHERE span_id IN ('good','boom','after')"
+            ).fetchall()
+        )
+    assert names["good"] == "seen" and names["after"] == "seen"
+    assert names["boom"] == "n", "the quarantined item writes nothing"
+    assert good < boom < after
+
+    quarantined = [r for r in caplog.records if "QUARANTINED" in r.getMessage()]
+    assert len(quarantined) == 1, "quarantine must be reported once, at ERROR"
+    assert str(boom) in quarantined[0].getMessage()
+
+
+def test_a_transient_failure_is_retried_not_quarantined(configured_db: str) -> None:
+    """An item that fails once and then succeeds is processed, not skipped —
+    serialization failures and deadlocks are non-connection but transient."""
+    seq = _insert_min_span(configured_db, span_id="flaky")
+    calls: list[int] = []
+
+    def _process(tx: db.Transaction, item: tuple[str, int]) -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("transient (injected)")
+        tx.execute("UPDATE spans SET name = 'seen' WHERE span_id = %s", (item[0],))
+
+    spec = _make_spec(process=_process)
+    with db.transaction() as tx:
+        cursor = _driver.read_cursor(tx, _TOY_NAME)
+    assert _driver.drain(spec, cursor) == seq
+    assert len(calls) == 2, "the item must be retried, not quarantined on first failure"
+
+    with psycopg.connect(configured_db) as conn:
+        name = conn.execute(
+            "SELECT name FROM spans WHERE span_id = 'flaky'"
+        ).fetchone()[0]
+    assert name == "seen", "the retry's derived write must commit"
+
+
+def test_connection_errors_are_never_quarantined(configured_db: str) -> None:
+    """A connection-class failure means the database is unreachable, not that
+    the item is bad. It propagates unretried, exactly as before — quarantining
+    it would step the cursor over perfectly good data during an outage."""
+    _insert_min_span(configured_db, span_id="s0")
+    calls: list[int] = []
+
+    def _process(tx: db.Transaction, item: tuple[str, int]) -> None:
+        calls.append(1)
+        raise db.ConnectionTimeout("pool exhausted (injected)")
+
+    spec = _make_spec(process=_process)
+    with db.transaction() as tx:
+        cursor = _driver.read_cursor(tx, _TOY_NAME)
+    with pytest.raises(db.ConnectionTimeout):
+        _driver.drain(spec, cursor)
+    assert len(calls) == 1, "connection failures must not be retried"
+    assert _toy_cursor(configured_db) == 0, "the cursor must not move"

@@ -18,6 +18,8 @@ The drain tests run in-process against a migrated DB (fast), mirroring
 
 from __future__ import annotations
 
+import dataclasses
+
 import psycopg
 import pytest
 
@@ -247,9 +249,22 @@ def test_crash_mid_payload_re_processes_from_same_cursor_without_duplicate(
     crash mid-payload rolls back BOTH — the cursor does not advance past the
     crashing payload, and its (partial) write rolls back with it. On restart the
     payload is re-processed from the same cursor and lands exactly one row.
+
+    Pinned to fail-stop (``max_item_attempts=0``). The shared loop's default is
+    now to retry a failing item and then quarantine it, which is what keeps one
+    undeliverable payload from halting the stream — but propagation is what makes
+    the rollback observable at this boundary, and fix-then-restart recovery from
+    the durable cursor is precisely the property under test here.
     """
     good = _insert_payload(configured_db, content_hash="ok")
     _insert_payload(configured_db, content_hash="boom")
+
+    real_spec = driver._spec
+    monkeypatch.setattr(
+        driver,
+        "_spec",
+        lambda **kw: dataclasses.replace(real_spec(**kw), max_item_attempts=0),
+    )
 
     # Make classifying "boom" raise, simulating a crash after "ok" committed.
     real_classify = driver.verdict.classify
