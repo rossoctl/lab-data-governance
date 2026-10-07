@@ -2,9 +2,13 @@
 
 Authoring a rule catalog is the policy engineering source-of-truth file's job, not
 DAS's (§1.3) — this module never writes ``rules_source.json``, it only serves it.
-The file itself ships baked into the package next to this module, resolved
+The file ships baked into the package next to this module, resolved
 relative to ``__file__`` (mirroring ``processors/classification/config.py``'s
-bundled-artifact convention) — no CLI, no caller-supplied path, no env var.
+bundled-artifact convention). ``RISK_RULES_SOURCE`` (``config.RULES_SOURCE``)
+points the reader at a different copy: on the cluster, the ``rules_source.json``
+key of the ``opa-policy`` ConfigMap mounted into the API pod, so the served
+catalog is the one OPA's policy was compiled from rather than the one the
+image was built with.
 
 ``rules_source.json`` is kept in the real policy-engine shape (nested
 ``rule_decision`` object per rule, ``rule_categories``) rather than PRD §6.5's
@@ -40,27 +44,35 @@ level is an enum *string* — ``schema/policy.schema.json``'s
 ``$defs/trustLevelValues`` defines eight names and no numeric scale to map
 them onto.
 
-The load is memoized for the process lifetime (FR-DAS-060's "refreshed when
-the policy bundle version changes" is met at the MVP bar the issue itself
-sets — "load-on-startup-plus-manual-reload is sufficient"): call
-:func:`reload` after the bundle file changes on disk. Live file-watch or
-bundle-version polling is a documented follow-up, not built here.
+The load is memoized per file identity (path, inode, mtime, size): a ConfigMap
+mount is updated in place by the kubelet, and the next read after such an
+update re-parses the file, so the served catalog follows the deployed one
+without a pod restart. :func:`reload` still drops the memo outright for
+callers that swap the path under the module (tests, :mod:`compile`).
 """
 
 from __future__ import annotations
 
-import functools
 import json
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from data_governance.risk import config
+
 # The baked-in rule catalog source, resolved relative to this module — same
 # convention as ``processors/classification/config.py``'s ``_CONFIG_DIR``.
 _POLICY_DATA_DIR = Path(__file__).parent / "_policy_data"
-_RULES_SOURCE = _POLICY_DATA_DIR / "rules_source.json"
+_PACKAGED_RULES_SOURCE = _POLICY_DATA_DIR / "rules_source.json"
+# The source actually served: ``RISK_RULES_SOURCE`` when set, else the
+# packaged copy. Tests swap this attribute to point at fixtures.
+_RULES_SOURCE = (
+    Path(config.RULES_SOURCE) if config.RULES_SOURCE else _PACKAGED_RULES_SOURCE
+)
 
 __all__ = [
+    "CatalogUnavailable",
     "load_rules_source",
     "bundle_version",
     "list_rules",
@@ -130,23 +142,61 @@ _RANKED_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-@functools.lru_cache(maxsize=1)
+class CatalogUnavailable(FileNotFoundError):
+    """No file at the served path. Raised rather than falling back to the
+    packaged copy: on a cluster this is the window between ``kubectl apply``
+    and ``deploy/create-opa-configmap.sh``, in which OPA has no policy
+    either, and the API answers 503 (``data_governance.api``) until the
+    ConfigMap exists."""
+
+
+# (path, inode, mtime_ns, size) of the file the memo was parsed from, and the
+# parsed envelope. One entry: the module serves one catalog at a time.
+_memo_key: tuple[str, int, int, int] | None = None
+_memo_value: dict[str, Any] | None = None
+
+
 def load_rules_source() -> dict[str, Any]:
-    """Load the raw ``rules_source.json`` payload, memoized for the process
-    lifetime. Returns the whole envelope (``policy_id``, ``version``,
-    ``status``, ``rules``, ...), not just the rule list."""
-    with _RULES_SOURCE.open(encoding="utf-8") as f:
-        return json.load(f)
+    """Load the raw ``rules_source.json`` payload. Returns the whole envelope
+    (``policy_id``, ``version``, ``status``, ``rules``, ...), not just the
+    rule list.
+
+    Memoized on the file's identity (path, inode, mtime, size): the file is
+    a few KB, so a ``stat`` per call is the whole cost of noticing that the
+    ConfigMap behind the path was updated in place (the kubelet writes a new
+    file and repoints a symlink, so inode and mtime both change). A missing
+    file raises :class:`CatalogUnavailable`, not a fallback to the packaged
+    copy — serving a catalog OPA does not enforce is the defect this path
+    exists to remove.
+    """
+    global _memo_key, _memo_value
+    path = _RULES_SOURCE
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        if config.RULES_SOURCE:
+            hint = (
+                "RISK_RULES_SOURCE points there; on a cluster the file is the "
+                "opa-policy ConfigMap, created by deploy/create-opa-configmap.sh"
+            )
+        else:
+            hint = "the packaged copy is missing from this installation"
+        raise CatalogUnavailable(f"rule catalog not found at {path}: {hint}") from None
+    key = (os.fspath(path), st.st_ino, st.st_mtime_ns, st.st_size)
+    if _memo_value is None or key != _memo_key:
+        with path.open(encoding="utf-8") as f:
+            _memo_value = json.load(f)
+        _memo_key = key
+    return _memo_value
 
 
 def reload() -> None:
-    """Clear the memoized load so the next call re-reads from disk.
-
-    The issue's stated MVP bar for "refreshed when the policy bundle version
-    changes" — call this after the bundle file is updated on disk. No
-    automatic file-watch or version-polling is implemented.
-    """
-    load_rules_source.cache_clear()
+    """Drop the memo so the next call re-reads from disk unconditionally,
+    whatever the file's stat says — for callers that swapped
+    ``_RULES_SOURCE`` or rewrote the file within the mtime resolution."""
+    global _memo_key, _memo_value
+    _memo_key = None
+    _memo_value = None
 
 
 def bundle_version() -> str:

@@ -125,7 +125,32 @@ def test_rules_list_returns_200(client):
 
 def test_rules_list_unfiltered_shape_has_items_and_next_cursor(client):
     body = client.get("/risk/rules").json()
-    assert set(body.keys()) == {"items", "next_cursor"}
+    assert set(body.keys()) == {"items", "next_cursor", "catalog_version"}
+
+
+def test_catalog_not_yet_deployed_is_503_with_the_error_triple(
+    client, monkeypatch, tmp_path
+):
+    """Between `kubectl apply` and `create-opa-configmap.sh` the mounted file
+    does not exist: every catalog route answers 503 with the FR-DAS-081
+    triple, never the packaged catalog and never a bare 500."""
+    monkeypatch.setattr(catalog, "_RULES_SOURCE", tmp_path / "rules_source.json")
+    catalog.reload()
+    for path in ("/risk/rules", "/risk/rules/categories", "/risk/rules/DG-001"):
+        resp = client.get(path)
+        assert resp.status_code == 503, path
+        body = resp.json()
+        assert set(body.keys()) == {"error", "detail", "timestamp"}
+        assert body["error"] == "catalog unavailable"
+        assert "rules_source.json" in body["detail"]
+
+
+def test_rules_list_carries_the_served_catalog_version(client, varied_catalog):
+    """`catalog_version` is the served file's `version`, so a reader can
+    compare it with the deployed ConfigMap's."""
+    body = client.get("/risk/rules").json()
+    assert body["catalog_version"] == catalog.bundle_version()
+    assert body["catalog_version"] == catalog.load_rules_source()["version"]
 
 
 def test_rules_list_every_item_is_six_five_shaped(client):
@@ -358,7 +383,11 @@ def test_cursor_past_end_returns_empty_items_not_error(client, paging_catalog):
     token = http.encode_cursor(len(body["items"]), "rule_id_asc")
     resp = client.get(f"/risk/rules?limit=100&cursor={token}")
     assert resp.status_code == 200
-    assert resp.json() == {"items": [], "next_cursor": None}
+    assert resp.json() == {
+        "items": [],
+        "next_cursor": None,
+        "catalog_version": catalog.bundle_version(),
+    }
     assert last_id  # sanity: fixture is non-empty
 
 

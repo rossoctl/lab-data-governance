@@ -128,6 +128,14 @@ To ship a catalog change to a running cluster:
 kubectl -n data-governance rollout restart deployment/opa
 ```
 
+The API pod mounts the same ConfigMap and serves its `rules_source.json`
+(`RISK_RULES_SOURCE`, see `deploy/k8s/40-ui.yaml`), so `GET /risk/rules`
+lists the deployed catalog without an image rebuild: the API picks the new
+file up within the kubelet sync period (about a minute), OPA after the
+restart above. The list response's `catalog_version` is the served file's
+`version`. Before the ConfigMap exists, `/risk/rules*` answers 503. With the
+variable unset (tests, the CLI) the packaged copy is served.
+
 This compiles the catalog, creates/updates the `opa-policy` ConfigMap (the
 compiled Rego plus the raw catalog JSON), and OPA reloads it from its mounted
 `/policies` volume. OPA itself runs a pinned stock image

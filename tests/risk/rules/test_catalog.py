@@ -9,18 +9,21 @@ bundled JSON file, so none of these tests take a DB fixture.
 Fixture-backed tests point the module's private ``_RULES_SOURCE`` path
 constant at a committed file under ``tests/risk/rules/fixtures/`` via
 ``monkeypatch.setattr`` — the same substitution idiom ``tests/api/conftest.py``
-uses for ``_UI_DIR`` (see PRD implementation-notes-v3 §6.1) — rather than a
-new env var or a caller-supplied path parameter (§8.4: read-only, no
-caller-supplied path).
+uses for ``_UI_DIR`` (see PRD implementation-notes-v3 §6.1). The
+``RISK_RULES_SOURCE`` setting that selects the file on a cluster is covered
+by its own section below.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from data_governance.risk import config
 from data_governance.risk.rules import catalog
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -160,6 +163,116 @@ def test_reload_picks_up_a_changed_file(monkeypatch: pytest.MonkeyPatch):
     catalog.reload()
     minimal_rules = catalog.list_rules()
     assert [r["rule_id"] for r in minimal_rules] == ["FX-001", "FX-002"]
+
+
+# --- RISK_RULES_SOURCE: the file the module serves --------------------------
+
+
+@pytest.fixture
+def import_with_rules_source():
+    """Re-import ``config`` and ``catalog`` with ``RISK_RULES_SOURCE`` set (or
+    unset for ``None``), the way the API process sees it at startup; the
+    env var and both modules are restored afterwards."""
+    saved = os.environ.get("RISK_RULES_SOURCE")
+
+    def _import(value: str | None):
+        if value is None:
+            os.environ.pop("RISK_RULES_SOURCE", None)
+        else:
+            os.environ["RISK_RULES_SOURCE"] = value
+        importlib.reload(config)
+        importlib.reload(catalog)
+
+    yield _import
+    _import(saved)
+
+
+def test_unset_setting_serves_the_packaged_file(import_with_rules_source):
+    import_with_rules_source(None)
+    assert catalog._RULES_SOURCE == catalog._PACKAGED_RULES_SOURCE
+    assert catalog.bundle_version() == "1.0.0"
+
+
+def test_setting_selects_the_served_file(import_with_rules_source):
+    import_with_rules_source(str(_FIXTURES / "catalog_minimal.json"))
+    assert catalog._RULES_SOURCE == _FIXTURES / "catalog_minimal.json"
+    assert [r["rule_id"] for r in catalog.list_rules()] == ["FX-001", "FX-002"]
+
+
+def test_missing_file_is_an_error_not_a_fallback(monkeypatch, tmp_path):
+    """A configured path with no file behind it (ConfigMap not created yet)
+    must not quietly serve the packaged copy — that is the drift this
+    setting exists to remove."""
+    monkeypatch.setattr(catalog, "_RULES_SOURCE", tmp_path / "absent.json")
+    catalog.reload()
+    with pytest.raises(catalog.CatalogUnavailable, match="absent.json"):
+        catalog.load_rules_source()
+
+
+def _write_catalog(path: Path, version: str, rule_ids: list[str]) -> None:
+    rules = [
+        {
+            "rule_id": rid,
+            "rule_name": rid,
+            "rule_categories": ["t"],
+            "rule_decision": {"risk_level": "low", "enforcement_type": "allow"},
+        }
+        for rid in rule_ids
+    ]
+    path.write_text(json.dumps({"policy_id": "p", "version": version, "rules": rules}))
+
+
+def test_rewritten_file_is_served_without_reload(monkeypatch, tmp_path):
+    """A file changed under the module is re-read on the next call, no
+    ``reload()`` and no restart. The rewrite keeps the size (same inode,
+    same length) so only the mtime can tell the two apart."""
+    path = tmp_path / "rules_source.json"
+    _write_catalog(path, "1", ["A-1"])
+    monkeypatch.setattr(catalog, "_RULES_SOURCE", path)
+    catalog.reload()
+    assert catalog.bundle_version() == "1"
+    size = path.stat().st_size
+
+    _write_catalog(path, "2", ["A-2"])
+    assert path.stat().st_size == size
+    # Force a distinct mtime even on a coarse filesystem clock.
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 1_000_000))
+    assert catalog.bundle_version() == "2"
+    assert [r["rule_id"] for r in catalog.list_rules()] == ["A-2"]
+
+
+def test_unchanged_file_is_not_reparsed(monkeypatch, tmp_path):
+    path = tmp_path / "rules_source.json"
+    _write_catalog(path, "1", ["A-1"])
+    monkeypatch.setattr(catalog, "_RULES_SOURCE", path)
+    catalog.reload()
+    first = catalog.load_rules_source()
+    assert catalog.load_rules_source() is first
+
+
+def test_configmap_style_symlink_swap_is_served(monkeypatch, tmp_path):
+    """The kubelet updates a ConfigMap volume by writing a new timestamped
+    directory and repointing the ``..data`` symlink; the served path is a
+    symlink through it. ``stat`` follows symlinks, so the swap is seen."""
+    old_dir = tmp_path / "..2026_a"
+    new_dir = tmp_path / "..2026_b"
+    old_dir.mkdir()
+    new_dir.mkdir()
+    _write_catalog(old_dir / "rules_source.json", "old", ["A-1"])
+    _write_catalog(new_dir / "rules_source.json", "new", ["B-1"])
+    data = tmp_path / "..data"
+    data.symlink_to(old_dir.name)
+    served = tmp_path / "rules_source.json"
+    served.symlink_to(Path("..data") / "rules_source.json")
+    monkeypatch.setattr(catalog, "_RULES_SOURCE", served)
+    catalog.reload()
+    assert catalog.bundle_version() == "old"
+
+    tmp_link = tmp_path / "..data_tmp"
+    tmp_link.symlink_to(new_dir.name)
+    os.replace(tmp_link, data)  # atomic repoint, as the kubelet does
+    assert catalog.bundle_version() == "new"
+    assert [r["rule_id"] for r in catalog.list_rules()] == ["B-1"]
 
 
 # --- corner cases -------------------------------------------------------------
