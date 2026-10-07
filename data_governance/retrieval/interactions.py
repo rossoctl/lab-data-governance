@@ -15,8 +15,8 @@ All flow-read *logic* lives here, behind the interface — not in the REST layer
   request.occurred_at``), **null when the response leg is absent** — the
   "response in flight" signal, never stored;
 - the aggregated ``any_error`` roll-up over the legs;
-- chronological ordering by the request leg's ``occurred_at`` (the parent row
-  carries no ``started_at``);
+- trace-local causal ordering from parent/request relationships and leg occurrence
+  times, exposed as ``leg_order`` alongside the interaction rows;
 - the not-yet-migrated **empty typed result**: before the interactions
   migration has run these return empty, never raise, so a fresh DB serves an
   empty flow rather than a 500.
@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from data_governance import db
+from data_governance.interaction_order import LegOrderEvent, LegOrderKey, order_legs
 from data_governance.sidecar_facts import classify_attrs
 
 __all__ = [
@@ -54,6 +55,7 @@ __all__ = [
     "InteractionKindsView",
     "InteractionLegView",
     "InteractionView",
+    "LegOrderKey",
     "SpanEvidenceView",
     "get_entities",
     "get_entity_spans",
@@ -78,9 +80,9 @@ _FEED_MAX_LIMIT = 1000
 class InteractionLegView:
     """One request/response leg of an **Interaction** (ADR-0025).
 
-    ``occurred_at`` is an ISO-8601 string (the request leg's is the call-start
-    time, the response leg's the completion time); ``None`` if the leg's
-    timestamp is absent. ``payload_hash`` references the leg's **Payload**
+    ``occurred_at`` is an ISO-8601 string (a call-start/completion time, or the
+    LLM message boundary for an inferred tool); ``None`` if the leg's timestamp
+    is absent. ``payload_hash`` references the leg's **Payload**
     (request vs response body), ``None`` when the leg carries no body.
     ``error`` is the leg's tri-state error (``True`` / ``False`` / ``None``).
     """
@@ -238,6 +240,7 @@ class EntitySpanEvidenceView:
 @dataclass(frozen=True)
 class GetInteractionsResult:
     interactions: list[InteractionView] = field(default_factory=list)
+    leg_order: list[LegOrderKey] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -292,14 +295,6 @@ def _legs_any_error(legs: list[InteractionLegView]) -> bool | None:
         return True
     if any(e is False for e in errs):
         return False
-    return None
-
-
-def _request_occurred_at(legs: list[InteractionLegView]) -> str | None:
-    """The request leg's ``occurred_at`` (ISO string), or None."""
-    for leg in legs:
-        if leg.leg_type == "request":
-            return leg.occurred_at
     return None
 
 
@@ -566,7 +561,7 @@ def _assemble_interactions(
 def get_interactions(trace_id: str) -> GetInteractionsResult:
     """Read the derived **Interaction**s for a trace — parent identity rows with
     their nested legs, read-time **Duration** / ``any_error``, and span/anchor
-    counts — ordered by the request leg's ``occurred_at``.
+    counts — ordered by each request's position in the trace-local causal order.
 
     Empty when the interactions migration has not run. Trace-scoped and
     eventually consistent (reflects what ``P-interactions`` has materialised).
@@ -580,10 +575,31 @@ def get_interactions(trace_id: str) -> GetInteractionsResult:
             (trace_id,),
         )
         views = _assemble_interactions(tx, identity_rows)
-        # Order by the request leg's occurrence so the flow list stays
-        # chronological (the parent no longer carries started_at).
-        views.sort(key=lambda ix: _request_occurred_at(ix.legs) or "")
-        return GetInteractionsResult(interactions=views)
+        leg_order = order_legs(
+            LegOrderEvent(
+                interaction_id=ix.id,
+                leg_type=leg.leg_type,
+                parent_interaction_id=ix.parent_interaction_id,
+                occurred_at=leg.occurred_at,
+                seq=leg.seq,
+            )
+            for ix in views
+            for leg in ix.legs
+        )
+        position = {key: index for index, key in enumerate(leg_order)}
+        views.sort(
+            key=lambda ix: (
+                position.get(
+                    LegOrderKey(ix.id, "request"),
+                    min(
+                        (position[LegOrderKey(ix.id, leg.leg_type)] for leg in ix.legs),
+                        default=len(position),
+                    ),
+                ),
+                ix.id,
+            )
+        )
+        return GetInteractionsResult(interactions=views, leg_order=leg_order)
 
 
 def get_interactions_feed(

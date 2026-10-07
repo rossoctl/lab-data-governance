@@ -11,7 +11,7 @@
 /**
  * How the flow view's Interactions section presents this trace's interactions:
  * the default parent/child `tree` (depth-indented interactions), `flat` (one row
- * per request/response leg, ordered by the trace-wide leg `seq`), `diagram` (a
+ * per request/response leg, ordered by the backend's trace-local leg order), `diagram` (a
  * UML-style sequence diagram of that same flat leg sequence — lifelines across
  * the top, one arrow per leg down the page), `graph` (the Execution Flow — the
  * same interactions drawn as a directed who-called-whom graph), or `lineage` (that
@@ -125,6 +125,7 @@ export interface InteractionLeg {
   occurred_at: string | null;
   payload_hash: string | null;
   error: boolean | null;
+  /** Durable ingestion cursor, which need not equal this leg's causal step. */
   seq: number;
 }
 
@@ -204,6 +205,18 @@ export interface Interaction {
   session_id?: string | null;
 }
 
+/** A leg's position in the backend's causal order for its trace. */
+export interface LegOrderKey {
+  interaction_id: string;
+  leg_type: 'request' | 'response';
+}
+
+/** The trace-scoped interactions resource. */
+export interface TraceInteractions {
+  interactions: Interaction[];
+  leg_order: LegOrderKey[];
+}
+
 /**
  * One-line rendering of the HTTP event for the detail panel — `POST → 200 (ok)`
  * — skipping whichever of the three facts is absent. Null when there is nothing
@@ -239,8 +252,8 @@ export function legOfType(
 
 /**
  * The interaction's start = its request leg's `occurred_at` (ADR-0025). The
- * flow table orders and displays on this, exactly as it used to read
- * `started_at` off the interaction row.
+ * flow table displays this time; row order comes from the backend's causal
+ * leg order.
  */
 export function requestOccurredAt(ix: Pick<Interaction, 'legs'>): string | null {
   return legOfType(ix, 'request')?.occurred_at ?? null;
@@ -270,18 +283,41 @@ export function legLineageKey(
 export interface FlatRow {
   ix: Interaction;
   leg: InteractionLeg;
+  /** One-based position in the trace's causal order. */
+  step: number;
 }
 
 /**
  * The flat view's rows: one entry per leg across all interactions, ordered by
- * the trace-wide leg `seq`, ignoring the parent/child tree. Each carries its
+ * the backend's trace-local causal order, ignoring the parent/child tree. Each carries its
  * parent interaction so a click still opens that interaction's detail panel
  * (legs have no selection of their own).
  */
-export function flatLegRows(interactions: readonly Interaction[]): FlatRow[] {
-  return interactions
-    .flatMap((ix) => (ix.legs ?? []).map((leg) => ({ ix, leg })))
-    .sort((a, b) => a.leg.seq - b.leg.seq);
+export function flatLegRows(
+  interactions: readonly Interaction[],
+  legOrder: readonly LegOrderKey[] = [],
+): FlatRow[] {
+  const rows = interactions.flatMap((ix) => (ix.legs ?? []).map((leg) => ({ ix, leg })));
+  const byKey = new Map(rows.map((row) => [legLineageKey(row.ix.id, row.leg.leg_type), row]));
+  const seen = new Set<string>();
+  const ordered: FlatRow[] = [];
+  legOrder.forEach((key, index) => {
+    const id = legLineageKey(key.interaction_id, key.leg_type);
+    const row = byKey.get(id);
+    if (row && !seen.has(id)) {
+      ordered.push({ ...row, step: index + 1 });
+      seen.add(id);
+    }
+  });
+  // Older servers may omit leg_order; append any leg absent from the supplied
+  // order deterministically so partial responses never hide a visible leg.
+  const unmatched = rows
+    .filter((row) => !seen.has(legLineageKey(row.ix.id, row.leg.leg_type)))
+    .sort((a, b) => a.leg.seq - b.leg.seq || a.ix.id.localeCompare(b.ix.id)
+      || a.leg.leg_type.localeCompare(b.leg.leg_type));
+  return ordered.concat(unmatched.map((row, index) => ({
+    ...row, step: legOrder.length + index + 1,
+  })));
 }
 
 /**
@@ -320,7 +356,7 @@ export function legDirection(
  * per row of `flatLegRows`.
  *
  * A request leg and its response leg share the same `ix.id` (that is the pairing
- * key), but they sort by `seq` so they are frequently NOT adjacent — other
+ * key), but they sort by causal step so they are frequently NOT adjacent — other
  * interactions' legs interleave between them. We map `ix.id` → the row indices of
  * its request and response, then derive each interaction's [top, bottom] index
  * span. A row then knows, for every interaction whose span covers it, whether it
@@ -336,7 +372,7 @@ export function flatConnectorRoles(
   rows.forEach(({ ix }, i) => {
     const s = spans.get(ix.id);
     if (!s) spans.set(ix.id, { top: i, bottom: i });
-    else s.bottom = i; // later index (legs already sorted by seq)
+    else s.bottom = i; // later index (legs already sorted by causal step)
   });
   // Per row, the drawing role for each interaction whose span covers it.
   return rows.map((_row, i) =>
@@ -374,9 +410,8 @@ export function toolSubtype(entity: Pick<Entity, 'kind' | 'natural_key'> | null)
 /**
  * Compute each interaction's tree depth by following `parent_interaction_id`
  * up through the full set, memoised and guarded against cycles / missing
- * parents. Rows arrive ordered by `started_at`, which is NOT topological (a
- * parent can sort after its child), so a single forward pass would misplace
- * such a child at depth 0.
+ * parents. This is independent of input row order so older or partial reads
+ * still place a child at the correct depth.
  */
 export function computeInteractionDepths(
   interactions: readonly Interaction[],

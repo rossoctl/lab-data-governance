@@ -151,7 +151,12 @@ in case payload(s) are missing - truncates the trace at the first absent payload
 Given these basic lineage operations we can map interactions In a trace to those operations 
 This is necessary to compute the lineage Of the payloads in the trace
 
-consider the following examples (arrows identify interactions and payloads, numbers represent the interaction sequence order and nodes represent entities)
+The numbered arrows below represent causal execution positions of interaction legs,
+not database `seq` values. A parent's request precedes its child's request, and a
+request precedes its own response. Otherwise ready legs follow occurrence time;
+`seq` is only a deterministic tie-breaker and ingestion cursor (ADR-0034).
+
+consider the following examples (arrows identify interactions and payloads, numbers represent their causal leg order and nodes represent entities)
 
 1.	Assume The following interaction: 
 		user -1-> LLM
@@ -177,7 +182,7 @@ consider the following examples (arrows identify interactions and payloads, numb
 	*Assume agent has transient/session memory, tools and LLM do not.*
 
 in summary:
-lineage[i] = for each interaction i in seq order:
+lineage[i] = for each interaction leg i in causal order:
   if input payload has no lineage:    					
   	 init_lineage(entity) 	// E.g. the caller entity is outside the trace / a source.
   else:
@@ -219,7 +224,7 @@ Current scope Per-trace:
 Derived from the trace *and* metadata:
 - lineage fanout(entity, source) — interactions + entities downstream (descendants)
 - lineage fanin(entity, source)  — interactions + entities upstream (ancestors)
-Note the fanout and the fanin have lineage semantics - If there is no lineage, from the source, through an entity that entity is the end of fanin or fanout. In other words, the traversal accounts for the entity, the interaction sequence number and lineage. Specifically, the traversal is on entities, the interaction sequence number governs the edges to be considered and their order (fanout - larger numbers, fanin - smaller numbers). Lastly, we should traverse an edge towards the next/previous entity based iff the source is part of the edge/interaction metadata sources.
+Note the fanout and the fanin have lineage semantics - If there is no lineage, from the source, through an entity that entity is the end of fanin or fanout. The traversal accounts for the entity, the leg's causal position and lineage. Specifically, the traversal is on entities, and causal position governs which edges may be considered and their order (fanout - later positions, fanin - earlier positions). Traverse an edge towards the next/previous entity iff the source is part of that leg's metadata sources. Database `seq` remains an ingestion cursor and does not determine hop eligibility.
 
 
 - list sources      — union of data sources, scoped to trace,

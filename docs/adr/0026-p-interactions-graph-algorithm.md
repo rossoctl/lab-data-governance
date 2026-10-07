@@ -352,6 +352,10 @@ input attributes — see the ordering note and the as-implemented note below).
 >   `SpanFacts.input_tool_calls`) sides are read; input-side calls are a prior
 >   turn's tool use replayed into the request and are ordered *ahead of* the LLM
 >   interaction (see ordering below).
+>   In the production leg projection, an inferred-only tool call's occurrence
+>   time is the LLM output boundary (or the input boundary for an input-only
+>   replay), since no tool execution span was observed. A tool resolved to an
+>   observed peer retains the observed span's timing (ADR-0034).
 > - **Case 4** (inferred agent from bare leaf LLM spans) is **implemented** in
 >   `infer_agent_from_bare_leaf_llms`, as the spec writes it: when a transport
 >   (Teal) parent's direct Blue children are all LLM spans and no Blue ancestor

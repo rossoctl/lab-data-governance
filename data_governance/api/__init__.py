@@ -383,9 +383,10 @@ async def _interactions_handler(request: Request) -> Response:
     Thin adapter over :func:`retrieval.get_interactions`: the derived
     interactions the processor materialised for a trace (parent identity row +
     nested request/response legs, computed ``duration_seconds`` / ``any_error``,
-    span/anchor counts — ADR-0025), ordered by request-leg occurrence. All that
-    logic lives behind the **Interaction retrieval** seam; the handler only
-    parses the id and encodes the result.
+    span/anchor counts — ADR-0025), ordered by request-leg causal position.
+    ``leg_order`` gives the trace-wide request/response order (ADR-0034).
+    All that logic lives behind the **Interaction retrieval** seam; the handler
+    only parses the id and encodes the result.
     """
     trace_id = request.path_params.get("tid")
     if not trace_id:
@@ -395,7 +396,10 @@ async def _interactions_handler(request: Request) -> Response:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"error": str(exc)}, status_code=500)
     return _json_ok(
-        {"interactions": [dataclasses.asdict(ix) for ix in result.interactions]}
+        {
+            "interactions": [dataclasses.asdict(ix) for ix in result.interactions],
+            "leg_order": [dataclasses.asdict(key) for key in result.leg_order],
+        }
     )
 
 
@@ -513,7 +517,8 @@ async def _data_lineage_handler(request: Request) -> Response:
     D6, issue #120), served on the envelope beside ``legs`` because coverage is a
     whole-trace fact — and because a truncated leg has no lineage object left to
     carry it. ``"partial"`` truncates the *lineage*, not ``legs``: every leg is
-    still listed, with ``lineage: null`` from ``stopped_at_seq`` on. ``null``
+    still listed, with ``lineage: null`` at the cutoff leg identified by
+    ``stopped_at_seq`` and after it in causal order. ``null``
     status is **unknown** and is encoded as ``null`` rather than defaulted to
     ``"complete"`` (ADR-0028 D6 "Reading the status").
     """
@@ -554,7 +559,7 @@ async def _lineage_graph_handler(request: Request) -> Response:
       open design question.
 
     Unlike ``data-lineage`` this read *derives*: a hop is a leg the trace has whose
-    stored ``data_sources`` **contains this source** and whose ``seq`` is on the correct
+    stored ``data_sources`` **contains this source** and whose causal position is on the correct
     side of the arrival, so the walk ends where this source's provenance ends. It still
     runs no matcher (D7) — the source test is a set-membership check against the
     persisted array, never a re-derivation — and never leaves the trace (D14).

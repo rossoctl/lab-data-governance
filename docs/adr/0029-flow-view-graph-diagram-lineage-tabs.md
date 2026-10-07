@@ -35,10 +35,10 @@ ADR-0020 rejected a view with two specific properties. Neither holds here.
 - **"Redundant with the Interaction flow view."** The deleted graph drew entities as
   nodes and *interactions* as edges — the same caller→callee relation the flow tables
   already tabulate, restated as a canvas. The Execution Flow graph draws **legs** as
-  edges, tagged with `seq`. That is not the tables' relation: ADR-0025 split each
+  edges, tagged with their causal step (ADR-0034). That is not the tables' relation: ADR-0025 split each
   interaction into request and response legs running in *opposite* directions, so an
   agent's data mostly arrives as the responses to its own calls. The per-leg,
-  seq-ordered picture is what makes a data path legible, and it is precisely what a
+  causally ordered picture is what makes a data path legible, and it is precisely what a
   caller→callee table cannot show. The `lineage` tab then asks one further question of
   that same node/edge set — "where did this entity's data come from?" — which has no
   tabular equivalent at all.
@@ -156,7 +156,7 @@ migration path.
 - **A jsdom `getBBox` stub returns.** ADR-0020 removed a `ResizeObserver` polyfill
   that existed solely so the graph could mount; `ui/src/test/setup.ts` now stubs
   `SVGElement.prototype.getBBox`, which jsdom does not implement at all, because
-  PatternFly measures node labels and the per-edge `seq` tag during the commit phase
+  PatternFly measures node labels and the per-edge step tag during the commit phase
   where a throw unmounts the whole tree. The stub returns zeros, which PF reads as
   "not measured yet" and skips, so no test can mistake them for real geometry.
 - **All graph geometry is therefore unasserted.** jsdom lays out no SVG, so column

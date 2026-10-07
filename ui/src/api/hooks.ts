@@ -21,7 +21,7 @@ import type {
   SpanEvidence,
   Payload,
   Entity,
-  Interaction,
+  TraceInteractions,
   DataLineageLeg,
   LineageStatus,
   TraceDataLineage,
@@ -114,13 +114,13 @@ export function useSpanChildren(
 }
 
 /** Derived interactions for a trace. `GET /api/traces/{tid}/interactions`. */
-export function useInteractions(traceId: string): UseQueryResult<Interaction[]> {
+export function useInteractions(traceId: string): UseQueryResult<TraceInteractions> {
   return useQuery({
     queryKey: ['interactions', traceId],
     queryFn: () =>
-      fetchJson<{ interactions: Interaction[] }>(
+      fetchJson<TraceInteractions>(
         `/traces/${traceId}/interactions`,
-      ).then((r) => r.interactions),
+      ).then((r) => ({ interactions: r.interactions, leg_order: r.leg_order ?? [] })),
   });
 }
 

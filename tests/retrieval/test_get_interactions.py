@@ -191,6 +191,39 @@ def test_interactions_ordered_by_request_occurrence(seeded: str, configured_db: 
     assert ids == ["ix-0", _IX_ID]
 
 
+def test_trace_order_keeps_a_late_parent_before_its_child(configured_db: str) -> None:
+    """Arrival and service clocks can both put a child ahead of its cause."""
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "INSERT INTO interactions (id, trace_id, parent_interaction_id, "
+            "caller_entity_id, callee_entity_id, summary) "
+            "VALUES ('parent', %s, NULL, 'client', 'agent', 'client call'), "
+            "('child', %s, 'parent', 'agent', 'tool', 'tool call')",
+            (_TID, _TID),
+        )
+        for interaction_id, leg_type, occurred_at in (
+            ("child", "request", "2026-01-01T00:00:01Z"),
+            ("parent", "response", "2026-01-01T00:00:12Z"),
+            ("parent", "request", "2026-01-01T00:00:10Z"),
+            ("child", "response", "2026-01-01T00:00:20Z"),
+        ):
+            conn.execute(
+                "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at) "
+                "VALUES (%s, %s, %s)",
+                (interaction_id, leg_type, occurred_at),
+            )
+        conn.commit()
+
+    result = retrieval.get_interactions(_TID)
+    assert [ix.id for ix in result.interactions] == ["parent", "child"]
+    assert [(leg.interaction_id, leg.leg_type) for leg in result.leg_order] == [
+        ("parent", "request"),
+        ("child", "request"),
+        ("parent", "response"),
+        ("child", "response"),
+    ]
+
+
 def test_entities_scoped_to_trace(seeded: str) -> None:
     """Entities are cross-trace stable (ADR-0013): scoped via entity_spans."""
     (ent,) = retrieval.get_entities(seeded).entities

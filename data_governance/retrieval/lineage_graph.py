@@ -17,11 +17,11 @@ being quietly weakened by a walk sharing its file.
 
 **THE EDGE RULE.** This is the whole of the design, and every clause is load-bearing::
 
-    Arriving at entity A at sequence position `s`, a hop A -> B is followed iff:
+    Arriving at entity A at causal position `s`, a hop A -> B is followed iff:
       1. the trace has an Interaction leg whose per-leg direction runs A -> B;
       2. that leg has a derived lineage_metadata row;
       3. the seeded `source` is a MEMBER of that row's stored `data_sources`; and
-      4. the leg's `seq` is strictly later than `s` (fanout) / earlier (fanin).
+      4. the leg's causal position is later than `s` (fanout) / earlier (fanin).
 
 - **The trace supplies the candidate edges; the metadata supplies whether lineage
   actually flowed along them** (D14's wording, literally). Neither table can answer
@@ -38,12 +38,11 @@ being quietly weakened by a walk sharing its file.
   against the previously-visited entity. A leg whose ``data_sources`` does not contain
   it is a leg this source's content demonstrably did not travel on, so the walk must
   not cross it even though some *other* source's content did.
-- **Clause 4 is the sequence scoping.** Data cannot flow backwards in time, so an
-  entity's downstream is what happened *after* the content arrived. ``seq`` is the
-  per-leg execution cursor (ADR-0025 puts it on the leg; the parent ``interactions``
-  row has none), and it both **gates** which edges are eligible and **orders** them —
-  the spec: "the interaction sequence number governs the edges to be considered and
-  their order (fanout - larger numbers, fanin - smaller numbers)".
+- **Clause 4 is causal scoping.** Data cannot flow backwards in the trace's derived
+  leg order. Parent-request and own-request precedence override cross-service
+  clock disagreement, then occurrence time orders ready legs (ADR-0034). The
+  database ``seq`` remains an ingestion cursor and is returned as such; it cannot
+  gate a lineage hop when a late parent has a larger ``seq`` than its child.
 - **Per-leg direction, never the interaction's caller->callee.** A response leg
   travels callee -> caller. This mirrors ``traversal._producer_id`` /
   ``_consumer_id`` and the UI's ``legDirection`` (``ui/src/lib/flow.ts``). Keying on
@@ -71,7 +70,7 @@ Those two figures are a **measurement against that one live trace**, not a regre
 guard: they are reproducible by hand but deliberately not asserted anywhere, because a
 test pinning them would be pinning the demo data rather than this module's rule. What the
 suites do pin is the *shape* of the same claim on small synthetic fixtures — fan-in and
-fan-out differing on a symmetric edge set, and an entity whose legs are all seq-earlier
+fan-out differing on a symmetric edge set, and an entity whose legs are all causally earlier
 being absent from a fanout. Do not read the numbers here as covered by a test.
 
 **No matcher runs here** (ADR-0028 D7). These reads re-walk structure and read
@@ -114,7 +113,7 @@ sends a caller back to poll forever.
 
 **Accepted degeneracy, already recorded in D14.** Under the trivial ``simple_match``
 every leg gets a derived row *and* inherits every upstream source, so clause 3 prunes
-little and ``fanout`` approaches the whole seq-forward reachable call graph. These
+little and ``fanout`` approaches the whole causally forward reachable call graph. These
 reads inherit matcher quality exactly as the triple does — though note clause 4 prunes
 regardless of matcher quality, because it is a fact about the trace's own ordering
 rather than about provenance. That is why ``pending_frontier`` and ``truncated`` are
@@ -128,6 +127,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from data_governance import db
+from data_governance.interaction_order import LegOrderEvent, order_legs
 from data_governance.processors.data_lineage.memory import TARGET_KINDS
 
 from .lineage import _lineage_tables_exist, _trace_status
@@ -202,7 +202,7 @@ class LineageGraphEntityView:
     """One **Entity** the walk reached, with how far away it is.
 
     ``hops`` is the *fewest* hops from the seed **along a path that respects the edge
-    rule** — every leg on it carries the source, and its seqs run monotonically away
+    rule** — every leg on it carries the source, and its causal positions advance
     from the seed. That qualifier is the whole subtlety: a plain hop-BFS no longer
     yields it, because the shortest *structural* route may be closed to this source or
     run backwards in time while a longer route is open. :func:`_walk` therefore
@@ -210,8 +210,7 @@ class LineageGraphEntityView:
 
     It is a distance, not an ordering of the flow — two entities at the same depth were
     reached by different routes and the lineage algebra has no truthful interleaving to
-    offer (D10). ``seq`` on the reported legs is the only ordering the schema genuinely
-    supports.
+    offer (D10). The reported leg list uses the trace's derived causal order.
 
     The seed entity itself is **not** in this list (it is the question, not the
     answer). It can still legitimately appear if the trace's flow returns to it —
@@ -237,9 +236,8 @@ class LineageGraphLegView:
     ``to_entity_id`` are the **per-leg** direction (a response runs callee ->
     caller), which is the direction the walk actually followed.
 
-    ``seq`` is the leg's own cursor value, so a caller can order the route in
-    execution order — the one ordering the schema genuinely offers (ADR-0025: the
-    parent ``interactions`` row has no ``seq``).
+    ``seq`` is the leg's own ingestion cursor value. The route list itself is
+    ordered by the trace's causal leg positions (ADR-0034).
     """
 
     interaction_id: str
@@ -269,7 +267,7 @@ class GetLineageGraphResult:
     - ``"no-adjacent"`` — no leg is available to leave the seed on. This covers the
       trace having no leg touching the seed at all, and the case that clause 3 and 4
       added: every candidate leg is derived but none carries this source, or none is on
-      the right side of the seed's arrival ``seq``. Those are all *complete* answers —
+      the right side of the seed's arrival position. Those are all *complete* answers —
       lineage for this source genuinely does not flow onward from here — which is why
       they share a state with "nothing there" rather than getting a fourth value.
 
@@ -287,7 +285,7 @@ class GetLineageGraphResult:
 
     A leg that IS derived but whose ``data_sources`` lacks ``source`` is deliberately
     **not** on the frontier: that is a settled answer, not a pending one, and polling
-    for it would never terminate. Same for a leg on the wrong side of the seq boundary.
+    for it would never terminate. Same for a leg on the wrong side of the causal boundary.
 
     ``truncated`` says a walk bound was hit, so the answer is a prefix of the real
     reachable set. Like D6's ``partial`` it is a *warning*, not an error.
@@ -357,14 +355,14 @@ class GetLineageSummaryResult:
 class _Edge:
     """One directed, lineage-bearing hop, as the walk consumes it.
 
-    ``seq`` is no longer decoration. In the first shipped version it rode along here
-    and was used only to sort the reported legs; now it *gates* the hop (edge-rule
-    clause 4), which is the difference between a lineage answer and a call-graph one.
+    ``position`` is the shared trace-local causal rank and gates a hop. ``seq``
+    remains the leg's ingestion cursor and is returned as metadata only.
     """
 
     to_entity_id: str
     interaction_id: str
     leg_type: str
+    position: int
     seq: int
 
 
@@ -373,7 +371,7 @@ class _Edge:
 # whatsoever. Using +/-infinity rather than the seed's earliest/latest touching leg is
 # deliberate: picking a real leg would silently narrow the question to "downstream of
 # that particular arrival", and the caller asked about the entity, not about one leg of
-# it. `float` and not a large int so no real `seq` can ever equal it.
+# it. `float` and not a large int so no real position can equal it.
 #
 # The sign also makes the seed unbeatable under `_walk`'s `more_permissive`, which is
 # what it should be: no arrival can open more onward legs than "no constraint at all",
@@ -390,41 +388,37 @@ def _walk(
     max_hops: int = _MAX_HOPS,
     max_entities: int = _MAX_ENTITIES,
 ) -> tuple[dict[str, int], list[LineageGraphLegView], list[str], bool]:
-    """Sequence-aware breadth-first walk from *seed*, returning
+    """Causal-position-aware breadth-first walk from *seed*, returning
     ``(hops_by_entity, legs, pending_frontier, truncated)``.
 
     *derived* is the adjacency of hops that have a lineage row **carrying the seeded
     source** — clause 3 was applied when this map was built (:func:`_adjacency`), so
     every edge in here is already source-eligible and the walk only has to enforce the
-    seq rule. *undelivered* is ``entity -> [(far_entity, seq), ...]`` for legs that touch
+    causal-position rule. *undelivered* is ``entity -> [(far_entity, position), ...]`` for legs that touch
     an entity but carry no derived row **yet**; it is never followed, only *reported*,
-    which is what turns a silent dead end into ``pending_frontier``. It carries ``seq``
+    which is what turns a silent dead end into ``pending_frontier``. It carries position
     because clause 4 applies to it as well — see the loop below. A derived leg that
     simply lacks the source appears in *neither* map: that is a final "no", not a
     pending one.
 
-    **The seq rule (clause 4), and why it is strict.** Arriving at an entity at
-    position ``s``, ``fanout`` may only depart on legs with ``seq > s`` and ``fanin``
-    only on ``seq < s``. Strict, not ``>=``, and the corpus settles it rather than
-    taste: a request and its response are two *different* legs at two different seqs
-    (ADR-0025 splits them, and on trace ``e62610bec7e8c1f4372aacc392eb9be5`` the
-    ``search_destinations`` call is seq 2 request / seq 3 response), so a genuine
-    round trip never needs ``>=`` to be expressible. Two legs sharing a ``seq`` is
-    impossible — ``seq`` is a per-leg cursor drawn from a sequence — so ``>=`` could
-    only ever re-admit the leg the walk just arrived on, i.e. let data flow straight
-    back where it came from in zero time. That is a false hop, so strict it is.
+    **The causal-position rule (clause 4), and why it is strict.** Arriving at an
+    entity at position ``s``, ``fanout`` may only depart on legs with a position
+    greater than ``s`` and ``fanin`` on positions less than ``s``. The shared order
+    gives each leg a unique position and always places a request before its own
+    response. A non-strict comparison could re-admit the leg just crossed and
+    invent a zero-time return hop.
 
     **``visited: set[str]`` would now be UNSOUND, and this is the subtle part.** With
     clause 4 an entity can be legitimately re-entered at a *different* position, and a
-    different arrival opens edges the first one could not take: an agent reached at seq
-    30 may only leave on seq > 30, while the same agent reached at seq 10 may also leave
-    on seq 20. A plain "seen it, skip it" set keeps whichever arrival happened to be
+    different arrival opens edges the first one could not take: an agent reached at
+    position 30 may only leave on later legs, while arrival at position 10 can also
+    leave on a leg at position 20. A plain "seen it, skip it" set keeps whichever arrival happened to be
     dequeued first and silently drops every entity reachable only past the better one.
     This is the ordinary shape of the corpus, not a corner case: a coordinating agent is
     re-entered on every tool response it receives.
 
-    The replacement is ``best_arrival[entity]``, the most **permissive** arrival seq seen
-    — smaller for fanout, larger for fanin, since fanout departs on ``seq > arrival``.
+    The replacement is ``best_arrival[entity]``, the most **permissive** arrival position
+    seen — smaller for fanout, larger for fanin, since fanout departs on later positions.
     An entity is re-enqueued iff the new arrival **either** is strictly more permissive
     than the recorded one **or** reaches it at a strictly smaller depth. Two clauses,
     because permissiveness and depth are independent dominance axes:
@@ -467,7 +461,7 @@ def _walk(
     **Termination**, on a genuinely cyclic graph, and it does *not* rest on the visited
     bookkeeping. Both records improve **monotonically in one direction only**, which is
     what bounds the enqueues. ``best_arrival[entity]`` is only ever replaced by a strictly
-    more permissive value, drawn from the trace's **finite** set of leg seqs, so it can
+    more permissive value, drawn from the trace's **finite** set of leg positions, so it can
     improve at most ``|legs|`` times per entity. ``best_depth[entity]`` is only ever
     replaced by a strictly *smaller* non-negative integer, so it can improve at most
     ``max_hops`` times per entity. Every enqueue is the entity's first or strictly
@@ -478,31 +472,31 @@ def _walk(
 
     The deeper reason is clause 4 itself: ``agent -> tool -> agent`` — the ordinary shape
     of every tool call, and a two-node cycle — cannot loop forever because each traversal
-    must strictly **advance** ``seq``, and legs are finite. **The seq gate subsumes the
-    old cycle guard.** ``best_arrival`` is a pruning optimisation; the seq monotonicity is
+    must strictly **advance** causal position, and legs are finite. **The position
+    gate subsumes the old cycle guard.** ``best_arrival`` is a pruning optimisation; causal monotonicity is
     the termination argument. Worth stating because a future editor relaxing clause 4 to
     ``>=`` would remove the termination guarantee, not merely widen the answer.
 
     Bounds are reported, never silently applied: hitting either cap returns
     ``truncated=True`` so the caller can tell a bounded answer from a complete one.
     """
-    # `fanout` departs on larger seqs, `fanin` on smaller. One sign flip is the whole
-    # of the direction's effect on the seq rule, which keeps a single comparison rather
+    # `fanout` departs on larger positions, `fanin` on smaller. One sign flip is the whole
+    # of the direction's effect on the causal rule, which keeps a single comparison rather
     # than two mirrored branches that could drift apart.
     forward = direction == FANOUT
 
-    def eligible(edge_seq: int, arrival: float) -> bool:
+    def eligible(edge_position: int, arrival: float) -> bool:
         """Clause 4. Strict — see the docstring's request/response evidence."""
-        return edge_seq > arrival if forward else edge_seq < arrival
+        return edge_position > arrival if forward else edge_position < arrival
 
     def more_permissive(new: float, old: float) -> bool:
         """Does arriving at *new* leave strictly more onward legs open than *old*?
 
         **Note the sign, which is the opposite of the direction of travel** and is the
-        easiest thing here to get backwards. ``fanout`` departs on ``seq > arrival``, so
+        easiest thing here to get backwards. ``fanout`` departs on later positions, so
         an *earlier* arrival opens strictly more onward legs — arriving at an agent at
-        seq 10 can leave on seq 20, while arriving at the same agent at seq 30 cannot.
-        Mirror for ``fanin``, which departs on ``seq < arrival`` and so prefers a
+        position 10 can leave on position 20, while arriving at position 30 cannot.
+        Mirror for ``fanin``, which departs on earlier positions and so prefers a
         *later* arrival. Getting this backwards silently under-reports: the walk keeps
         the more restrictive arrival and drops every entity only reachable past the
         better one.
@@ -516,7 +510,7 @@ def _walk(
 
     # **Two separate maps, and conflating them is a correctness bug.**
     #
-    # `best_arrival[entity]` — the most PERMISSIVE arrival seq seen, which is the only
+    # `best_arrival[entity]` — the most PERMISSIVE arrival position seen, which is the only
     # thing that decides whether re-expanding is worthwhile: an arrival opens exactly
     # the legs on its permissive side, so a strictly more permissive one opens a
     # superset and anything else opens a subset. Depth is deliberately NOT part of this
@@ -556,14 +550,14 @@ def _walk(
         # reach a subset of what the dominating one will. That much is true — but
         # SUBSET-OF-ENTITIES IS NOT SUBSET-OF-DISTANCES. The more permissive arrival is
         # typically the *deeper* one (it reached here the long way round, which is
-        # exactly why it arrived earlier in seq), so every entity the weaker-but-
+        # exactly why it arrived earlier in causal order), so every entity the weaker-but-
         # shallower visit would have reached at `depth + 1` was instead rediscovered
         # from the dominator at its own greater depth. `hops` is a distance, so the
         # answer reported a longer route than one that demonstrably exists.
         #
         # Concretely, with `seed -(50)-> x`, `seed -(5)-> mid`, `mid -(10)-> x` and
-        # `x -(60)-> y`: candidates are walked in seq order, so `x` is first reached at
-        # depth 1 via seq 50, then `mid` offers it again at depth 2 via seq 10. Seq 10 is
+        # `x -(60)-> y`: candidates are walked in causal order, so `x` is first reached at
+        # depth 1 via position 50, then `mid` offers it again at position 10. Position 10 is
         # more permissive, so the depth-1 entry was skipped when it popped and `y` came
         # back at **3** hops — when `seed -> x -> y` is a valid 2-hop path, 60 > 50
         # satisfying clause 4 at every step.
@@ -587,34 +581,37 @@ def _walk(
         # derivation catches up. Record the entity on the far side; do not follow it.
         #
         # Clause 4 IS applied here, clause 3 is not, and the asymmetry is the point: a
-        # leg's `seq` lives on `interaction_legs` and is known whether or not the lineage
-        # row has landed, whereas its `data_sources` is exactly what has not landed. So
-        # seq-ineligibility is already a settled "never an edge" and belongs excluded,
+        # a leg's causal position is derived from interaction and leg facts, which are
+        # known whether or not the lineage row has landed. Its `data_sources` is
+        # what has not landed. Position-ineligibility is a settled "never an edge",
         # while source membership is genuinely unknown and the entity is honestly pending.
-        for pending_id, pending_seq in undelivered.get(current, ()):
-            if eligible(pending_seq, arrival):
+        for pending_id, pending_position in undelivered.get(current, ()):
+            if eligible(pending_position, arrival):
                 frontier.add(pending_id)
 
         if depth >= max_hops:
             # Reached the depth bound. Only cry truncation if there was actually
             # somewhere eligible left to go — a walk that merely ends on the boundary
             # is a complete answer.
-            if any(eligible(e.seq, arrival) for e in derived.get(current, ())):
+            if any(eligible(e.position, arrival) for e in derived.get(current, ())):
                 truncated = True
             continue
 
-        # Order the departures by seq, in the direction of travel: the spec makes the
-        # sequence number govern "the edges to be considered and *their order*". It does
-        # not change which entities are reachable, but it makes the walk deterministic
-        # and makes the earliest-in-time route the one that claims a given depth.
+        # Order departures by causal position in the direction of travel. This
+        # determines the prefix a bounded walk returns while keeping the walk
+        # deterministic.
         candidates = sorted(
-            (e for e in derived.get(current, ()) if eligible(e.seq, arrival)),
-            key=lambda e: (e.seq if forward else -e.seq, e.interaction_id, e.leg_type),
+            (e for e in derived.get(current, ()) if eligible(e.position, arrival)),
+            key=lambda e: (
+                e.position if forward else -e.position,
+                e.interaction_id,
+                e.leg_type,
+            ),
         )
         for edge in candidates:
             target = edge.to_entity_id
             new_depth = depth + 1
-            new_arrival = float(edge.seq)
+            new_arrival = float(edge.position)
             known_arrival = best_arrival.get(target)
             first_visit = known_arrival is None
 
@@ -705,24 +702,36 @@ def _walk(
     # exists, whatever else about it is undelivered.
     frontier -= set(hops)
     frontier.discard(seed)
-    legs.sort(key=lambda leg: (leg.seq, leg.interaction_id, leg.leg_type))
+    position_by_key = {
+        (edge.interaction_id, edge.leg_type): edge.position
+        for edges in derived.values()
+        for edge in edges
+    }
+    legs.sort(
+        key=lambda leg: (
+            position_by_key[(leg.interaction_id, leg.leg_type)],
+            leg.interaction_id,
+            leg.leg_type,
+        )
+    )
     return hops, legs, sorted(frontier), truncated
 
 
 def _adjacency(
     rows: list[tuple], direction: str, source: str
-) -> tuple[dict[str, list[_Edge]], dict[str, list[str]]]:
+) -> tuple[dict[str, list[_Edge]], dict[str, list[tuple[str, int]]]]:
     """Build the eligible and undelivered adjacency maps for *direction* / *source*.
 
     One pass over the trace's legs. Each row is
-    ``(interaction_id, leg_type, seq, caller_id, callee_id, data_sources)``, where
+    ``(interaction_id, leg_type, seq, caller_id, callee_id, data_sources,
+    parent_interaction_id, occurred_at)``, where
     ``data_sources`` is the stored ``TEXT[]`` or ``None`` for a leg with no derived
     lineage row yet (the ``LEFT JOIN``'s null probe).
 
     **Per-leg direction** (the module docstring's edge rule clause 1): a request runs
     caller -> callee, a response runs callee -> caller. ``fanout`` follows that
     direction as-is; ``fanin`` follows it reversed, which is the entire difference
-    between the two reads' *topology* — the seq rule in :func:`_walk` is what makes
+    between the two reads' *topology* — the causal-position rule in :func:`_walk` is what makes
     them differ in *content*.
 
     **Clause 3 is applied here**, and it is a plain ``in`` against the persisted array:
@@ -741,10 +750,10 @@ def _adjacency(
       this source's content did not travel on this leg, and no amount of waiting
       changes that. Putting it on the frontier would be a false promise.
 
-    *undelivered* carries the leg's ``seq`` alongside the far entity, so :func:`_walk`
-    can apply clause 4 to it too. That matters: a leg's ``seq`` lives on
-    ``interaction_legs`` and is therefore known **whether or not** the lineage row has
-    landed. An undelivered leg on the wrong side of the arrival could never become an
+    *undelivered* carries the leg's causal position alongside the far entity, so
+    :func:`_walk` can apply clause 4 to it too. That position is derivable from the
+    trace **whether or not** the lineage row has landed. An undelivered leg on the
+    wrong side of the arrival could never become an
     edge however the derivation turns out, so naming its entity as pending would promise
     growth that cannot happen — the same false promise as the source-absent case, and it
     would be missed by only filtering the derived map.
@@ -753,11 +762,33 @@ def _adjacency(
     window) contributes no edge in any map: there is no node to walk to or from,
     and inventing one would be a claim about an entity we cannot name.
     """
+    position_by_key = {
+        (key.interaction_id, key.leg_type): position
+        for position, key in enumerate(
+            order_legs(
+                LegOrderEvent(
+                    interaction_id=interaction_id,
+                    leg_type=leg_type,
+                    parent_interaction_id=parent_interaction_id,
+                    occurred_at=occurred_at,
+                    seq=int(seq),
+                )
+                for (
+                    interaction_id, leg_type, seq, _caller_id, _callee_id,
+                    _data_sources, parent_interaction_id, occurred_at,
+                ) in rows
+            )
+        )
+    }
     derived: dict[str, list[_Edge]] = {}
     undelivered: dict[str, list[tuple[str, int]]] = {}
-    for interaction_id, leg_type, seq, caller_id, callee_id, data_sources in rows:
+    for (
+        interaction_id, leg_type, seq, caller_id, callee_id, data_sources,
+        _parent_interaction_id, _occurred_at,
+    ) in rows:
         if caller_id is None or callee_id is None:
             continue
+        position = position_by_key[(interaction_id, leg_type)]
         if leg_type == "response":
             producer, consumer = callee_id, caller_id
         else:
@@ -767,13 +798,14 @@ def _adjacency(
             (producer, consumer) if direction == FANOUT else (consumer, producer)
         )
         if data_sources is None:
-            undelivered.setdefault(origin, []).append((destination, int(seq)))
+            undelivered.setdefault(origin, []).append((destination, position))
         elif source in data_sources:
             derived.setdefault(origin, []).append(
                 _Edge(
                     to_entity_id=destination,
                     interaction_id=interaction_id,
                     leg_type=leg_type,
+                    position=position,
                     seq=int(seq),
                 )
             )
@@ -794,7 +826,7 @@ def _fetch_legs(tx: db.Transaction, trace_id: str) -> list[tuple]:
     alternative and is the shape ``processors/interactions/state.py`` uses for span
     trees — but that walks a single self-referential FK, whereas an edge here is
     derived from two tables plus the per-leg direction rule, a source-membership test
-    and a seq comparison against the *arrival*. Encoding that into a recursive join
+    and a causal-position comparison against the *arrival*. Encoding that into a recursive join
     condition would bury the edge rule in SQL and put the pending-frontier logic out of
     reach; a trace is bounded, and :func:`.interactions.get_interactions` already scans
     one three times.
@@ -833,14 +865,13 @@ def _fetch_legs(tx: db.Transaction, trace_id: str) -> list[tuple]:
     return tx.fetch_all(
         "SELECT l.interaction_id::text, l.leg_type::text, l.seq, "
         "       i.caller_entity_id::text, i.callee_entity_id::text, "
-        "       m.data_sources "
+        "       m.data_sources, i.parent_interaction_id::text, l.occurred_at "
         "FROM interaction_legs l "
         "JOIN interactions i ON i.id = l.interaction_id "
         "LEFT JOIN lineage_metadata m "
         "  ON m.interaction_id = l.interaction_id "
         " AND m.leg_type = l.leg_type "
-        "WHERE i.trace_id = %s "
-        "ORDER BY l.seq ASC",
+        "WHERE i.trace_id = %s",
         (trace_id,),
     )
 
@@ -882,7 +913,7 @@ def get_lineage_graph(
 
     Follows the module's edge rule: a hop exists where the trace has a leg running
     that way, that leg has a derived ``lineage_metadata`` row, *this source is in that
-    row's* ``data_sources``, and the leg's ``seq`` is on the correct side of the
+    row's* ``data_sources``, and the leg's causal position is on the correct side of the
     arrival. So the walk ends where **this source's** provenance ends
     (``data_lineage_alg.md`` "API"). Intra-trace only (D14).
 
@@ -972,7 +1003,7 @@ def get_lineage_graph(
         if hops:
             state = "derived"
         elif frontier or undelivered.get(entity_id):
-            # `undelivered.get(entity_id)` needs no seq filter: the seed's arrival is
+            # `undelivered.get(entity_id)` needs no position filter: the seed's arrival is
             # unconstrained, so every leg leaving it is eligible by construction. (The
             # walk still filters, because that same loop runs at every later entity too.)
             state = "pending"

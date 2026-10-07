@@ -392,4 +392,4 @@ export interface LineageSummary {
 // one module. `InteractionLeg` is part of that contract too — since ADR-0025 the
 // leg is the grain timing, payload, error and `seq` live at, so callers building
 // an interaction cannot avoid naming it.
-export type { Entity, Interaction, InteractionLeg } from './lib/flow';
+export type { Entity, Interaction, InteractionLeg, LegOrderKey, TraceInteractions } from './lib/flow';

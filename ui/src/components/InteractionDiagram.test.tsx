@@ -3,7 +3,7 @@ import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { InteractionDiagram } from './InteractionDiagram';
-import type { Entity, Interaction, InteractionLeg } from '../types';
+import type { Entity, Interaction, InteractionLeg, LegOrderKey } from '../types';
 
 /**
  * Render coverage for the Interaction diagram, deliberately scoped to what jsdom
@@ -83,12 +83,17 @@ const titles = () => [...document.querySelectorAll('title')].map((t) => t.textCo
 function renderDiagram(
   entities: Entity[],
   interactions: Interaction[],
-  over: { selectedId?: string | null; onSelect?: (ix: Interaction) => void } = {},
+  over: {
+    selectedId?: string | null;
+    onSelect?: (ix: Interaction) => void;
+    legOrder?: LegOrderKey[];
+  } = {},
 ) {
   return renderWithProviders(
     <InteractionDiagram
       entities={entities}
       interactions={interactions}
+      legOrder={over.legOrder}
       selectedId={over.selectedId ?? null}
       onSelect={over.onSelect ?? (() => {})}
     />,
@@ -110,9 +115,10 @@ describe('InteractionDiagram', () => {
     expect(titles()).toContain('tool — tool:(p,svc)');
   });
 
-  it('renders one message row per LEG, in seq order, each tagged with its seq', () => {
+  it('renders one message row per leg, with a visible step tag', () => {
     // Two completed interactions → FOUR rows, not two. The rows are top-to-bottom
-    // in trace-wide seq order, the same order the Flat tab lists.
+    // in the same order the Flat tab lists. This older-server fixture omits
+    // leg_order, so that order falls back to ingest seq.
     renderDiagram(ENTITIES, [
       mkIx({ id: 'i1', callee_entity_id: 'e2' }, 1),
       mkIx({ id: 'i2', callee_entity_id: 'e3' }, 3),
@@ -126,10 +132,36 @@ describe('InteractionDiagram', () => {
       'i2:response',
     ]);
     expect(messageEls().map((el) => el.getAttribute('data-seq'))).toEqual(['1', '2', '3', '4']);
-    // The seq is visible on the arrow, not only in the DOM attribute.
-    for (const seq of ['1', '2', '3', '4']) {
-      expect(screen.getByText(seq)).toBeInTheDocument();
+    // Each step is visible on its arrow, not only in the DOM attribute.
+    for (const step of ['1', '2', '3', '4']) {
+      expect(screen.getByText(step)).toBeInTheDocument();
     }
+  });
+
+  it('renders causal steps while identifying an inverted ingestion seq', () => {
+    renderDiagram(
+      ENTITIES,
+      [
+        mkIx({
+          id: 'child', caller_entity_id: 'e2', callee_entity_id: 'e3',
+          parent_interaction_id: 'parent', legs: [mkLeg('request', 1)],
+        }),
+        mkIx({ id: 'parent', legs: [mkLeg('request', 2)] }),
+      ],
+      {
+        legOrder: [
+          { interaction_id: 'parent', leg_type: 'request' },
+          { interaction_id: 'child', leg_type: 'request' },
+        ],
+      },
+    );
+
+    expect(messageEls().map((el) => el.getAttribute('data-message-key'))).toEqual([
+      'parent:request', 'child:request',
+    ]);
+    expect(messageEls().map((el) => [el.getAttribute('data-step'), el.getAttribute('data-seq')]))
+      .toEqual([['1', '2'], ['2', '1']]);
+    expect(titles()).toContain('Step 1 · ingest seq 2 · request — summary-parent');
   });
 
   it('renders each row lower than the last, so the vertical axis really is time', () => {
@@ -164,8 +196,8 @@ describe('InteractionDiagram', () => {
   it('carries the interaction summary as each row\'s hover title', () => {
     renderDiagram(ENTITIES, [mkIx({ id: 'i1', summary: 'agent calls search' })]);
 
-    expect(titles()).toContain('#1 request — agent calls search');
-    expect(titles()).toContain('#2 response — agent calls search');
+    expect(titles()).toContain('Step 1 · ingest seq 1 · request — agent calls search');
+    expect(titles()).toContain('Step 2 · ingest seq 2 · response — agent calls search');
   });
 
   it('selects the clicked message\'s parent INTERACTION, not the leg', () => {
@@ -187,7 +219,7 @@ describe('InteractionDiagram', () => {
     const onSelect = vi.fn();
     renderDiagram(ENTITIES, [mkIx({ id: 'i1' })], { onSelect });
 
-    const row = screen.getByRole('button', { name: /Seq 1, request: summary-i1/i });
+    const row = screen.getByRole('button', { name: /Step 1, ingest seq 1, request: summary-i1/i });
     row.focus();
     await userEvent.keyboard('{Enter}');
 

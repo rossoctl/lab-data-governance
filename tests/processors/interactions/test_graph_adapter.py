@@ -177,6 +177,102 @@ def test_co_anchored_inferred_tool_call_stays_distinct() -> None:
     assert any("tool:file" in s for s in summaries)
 
 
+def test_output_inferred_tool_legs_follow_the_llm_response() -> None:
+    """A tool call found in an LLM output has no independently observed time.
+    Its request and response belong at the LLM completion boundary, after the
+    response that disclosed the call, rather than at the LLM request start.
+    """
+    _, rows = _adapt("patent_agent_II")
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    llm_by_anchor = {
+        ix.primary_anchor_span_id: ix
+        for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "llm"
+    }
+    tool_calls = [
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "tool"
+    ]
+    assert len(tool_calls) == 2
+    for tool_call in tool_calls:
+        llm = llm_by_anchor[tool_call.primary_anchor_span_id]
+        llm_response = next(
+            leg for leg in rows.legs_by_ix[llm.id] if leg.leg_type == "response"
+        )
+        tool_legs = rows.legs_by_ix[tool_call.id]
+        assert {leg.leg_type for leg in tool_legs} == {"request", "response"}
+        assert all(
+            leg.occurred_at == llm_response.occurred_at for leg in tool_legs
+        )
+
+
+def test_input_only_tool_replay_precedes_the_llm_request() -> None:
+    _, rows = _adapt("trace_inferred_observed_merge")
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    calendar = next(
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].natural_key.endswith(":calendar")
+    )
+    llm = next(
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "llm"
+    )
+    assert calendar.primary_anchor_span_id == llm.primary_anchor_span_id
+    llm_request = next(
+        leg for leg in rows.legs_by_ix[llm.id] if leg.leg_type == "request"
+    )
+    assert all(
+        leg.occurred_at == llm_request.occurred_at
+        for leg in rows.legs_by_ix[calendar.id]
+    )
+
+
+def test_replayed_tool_call_keeps_its_output_boundary() -> None:
+    """An input replay of a prior output must retain that output's time."""
+    _, rows = _adapt("trace_anthropic_tool_calls")
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    llm_by_anchor = {
+        ix.primary_anchor_span_id: ix
+        for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "llm"
+    }
+    database_calls = [
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].natural_key.endswith(":database")
+    ]
+    assert len(database_calls) == 2
+    for call in database_calls:
+        llm = llm_by_anchor[call.primary_anchor_span_id]
+        response = next(
+            leg for leg in rows.legs_by_ix[llm.id] if leg.leg_type == "response"
+        )
+        assert all(
+            leg.occurred_at == response.occurred_at
+            for leg in rows.legs_by_ix[call.id]
+        )
+
+
+def test_tool_call_resolved_to_observed_peer_keeps_observed_times() -> None:
+    spans, rows = _adapt("trace_inferred_observed_merge")
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    observed_peer = next(
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "agent"
+        and "weather-tool" in by_id[ix.callee_entity_id].natural_key
+    )
+    anchor = next(
+        span for span in spans
+        if span.span_id == observed_peer.primary_anchor_span_id
+    )
+    legs = {leg.leg_type: leg for leg in rows.legs_by_ix[observed_peer.id]}
+    assert legs["request"].occurred_at == anchor.started_at
+    assert legs["response"].occurred_at == anchor.ended_at
+
+
 @pytest.mark.parametrize("fixture", FIXTURES)
 def test_legs_are_real_edges_never_fabricated(fixture: str) -> None:
     """ADR-0025: `adapt` supplies explicit per-leg rows via `legs_by_ix`. Each leg

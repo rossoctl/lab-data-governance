@@ -664,7 +664,7 @@ export function deriveReachabilityHighlight({
     litNodeIds: [...litNodes].sort(),
     // Sorted so the union of two response-ordered lists is deterministic; the
     // renderer looks these up by id and does not iterate them to draw, so losing
-    // the response's `seq` order here costs nothing (each direction's own
+    // the response's causal order here costs nothing (each direction's own
     // `edgeIds` keeps it).
     litEdgeIds: [...litEdges].sort(),
     hasAnswer:

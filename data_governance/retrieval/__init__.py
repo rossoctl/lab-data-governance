@@ -27,7 +27,7 @@ derivation stays behind the interface (ADR-0005):
   downstream (``fanout``) from an **Entity**, and ``get_lineage_summary`` serves a
   trace's ``list sources`` / ``list destinations``. Unlike :mod:`.lineage` these
   *derive* — a hop is a leg the trace has whose stored ``data_sources`` contains the
-  seeded source and whose ``seq`` runs the right way in time, so the walk ends where
+  seeded source and whose causal position runs the right way in time, so the walk ends where
   that source's provenance ends — but they still run no matcher (D7) and never cross a
   trace boundary (D14). Both ``direction`` and ``source`` are required; multi-source
   fanin/fanout is deferred by the spec.
@@ -53,6 +53,7 @@ from data_governance.retrieval.interactions import (
     InteractionKindsView,
     InteractionLegView,
     InteractionView,
+    LegOrderKey,
     SpanEvidenceView,
     get_entities,
     get_entity_spans,
@@ -109,6 +110,7 @@ __all__ = [
     "InteractionKindsView",
     "InteractionLegView",
     "InteractionView",
+    "LegOrderKey",
     "SpanEvidenceView",
     "get_entities",
     "get_entity_spans",

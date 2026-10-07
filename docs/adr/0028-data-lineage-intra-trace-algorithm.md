@@ -12,6 +12,11 @@ metadata**. This ADR records the intra-trace algorithm and the decisions that
 shaped it. The human-owned spec lives at `docs/data_lineage_alg.md`; this ADR
 captures the *why* and the settled boundaries.
 
+**Ordering amendment (issue #279):** ADR-0034 defines trace-local causal leg order.
+Older passages below describing `seq` as execution order record the former
+implementation; the current D1, D4, D6 and D15 rules use causal position while
+`seq` remains the durable ingestion cursor.
+
 > **Renumbered from 0027.** This ADR was originally written as ADR-0027 on the
 > data-lineage branch while ADR-0027 "Leg-readiness notification for governance
 > consumers" (#125) was written independently on `main` — the same
@@ -67,7 +72,7 @@ what transformation connects them. Lineage does **not** know how it decides.
 ## The two-operation algebra
 
 Every interaction maps to exactly one operation, applied while traversing the
-trace's interactions in `seq` order:
+trace's interactions in causal leg order:
 
 - **`init_lineage(entity)`** — the payload **originates here** (a data source);
   trivial metadata rooted at this entity.
@@ -93,9 +98,9 @@ does not change in the traversal.
 
 ### D1 — "Prior" and inbound routing are structural, from the interaction legs
 
-Traversal is **`seq` order, per trace**. A payload is **inbound to entity E**
-iff, in an interaction with lower `seq`, E is the **callee** and the payload is
-the **request** leg, OR E is the **caller** and the payload is the **response**
+Traversal is in **causal leg order, per trace** (ADR-0034). A payload is
+**inbound to entity E** iff, in an earlier leg, E is the **callee** and the
+payload is the **request** leg, OR E is the **caller** and the payload is the **response**
 leg. That single rule generates `inbound(i)` from the interaction table —
 requests are inbound to the callee, responses are inbound to the caller.
 
@@ -156,7 +161,7 @@ its request and returns newly-read data reports both facts, which the old
 
 ### D4 — Op selection
 
-Computed per interaction `i` in `seq` order. Two distinct terms, at two grains:
+Computed per interaction leg `i` in causal order. Two distinct terms, at two grains:
 
 - **`output_leg`** — the single leg of `i` whose lineage we are computing (for a
   call, the callee's response is its output; the request is its input, D1).
@@ -166,7 +171,7 @@ Computed per interaction `i` in `seq` order. Two distinct terms, at two grains:
   inbound payload; an accumulating entity carries all its priors.
 
 ```
-lineage[i], for each interaction i in seq order:
+lineage[i], for each interaction leg i in causal order:
   # (a) structural init — D3(1): output_leg's payload has no producing interaction
   if inbound(i) is empty:
       init_lineage(entity)
@@ -206,12 +211,11 @@ lookup ("where did this content go / come from"), not as the primary key.
 ### D6 — Absent payload: positional prefix cutoff (interim)
 
 If a leg's `payload_hash` is absent, lineage is computed **up to that point
-only** — a positional prefix in **leg `seq`** order (ADR-0025 put `seq` on
-`interaction_legs`; the parent `interactions` row has no `seq`, so ordering is
-by leg). Processing stops at the first leg with an absent payload; legs with
-lower `seq` get lineage, legs from that point on get none. The trace's lineage
-is then marked **`partial`** (vs `complete`), recording the leg `seq` at which
-it stopped — so a governance consumer never reads a truncated prefix as the full
+only** — a positional prefix in trace-local causal order (ADR-0034). Processing
+stops at the first leg with an absent payload; legs before it in that order get
+lineage, and that leg and later ones get none. The trace's lineage is then marked
+**`partial`** (vs `complete`), recording the cutoff leg's ingestion `seq` as an
+identifier and its causal prefix as leg keys. A consumer never reads a truncated prefix as the full
 set of sources. Silent truncation is the failure mode this flag exists to
 prevent.
 
@@ -247,10 +251,10 @@ row always makes a definite claim, absence of the **row** is the only way to say
 invariant is structural in the database; it is only defaultable in the code above
 it, which is where the warnings belong.
 
-One deliberate consequence: the driver writes **no status row at all** for a trace
-whose legs have not landed (`process_leg` returns early when the trace has no
-legs). Nothing was derived, so there is nothing to claim — and writing `complete`
-there would assert full coverage of a trace we have not seen.
+One deliberate consequence: the driver leaves **no status row at all** for a trace
+whose legs have not landed. If reconciliation deletes its last leg, the driver
+removes its previous status row too. Nothing remains derived, so there is nothing
+to claim — and keeping `complete` would assert full coverage of a trace we cannot see.
 
 **2. `partial` is a *warning*, not an error state.** The derived prefix is
 correct; it is simply a prefix. Nothing failed, no read should 500, and no
@@ -331,10 +335,12 @@ Two consequences worth stating, because both are load-bearing:
 
 ### D9 — Re-derivation is upsert **plus** a stale-row delete, not upsert alone
 
-The derived-stream pattern this repo uses elsewhere (`payload_classifications`,
-the P-interactions `flush`) re-derives by upsert and never deletes, because those
-derivations only ever grow: a payload gets classified, a trace gains
-interactions. `lineage_metadata` broke that assumption the moment D6's cutoff
+The original derived-stream pattern (`payload_classifications`, the streaming
+P-interactions `flush`) re-derived by upsert because those derivations only grew:
+a payload got classified, a trace gained interactions. Sidecar reconciliation
+can now delete interactions and legs, which migration 0021 handles with deletion
+triggers and replay. `lineage_metadata` had already broken the growth assumption
+when D6's cutoff
 landed, so it needs one operation more than its siblings. Recorded as its own
 decision because it is a deliberate departure from the pattern — and from the
 "idempotent re-derive by upsert" the lineage table was originally specified with
@@ -360,12 +366,10 @@ announces would not actually be reflected in what the read serves.
 **Scope of the delete: set membership, never a `seq` threshold.** The condition is
 "everything under the trace that this derivation did not produce" — not
 `seq >= stopped_at_seq`. This is the one part of D9 that is easy to get backwards,
-and getting it backwards is silent: **a `seq`-threshold delete would spare exactly
-the rows it must remove.** `seq` is a re-allocated cursor value, not a stable
-position. When P-interactions rewrites a leg in place it draws a *fresh* `seq` from
-the sequence, so the gap leg's new `seq` sits *above* the stale rows that were
-written under its old one — a `>= stop` predicate then matches the gap leg's own
-(already correct, or absent) row and misses the stale tail entirely. Set membership
+and getting it backwards is silent: **a `seq`-threshold delete can spare rows it
+must remove.** `seq` is a stable ingestion cursor, not a causal position. A late
+parent can have a higher `seq` while preceding the cutoff leg, and a stale row
+after the cutoff can have a lower `seq`. Set membership
 has no such failure mode: the derivation is the sole authority on which of a trace's
 legs have lineage, so anything else under the trace goes.
 
@@ -415,8 +419,8 @@ advertising it. A stale name on a governance claim is worse than a rename.
 **Ordering is deliberately deferred, not lost.** The spec routes it to a future
 trace-derived API — since named, and the same shape D14's `fanin`/`fanout` take:
 derived from the trace *and* the metadata rather than from the triple alone. That is
-the honest home for it: the trace has the leg `seq`
-order that could answer "in what order", whereas the metadata triple does not. A
+the honest home for it: the trace has the interaction and leg facts from which
+causal leg order can be derived, whereas the metadata triple does not. A
 `merge` unions two branches that reached the entity through different routes, and
 there is no single truthful interleaving of them to store — the old implementation
 could only offer whichever first-arrival order its traversal happened to produce.
@@ -622,6 +626,11 @@ inconsistency rather than as two different facts.
 
 ### D13 — The drain needs a second, non-cursored arm to catch legs rewritten in place
 
+**Updated by ADR-0034.** The current drain has a third arm: a durable dirty-trace
+queue for parent, endpoint, leg timing and payload corrections, deletions, and the
+migration backfill. The staleness sweep described here remains for missing producer entities
+and as a repair path for older data; neither non-cursored arm rewinds `seq`.
+
 D9 established that a re-derivation must delete stale rows as well as upsert, and
 justified it by noting that legs are rewritten in place and that migration 0012's
 trigger covers UPDATE "for exactly this reason". That is true about the *wake* and
@@ -669,10 +678,10 @@ perturbs a producer to fix a consumer's blind spot.
 **Accepted cost.** No index can serve a predicate comparing two columns across two
 tables, so the arm hash-joins `lineage_metadata` against `interaction_legs` on every
 wake, including the common one where nothing is stale. Cost scales with table size
-rather than with staleness. Acceptable at lab scale and strictly better than serving
-stale provenance; a cheaper trigger (a dirty-trace queue written by the statement that
-rewrites the leg, or an indexable generated column) is the shape to reach for against
-real traffic. Recorded as an open item rather than guessed at.
+rather than with staleness. The dirty-trace queue now catches interaction and leg
+corrections directly; the sweep still covers producer entities arriving later
+without another leg write. An entity-aware invalidation path could remove that
+remaining full scan.
 
 ### D14 — The read surface is five reads at three grains, all trace-scoped
 
@@ -723,7 +732,7 @@ report every entity the trace reached; these stop where provenance stops.
 
 The rewritten spec sharpens *what* "no lineage through an entity" is measured against,
 and it is not the mere existence of a metadata row: it is **whether the traced source is
-in that row's set**, evaluated in **sequence order**. D15 records the operational rule.
+in that row's set**, evaluated in **causal leg order**. D15 records the operational rule.
 The paragraph above is still the right reading of why two tables are needed; what it
 under-specified is which bit of the metadata answers the question.
 
@@ -733,10 +742,10 @@ fanout degenerates to the whole reachable call graph and fanin to the whole ance
 complete but full of maybes, exactly as the triple is. Not a new weakness, but a full
 fanout must not be read as evidence that data genuinely reached everything it lists.
 
-Partly bounded by the amendment: the sequence rule prunes **regardless of matcher
+Partly bounded by the amendment: the causal-order rule prunes **regardless of matcher
 quality**, because it is a fact about the trace's own ordering rather than about
-provenance. So even under `simple_match` a fanout is now the seq-*forward* reachable
-graph rather than the whole of it, and fanin the seq-backward one. The source rule still
+provenance. So even under `simple_match` a fanout is now the causally forward reachable
+graph rather than the whole of it, and fanin the causally backward one. The source rule still
 inherits matcher quality as described — `simple_match` propagates every upstream source
 into every downstream leg, so membership rarely fails — and the caveat above stands
 undiminished for it.
@@ -786,12 +795,17 @@ deferred") is not later cited as spec text; it is this ADR's own reading, and it
 holds in practice. Reaching for a deployment-wide read should re-open the question with a
 human rather than treat the removed line as permission.
 
-### D15 — The traversal's edge is a leg carrying *this source*, crossed in sequence order
+### D15 — The traversal's edge is a leg carrying *this source*, crossed in causal order
 
 **Shipped**, implementing D14's four deferred reads (`retrieval/lineage_graph.py`).
 D14 settled *what* the reads are and *which two tables* answer them; it deliberately
 did not fix the edge rule. This records what the implementation had to decide, because
 each choice is one a later editor could plausibly reverse.
+
+**Ordering updated by ADR-0034.** The source-membership and per-leg direction
+rules below still apply. Every temporal comparison now uses the shared trace-local
+causal position. Numeric examples below illustrate positions in that order, not
+database ingestion `seq` values.
 
 **Amended** after `data_lineage_alg.md` commit `399f4fc` rewrote the spec's **API**
 section (`ee3a493` is its parent, which reworked the surrounding algorithm text but left
@@ -843,11 +857,11 @@ empty lists, exactly as an unknown seed entity does. Three reasons:
 **The edge rule.**
 
 ```
-Arriving at entity A at sequence position s, a hop A -> B is followed iff:
+Arriving at entity A at causal position s, a hop A -> B is followed iff:
   1. the trace has an Interaction leg whose per-leg direction runs A -> B;
   2. that leg has a derived lineage_metadata row;
   3. `source` is a MEMBER of that row's stored `data_sources`; and
-  4. the leg's `seq` is strictly later than s (fanout) / earlier (fanin).
+  4. the leg's causal position is strictly later than s (fanout) / earlier (fanin).
 ```
 
 Clauses 1-2 are D14's "the trace supplies the candidate edges, the metadata supplies
@@ -857,8 +871,8 @@ alone. Clauses 3-4 are the spec's own sentence, which is the whole of the amendm
 > we should traverse an edge towards the next/previous entity based iff the source is
 > part of the edge/interaction metadata sources
 >
-> the interaction sequence number governs the edges to be considered and their order
-> (fanout - larger numbers, fanin - smaller numbers)
+> causal position governs which edges may be considered and their order
+> (fanout - later positions, fanin - earlier positions)
 
 **Clause 3: the source is held CONSTANT for the whole walk.** It is the thing being
 *traced*, not a per-hop comparison against the previously-visited entity. A leg whose
@@ -873,22 +887,20 @@ to violate — an implementation that finds itself wanting to *decide* whether a
 belongs to a leg has violated it, and the fix is to persist the attribution at ingest,
 not to compute it here.
 
-**Clause 4: `seq` governs eligibility AND order.** Data cannot flow backwards in time,
-so an entity's downstream is what happened *after* the content arrived there. `seq` is
-the per-leg execution cursor (ADR-0025 puts it on the leg; the parent `interactions` row
-has none), and it does two jobs: it *gates* which edges may be crossed, and it *orders*
-the departures within an entity, which is what the spec's "and their order" asks for.
+**Clause 4: causal position governs eligibility AND order.** Data cannot flow
+backwards in the trace's derived leg order. The shared causal position (ADR-0034)
+*gates* which edges may be crossed and *orders* departures within an entity.
+`seq` remains the leg's durable ingestion cursor, so a late parent's larger `seq`
+must not exclude its earlier hop.
 Ordering does not change which entities are reachable; it makes the walk deterministic
-and gives the earliest-in-time route the claim on a given hop count.
+and gives the earliest causal route the claim on a given hop count.
 
-**Strict (`>`), not non-strict (`>=`), and the corpus settles it rather than taste.** A
-request and its response are two *different* legs at two different `seq`s — ADR-0025
-splits them, and on live trace `e62610bec7e8c1f4372aacc392eb9be5` the
-`search_destinations` call is seq 2 request / seq 3 response — so a genuine round trip is
-always expressible under `>`. Two legs can never share a `seq`, it being drawn from a
-sequence, so `>=` could only ever re-admit the very leg just arrived on: data flowing
-straight back where it came from in zero elapsed time. That is a false hop. Relaxing
-this is also not a free widening — it removes the termination argument below.
+**Strict (`>`), not non-strict (`>=`).** A request and its response are distinct legs,
+and the shared order gives each leg a unique position while placing a request before
+its own response. A genuine round trip remains expressible under `>`. Using `>=`
+could re-admit the very leg just crossed: data flowing straight back where it came
+from without an intervening event. That is a false hop. Relaxing this also removes
+the termination argument below.
 
 **The seed is unconstrained.** It has not arrived *on* a leg, so it may depart on any
 eligible one. Pinning it to its earliest/latest touching leg would silently narrow the
@@ -927,13 +939,14 @@ null-probe in `_fetch_legs` exists precisely to keep them apart, and the pair is
 together in the tests so the two branches cannot be "simplified" into one.
 
 **Clause 4 also filters the frontier; clause 3 deliberately does not.** The asymmetry
-follows from where each fact lives. A leg's `seq` is on `interaction_legs` and is known
-**whether or not** the lineage row has landed, so an undelivered leg on the wrong side of
-the arrival is *already* a settled "never an edge" — naming its entity as pending would
-promise growth no derivation can deliver. Its `data_sources`, by contrast, is precisely
-what has not landed, so membership is genuinely unknown and the entity is honestly named.
-Filtering the frontier by source would under-promise; not filtering it by seq would
-over-promise. Both directions are pinned by paired tests.
+follows from where each fact lives. A leg's causal position is derived from known
+interaction and leg facts **whether or not** its lineage row has landed. An undelivered
+leg on the wrong side of the arrival is *already* a settled "never an edge" — naming
+its entity as pending would promise growth no derivation can deliver. Its
+`data_sources`, by contrast, is precisely what has not landed, so membership is
+genuinely unknown and the entity is honestly named. Filtering the frontier by source
+would under-promise; not filtering it by causal position would over-promise. Both
+directions are pinned by paired tests.
 
 A source-absent dead end therefore shares `no-adjacent` with "nothing there" rather than
 getting a fourth `state` value. *Rejected: a `source-absent` state.* It would name the
@@ -945,7 +958,7 @@ that *does* change caller behaviour, final versus not-yet, is already carried.
 the trace's legs with a `LEFT JOIN` lineage probe; the walk runs in Python. The
 recursive-CTE precedent (`processors/interactions/state.py`) walks a *single*
 self-referential FK with no filter; here an edge is derived from two tables plus the
-direction rule, a source-membership test and a `seq` comparison against the *arrival* —
+direction rule, a source-membership test and a causal-position comparison against the *arrival* —
 encoding that into a recursive join condition would bury the edge rule in SQL and put
 the frontier logic out of reach. Traces are bounded and `get_interactions` already scans
 one three times.
@@ -961,62 +974,59 @@ being an unordered "passed through here" claim (D10) that would let the walk hop
 anything the metadata ever mentioned.
 
 **Clause 4 makes `visited: set[str]` unsound, and this is the subtle consequence.** With
-the seq gate an entity can be legitimately **re-entered** at a different position, and a
-different arrival opens edges the first one could not take: an agent reached at seq 30 may
-only leave on seq > 30, while the same agent reached at seq 10 may also leave on seq 20.
+the causal-position gate an entity can be legitimately **re-entered** at a different position,
+and a different arrival opens edges the first one could not take: an agent reached at
+position 30 may only leave on later legs, while an arrival at position 10 can also
+leave on a leg at position 20.
 A plain "seen it, skip it" set keeps whichever arrival happened to be dequeued first and
 silently drops every entity reachable only past the better one. This is the ordinary shape
 of the corpus — a coordinating agent is re-entered on every tool response it receives —
 not a corner case.
 
-The replacement is `best_arrival[entity]`: the most **permissive** arrival seq seen, and an
-entity is re-enqueued iff a new arrival is strictly more permissive. An arrival opens
-exactly the legs on its permissive side, so a strictly more permissive one opens a
-superset and anything else a subset. Note the sign, which is the opposite of the direction
-of travel and is the easiest thing here to get backwards: fanout departs on `seq >
-arrival`, so an *earlier* arrival is the more permissive one; fanin is the mirror.
+The replacement keeps two independent records. `best_arrival[entity]` is the most
+**permissive** arrival position seen; `best_depth[entity]` is the shallowest visit
+enqueued. A new visit is enqueued if either record improves. An earlier arrival opens
+more onward legs for fanout, while a later one opens more for fanin. A **deeper**
+arrival can be more permissive and reveal edges the shallow arrival cannot; a
+**shallower** but less permissive arrival can give an already reachable edge a shorter
+route. Requiring both properties to improve loses one of those answers.
 
-**Depth is deliberately not part of that test, and `hops` is tracked separately.** This is
-the trap one refinement in from the `visited` bug, and it is easy to walk straight into: a
-`(depth, arrival)` dominance test reading "shallower, or equal depth and more permissive"
-looks natural and is wrong. A **deeper** arrival can be **more permissive** — reached the
-long way round but earlier in the trace — and it then opens edges the shallow arrival
-cannot; rejecting it loses everything beyond it, the same class of silent under-reporting
-merely rarer. So permissiveness alone gates expansion, while `hops` keeps its own map and
-is written with `min` so a deeper permissive revisit records reachability without
-lengthening the reported distance.
+`hops` is tracked separately as the shortest distance actually reached and written
+with `min`. The queue does not skip a shallower entry just because a more permissive
+one has since arrived: the latter may be deeper, and dropping the former would
+overstate distances beyond it.
 
 **Termination, and it no longer rests on the cycle guard.** `agent → tool → agent` is
 still the ordinary shape of every tool call, and the graph is still genuinely cyclic — but
 what makes it finite now is **clause 4**, not the visited bookkeeping: every traversal
-must strictly advance `seq`, and a trace has finitely many legs. `best_arrival` is a
-pruning optimisation; the seq monotonicity is the termination argument. Formally,
+must strictly advance causal position, and a trace has finitely many legs. `best_arrival` is a
+pruning optimisation; causal monotonicity is the termination argument. Formally,
 `best_arrival[entity]` is only ever replaced by a strictly more permissive value drawn
-from the trace's **finite** set of leg seqs, so it can improve at most `|legs|` times per
-entity; every enqueue is either an entity's first or a strict improvement, bounding total
-enqueues at `|entities| × (|legs| + 1)`.
+from the trace's **finite** set of leg positions, so it can improve at most `|legs|`
+times per entity. `best_depth[entity]` only decreases and can improve at most
+`max_hops` times. Every enqueue is either an entity's first or a strict improvement,
+bounding total enqueues at `|entities| × (|legs| + max_hops + 1)`.
 
 That reassignment matters for a future editor: relaxing clause 4 to `>=` would remove the
 termination guarantee, not merely widen the answer. The span-tree CTEs in `state.py`
 still have no guard because a tree cannot cycle; do not read their absence as precedent.
 
-**`hops` is now sequence-aware, and plain hop-BFS no longer yields it.** `hops` is the
+**`hops` is now causal-order-aware, and plain hop-BFS no longer yields it.** `hops` is the
 fewest hops along a path that respects *both* clauses, and the shortest **structural**
 route may be closed to this source or run backwards in time while a longer route is open.
-Two properties make the reported number right: the queue is processed in non-decreasing
-depth order (a plain FIFO, every enqueue at `depth + 1` — the standard BFS invariant,
-which survives the seq gate because the gate only ever *removes* edges), and a shallower
-route already found is never overwritten by a deeper one. So the first depth at which an
-entity becomes reachable *at all* is the depth recorded.
+Two properties make the reported number right: a shallower visit is expanded even
+if a more permissive visit was recorded in the meantime, and `hops` retains the
+minimum depth reached. A FIFO queue alone cannot guarantee this when a visit is
+discarded before it expands.
 
 **Bounds are disclosed.** Hop and entity caps set `truncated` rather than silently
 returning a prefix, and a walk that merely *ends* on the boundary does not set it — a
 flag that cried truncation on complete answers would be trained away. A cap is also not
-tripped by legs the seq rule had already excluded: reporting `truncated` there would tell
+tripped by legs the causal-position rule had already excluded: reporting `truncated` there would tell
 the caller a wider bound reveals more, which is false.
 
 The spec's "and their order" earns its keep at exactly this boundary. Ordering departures
-by `seq` does not change *reachability*, so it is easy to dismiss as cosmetic — but it
+by causal position does not change *reachability*, so it is easy to dismiss as cosmetic — but it
 decides which prefix a truncated answer returns, and "the earliest flows" is the only
 prefix a reader can interpret. An insertion-order walk would return an arbitrary one.
 
@@ -1136,13 +1146,20 @@ FKs, idempotent re-derive):
 - **`lineage_trace_status`** — PK `trace_id` (D8). Columns: `status`
   (`lineage_status` ENUM: `complete` | `partial`, `NOT NULL`) and
   `stopped_at_seq` (`BIGINT`, nullable). **Shipped** as migration
-  `0014_lineage_trace_status` (issue #120). A CHECK constraint pairs the two —
-  `partial` requires a stop position, `complete` forbids one — so a
+  `0014_lineage_trace_status` (issue #120). Migration
+  `0021_causal_leg_order` adds `prefix_leg_keys` (`TEXT[]`, inclusive causal prefix
+  through the cutoff leg) for missing-row recovery; `stopped_at_seq` still identifies
+  that leg by its ingestion cursor. A CHECK constraint pairs status and stop —
+  `partial` requires a cutoff identifier, `complete` forbids one — so a
   "partial, but I won't say from where" row cannot be stored. Absence of the row
   means *not yet derived*, matching `lineage_metadata`'s convention; `status` is
   therefore `NOT NULL` (a present row always makes a definite claim). No `seq`
   cursor column: nothing drains this table, and a trace's coverage is not a stream
   of events.
+- **`data_lineage_dirty_traces`** — PK `trace_id`, with a generation from
+  `data_lineage_dirty_generation` (migration `0021_causal_leg_order`). Interaction
+  and leg writes queue changed traces for replay without rewinding the ingestion
+  cursor. A generation is removed only if no later correction replaced it.
 
 This section fixes the keys and the fact that a trace-level status must exist,
 matching how ADR-0024/0025 name their PKs.
@@ -1199,21 +1216,13 @@ matching how ADR-0024/0025 name their PKs.
   loses its lineage too. This would be per-leg state, not the trace-level row
   D8 added.
 
-- D13's staleness arm is blind to a `lineage_metadata` row whose **leg has been
-  deleted**: with nothing to compare against, the inner join cannot see it, so the
-  orphaned provenance claim survives until that trace is re-derived for some other
-  reason. Latent today — P-interactions only ever upserts legs, it does not hard-delete
-  them — and deliberately not fixed by widening the join, which would make the two arms
-  race for the same unconsumed leg. If leg deletion is ever introduced, this needs a
-  sweep of its own.
-
-- A cheaper staleness trigger than D13's per-wake hash join. The predicate cannot
-  be indexed (it compares two columns across two tables), so its cost tracks table
-  size and is paid even when nothing is stale. Candidates: a dirty-trace queue
-  written by the same statement that rewrites a leg (moves the cost to the writer,
-  which knows precisely what changed), or an indexable generated/denormalised
-  column. Not chosen now because the right shape depends on write volume this
-  deployment has not yet seen.
+- A cheaper path for the remaining entity-arrival staleness scan. Migration 0021
+  added a durable dirty-trace queue for interaction and leg corrections, including
+  deletions. Delete triggers remove lineage for vanished legs before its interaction
+  identity is lost. The per-wake join still catches a producer entity that arrives
+  after its leg was consumed; that predicate cannot be indexed across both tables,
+  so its cost tracks table size even when nothing is stale. An entity-aware
+  invalidation path could move that last scan to the writer.
 
 - Distinguishing a **data-contributing** tool from a **pass-through** one (D12).
   The kind default makes every `tool` a source, which over-reports for
