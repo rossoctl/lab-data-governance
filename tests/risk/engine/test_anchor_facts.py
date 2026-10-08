@@ -3,7 +3,7 @@
 Three layers, mirroring the engine's own split:
 
 - pure: destination categorisation (#178's wildcard hostname whitelist with
-  address/CIDR patterns for IP literals, plus the dotless-short-name
+  address/CIDR patterns for IP literals, plus the single-label short-name
   structural rule, and a malformed host classifying rather than raising),
   ``build_opa_input``'s new ``data_destinations`` / ``event_type`` /
   ``accessing_user`` mapping, and — the correctness trap the issue calls out
@@ -43,7 +43,7 @@ _PATTERNS = [
 # --- destination categorisation ----------------------------------------------
 # The matcher itself is #178's ``matches_internal_whitelist``; what is tested
 # here is how ``build_opa_input`` uses it — including the one case no glob can
-# express (a hostname with no dot at all).
+# express (a hostname that is a single Service-name label).
 
 
 def _category(host: str, patterns: list[str] = _PATTERNS) -> str:
@@ -69,10 +69,10 @@ def test_cluster_service_hosts_are_internal() -> None:
         assert _category(host) == "internal", host
 
 
-def test_dotless_short_names_are_internal() -> None:
+def test_single_label_short_names_are_internal() -> None:
     # A cluster-DNS short name cannot resolve outside the cluster's search
     # domains — structurally internal, not a whitelist question. No fnmatch
-    # glob can express "has no dot", so this rule lives in the engine rather
+    # glob can express "one label", so this rule lives in the engine rather
     # than in the pattern list.
     assert _category("opa:8181") == "internal"
     assert _category("ollama") == "internal"
@@ -105,6 +105,18 @@ def test_brackets_and_userinfo_never_reach_the_whitelist() -> None:
     # urlsplit accepts an IPvFuture bracket and userinfo; neither is a Host
     # header's host, so neither may borrow a pattern or the short-name rule.
     for host in ["[v1.foo.svc]:8080", "api.openai.com@x.svc", "evil.com@opa"]:
+        assert _category(host) == "external", host
+
+
+def test_ip_literals_are_never_short_names() -> None:
+    # An IPv6 literal has no dot but is not a cluster-DNS short name; nor is
+    # an all-digit label. They take the whitelist path like any IP literal,
+    # so a public IPv6 destination is external.
+    for host in [
+        "[2606:4700:4700::1111]:443",
+        "2606:4700:4700::1111",
+        "1234",
+    ]:
         assert _category(host) == "external", host
 
 

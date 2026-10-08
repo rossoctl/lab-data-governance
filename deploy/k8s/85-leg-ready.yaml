@@ -117,9 +117,9 @@ spec:
             # and CIDR entries match IP-literal hosts only, so a name like
             # `10.96.evil.com` never rides a range. These values describe the
             # kind development cluster — review them for any other cluster.
-            # (Cluster-DNS short names with no dot at all — `opa`, `ollama` —
-            # need no pattern: no glob can express "has no dot", so the
-            # engine treats them as structurally internal.)
+            # (Cluster-DNS short names — a single label such as `opa` or
+            # `ollama` — need no pattern: the engine treats them as
+            # structurally internal.)
             - name: RISK_INTERNAL_URL_WHITELIST_PATTERNS
               value: "*.svc,*.svc.cluster.local,*.localtest.me,localhost,*.localhost,127.0.0.0/8,::1,10.96.0.0/16,10.244.0.0/16,host.containers.internal,host.docker.internal"
           # No ports / no Service (metrics on 9094 stay in-pod); no probes —

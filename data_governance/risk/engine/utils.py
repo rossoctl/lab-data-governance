@@ -20,6 +20,7 @@ import dataclasses
 import fnmatch
 import ipaddress
 import json
+import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
 from urllib.parse import urlsplit
@@ -321,23 +322,29 @@ def _verdict_to_data_item(verdict: Verdict) -> dict[str, Any]:
     return item
 
 
+# A Kubernetes Service name (an RFC 1035 label): the shape a cluster-DNS
+# short name has. Deliberately not "has no dot": an IPv6 literal has none.
+_SERVICE_NAME = re.compile(r"[a-z]([-a-z0-9]{0,61}[a-z0-9])?")
+
+
 def _category(host: str, internal_patterns: list[str]) -> str:
     """Categorise a destination host as ``internal`` or ``external``.
 
-    A host with no dot at all is a cluster-DNS short name (``records-tool``,
-    ``opa``, ``ollama``) and is internal by construction — such a name cannot
-    resolve outside the cluster's search domains, so this is a structural
-    fact rather than a whitelist question, and no glob pattern can express
-    "has no dot" anyway. Every other host is put to #178's wildcard hostname
+    A host that is a single Service-name label (``records-tool``, ``opa``,
+    ``ollama``) is a cluster-DNS short name and is internal by construction —
+    such a name cannot resolve outside the cluster's search domains, so this
+    is a structural fact rather than a whitelist question, and no glob
+    pattern can express "one label" anyway. Every other host is put to #178's wildcard hostname
     whitelist: internal iff it matches a pattern, external otherwise
     (including when the whitelist is empty — #178's safer default, which is
     why a real deployment must set ``RISK_INTERNAL_URL_WHITELIST_PATTERNS``;
     see ``deploy/k8s/85-leg-ready.yaml``). IP literals take the whitelist
-    path too and match address or CIDR patterns (``127.0.0.1``,
-    ``10.96.0.0/16``).
+    path too and match address or CIDR patterns (``::1``,
+    ``10.96.0.0/16``); a host that does not parse at all matches nothing and
+    is external.
     """
     hostname = _hostname(host)
-    if hostname and "." not in hostname:
+    if _SERVICE_NAME.fullmatch(hostname):
         return "internal"
     return "internal" if _hostname_matches(hostname, internal_patterns) else "external"
 
