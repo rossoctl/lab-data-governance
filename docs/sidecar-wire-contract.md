@@ -3,11 +3,11 @@
 What the AuthBridge `lineage-telemetry` plugin emits, what it writes onto the wire, and what the
 data-governance `sidecar` interactions algorithm (ADR-0030) commits to when consuming it.
 
-- Producer: `cortex/authbridge/authlib/plugins/lineage/` (repo `rossoctl/cortex`).
+- Producer: `cortex/core/plugins/lineage/` (repo `rossoctl/cortex`).
 - Consumer: `data_governance/processors/interactions/sidecar.py`; vocabulary in
   `data_governance/sidecar_facts.py` (repo `rossoctl/lab-data-governance`).
 
-This document is kept **byte-identical in both repositories** — `cortex/authbridge/docs/lineage-wire-contract.md`
+This document is kept **byte-identical in both repositories** — `cortex/docs/lineage-wire-contract.md`
 and `lab-data-governance/docs/sidecar-wire-contract.md`. The version in the title is the pin: a
 minor bump means producer behaviour or vocabulary changed; a patch bump means prose only. A change
 is a pull request to both repositories.

@@ -1,0 +1,49 @@
+# pins.yaml — everything a live run depends on, named exactly. Fill a COPY named
+# pins.<app>.local.yaml (gitignored; loaded first) — this file stays FILL_ME. Preflight
+# (tests/live/conftest.py) refuses to send traffic unless the cluster
+# matches every value here; FILL_ME values fail preflight outright.
+# How to fill each: tests/live/ops/fill_pins.py (docs/LIVE-E2E.md → "The pins").
+
+agent_examples_snp:
+  # `git -C $E2E_AGENT_EXAMPLES_SNP rev-parse HEAD`
+  commit: FILL_ME
+  # The app image built from that commit, retagged by commit and set on
+  # every workload of the app (never `:latest`).
+  image: docker.io/library/agent-examples-snp:<tag>
+  # `podman inspect --format 'sha256:{{.Id}}' docker.io/library/agent-examples-snp:<tag>
+  # (the IMAGE ID: for a kind-loaded image the pod reports this, not a registry digest)
+  image_id: FILL_ME
+  # The lineage-kit shim baked from `image` (build-otel-shim.sh <image> <shim_image>).
+  shim_image: docker.io/library/agent-examples-snp-otel:<tag>
+  shim_image_id: FILL_ME
+
+cortex:
+  # `git -C $E2E_CORTEX_DIR rev-parse HEAD` — the branch the sidecar was built from.
+  commit: FILL_ME
+  # image ids of the sidecar and proxy-init images loaded into the kind node
+  # (kit RECIPE step 1): `podman inspect --format 'sha256:{{.Id}}' <ref>`.
+  sidecar_image_id: FILL_ME
+  proxy_init_image_id: FILL_ME
+
+dg:
+  # Recorded, not gated: the live tier applies on top of any risk branch.
+  commit: recorded-at-run-time
+  # The alembic head is NOT pinned here: preflight derives it from this
+  # checkout's migrations directory and refuses a cluster on any other head.
+  # image ids of the deployed receiver/ui image and the classification image
+  # (deploy/build-and-load.sh; `podman inspect --format 'sha256:{{.Id}}'`).
+  receiver_image_id: FILL_ME
+  classification_image_id: FILL_ME
+  opa_image: docker.io/openpolicyagent/opa:1.19.0
+
+llm:
+  # Plaintext ollama on the host so the inference hops are captured
+  # (the app's default HTTPS gateway is TLS passthrough: invisible).
+  url: http://host.containers.internal:11434/v1
+  model: qwen2.5:7b
+  # `ollama show qwen2.5:7b --modelfile` → the FROM blob's sha256.
+  digest: FILL_ME
+
+contract:
+  # docs/sidecar-wire-contract.md version; the cortex copy must be byte-identical.
+  version: "1.7.0"
