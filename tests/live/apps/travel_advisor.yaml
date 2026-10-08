@@ -94,26 +94,6 @@ turn:
 # exactly inside one of these reads KNOWN (reported every run, by id), the
 # honest completeness number is asserted, and nothing else is excused.
 known_gap:
-  - id: pod-lifetime-mcp-sessions
-    why: >-
-      travel-advisor (openai-agents) and payment-agent (openai-agents) hold one MCP session per
-      tool for the pod's lifetime; every tools/list and tools/call leaves with the startup
-      context, the shim mints a fresh trace per request, the sidecar records a wire entry.
-      Their tool hops, and the tool→service hops under them, sit in their own traces.
-    issue: app runtime (agent-examples-snp rossoctl/core/runtimes), unfiled
-    stray: {from: [travel-advisor, payment-agent], protocol: mcp}
-    entities: [search-destinations, get-weather, get-flights, get-payment-info, charge-card,
-               weather-service, minio, psp.external.localtest.me]
-    edges:
-      - [travel-advisor, search-destinations, mcp]
-      - [travel-advisor, get-weather, mcp]
-      - [travel-advisor, get-flights, mcp]
-      - [payment-agent, get-payment-info, mcp]
-      - [payment-agent, charge-card, mcp]
-      - [get-weather, weather-service, http]
-      - [get-flights, minio, http]
-      - [charge-card, psp.external.localtest.me, http]
-    checks: [C4]
   - id: tool-call-stale-parent
     why: >-
       booking-agent's MCP tool client keeps the context of an earlier turn, so a later turn's

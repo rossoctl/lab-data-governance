@@ -173,9 +173,9 @@ def test_L1_baseline_turn(env, kube, dg, capabilities, catalog, fleet, attach, r
     their response twin, every inbound stamp-parented, the entry the only
     unstamped span; demo-client started no other trace in the window; the
     audit holds on the four lineage axes — soundness, completeness,
-    fidelity, invariance — with the app's declared gaps (the frameworks'
-    own-trace MCP sessions, the stale toolset parent, the held content-kind
-    fix) reported as KNOWN by id, never excused silently; after a quiet
+    fidelity, invariance — with the app's declared gaps (the stale toolset
+    parent, the held content-kind fix) reported as KNOWN by id, never
+    excused silently; after a quiet
     window nothing moves. The risk axis and the risk tables are not read:
     they are group B's (L7 onwards). Counts (spans, interactions, depth
     histogram) recorded.
@@ -1012,9 +1012,9 @@ def test_L14_rogue_partner_notification(env, kube, dg, capabilities, catalog, fl
     commit: rogue about 2 of 5 live turns, fixed 5 of 5); a turn without
     the call xfails and asserts nothing about the verdict. The booking
     statuses are recorded first: the instructions trigger on `confirmed`.
-    The exchange may sit in the turn's trace or, under a pod-lifetime MCP
-    session (a declared gap), in its own trace: it is found by callee and
-    time window, and where it landed is recorded.
+    The exchange may sit in the turn's trace or, under a stale tool-call
+    parent (a declared gap), in another: it is found by callee and time
+    window, and where it landed is recorded.
     """
     dep = kube.json(["get", "deploy", "booking-agent"], ns=env.app_ns)
     variant = next((e.get("value") for c in dep["spec"]["template"]["spec"]["containers"]

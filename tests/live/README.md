@@ -132,8 +132,8 @@ reported as coverage; the window census classes every other trace as known, decl
 escape); fidelity F1–F2 (the entry payloads are the driver's text and the reply); invariance I1–I4
 (uuid5 ids, isolation, a quiet re-read, no critical record on a stray); risk R1 (a record's
 evidenced legs are the interaction's legs). A check that a gap the fleet declares lists
- (`known_gap` in `apps/travel_advisor.yaml`: the frameworks' pod-lifetime MCP sessions,
-booking-agent's stale tool-call parent, the held content-kind fix) reads **KNOWN** — the run stays green on
+ (`known_gap` in `apps/travel_advisor.yaml`: booking-agent's stale tool-call parent, the held
+content-kind fix) reads **KNOWN** — the run stays green on
 the honest number and every record and report names the gap.
 
 **The risk invariants** (`assert_risk_shape`):
