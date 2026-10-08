@@ -63,8 +63,9 @@ spec:
       containers:
         - name: opa
           # Pinned release (2026-07-30). This tag is the single source of
-          # truth for the OPA version deployed with the compiled policy
-          # (see tests/risk/rules/test_rego_opa.py for the real-OPA harness).
+          # truth for the OPA version deployed with the compiled policy; the
+          # real-OPA suite (tests/risk/rules/conftest.py, -m opa) reads it
+          # from here and runs this same image.
           image: docker.io/openpolicyagent/opa:1.19.0
           imagePullPolicy: IfNotPresent
           args:
