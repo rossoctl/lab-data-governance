@@ -87,6 +87,26 @@ def test_public_hosts_are_external() -> None:
         assert _category(host) == "external", host
 
 
+def test_a_host_that_does_not_parse_is_external_never_an_error() -> None:
+    # `lineage.peer.host` is the caller's Host header. A malformed one must
+    # classify, not raise: an exception here is not an OpaError, so it would
+    # crash the leg-ready consumer and re-crash it on the same leg forever.
+    # The longest legal DNS name (253 bytes) with a port is over the
+    # sidecar's 256-byte attribute cap, which appends this marker — brackets
+    # included — so a legitimate host can arrive like so.
+    longest = ".".join(["a" * 63] * 3 + ["b" * 45]) + ".partner.example:8443"
+    truncated = longest.encode()[:256].decode() + "…[truncated]"
+    for host in ["a[b.example.com", "x]y.example.com", "[not-an-ip]", truncated]:
+        assert _category(host) == "external", host
+
+
+def test_brackets_and_userinfo_never_reach_the_whitelist() -> None:
+    # urlsplit accepts an IPvFuture bracket and userinfo; neither is a Host
+    # header's host, so neither may borrow a pattern or the short-name rule.
+    for host in ["[v1.foo.svc]:8080", "api.openai.com@x.svc", "evil.com@opa"]:
+        assert _category(host) == "external", host
+
+
 def test_pattern_must_match_on_label_boundary() -> None:
     # "evil-localtest.me" must not ride the "*.localtest.me" pattern: the glob
     # requires a literal dot before the whitelisted domain.

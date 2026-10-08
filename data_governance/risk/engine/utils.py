@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import ipaddress
 import json
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
@@ -203,12 +204,35 @@ _IDENTIFIER_TYPE_TO_DATA_TYPE: Final[dict[str, str]] = {
 }
 
 
+def _ip_or_none(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(value)
+    except ValueError:
+        return None
+
+
 def _hostname(url: str) -> str:
     """Best-effort hostname extraction, tolerating a URL with no scheme
     (``urlsplit`` parses a bare ``host/path`` string's leading segment as
-    ``path``, not ``netloc``, unless a scheme-like prefix is present)."""
-    parsed = urlsplit(url if "//" in url else f"//{url}")
-    return (parsed.hostname or "").lower()
+    ``path``, not ``netloc``, unless a scheme-like prefix is present).
+
+    ``""`` when the value is not ``host[:port]``: an unbalanced bracket, a
+    bracket around anything but an IP literal (``urlsplit`` accepts an
+    IPvFuture such as ``[v1.foo.svc]``), userinfo (``a@b`` — a Host header
+    carries none, RFC 9110), a port that is not a number, or the producer's
+    own ``…[truncated]`` marker on an over-long host. The host is
+    caller-controlled (the Host header), so a malformed one must classify,
+    never raise: an empty hostname matches no pattern.
+    """
+    try:
+        parsed = urlsplit(url if "//" in url else f"//{url}")
+        _ = parsed.port  # raises ValueError unless the port is a number
+    except ValueError:
+        return ""
+    hostname = (parsed.hostname or "").lower()
+    if parsed.username is not None or ("[" in parsed.netloc and _ip_or_none(hostname) is None):
+        return ""
+    return hostname
 
 
 def matches_internal_whitelist(url: str, *, patterns: list[str]) -> bool:
