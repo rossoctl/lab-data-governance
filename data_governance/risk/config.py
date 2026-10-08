@@ -60,6 +60,7 @@ __all__ = [
     "API_METRICS_TOP_TRACES_DEFAULT_LIMIT",
     "API_METRICS_TOP_TRACES_MAX_LIMIT",
     "INTERNAL_URL_WHITELIST_PATTERNS",
+    "RULES_SOURCE",
 ]
 
 
@@ -160,6 +161,17 @@ OPA_DECISION_PATH = _str_env(
 )
 OPA_TIMEOUT_SECONDS = _int_env("RISK_OPA_TIMEOUT_SECONDS", 5)
 OPA_MAX_RETRIES = _int_env("RISK_OPA_MAX_RETRIES", 2)
+
+# --- risk.rules_source -----------------------------------------------------
+# Absolute path of the rule catalog the catalog reader serves
+# (``rules/catalog.py``). Empty (the default) means the copy baked into the
+# package. On the cluster
+# the API pod sets it to the ``rules_source.json`` key of the ``opa-policy``
+# ConfigMap, mounted read-only — the same document OPA's policy was compiled
+# from — so ``GET /risk/rules`` lists the catalog OPA enforces, not the one
+# the image was built with.
+
+RULES_SOURCE = _str_env("RISK_RULES_SOURCE", "")
 
 # --- api.risk_rules.* (issue #113) ------------------------------------------
 

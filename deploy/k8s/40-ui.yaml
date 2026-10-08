@@ -83,6 +83,14 @@ spec:
                   key: POSTGRES_PASSWORD
             - name: DATABASE_URL
               value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+            # The rule catalog `/risk/rules*` serves is the `rules_source.json`
+            # key of the `opa-policy` ConfigMap — the document OPA's policy is
+            # compiled from (95-opa.yaml) — not the copy baked into the image.
+            # OPA loads its copy once at startup, so after a catalog change
+            # the API follows the ConfigMap within the kubelet sync period and
+            # OPA after `rollout restart deploy/opa`.
+            - name: RISK_RULES_SOURCE
+              value: /policies/rules_source.json
           ports:
             - name: http
               containerPort: 8080
@@ -107,3 +115,21 @@ spec:
               memory: "128Mi"
             limits:
               memory: "512Mi"
+          volumeMounts:
+            - name: policy
+              mountPath: /policies
+              readOnly: true
+      volumes:
+        # `optional`: the ConfigMap is created by deploy/create-opa-configmap.sh,
+        # which neither `kubectl apply -f deploy/k8s/` nor `dg.sh component
+        # install` runs (dg.sh waits for this rollout), so the pod must start
+        # without it; the kubelet fills the mount once the ConfigMap exists and
+        # keeps it current afterwards. Until then /risk/rules* answers 503.
+        # No subPath: a subPath mount is never updated in place.
+        - name: policy
+          configMap:
+            name: opa-policy
+            optional: true
+            items:
+              - key: rules_source.json
+                path: rules_source.json

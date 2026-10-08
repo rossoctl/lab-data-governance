@@ -77,7 +77,15 @@ async def _rules_list_handler(request: Request) -> Response:
     except http.ApiError as exc:
         return http.error_response(exc)
 
-    return http.json_ok({"items": page.items, "next_cursor": page.next_cursor})
+    # ``catalog_version`` is the served catalog's ``version`` field, so a
+    # reader can check it against the deployed ConfigMap's.
+    return http.json_ok(
+        {
+            "items": page.items,
+            "next_cursor": page.next_cursor,
+            "catalog_version": catalog.bundle_version(),
+        }
+    )
 
 
 def routes() -> list[BaseRoute]:

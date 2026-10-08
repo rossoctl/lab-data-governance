@@ -102,3 +102,45 @@ def test_trace_trigger_has_no_service_and_no_ports(
         assert selector.get("app.kubernetes.io/name") != label
     (container,) = trace_trigger_deployment["spec"]["template"]["spec"]["containers"]
     assert "ports" not in container
+
+
+# ---------------------------------------------------------------------------
+# UI/API Deployment serves the deployed catalog (opa-policy ConfigMap)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def ui_deployment(docs: list[dict]) -> dict:
+    (dep,) = _by_kind(docs, "Deployment", "data-governance-ui")
+    return dep
+
+
+def test_ui_reads_the_rule_catalog_from_the_opa_policy_configmap(
+    ui_deployment: dict,
+) -> None:
+    """`GET /risk/rules*` must list the catalog OPA enforces: the API pod
+    mounts the same `opa-policy` ConfigMap 95-opa.yaml mounts, and
+    RISK_RULES_SOURCE points at its `rules_source.json` key."""
+    pod = ui_deployment["spec"]["template"]["spec"]
+    (container,) = pod["containers"]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    source = env["RISK_RULES_SOURCE"]
+
+    (volume,) = [v for v in pod["volumes"] if v["name"] == "policy"]
+    cm = volume["configMap"]
+    assert cm["name"] == "opa-policy"
+    (item,) = cm["items"]
+    assert item["key"] == "rules_source.json"
+
+    (mount,) = [m for m in container["volumeMounts"] if m["name"] == volume["name"]]
+    assert mount["readOnly"] is True
+    assert "subPath" not in mount, "a subPath mount is never updated in place"
+    assert source == f"{mount['mountPath']}/{item['path']}"
+
+
+def test_ui_starts_before_the_opa_policy_configmap_exists(ui_deployment: dict) -> None:
+    """deploy/dg.sh applies the manifests and waits for this rollout BEFORE
+    deploy/create-opa-configmap.sh ever runs, so the mount must be optional."""
+    pod = ui_deployment["spec"]["template"]["spec"]
+    (volume,) = [v for v in pod["volumes"] if v["name"] == "policy"]
+    assert volume["configMap"]["optional"] is True

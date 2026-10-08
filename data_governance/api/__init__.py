@@ -68,7 +68,9 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from data_governance import db, retrieval
+from data_governance.risk.api import http as risk_http
 from data_governance.risk.api import metrics_routes, risk_routes, rules_routes
+from data_governance.risk.rules import catalog
 
 __all__ = ["SpansApiServer", "build_app"]
 
@@ -781,7 +783,23 @@ def build_app() -> Starlette:
         # hazard to defuse here.
         *metrics_routes.routes(),
     ]
-    return Starlette(routes=routes)
+    # The rule catalog is read from the opa-policy ConfigMap on a cluster
+    # (deploy/k8s/40-ui.yaml); until deploy/create-opa-configmap.sh has
+    # created it, every route that consults the catalog (/risk/rules*, the
+    # metrics leaderboards) answers 503 with the FR-DAS-081 triple rather
+    # than a bare 500 — or the packaged catalog, which OPA would not enforce.
+    return Starlette(
+        routes=routes,
+        exception_handlers={catalog.CatalogUnavailable: _catalog_unavailable_handler},
+    )
+
+
+async def _catalog_unavailable_handler(
+    _request: Request, exc: Exception
+) -> Response:
+    return risk_http.error_response(
+        risk_http.ApiError("catalog unavailable", str(exc), status_code=503)
+    )
 
 
 # ---------------------------------------------------------------------------
