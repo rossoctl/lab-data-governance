@@ -70,12 +70,19 @@ def test_cluster_service_hosts_are_internal() -> None:
 
 
 def test_single_label_short_names_are_internal() -> None:
-    # A cluster-DNS short name cannot resolve outside the cluster's search
-    # domains — structurally internal, not a whitelist question. No fnmatch
+    # A one-label host resolves through the pod's search path, cluster
+    # Service domain first — treated as internal by convention. No fnmatch
     # glob can express "one label", so this rule lives in the engine rather
     # than in the pattern list.
     assert _category("opa:8181") == "internal"
     assert _category("ollama") == "internal"
+
+
+def test_a_trailing_dot_is_the_same_name() -> None:
+    # DNS's absolute form ("name.") is the same host, not a new one.
+    assert _category("records-tool.") == "internal"
+    assert _category("records-tool.team2.svc.cluster.local.:8000") == "internal"
+    assert _category("api.openai.com.") == "external"
 
 
 def test_public_hosts_are_external() -> None:

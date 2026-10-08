@@ -233,7 +233,8 @@ def _hostname(url: str) -> str:
     hostname = (parsed.hostname or "").lower()
     if parsed.username is not None or ("[" in parsed.netloc and _ip_or_none(hostname) is None):
         return ""
-    return hostname
+    # A trailing dot is DNS's absolute form of the same name.
+    return hostname.removesuffix(".")
 
 
 def _network_or_none(pattern: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
@@ -271,7 +272,7 @@ def matches_internal_whitelist(url: str, *, patterns: list[str]) -> bool:
     MVP-only: plain ``fnmatch`` glob matching against a DNS hostname, or
     address/CIDR membership for an IP-literal host (see
     :func:`_hostname_matches`); no awareness of scheme/port/path, and no
-    normalization beyond lowercasing. An empty *patterns* list never matches
+    normalization beyond lowercasing and dropping a trailing dot. An empty *patterns* list never matches
     anything — the caller's default-external behaviour, not a special case
     here. This will be replaced by more holistic destination classification
     in a future version (see ``build_opa_input``'s docstring).
@@ -331,17 +332,20 @@ def _category(host: str, internal_patterns: list[str]) -> str:
     """Categorise a destination host as ``internal`` or ``external``.
 
     A host that is a single Service-name label (``records-tool``, ``opa``,
-    ``ollama``) is a cluster-DNS short name and is internal by construction —
-    such a name cannot resolve outside the cluster's search domains, so this
-    is a structural fact rather than a whitelist question, and no glob
-    pattern can express "one label" anyway. Every other host is put to #178's wildcard hostname
-    whitelist: internal iff it matches a pattern, external otherwise
-    (including when the whitelist is empty — #178's safer default, which is
-    why a real deployment must set ``RISK_INTERNAL_URL_WHITELIST_PATTERNS``;
-    see ``deploy/k8s/85-leg-ready.yaml``). IP literals take the whitelist
-    path too and match address or CIDR patterns (``::1``,
-    ``10.96.0.0/16``); a host that does not parse at all matches nothing and
-    is external.
+    ``ollama``) is treated as a cluster-DNS short name, internal even with an
+    empty whitelist: the pod's DNS search path tries its own namespace and
+    the cluster's Service domain first, and no glob pattern can express "one
+    label" anyway. It is a convention, not proof — a search path can end in
+    a node or corporate domain, and the Host header is the caller's to write
+    (the wire contract says so), so every category here describes the name
+    the caller used, not the address it reached. Every other host is put to
+    #178's wildcard hostname whitelist: internal iff it matches a pattern,
+    external otherwise (including when the whitelist is empty — #178's safer
+    default, which is why a real deployment must set
+    ``RISK_INTERNAL_URL_WHITELIST_PATTERNS``; see
+    ``deploy/k8s/85-leg-ready.yaml``). IP literals take the whitelist path
+    too and match address or CIDR patterns (``::1``, ``10.96.0.0/16``); a
+    host that does not parse at all matches nothing and is external.
     """
     hostname = _hostname(host)
     if _SERVICE_NAME.fullmatch(hostname):
