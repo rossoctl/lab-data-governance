@@ -277,3 +277,113 @@ class TestListen:
         with pytest.raises(ValueError):
             with db.listen("bad; DROP TABLE spans", pg_dsn):
                 pass
+
+
+class TestSessionLock:
+    """`db.session_lock()`: one holder at a time, on its own connection.
+
+    Like `listen()` it opens its own connection from the DSN, so these tests
+    pass `pg_dsn` directly."""
+
+    def test_a_second_holder_waits_for_the_first(self, pg_dsn: str) -> None:
+        events: list[str] = []
+        first_holds = threading.Event()
+        release_first = threading.Event()
+
+        def first() -> None:
+            with db.session_lock("dg-test-lock", pg_dsn):
+                events.append("first acquired")
+                first_holds.set()
+                release_first.wait(timeout=10)
+                events.append("first releasing")
+
+        def second() -> None:
+            with db.session_lock("dg-test-lock", pg_dsn):
+                events.append("second acquired")
+
+        holder = threading.Thread(target=first)
+        holder.start()
+        assert first_holds.wait(timeout=10)
+        waiter = threading.Thread(target=second)
+        waiter.start()
+        waiter.join(timeout=0.5)
+        assert waiter.is_alive(), "the second holder must block while the first holds"
+
+        release_first.set()
+        holder.join(timeout=10)
+        waiter.join(timeout=10)
+        assert events == ["first acquired", "first releasing", "second acquired"]
+
+    def test_a_lost_holder_connection_frees_the_lock(self, pg_dsn: str) -> None:
+        """A holder that dies loses its connection, and with it the lock —
+        simulated by terminating the holding session_lock's backend while a
+        second session_lock waits for it."""
+        acquired = threading.Event()
+
+        def take() -> None:
+            with db.session_lock("dg-test-lock", pg_dsn, poll_seconds=0.1):
+                acquired.set()
+
+        with db.session_lock("dg-test-lock", pg_dsn) as holder:
+            taker = threading.Thread(target=take)
+            taker.start()
+            assert not acquired.wait(timeout=1), "the lock is held"
+            with psycopg.connect(pg_dsn, autocommit=True) as admin:
+                admin.execute("SELECT pg_terminate_backend(%s)", (holder._conn.info.backend_pid,))
+            assert acquired.wait(timeout=10)
+        taker.join(timeout=10)
+
+    def test_the_lock_session_sets_keepalives(self, pg_dsn: str) -> None:
+        """A holder whose node vanishes without closing its socket must free
+        the lock in seconds, not after the kernel's two-hour default."""
+        with db.session_lock("dg-test-lock", pg_dsn) as lock:
+            (idle,) = lock._conn.execute("SHOW tcp_keepalives_idle").fetchone()
+            (timeout,) = lock._conn.execute("SHOW tcp_user_timeout").fetchone()
+        assert (idle, timeout) == ("15", "30000")
+
+    def test_check_raises_once_the_lock_session_is_gone(self, pg_dsn: str) -> None:
+        with db.session_lock("dg-test-lock", pg_dsn) as lock:
+            lock.check()  # alive: no error
+            with psycopg.connect(pg_dsn, autocommit=True) as admin:
+                admin.execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_locks "
+                    "WHERE locktype = 'advisory' AND granted AND database = "
+                    "(SELECT oid FROM pg_database WHERE datname = current_database())"
+                )
+            with pytest.raises(db.LockLost):
+                lock.check()
+
+    def test_a_stop_while_waiting_raises_promptly(self, pg_dsn: str) -> None:
+        stop = threading.Event()
+        outcome: list[BaseException] = []
+
+        with db.session_lock("dg-test-lock", pg_dsn):
+
+            def waiter() -> None:
+                try:
+                    with db.session_lock("dg-test-lock", pg_dsn, stop=stop, poll_seconds=0.1):
+                        pass
+                except BaseException as exc:  # noqa: BLE001 - asserted below
+                    outcome.append(exc)
+
+            thread = threading.Thread(target=waiter)
+            thread.start()
+            thread.join(timeout=0.5)
+            assert thread.is_alive(), "still waiting while the lock is held"
+            stop.set()
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+        assert len(outcome) == 1 and isinstance(outcome[0], db.LockWaitStopped)
+
+    def test_different_names_do_not_contend(self, pg_dsn: str) -> None:
+        with db.session_lock("dg-test-lock-a", pg_dsn):
+            done = threading.Event()
+
+            def other() -> None:
+                with db.session_lock("dg-test-lock-b", pg_dsn):
+                    done.set()
+
+            thread = threading.Thread(target=other)
+            thread.start()
+            assert done.wait(timeout=5)
+            thread.join(timeout=5)

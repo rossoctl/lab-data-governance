@@ -18,6 +18,9 @@ Public surface:
     with db.listen(channel, dsn) as lst:   # LISTEN/NOTIFY wake (ADR-0015)
         woke = lst.wait(timeout)           # True on notify, False on timeout
 
+    with db.session_lock(name, dsn, stop=ev) as lock:  # one holder at a time
+        lock.check()                       # LockLost if its session died
+
     db.ConnectionTimeout      # raised when the pool can't hand out a conn
     db.is_connection_error(e) # ADR-0003 connection-class classifier
 
@@ -30,6 +33,8 @@ pool is live at a time.
 (ADR-0015): a dedicated, autocommit, session-scoped connection for Postgres
 `LISTEN`, which the pool's short-lived autocommit-off connections cannot
 provide. It stays generic — it knows nothing about the channel's meaning.
+`session_lock()` is the same connection shape for a session-level advisory
+lock: held until its connection closes, including when the process dies.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
@@ -47,11 +53,15 @@ import psycopg_pool
 __all__ = [
     "ConnectionTimeout",
     "Listener",
+    "LockLost",
+    "LockWaitStopped",
+    "SessionLock",
     "Transaction",
     "close_pool",
     "configure",
     "is_connection_error",
     "listen",
+    "session_lock",
     "transaction",
 ]
 
@@ -314,5 +324,87 @@ def listen(channel: str, dsn: str) -> Iterator[Listener]:
     try:
         conn.execute(f"LISTEN {channel}")
         yield Listener(conn)
+    finally:
+        conn.close()
+
+
+class LockLost(Exception):
+    """The connection holding a :func:`session_lock` is gone, and with it the
+    lock: Postgres releases a session lock when its session ends."""
+
+
+class LockWaitStopped(Exception):
+    """A stop was requested while :func:`session_lock` was still waiting."""
+
+
+class SessionLock:
+    """Handle yielded by :func:`session_lock`.
+
+    A session-level advisory lock is held for exactly as long as the session
+    that took it, so :meth:`check` only has to prove that session is still
+    alive. Call it before each unit of work the lock protects: a holder
+    whose connection died (a Postgres restart, an idle-session timeout, a
+    terminated backend) has lost the lock without being told, and another
+    instance may already hold it.
+    """
+
+    __slots__ = ("_conn",)
+
+    def __init__(self, conn: psycopg.Connection[Any]) -> None:
+        self._conn = conn
+
+    def check(self) -> None:
+        """Raise :class:`LockLost` unless the lock's session is alive."""
+        try:
+            self._conn.execute("SELECT 1")
+        except psycopg.Error as exc:
+            raise LockLost(f"session lock connection lost: {exc}") from exc
+
+
+_LOCK_SESSION_OPTIONS = (
+    "-c tcp_keepalives_idle=15 -c tcp_keepalives_interval=5 "
+    "-c tcp_keepalives_count=3 -c tcp_user_timeout=30000"
+)
+
+
+@contextmanager
+def session_lock(
+    name: str,
+    dsn: str,
+    *,
+    stop: threading.Event | None = None,
+    poll_seconds: float = 1.0,
+) -> Iterator[SessionLock]:
+    """Hold the session-level advisory lock *name* for the ``with`` block,
+    waiting until it is free, and yield a :class:`SessionLock`.
+
+    The lock lives on a dedicated autocommit connection, not drawn from the
+    pool (the same shape as :func:`listen`), and Postgres releases it when
+    that connection closes — on a clean exit, or when the holding process
+    dies — so a crashed holder can never strand it. The wait polls with
+    ``pg_try_advisory_lock`` every *poll_seconds* rather than blocking in
+    the server, so a *stop* set meanwhile raises :class:`LockWaitStopped`
+    promptly and no ``lock_timeout`` applies. Only the name's meaning belongs
+    to the caller; typically a long-running consumer holds it for its
+    lifetime so that no second instance can run beside it.
+    """
+    # Server-side keepalives on this one session: a holder whose node vanishes
+    # (no FIN, no RST) would otherwise keep its backend, and the lock, for the
+    # kernel default of over two hours while its replacement waits.
+    options = psycopg.conninfo.conninfo_to_dict(dsn).get("options")
+    conn = psycopg.connect(
+        dsn,
+        autocommit=True,
+        options=f"{options} {_LOCK_SESSION_OPTIONS}" if options else _LOCK_SESSION_OPTIONS,
+    )
+    try:
+        while not conn.execute(
+            "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (name,)
+        ).fetchone()[0]:
+            if stop is not None and stop.wait(poll_seconds):
+                raise LockWaitStopped(f"stopped while waiting for session lock {name!r}")
+            if stop is None:
+                time.sleep(poll_seconds)
+        yield SessionLock(conn)
     finally:
         conn.close()

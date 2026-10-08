@@ -204,6 +204,7 @@ def _drain_spec(
     spec: _driver.StreamSpec[Leg],
     cursor: int,
     observer: Observer | None = None,
+    guard: Callable[[], None] | None = None,
 ) -> int:
     """Bespoke contiguous-prefix drain over the leg-readiness stream.
 
@@ -224,7 +225,18 @@ def _drain_spec(
     holds the stream: the drain logs it and returns with the cursor unchanged, so
     the same leg is re-delivered on the next wake (transient-failure retry without
     losing the leg). Any other observer error propagates.
+
+    *guard*, when given, runs when the drain starts and before each leg, and
+    ends the drain by raising — so a process notices a lost sole-consumer lock
+    at its next wake, and a drain that outlives the lock stops at the next leg
+    without another OPA call. The guard alone cannot fence a write (it runs on
+    another connection), so each leg's transaction also advances the cursor
+    only from the value this drain read (:func:`_advance_from`): a leg another
+    consumer already delivered rolls back and raises
+    :class:`~data_governance.db.LockLost`.
     """
+    if guard is not None:
+        guard()
     while True:
         with db.transaction() as tx:
             batch = spec.fetch_batch(tx, cursor, spec.batch_size)
@@ -245,6 +257,8 @@ def _drain_spec(
         by_seq = {leg.seq: leg for leg in batch}
         for item in result.delivered:
             leg = by_seq[item.seq]
+            if guard is not None:
+                guard()
             # Phase 1 — observer compute, no transaction held.
             try:
                 write = observer(leg) if observer is not None else None
@@ -255,10 +269,11 @@ def _drain_spec(
                     leg.seq, leg.interaction_id, exc.__cause__ or exc, cursor,
                 )
                 return cursor
-            # Phase 2 — the observer's write + the cursor advance, one txn.
+            # Phase 2 — the cursor advance + the observer's write, one txn. The
+            # advance is first and conditional: it is the fence.
             with db.transaction() as tx:
+                _advance_from(tx, spec.processor_name, cursor, leg.seq)
                 process_leg(tx, leg, write)
-                _driver.advance_cursor(tx, spec.processor_name, leg.seq)
             cursor = leg.seq
 
         # If the ready prefix stopped short of the whole batch, a leg is held —
@@ -270,26 +285,60 @@ def _drain_spec(
             return cursor
 
 
+def _advance_from(tx: db.Transaction, processor_name: str, expected: int, seq: int) -> None:
+    """Advance the durable cursor from *expected* to *seq*, or raise
+    :class:`~data_governance.db.LockLost` if it no longer reads *expected*.
+
+    The sole-consumer lock is checked before each leg, but that check and this
+    transaction run on different connections: a consumer that stalls between
+    them can lose its lock while a replacement delivers the same legs. The
+    conditional update closes that window. It takes the cursor row's lock, so
+    the stalled writer waits for the replacement's commit, then finds the
+    cursor moved and rolls back its whole leg — record included — instead of
+    landing an older computation as the newest version and moving the cursor
+    backwards."""
+    tx.execute(
+        "INSERT INTO processor_state (processor_name, last_processed_seq, updated_at) "
+        "VALUES (%s, 0, now()) ON CONFLICT (processor_name) DO NOTHING",
+        (processor_name,),
+    )
+    if tx.fetch_one(
+        "UPDATE processor_state SET last_processed_seq = %s, updated_at = now() "
+        "WHERE processor_name = %s AND last_processed_seq = %s RETURNING 1",
+        (seq, processor_name, expected),
+    ) is None:
+        raise db.LockLost(
+            f"{processor_name} cursor moved past {expected}: another consumer delivered"
+        )
+
+
 def read_cursor(tx: db.Transaction) -> int:
     """Read the leg-ready durable cursor (delegates to the shared loop)."""
     return _driver.read_cursor(tx, PROCESSOR_NAME)
 
 
-def drain(cursor: int, observer: Observer | None = None) -> int:
+def drain(
+    cursor: int,
+    observer: Observer | None = None,
+    guard: Callable[[], None] | None = None,
+) -> int:
     """Deliver every ready leg in the leading contiguous-prefix run past *cursor*,
     one transaction per leg. Returns the new cursor (the seq of the last delivered
     leg, or *cursor* if none / the head is unready / the observer deferred).
 
     *observer* is the downstream governance seam (ADR-0027, two-phase since issue
     #158 — see :data:`Observer`); ``None`` keeps delivery to the metric
-    increment."""
-    return _drain_spec(_spec(), cursor, observer=observer)
+    increment. *guard* runs at the start and before each leg's write (see
+    :func:`_drain_spec`)."""
+    return _drain_spec(_spec(), cursor, observer=observer, guard=guard)
 
 
 def run(
     stop_event: threading.Event,
     dsn: str,
     observer: Observer | None = None,
+    *,
+    guard: Callable[[], None] | None = None,
 ) -> None:
     """Wake-driven readiness drain over ``interaction_legs``. Returns when
     *stop_event* is set.
@@ -304,8 +353,11 @@ def run(
 
     *observer* is the downstream governance consumer seam (two-phase since issue
     #158 — see :data:`Observer`); ``None`` keeps delivery to the metric
-    increment."""
+    increment. *guard*, when given, runs at every wake and before each leg's
+    write, and ends the loop by raising — the entry point passes its sole-consumer lock's
+    :meth:`~data_governance.db.SessionLock.check`, so a process that lost the
+    lock commits nothing more instead of running unprotected."""
     def _drain_with_observer(spec: _driver.StreamSpec[Leg], cursor: int) -> int:
-        return _drain_spec(spec, cursor, observer=observer)
+        return _drain_spec(spec, cursor, observer=observer, guard=guard)
 
     _driver.run(_spec(), stop_event, dsn, drain_fn=_drain_with_observer)

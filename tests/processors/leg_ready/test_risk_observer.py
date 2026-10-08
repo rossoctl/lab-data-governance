@@ -281,7 +281,14 @@ def test_redelivery_with_unchanged_evidence_is_a_no_op(configured_db: str) -> No
     assert _risk_versions(configured_db, "ix-idem") == [(1, ["request"])]
     assert len(opa.calls) == 1
 
-    driver.drain(0, observer=observer)  # re-deliver from scratch
+    # Re-deliver from scratch: reset the durable cursor, as a restart after a
+    # rolled-back cursor commit would find it.
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "UPDATE processor_state SET last_processed_seq = 0 WHERE processor_name = %s",
+            (driver.PROCESSOR_NAME,),
+        )
+    driver.drain(0, observer=observer)
 
     assert _risk_versions(configured_db, "ix-idem") == [(1, ["request"])]
     assert len(opa.calls) == 1, "unchanged evidence must not re-call OPA"

@@ -41,6 +41,12 @@ So this amends ADR-0005's "complete from day one" framing — Layer 1 grows by
 exactly one connection-lifecycle primitive — without contradicting its core
 rule that **domain** capabilities live in Layer 2.
 
+*Amendment (leg-ready sole consumer):* `db.session_lock(name, dsn)` is a second
+primitive of the same shape — a dedicated autocommit session connection, here
+holding a session-level advisory lock for its lifetime. Like `listen`, it knows
+nothing about what the name means; the leg-ready consumer uses it so that a
+replacement pod cannot drain beside one that is still exiting.
+
 ## The helper
 
 - `db.listen(channel, dsn)` — context manager. Validates `channel` as a bare
