@@ -72,9 +72,10 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra -m 'not opa'"
+addopts = "-ra -m 'not opa and not live'"
 markers = [
     "opa: needs a real OPA container (deselected by default; -m opa to run)",
+    "live: drives the rossoctl kind cluster end to end — real sidecar, real app, real DG pods (deselected by default; -m live to run; see docs/LIVE-E2E.md)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:testcontainers.*",
