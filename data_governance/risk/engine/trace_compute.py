@@ -1,9 +1,8 @@
 """Orchestration + write path for the trace risk processor (issue #102).
 
-``compute_trace_risk`` is this engine's one directly-callable entry point.
-Wiring it to the ``dg_interaction_risk_written`` NOTIFY channel/poll fallback
-(StreamSpec driver + ``__main__.py``) is deferred to whichever issue lands
-#164's trigger/cursoring redesign — this module only needs a ``trace_id``:
+``compute_trace_risk`` is this engine's one directly-callable entry point;
+the trace-risk-trigger processor (``processors/risk/trace_trigger``, #102/#164)
+drives it once per new interaction risk record. It only needs a ``trace_id``:
 
     gather the trace's current (latest-version per interaction_id)
     interaction risk records -> aggregate (FR-DAS-021, via
@@ -17,11 +16,14 @@ No OPA call here — unlike #101's interaction-level compute, trace risk is a
 pure rollup over already-computed interaction risk records, so there is no
 policy decision to cache/refresh.
 
-The insert allocates its next ``version`` in-statement (``SELECT
-COALESCE(MAX(version), 0) + 1 ...``), same as #101's writes, so two
-concurrent recomputes for the same trace collide on
-``trace_risk_records``' ``UNIQUE (trace_id, version)`` index rather than
-silently double-writing. On that collision this module retries once.
+Concurrent recomputes of one trace are serialized, the same way
+``compute.py`` serializes an interaction's writers: the whole gather →
+compare → insert runs under a transaction-scoped advisory lock keyed on the
+trace, so a second recompute waits for the first to commit, re-reads the
+records it saw, and no-ops on an identical rollup. The insert still
+allocates its ``version`` in-statement (``SELECT COALESCE(MAX(version), 0) +
+1 ...``), so ``UNIQUE (trace_id, version)`` stays the backstop against a
+writer that bypasses the lock.
 
 FR-DAS-022: no ``is_complete``/``status`` field is ever written — a trace is
 an open-ended forest with no defined "done" point, so a trace risk record is
@@ -41,8 +43,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import psycopg
-
 from data_governance import db
 from data_governance.risk.engine.trace_aggregate import (
     CurrentInteractionRisk,
@@ -52,7 +52,8 @@ from data_governance.risk.engine.trace_aggregate import (
 
 __all__ = ["compute_trace_risk"]
 
-_MAX_ATTEMPTS = 2
+# Serializes the recomputes of one trace until the enclosing transaction ends.
+_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
 
 # "Current" = the latest version per interaction_id within this trace_id,
 # for interactions that still EXIST. DISTINCT ON (interaction_id) ... ORDER BY
@@ -205,7 +206,8 @@ def _record_params(trace_id: str, aggregate: TraceRiskAggregate) -> tuple[dict, 
     return params, normalized
 
 
-def _attempt_in(tx: db.Transaction, trace_id: str) -> None:
+def _compute_in(tx: db.Transaction, trace_id: str) -> None:
+    tx.execute(_LOCK_SQL, (f"risk:trace:{trace_id}",))
     current_records = _fetch_current_records(tx, trace_id)
     aggregate = aggregate_trace_risk(current_records)
     params, normalized = _record_params(trace_id, aggregate)
@@ -221,33 +223,20 @@ def compute_trace_risk(trace_id: str, *, tx: db.Transaction | None = None) -> No
     """Compute and persist the current trace risk record for *trace_id*.
 
     Idempotent: if the freshly-computed record is identical to the latest
-    stored version, nothing is written and no NOTIFY fires.
+    stored version, nothing is written and no NOTIFY fires — including when
+    a concurrent recompute of the same trace got there first (see the module
+    docstring).
 
     When *tx* is provided the whole gather/aggregate/write runs inside the
     caller's transaction — the trace-trigger processor (#102/#164) passes its
     per-item transaction here so the write commits atomically with the
     stream's cursor advance (ADR-0007: an engine failure rolls the cursor
-    back and the item is re-delivered, never silently skipped). No retry in
-    this mode: a ``UNIQUE (trace_id, version)`` collision propagates, the
-    caller's transaction rolls back, and the stream re-delivers the item —
-    the re-delivery IS the retry, and it re-checks idempotency on arrival.
-
-    When *tx* is ``None`` the call owns its transaction and retries once on
-    that collision from a racing concurrent recompute — the retry re-gathers
-    current records and re-checks idempotency, so a retry that lost the race
-    to a winner whose write already matches simply becomes a no-op.
+    back and the item is re-delivered, never silently skipped). The trace
+    lock is then held until the caller's transaction ends. When *tx* is
+    ``None`` the call runs in its own transaction.
     """
     if tx is not None:
-        _attempt_in(tx, trace_id)
+        _compute_in(tx, trace_id)
         return
-
-    last_error: psycopg.errors.UniqueViolation | None = None
-    for _attempt_number in range(_MAX_ATTEMPTS):
-        try:
-            with db.transaction() as own_tx:
-                _attempt_in(own_tx, trace_id)
-            return
-        except psycopg.errors.UniqueViolation as exc:
-            last_error = exc
-            continue
-    raise last_error
+    with db.transaction() as own_tx:
+        _compute_in(own_tx, trace_id)

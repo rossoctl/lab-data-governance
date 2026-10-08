@@ -26,6 +26,7 @@ from data_governance.risk.engine.compute import (
     prepare_interaction_risk,
 )
 from data_governance.risk.engine.opa import OpaDecision
+from tests.risk.engine.interleave import read_between_write_and_commit
 
 _TID = "trace-cx-1"
 _IX_ID = "ix-cx-1"
@@ -268,52 +269,60 @@ def test_notify_fires_on_insert_not_on_skipped_write(seeded: str):
         assert notifications == []
 
 
-# --- retry on UNIQUE (interaction_id, version) collision -----------------------
+# --- concurrent recomputes of one interaction (writers are serialized) ---------
 
 
-def test_racing_computes_collide_and_the_retry_recovers(seeded: str, monkeypatch):
-    """Two concurrent ``compute_interaction_risk(_IX_ID, ...)`` calls both see
-    no cached policy decision (fresh interaction), both call OPA, and both
-    race to insert the first ``interaction_policy_decisions`` version. A
-    barrier holds both threads right before that insert so they submit
-    concurrently: one wins, the other's insert hits
-    ``interaction_policy_decisions_version_uq``, is caught by
-    ``compute_interaction_risk``'s retry loop, and retries — the retry
-    re-gathers evidence, finds the winner's decision already cached (matching
-    fingerprint), reuses it, and writes (or, if the winner already wrote it,
-    no-ops on) the risk record. Final state: no unhandled exception, exactly
-    one decision version, exactly one risk record version."""
-    barrier = threading.Barrier(2)
-    real_execute = psycopg.Cursor.execute
+class _RacingOpaClient(_FakeOpaClient):
+    """A fake that makes every racer wait for the others inside ``evaluate``
+    — i.e. after all of them missed the decision cache — so each one goes
+    on to insert a decision of its own."""
 
-    def _gated_execute(self, sql, params=None, *args, **kwargs):
-        if isinstance(sql, str) and "INSERT INTO interaction_policy_decisions" in sql:
-            barrier.wait(timeout=20)
-        return real_execute(self, sql, params, *args, **kwargs)
+    def __init__(self, decisions: list[OpaDecision], barrier: threading.Barrier):
+        super().__init__(decisions)
+        self._barrier = barrier
 
-    monkeypatch.setattr(psycopg.Cursor, "execute", _gated_execute)
+    def evaluate(self, **kwargs) -> OpaDecision:
+        self._barrier.wait(timeout=20)
+        return super().evaluate(**kwargs)
 
+
+def _race(*targets) -> list[BaseException]:
     errors: list[BaseException] = []
 
-    def _run() -> None:
+    def _run(target) -> None:
         try:
-            # Each thread gets its own fake OPA client — `_FakeOpaClient`
-            # isn't thread-safe, and both racing computes are expected to
-            # produce the identical decision anyway.
-            opa = _FakeOpaClient([_decision(risk_level="high")])
-            compute_interaction_risk(_IX_ID, opa_client=opa)
-        except BaseException as exc:  # noqa: BLE001 - surfaced to the main thread below
+            target()
+        except BaseException as exc:  # noqa: BLE001 - surfaced to the caller
             errors.append(exc)
 
-    t1 = threading.Thread(target=_run)
-    t2 = threading.Thread(target=_run)
-    t1.start()
-    t2.start()
-    t1.join(timeout=30)
-    t2.join(timeout=30)
+    threads = [threading.Thread(target=_run, args=(t,)) for t in targets]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not any(thread.is_alive() for thread in threads)
+    return errors
 
-    assert not t1.is_alive() and not t2.is_alive()
+
+def test_racing_computes_write_one_decision_and_one_record(seeded: str):
+    """Two concurrent ``compute_interaction_risk(_IX_ID, ...)`` calls both
+    miss the decision cache and both call OPA (the barrier holds them there
+    until both have). Serialized on the interaction lock, the second to
+    insert finds the first one's decision under the same evidence
+    fingerprint and reuses it, and the second record write finds an
+    identical record and writes nothing. Final state: no exception, one
+    decision version, one record version."""
+    barrier = threading.Barrier(2)
+    # One fake per thread: `_FakeOpaClient` isn't thread-safe, and both
+    # racing computes produce the identical decision anyway.
+    clients = [_RacingOpaClient([_decision(risk_level="high")], barrier) for _ in range(2)]
+
+    errors = _race(
+        *(lambda c=c: compute_interaction_risk(_IX_ID, opa_client=c) for c in clients)
+    )
+
     assert errors == []
+    assert [len(c.calls) for c in clients] == [1, 1], "both racers reached OPA"
     assert _policy_decision_versions(seeded) == [1]
     assert _all_risk_versions(seeded) == [1]
     row = _latest_risk_row(seeded)
@@ -321,64 +330,61 @@ def test_racing_computes_collide_and_the_retry_recovers(seeded: str, monkeypatch
     assert row[1] == "high"
 
 
-def test_racing_prepares_collide_and_the_decision_retry_recovers(
-    seeded: str, monkeypatch
-):
-    """The same race as above, but on the SPLIT path the leg-ready consumer
-    actually runs (issue #158). Two concurrent ``prepare_interaction_risk``
-    calls both see no cached decision, both call OPA, and the same barrier
-    makes them submit the ``interaction_policy_decisions`` insert together.
-
-    ``compute_interaction_risk``'s retry loop is not in play here — the
-    caller holds the write half — so this proves the recovery lives low
-    enough to protect the split path on its own:
-    ``_get_or_refresh_decision`` absorbs the collision, re-enters through
-    the cache lookup, finds the winner's decision under the same evidence
-    fingerprint, and reuses it. Both callers get a usable write closure, no
-    exception escapes toward the observer, and the table holds exactly one
-    decision version."""
+def test_racing_prepares_and_writes_on_the_split_path(seeded: str):
+    """The same race on the SPLIT path the leg-ready consumer runs (issue
+    #158): two concurrent ``prepare_interaction_risk`` calls, then BOTH
+    returned write halves run concurrently, each in its own transaction —
+    as two deliveries of legs of one interaction would. Nothing escapes
+    toward the observer, and each table holds exactly one version."""
     barrier = threading.Barrier(2)
-    real_execute = psycopg.Cursor.execute
+    clients = [_RacingOpaClient([_decision(risk_level="high")], barrier) for _ in range(2)]
+    closures: list = []
 
-    def _gated_execute(self, sql, params=None, *args, **kwargs):
-        if isinstance(sql, str) and "INSERT INTO interaction_policy_decisions" in sql:
-            barrier.wait(timeout=20)
-        return real_execute(self, sql, params, *args, **kwargs)
-
-    monkeypatch.setattr(psycopg.Cursor, "execute", _gated_execute)
-
-    errors: list[BaseException] = []
-    closures: list[object] = []
-
-    def _run() -> None:
-        try:
-            # Per-thread fake: `_FakeOpaClient` isn't thread-safe, and both
-            # racing computes are expected to produce the same decision.
-            opa = _FakeOpaClient([_decision(risk_level="high")])
-            closures.append(prepare_interaction_risk(_IX_ID, opa_client=opa))
-        except BaseException as exc:  # noqa: BLE001 - surfaced below
-            errors.append(exc)
-
-    t1 = threading.Thread(target=_run)
-    t2 = threading.Thread(target=_run)
-    t1.start()
-    t2.start()
-    t1.join(timeout=30)
-    t2.join(timeout=30)
-
-    assert not t1.is_alive() and not t2.is_alive()
-    assert errors == [], "a lost decision race must not escape the engine"
+    errors = _race(
+        *(
+            lambda c=c: closures.append(prepare_interaction_risk(_IX_ID, opa_client=c))
+            for c in clients
+        )
+    )
+    assert errors == []
     assert len(closures) == 2
     assert _policy_decision_versions(seeded) == [1]
 
-    # The write half still works after the race: running one closure writes
-    # the single expected record version.
-    with db.transaction() as tx:
-        closures[0](tx)
+    write_barrier = threading.Barrier(2)
+
+    def _deliver(write) -> None:
+        write_barrier.wait(timeout=20)
+        with db.transaction() as tx:
+            write(tx)
+
+    errors = _race(*(lambda w=w: _deliver(w) for w in closures))
+    assert errors == []
     assert _all_risk_versions(seeded) == [1]
-    row = _latest_risk_row(seeded)
-    assert row is not None
-    assert row[1] == "high"
+
+
+def test_a_record_read_before_the_other_writer_commits_writes_nothing(
+    seeded: str, monkeypatch
+):
+    """The schedule no retry can repair, because nothing fails: the second
+    writer reads the latest record while the first has inserted but not
+    committed (it sees nothing), then inserts after the commit — and its
+    in-statement ``MAX(version) + 1`` lands a silent, identical version 2.
+    The interaction lock makes that schedule impossible: the second writer
+    cannot read until the first commits, then finds the identical record."""
+    opa = _FakeOpaClient([_decision(risk_level="high", triggered_rules=["DG-001"])])
+    first = prepare_interaction_risk(_IX_ID, opa_client=opa)
+    second = prepare_interaction_risk(_IX_ID, opa_client=opa)
+    assert len(opa.calls) == 1, "the second prepare reuses the cached decision"
+
+    errors = read_between_write_and_commit(
+        first,
+        second,
+        read_marker="FROM interaction_risk_records WHERE interaction_id = %s",
+        monkeypatch=monkeypatch,
+    )
+
+    assert errors == []
+    assert _all_risk_versions(seeded) == [1]
 
 
 # --- corner cases ---------------------------------------------------------------
