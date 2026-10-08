@@ -183,8 +183,10 @@ until the run ends (principle 6).
 E2E_APP=lineage_lab E2E_APP_NS=lineage-lab .venv/bin/pytest tests/live -m live -rA   # lineage_lab, ~4 min
 ```
 
-Add `E2E_DESTRUCTIVE=1` to the first command to run L12, which scales OPA to zero and back;
-without it L12 skips. Do not pass `-x`: a scenario that needs L1's trace skips itself when L1 did
+Add `E2E_DESTRUCTIVE=1` to the first command to run L12, L16 and L17: L12 scales OPA to zero and
+back, L16 scales leg-ready to two replicas and back, and L17 sends a Host the producer truncates (on
+a DG that cannot parse it, leg-ready stops for the whole cluster until a fixed image is deployed).
+Without it they skip. Do not pass `-x`: a scenario that needs L1's trace skips itself when L1 did
 not run, and the rest must still run.
 
 Expected today, with `E2E_VARIANT=rogue` and `E2E_DESTRUCTIVE=1`:
@@ -274,16 +276,18 @@ L15 join the ledger too when it is on); L13 needs the alerts processor. Both are
 | L5 | four probes at once into L1's trace | four interactions; the forest holds (in-trace concurrency) | 2, 3 |
 | L6 | two turns at once on fresh traces with different guests | both forests, lineage audits and ledger joins hold; no cross-trace payload leakage; no shared record (cross-trace isolation; red on app commits before agent-examples-snp #17) | 5 |
 | L7 | a benign body, then the card payload to the PSP as external name and internal name, in L1's trace | the benign leg zero findings, PUBLIC, none/allow; identical card classification; external critical/block [DG-001, DG-004, E2E-INVERT]; internal none/allow; L4's exchange none/allow; rollup critical/block; then R1 and the risk shape of T | 8, 9, 10, 12, 13 |
-| L8 | five probes at once into a fresh trace | three distinct (risk, enforcement) pairs in one trace; the PI-only internal probe's explanation joins two rules (the two combining axes won by different rules); rollup and union of rules | 11, 13, 14 |
+| L8 | eight probes at once into a fresh trace | three distinct (risk, enforcement) pairs in one trace; the PI-only internal probe's explanation joins two rules (the two combining axes won by different rules); rollup and union of rules; the PSP under three more names decides by category (FQDN with a trailing dot and ClusterIP internal, IPv6 literal external), peer.host as sent | 11, 13, 14 |
 | L9 | (L3's exchange) | version 1 `[request]` → version 2 `[request, response]`; ≥ 2 decision fingerprints; verdict from the request leg | 4, 6 (risk half) |
 | L10 | the internal card probe again, byte-identical | no re-version anywhere; the new interaction equals the old at v1 | FR-DAS-014 |
 | L11 | benign tools/call to an external reflector whose JSON-RPC result is PII | request leg zero findings, response leg PII, no external-sharing rule, none/allow — data that only came back was not sent (#271, fixed by #274) | — |
 | L12 | OPA scaled to zero (opt-in) | cursor held, nothing skipped, exactly one version after catch-up | #158 |
+| L16 | leg-ready scaled to two, eight probes at once (opt-in) | one process drains; no duplicate or shrinking record version; no restart | — |
+| L17 | a 258-byte Host the producer truncates (opt-in) | peer.host arrives truncated; classified external, critical/block; no restart | — |
 | L13 | PI probe, then card external, then again (needs the alerts processor) | medium head → critical head superseding it → duplicate_count 1 | #104 |
 | L14 | (#258, `ROSSOCTL_VARIANT` on booking-agent) one scripted turn | rogue: the partner request carries the guest's name, classifies PII and decides critical/block [DG-001]; fixed: `dates` and `note` only, no PII, none/allow; xfails on a turn where the model does not make the call (its choice; coverage) | — |
 | L15 | a full turn whose client closes after 20 s without reading a byte | entry response span not `ok` (abandoned), response leg `error=true`, no response payload, the turn still derives under its root; the ledger joins | — |
 
-Order: A. lineage and the plugin (L1–L6, nothing read from the risk tables; every real turn checked by shape and by the ledger), B. classification and risk (L7–L13), C. the app's behaviour (L14–L15, the cut turn last).
+Order: A. lineage and the plugin (L1–L6, nothing read from the risk tables; every real turn checked by shape and by the ledger), B. classification and risk (L7–L13, with the opt-in L16–L17 after L12), C. the app's behaviour (L14–L15, the cut turn last).
 
 Issue #161's scenario 7 (response leg only) is impossible by contract and recorded as N/A.
 

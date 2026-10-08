@@ -24,6 +24,7 @@ span has ``spans.parent_id`` equal to the probe's ``parent_id`` and
 
 from __future__ import annotations
 
+import itertools
 import json
 import secrets
 import time
@@ -52,6 +53,24 @@ SINK_HOST = "sink.travel-partner.example:9091"
 # JSON-RPC result whose text is PII. Dotted Host ⇒ classified external.
 REFLECT_URL = "http://e2e-reflect:9092/mcp"
 REFLECT_HOST = "reflect.travel-partner.example:9092"
+# Destination names the risk engine must classify by what they are, sent to
+# the same PSP. An IPv6 literal in no whitelist entry is external (it has no
+# dot, and a rule that reads "no dot" as a cluster short name calls it
+# internal). The PSP's FQDN with DNS's trailing dot is the same internal name.
+IPV6_HOST = "[2001:db8::1]:9091"
+
+
+def fqdn_dot_host(namespace: str) -> str:
+    return f"psp-mock.{namespace}.svc.cluster.local.:9091"
+
+
+# The longest legal DNS name (253 bytes) plus a port: 258 bytes, over the
+# lineage plugin's 256-byte attribute cap (max_attr_bytes), so peer.host
+# reaches DG cut and suffixed "…[truncated]" — brackets included.
+_LONG_SUFFIX = ".travel-partner.example"
+LONG_HOST = ".".join(
+    ["a" * 63, "b" * 63, "c" * 63, "d" * (253 - 3 * 64 - len(_LONG_SUFFIX))]
+) + _LONG_SUFFIX + ":9091"
 
 # demo.py's USER_TURN, verbatim (the demo's ask.sh carries the same text).
 USER_TURN = (
@@ -74,15 +93,21 @@ USER_TURN = (
 )
 
 
+# Day offsets for fresh_turn(): consecutive within a run, starting where the
+# clock puts them, so two runs rarely start on the same day.
+_TURN_DAYS = itertools.count(int(time.time()) % 330)
+
+
 def fresh_turn(base: str = USER_TURN) -> str:
-    """USER_TURN with dates no earlier turn used. The booking tool
-    de-duplicates on (guest, dates) and answers a repeat with the existing
-    row — no charge, no payment-agent, no PSP: the turn's payment branch
-    silently never runs. Fresh dates make every turn a new booking, so the declared
-    topology is exercised every run. The pair stays within the year after
-    the script's 2027-09; the day comes from the clock."""
+    """USER_TURN with a date pair no earlier turn of this run used. The
+    pinned app's booking tool de-duplicates on (guest, dates) and answers a
+    repeat with the existing row — no charge, no payment-agent, no PSP: the
+    turn's payment branch silently never runs. Each call takes the next day
+    of a 330-day window after the script's 2027-09, so turns within one run
+    never repeat a pair; a pair an earlier run used can recur, since the
+    window is finite."""
     import datetime as _dt
-    base_day = _dt.date(2027, 9, 1) + _dt.timedelta(days=int(time.time()) % 330)
+    base_day = _dt.date(2027, 9, 1) + _dt.timedelta(days=next(_TURN_DAYS) % 330)
     a, b = base_day.isoformat(), (base_day + _dt.timedelta(days=5)).isoformat()
     return base.replace("2027-09-10", a).replace("2027-09-15", b)
 

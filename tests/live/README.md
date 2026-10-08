@@ -23,7 +23,7 @@ alerts where deployed). It runs only under `-m live`, and only on a cluster that
 | `pins.<app>.yaml` | gate | an app's own template when it has its own image and shim (`pins.lineage_lab.yaml`); `pins.yaml` otherwise. Both stay `FILL_ME`: a run loads the filled, gitignored `pins.<app>.local.yaml` that `ops/fill_pins.py` writes |
 | `../live_offline/` | guard | runs in the default suite: the report's finding labels and the expected-forest engine |
 | `driver.py` | drive | makes traffic happen from inside the cluster (`kubectl exec` into `demo-client`, so its sidecar is the entry of every trace): one scripted turn, one probe, both under minted ids; the four payload builders |
-| `test_travel_live.py` | drive | scenarios L1–L15, each docstring the expectation card written before the run |
+| `test_travel_live.py` | drive | scenarios L1–L17, each docstring the expectation card written before the run |
 | `settle.py` | read | when the tables are ready to read: no exchange of the trace in flight (every request span has its response), the trace quiet, every deployed stream's cursor at its head |
 | `checks.py` | read | the recorder: every property examined becomes one row (case, id, property, expected, actual, status, comment) in `<case>/checks.json` and the run's `checks.csv`; KNOWN marks a failure inside a declared gap or a filed defect |
 | `shape.py` | read | the assertions: the lineage forest, the risk invariants, plus the per-interaction readers the scenarios use |
@@ -64,7 +64,7 @@ export E2E_CORTEX_DIR=/path/to/cortex
 .venv/bin/pytest tests/live -m live -rA
 ```
 
-`E2E_DESTRUCTIVE=1` enables L12 (scales OPA to zero and back). `E2E_ACCEPT_ALEMBIC_HEAD=<revision>`
+`E2E_DESTRUCTIVE=1` enables L12 (scales OPA to zero and back), L16 (scales leg-ready to two and back) and L17 (a host the producer truncates; on a DG that cannot parse it, leg-ready stops until a fixed image is deployed). `E2E_ACCEPT_ALEMBIC_HEAD=<revision>`
 accepts one named later migration head on the cluster (recorded in the run; strict when unset).
 The other tunables (`E2E_SETTLE_TIMEOUT`, `E2E_QUIET_SECONDS`, namespaces, API URL, run directory)
 are listed in `docs/LIVE-E2E.md`.
@@ -169,11 +169,13 @@ LLM's plan varies between turns, the shape does not.
 | L6 | two turns at once on two fresh traces, different guests | both forests, lineage audits and ledger joins hold; no cross-trace payload mention (I2); no shared record id (cross-trace isolation; red on app commits before agent-examples-snp #17, the shared A2A context) | |
 | **B. classification and risk** — known bytes under the test catalog | | | |
 | L7 | benign, card → external and card → internal, in T | the benign leg PUBLIC and none/allow; identical card classification, opposite verdicts; L4's exchange none/allow with `{"payload": null}` both sides; rollup critical/block; then R1 and the risk shape of T (an entity-set mismatch is the open defect #279: a KNOWN row) | |
-| L8 | five probes at once, fresh trace | the five predicted verdicts, three distinct (risk, enforcement) pairs, rollup = union of rules | |
+| L8 | eight probes at once, fresh trace | the five predicted verdicts, three distinct (risk, enforcement) pairs, rollup = union of rules; the card under three more names for the PSP — its FQDN with a trailing dot and its ClusterIP decide internal, the IPv6 literal `[2001:db8::1]` external; every peer.host as sent | |
 | L9 | (L3's exchange) | v1 `[request]` then v2 `[request, response]`, ≥ 2 decision fingerprints, verdict from the request leg | sink |
 | L10 | the internal card probe again, byte-identical | no re-version anywhere; the new interaction equals the old at v1 | |
 | L11 | benign tools/call to the external reflector whose result is PII, in T | request leg zero findings, response leg PII; no external-sharing rule fires — data that only came back was not sent (#271/#274); none/allow | sink |
 | L12 | card → external with OPA scaled to zero, then back | leg-ready holds the cursor, nothing skipped, exactly one version after catch-up | `E2E_DESTRUCTIVE=1` |
+| L16 | leg-ready scaled to two, eight card → external probes at once, fresh trace | one process in the drain loop throughout; every probe recorded; no two consecutive identical versions, no version with fewer legs; no leg-ready restart | `E2E_DESTRUCTIVE=1` |
+| L17 | card → the PSP under a 258-byte Host (the producer truncates it to `…[truncated]`) | peer.host arrives truncated; the trace settles; critical/block; no leg-ready restart | `E2E_DESTRUCTIVE=1` |
 | L13 | PI probe, card → external, the same again, fresh trace | one open alert medium → superseded by critical → `duplicate_count` 1 | alerts processor |
 | **C. the app's behaviour** | | | |
 | L14 | (#258, `ROSSOCTL_VARIANT` on booking-agent) one scripted turn | rogue: the partner request carries the guest's name, classifies PII, critical/block [DG-001]; fixed: `dates` and `note` only, no PII, none/allow; xfails on a turn where the model does not make the call | variant |

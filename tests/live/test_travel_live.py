@@ -37,6 +37,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import time
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -44,9 +45,9 @@ import pytest
 from tests.live import audit, checks, driver, ledger, settle, shape
 from tests.live.checks import Checks
 from tests.live.driver import (
-    EXTERNAL_HOST, PSP_NOBODY_URL, REFLECT_HOST, REFLECT_URL, SINK_HOST, SINK_URL, card_pii,
-    credential, guest_turn, benign, mint_span_id, mint_trace_id, pi_only, probe, probes_concurrent,
-    turn, turn_cut, turns_concurrent,
+    EXTERNAL_HOST, IPV6_HOST, LONG_HOST, PSP_NOBODY_URL, REFLECT_HOST, REFLECT_URL, SINK_HOST,
+    SINK_URL, card_pii, credential, fqdn_dot_host, guest_turn, benign, mint_span_id,
+    mint_trace_id, pi_only, probe, probes_concurrent, turn, turn_cut, turns_concurrent,
 )
 
 # A live session for another app skips this module (see test_lab_live.py).
@@ -136,6 +137,22 @@ def _request_summary(record):
 
 def _verdict(rec: dict) -> str:
     return f"{rec['risk_level']}/{rec['enforcement_type']}"
+
+
+def _peer_host(dg, trace_id, parent_id) -> str | None:
+    """``lineage.peer.host`` on a probe's request span: the Host the sidecar
+    saw, which is what the risk engine classifies."""
+    rows = dg.q("""
+        SELECT attributes->>'lineage.peer.host' FROM spans
+        WHERE trace_id = %s AND parent_id = %s AND attributes->>'lineage.role' = 'request'""",
+        (trace_id, parent_id))
+    return rows[0][0] if rows else None
+
+
+def _leg_ready_restarts(kube, env) -> int:
+    pods = kube.json(["get", "pod", "-l", "app.kubernetes.io/name=data-governance-leg-ready"],
+                     ns=env.dg_ns)["items"]
+    return sum(cs.get("restartCount", 0) for p in pods for cs in p["status"].get("containerStatuses", []))
 
 
 # =============================================================================
@@ -519,11 +536,18 @@ L8_EXPECT = {
     "cred_ext": dict(risk="critical", enforcement="block", rules=["DG-004", "E2E-CRED-EXT"],
                      allowed=[], confidence=0.95, explanation=explanation("DG-004")),
 }
+# The card payload under three more names for the same PSP: the verdict is the
+# destination's category, so each must decide like card_int or card_ext.
+L8_EXPECT |= {
+    "card_int_dot": L8_EXPECT["card_int"],        # psp-mock.<ns>.svc.cluster.local.
+    "card_int_clusterip": L8_EXPECT["card_int"],  # the Service's ClusterIP, a listed range
+    "card_ext_ipv6": L8_EXPECT["card_ext"],       # [2001:db8::1], in no whitelist entry
+}
 
 
 def test_L8_mixed_levels_in_one_trace(env, kube, dg, capabilities, catalog, run_record, state):
-    """L8 — five probes fired at once into a fresh trace, under the test
-    catalog (#161 scenarios 11, 13, 14).
+    """L8 — eight probes fired at once into a fresh trace, under the test
+    catalog (#161 scenarios 11, 13, 14), plus the destination names.
 
     Expect, per probe (rules from interaction_risk_records, the rest from
     the stored decision): card→external critical/block [DG-001, DG-004,
@@ -534,24 +558,39 @@ def test_L8_mixed_levels_in_one_trace(env, kube, dg, capabilities, catalog, run_
     credential→external critical/block [DG-004, E2E-CRED-EXT] (no PII, so
     no DG-001). Three distinct rule-driven (risk, enforcement) pairs in one
     trace; the trace rolls up critical/block with the union of rules; the
-    five probes are five interactions; shape holds.
+    probes are as many interactions; shape holds.
+
+    The same card payload also goes to the PSP under three more Host names,
+    each decided by its category: the in-cluster FQDN with DNS's trailing
+    dot and the Service's ClusterIP (a whitelisted range) are internal,
+    none/allow; the IPv6 literal 2001:db8::1 is external, critical/block.
+    Every probe's request span must carry the Host exactly as sent, so a
+    row cannot pass on a name the proxy rewrote.
     """
     rec = run_record.scenario("L8")
     with Checks("L8", rec, raise_at_exit=True) as ch:
         T2 = mint_trace_id()
         state["T2"] = T2
-        state["traces"].add(T2)
+        state.setdefault("traces", set()).add(T2)
         specs = [
             dict(trace_id=T2, parent_id=mint_span_id(), label="card_ext", payload=card_pii(), host=EXTERNAL_HOST),
             dict(trace_id=T2, parent_id=mint_span_id(), label="card_int", payload=card_pii()),
             dict(trace_id=T2, parent_id=mint_span_id(), label="pi_int", payload=pi_only()),
             dict(trace_id=T2, parent_id=mint_span_id(), label="cred_int", payload=credential()),
             dict(trace_id=T2, parent_id=mint_span_id(), label="cred_ext", payload=credential(), host=EXTERNAL_HOST),
+            dict(trace_id=T2, parent_id=mint_span_id(), label="card_int_dot", payload=card_pii(),
+                 host=fqdn_dot_host(env.app_ns)),
+            dict(trace_id=T2, parent_id=mint_span_id(), label="card_int_clusterip", payload=card_pii(),
+                 host=f"{kube.json(['get', 'svc', 'psp-mock'], ns=env.app_ns)['spec']['clusterIP']}:9091"),
+            dict(trace_id=T2, parent_id=mint_span_id(), label="card_ext_ipv6", payload=card_pii(), host=IPV6_HOST),
         ]
         results = probes_concurrent(kube, specs)
         rec.write("probes.json", [r.__dict__ for r in results])
-        ch.check("probes.outcomes", "the five probes were answered", ["ok"] * 5, [r.outcome for r in results])
+        ch.check("probes.outcomes", "every probe was answered", ["ok"] * len(specs), [r.outcome for r in results])
         _settle(ch, env, dg, capabilities, T2, rec)
+        for sp in specs:
+            ch.check(f"{sp['label']}.peer_host", f"{sp['label']}: peer.host as sent",
+                     sp.get("host") or "psp-mock:9091", _peer_host(dg, T2, sp["parent_id"]))
 
         records = shape.current_records(dg, T2)
         seen = {}
@@ -567,7 +606,7 @@ def test_L8_mixed_levels_in_one_trace(env, kube, dg, capabilities, catalog, run_
             ch.check(f"{r.label}.confidence", f"{r.label}: confidence", exp["confidence"], d["confidence"])
             ch.check(f"{r.label}.explanation", f"{r.label}: explanation", exp["explanation"], d["explanation"])
         rec.write("per_probe.json", seen)
-        ch.check("probes.interactions", "five probes, five interactions", 5, len({v["interaction"] for v in seen.values()}))
+        ch.check("probes.interactions", "one interaction per probe", len(specs), len({v["interaction"] for v in seen.values()}))
         pairs = sorted({(v["record"]["risk_level"], v["record"]["enforcement_type"]) for v in seen.values()})
         ch.check("probes.distinct_pairs", "distinct (risk, enforcement) pairs in one trace", "≥ 3", pairs, ok=len(pairs) >= 3)
 
@@ -577,7 +616,7 @@ def test_L8_mixed_levels_in_one_trace(env, kube, dg, capabilities, catalog, run_
         want = {"DG-001", "DG-004", "E2E-INVERT", "E2E-INT-DATA", "E2E-PI-INT", "E2E-CRED-INT", "E2E-CRED-EXT"}
         ch.check("trace.rules_union", "trace rules ⊇ the union of the five probes' rules", sorted(want),
                  sorted(set(trace["rules"]) & want), ok=set(trace["rules"]) >= want)
-        _forest(ch, dg, rec, T2, state, expect_entries=5, expect_children=False)  # five probes, no turn
+        _forest(ch, dg, rec, T2, state, expect_entries=len(specs), expect_children=False)  # probes, no turn
         rec.write("risk.json", shape.assert_risk_shape(dg, T2, capabilities, entity_set="record", checks=ch))
 
 
@@ -786,6 +825,111 @@ def test_L12_opa_outage_holds_the_cursor(env, kube, dg, capabilities, catalog, r
         bumped = {i: (before[i], after[i]) for i in before if after.get(i) != before[i]}
         ch.check("catchup.no_duplicates", "interactions re-versioned by the catch-up without new evidence", {}, bumped)
         rec.write("risk.json", shape.assert_risk_shape(dg, T, capabilities, entity_set="record", checks=ch))
+
+
+# --- L16 (opt-in, destructive) -------------------------------------------------
+
+
+def _draining_leg_ready(dg) -> int:
+    """leg-ready processes inside the drain loop: each holds a LISTEN
+    connection on the leg-ready channel for its wake-up."""
+    (n,) = dg.one("SELECT count(*) FROM pg_stat_activity WHERE query = %s",
+                  ("LISTEN dg_interaction_leg_ready",))
+    return int(n)
+
+
+def test_L16_two_leg_ready_consumers(env, kube, dg, capabilities, catalog, run_record, state):
+    """L16 — two leg-ready processes at once: only one drains, and no risk
+    record is written twice or out of order. Opt-in with E2E_DESTRUCTIVE=1:
+    it scales the leg-ready Deployment to two replicas and back.
+
+    The overlap is real in production (a replacement pod starts while an
+    evicted or exiting one is still inside its last drain); two replicas
+    hold it open on purpose. Drive: eight card probes to the external name,
+    fired at once into a fresh trace while both replicas run. Expect: one
+    process in the drain loop throughout (the other waits for the
+    sole-consumer lock); every probe's interaction gets a record; no
+    interaction has two consecutive identical versions and none loses a leg
+    between versions; leg-ready's restart count does not grow. Without the
+    lock both drain, and the race leaves duplicate versions or a restart —
+    by chance, so a red row there is proof and a green one is not.
+    """
+    if not env.destructive:
+        pytest.skip("E2E_DESTRUCTIVE=1 to run the two-consumer drill")
+    rec = run_record.scenario("L16")
+    with Checks("L16", rec, raise_at_exit=True) as ch:
+        restarts = _leg_ready_restarts(kube, env)
+        kube.run(["scale", "deploy/data-governance-leg-ready", "--replicas=2"], ns=env.dg_ns)
+        try:
+            kube.run(["rollout", "status", "deploy/data-governance-leg-ready", "--timeout=180s"],
+                     ns=env.dg_ns, timeout=210)
+            time.sleep(10)  # both past startup: one in the drain loop, one at the lock
+            T3 = mint_trace_id()
+            state.setdefault("traces", set()).add(T3)
+            specs = [dict(trace_id=T3, parent_id=mint_span_id(), label=f"card_ext_{i}", payload=card_pii(),
+                          host=EXTERNAL_HOST) for i in range(8)]
+            draining = [_draining_leg_ready(dg)]
+            results = probes_concurrent(kube, specs)
+            rec.write("probes.json", [r.__dict__ for r in results])
+            ch.check("probes.outcomes", "every probe was answered", ["ok"] * len(specs), [r.outcome for r in results])
+            _settle(ch, env, dg, capabilities, T3, rec)
+            draining.append(_draining_leg_ready(dg))
+            rec.write("draining.json", draining)
+            ch.check("consumers.draining", "leg-ready processes in the drain loop, before and after the probes",
+                     [1, 1], draining)
+            records = shape.current_records(dg, T3)
+            histories = {iid: shape.record_history(dg, iid) for iid in records}
+            rec.write("histories.json", histories)
+            ch.check("records.count", "one interaction with a record per probe", len(specs), len(records))
+            repeated = sorted(iid for iid, h in histories.items()
+                              if any({**a, "version": 0} == {**b, "version": 0} for a, b in pairwise(h)))
+            ch.check("records.no_duplicate_version", "interactions with two consecutive identical versions", [], repeated)
+            shrunk = sorted(iid for iid, h in histories.items()
+                            if any(not set(a["legs"]) <= set(b["legs"]) for a, b in pairwise(h)))
+            ch.check("records.legs_never_shrink", "interactions whose newer version evidences fewer legs", [], shrunk)
+        finally:
+            kube.run(["scale", "deploy/data-governance-leg-ready", "--replicas=1"], ns=env.dg_ns)
+            kube.run(["rollout", "status", "deploy/data-governance-leg-ready", "--timeout=180s"],
+                     ns=env.dg_ns, timeout=210)
+        ch.check("leg_ready.restarts", "leg-ready container restarts during the drill", restarts,
+                 _leg_ready_restarts(kube, env))
+
+
+# --- L17 (opt-in, destructive on a DG without the fix) -------------------------
+
+
+def test_L17_truncated_host_is_classified(env, kube, dg, capabilities, catalog, run_record, state):
+    """L17 — a destination host the sidecar truncates still classifies, and
+    the leg stream keeps moving. Opt-in with E2E_DESTRUCTIVE=1: on a DG
+    whose host parsing raises, this leg stops leg-ready for the whole
+    cluster (it exits, and its restart meets the same leg) until a fixed
+    image is deployed.
+
+    Drive: the card payload to the PSP with a 258-byte Host — the longest
+    legal DNS name plus a port. The lineage plugin caps attributes at 256
+    bytes and appends "…[truncated]", so DG receives a host with brackets.
+    Expect: peer.host arrives truncated (the condition is real); the trace
+    settles; the record is external, critical/block; leg-ready's restart
+    count does not grow.
+    """
+    if not env.destructive:
+        pytest.skip("E2E_DESTRUCTIVE=1 to send a host the producer truncates")
+    rec = run_record.scenario("L17")
+    with Checks("L17", rec, raise_at_exit=True) as ch:
+        restarts = _leg_ready_restarts(kube, env)
+        T4, p = mint_trace_id(), mint_span_id()
+        state.setdefault("traces", set()).add(T4)
+        r = probe(kube, trace_id=T4, parent_id=p, label="card_long_host", payload=card_pii(), host=LONG_HOST)
+        rec.write("probe.json", r.__dict__)
+        ch.check("probe.outcome", "the probe was answered", "ok", r.outcome)
+        _settle(ch, env, dg, capabilities, T4, rec)
+        host = _peer_host(dg, T4, p)
+        ch.check("peer_host.truncated", "peer.host arrives cut by the producer's cap", "…[truncated] suffix",
+                 host, ok=bool(host) and host.endswith("…[truncated]"))
+        record = shape.current_records(dg, T4)[shape.interaction_of_probe(dg, T4, p)]
+        rec.write("record.json", record)
+        ch.check("record.verdict", "verdict for the truncated external host", "critical/block", _verdict(record))
+        ch.check("leg_ready.restarts", "leg-ready container restarts", restarts, _leg_ready_restarts(kube, env))
 
 
 # --- L13 (needs the alerts processor) ------------------------------------------
