@@ -5,6 +5,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 .ruff_cache/
+# Live e2e tier run records (tests/live): per-run evidence, never committed.
+tests/live/runs/
 build/
 dist/
 uv.lock
@@ -71,3 +73,4 @@ classification/output/
 /docs/CUTOVER-two-span.md
 /docs/REVIEWER-QUICKSTART.md
 /docs/reading-the-sidecar-algorithm.md
+tests/live/pins.*.local.yaml

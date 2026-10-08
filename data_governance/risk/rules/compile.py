@@ -14,6 +14,9 @@ this to a runtime "policy created" event; that wiring is out of scope here.
 from __future__ import annotations
 
 import functools
+import json
+import os
+from pathlib import Path
 
 from data_governance.risk.rules import catalog
 from data_governance.risk.rules.rego import compile_policy
@@ -22,14 +25,35 @@ __all__ = ["compile_bundle", "reload"]
 
 
 @functools.lru_cache(maxsize=1)
-def compile_bundle() -> str:
-    """The shipped catalog (``catalog.load_rules_source()``) compiled to
-    Rego, memoized for the process lifetime like
-    :func:`catalog.load_rules_source` itself. Call :func:`reload` after the
-    catalog file changes on disk so the next call recompiles from the fresh
-    JSON rather than serving a stale bundle."""
-    policy = catalog.load_rules_source()
-    return compile_policy(policy)
+def _shipped_bundle() -> str:
+    """The shipped catalog compiled to Rego, memoized for the process
+    lifetime like :func:`catalog.load_rules_source` itself."""
+    return compile_policy(catalog.load_rules_source())
+
+
+def compile_bundle(path: str | os.PathLike[str] | None = None) -> str:
+    """Compile a rule catalog to the Rego module OPA serves.
+
+    With no *path* (the production default) this is the shipped catalog
+    (``catalog.load_rules_source()``), memoized for the process lifetime;
+    call :func:`reload` after the catalog file changes on disk so the next
+    call recompiles from the fresh JSON rather than serving a stale bundle.
+
+    With a *path*, the JSON document at that path is loaded, validated
+    against ``schema/policy.schema.json`` and compiled — never memoized, so
+    two calls with different files never share a result. This is the one
+    sanctioned way to put a catalog other than the shipped one in front of
+    OPA (``deploy/create-opa-configmap.sh [catalog.json]``): the same
+    compiler, the same schema check, the same ConfigMap path, so a test or
+    a staging catalog can never reach the cluster by a route production
+    rules do not take. Raises ``FileNotFoundError`` for a missing file and
+    ``jsonschema.ValidationError`` for a document that does not conform.
+    """
+    if path is None:
+        return _shipped_bundle()
+    with Path(path).open(encoding="utf-8") as f:
+        policy = json.load(f)
+    return compile_policy(policy, validate=True)
 
 
 def reload() -> None:
@@ -37,5 +61,5 @@ def reload() -> None:
     :mod:`catalog`'s raw-JSON cache, so the next :func:`compile_bundle` call
     re-reads ``rules_source.json`` from disk and recompiles it — clearing
     only one of the two caches would let the other serve stale data."""
-    compile_bundle.cache_clear()
+    _shipped_bundle.cache_clear()
     catalog.reload()

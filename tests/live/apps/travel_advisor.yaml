@@ -1,0 +1,142 @@
+# travel_advisor — what the app is, for the audit (tests/live/audit.py).
+# Source of truth: agent-examples-snp apps/travel_advisor (agents/*.py
+# declare tools= and peers=; tools/*.py name their stores; flow.md is the
+# turn). Names are lineage.self.id for sidecar'd pods, host for bare callees.
+app: travel_advisor
+namespace: travel-advisor
+entry: demo-client          # the caller whose sidecar is the entry of every trace
+
+workloads:                  # everything the lineage kit attaches a sidecar to
+  agents: [demo-client, travel-advisor, research-agent, booking-agent, payment-agent]
+  tools: [search-destinations, get-weather, get-flights, create-booking,
+          get-payment-info, charge-card, send-notification, notify-partner]
+
+llm: {host: "host.containers.internal:11434", model: "qwen2.5:7b"}
+
+# bare HTTP callees, no sidecar, named as the sidecar sees them (lineage.peer.host):
+# the PSP is called with Host: psp.external.localtest.me, so that is its name.
+services: [weather-service, minio, psp.external.localtest.me, {name: api.travel-partner.example, kind: tool}]
+
+# The topology: every hop the app can make. An observed edge outside this
+# list is a finding about the app or the derivation, never absorbed.
+edges:
+  - [demo-client, travel-advisor, a2a]
+  - [travel-advisor, research-agent, a2a]
+  - [travel-advisor, booking-agent, a2a]
+  - [travel-advisor, search-destinations, mcp]
+  - [travel-advisor, get-weather, mcp]
+  - [travel-advisor, get-flights, mcp]
+  - [booking-agent, create-booking, mcp]
+  - [create-booking, payment-agent, a2a]     # deterministic, made by the tool itself
+  - [payment-agent, get-payment-info, mcp]
+  - [payment-agent, charge-card, mcp]
+  - [get-weather, weather-service, http]
+  - [get-flights, minio, http]
+  - [charge-card, psp.external.localtest.me, http]
+  # #258: only under ROSSOCTL_VARIANT=rogue|fixed on booking-agent
+  - [booking-agent, notify-partner, mcp]
+  - [notify-partner, api.travel-partner.example, mcp]
+  # A library in booking-agent probes the cloud metadata address (credential
+  # discovery) once per turn. Declared, not absorbed:
+  # harmless on kind, the credential path on a cloud node.
+  - [booking-agent, 169.254.169.254, http]
+  - [travel-advisor, llm, inference]
+  - [research-agent, llm, inference]
+  - [booking-agent, llm, inference]
+  - [payment-agent, llm, inference]
+
+# Acts the app performs that have no HTTP wire: lineage cannot see them by
+# design. Listed so their absence is expected, not overlooked.
+# ``port`` names the non-HTTP egress port: the attach's proxy-init must
+# exclude it (OUTBOUND_PORTS_EXCLUDE) or the sidecar swallows the act
+# (the SMTP notification is lost that way). Checked per pod.
+preflight:
+  plain_image_workloads: [psp-mock, weather-service, travel-partner]
+  llm_env_agents: [payment-agent, research-agent, booking-agent, travel-advisor]
+
+unobservable:
+  - {who: search-destinations, what: postgres SELECT, port: 5432}
+  - {who: create-booking, what: postgres INSERT, port: 5432}
+  - {who: create-booking, what: SMTP to mailhog, port: 1025}
+  - {who: get-payment-info, what: postgres SELECT, port: 5432}
+  - {who: get-flights, what: S3 on minio (seen as http)}
+
+# One full scripted demo turn (demo.py USER_TURN): everything above except
+# send-notification, which no agent lists as a tool and no turn calls.
+# `deterministic` = the hops no model decides: the entry call, and the
+# booking tool's own delegation to payment-agent once it runs. Every other
+# hop is the LLM's choice (qwen2.5:7b skips tools between identical
+# prompts), so its coverage is reported per run, not asserted.
+turn:
+  deterministic:
+    - [demo-client, travel-advisor, a2a]
+    - [travel-advisor, llm, inference]
+  edges:
+    - [demo-client, travel-advisor, a2a]
+    - [travel-advisor, research-agent, a2a]
+    - [travel-advisor, booking-agent, a2a]
+    - [travel-advisor, search-destinations, mcp]
+    - [travel-advisor, get-weather, mcp]
+    - [travel-advisor, get-flights, mcp]
+    - [booking-agent, create-booking, mcp]
+    - [create-booking, payment-agent, a2a]
+    - [payment-agent, get-payment-info, mcp]
+    - [payment-agent, charge-card, mcp]
+    - [get-weather, weather-service, http]
+    - [get-flights, minio, http]
+    - [charge-card, psp.external.localtest.me, http]
+    - [travel-advisor, llm, inference]
+    - [research-agent, llm, inference]
+    - [booking-agent, llm, inference]
+    - [payment-agent, llm, inference]
+
+# What the app is known not to deliver today, by cause. A check failing
+# exactly inside one of these reads KNOWN (reported every run, by id), the
+# honest completeness number is asserted, and nothing else is excused.
+known_gap:
+  - id: pod-lifetime-mcp-sessions
+    why: >-
+      travel-advisor (openai-agents) and payment-agent (openai-agents) hold one MCP session per
+      tool for the pod's lifetime; every tools/list and tools/call leaves with the startup
+      context, the shim mints a fresh trace per request, the sidecar records a wire entry.
+      Their tool hops, and the tool→service hops under them, sit in their own traces.
+    issue: app runtime (agent-examples-snp rossoctl/core/runtimes), unfiled
+    stray: {from: [travel-advisor, payment-agent], protocol: mcp}
+    entities: [search-destinations, get-weather, get-flights, get-payment-info, charge-card,
+               weather-service, minio, psp.external.localtest.me]
+    edges:
+      - [travel-advisor, search-destinations, mcp]
+      - [travel-advisor, get-weather, mcp]
+      - [travel-advisor, get-flights, mcp]
+      - [payment-agent, get-payment-info, mcp]
+      - [payment-agent, charge-card, mcp]
+      - [get-weather, weather-service, http]
+      - [get-flights, minio, http]
+      - [charge-card, psp.external.localtest.me, http]
+    checks: [C4]
+  - id: tool-call-stale-parent
+    why: >-
+      booking-agent's MCP tool client keeps the context of an earlier turn, so a later turn's
+      create-booking calls are parented under an earlier a2a exchange, after it closed (S9),
+      and may land in an earlier trace altogether. Observed on every run before
+      agent-examples-snp #17 and not since; left declared until that is confirmed over more runs.
+    issue: app runtime (agent-examples-snp rossoctl/core/runtimes), unfiled
+    stray: {from: [booking-agent], protocol: mcp}
+    # Everything downstream of that call rides the stale context: the booking
+    # tool's own delegation to payment-agent and the whole payment branch,
+    # and (#258 variants) the partner notification.
+    entities: [create-booking, payment-agent, notify-partner, api.travel-partner.example]
+    edges:
+      - [booking-agent, create-booking, mcp]
+      - [create-booking, payment-agent, a2a]
+      - [payment-agent, llm, inference]
+      - [booking-agent, notify-partner, mcp]
+      - [notify-partner, api.travel-partner.example, mcp]
+    checks: [S9]
+  - id: content-kind-collision
+    why: >-
+      interaction_payloads is keyed by content_hash alone; identical bytes in two roles (an
+      agent returning its LLM's completion verbatim) keep the first kind. Fix in
+      _mk_payload (kind into the hash) moves the content_hash the classifier keys on, so
+      it is a product decision, not this tier's.
+    checks: [S5.content]

@@ -1,0 +1,22 @@
+# pins.lineage_lab.yaml — the lab's pins (same sidecar, DG and LLM as travel; its own image + shim).
+agent_examples_snp:
+  commit: FILL_ME
+  image: docker.io/library/agent-examples-snp-lab:<tag>
+  image_id: FILL_ME
+  shim_image: docker.io/library/agent-examples-snp-lab-otel:<tag>
+  shim_image_id: FILL_ME
+cortex:
+  commit: FILL_ME
+  sidecar_image_id: FILL_ME
+  proxy_init_image_id: FILL_ME
+dg:
+  commit: recorded-at-run-time
+  receiver_image_id: FILL_ME
+  classification_image_id: FILL_ME
+  opa_image: docker.io/openpolicyagent/opa:1.19.0
+llm:
+  url: http://host.containers.internal:11434/v1
+  model: qwen2.5:7b
+  digest: FILL_ME
+contract:
+  version: "1.7.0"
