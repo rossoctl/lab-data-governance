@@ -1,5 +1,10 @@
 # Reproduce the risk e2e — travel advisor + the two-name probe
 
+> For the automated, asserted run of the same chain (pinned inputs, both apps, a report per run)
+> follow the runbook in `docs/LIVE-E2E.md`. This page is the manual demo as validated on the
+> September snapshot it names; §2's cortex branch and app deploy command predate later changes in
+> those repositories.
+
 The whole demo, from a laptop with podman + a rossoctl kind cluster, in order.
 Two repos, two branches:
 
@@ -60,7 +65,8 @@ kubectl -n data-governance rollout restart deploy/opa
 kubectl -n data-governance rollout restart deploy --selector app.kubernetes.io/part-of=data-governance
 ```
 
-Checks: DB migration head is `0019_interaction_risk_seq`
+Checks: DB migration head equals the head of `data_governance/db/migrations/versions/`
+(`0020_entity_namespace` at the time of writing; `alembic heads` prints the current one)
 (`… psql -c "select version_num from alembic_version"`), and OPA answers —
 `POST http://opa:8181/v1/data/data_governance/policy_decision` from any pod
 returns a decision (a PII + external_sharing input returns critical/block/DG-001).
