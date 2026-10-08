@@ -104,9 +104,10 @@ APP=travel_advisor bash deploy.sh          # naked deploy — do NOT --with-tele
   (#198): the external probe as the red violation edge + the policy-decision stepper.
 - In SQL: both probe interactions' `interaction_risk_records` carry an identical
   request classification (PCI/PI/PII, RESTRICTED, identity bundle); the external one
-  `critical/block {DG-001,DG-004}`, the internal one `none/allow` with the compiled
-  policy's fallback sentinel `"0000"` (that sentinel also shows up in the UI's
-  violation counts and Top-rules list — known presentation seam, not a decision bug).
+  `critical/block {DG-001,DG-004}`, the internal one `none/allow` with
+  `triggered_rule_ids = {}` and `policy_event_count = 0`: the compiled policy's
+  fallback answer (`"0000"`) is kept verbatim in `interaction_policy_decisions` but
+  is not a fired rule, so it reaches neither the record nor the UI's counts.
 
 ## Known seams
 

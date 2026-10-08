@@ -3,7 +3,7 @@
 #
 # Like the interactions/classification processors (70/80), this workload
 # exposes NO Service and declares NO container ports: it has no inbound
-# traffic. It drains `interaction_risk_records` by `seq` (migration 0018),
+# traffic. It drains `interaction_risk_records` by `seq` (migration 0019),
 # wakes on the `dg_interaction_risk_written` LISTEN channel (migration 0016)
 # plus the poll backstop, and writes `trace_risk_records`, advancing the
 # durable `risk_trace_trigger` cursor in `processor_state`

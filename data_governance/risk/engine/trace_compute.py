@@ -68,7 +68,11 @@ _MAX_ATTEMPTS = 2
 # interaction_count and could freeze a stale risk level into every future
 # trace version). Re-reading the live lineage table at aggregation time is
 # the DAS discipline (FR-DAS-004: read live, never cache) — the records
-# themselves stay append-only and untouched.
+# themselves stay append-only and untouched. The filter takes effect at the
+# trace's next recompute: a re-keyed exchange's replacement gets a record of
+# its own, which triggers one. An interaction deleted with no replacement
+# triggers none, so until some later record in that trace arrives, the
+# latest trace record still counts it (a known seam).
 _CURRENT_INTERACTION_RISK_SQL = """
 SELECT DISTINCT ON (r.interaction_id)
     r.interaction_risk_id, r.risk_level, r.enforcement_type,

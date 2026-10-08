@@ -152,8 +152,8 @@ TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE = _str_env(
 )
 
 # --- opa.* (issue #101) -------------------------------------------------------
-# No OPA deploy manifest exists in deploy/k8s/ yet, so OPA_BASE_URL's default
-# is a placeholder host, not a verified deployment address.
+# OPA_BASE_URL's default is the `opa` Service deploy/k8s/95-opa.yaml creates in
+# the data-governance namespace (issue #162).
 
 OPA_BASE_URL = _str_env("RISK_OPA_BASE_URL", "http://opa:8181")
 OPA_DECISION_PATH = _str_env(

@@ -1,7 +1,7 @@
 """Trace risk trigger processor (issues #102/#164).
 
 A Layer-2 DAS consumer that drains the ``interaction_risk_records`` stream by
-``seq`` (migration 0018) and recomputes the trace risk rollup for each new
+``seq`` (migration 0019) and recomputes the trace risk rollup for each new
 interaction risk version's ``trace_id`` — the wiring PR #172 deferred until
 the #164 cursoring landed.
 

@@ -9,9 +9,9 @@
 #
 # Usage: deploy/create-opa-configmap.sh
 # Requires a Python able to import data_governance (repo venv or
-# PYTHON=... override). Idempotent (server-side apply of a generated
-# manifest). After a catalog change: re-run this script, then restart the opa
-# pod (`kubectl -n data-governance rollout restart deploy/opa`) — OPA loads
+# PYTHON=... override). Idempotent (`kubectl apply` of a generated manifest).
+# After a catalog change: re-run this script, then restart the opa pod
+# (`kubectl -n data-governance rollout restart deploy/opa`) — OPA loads
 # /policies once at startup.
 set -euo pipefail
 
