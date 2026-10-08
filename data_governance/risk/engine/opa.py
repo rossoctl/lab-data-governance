@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -61,21 +62,103 @@ class OpaDecision:
     policy_version: str | None
 
 
-def _parse_decision(body: dict[str, Any]) -> OpaDecision:
-    result = body.get("result")
+_SHOWN = 300  # characters of a rejected answer quoted in the error (logged every wake)
+
+
+def _brief(value: Any) -> str:
+    text = repr(value)
+    return text if len(text) <= _SHOWN else f"{text[:_SHOWN]}… ({len(text)} chars)"
+
+
+def _is_text(value: Any) -> bool:
+    """A string Postgres TEXT can store: no NUL, and valid UTF-8 (a lone
+    surrogate is not)."""
+    if not isinstance(value, str) or "\x00" in value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+# Identifiers (risk_level, enforcement_type, rule ids) are indexed columns of
+# the risk record: a btree entry holds at most ~2.7 kB, so an over-long one
+# fails the record insert after its decision is already cached, and every
+# re-delivery reuses that decision. The cap keeps them far from the limit.
+_MAX_IDENTIFIER = 256
+
+
+def _is_identifier(value: Any) -> bool:
+    return _is_text(value) and 0 < len(value) <= _MAX_IDENTIFIER
+
+
+def _optional_str(
+    result: dict[str, Any], key: str, accept: Callable[[Any], bool] = _is_text
+) -> str | None:
+    value = result.get(key)
+    if value is not None and not accept(value):
+        raise OpaResponseError(f"OPA result {key!r} must be a string: {_brief(result)}")
+    return value
+
+
+def _str_list(
+    result: dict[str, Any], key: str, accept: Callable[[Any], bool] = _is_text
+) -> list[str]:
+    value = result.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(accept(v) for v in value):
+        raise OpaResponseError(
+            f"OPA result {key!r} must be a list of strings: {_brief(result)}"
+        )
+    return list(value)
+
+
+def _confidence(result: dict[str, Any]) -> float | None:
+    value = result.get("confidence")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise OpaResponseError(
+            f"OPA result 'confidence' must be a number in [0, 1]: {_brief(result)}"
+        )
+    return float(value)
+
+
+def _parse_decision(body: Any) -> OpaDecision:
+    """Parse and shape-check OPA's answer. Every field is checked here, at
+    the boundary, so a malformed answer surfaces as :class:`OpaResponseError`
+    — which the leg-ready observer turns into a loud hold that an operator
+    can fix by reloading the policy — rather than as a ``TypeError`` or
+    ``ValueError`` deeper in the engine, which would crash the consumer and
+    re-crash it on the same leg. A string must be one Postgres TEXT can
+    store (no NUL, valid UTF-8), and an identifier — ``risk_level``,
+    ``enforcement_type``, a rule id — one the record's indexes can hold
+    (at most 256 characters), or the database write would fail the same
+    way. Values are not checked against a vocabulary: ``risk_level`` /
+    ``enforcement_type`` are open, policy-owned text (migration 0017), and
+    the engine ranks an unknown value last. ``confidence`` may arrive as an
+    integer: JSON has one number type."""
+    result = body.get("result") if isinstance(body, dict) else None
     if not isinstance(result, dict):
-        raise OpaResponseError(f"OPA response missing 'result' object: {body!r}")
+        raise OpaResponseError(f"OPA response missing 'result' object: {_brief(body)}")
     risk_level = result.get("risk_level")
     if risk_level is None:
-        raise OpaResponseError(f"OPA result missing required 'risk_level': {result!r}")
+        raise OpaResponseError(f"OPA result missing required 'risk_level': {_brief(result)}")
+    if not _is_identifier(risk_level):
+        raise OpaResponseError(
+            f"OPA result 'risk_level' must be a non-empty string of at most "
+            f"{_MAX_IDENTIFIER} characters: {_brief(result)}"
+        )
     return OpaDecision(
         risk_level=risk_level,
-        enforcement_type=result.get("enforcement_type"),
-        allowed_actions=list(result.get("allowed_actions") or []),
-        explanation=result.get("explanation"),
-        triggered_rules=list(result.get("triggered_rules") or []),
-        confidence=result.get("confidence"),
-        policy_version=result.get("policy_version"),
+        enforcement_type=_optional_str(result, "enforcement_type", _is_identifier),
+        allowed_actions=_str_list(result, "allowed_actions"),
+        explanation=_optional_str(result, "explanation"),
+        triggered_rules=_str_list(result, "triggered_rules", _is_identifier),
+        confidence=_confidence(result),
+        policy_version=_optional_str(result, "policy_version"),
     )
 
 
@@ -144,13 +227,13 @@ class OpaClient:
 
             if response.status_code // 100 != 2:
                 last_request_error = OpaRequestError(
-                    f"OPA returned status {response.status_code}: {response.text!r}"
+                    f"OPA returned status {response.status_code}: {_brief(response.text)}"
                 )
                 continue
 
             try:
                 body = response.json()
-            except (json.JSONDecodeError, ValueError) as exc:
+            except (json.JSONDecodeError, ValueError, RecursionError) as exc:
                 raise OpaResponseError(
                     f"OPA response was not valid JSON: {exc}"
                 ) from exc
