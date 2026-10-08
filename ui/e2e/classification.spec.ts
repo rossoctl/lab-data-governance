@@ -124,7 +124,7 @@ async function stubFlowApi(page: Page, classification: unknown) {
     if (url.includes(`/api/payloads/${REQ_HASH}`)) {
       return route.fulfill(
         json({
-          content_hash: REQ_HASH, content_kind: 'json',
+          content_hash: REQ_HASH,
           content: { note: 'contact jo@example.com' }, byte_size: 42,
           classification,
         }),

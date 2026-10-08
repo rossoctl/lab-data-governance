@@ -572,7 +572,10 @@ response bodies, (2) canonicalizes each into a normalized form per its
 `content_hash`. Load-bearing for dedup quality and analytics correctness.
 
 **Content kind**:
-The semantic shape of a **Payload**. Closed enum defined by `P-interactions`
+The role a **Payload**'s bytes played on one **Interaction leg** (`llm_completion`,
+`agent_response`, …) — a property of the leg, not of the bytes: the same
+content-addressed **Payload** row can sit under two kinds on two legs (issue
+#286). Closed enum defined by `P-interactions`
 (initial members: `llm_chat_prompt`, `llm_completion`, `tool_call_arguments`,
 `tool_call_result`, `http_request_body`, `http_response_body`,
 `agent_message`, `unknown`); adding a kind is a code change. Unlike the three
@@ -587,9 +590,11 @@ non-`unknown` kind has its own canonicalization rule under the
 attributes the processor did not recognise: the **Payload** is still stored
 (raw bytes, no canonicalization, hash over the raw bytes) so the
 **Interaction** still carries a `request_payload_hash` /
-`response_payload_hash` and analytics can measure classifier coverage by
-filtering `content_kind = 'unknown'`. Stored on
-`interaction_payloads.content_kind`.
+`response_payload_hash`. Today no writer emits `unknown`: the three
+algorithms stamp a kind from their own extraction, and a protocol with no
+semantic body kind leaves the leg's kind NULL. Stored on
+`interaction_legs.content_kind` (migration 0022); the payload row itself
+carries no kind.
 
 **Classification**:
 The data-governance verdict on the sensitivity of one **Payload** — its
@@ -665,13 +670,14 @@ JSONB.
 
 **Text projection rule**:
 The processor-side rule by which **P-classification** projects a **Payload**'s
-JSONB `content` into its **Classifiable text**, one branch per **Content
-kind** (e.g. concatenate message bodies for `llm_chat_prompt`, take the result
-string for `tool_call_result`). Like the **Payload extraction rule** it
-mirrors, this is a closed set enforced in code that churns as content kinds
-mature. `unknown` (and any kind without a branch) falls back to serializing
-the whole `content` JSONB to a canonical string — best-effort classification
-that also marks the projection-coverage gap.
+JSONB `content` into its **Classifiable text**. A function of the content
+alone — it recognises shapes, not **Content kinds** (a bare string is the
+text; the LLM message envelope projects to its message bodies), because the
+kind is the referencing leg's and one payload row can sit under two kinds
+(issue #286); that is what makes one **Classification** per `content_hash`
+sound. Anything else falls back to serializing the whole `content` JSONB to a
+canonical string — best-effort classification that also marks the
+projection-coverage gap.
 
 **Data lineage**:
 Where one **Payload**'s content originated and what it passed through. Carried

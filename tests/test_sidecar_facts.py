@@ -1,11 +1,10 @@
 """Unit tests for the sidecar wire-contract vocabulary (`sidecar_facts`):
-the static classify table, its mcp.method overrides, and content-kind
-projection parity. Pure — no DB, no span objects.
+the static classify table and its mcp.method overrides. Pure — no DB, no
+span objects.
 """
 
 from __future__ import annotations
 
-from data_governance.processors.classification import projection
 from data_governance.sidecar_facts import CONTENT_KINDS, classify_attrs
 
 
@@ -108,15 +107,21 @@ def test_classify_bodyless_http_on_mcp_endpoint_is_lifecycle():
     assert _content_kinds(k) == (None, None)
 
 
-# --- content-kind parity ----------------------------------------------------
+# --- the vocabulary -----------------------------------------------------------
 
-def test_content_kind_parity_every_emitted_kind_is_projectable():
-    """Every content kind classify_attrs() can emit must be projectable by
-    P-classification (no whole-JSONB fallback). Pins the vocabulary to the
-    projector's branch set so the two cannot drift (ADR-0014)."""
-    assert CONTENT_KINDS  # non-empty
-    for ck in CONTENT_KINDS:
-        assert projection.is_projectable(ck), ck
+def test_content_kinds_is_the_closed_emitted_vocabulary():
+    """The kinds classify_attrs() can emit, as one registry (ADR-0014: adding a
+    kind is a code change here, never a migration). Since #286 the classifier
+    does not dispatch on them — a kind is the leg's label, the verdict is a
+    function of the bytes — so there is no projector branch set to stay in
+    parity with; the registry is the vocabulary's single statement."""
+    assert CONTENT_KINDS == {
+        "agent_request", "agent_response",
+        "tool_call_arguments", "tool_call_result",
+        "llm_chat_prompt", "llm_completion",
+        "mcp_lifecycle_request", "mcp_lifecycle_result",
+        "tool_discovery_request", "tool_discovery_result",
+    }
 
 
 def test_missing_or_garbled_direction_raises():

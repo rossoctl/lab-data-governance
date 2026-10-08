@@ -375,6 +375,8 @@ export function FlowTables({
       pinLabel: ix.summary || ix.id,
       requestPayloadHash: reqLeg?.payload_hash ?? null,
       responsePayloadHash: respLeg?.payload_hash ?? null,
+      requestContentKind: reqLeg?.content_kind ?? null,
+      responseContentKind: respLeg?.content_kind ?? null,
     });
     onSelectionChange?.({ iid: ix.id });
   }
@@ -404,6 +406,8 @@ export function FlowTables({
       pinLabel: e.display_name || e.id,
       requestPayloadHash: null, // entities carry no payload
       responsePayloadHash: null,
+      requestContentKind: null,
+      responseContentKind: null,
     });
     onSelectionChange?.({ eid: e.id });
   }

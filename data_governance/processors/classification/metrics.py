@@ -15,9 +15,12 @@ Two counters (issues #77, #81):
 - ``payloads_classified_total`` (#77) — one increment per **Payload** the drain
   loop writes a **Classification** for.
 - ``projection_fallbacks_total`` (#81) — one increment per **Payload** whose
-  **Text projection rule** had no branch for its **Content kind** and fell back
-  to serializing the whole ``content`` JSONB (``unknown`` and any unhandled
-  kind; CONTEXT.md **Text projection rule**). This is the projection-coverage
+  **Text projection rule** recognised no prose shape in its ``content`` and fell
+  back to serializing the whole JSONB (CONTEXT.md **Text projection rule**;
+  since #286 the rule is keyed on the content's shape, not on a **Content
+  kind** — the kind is the leg's; a bare string never counts as a fallback
+  now, a structured tool argument always does, so the series steps at the
+  upgrade). This is the projection-coverage
   signal: divided by ``payloads_classified_total`` it is the fraction of
   payloads the classifier saw only as best-effort serialized JSONB rather than
   real **Classifiable text**. The real per-kind projection lands in issue #78

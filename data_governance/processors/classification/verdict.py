@@ -6,7 +6,8 @@ Issue #78 replaces the stub body with the real path, behind the *same* signature
 and the same :mod:`.driver` write path:
 
 1. Project the payload's JSONB ``content`` into its **Classifiable text** — the
-   **Text projection rule** (:mod:`.projection`), one branch per **Content kind**.
+   **Text projection rule** (:mod:`.projection`), a function of the content
+   alone (the **Content kind** is the leg's, not the payload's; issue #286).
 2. Detect sensitive regions in that text as **Finding** annotations — through the
    narrow :class:`~.detector.Detector` seam (:mod:`.detector`).
 3. Aggregate the findings up to the document-level verdict — the ported
@@ -66,22 +67,24 @@ class Verdict:
 
 def classify(
     content_hash: str,
-    content_kind: str,
     content: object,
     detector: Detector | None = None,
     model_version: int = STUB_MODEL_VERSION,
 ) -> Verdict:
     """Return the **Classification** verdict for one **Payload**.
 
-    Projects ``content`` into its **Classifiable text** per *content_kind*, detects
-    **Findings** in that text through *detector* (defaulting to the no-op
+    Projects ``content`` into its **Classifiable text**, detects **Findings** in
+    that text through *detector* (defaulting to the no-op
     :class:`~.detector.NullDetector` until issue #79 wires the model), and
     aggregates the findings into the document-level verdict via the ported logic.
 
     ``content_hash`` is accepted for parity with the driver's call site (and for
-    future per-payload logging); the verdict is a pure function of *content_kind*
-    and *content*. A payload that projects to prose but has no detected findings
-    is a real ``PUBLIC`` / zero-**Findings** verdict, not a null and not a skip.
+    future per-payload logging); the verdict is a pure function of *content* —
+    which is what makes one classification per ``content_hash`` sound: the same
+    bytes referenced from legs of different **Content kinds** are one row with
+    one verdict (ADR-0024, issue #286). A payload that projects to prose but has
+    no detected findings is a real ``PUBLIC`` / zero-**Findings** verdict, not a
+    null and not a skip.
 
     *model_version* is the model generation stamped on the row (ADR-0023/0024):
     the ``STUB_MODEL_VERSION`` no-model generation by default, bumped when issue
@@ -92,7 +95,7 @@ def classify(
     """
     det = detector if detector is not None else _DEFAULT_DETECTOR
 
-    classifiable_text = projection.project(content_kind, content)
+    classifiable_text = projection.project(content)
     annotations = det.detect(classifiable_text)
 
     entity_metadata = _config.load_entity_metadata()

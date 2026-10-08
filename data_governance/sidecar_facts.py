@@ -35,11 +35,11 @@ from typing import Any
 # from its own inbound (a tool that calls out stays `tool:`, see
 # `processors.interactions.sidecar._self_kinds`). Content kinds are None for
 # `http` (no parser matched → no semantic
-# body is ever produced → the payload columns stay NULL). Every non-None content
-# kind here is projectable by processors/classification/projection.py — the
-# parity test (test_content_kind_parity) pins that so this table cannot drift
-# from the projector's branch set (ADR-0014: adding a content kind is a code
-# change).
+# body is ever produced → the payload columns stay NULL). A content kind is the
+# LEG's label for the role its body played (`interaction_legs.content_kind`,
+# migration 0022) — never a property of the shared payload row, and nothing the
+# classifier dispatches on (ADR-0014: adding a content kind is a code change;
+# `CONTENT_KINDS` below is the registry its test pins).
 _KIND_TABLE: dict[tuple[str, str], tuple[str, str, str | None, str | None]] = {
     ("inbound", "a2a"): ("user", "agent", "agent_request", "agent_response"),
     ("inbound", "mcp"): ("user", "tool", "tool_call_arguments", "tool_call_result"),
@@ -72,7 +72,7 @@ _TOOL_DISCOVERY_METHODS = frozenset(
     {"tools/list", "resources/list", "prompts/list", "resources/templates/list"}
 )
 
-# The content kinds this classifier can emit (for the projection parity test).
+# The content kinds this classifier can emit — the closed vocabulary.
 CONTENT_KINDS: frozenset[str] = frozenset(
     ck for row in _KIND_TABLE.values() for ck in row[2:4] if ck is not None
 ) | frozenset(_MCP_LIFECYCLE + _TOOL_DISCOVERY)
