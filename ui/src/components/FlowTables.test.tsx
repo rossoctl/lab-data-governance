@@ -96,8 +96,8 @@ function withLegHashes(reqHash: string | null, respHash: string | null) {
   return {
     ...INTERACTIONS[0],
     legs: [
-      { ...INTERACTIONS[0].legs[0], payload_hash: reqHash },
-      { ...INTERACTIONS[0].legs[1], payload_hash: respHash },
+      { ...INTERACTIONS[0].legs[0], payload_hash: reqHash, content_kind: 'agent_request' },
+      { ...INTERACTIONS[0].legs[1], payload_hash: respHash, content_kind: 'agent_response' },
     ],
   };
 }
@@ -1644,7 +1644,7 @@ describe('FlowTables', () => {
       if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
       if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
       if (url.includes('/payloads/reqhash0deadbeef'))
-        return { ok: true, status: 200, json: async () => ({ content_hash: 'reqhash0deadbeef', content_kind: 'json', content: { q: 'flights' }, byte_size: 42 }) };
+        return { ok: true, status: 200, json: async () => ({ content_hash: 'reqhash0deadbeef', content: { q: 'flights' }, byte_size: 42 }) };
       if (url.includes('/interactions/')) return { ok: true, status: 200, json: async () => ({ spans: INTERACTION_EVIDENCE }) };
       return { ok: true, status: 200, json: async () => ({ spans: [] }) };
     });
@@ -1666,9 +1666,11 @@ describe('FlowTables', () => {
     const reqPayloadTab = screen.getByRole('tab', { name: /Request: Payload reqhash0/i });
     expect(reqPayloadTab).toHaveAttribute('aria-selected', 'true');
     // Payload is the active leg's default section, so the decoded content +
-    // kind/hash/bytes render for the ACTIVE leg...
+    // kind/hash/bytes render for the ACTIVE leg. The kind is the LEG's
+    // (`content_kind` on the leg row, #286), not a field of the fetched
+    // payload — the mock payload carries none.
     await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
-    expect(screen.getByText('json')).toBeInTheDocument();
+    expect(screen.getByText('agent_request')).toBeInTheDocument();
     // ...and the inactive leg's inner tabs are not even on screen, so nothing
     // there could have been read (the fetch assertion is in the gating block).
     expect(screen.queryByRole('tab', { name: /Response: Payload resphash/i })).toBeNull();
@@ -1691,7 +1693,7 @@ describe('FlowTables', () => {
         return {
           ok: true, status: 200,
           json: async () => ({
-            content_hash: 'reqhash0deadbeef', content_kind: 'json',
+            content_hash: 'reqhash0deadbeef',
             content: { note: 'contact jo@example.com' }, byte_size: 42,
             classification: {
               sensitivity_level: 'CONFIDENTIAL',
@@ -1736,7 +1738,7 @@ describe('FlowTables', () => {
         return {
           ok: true, status: 200,
           json: async () => ({
-            content_hash: 'reqhash0deadbeef', content_kind: 'json',
+            content_hash: 'reqhash0deadbeef',
             content: { q: 'flights' }, byte_size: 42, classification: null,
           }),
         };
@@ -1866,7 +1868,7 @@ describe('FlowTables', () => {
         return {
           ok: true, status: 200,
           json: async () => ({
-            content_hash: url.split('/').pop(), content_kind: 'json',
+            content_hash: url.split('/').pop(),
             content: { q: 'flights' }, byte_size: 42, classification: null,
           }),
         };
@@ -1976,7 +1978,7 @@ describe('FlowTables', () => {
         return {
           ok: true, status: 200,
           json: async () => ({
-            content_hash: url.split('/').pop(), content_kind: 'json',
+            content_hash: url.split('/').pop(),
             content: { q: 'flights' }, byte_size: 42, classification: null,
           }),
         };
@@ -2167,7 +2169,7 @@ describe('FlowTables', () => {
         return {
           ok: true, status: 200,
           json: async () => ({
-            content_hash: 'reqhash0deadbeef', content_kind: 'json',
+            content_hash: 'reqhash0deadbeef',
             content: { q: 'flights' }, byte_size: 42, classification: null,
           }),
         };

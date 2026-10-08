@@ -183,29 +183,8 @@ class TestStructuralEnums:
 
 
 # --- content_kind stays TEXT (ADR-0014) --------------------------------------
-
-
-def test_content_kind_is_text_not_enum(migrated_dsn: str) -> None:
-    """content_kind churns as the payload classifier matures; it is TEXT, not
-    an ENUM (ADR-0014)."""
-    assert _columns(migrated_dsn, "interaction_payloads")["content_kind"][
-        "data_type"
-    ] == "text"
-
-
-def test_content_kind_accepts_arbitrary_value(migrated_dsn: str) -> None:
-    """A new content kind is a code change, not a migration — so an unknown
-    value writes fine."""
-    with psycopg.connect(migrated_dsn) as conn:
-        conn.execute(
-            "INSERT INTO interaction_payloads "
-            "(content_hash, content_kind, content, byte_size) "
-            "VALUES ('h1', 'some_future_kind', '{}'::jsonb, 2)"
-        )
-        row = conn.execute(
-            "SELECT content_kind FROM interaction_payloads WHERE content_hash='h1'"
-        ).fetchone()
-    assert row == ("some_future_kind",)
+# Since migration 0022 the column lives on interaction_legs (issue #286); its
+# TEXT-not-ENUM tests moved to tests/db/test_content_kind_on_legs_migration.py.
 
 
 # --- entities: cross-trace stable, no trace_id (decisions memory) ------------

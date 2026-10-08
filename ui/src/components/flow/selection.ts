@@ -22,6 +22,11 @@ export interface Selection {
    *  Req/Resp cells + showPayload(). Null when the interaction carried none. */
   requestPayloadHash: string | null;
   responsePayloadHash: string | null;
+  /** Each leg's own content kind (the role its body played). The payload
+   *  resource is bytes-only — the same hash can sit under two kinds on two
+   *  legs — so the kind travels with the leg, not with the fetched payload. */
+  requestContentKind: string | null;
+  responseContentKind: string | null;
 }
 
 /**

@@ -29,11 +29,13 @@ const LINEAGE: DataLineage = {
 const REQUEST: Leg = {
   label: 'Request',
   hash: 'reqhash0deadbeef',
+  kind: 'agent_request',
   lineage: { kind: 'derived', lineage: LINEAGE },
 };
 const RESPONSE: Leg = {
   label: 'Response',
   hash: 'resphash0feedface',
+  kind: 'agent_response',
   lineage: { kind: 'pending' },
 };
 
@@ -49,7 +51,6 @@ function mockPayloads() {
     status: 200,
     json: async () => ({
       content_hash: String(url).split('/').pop(),
-      content_kind: 'json',
       content: { q: 'flights' },
       byte_size: 42,
       classification: null,

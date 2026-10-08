@@ -179,6 +179,11 @@ class Interaction:
     anchor_rule: str
     primary_anchor_span_id: str  # not in production schema; for tree-walking
     retracted_at: _dt.datetime | None = None  # ADR-0011 tombstone
+    # Each leg's **Content kind** — the role its body played, stored on the
+    # leg (``interaction_legs.content_kind``, migration 0022), never on the
+    # shared payload row (issue #286).
+    request_content_kind: str | None = None
+    response_content_kind: str | None = None
 
 
 @dataclasses.dataclass
@@ -1136,9 +1141,11 @@ class Processor:
         if req is not None:
             self.payloads.setdefault(req.content_hash, req)
             ix.request_payload_hash = req.content_hash
+            ix.request_content_kind = req.content_kind
         if resp is not None:
             self.payloads.setdefault(resp.content_hash, resp)
             ix.response_payload_hash = resp.content_hash
+            ix.response_content_kind = resp.content_kind
 
     # ==================================================================
     # External-http: re-anchored onto the owning OI TOOL span (ADR-0012).

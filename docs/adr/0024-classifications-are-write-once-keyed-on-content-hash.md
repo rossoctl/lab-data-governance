@@ -23,7 +23,13 @@ operationally.
   advance cursor.
 - **Content addressing gives dedup for free.** One classification per
   `content_hash` means a body referenced by many interactions or traces is
-  classified exactly once.
+  classified exactly once. That is sound only because the verdict is a
+  function of the bytes alone: the **Text projection rule** recognises the
+  content's shape and takes no **Content kind** — the kind is the referencing
+  leg's label (`interaction_legs.content_kind`, migration 0022, issue #286),
+  and one row of bytes can carry two kinds on two legs. A projection that
+  dispatched on a kind would make the single verdict depend on which leg was
+  written first.
 - **No finalization analogue is needed.** Spans carry both `seq` and
   `arrival_seq` and the interactions driver runs a finalization tripwire
   because spans finalize (ADR-0004). Payloads never do, so

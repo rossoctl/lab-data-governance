@@ -95,6 +95,10 @@ class Interaction:
     # delegation — so consumers sort by `order` ALONE. Copied from
     # `EntityEdge.order`.
     order: int = 0
+    # Each leg's content kind (the role its body played); rides on the leg row,
+    # not on the content-addressed payload (issue #286).
+    request_content_kind: str | None = None
+    response_content_kind: str | None = None
 
 
 @dataclasses.dataclass
@@ -317,8 +321,8 @@ def _derive_interactions(
         # arguments). Prefer the edge-carried request payload when present.
         if ee.req_payload is not None:
             req_shape = ee.req_payload
-        req_hash = _ensure(_build_payload(req_shape))
-        resp_hash = _ensure(_build_payload(resp_shape))
+        req_pl, resp_pl = _build_payload(req_shape), _build_payload(resp_shape)
+        req_hash, resp_hash = _ensure(req_pl), _ensure(resp_pl)
 
         # The summary uses the natural_key (the typed classifier label), which
         # is the most distinguishing identifier; the display_name (Step 3.a entity key) is
@@ -337,6 +341,8 @@ def _derive_interactions(
             response_payload_hash=resp_hash,
             summary=f"{caller_label} → {callee_label}",
             order=ee.order,
+            request_content_kind=req_pl.content_kind if req_pl else None,
+            response_content_kind=resp_pl.content_kind if resp_pl else None,
         ))
 
         # One evidence row per interaction: the anchor span. (error / timing /

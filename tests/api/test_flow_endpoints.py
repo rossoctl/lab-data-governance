@@ -83,14 +83,14 @@ def seeded(configured_db: str) -> str:
         # (occurred_at brackets the call; duration = response - request = 2s).
         conn.execute(
             "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-            "payload_hash, error) "
-            "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', false)",
+            "payload_hash, content_kind, error) "
+            "VALUES (%s, 'request', '2026-01-01T00:00:00Z', 'reqhash', 'agent_request', false)",
             (_IX_ID,),
         )
         conn.execute(
             "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
-            "payload_hash, error) "
-            "VALUES (%s, 'response', '2026-01-01T00:00:02Z', 'resphash', true)",
+            "payload_hash, content_kind, error) "
+            "VALUES (%s, 'response', '2026-01-01T00:00:02Z', 'resphash', 'agent_response', true)",
             (_IX_ID,),
         )
         conn.execute(
@@ -142,6 +142,9 @@ def test_interactions_carry_nested_legs(seeded, api_server):
     assert legs["request"]["error"] is False
     assert legs["response"]["payload_hash"] == "resphash"
     assert legs["response"]["error"] is True
+    # Each leg carries its own content kind (migration 0022, issue #286).
+    assert legs["request"]["content_kind"] == "agent_request"
+    assert legs["response"]["content_kind"] == "agent_response"
     # Duration = response.occurred_at - request.occurred_at = 2 seconds.
     assert ix["duration_seconds"] == 2.0
     # any_error aggregates the legs (the response leg errored).

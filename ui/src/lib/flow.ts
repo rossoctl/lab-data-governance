@@ -124,6 +124,11 @@ export interface InteractionLeg {
   leg_type: 'request' | 'response';
   occurred_at: string | null;
   payload_hash: string | null;
+  /** The role this leg's body played — the leg's own fact (migration 0022):
+   * one payload row can be `llm_completion` on one leg and `agent_response`
+   * on another. Null for a protocol with no semantic body kind; absent on
+   * servers older than 0022. Optional so older fixtures type. */
+  content_kind?: string | null;
   error: boolean | null;
   seq: number;
 }
