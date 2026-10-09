@@ -2,8 +2,9 @@
 
 Three layers, mirroring the engine's own split:
 
-- pure: destination categorisation (#178's wildcard hostname whitelist, plus
-  the dotless-short-name structural rule),
+- pure: destination categorisation (#178's wildcard hostname whitelist with
+  address/CIDR patterns for IP literals, plus the dotless-short-name
+  structural rule, and a malformed host classifying rather than raising),
   ``build_opa_input``'s new ``data_destinations`` / ``event_type`` /
   ``accessing_user`` mapping, and — the correctness trap the issue calls out
   explicitly — the anchor facts joining ``fingerprint`` so a changed
@@ -45,12 +46,12 @@ _PATTERNS = [
 # express (a hostname with no dot at all).
 
 
-def _category(host: str) -> str:
+def _category(host: str, patterns: list[str] = _PATTERNS) -> str:
     """The category ``build_opa_input`` would emit for an outbound call to
-    *host*, exercised through the public surface rather than a private
-    helper."""
+    *host* under *patterns*, exercised through the public surface rather
+    than a private helper."""
     anchor = utils.AnchorFacts(direction="outbound", peer_host=host)
-    payload = _request_flow(anchor=anchor, internal_patterns=_PATTERNS)
+    payload = _request_flow(anchor=anchor, internal_patterns=patterns)
     (categories,) = [d["data_destination_categories"] for d in payload["data_destinations"]]
     (category,) = categories
     return category
@@ -105,6 +106,21 @@ def test_brackets_and_userinfo_never_reach_the_whitelist() -> None:
     # header's host, so neither may borrow a pattern or the short-name rule.
     for host in ["[v1.foo.svc]:8080", "api.openai.com@x.svc", "evil.com@opa"]:
         assert _category(host) == "external", host
+
+
+def test_ip_literals_match_address_and_cidr_patterns() -> None:
+    # A ClusterIP call is internal once the service range is listed.
+    assert _category("10.96.12.7:8080", ["10.96.0.0/16"]) == "internal"
+    assert _category("10.97.0.1", ["10.96.0.0/16"]) == "external"
+    assert _category("[::1]:11434", ["::1"]) == "internal"
+
+
+def test_address_patterns_and_globs_never_cross() -> None:
+    # A DNS name that merely looks like an address range must not ride it,
+    # and an address must not ride a glob written for names.
+    assert _category("10.96.evil.com", ["10.96.0.0/16"]) == "external"
+    assert _category("10.96.evil.com", ["*.svc"]) == "external"
+    assert _category("10.96.12.7", ["10.96.*"]) == "external"
 
 
 def test_pattern_must_match_on_label_boundary() -> None:

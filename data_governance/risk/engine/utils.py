@@ -235,19 +235,47 @@ def _hostname(url: str) -> str:
     return hostname
 
 
-def matches_internal_whitelist(url: str, *, patterns: list[str]) -> bool:
-    """Whether *url*'s hostname matches any wildcard hostname *pattern*
-    (e.g. ``"*.corp.internal"``), case-insensitively.
+def _network_or_none(pattern: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    try:
+        return ipaddress.ip_network(pattern, strict=False)
+    except ValueError:
+        return None
 
-    MVP-only: plain ``fnmatch`` glob matching against the hostname, no
-    awareness of scheme/port/path, IP literals, or normalization beyond
-    lowercasing. An empty *patterns* list never matches anything — the
-    caller's default-external behaviour, not a special case here. This will
-    be replaced by more holistic destination classification in a future
-    version (see ``build_opa_input``'s docstring).
+
+def _hostname_matches(hostname: str, patterns: list[str]) -> bool:
+    """Whether *hostname* matches a whitelist pattern. An address pattern
+    (``127.0.0.1``, ``::1``, ``10.96.0.0/16``) matches IP-literal hosts by
+    membership; any other pattern is a glob and matches DNS names only — so
+    a name such as ``10.96.evil.com`` can never ride an address pattern, and
+    an address never rides a glob. An empty (unparseable) host matches
+    nothing."""
+    if not hostname:
+        return False
+    address = _ip_or_none(hostname)
+    for pattern in patterns:
+        network = _network_or_none(pattern)
+        if network is not None:
+            if address is not None and address in network:
+                return True
+        elif address is None and fnmatch.fnmatch(hostname, pattern.lower()):
+            return True
+    return False
+
+
+def matches_internal_whitelist(url: str, *, patterns: list[str]) -> bool:
+    """Whether *url*'s hostname matches any whitelist *pattern*: a wildcard
+    hostname glob (e.g. ``"*.corp.internal"``, case-insensitive) or an
+    address / CIDR entry (``"10.96.0.0/16"``).
+
+    MVP-only: plain ``fnmatch`` glob matching against a DNS hostname, or
+    address/CIDR membership for an IP-literal host (see
+    :func:`_hostname_matches`); no awareness of scheme/port/path, and no
+    normalization beyond lowercasing. An empty *patterns* list never matches
+    anything — the caller's default-external behaviour, not a special case
+    here. This will be replaced by more holistic destination classification
+    in a future version (see ``build_opa_input``'s docstring).
     """
-    hostname = _hostname(url)
-    return any(fnmatch.fnmatch(hostname, pattern.lower()) for pattern in patterns)
+    return _hostname_matches(_hostname(url), patterns)
 
 
 _CATEGORY_TO_TRUST_LEVEL: Final[dict[str, str]] = {
@@ -304,16 +332,14 @@ def _category(host: str, internal_patterns: list[str]) -> str:
     whitelist: internal iff it matches a pattern, external otherwise
     (including when the whitelist is empty — #178's safer default, which is
     why a real deployment must set ``RISK_INTERNAL_URL_WHITELIST_PATTERNS``;
-    see ``deploy/k8s/85-leg-ready.yaml``).
+    see ``deploy/k8s/85-leg-ready.yaml``). IP literals take the whitelist
+    path too and match address or CIDR patterns (``127.0.0.1``,
+    ``10.96.0.0/16``).
     """
     hostname = _hostname(host)
     if hostname and "." not in hostname:
         return "internal"
-    return (
-        "internal"
-        if matches_internal_whitelist(hostname, patterns=internal_patterns)
-        else "external"
-    )
+    return "internal" if _hostname_matches(hostname, internal_patterns) else "external"
 
 
 @dataclasses.dataclass(frozen=True)

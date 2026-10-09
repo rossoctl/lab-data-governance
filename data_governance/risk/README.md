@@ -182,8 +182,13 @@ grouped by concern (defaults in parentheses):
 
 **Engine wiring** (`processors/leg_ready/__main__.py`)
 - `RISK_ENGINE_OBSERVER` (`on`; set `off`/`0`/`false` to disable)
-- `RISK_INTERNAL_URL_WHITELIST_PATTERNS` (empty) — hostname glob patterns
-  treated as internal destinations when the engine builds anchor facts
+- `RISK_INTERNAL_URL_WHITELIST_PATTERNS` (empty) — comma-separated entries
+  naming internal destinations when the engine builds anchor facts. An entry
+  that parses as an address or network (`::1`, `10.96.0.0/16`) matches
+  IP-literal hosts by membership; any other entry is a hostname glob
+  (`*.svc`) and matches DNS names only, so an IP-shaped glob such as `10.0.*`
+  never matches an address — list the range instead. A single Service-name
+  label (`opa`) is internal without an entry.
 
 **Trace-risk trigger** (`processors/risk/trace_trigger/`)
 - `RISK_TRACE_TRIGGER_CHANNEL_NAME` (`dg_interaction_risk_written`)
