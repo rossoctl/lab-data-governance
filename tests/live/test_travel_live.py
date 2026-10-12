@@ -672,10 +672,12 @@ def test_L10_idempotency(env, kube, dg, capabilities, catalog, run_record, state
     new interaction, a new classification and a new decision (a new
     exchange id). Expect: L7's internal interaction has exactly the record
     history and decision fingerprints it had (untouched); the new
-    interaction's version 1 equals it in risk, enforcement, rules and
-    classification summary; every interaction of T still has the version
-    count it had at L7; the trace has a new version only because its
-    contributing set grew. Evidence for one interaction never re-versions
+    interaction's current record equals it in risk, enforcement, rules and
+    classification summary, and none of its versions repeats the previous
+    one (its version count is leg timing — a response leg classified after
+    the first drain re-versions once, as in L9 — and is recorded); every
+    interaction of T still has the version count it had at L7; the trace
+    has a new version only because its contributing set grew. Evidence for one interaction never re-versions
     another; identical evidence yields an identical verdict.
     """
     T = state.get("T") or pytest.skip("L1 did not run")
@@ -698,7 +700,16 @@ def test_L10_idempotency(env, kube, dg, capabilities, catalog, run_record, state
         records = shape.current_records(dg, T)
         a, b = records[l7["int"]], records[new]
         rec.write("pair.json", {"l7": a, "new": b})
-        ch.check("new.version", "the new interaction's record version", 1, b["version"])
+        # Version count is leg timing, not evidence: leg-ready may drain the
+        # request leg before the response leg is classified (seconds apart on
+        # a 9 ms probe), and the record goes [request] → [request, response]
+        # like L9's. What FR-DAS-014 forbids is a version with nothing new in
+        # it: no two consecutive versions may be identical.
+        hist = shape.record_history(dg, new)
+        rec.write("new_history.json", hist)
+        ch.record("new.versions", "the new interaction's versions by legs evidenced (leg timing)", [h["legs"] for h in hist])
+        ch.check("new.no_duplicate_version", "consecutive identical versions on the new interaction (unchanged evidence re-versioned)",
+                 [], [h["version"] for g, h in pairwise(hist) if {**g, "version": 0} == {**h, "version": 0}])
         for k in ("risk_level", "enforcement_type", "rules", "summary"):
             ch.check(f"new.{k}", f"new interaction's {k} equals L7's", a[k], b[k])
         now = settle.snapshot_versions(dg, T)["records"]
