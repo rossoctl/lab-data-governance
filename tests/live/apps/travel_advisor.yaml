@@ -31,7 +31,7 @@ edges:
   - [payment-agent, get-payment-info, mcp]
   - [payment-agent, charge-card, mcp]
   - [get-weather, weather-service, http]
-  - [get-flights, minio, http]
+  - [get-flights, minio, http]               # S3 over http: the ledger's store record, the sidecar's span (urllib3 is instrumented)
   - [charge-card, psp.external.localtest.me, http]
   # #258: only under ROSSOCTL_VARIANT=rogue|fixed on booking-agent
   - [booking-agent, notify-partner, mcp]
@@ -59,7 +59,6 @@ unobservable:
   - {who: create-booking, what: postgres INSERT, port: 5432}
   - {who: create-booking, what: SMTP to mailhog, port: 1025}
   - {who: get-payment-info, what: postgres SELECT, port: 5432}
-  - {who: get-flights, what: S3 on minio (seen as http)}
 
 # One full scripted demo turn (demo.py USER_TURN): everything above except
 # send-notification, which no agent lists as a tool and no turn calls.

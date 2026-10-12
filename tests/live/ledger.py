@@ -21,8 +21,13 @@ derivation produced, hop by hop:
   window; inbound, the sidecar saw the request no later than the app began
   handling it (a busy tool server may queue a request for seconds before the
   app reads it, so the wait has no upper bound).
-- **dark hops**: every store record under the turn's trace is listed, and by
-  construction has no table counterpart.
+- **store ⟷ span**: a store act the app makes over HTTP (boto3 to minio) is
+  one ``store`` record on the ledger's side and, since the kit instruments
+  urllib3 (cortex #1323), one request span on the sidecar's: they pair by
+  pod, endpoint host and the record's window, on an edge the fleet
+  declares as http.
+- **dark hops**: every other store record under the turn's trace is listed,
+  and by construction has no table counterpart.
 - **self-reported strays**: an outbound record with no ambient trace whose
   sent traceparent names another trace — the framework's own session, said
   by the app, not inferred from the tables.
@@ -224,6 +229,27 @@ def compare(dg, trace_id: str, records: list[dict], fleet, *, skew_seconds: floa
                       "req_digest": verdict(want, best["input_shas"]),
                       "resp_digest": verdict(resp_want, best["output_shas"]),
                       "timing_ok": window_ok, "streamed": (end or {}).get("streamed")})
+    # A store act over HTTP is one store record on the ledger's side and one
+    # request span on the sidecar's (the kit instruments urllib3): pair them by
+    # pod, endpoint host and the record's window (ts is the record's end, ms
+    # its duration), on an edge the fleet declares as http. A store with no
+    # such edge is dark by construction.
+    http_edges = {(caller, callee) for caller, callee, proto in fleet.edges if proto == "http"}
+    store_pairs, dark = [], []
+    for r in stores:
+        host = short_host((r.get("endpoint") or "").split("//", 1)[-1])
+        cands = [s for s in unmatched_spans.values() if s["self_id"] == r["pod"] and s["direction"] == "outbound"
+                 and s["peer"] == host] if (r["pod"], host) in http_edges else []
+        ts, ms = r.get("ts"), (r.get("ms") or 0) / 1000
+        best = min(cands, key=lambda s: abs(s["started_at"].timestamp() - (float(ts) - ms)) if ts else 0) if cands else None
+        if best is None:
+            dark.append(r)
+            continue
+        del unmatched_spans[best["span_id"]]
+        started = best["started_at"].timestamp()
+        store_pairs.append({"pod": r["pod"], "dir": "out", "host": host, "store": r["store"], "op": r.get("op"),
+                            "method": best["method"], "span_id": best["span_id"], "proto_sidecar": best["protocol"],
+                            "timing_ok": ts is None or float(ts) - ms - skew_seconds <= started <= float(ts) + skew_seconds})
     table_only = [{"span_id": s["span_id"], "pod": s["self_id"], "dir": s["direction"], "peer": s["peer"],
                    "method": s["method"], "proto": s["protocol"]} for s in unmatched_spans.values()]
 
@@ -256,10 +282,11 @@ def compare(dg, trace_id: str, records: list[dict], fleet, *, skew_seconds: floa
         "unledgered_spans": unledgered_spans,
         "ledger_only_undeclared": [x for x in ledger_only if not x["declared_dark"]],
         "digest_mismatch": digest_bad, "digest_unaligned": digest_unaligned,
-        "timing_violations": [p for p in pairs if not p["timing_ok"]],
+        "timing_violations": [p for p in pairs + store_pairs if not p["timing_ok"]],
         "tools": [{"pod": r["pod"], "name": r["name"], "error": r.get("error")} for r in tools],
+        "store_pairs": store_pairs,
         "dark_hops": [{"pod": r["pod"], "store": r["store"], "op": r.get("op"), "verb": r.get("verb"),
-                       "table": r.get("table")} for r in stores],
+                       "table": r.get("table")} for r in dark],
         "ledger_pods": ledger_pods, "tree_pods": tree_pods,
         "ledger_not_in_tree": sorted(set(ledger_pods) - set(tree_pods)),
         "tree_not_in_ledger": sorted(set(tree_pods) - set(ledger_pods)),
@@ -293,7 +320,7 @@ def assert_consistent(c: dict, checks=None) -> None:
     expect(checks, "ledger.table_only", "sidecar exchanges the app's ledger does not know", [], c["table_only"])
     expect(checks, "ledger.digest_mismatch", "captured payload differs from what the app sent/received (aligned pairs)", [],
            [(p["pod"], p["dir"], p["host"], p["jsonrpc_method"], p["req_digest"], p["resp_digest"]) for p in c["digest_mismatch"]])
-    expect(checks, "ledger.timing_violations", "spans outside the app's send window", [],
+    expect(checks, "ledger.timing_violations", "spans outside the app's send window (exchanges and store acts)", [],
            [(p["pod"], p["dir"], p["host"], p["span_id"]) for p in c["timing_violations"]])
     missing = [p for p in c["tree_not_in_ledger"] if p not in c["pods_without_ledger"]]
     expect(checks, "ledger.tree_in_ledger", "entities in the tree whose pod wrote a ledger but not for this trace", [], missing)
@@ -304,7 +331,9 @@ def assert_consistent(c: dict, checks=None) -> None:
            comment=", ".join(sorted({s["pod"] for s in c["unledgered_spans"]})))
     record(checks, "ledger.ledger_only_declared", "ledger-only exchanges covered by a declaration or a bypass path",
            len(c["ledger_only"]) - len(c["ledger_only_undeclared"]))
-    record(checks, "ledger.dark_hops", "store records under the trace", len(c["dark_hops"]))
+    record(checks, "ledger.store_pairs", "store records paired with the sidecar's http span (S3 over http)", len(c["store_pairs"]),
+           comment=", ".join(f"{p['pod']}→{p['host']} {p['store']}/{p['op']}" for p in c["store_pairs"]))
+    record(checks, "ledger.dark_hops", "store records under the trace with no span by construction", len(c["dark_hops"]))
     record(checks, "ledger.tools", "tool records under the trace", len(c["tools"]))
     record(checks, "ledger.strays", "self-reported strays (ambient trace null, fresh sent trace)", len(c["self_reported_strays"]))
     record(checks, "ledger.pods", "pods whose ledger carries the trace / in the tree", f"{c['ledger_pods']} / {c['tree_pods']}")

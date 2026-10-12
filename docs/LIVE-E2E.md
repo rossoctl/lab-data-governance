@@ -276,7 +276,7 @@ L15 join the ledger too when it is on); L13 needs the alerts processor. Both are
 | # | drives | asserts | #161 scenario |
 |---|---|---|---|
 | L1 | one scripted turn (fresh booking dates) under a minted trace id, nothing else | forest (1 root, 0 orphans, 0 unpaired, parent sources {wire 1, tracestate N}), **the audit** on the four lineage axes with the fleet's declared gaps reported as KNOWN, quiet re-check; the risk tables are not read | 1 |
-| L2 | the app's ledger lines for the run window against L1's trace, before any probe | exchange ⟷ span one to one, payload digests equal where the reductions coincide, timing inside the app's window, dark hops listed, strays self-reported, tree pods all wrote the trace | — |
+| L2 | the app's ledger lines for the run window against L1's trace, before any probe | exchange ⟷ span one to one, payload digests equal where the reductions coincide, timing inside the app's window, the S3 read's store record paired with its http span, dark hops listed, strays self-reported, tree pods all wrote the trace | — |
 | L3 | card to the never-answering sink, 45 s client timeout | `lineage.outcome=abandoned`, no status, response leg `error=true` with no payload | 4, 6 (lineage half) |
 | L4 | GET with no body | both legs without payload | 8 (lineage half) |
 | L5 | four probes at once into L1's trace | four interactions; the forest holds (in-trace concurrency) | 2, 3 |

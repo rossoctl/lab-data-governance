@@ -16,7 +16,7 @@ alerts where deployed). It runs only under `-m live`, and only on a cluster that
 | `pins.yaml` | gate | what the cluster must be: app and cortex commits, every image id (app, shim, sidecar, proxy-init, DG), OPA image, LLM model + digest, contract version; the migration head is derived from the checkout, not pinned |
 | `fleet.py` + `apps/<app>.yaml` | declare | the one app-specific input: sidecar'd workloads, bare callees, the LLM, every allowed edge, the wire-invisible acts with their ports, the turn's deterministic edges, and the **known gaps** — what the app is known not to deliver today and why |
 | `audit.py` | read | every property of the derived tables for one trace on five axes (soundness, completeness, fidelity, invariance, risk); a check a declared gap lists reads KNOWN when it fails, by the gap's id, never silent |
-| `ledger.py` | read | Tier C: the app's own ledger (`ROSSOCTL_LEDGER=stdout` in agent-examples-snp) joined to the tables exchange by exchange — digests, timing, dark hops, self-reported strays, turn completeness |
+| `ledger.py` | read | Tier C: the app's own ledger (`ROSSOCTL_LEDGER=stdout` in agent-examples-snp) joined to the tables exchange by exchange — digests, timing, store acts over http paired with their span, dark hops, self-reported strays, turn completeness |
 | `lab_expect.py` | read | the expected forest of a lineage_lab plan (the wire contract as a function), the tables read in the same vocabulary, and their diff |
 | `test_lab_live.py` | drive | the controlled app's scenarios R2–R11 (`E2E_APP=lineage_lab`), one catalogue row each |
 | `catalog/scenarios.yaml` | data | the scenario catalogue: transformation × hop shape × framework × origin × egress, expected graph and per-leg verdicts, the label-propagation column empty (#272) |
@@ -162,7 +162,7 @@ LLM's plan varies between turns, the shape does not.
 |---|---|---|---|
 | **A. lineage and the plugin** — nothing read from the risk tables | | | |
 | L1 | one turn (fresh booking dates), fresh trace T, nothing else | forest (1 root), **the audit** on the four lineage axes (declared gaps KNOWN), quiet re-check | |
-| L2 | (T) the workloads' ledger lines for the run window | every exchange the app made has its sidecar span and vice versa, captured payloads equal the digests where the reductions coincide, spans inside the app's send windows, dark hops listed, strays self-reported, every pod in the tree wrote the trace | app pods with `ROSSOCTL_LEDGER=stdout` |
+| L2 | (T) the workloads' ledger lines for the run window | every exchange the app made has its sidecar span and vice versa, captured payloads equal the digests where the reductions coincide, spans inside the app's send windows, the S3 read's store record paired with its http span, dark hops listed, strays self-reported, every pod in the tree wrote the trace | app pods with `ROSSOCTL_LEDGER=stdout` |
 | L3 | card → sink, 45 s client timeout, in T | `lineage.outcome=abandoned`, no status, response leg `error=true` with no payload, request leg with payload | sink |
 | L4 | no-body GET, in T | both legs NULL | |
 | L5 | four probes at once in T | four interactions, forest holds (in-trace concurrency) | |
