@@ -22,7 +22,8 @@
  * utils.py`'s `_verdict_summary`. The other two possible per-leg shapes are
  * `{classification_pending: true}` (still running) and `{payload: null}`
  * (nothing to classify); neither carries tags or a sensitivity level, so
- * both fall through this narrowing to the "none" default below.
+ * both pass this narrowing contributing nothing to the unions below (the
+ * risk trace page's interaction panel tells them apart by key).
  */
 export interface ClassifiedLegSummary {
   sensitivity_level?: unknown;
@@ -45,20 +46,40 @@ export interface ClassifiedLegSummary {
  * classificationByInteraction` build on it rather than re-deriving it.
  */
 export function classifiedLegs(summary: Record<string, unknown> | null): ClassifiedLegSummary[] {
+  return classifiedLegEntries(summary).map(([, leg]) => leg);
+}
+
+export type LegName = 'request' | 'response';
+
+/**
+ * `classifiedLegs` with each leg's name kept (issue #295: the risk trace
+ * page's interaction panel shows the verdict PER LEG, where the unioned
+ * `regulatoryTagsOf`/`classificationLevelsOf` below would lose which leg
+ * carried what). Same narrowing, same order: request, then response.
+ */
+export function classifiedLegEntries(
+  summary: Record<string, unknown> | null,
+): [LegName, ClassifiedLegSummary][] {
   if (summary == null || typeof summary !== 'object') return [];
   return (['request', 'response'] as const)
-    .map((leg) => summary[leg])
-    .filter((v): v is ClassifiedLegSummary => typeof v === 'object' && v !== null);
+    .map((leg): [LegName, unknown] => [leg, summary[leg]])
+    .filter((e): e is [LegName, ClassifiedLegSummary] => typeof e[1] === 'object' && e[1] !== null);
+}
+
+/** One classified leg's `regulatory_tags`, strings only, in wire order. */
+export function legTags(leg: ClassifiedLegSummary): string[] {
+  return Array.isArray(leg.regulatory_tags) ? leg.regulatory_tags.filter((t): t is string => typeof t === 'string') : [];
+}
+
+/** One classified leg's `sensitivity_level`, or `null` when it isn't a string. */
+export function legLevel(leg: ClassifiedLegSummary): string | null {
+  return typeof leg.sensitivity_level === 'string' ? leg.sensitivity_level : null;
 }
 
 /** Every `regulatory_tags` string across whichever legs were actually classified, deduplicated, first-seen order. */
 export function regulatoryTagsOf(summary: Record<string, unknown> | null): string[] {
   const tags = new Set<string>();
-  for (const leg of classifiedLegs(summary)) {
-    if (Array.isArray(leg.regulatory_tags)) {
-      for (const tag of leg.regulatory_tags) if (typeof tag === 'string') tags.add(tag);
-    }
-  }
+  for (const leg of classifiedLegs(summary)) for (const tag of legTags(leg)) tags.add(tag);
   return [...tags];
 }
 
@@ -66,7 +87,8 @@ export function regulatoryTagsOf(summary: Record<string, unknown> | null): strin
 export function classificationLevelsOf(summary: Record<string, unknown> | null): string[] {
   const levels = new Set<string>();
   for (const leg of classifiedLegs(summary)) {
-    if (typeof leg.sensitivity_level === 'string') levels.add(leg.sensitivity_level);
+    const level = legLevel(leg);
+    if (level != null) levels.add(level);
   }
   return [...levels];
 }

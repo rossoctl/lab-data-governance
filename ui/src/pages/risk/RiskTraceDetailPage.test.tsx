@@ -269,33 +269,213 @@ describe('RiskTraceDetailPage content (#170)', () => {
     await waitFor(() => expect(screen.getByText('2 of 2')).toBeInTheDocument());
     expect(within(screen.getByTestId('policy-decision-panel')).getByText('second violation')).toBeInTheDocument();
     expect(screen.getByTestId('location')).toHaveTextContent('violation=2');
+    expect(screen.getByTestId('location')).not.toHaveTextContent('interaction=');
   });
 
-  it('clicking an edge whose interaction triggered no rule is a no-op, leaving the open violation as-is', async () => {
-    mockFetchRouter({
-      detail: {
-        trace_risk: { trace_id: 't1' },
-        interactions: [
-          interaction({ interaction_id: 'i1', summary: 'only violation' }),
-          interaction({ interaction_id: 'i2', summary: 'not a violation', risk: null }),
-        ],
-      },
+  // Issue #295: a click on ANY edge shows that interaction's own data in the
+  // interaction panel; only a policy event's edge also moves the stepper.
+  describe('edge click shows the interaction (issue #295)', () => {
+    const TWO = [
+      interaction({ interaction_id: 'i1', summary: 'only violation' }),
+      interaction({
+        interaction_id: 'i2',
+        summary: 'agent calls weather',
+        risk: risk({
+          interaction_id: 'i2',
+          risk_level: 'low',
+          enforcement_type: null,
+          triggered_rule_ids: [],
+          classification_summary: {
+            request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PCI', 'PI'] },
+            response: { payload: null },
+          },
+        }),
+      }),
+      interaction({
+        interaction_id: 'i3',
+        summary: 'plain call',
+        risk: risk({
+          interaction_id: 'i3',
+          risk_level: 'low',
+          enforcement_type: null,
+          triggered_rule_ids: [],
+          classification_summary: { request: { classification_pending: true } },
+        }),
+      }),
+    ];
+
+    /** The `<dd>` text beside a `<dt>` term — pins WHICH leg carries a verdict, not just that both strings appear. */
+    function rowText(panel: HTMLElement, term: string) {
+      return within(panel).getByText(term).closest('.pf-v5-c-description-list__group')!.textContent;
+    }
+
+    it('clicking an edge that triggered no rule shows its per-leg tags, mirrors ?interaction=, and leaves the open policy event as-is', async () => {
+      mockFetchRouter({ detail: { trace_risk: { trace_id: 't1' }, interactions: TWO } });
+      renderWithProviders(
+        <>
+          <LocationProbe />
+          {harness()}
+        </>,
+        { route: '/risk/traces/t1' },
+      );
+
+      await waitFor(() => expect(screen.getByText('1 of 1')).toBeInTheDocument());
+      // Default selection = the open policy event's interaction.
+      expect(within(screen.getByTestId('interaction-panel')).getByText('only violation')).toBeInTheDocument();
+
+      clickEdge('i2:request');
+
+      const panel = await screen.findByTestId('interaction-panel');
+      await waitFor(() => expect(within(panel).getByText('agent calls weather')).toBeInTheDocument());
+      expect(rowText(panel, 'Request leg')).toContain('INTERNAL · PCI, PI');
+      expect(rowText(panel, 'Response leg')).toContain('no payload'); // `{payload: null}`
+      expect(within(panel).getByText('low')).toBeInTheDocument();
+      expect(within(panel).getByRole('link', { name: 'Open in trace view' })).toHaveAttribute(
+        'href',
+        '/traces/t1/flow?iid=i2',
+      );
+
+      expect(screen.getByTestId('location')).toHaveTextContent('interaction=i2');
+      expect(screen.getByTestId('location')).not.toHaveTextContent('violation=');
+      expect(screen.getByText('1 of 1')).toBeInTheDocument();
+      expect(within(screen.getByTestId('policy-decision-panel')).getByText('only violation')).toBeInTheDocument();
+
+      // A second click REPLACES the param (one `interaction=`, the new one), never appends.
+      clickEdge('i3:request');
+      await waitFor(() => expect(within(panel).getByText('plain call')).toBeInTheDocument());
+      expect(rowText(panel, 'Request leg')).toContain('pending'); // `{classification_pending: true}`
+      expect(screen.getByTestId('location')).toHaveTextContent('interaction=i3');
+      expect(screen.getByTestId('location')).not.toHaveTextContent('interaction=i2');
     });
-    renderWithProviders(
-      <>
-        <LocationProbe />
-        {harness()}
-      </>,
-      { route: '/risk/traces/t1' },
-    );
 
-    await waitFor(() => expect(screen.getByText('1 of 1')).toBeInTheDocument());
+    it('a plain-edge click keeps the policy event that a saved ?interaction= had opened', async () => {
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [
+            interaction({ interaction_id: 'i1', summary: 'first violation' }),
+            interaction({ interaction_id: 'i2', summary: 'second violation', risk: risk({ interaction_id: 'i2' }) }),
+            interaction({ interaction_id: 'i3', summary: 'plain call', risk: null }),
+          ],
+        },
+      });
+      renderWithProviders(
+        <>
+          <LocationProbe />
+          {harness()}
+        </>,
+        { route: '/risk/traces/t1?interaction=i2' },
+      );
 
-    clickEdge('i2:request');
+      await waitFor(() => expect(screen.getByText('2 of 2')).toBeInTheDocument());
 
-    expect(screen.getByText('1 of 1')).toBeInTheDocument();
-    expect(within(screen.getByTestId('policy-decision-panel')).getByText('only violation')).toBeInTheDocument();
-    expect(screen.getByTestId('location')).not.toHaveTextContent('violation=');
+      clickEdge('i3:request');
+
+      await waitFor(() => expect(within(screen.getByTestId('interaction-panel')).getByText('plain call')).toBeInTheDocument());
+      expect(screen.getByText('2 of 2')).toBeInTheDocument();
+      expect(within(screen.getByTestId('policy-decision-panel')).getByText('second violation')).toBeInTheDocument();
+      expect(screen.getByTestId('location')).toHaveTextContent('violation=2');
+      expect(screen.getByTestId('location')).toHaveTextContent('interaction=i3');
+    });
+
+    it('clicking a policy event edge moves the stepper and deletes ?interaction= (its interaction is the default)', async () => {
+      mockFetchRouter({ detail: { trace_risk: { trace_id: 't1' }, interactions: TWO } });
+      renderWithProviders(
+        <>
+          <LocationProbe />
+          {harness()}
+        </>,
+        { route: '/risk/traces/t1?interaction=i2' },
+      );
+
+      await waitFor(() =>
+        expect(within(screen.getByTestId('interaction-panel')).getByText('agent calls weather')).toBeInTheDocument(),
+      );
+
+      clickEdge('i1:request');
+
+      await waitFor(() => expect(screen.getByTestId('location')).not.toHaveTextContent('interaction='));
+      expect(within(screen.getByTestId('interaction-panel')).getByText('only violation')).toBeInTheDocument();
+      expect(screen.getByText('1 of 1')).toBeInTheDocument();
+    });
+
+    it('says "not yet computed" for an interaction whose risk is null', async () => {
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [interaction({ interaction_id: 'i2', summary: 'pending', risk: null })],
+        },
+      });
+      renderWithProviders(harness(), { route: '/risk/traces/t1?interaction=i2' });
+
+      const panel = await screen.findByTestId('interaction-panel');
+      expect(within(panel).getByText('pending')).toBeInTheDocument();
+      expect(within(panel).getByText('not yet computed')).toBeInTheDocument();
+      expect(within(panel).getByText('not classified')).toBeInTheDocument();
+    });
+
+    it('falls back to the open policy event for a stale ?interaction= that names no interaction of the trace', async () => {
+      mockFetchRouter({ detail: { trace_risk: { trace_id: 't1' }, interactions: TWO } });
+      renderWithProviders(harness(), { route: '/risk/traces/t1?interaction=gone' });
+
+      await waitFor(() => expect(screen.getByText('1 of 1')).toBeInTheDocument());
+      expect(within(screen.getByTestId('interaction-panel')).getByText('only violation')).toBeInTheDocument();
+    });
+
+    it('renders no panel for a stale ?interaction= when the trace has no policy event either', async () => {
+      mockFetchRouter({
+        detail: { trace_risk: { trace_id: 't1' }, interactions: [interaction({ risk: null })] },
+      });
+      renderWithProviders(harness(), { route: '/risk/traces/t1?interaction=gone' });
+
+      await waitFor(() => expect(screen.getByText('No policy events')).toBeInTheDocument());
+      expect(screen.queryByTestId('interaction-panel')).not.toBeInTheDocument();
+    });
+
+    it('a cold-opened ?interaction= naming a policy event moves the stepper to it, so both panels agree', async () => {
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [
+            interaction({ interaction_id: 'i1', summary: 'first violation' }),
+            interaction({ interaction_id: 'i2', summary: 'second violation', risk: risk({ interaction_id: 'i2' }) }),
+          ],
+        },
+      });
+      renderWithProviders(harness(), { route: '/risk/traces/t1?interaction=i2' });
+
+      await waitFor(() => expect(screen.getByText('2 of 2')).toBeInTheDocument());
+      expect(within(screen.getByTestId('policy-decision-panel')).getByText('second violation')).toBeInTheDocument();
+      expect(within(screen.getByTestId('interaction-panel')).getByText('second violation')).toBeInTheDocument();
+    });
+
+    it('Previous/Next clear ?interaction=, so the stepped-to event is the selection', async () => {
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [
+            interaction({ interaction_id: 'i1', summary: 'first violation' }),
+            interaction({ interaction_id: 'i2', summary: 'second violation', risk: risk({ interaction_id: 'i2' }) }),
+            interaction({ interaction_id: 'i3', summary: 'plain call', risk: null }),
+          ],
+        },
+      });
+      renderWithProviders(
+        <>
+          <LocationProbe />
+          {harness()}
+        </>,
+        { route: '/risk/traces/t1?interaction=i3' },
+      );
+
+      await waitFor(() => expect(within(screen.getByTestId('interaction-panel')).getByText('plain call')).toBeInTheDocument());
+
+      await userEvent.click(screen.getByRole('button', { name: /next/i }));
+
+      await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('violation=2'));
+      expect(screen.getByTestId('location')).not.toHaveTextContent('interaction=');
+      expect(within(screen.getByTestId('interaction-panel')).getByText('second violation')).toBeInTheDocument();
+    });
   });
 
   it('clamps an out-of-range or non-numeric ?violation= to violation 1 without error', async () => {
