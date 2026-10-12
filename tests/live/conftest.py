@@ -387,9 +387,22 @@ def preflight(env: Env, kube: Kube, pins: dict[str, Any], run_record) -> Preflig
             pf.expect_suffix(f"{d}.sidecar_image_id", pins["cortex"]["sidecar_image_id"],
                              sidecar.get("imageID"))
     for w in PLAIN_IMAGE_WORKLOADS:
-        pods = [p for p in kube.json(["get", "pod", "-l", f"app.kubernetes.io/name={w}"],
-                                     ns=env.app_ns)["items"] if not p["metadata"].get("deletionTimestamp")]
-        img = next((c.get("imageID") for p in pods for c in p["status"].get("containerStatuses", [])), None)
+        # The Deployment must be settled, or the pod read here may be the one on
+        # its way out (right after a roll the old pod is still Running, without
+        # a deletionTimestamp, while its replacement is Pending). Then exactly
+        # one running, non-terminating pod carries the image to compare.
+        dep = kube.json(["get", "deploy", w], ns=env.app_ns)
+        st, spec = dep.get("status", {}), dep.get("spec", {})
+        settled = (st.get("observedGeneration") == dep["metadata"].get("generation")
+                   and st.get("updatedReplicas") == spec.get("replicas", 1) == st.get("availableReplicas")
+                   and st.get("replicas") == spec.get("replicas", 1))
+        pf.expect(f"{w}.settled", True, settled)
+        pods = [p for p in kube.json(["get", "pod", "-l", f"app.kubernetes.io/name={w}"], ns=env.app_ns)["items"]
+                if p["status"].get("phase") == "Running" and not p["metadata"].get("deletionTimestamp")]
+        if len(pods) != 1:
+            pf.problems.append(f"{w}: expected 1 running pod, found {len(pods)}")
+            continue
+        img = next((c.get("imageID") for c in pods[0]["status"].get("containerStatuses", [])), None)
         pf.expect_suffix(f"{w}.image_id", pins["agent_examples_snp"]["image_id"], img)
 
     # Every agent resolved every peer at startup. The app resolves peers once
