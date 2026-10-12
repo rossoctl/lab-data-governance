@@ -875,8 +875,8 @@ def test_L16_two_leg_ready_consumers(env, kube, dg, capabilities, catalog, run_r
     if not env.destructive:
         pytest.skip("E2E_DESTRUCTIVE=1 to run the two-consumer drill")
     if not capabilities.consumer_lock:
-        pytest.skip("leg-ready holds no sole-consumer lock on the deployed branch (lab-dg #290 not deployed; "
-                    "capabilities.consumer_lock=False)")
+        pytest.skip("no granted sole-consumer lock in pg_locks when capabilities were probed (lab-dg #290 not "
+                    "deployed, or leg-ready was between sessions; capabilities.consumer_lock=False)")
     rec = run_record.scenario("L16")
     with Checks("L16", rec, raise_at_exit=True) as ch:
         restarts = _leg_ready_restarts(kube, env)

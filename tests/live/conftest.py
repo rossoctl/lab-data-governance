@@ -391,7 +391,11 @@ def preflight(env: Env, kube: Kube, pins: dict[str, Any], run_record) -> Preflig
         # its way out (right after a roll the old pod is still Running, without
         # a deletionTimestamp, while its replacement is Pending). Then exactly
         # one running, non-terminating pod carries the image to compare.
-        dep = kube.json(["get", "deploy", w], ns=env.app_ns)
+        try:
+            dep = kube.json(["get", "deploy", w], ns=env.app_ns)
+        except RuntimeError as e:
+            pf.problems.append(f"{w}: no Deployment to read: {e}")
+            continue
         st, spec = dep.get("status", {}), dep.get("spec", {})
         want = spec.get("replicas", 1)
         shape_ = {"generation": f"{st.get('observedGeneration')}/{dep['metadata'].get('generation')}",
