@@ -10,9 +10,13 @@ import { LIVE_POLL_MS, TRACE_LIVE_KEYS, useTraceLive } from './live';
  * jsdom has no EventSource of its own, which is also what the `off` test relies on.
  */
 class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
   static instances: FakeEventSource[] = [];
   readonly url: string;
   closed = false;
+  readyState = FakeEventSource.CONNECTING;
   onerror: ((e: Event) => void) | null = null;
   private listeners = new Map<string, Set<(e: Event) => void>>();
 
@@ -32,10 +36,18 @@ class FakeEventSource {
   }
   /** Deliver a `change` event carrying `id` as the token. */
   change(id: string) {
+    this.readyState = FakeEventSource.OPEN;
     const ev = new MessageEvent('change', { lastEventId: id, data: id });
     this.listeners.get('change')?.forEach((fn) => fn(ev));
   }
+  /** A drop the browser will retry by itself (readyState CONNECTING). */
   fail() {
+    this.readyState = FakeEventSource.CONNECTING;
+    this.onerror?.(new Event('error'));
+  }
+  /** A non-200 reply: the browser closes the source for good and never retries. */
+  reject() {
+    this.readyState = FakeEventSource.CLOSED;
     this.onerror?.(new Event('error'));
   }
 }
@@ -119,6 +131,40 @@ describe('useTraceLive', () => {
     expect(result.current).toBe('stream');
   });
 
+  it('reopens a source the browser closed (non-200 reply) on the poll cadence, polling meanwhile', () => {
+    const { invalidate, wrapper } = setup();
+    const { result } = renderHook(() => useTraceLive('T1'), { wrapper });
+    const first = FakeEventSource.instances[0];
+    act(() => first.change('v1'));
+    invalidate.mockClear();
+
+    // The pod went away; the gateway answered the reconnect with 503.
+    act(() => first.reject());
+    expect(result.current).toBe('poll');
+    expect(FakeEventSource.instances).toHaveLength(1);
+
+    act(() => vi.advanceTimersByTime(LIVE_POLL_MS + 10));
+    expect(FakeEventSource.instances).toHaveLength(2);
+    const second = FakeEventSource.instances[1];
+    expect(second.url).toBe('/api/traces/T1/events');
+    expect(result.current).toBe('poll'); // still polling until the new one speaks
+
+    // Still 503: closed again → one more reopen, not a storm.
+    act(() => second.reject());
+    act(() => vi.advanceTimersByTime(LIVE_POLL_MS + 10));
+    expect(FakeEventSource.instances).toHaveLength(3);
+    expect(invalidate.mock.calls.length).toBeGreaterThan(0); // polling carried the page meanwhile
+
+    // The new pod is up: first token → stream, polling stops, token compared across reopens.
+    invalidate.mockClear();
+    act(() => FakeEventSource.instances[2].change('v1'));
+    expect(result.current).toBe('stream');
+    expect(invalidate).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(LIVE_POLL_MS * 3));
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(FakeEventSource.instances).toHaveLength(3);
+  });
+
   it('closes the stream and clears the poll timer on unmount and on trace change', () => {
     const { invalidate, wrapper } = setup();
     const { rerender, unmount } = renderHook(({ id }) => useTraceLive(id), {
@@ -126,16 +172,18 @@ describe('useTraceLive', () => {
       initialProps: { id: 'T1' },
     });
     const first = FakeEventSource.instances[0];
-    act(() => first.fail());
+    act(() => first.reject()); // closed by the browser: a reopen is pending too
 
     rerender({ id: 'T2' });
     expect(first.closed).toBe(true);
     expect(FakeEventSource.instances).toHaveLength(2);
     expect(FakeEventSource.instances[1].url).toBe('/api/traces/T2/events');
-    // T1's poll timer is gone: advancing time invalidates nothing for T1.
+    // T1's poll timer and its pending reopen are gone: advancing time
+    // invalidates nothing for T1 and opens nothing on T1.
     invalidate.mockClear();
     act(() => vi.advanceTimersByTime(LIVE_POLL_MS * 2));
     expect(invalidatedKeys(invalidate).some((k) => k.includes('"T1"'))).toBe(false);
+    expect(FakeEventSource.instances).toHaveLength(2);
 
     unmount();
     expect(FakeEventSource.instances[1].closed).toBe(true);

@@ -27,7 +27,9 @@
  *   server restart in progress). The hook invalidates on a fixed interval
  *   until the stream comes back, so liveness degrades to a few seconds of lag
  *   rather than to nothing. Polling is never the steady state: the moment an
- *   event arrives the interval is cleared.
+ *   event arrives the interval is cleared. A source the browser has CLOSED
+ *   (it does so on any non-200 reply, e.g. a gateway's 503 during a restart,
+ *   and never retries) is reopened on the same cadence.
  *
  * `off` is the third value and means no `EventSource` at all, which is not a
  * browser this SPA supports — it is jsdom. The hook then does nothing, so the
@@ -92,6 +94,8 @@ export function useTraceLive(traceId: string): LiveMode {
 
     let lastId: string | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let reopenTimer: ReturnType<typeof setTimeout> | null = null;
+    let source: EventSource | null = null;
     const startPolling = () => {
       if (pollTimer === null) pollTimer = setInterval(invalidate, LIVE_POLL_MS);
       setMode('poll');
@@ -103,23 +107,35 @@ export function useTraceLive(traceId: string): LiveMode {
       }
     };
 
-    const source = new EventSource(traceEventsPath(traceId));
-    source.addEventListener(CHANGE_EVENT, (event) => {
-      const id = (event as MessageEvent).lastEventId;
-      stopPolling();
-      setMode('stream');
-      if (id !== lastId) invalidate();
-      lastId = id;
-    });
-    source.onerror = () => {
-      // EventSource reconnects on its own; cover the gap. A CLOSED source
-      // (the browser gave up) is not expected from a `retry:`-hinted stream,
-      // and polling is the right answer to it too.
-      startPolling();
+    const open = () => {
+      reopenTimer = null;
+      const es = new EventSource(traceEventsPath(traceId));
+      source = es;
+      es.addEventListener(CHANGE_EVENT, (event) => {
+        const id = (event as MessageEvent).lastEventId;
+        stopPolling();
+        setMode('stream');
+        if (id !== lastId) invalidate();
+        lastId = id;
+      });
+      es.onerror = () => {
+        // Cover the gap by polling. A dropped stream the browser reconnects to
+        // by itself (CONNECTING); one it gave up on (CLOSED) it never retries —
+        // a proxy answering 503 while the API is restarting is enough for that,
+        // and the EventSource spec says a non-200 reply closes the source for
+        // good. So a closed source is reopened on the poll cadence; polling
+        // continues until the new one delivers its first token.
+        startPolling();
+        if (es.readyState === EventSource.CLOSED && reopenTimer === null) {
+          reopenTimer = setTimeout(open, LIVE_POLL_MS);
+        }
+      };
     };
+    open();
 
     return () => {
-      source.close();
+      source?.close();
+      if (reopenTimer !== null) clearTimeout(reopenTimer);
       stopPolling();
     };
   }, [queryClient, traceId]);

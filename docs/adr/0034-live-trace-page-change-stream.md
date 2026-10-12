@@ -71,8 +71,13 @@ being open, not of any tab. The first token also invalidates once, closing
 the window between the page's first reads and the stream's first event.
 
 Two modes, decided by the browser: `stream` normally, and `poll` (invalidate
-every 2 s) while the stream is in error, until it comes back. A `Live` /
-`Polling` label by the title is the only visible trace of it. Without an
+every 2 s) while the stream is in error, until it comes back. A dropped
+stream the browser retries by itself; one it has *closed* it never does —
+the EventSource specification closes the source on any non-200 reply, and a
+gateway answers 503 for the seconds in which the API has no ready endpoint —
+so a closed source is reopened on the poll cadence until its first token
+arrives. A `Live` / `Polling` label by the title is the only visible trace
+of it. Without an
 `EventSource` at all — jsdom, not a supported browser — the hook does nothing,
 so the page behaves as it did before and no test that counts fetches sees a
 timer it did not start.
@@ -130,3 +135,9 @@ sharing, so a change event that changed nothing visible pushes nothing.
   process was stopped and restarted under the page (label flipped to
   `Polling` and back to `Live`, picture never blanked), and the sidecar
   algorithm's per-span re-derivation re-labelled a node in place.
+- Observed on the `rossoctl` cluster behind the Istio gateway: the stream
+  passes unbuffered (first token at once, keepalives every 3 s); a real
+  travel-advisor turn drew its graph in while the agents ran; deleting the
+  API pod under the open page gave the 503-closes-the-source case above,
+  which the rig could not produce (a stopped process refuses the connection,
+  which the browser does retry) and which the reopen now covers.
