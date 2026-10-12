@@ -81,7 +81,7 @@ def psql(sql):
 
 def turn(trace_id, parent_id, text, url="http://travel-advisor:8080/", timeout=580):
     spec = {"trace_id": trace_id, "parent_id": parent_id, "text": text, "url": url, "timeout": timeout}
-    out = k("exec", "-i", "deploy/demo-client", "-c", "client", "--", "env",
+    out = k("exec", "-i", "deploy/demo-client", "-c", "client", "--", "env", "LINEAGE_PROPAGATE=0",
             f"E2E_SPEC={json.dumps(spec)}", "python3", "-", input=TURN_PROGRAM, timeout=timeout + 60)
     return json.loads(out)
 
