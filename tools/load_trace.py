@@ -173,6 +173,31 @@ def shift_rows_to_now(
     return shifted, offset
 
 
+def _remap_refs(value: Any, id_map: dict[str, str]) -> Any:
+    """Copy *value* with every string that is exactly a key of *id_map* replaced
+    by its new id, at any depth of dicts and lists. Everything else is returned
+    as-is. Whole-string only: an id inside a longer string (a serialized
+    ``traceparent`` in a captured body, say) is opaque content, not a reference."""
+    if isinstance(value, str):
+        return id_map.get(value, value)
+    if isinstance(value, dict):
+        return {k: _remap_refs(v, id_map) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_remap_refs(v, id_map) for v in value]
+    return value
+
+
+def _remap_trace_state(value: str, id_map: dict[str, str]) -> str:
+    """A W3C ``tracestate`` is ``key=value`` members joined by commas; the sidecar
+    lineage plugin stamps ``lineage-parent=<request span id>`` there. Remap every
+    member whose whole value is a key of *id_map*; leave the rest as-is."""
+    members = []
+    for member in value.split(","):
+        key, sep, val = member.partition("=")
+        members.append(key + sep + id_map.get(val, val) if sep else member)
+    return ",".join(members)
+
+
 def _reid_rows(
     rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], str]:
@@ -188,14 +213,27 @@ def _reid_rows(
     One new 32-hex ``trace_id`` is minted; every distinct ``span_id`` is mapped to a
     new 16-hex id. ``parent_id`` is remapped through the *same* map when present so
     the parent/child tree (and thus the derived interactions) is preserved; a
-    missing/empty/root parent is left as-is. All other fields are untouched. The ids
-    only need to be unique, not reproducible, so ``secrets`` supplies the randomness.
+    missing/empty/root parent is left as-is. The ids only need to be unique, not
+    reproducible, so ``secrets`` supplies the randomness.
+
+    A span also names ids *inside* its own fields: a link carries a ``span_id`` and
+    ``trace_id``, and a producer may record an id in an attribute — the sidecar
+    lineage plugin writes the request span's own id into ``lineage.exchange.id``,
+    and the consumer refuses a request span whose two ids differ. The plugin also
+    stamps that id into the ``tracestate`` member ``lineage-parent``; the stamp is
+    wire-only on the sidecar's own spans, but an application that exports its own
+    spans carries it there, and the receiver keeps a span's ``tracestate`` in the
+    ``otlp`` envelope. So every string in ``attributes``, ``events`` and ``links``
+    that is exactly an old span id or the old trace id, and every ``tracestate``
+    member value that is one, is remapped through the same map; a copy must be a
+    trace the producers could have emitted. All other fields are untouched.
     """
     new_trace_id = secrets.token_hex(16)  # 32 lowercase hex chars
     id_map = {
         span_id: secrets.token_hex(8)  # 16 lowercase hex chars
         for span_id in {r["span_id"] for r in rows}
     }
+    ref_map = {**id_map, **{r["trace_id"]: new_trace_id for r in rows}}
     reidd: list[dict[str, Any]] = []
     for row in rows:
         new_row = dict(row)
@@ -204,6 +242,14 @@ def _reid_rows(
         parent = row.get("parent_id")
         if parent:  # non-empty / non-None: remap; root stays as-is
             new_row["parent_id"] = id_map.get(parent, parent)
+        for field in ("attributes", "events", "links"):
+            if row.get(field):
+                new_row[field] = _remap_refs(row[field], ref_map)
+        otlp = row.get("otlp")
+        if otlp and otlp.get("trace_state"):
+            new_row["otlp"] = {
+                **otlp, "trace_state": _remap_trace_state(otlp["trace_state"], ref_map)
+            }
         reidd.append(new_row)
     return reidd, new_trace_id
 
@@ -529,9 +575,9 @@ def main(argv: list[str] | None = None) -> int:
         "--reid",
         action="store_true",
         help="rewrite the trace onto a fresh random trace_id + span_ids before "
-        "sending, so re-loading a fixture you have already ingested reads as "
-        "genuinely new data (a plain re-replay is a no-op); compose with --now "
-        "to land it in the last-hour view",
+        "sending (ids a span names inside itself follow), so re-loading a "
+        "fixture you have already ingested reads as genuinely new data (a plain "
+        "re-replay is a no-op); compose with --now to land it in the last-hour view",
     )
     parser.add_argument(
         "--now",
