@@ -181,7 +181,7 @@ class Kube:
         pod; *spec* travels as one env var, never through a shell."""
         return self.run(
             ["exec", "-i", deploy, "-c", container, "--",
-             "env", f"E2E_SPEC={json.dumps(spec)}", "python3", "-"],
+             "env", "LINEAGE_PROPAGATE=0", f"E2E_SPEC={json.dumps(spec)}", "python3", "-"],
             ns=self.env.app_ns, input=program, timeout=timeout)
 
     def rollout_restart(self, deploy: str, *, ns: str, timeout: float = 180.0) -> None:
