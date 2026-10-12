@@ -309,7 +309,7 @@ travel_advisor, so the lab starts at R2).
 | R8 | redacted to the SSN's last four, then sent | predicted allow; xfails today: the classifier reads the four digits as PCI |
 | R9 | the record to the model, the model's summary sent | the inference request leg carries PII; what leaves is recorded |
 | R10 | two agents in parallel, one tool | fan-in derives as the plan says |
-| R11 | the same tool call on a pod-lifetime session and on a per-turn one | the pod-lifetime call lands in its own trace, the per-turn call under the turn |
+| R11 | the same tool call on a pod-lifetime session and on a per-turn one | both derive under the turn (cortex #1333 carries the turn across the startup session; before it the pod-lifetime call sat in its own trace, and a kit without the bridge turns the row red) |
 
 ### Reading the outcomes
 

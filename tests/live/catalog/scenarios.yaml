@@ -211,11 +211,11 @@ rows:
     title: "pod-lifetime MCP session — the frameworks' failure mode as a switch"
     app: lineage_lab
     transformation: forward
-    hop_shape: "demo-client > lab-a > lab-store [per_turn] ; lab-a > lab-tool-x [pod_lifetime: its own trace]"
+    hop_shape: "demo-client > lab-a > lab-store [per_turn] ; lab-a > lab-tool-x [pod_lifetime: under the turn since cortex #1333]"
     framework: plan
     datastore_origin: "postgres lab.records row public"
     egress: none
-    expected_graph: "root; lab-a→lab-store (mcp); the lab-tool-x call ABSENT from the tree (asserted), present as a wire-entered stray"
+    expected_graph: "root; lab-a→lab-store (mcp); lab-a→lab-tool-x (mcp) under the root like a per-turn call — the kit's MCP context bridge (cortex #1333, lab-dg #287) carries the turn across the startup session; before it the call was a wire-entered stray, and a kit without the bridge turns the row red"
     classification_per_leg: "none (public record)"
     decision_per_leg: "allow"
     expected_label_propagation: ""

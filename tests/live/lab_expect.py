@@ -9,8 +9,13 @@ sidecars and the derivation will see it:
   name is the op), plus the session's lifecycle exchanges (``initialize``,
   ``notifications/initialized``, …), whose count the MCP client decides:
   they are expected as "one or more X → T mcp lifecycle" and recorded;
-  with ``pod_lifetime`` the call is NOT in the tree (it rides the startup
-  context: its own trace) — an absence that is asserted;
+  with ``pod_lifetime`` the call rides a session the agent opened at
+  startup: since cortex #1333 (the MCP context bridge) the kit carries the
+  turn's context across that session's post task, so the call derives
+  under the turn exactly like a per-turn one; its lifecycle exchanges
+  happened at startup, so none is expected and none is counted as extra
+  (an ``initialize`` the client repeats inside the turn is recorded, not
+  asserted);
 - an ``a2a`` step: X → Y (a2a message/send) under X's inbound, and the
   sub-plan's steps under Y's inbound (the echo);
 - an ``http`` step: X → host (mcp — the body is MCP-shaped) under X's
@@ -35,7 +40,8 @@ from dataclasses import dataclass, field
 class Expected:
     calls: Counter = field(default_factory=Counter)       # (caller, callee, proto, op) -> count
     lifecycle: set = field(default_factory=set)           # (caller, callee) pairs with mcp lifecycle exchanges
-    absent: list = field(default_factory=list)            # pod_lifetime calls: (caller, callee, tool) not in the tree
+    lifecycle_optional: set = field(default_factory=set)  # pairs whose lifecycle ran at startup: neither missing nor extra
+    pod_lifetime: list = field(default_factory=list)      # calls on a startup session: (caller, callee, tool), in the tree
     parents: dict = field(default_factory=dict)           # (caller, callee, proto, op) -> caller of the parent interaction
     entities: set = field(default_factory=set)
 
@@ -72,14 +78,15 @@ def _walk(steps: list[dict], agent: str, parent_caller: str, e: Expected, fleet)
         op = st.get("op")
         if op == "mcp":
             tool = tool_pod(st["tool"])
-            if st.get("session", "per_turn") == "pod_lifetime":
-                e.absent.append((agent, tool, st["tool"]))
-                continue
             key = (agent, tool, "mcp", st["tool"])
             e.calls[key] += 1
             e.parents[key] = parent_caller
-            e.lifecycle.add((agent, tool))
             e.entities |= {agent, tool}
+            if st.get("session", "per_turn") == "pod_lifetime":
+                e.pod_lifetime.append((agent, tool, st["tool"]))
+                e.lifecycle_optional.add((agent, tool))
+            else:
+                e.lifecycle.add((agent, tool))
         elif op == "a2a":
             peer = st["agent"]
             key = (agent, peer, "a2a", "message/send")
@@ -158,7 +165,7 @@ def diff(exp: Expected, obs: dict) -> dict:
     missing = {k: v for k, v in exp.calls.items() if obs["calls"].get(k, 0) < v}
     extra = {k: v for k, v in obs["calls"].items() if exp.calls.get(k, 0) < v}
     missing_lc = exp.lifecycle - obs["lifecycle"]
-    extra_lc = obs["lifecycle"] - exp.lifecycle
+    extra_lc = obs["lifecycle"] - exp.lifecycle - exp.lifecycle_optional
     wrong_parent = {k: (exp.parents.get(k), obs["parents"].get(k)) for k in exp.calls
                     if k in obs["parents"] and exp.parents.get(k) != obs["parents"].get(k)}
     return {"missing_calls": {str(k): v for k, v in missing.items()}, "extra_calls": {str(k): v for k, v in extra.items()},

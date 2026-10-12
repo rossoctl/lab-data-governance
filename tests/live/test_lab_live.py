@@ -75,9 +75,10 @@ def _run(env, kube, dg, capabilities, fleet, attach, run_record, state, name, pl
     d = lab_expect.diff(exp, obs)
     rec.write("forest_diff.json", {**d, "expected_calls": {str(k): v for k, v in exp.calls.items()},
                                    "observed_calls": {str(k): v for k, v in obs["calls"].items()},
-                                   "expected_depth": exp.depth, "absent": exp.absent})
+                                   "expected_depth": exp.depth, "pod_lifetime": exp.pod_lifetime,
+                                   "observed_lifecycle": sorted(map(str, obs["lifecycle"]))})
     ch.record("forest.expected_calls", "calls the plan predicts (with multiplicity)", len(exp.calls),
-              comment=f"depth {exp.depth}; absent (pod_lifetime) {len(exp.absent)}")
+              comment=f"depth {exp.depth}; on a pod-lifetime session {len(exp.pod_lifetime)}")
     ch.check("forest.missing_calls", "predicted calls missing from the tables", {}, d["missing_calls"])
     ch.check("forest.extra_calls", "calls in the tables the plan did not predict", {}, d["extra_calls"])
     ch.check("forest.missing_lifecycle", "predicted lifecycle exchanges missing", [], d["missing_lifecycle"])
@@ -87,36 +88,23 @@ def _run(env, kube, dg, capabilities, fleet, attach, run_record, state, name, pl
              "equal" if not d["missing_entities"] and not d["extra_entities"] else {"missing": d["missing_entities"], "extra": d["extra_entities"]},
              ok=not d["missing_entities"] and not d["extra_entities"])
     ch.check("forest.equal", "the forest EQUALS the plan's", True, d["equal"])
-    for caller, callee, tool in exp.absent:
-        ch.check(f"forest.absent.{caller}>{callee}/{tool}", f"a pod_lifetime call stays out of the turn: {caller}→{callee}/{tool}",
-                 "absent", "present" if (caller, callee, "mcp", tool) in obs["calls"] else "absent",
-                 ok=(caller, callee, "mcp", tool) not in obs["calls"])
+    # The switch: a call on a session the agent opened at startup rides the
+    # turn since cortex #1333 (before it, the call sat in its own trace). A
+    # kit that loses the bridge turns this row red, with the call missing
+    # above and the census reporting the stray.
+    for caller, callee, tool in exp.pod_lifetime:
+        ch.check(f"forest.rides_turn.{caller}>{callee}/{tool}",
+                 f"a pod-lifetime session's call derives under the turn: {caller}→{callee}/{tool}",
+                 "under the turn", "under the turn" if (caller, callee, "mcp", tool) in obs["calls"] else "absent",
+                 ok=(caller, callee, "mcp", tool) in obs["calls"],
+                 comment="lifecycle in the turn: " + ("yes" if (caller, callee) in obs["lifecycle"] else "no (ran at startup)"))
     # 2. the audit, with no gaps to hide behind
     au, extra = audit.run(dg, T, fleet, known=state["traces"], quiet_seconds=env.quiet_seconds, attach=attach,
                           quiet_reread=False)
     rec.write("audit.json", au.as_dict())
     rec.write("audit.md", au.markdown(), raw=True)
     rec.write("census.json", extra)
-    # A plan with pod_lifetime steps PREDICTS its own strays: the census may
-    # list traces whose workloads are exactly those calls' (caller, tool);
-    # anything else outside the turn is a real escape.
     failed = list(au.failed)
-    if exp.absent:
-        predicted = {(c, t) for c, t, _ in exp.absent}
-        c5 = next((c for c in failed if c.id == "C5"), None)
-
-        def is_predicted(row) -> bool:
-            selfs = set((row.get("self_ids") or "").split(",")) - {""}
-            peers = {p.split(".")[0].removesuffix("-mcp") for p in (row.get("peers") or "").split(",") if p}
-            protos = set((row.get("protocols") or "").split(",")) - {""}
-            return protos <= {"mcp"} and any(selfs <= {c, t} and peers <= {t} for c, t in predicted)
-        if c5 is not None:
-            outside = (c5.detail or {}).get("outside") or []
-            if outside and all(is_predicted(r) for r in outside):
-                failed.remove(c5)
-                c5.ok = True  # the predicted strays are exactly the census's "outside"
-                rec.write("predicted_strays.json", outside)
-                ch.record("audit.C5.predicted_strays", "strays the plan predicted (pod_lifetime calls)", len(outside))
     ch.absorb_audit(au)
     ch.check("audit.no_known_gaps", "the lab declares no gaps: KNOWN checks", [], [c.id for c in au.known])
     assert not failed and not au.known, "\n" + au.markdown(failed_only=True)
@@ -342,13 +330,16 @@ def test_R10_fan_in_two_agents_one_tool(env, kube, dg, capabilities, catalog, fl
     ch.finish()
 
 
-def test_R11_pod_lifetime_session_is_its_own_trace(env, kube, dg, capabilities, catalog, fleet, attach, run_record, state):
-    """R11 — the frameworks' failure mode as a switch: the same tool call with
-    session=pod_lifetime must NOT appear in the turn's tree (it rides the
-    startup context into its own trace), while a per_turn call does."""
+def test_R11_pod_lifetime_session_rides_the_turn(env, kube, dg, capabilities, catalog, fleet, attach, run_record, state):
+    """R11 — the frameworks' failure mode as a switch: the same tool call on a
+    session the agent opened at startup (session=pod_lifetime) derives under
+    the turn exactly like a per-turn call. Before cortex #1333 (the MCP
+    context bridge, lab-dg #287) the call rode the startup context into its
+    own trace; the kit now carries the turn across the session's post task.
+    The switch stays: a kit that loses the bridge turns forest.rides_turn red."""
     plan = {"mark": "R11", "steps": [read("public", "rec"),
                                      {"op": "mcp", "tool": "lab_tool_x", "args": {"op": "forward", "payload": "$rec"},
                                       "session": "pod_lifetime", "mark": "t"}]}
     T, values, legs, ch = _run(env, kube, dg, capabilities, fleet, attach, run_record, state, "R11", plan)
-    ch.check("app.forwarded", "the tool forwarded the record (the call happened, outside the trace)", values["rec"], values["t"])
+    ch.check("app.forwarded", "the tool forwarded the record (the call happened)", values["rec"], values["t"])
     ch.finish()

@@ -20,14 +20,26 @@ def test_forward_to_external_partner_r2():
     assert e.lifecycle == {("lab-a", "lab-store")}
     assert e.parents[("lab-b", "api.partner.example", "mcp", "receive")] == "lab-a"
     assert e.entities == {"demo-client", "lab-a", "lab-store", "lab-b", "api.partner.example"}
-    assert e.depth == 2 and e.absent == []
+    assert e.depth == 2 and e.pod_lifetime == []
 
 
-def test_pod_lifetime_session_is_an_asserted_absence():
+def test_pod_lifetime_session_rides_the_turn_without_a_lifecycle():
     plan = {"steps": [{"op": "mcp", "tool": "lab_tool_x", "args": {}, "session": "pod_lifetime"}]}
     e = expected_forest(plan, FLEET)
-    assert e.calls == {("demo-client", "lab-a", "a2a", "message/send"): 1}
-    assert e.absent == [("lab-a", "lab-tool-x", "lab_tool_x")]
+    assert e.calls == {("demo-client", "lab-a", "a2a", "message/send"): 1, ("lab-a", "lab-tool-x", "mcp", "lab_tool_x"): 1}
+    assert e.pod_lifetime == [("lab-a", "lab-tool-x", "lab_tool_x")]
+    assert e.lifecycle == set() and e.lifecycle_optional == {("lab-a", "lab-tool-x")}
+    assert e.entities == {"demo-client", "lab-a", "lab-tool-x"}
+
+
+def test_lifecycle_of_a_startup_session_is_neither_missing_nor_extra():
+    from tests.live.lab_expect import diff
+    plan = {"steps": [{"op": "mcp", "tool": "lab_tool_x", "args": {}, "session": "pod_lifetime"}]}
+    e = expected_forest(plan, FLEET)
+    obs = {"calls": dict(e.calls), "lifecycle": set(), "parents": dict(e.parents), "entities": set(e.entities)}
+    assert diff(e, obs)["equal"]
+    obs["lifecycle"] = {("lab-a", "lab-tool-x")}   # the client re-initialised inside the turn
+    assert diff(e, obs)["equal"]
 
 
 def test_parallel_loop_llm_r10_shape():
