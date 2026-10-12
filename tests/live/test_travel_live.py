@@ -853,9 +853,18 @@ def test_L16_two_leg_ready_consumers(env, kube, dg, capabilities, catalog, run_r
     between versions; leg-ready's restart count does not grow. Without the
     lock both drain, and the race leaves duplicate versions or a restart —
     by chance, so a red row there is proof and a green one is not.
+
+    The lock is lab-dg #290's. The deployed leg-ready is probed for it
+    (capabilities.consumer_lock, the lock's row in pg_locks) and the drill
+    skips with that reason on a DG without it: a branch that has not taken
+    #290 drains with both replicas by design, and the tier asserts what the
+    deployment claims, never what another PR would add.
     """
     if not env.destructive:
         pytest.skip("E2E_DESTRUCTIVE=1 to run the two-consumer drill")
+    if not capabilities.consumer_lock:
+        pytest.skip("leg-ready holds no sole-consumer lock on the deployed branch (lab-dg #290 not deployed; "
+                    "capabilities.consumer_lock=False)")
     rec = run_record.scenario("L16")
     with Checks("L16", rec, raise_at_exit=True) as ch:
         restarts = _leg_ready_restarts(kube, env)

@@ -132,7 +132,8 @@ def render(run: Path) -> str:
     if ah.get("accepted_override"):
         out.append(f"**Schema**: cluster at `{ah['observed']}`, this checkout's head is `{ah['checkout_head']}` — "
                    f"accepted by E2E_ACCEPT_ALEMBIC_HEAD (another branch's processors on the same derived tables)  ")
-    out.append(f"**Capabilities**: alerts={caps.get('alerts')} health={caps.get('health')} ledger={caps.get('ledger')}  ")
+    out.append(f"**Capabilities**: alerts={caps.get('alerts')} health={caps.get('health')} ledger={caps.get('ledger')} "
+               f"consumer_lock={caps.get('consumer_lock')}  ")
     proof, restored = load(run / "catalog-proof.json") or {}, load(run / "catalog-restored-proof.json")
     out.append(f"**Catalog**: test catalog proved live by {proof.get('triggered_rules')}; shipped catalog restored "
                f"{'and proved' if restored else 'NOT PROVED'}; `catalog-after.yaml` "

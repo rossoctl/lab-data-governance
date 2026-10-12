@@ -186,14 +186,20 @@ E2E_APP=lineage_lab E2E_APP_NS=lineage-lab .venv/bin/pytest tests/live -m live -
 Add `E2E_DESTRUCTIVE=1` to the first command to run L12, L16 and L17: L12 scales OPA to zero and
 back, L16 scales leg-ready to two replicas and back, and L17 sends a Host the producer truncates (on
 a DG that cannot parse it, leg-ready stops for the whole cluster until a fixed image is deployed).
-Without it they skip. Do not pass `-x`: a scenario that needs L1's trace skips itself when L1 did
-not run, and the rest must still run.
+Without it they skip. L16 also needs leg-ready's sole-consumer lock (lab-dg #290): the harness probes
+the deployed DG for it (`capabilities.consumer_lock`, the lock's row in `pg_locks`) and L16 skips
+with that reason when the lock is not there — a branch without #290 drains with both replicas by
+design, and the tier asserts what the deployment claims, never what another PR would add. Do not
+pass `-x`: a scenario that needs L1's trace skips itself when L1 did not run, and the rest must
+still run.
 
-Expected today, with `E2E_VARIANT=rogue` and `E2E_DESTRUCTIVE=1`:
+Expected today, with `E2E_VARIANT=rogue` and `E2E_DESTRUCTIVE=1`, on a kit at or after cortex
+main e63a4f98 (the merge of #1333):
 
 | app | pytest summary | notes |
 |---|---|---|
-| travel_advisor | `13 passed, 2 skipped, 1 xfailed` or `14 passed, 2 skipped` | the two skips are the lab module and L13 (no alerts processor on this branch); L14 passes when the model makes the partner call and xfails when it skips it. KNOWN rows: the content-kind gap on L1/L6, the stale-callee record (#279) on the risk scenarios |
+| travel_advisor, `risk` without #290 | `15 passed, 3 skipped` or `14 passed, 3 skipped, 1 xfailed` | the three skips are the lab module, L13 (no alerts processor on this branch) and L16 (no sole-consumer lock); L14 passes when the model makes the partner call and xfails when it skips it. KNOWN rows: the content-kind gap on L1/L6, the stale-callee record (#279) on the risk scenarios |
+| travel_advisor, with #290 | `16 passed, 2 skipped` or `15 passed, 2 skipped, 1 xfailed` | as above with L16 run: one process drains, no duplicate version, no restart |
 | lineage_lab | `9 passed, 1 skipped, 1 xfailed` | the skip is the travel module; R8 xfails on the classifier finding (last four digits read as PCI). KNOWN rows: the stale-callee record (#279) |
 
 Anything else is a finding. A preflight failure names the pin, the expected value and the
@@ -281,7 +287,7 @@ L15 join the ledger too when it is on); L13 needs the alerts processor. Both are
 | L10 | the internal card probe again, byte-identical | no re-version anywhere; the new interaction equals the old at v1 | FR-DAS-014 |
 | L11 | benign tools/call to an external reflector whose JSON-RPC result is PII | request leg zero findings, response leg PII, no external-sharing rule, none/allow — data that only came back was not sent (#271, fixed by #274) | — |
 | L12 | OPA scaled to zero (opt-in) | cursor held, nothing skipped, exactly one version after catch-up | #158 |
-| L16 | leg-ready scaled to two, eight probes at once (opt-in) | one process drains; no duplicate or shrinking record version; no restart | — |
+| L16 | leg-ready scaled to two, eight probes at once (opt-in; skips with a reason unless the deployed leg-ready holds the sole-consumer lock) | one process drains; no duplicate or shrinking record version; no restart | #290 |
 | L17 | a 258-byte Host the producer truncates (opt-in) | peer.host arrives truncated; classified external, critical/block; no restart | — |
 | L13 | PI probe, then card external, then again (needs the alerts processor) | medium head → critical head superseding it → duplicate_count 1 | #104 |
 | L14 | (#258, `ROSSOCTL_VARIANT` on booking-agent) one scripted turn | rogue: the partner request carries the guest's name, classifies PII and decides critical/block [DG-001]; fixed: `dates` and `note` only, no PII, none/allow; xfails on a turn where the model does not make the call (its choice; coverage) | — |

@@ -64,7 +64,7 @@ export E2E_CORTEX_DIR=/path/to/cortex
 .venv/bin/pytest tests/live -m live -rA
 ```
 
-`E2E_DESTRUCTIVE=1` enables L12 (scales OPA to zero and back), L16 (scales leg-ready to two and back) and L17 (a host the producer truncates; on a DG that cannot parse it, leg-ready stops until a fixed image is deployed). `E2E_ACCEPT_ALEMBIC_HEAD=<revision>`
+`E2E_DESTRUCTIVE=1` enables L12 (scales OPA to zero and back), L16 (scales leg-ready to two and back; it also needs leg-ready's sole-consumer lock, lab-dg #290, and skips with that reason when the deployed DG holds none) and L17 (a host the producer truncates; on a DG that cannot parse it, leg-ready stops until a fixed image is deployed). `E2E_ACCEPT_ALEMBIC_HEAD=<revision>`
 accepts one named later migration head on the cluster (recorded in the run; strict when unset).
 The other tunables (`E2E_SETTLE_TIMEOUT`, `E2E_QUIET_SECONDS`, namespaces, API URL, run directory)
 are listed in `docs/LIVE-E2E.md`.
@@ -174,7 +174,7 @@ LLM's plan varies between turns, the shape does not.
 | L10 | the internal card probe again, byte-identical | no re-version anywhere; the new interaction equals the old at v1 | |
 | L11 | benign tools/call to the external reflector whose result is PII, in T | request leg zero findings, response leg PII; no external-sharing rule fires — data that only came back was not sent (#271/#274); none/allow | sink |
 | L12 | card → external with OPA scaled to zero, then back | leg-ready holds the cursor, nothing skipped, exactly one version after catch-up | `E2E_DESTRUCTIVE=1` |
-| L16 | leg-ready scaled to two, eight card → external probes at once, fresh trace | one process in the drain loop throughout; every probe recorded; no two consecutive identical versions, no version with fewer legs; no leg-ready restart | `E2E_DESTRUCTIVE=1` |
+| L16 | leg-ready scaled to two, eight card → external probes at once, fresh trace | one process in the drain loop throughout; every probe recorded; no two consecutive identical versions, no version with fewer legs; no leg-ready restart | `E2E_DESTRUCTIVE=1`, the sole-consumer lock (#290) |
 | L17 | card → the PSP under a 258-byte Host (the producer truncates it to `…[truncated]`) | peer.host arrives truncated; the trace settles; critical/block; no leg-ready restart | `E2E_DESTRUCTIVE=1` |
 | L13 | PI probe, card → external, the same again, fresh trace | one open alert medium → superseded by critical → `duplicate_count` 1 | alerts processor |
 | **C. the app's behaviour** | | | |

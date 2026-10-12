@@ -531,12 +531,14 @@ class Caps:
     alerts: bool
     health: bool
     ledger: bool = False  # the app pods write a ledger (ROSSOCTL_LEDGER=stdout)
+    consumer_lock: bool = False  # leg-ready holds the sole-consumer session lock (lab-dg #290)
 
 
 @pytest.fixture(scope="session")
 def capabilities(env: Env, kube: Kube, dg: Dg, api: httpx.Client, run_record) -> Caps:
-    """What the deployed branch runs. Never assumed: the alerts processor
-    and the health route exist only on some risk branches."""
+    """What the deployed branch runs. Never assumed: the alerts processor,
+    the health route and leg-ready's sole-consumer lock exist only on some
+    risk branches."""
     has_alerts_deploy = kube.exists("deploy", "data-governance-risk-alerts", ns=env.dg_ns)
     (has_seq,) = dg.one(
         "SELECT count(*) FROM information_schema.columns "
@@ -551,9 +553,22 @@ def capabilities(env: Env, kube: Kube, dg: Dg, api: httpx.Client, run_record) ->
                  if any(e.get("name") == "ROSSOCTL_LEDGER" and e.get("value") == "stdout"
                         for c in d["spec"]["template"]["spec"]["containers"] for e in c.get("env", []))}
     ledger = set(ATTACHED_WORKLOADS) <= ledger_on
-    caps = Caps(alerts=alerts, health=health, ledger=ledger)
+    # #290: leg-ready drains only while it holds the session-level advisory
+    # lock "consumer:leg_ready" (pg_try_advisory_lock(hashtextextended(name, 0))).
+    # A 64-bit advisory key shows in pg_locks as classid = high word,
+    # objid = low word, objsubid = 1; the one running replica holds it for
+    # its life, so a granted row is the lock deployed.
+    (key,) = dg.one("SELECT hashtextextended('consumer:leg_ready', 0)")
+    key &= (1 << 64) - 1
+    (held,) = dg.one(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 1 "
+        "AND classid::bigint = %s AND objid::bigint = %s "
+        "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+        (key >> 32, key & 0xFFFFFFFF))
+    consumer_lock = held >= 1
+    caps = Caps(alerts=alerts, health=health, ledger=ledger, consumer_lock=consumer_lock)
     run_record.write("capabilities.json", {"alerts": alerts, "health": health, "ledger": ledger,
-                                           "ledger_on": sorted(ledger_on),
+                                           "consumer_lock": consumer_lock, "ledger_on": sorted(ledger_on),
                                            "alerts_deploy": has_alerts_deploy,
                                            "trace_risk_records.seq": bool(has_seq)})
     return caps
