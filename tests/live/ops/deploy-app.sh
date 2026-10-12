@@ -92,6 +92,14 @@ else
   attach demo-client client
 fi
 
+# The workloads on the plain app image: `kubectl apply` sees no change when the
+# tag is unchanged, but the image behind the tag is whatever build-app.sh made
+# last, so they are restarted like the attached ones (preflight pins their image
+# id per pod and refuses a stale one).
+PLAIN=$(sed -n 's/^ *plain_image_workloads: *\[\(.*\)\].*/\1/p' "../apps/$APP.yaml" | tr -d ',')
+say "roll the plain-image workloads: $PLAIN"
+for d in $PLAIN; do k -n "$NS" rollout restart "deploy/$d" >/dev/null; done
+rolled $PLAIN >/dev/null
 say "roll: tools first, then the agents in dependency order (an agent resolves its peers once, at startup)"
 rolled $TOOLS
 for d in $AGENTS demo-client; do
