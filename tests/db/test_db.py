@@ -271,6 +271,28 @@ class TestListen:
                     notifier.execute("NOTIFY dg_test_chan, ''")
             assert lst.wait(timeout=5.0) is True
 
+    def test_several_channels_on_one_session(self, pg_dsn: str) -> None:
+        """A sequence registers every channel on the one connection (ADR-0034's
+        change hub wakes on two streams); a NOTIFY on any of them wakes it."""
+        with db.listen(("dg_test_a", "dg_test_b"), pg_dsn) as lst:
+            with psycopg.connect(pg_dsn, autocommit=True) as notifier:
+                notifier.execute("NOTIFY dg_test_b")
+            assert lst.wait(timeout=5.0) is True
+            with psycopg.connect(pg_dsn, autocommit=True) as notifier:
+                notifier.execute("NOTIFY dg_test_a")
+            assert lst.wait(timeout=5.0) is True
+            assert lst.wait(timeout=0.3) is False
+
+    def test_rejects_empty_channel_sequence(self, pg_dsn: str) -> None:
+        with pytest.raises(ValueError):
+            with db.listen((), pg_dsn):
+                pass
+
+    def test_rejects_non_identifier_channel_in_sequence(self, pg_dsn: str) -> None:
+        with pytest.raises(ValueError):
+            with db.listen(("dg_ok", "bad; DROP TABLE spans"), pg_dsn):
+                pass
+
     def test_rejects_non_identifier_channel(self, pg_dsn: str) -> None:
         """LISTEN can't bind the channel as a parameter, so a non-identifier
         (the injection vector) is refused before any SQL runs."""

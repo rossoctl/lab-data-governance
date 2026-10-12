@@ -93,6 +93,7 @@ def main() -> int:
     config = uvicorn.Config(
         app=build_app(
             hide_connect_only_traces=hide_connect_only_traces,
+            listen_dsn=dsn,
         ),
         host=host,
         port=port,

@@ -559,7 +559,10 @@ export function FlowTables({
       <LineageCoverageAlert
         status={lineageQ.data?.status ?? null}
         stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
-        isError={lineageQ.isError}
+        // `isLoadingError`, not `isError`: a failed BACKGROUND re-read (the page is
+        // live, ADR-0034) keeps the last answer, and the banner keeps quoting it.
+        // Only a read that never produced an answer is "unknown".
+        isError={lineageQ.isLoadingError}
         // The `isLoading` gate above covers the interactions/entities reads only,
         // so these tables are already on screen while the lineage read is in
         // flight. The banner needs to know that, or its silence claims complete
@@ -712,7 +715,7 @@ export function FlowTables({
               // leave two suppliers of one answer. The trace's `status` still comes
               // from this read, so the coverage banner and the tab quote one value.
               status={lineageQ.data?.status ?? null}
-              isLineageError={lineageQ.isError}
+              isLineageError={lineageQ.isLoadingError}
               selectedEntityId={selectedEntityId}
               // THE OTHER HALF OF THE QUESTION. The reachability read is
               // `fanin(entity, source)` / `fanout(entity, source)` with `source`
