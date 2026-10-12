@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import ipaddress
 import json
+import re
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Final
 from urllib.parse import urlsplit
@@ -203,27 +205,79 @@ _IDENTIFIER_TYPE_TO_DATA_TYPE: Final[dict[str, str]] = {
 }
 
 
+def _ip_or_none(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(value)
+    except ValueError:
+        return None
+
+
 def _hostname(url: str) -> str:
     """Best-effort hostname extraction, tolerating a URL with no scheme
     (``urlsplit`` parses a bare ``host/path`` string's leading segment as
-    ``path``, not ``netloc``, unless a scheme-like prefix is present)."""
-    parsed = urlsplit(url if "//" in url else f"//{url}")
-    return (parsed.hostname or "").lower()
+    ``path``, not ``netloc``, unless a scheme-like prefix is present).
+
+    ``""`` when the value is not ``host[:port]``: an unbalanced bracket, a
+    bracket around anything but an IP literal (``urlsplit`` accepts an
+    IPvFuture such as ``[v1.foo.svc]``), userinfo (``a@b`` — a Host header
+    carries none, RFC 9110), a port that is not a number, or the producer's
+    own ``…[truncated]`` marker on an over-long host. The host is
+    caller-controlled (the Host header), so a malformed one must classify,
+    never raise: an empty hostname matches no pattern.
+    """
+    try:
+        parsed = urlsplit(url if "//" in url else f"//{url}")
+        _ = parsed.port  # raises ValueError unless the port is a number
+    except ValueError:
+        return ""
+    hostname = (parsed.hostname or "").lower()
+    if parsed.username is not None or ("[" in parsed.netloc and _ip_or_none(hostname) is None):
+        return ""
+    # A trailing dot is DNS's absolute form of the same name.
+    return hostname.removesuffix(".")
+
+
+def _network_or_none(pattern: str) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    try:
+        return ipaddress.ip_network(pattern, strict=False)
+    except ValueError:
+        return None
+
+
+def _hostname_matches(hostname: str, patterns: list[str]) -> bool:
+    """Whether *hostname* matches a whitelist pattern. An address pattern
+    (``127.0.0.1``, ``::1``, ``10.96.0.0/16``) matches IP-literal hosts by
+    membership; any other pattern is a glob and matches DNS names only — so
+    a name such as ``10.96.evil.com`` can never ride an address pattern, and
+    an address never rides a glob. An empty (unparseable) host matches
+    nothing."""
+    if not hostname:
+        return False
+    address = _ip_or_none(hostname)
+    for pattern in patterns:
+        network = _network_or_none(pattern)
+        if network is not None:
+            if address is not None and address in network:
+                return True
+        elif address is None and fnmatch.fnmatch(hostname, pattern.lower()):
+            return True
+    return False
 
 
 def matches_internal_whitelist(url: str, *, patterns: list[str]) -> bool:
-    """Whether *url*'s hostname matches any wildcard hostname *pattern*
-    (e.g. ``"*.corp.internal"``), case-insensitively.
+    """Whether *url*'s hostname matches any whitelist *pattern*: a wildcard
+    hostname glob (e.g. ``"*.corp.internal"``, case-insensitive) or an
+    address / CIDR entry (``"10.96.0.0/16"``).
 
-    MVP-only: plain ``fnmatch`` glob matching against the hostname, no
-    awareness of scheme/port/path, IP literals, or normalization beyond
-    lowercasing. An empty *patterns* list never matches anything — the
-    caller's default-external behaviour, not a special case here. This will
-    be replaced by more holistic destination classification in a future
-    version (see ``build_opa_input``'s docstring).
+    MVP-only: plain ``fnmatch`` glob matching against a DNS hostname, or
+    address/CIDR membership for an IP-literal host (see
+    :func:`_hostname_matches`); no awareness of scheme/port/path, and no
+    normalization beyond lowercasing and dropping a trailing dot. An empty *patterns* list never matches
+    anything — the caller's default-external behaviour, not a special case
+    here. This will be replaced by more holistic destination classification
+    in a future version (see ``build_opa_input``'s docstring).
     """
-    hostname = _hostname(url)
-    return any(fnmatch.fnmatch(hostname, pattern.lower()) for pattern in patterns)
+    return _hostname_matches(_hostname(url), patterns)
 
 
 _CATEGORY_TO_TRUST_LEVEL: Final[dict[str, str]] = {
@@ -269,27 +323,34 @@ def _verdict_to_data_item(verdict: Verdict) -> dict[str, Any]:
     return item
 
 
+# A Kubernetes Service name (an RFC 1035 label): the shape a cluster-DNS
+# short name has. Deliberately not "has no dot": an IPv6 literal has none.
+_SERVICE_NAME = re.compile(r"[a-z]([-a-z0-9]{0,61}[a-z0-9])?")
+
+
 def _category(host: str, internal_patterns: list[str]) -> str:
     """Categorise a destination host as ``internal`` or ``external``.
 
-    A host with no dot at all is a cluster-DNS short name (``records-tool``,
-    ``opa``, ``ollama``) and is internal by construction — such a name cannot
-    resolve outside the cluster's search domains, so this is a structural
-    fact rather than a whitelist question, and no glob pattern can express
-    "has no dot" anyway. Every other host is put to #178's wildcard hostname
-    whitelist: internal iff it matches a pattern, external otherwise
-    (including when the whitelist is empty — #178's safer default, which is
-    why a real deployment must set ``RISK_INTERNAL_URL_WHITELIST_PATTERNS``;
-    see ``deploy/k8s/85-leg-ready.yaml``).
+    A host that is a single Service-name label (``records-tool``, ``opa``,
+    ``ollama``) is treated as a cluster-DNS short name, internal even with an
+    empty whitelist: the pod's DNS search path tries its own namespace and
+    the cluster's Service domain first, and no glob pattern can express "one
+    label" anyway. It is a convention, not proof — a search path can end in
+    a node or corporate domain, and the Host header is the caller's to write
+    (the wire contract says so), so every category here describes the name
+    the caller used, not the address it reached. Every other host is put to
+    #178's wildcard hostname whitelist: internal iff it matches a pattern,
+    external otherwise (including when the whitelist is empty — #178's safer
+    default, which is why a real deployment must set
+    ``RISK_INTERNAL_URL_WHITELIST_PATTERNS``; see
+    ``deploy/k8s/85-leg-ready.yaml``). IP literals take the whitelist path
+    too and match address or CIDR patterns (``::1``, ``10.96.0.0/16``); a
+    host that does not parse at all matches nothing and is external.
     """
     hostname = _hostname(host)
-    if hostname and "." not in hostname:
+    if _SERVICE_NAME.fullmatch(hostname):
         return "internal"
-    return (
-        "internal"
-        if matches_internal_whitelist(hostname, patterns=internal_patterns)
-        else "external"
-    )
+    return "internal" if _hostname_matches(hostname, internal_patterns) else "external"
 
 
 @dataclasses.dataclass(frozen=True)

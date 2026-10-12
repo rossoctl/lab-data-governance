@@ -230,10 +230,11 @@ API_METRICS_TOP_TRACES_MAX_LIMIT = _int_env(
 # --- risk.internal_url_whitelist.* (issue #163) -------------------------------
 # Wildcard hostname patterns (e.g. "*.corp.internal") identifying destinations
 # that are "internal" for data_destination_categories purposes
-# (engine/utils.py:build_opa_input). Default empty: with no patterns
-# configured, every destination classifies as "external" — the safer default
-# when internal-ness can't be determined. This is deliberately simple
-# (wildcard hostname matching only, no URL parsing, no path/scheme awareness)
-# for MVP; see build_opa_input's docstring for the caveat.
+# (engine/utils.py:build_opa_input); an address or CIDR entry ("::1",
+# "10.96.0.0/16") matches IP-literal destinations instead. Default empty:
+# with no patterns configured, every destination classifies as "external" —
+# the safer default when internal-ness can't be determined. This is
+# deliberately simple (no path/scheme awareness) for MVP; see
+# build_opa_input's docstring for the caveat.
 
 INTERNAL_URL_WHITELIST_PATTERNS = _list_env("RISK_INTERNAL_URL_WHITELIST_PATTERNS", [])

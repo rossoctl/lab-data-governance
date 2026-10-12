@@ -2,8 +2,9 @@
 
 Three layers, mirroring the engine's own split:
 
-- pure: destination categorisation (#178's wildcard hostname whitelist, plus
-  the dotless-short-name structural rule),
+- pure: destination categorisation (#178's wildcard hostname whitelist with
+  address/CIDR patterns for IP literals, plus the single-label short-name
+  structural rule, and a malformed host classifying rather than raising),
   ``build_opa_input``'s new ``data_destinations`` / ``event_type`` /
   ``accessing_user`` mapping, and — the correctness trap the issue calls out
   explicitly — the anchor facts joining ``fingerprint`` so a changed
@@ -42,15 +43,15 @@ _PATTERNS = [
 # --- destination categorisation ----------------------------------------------
 # The matcher itself is #178's ``matches_internal_whitelist``; what is tested
 # here is how ``build_opa_input`` uses it — including the one case no glob can
-# express (a hostname with no dot at all).
+# express (a hostname that is a single Service-name label).
 
 
-def _category(host: str) -> str:
+def _category(host: str, patterns: list[str] = _PATTERNS) -> str:
     """The category ``build_opa_input`` would emit for an outbound call to
-    *host*, exercised through the public surface rather than a private
-    helper."""
+    *host* under *patterns*, exercised through the public surface rather
+    than a private helper."""
     anchor = utils.AnchorFacts(direction="outbound", peer_host=host)
-    payload = _request_flow(anchor=anchor, internal_patterns=_PATTERNS)
+    payload = _request_flow(anchor=anchor, internal_patterns=patterns)
     (categories,) = [d["data_destination_categories"] for d in payload["data_destinations"]]
     (category,) = categories
     return category
@@ -68,13 +69,20 @@ def test_cluster_service_hosts_are_internal() -> None:
         assert _category(host) == "internal", host
 
 
-def test_dotless_short_names_are_internal() -> None:
-    # A cluster-DNS short name cannot resolve outside the cluster's search
-    # domains — structurally internal, not a whitelist question. No fnmatch
-    # glob can express "has no dot", so this rule lives in the engine rather
+def test_single_label_short_names_are_internal() -> None:
+    # A one-label host resolves through the pod's search path, cluster
+    # Service domain first — treated as internal by convention. No fnmatch
+    # glob can express "one label", so this rule lives in the engine rather
     # than in the pattern list.
     assert _category("opa:8181") == "internal"
     assert _category("ollama") == "internal"
+
+
+def test_a_trailing_dot_is_the_same_name() -> None:
+    # DNS's absolute form ("name.") is the same host, not a new one.
+    assert _category("records-tool.") == "internal"
+    assert _category("records-tool.team2.svc.cluster.local.:8000") == "internal"
+    assert _category("api.openai.com.") == "external"
 
 
 def test_public_hosts_are_external() -> None:
@@ -85,6 +93,53 @@ def test_public_hosts_are_external() -> None:
         "10.96.0.1",  # a raw dotted IP is not whitelisted -> external
     ]:
         assert _category(host) == "external", host
+
+
+def test_a_host_that_does_not_parse_is_external_never_an_error() -> None:
+    # `lineage.peer.host` is the caller's Host header. A malformed one must
+    # classify, not raise: an exception here is not an OpaError, so it would
+    # crash the leg-ready consumer and re-crash it on the same leg forever.
+    # The longest legal DNS name (253 bytes) with a port is over the
+    # sidecar's 256-byte attribute cap, which appends this marker — brackets
+    # included — so a legitimate host can arrive like so.
+    longest = ".".join(["a" * 63] * 3 + ["b" * 45]) + ".partner.example:8443"
+    truncated = longest.encode()[:256].decode() + "…[truncated]"
+    for host in ["a[b.example.com", "x]y.example.com", "[not-an-ip]", truncated]:
+        assert _category(host) == "external", host
+
+
+def test_brackets_and_userinfo_never_reach_the_whitelist() -> None:
+    # urlsplit accepts an IPvFuture bracket and userinfo; neither is a Host
+    # header's host, so neither may borrow a pattern or the short-name rule.
+    for host in ["[v1.foo.svc]:8080", "api.openai.com@x.svc", "evil.com@opa"]:
+        assert _category(host) == "external", host
+
+
+def test_ip_literals_are_never_short_names() -> None:
+    # An IPv6 literal has no dot but is not a cluster-DNS short name; nor is
+    # an all-digit label. They take the whitelist path like any IP literal,
+    # so a public IPv6 destination is external.
+    for host in [
+        "[2606:4700:4700::1111]:443",
+        "2606:4700:4700::1111",
+        "1234",
+    ]:
+        assert _category(host) == "external", host
+
+
+def test_ip_literals_match_address_and_cidr_patterns() -> None:
+    # A ClusterIP call is internal once the service range is listed.
+    assert _category("10.96.12.7:8080", ["10.96.0.0/16"]) == "internal"
+    assert _category("10.97.0.1", ["10.96.0.0/16"]) == "external"
+    assert _category("[::1]:11434", ["::1"]) == "internal"
+
+
+def test_address_patterns_and_globs_never_cross() -> None:
+    # A DNS name that merely looks like an address range must not ride it,
+    # and an address must not ride a glob written for names.
+    assert _category("10.96.evil.com", ["10.96.0.0/16"]) == "external"
+    assert _category("10.96.evil.com", ["*.svc"]) == "external"
+    assert _category("10.96.12.7", ["10.96.*"]) == "external"
 
 
 def test_pattern_must_match_on_label_boundary() -> None:

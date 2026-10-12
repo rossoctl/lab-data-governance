@@ -64,6 +64,21 @@ def test_internal_whitelist_is_set_in_the_manifest(deployment: dict) -> None:
     assert "*.localtest.me" in patterns, "the kind cluster's ingress hosts"
 
 
+def test_address_shaped_whitelist_entries_parse(deployment: dict) -> None:
+    """An entry made of digits, dots, colons and a slash is meant as an
+    address or a range. If it does not parse as one the engine treats it as
+    a glob, which never matches an IP, so a typo would silently whitelist
+    nothing."""
+    import ipaddress
+    import re
+
+    (container,) = deployment["spec"]["template"]["spec"]["containers"]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    for entry in env["RISK_INTERNAL_URL_WHITELIST_PATTERNS"].split(","):
+        if re.fullmatch(r"[0-9a-fA-F.:/]+", entry) and not re.fullmatch(r"[a-fA-F]+", entry):
+            ipaddress.ip_network(entry, strict=False)  # raises on a typo
+
+
 def test_no_ports_declared(deployment: dict) -> None:
     (container,) = deployment["spec"]["template"]["spec"]["containers"]
     assert "ports" not in container
