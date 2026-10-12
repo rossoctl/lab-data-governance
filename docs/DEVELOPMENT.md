@@ -24,6 +24,7 @@ tests/
     test_db.py        # Layer 1 tests against real Postgres
     test_migrations.py # Baseline migration + migrate CLI tests
 docs/                 # PROJECT.md, ADRs, this file
+demos/                # scripted demos on a running cluster: runbook + tools per demo
 alembic.ini
 pyproject.toml
 ```

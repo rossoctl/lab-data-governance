@@ -109,7 +109,9 @@ kubectl -n travel-advisor exec deploy/demo-client -- python3 /app/app/demo.py
 
 The UI landing page ("Recent traces") lists the run; click one to walk the
 resource tree. The full demo runbook (deploying the app, the demo-client pod,
-and the expected trace shape) lives with the `agent-examples` project.
+and the expected trace shape) lives with the `agent-examples` project. Scripted
+demos on a running cluster, with their commands and tools, live under `demos/`
+(`demos/README.md`).
 
 ## Configuration
 

@@ -71,3 +71,7 @@ classification/output/
 /docs/CUTOVER-two-span.md
 /docs/REVIEWER-QUICKSTART.md
 /docs/reading-the-sidecar-algorithm.md
+
+# Demo tooling output (demos/*/*/runs/ — turn transcripts, pod logs, the keep list).
+demos/*/*/runs/*
+!demos/*/*/runs/.gitkeep
