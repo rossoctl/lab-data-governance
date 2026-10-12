@@ -87,18 +87,21 @@ def test_a_declared_store_act_with_no_span_is_asserted_not_dark():
 
 
 def test_a_store_pairs_only_with_its_own_pod_outbound_span_on_a_declared_edge():
-    """Decoys: another pod's span to minio, get-flights' inbound span whose
-    peer is minio, and a get-flights span to a host with no declared edge.
-    None may take the S3 record; the real span does."""
-    extra = [_span("aaaa000000000001", T0, "travel-advisor", "outbound", "minio:9000"),
-             _span("aaaa000000000002", T0, "get-flights", "inbound", "minio:9000"),
-             _span("aaaa000000000003", T0, "get-flights", "outbound", "weather-service:8080")]
+    """Decoys that would win without the guards: another ledgered pod's span
+    to minio (pod), get-flights' inbound span whose peer is minio
+    (direction), a get-flights span to a host with no declared edge (edge).
+    Each starts exactly at the record's start, nearer than the real span, so
+    a dropped guard pairs it. None may take the S3 record; the real span does."""
+    start = T0 + timedelta(milliseconds=0.2)   # ts - ms: the record's start
+    extra = [_span("aaaa000000000001", start, "get-weather", "outbound", "minio:9000"),
+             _span("aaaa000000000002", start, "get-flights", "inbound", "minio:9000"),
+             _span("aaaa000000000003", start, "get-flights", "outbound", "weather-service:8080")]
     recs = _records(T0.timestamp() + 0.015)
+    recs.append({**recs[0], "pod": "get-weather", "_workload": "get-weather", "host": "get-weather:8000"})  # get-weather is ledgered
     recs.append({**recs[1], "endpoint": "http://weather-service:8080"})   # a store on an undeclared edge
-    c = ledger.compare(_Dg(T0, extra=extra), T, recs, FLEET)
+    c = ledger.compare(_Dg(T0 + timedelta(seconds=1), extra=extra), T, recs, FLEET)
     assert [p["span_id"] for p in c["store_pairs"]] == ["69c451bad5014a9e"]
-    assert sorted(s["span_id"] for s in c["table_only"]) == ["aaaa000000000002", "aaaa000000000003"]
-    assert [s["span_id"] for s in c["unledgered_spans"]] == ["aaaa000000000001"]   # travel-advisor wrote no ledger line
+    assert sorted(s["span_id"] for s in c["table_only"]) == ["aaaa000000000001", "aaaa000000000002", "aaaa000000000003"]
     assert [d["store"] for d in c["dark_hops"]] == ["s3"] and c["store_unpaired"] == []
 
 
