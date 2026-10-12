@@ -62,8 +62,11 @@ kubectl -n data-governance rollout restart deploy --selector app.kubernetes.io/p
 
 Checks: DB migration head is `0019_interaction_risk_seq`
 (`… psql -c "select version_num from alembic_version"`), and OPA answers —
-`POST http://opa:8181/v1/data/data_governance/policy_decision` from any pod
-returns a decision (a PII + external_sharing input returns critical/block/DG-001).
+`POST /v1/data/data_governance/policy_decision` returns a decision (a PII +
+external_sharing input returns critical/block/DG-001). Only the leg-ready pod may
+reach OPA in-cluster (`data-governance-opa-ingress`), so ask it from your machine:
+`kubectl -n data-governance port-forward svc/opa 8181` and POST to
+`http://localhost:8181/...`.
 
 > Never run the old `interactions` processor alongside `sidecar_interactions`
 > (shared tables); the manifests here deploy only the sidecar algorithm.
@@ -101,9 +104,10 @@ APP=travel_advisor bash deploy.sh          # naked deploy — do NOT --with-tele
   (#198): the external probe as the red violation edge + the policy-decision stepper.
 - In SQL: both probe interactions' `interaction_risk_records` carry an identical
   request classification (PCI/PI/PII, RESTRICTED, identity bundle); the external one
-  `critical/block {DG-001,DG-004}`, the internal one `none/allow` with the compiled
-  policy's fallback sentinel `"0000"` (that sentinel also shows up in the UI's
-  violation counts and Top-rules list — known presentation seam, not a decision bug).
+  `critical/block {DG-001,DG-004}`, the internal one `none/allow` with
+  `triggered_rule_ids = {}` and `policy_event_count = 0`: the compiled policy's
+  fallback answer (`"0000"`) is kept verbatim in `interaction_policy_decisions` but
+  is not a fired rule, so it reaches neither the record nor the UI's counts.
 
 ## Known seams
 

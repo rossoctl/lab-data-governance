@@ -1,7 +1,7 @@
 """Cursor-drain loop for the trace-risk-trigger processor (issues #102/#164).
 
 The trace trigger is a Layer-2 DAS consumer that drains
-``interaction_risk_records`` by ``seq`` (migration 0018) via the shared
+``interaction_risk_records`` by ``seq`` (migration 0019) via the shared
 cursor-driven driver and recomputes the trace risk rollup
 (:func:`data_governance.risk.engine.trace_compute.compute_trace_risk`) for
 each delivered record's ``trace_id`` — inside the per-item transaction, so the
@@ -42,7 +42,6 @@ import pytest
 
 from data_governance import db
 from data_governance.processors.risk.trace_trigger import driver
-from data_governance.risk.engine import trace_compute
 
 
 # --- helpers -----------------------------------------------------------------

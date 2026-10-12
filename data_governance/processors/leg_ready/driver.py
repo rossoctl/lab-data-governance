@@ -39,11 +39,12 @@ the ``dg_interaction_leg_ready`` notify (which is latency-only; ADR-0015/ADR-002
 
 Atomicity
 ---------
-Each delivered leg is handled in ONE transaction that runs the per-leg delivery
-AND advances the durable ``leg_ready`` cursor — together, so a crash mid-leg
-commits nothing and the restart re-delivers from the same cursor (ADR-0007). Since
-delivery is a thin observer (no real downstream yet — risk/lineage/PDP are future
-work), the durable cursor is the complete exactly-once record.
+Each delivered leg is handled in ONE transaction that runs the observer's write
+(since issue #158: the interaction's risk record) AND advances the durable
+``leg_ready`` cursor — together, so a crash mid-leg commits nothing and the
+restart re-delivers from the same cursor (ADR-0007). The observer's compute half,
+including the OPA round-trip, runs before that transaction, holding none; see
+:data:`Observer`.
 
 Run as ``python -m data_governance.processors.leg_ready``.
 """

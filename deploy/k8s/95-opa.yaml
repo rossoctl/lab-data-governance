@@ -20,6 +20,10 @@
 # is: edit the catalog, re-run the script, restart the pod. The ConfigMap
 # (and so the policy) survives pod restarts; real-OPA coverage for the
 # compiled policy runs via tests/risk/rules/test_rego_opa.py (-m opa).
+#
+# OPA's REST API is unauthenticated and can replace or delete the loaded
+# policy, so ingress is restricted to the leg-ready consumer by
+# `data-governance-opa-ingress` in 50-networkpolicy.yaml.
 apiVersion: v1
 kind: Service
 metadata:
@@ -59,8 +63,9 @@ spec:
       containers:
         - name: opa
           # Pinned release (2026-07-30). This tag is the single source of
-          # truth for the OPA version deployed with the compiled policy
-          # (see tests/risk/rules/test_rego_opa.py for the real-OPA harness).
+          # truth for the OPA version deployed with the compiled policy; the
+          # real-OPA suite (tests/risk/rules/conftest.py, -m opa) reads it
+          # from here and runs this same image.
           image: docker.io/openpolicyagent/opa:1.19.0
           imagePullPolicy: IfNotPresent
           args:
@@ -72,6 +77,8 @@ spec:
             # file three times over and refuses to start ("multiple default
             # rules ... found").
             - "--ignore=.*"
+            # No outbound version check against GitHub releases.
+            - "--skip-version-check"
             - "/policies"
           ports:
             - name: http

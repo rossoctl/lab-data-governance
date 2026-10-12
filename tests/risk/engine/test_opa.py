@@ -18,6 +18,8 @@ retry mechanics.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -135,6 +137,82 @@ def test_missing_risk_level_raises_response_error():
     client = _client(lambda r: httpx.Response(200, json={"result": {}}))
     with pytest.raises(OpaResponseError):
         client.evaluate(interaction_id="ix1", opa_input=_opa_input())
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("risk_level", ""),
+        ("risk_level", 3),
+        ("confidence", 1.5),
+        ("confidence", -0.1),
+        ("confidence", "0.9"),
+        ("confidence", True),
+        ("triggered_rules", "DG-001"),
+        ("triggered_rules", ["DG-001", 7]),
+        ("allowed_actions", {"redact": True}),
+        ("enforcement_type", ["block"]),
+        ("explanation", 42),
+        ("policy_version", 3),
+        # Valid JSON strings Postgres TEXT cannot store: the decision insert
+        # would raise DataError / UnicodeEncodeError instead.
+        ("explanation", "a\u0000b"),
+        ("triggered_rules", ["DG-001\u0000"]),
+        ("risk_level", "\ud800"),
+        # Identifiers the record's btree / GIN indexes could not hold.
+        ("risk_level", "x" * 257),
+        ("enforcement_type", "x" * 257),
+        ("triggered_rules", ["x" * 257]),
+    ],
+)
+def test_a_malformed_field_raises_response_error(field, value):
+    """A wrong-typed or out-of-range field is an unusable answer, reported
+    as OpaResponseError at the boundary (a loud hold in the leg-ready
+    consumer) — not a TypeError/ValueError later in the engine, which would
+    crash the consumer on the same leg every restart."""
+    body = _full_decision_body()
+    body["result"][field] = value
+    # json.dumps escapes non-ASCII (a lone surrogate as \ud800), as OPA does.
+    client = _client(lambda r: httpx.Response(200, content=json.dumps(body).encode()))
+    with pytest.raises(OpaResponseError, match=rf"OPA result '{field}'"):
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
+
+
+@pytest.mark.parametrize("body", [b"null", b"[]", b'"x"', b"3"])
+def test_a_non_object_body_raises_response_error(body):
+    """Valid JSON that is not an object (a misconfigured decision path or
+    base URL can return one) is an unusable answer too."""
+    client = _client(lambda r: httpx.Response(200, content=body))
+    with pytest.raises(OpaResponseError):
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
+
+
+def test_a_deeply_nested_body_raises_response_error():
+    # json raises RecursionError, not a ValueError, past the interpreter's
+    # recursion limit.
+    client = _client(lambda r: httpx.Response(200, content=b"[" * 100_000 + b"]" * 100_000))
+    with pytest.raises(OpaResponseError):
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
+
+
+def test_a_rejected_answer_is_quoted_briefly():
+    # The leg-ready driver logs the error at every wake while the stream holds.
+    body = _full_decision_body()
+    body["result"]["confidence"] = 2
+    body["result"]["explanation"] = "x" * 2_000_000
+    client = _client(lambda r: httpx.Response(200, json=body))
+    with pytest.raises(OpaResponseError) as info:
+        client.evaluate(interaction_id="ix1", opa_input=_opa_input())
+    assert len(str(info.value)) < 1_000
+
+
+def test_integral_confidence_is_accepted():
+    # JSON has one number type; an integral confidence is a valid number.
+    body = _full_decision_body()
+    body["result"]["confidence"] = 1
+    client = _client(lambda r: httpx.Response(200, json=body))
+    confidence = client.evaluate(interaction_id="ix1", opa_input=_opa_input()).confidence
+    assert confidence == 1.0 and isinstance(confidence, float)
 
 
 def test_malformed_json_raises_response_error():

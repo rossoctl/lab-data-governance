@@ -3,8 +3,8 @@
 Mirrors ``tests/conftest.py``'s Postgres-container conventions
 (``DOCKER_HOST``/``TESTCONTAINERS_RYUK_DISABLED`` defaults set before
 testcontainers imports its docker client; a session-scoped container so the
-whole ``-m opa`` run pays one container-start cost, not one per test) for a
-generic ``openpolicyagent/opa:latest`` container instead of Postgres —
+whole ``-m opa`` run pays one container-start cost, not one per test) for
+the OPA image ``deploy/k8s/95-opa.yaml`` deploys, instead of Postgres —
 ``testcontainers`` has no dedicated OPA wrapper, so this uses the generic
 ``DockerContainer`` and waits on OPA's own startup log line rather than a
 readiness probe endpoint.
@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.waiting_utils import wait_for_logs
 
@@ -28,6 +30,18 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 _OPA_PORT = 8181
 
+_OPA_MANIFEST = Path(__file__).resolve().parents[3] / "deploy" / "k8s" / "95-opa.yaml"
+
+
+def _deployed_opa_image() -> str:
+    """The image the OPA manifest pins, so the real-OPA suite tests the OPA
+    version that ships rather than whatever ``:latest`` is today."""
+    for doc in yaml.safe_load_all(_OPA_MANIFEST.read_text()):
+        if doc and doc.get("kind") == "Deployment":
+            (container,) = doc["spec"]["template"]["spec"]["containers"]
+            return container["image"]
+    raise LookupError(f"no Deployment in {_OPA_MANIFEST}")
+
 
 @pytest.fixture(scope="session")
 def opa_base_url() -> Iterator[str]:
@@ -35,8 +49,8 @@ def opa_base_url() -> Iterator[str]:
     the default port. Yields the container's reachable base URL
     (``http://<host>:<mapped-port>``)."""
     container = (
-        DockerContainer("docker.io/openpolicyagent/opa:latest")
-        .with_command(f"run --server --addr :{_OPA_PORT}")
+        DockerContainer(_deployed_opa_image())
+        .with_command(f"run --server --addr :{_OPA_PORT} --skip-version-check")
         .with_exposed_ports(_OPA_PORT)
     )
     with container:
