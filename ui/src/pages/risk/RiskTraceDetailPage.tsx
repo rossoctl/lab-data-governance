@@ -25,6 +25,7 @@ import {
 import { parseViolationIndex, stepViolation } from '../../lib/riskViolation';
 import { EntityGraph } from '../../components/ExecutionFlowGraph';
 import { PolicyDecisionPanel } from '../../risk-components/PolicyDecisionPanel';
+import { InteractionPanel } from '../../risk-components/InteractionPanel';
 import { ViolationStepper } from '../../risk-components/ViolationStepper';
 
 /**
@@ -59,16 +60,24 @@ import { ViolationStepper } from '../../risk-components/ViolationStepper';
  * hide it. Loading/error/not-found are hand-rendered below instead.
  *
  * `?violation=` is 1-based with the default (1) omitted from the URL — see
- * `lib/riskViolation.ts`'s header for why, and note the selection is ALWAYS
- * derived from that param, never from component state, so a cold-opened
- * `?violation=N` URL and the Previous/Next controls can never disagree.
+ * `lib/riskViolation.ts`'s header for why, and note the open policy event
+ * is ALWAYS derived from the URL, never from component state, so a
+ * cold-opened URL and the Previous/Next controls can never disagree.
  *
- * CLICKING AN EDGE selects that interaction's violation the same way the
- * stepper does — both write the same `?violation=` param via `setViolation`,
- * so a graph click and Previous/Next can never disagree either. An edge
- * whose interaction triggered no rule has no violation index to select, so
- * `handleSelectInteraction` no-ops for it rather than clearing whatever
- * violation is currently open.
+ * CLICKING AN EDGE selects that interaction (issue #295): the
+ * `InteractionPanel` under the graph shows its per-leg classification and
+ * risk for ANY interaction. The selection is mirrored as `?interaction=`
+ * with the same delete-at-default convention as `?violation=` — the default
+ * being the open policy event's own interaction. So a click on an edge that
+ * triggered a rule writes `?violation=` (moving the stepper, as before) and
+ * deletes `?interaction=`; a click on any other edge writes `?interaction=`
+ * and pins the open policy event into `?violation=` so it stays where it
+ * was. Previous/Next delete `?interaction=`, so stepping always shows the
+ * stepped-to interaction. On read, a `?interaction=` that names a policy
+ * event takes precedence over `?violation=` (a saved link can start naming
+ * one once the engine computes that interaction's risk); one that names
+ * nothing in the trace falls back to the open policy event. Like
+ * `?violation=`, the selection is derived from the URL, never held in state.
  */
 export function RiskTraceDetailPage() {
   const { traceId = '' } = useParams<{ traceId: string }>();
@@ -103,9 +112,6 @@ export function RiskTraceDetailPage() {
   const classifications = useMemo(() => classificationByInteraction(forest), [forest]);
   const violations = useMemo(() => violationsOf(forest), [forest]);
 
-  const violationIndex = parseViolationIndex(searchParams.get('violation'), violations.length);
-  const violation = violationIndex != null ? violations[violationIndex - 1] : null;
-
   // Maps a clicked edge's interaction id back to its 1-based position in
   // `violations`, the same numbering `?violation=` uses — so a graph click
   // and the stepper always agree on what "violation N" means.
@@ -115,24 +121,50 @@ export function RiskTraceDetailPage() {
     return map;
   }, [violations]);
 
-  // Clicking an edge whose interaction triggered no rule has no policy
-  // decision to show — left as a no-op rather than clearing the current
-  // selection, since a click that can't show anything shouldn't hide what
-  // was already open.
+  // A `?interaction=` that names a policy event wins over `?violation=`: the
+  // click path never writes that URL (see header), but a link saved while the
+  // interaction's risk was still null can start naming one once it is
+  // computed, and the stepper must then show THAT event, not another.
+  const requestedInteractionId = searchParams.get('interaction');
+  const violationIndex =
+    (requestedInteractionId != null ? violationIndexByInteractionId.get(requestedInteractionId) : undefined) ??
+    parseViolationIndex(searchParams.get('violation'), violations.length);
+  const violation = violationIndex != null ? violations[violationIndex - 1] : null;
+
+  // A click on the graph's background deselects in `EntityGraph` (null) —
+  // ignored here rather than clearing the panel, so a stray click never
+  // hides what was already open. See the header on which param each kind
+  // of edge writes.
   function handleSelectInteraction(interactionId: string | null) {
     if (interactionId == null) return;
     const index = violationIndexByInteractionId.get(interactionId);
     if (index != null) setViolation(index);
+    else
+      setSearchParams((prev) => {
+        const params = new URLSearchParams(prev);
+        // The open policy event stays where it is — written out explicitly,
+        // because a `?interaction=` naming it may be what held it there.
+        writeViolation(params, violationIndex);
+        params.set('interaction', interactionId);
+        return params;
+      });
   }
 
   // Written by DELETING the param at the default, never by setting it
   // explicitly — the same convention `RiskDashboardPage.tsx` documents for
   // `?window=`, so the canonical URL for violation 1 stays clean.
+  function writeViolation(params: URLSearchParams, next: number | null) {
+    if (next == null || next === 1) params.delete('violation');
+    else params.set('violation', String(next));
+  }
+
+  // Also deletes `?interaction=`: the stepped-to policy event's interaction
+  // IS the default selection (see header).
   function setViolation(next: number) {
     setSearchParams((prev) => {
       const params = new URLSearchParams(prev);
-      if (next === 1) params.delete('violation');
-      else params.set('violation', String(next));
+      writeViolation(params, next);
+      params.delete('interaction');
       return params;
     });
   }
@@ -142,7 +174,11 @@ export function RiskTraceDetailPage() {
     setViolation(stepViolation(violationIndex, delta, violations.length));
   }
 
-  const selectedInteractionId = violation?.interaction_id ?? null;
+  // The open policy event's interaction is the default; a stale
+  // `?interaction=` naming no interaction of this trace falls back to it too,
+  // so the graph's highlighted edge and the panel never disagree.
+  const selected = forest.find((ix) => ix.interaction_id === requestedInteractionId) ?? violation;
+  const selectedInteractionId = selected?.interaction_id ?? null;
 
   const isNotFound =
     detail.isError && detail.error instanceof RiskApiError && detail.error.status === 404;
@@ -205,6 +241,7 @@ export function RiskTraceDetailPage() {
             hideEdgeLabels
             compactSurface
           />
+          {selected && <InteractionPanel interaction={selected} />}
 
           <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
             Policy events
