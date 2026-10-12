@@ -393,10 +393,15 @@ def preflight(env: Env, kube: Kube, pins: dict[str, Any], run_record) -> Preflig
         # one running, non-terminating pod carries the image to compare.
         dep = kube.json(["get", "deploy", w], ns=env.app_ns)
         st, spec = dep.get("status", {}), dep.get("spec", {})
+        want = spec.get("replicas", 1)
+        shape_ = {"generation": f"{st.get('observedGeneration')}/{dep['metadata'].get('generation')}",
+                  "replicas": f"{st.get('replicas')}/{want}", "updated": st.get("updatedReplicas"),
+                  "available": st.get("availableReplicas")}
         settled = (st.get("observedGeneration") == dep["metadata"].get("generation")
-                   and st.get("updatedReplicas") == spec.get("replicas", 1) == st.get("availableReplicas")
-                   and st.get("replicas") == spec.get("replicas", 1))
-        pf.expect(f"{w}.settled", True, settled)
+                   and st.get("updatedReplicas") == want == st.get("availableReplicas") and st.get("replicas") == want)
+        pf.expect(f"{w}.settled", "settled", "settled" if settled else f"rolling {shape_}")
+        if not settled:
+            continue   # the pod read below would be the outgoing one; the mismatch is named above
         pods = [p for p in kube.json(["get", "pod", "-l", f"app.kubernetes.io/name={w}"], ns=env.app_ns)["items"]
                 if p["status"].get("phase") == "Running" and not p["metadata"].get("deletionTimestamp")]
         if len(pods) != 1:

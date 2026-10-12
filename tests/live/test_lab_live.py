@@ -97,7 +97,8 @@ def _run(env, kube, dg, capabilities, fleet, attach, run_record, state, name, pl
                  f"a pod-lifetime session's call derives under the turn: {caller}→{callee}/{tool}",
                  "under the turn", "under the turn" if (caller, callee, "mcp", tool) in obs["calls"] else "absent",
                  ok=(caller, callee, "mcp", tool) in obs["calls"],
-                 comment="lifecycle in the turn: " + ("yes" if (caller, callee) in obs["lifecycle"] else "no (ran at startup)"))
+                 comment=("lifecycle in the turn: " + ("yes" if (caller, callee) in obs["lifecycle"] else "no (ran at startup)"))
+                 if (caller, callee, "mcp", tool) in obs["calls"] else "the call left the turn: a kit without the MCP context bridge?")
     # 2. the audit, with no gaps to hide behind
     au, extra = audit.run(dg, T, fleet, known=state["traces"], quiet_seconds=env.quiet_seconds, attach=attach,
                           quiet_reread=False)

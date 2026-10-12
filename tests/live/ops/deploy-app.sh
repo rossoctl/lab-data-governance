@@ -96,7 +96,10 @@ fi
 # tag is unchanged, but the image behind the tag is whatever build-app.sh made
 # last, so they are restarted like the attached ones (preflight pins their image
 # id per pod and refuses a stale one).
-PLAIN=$(sed -n 's/^ *plain_image_workloads: *\[\(.*\)\].*/\1/p' "../apps/$APP.yaml" | tr -d ',')
+# (read with sed: the list is a one-line flow list in both fleet files, and the
+# host python3 has no yaml module; an unreadable list stops the deploy here)
+PLAIN=$(sed -n 's/^ *plain_image_workloads: *\[\(.*\)\].*/\1/p' "../apps/$APP.yaml" | tr -d ",\"'")
+[ -n "$PLAIN" ] || { echo "apps/$APP.yaml: preflight.plain_image_workloads must be a one-line flow list, e.g. [a, b]" >&2; exit 1; }
 say "roll the plain-image workloads: $PLAIN"
 for d in $PLAIN; do k -n "$NS" rollout restart "deploy/$d" >/dev/null; done
 rolled $PLAIN >/dev/null

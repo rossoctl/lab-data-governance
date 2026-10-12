@@ -206,7 +206,7 @@ only the files below and asserts nothing.
 | file | what it tells you |
 |---|---|
 | `preflight.json` | every pin with expected and observed values |
-| `capabilities.json` | whether alerts and the health route were present on this branch |
+| `capabilities.json` | what the deployed branch runs: `alerts`, `health`, `ledger` (and which workloads write it), `consumer_lock` (#290's lock), the alerts Deployment and the `seq` column |
 | `catalog-proof.json`, `catalog-restored-proof.json` | the OPA decision that proved the test catalog was live, and the shipped one afterwards |
 | `env.json`, `pins.<app>.local.yaml` | the run's inputs, copied |
 | `L<n>/forest.json` | the forest numbers: roots, orphans, unpaired, parent sources, depth histogram, escapes |

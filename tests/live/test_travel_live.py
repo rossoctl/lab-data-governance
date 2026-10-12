@@ -214,7 +214,8 @@ def test_L2_ledger_matches_the_tables(env, kube, dg, capabilities, catalog, flee
     the same pod, host and method, one to one; compares the captured
     input/output with the digest of what the app sent/received where the
     two reductions are defined to coincide; checks the span sits inside the
-    app's send window; lists the dark hops (store acts) and the strays the
+    app's send window; pairs a store act over http with its span, lists the
+    rest as dark hops, and the strays the
     frameworks report about themselves (an outbound call with no ambient
     trace naming another trace). Asserts: no undeclared ledger-only
     exchange, no table-only exchange, no digest mismatch, no timing

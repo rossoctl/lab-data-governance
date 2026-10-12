@@ -101,8 +101,8 @@ APP=travel_advisor bash deploy.sh          # naked deploy — do NOT --with-tele
 ## 3 · What to verify
 
 - `../lineage/show-trace.py <trace-id>` — one root; the two probe exchanges inside
-  the trace (openai-agents/langgraph MCP tool calls stray to their own traces —
-  known SDK background-task limitation, counted honestly by the script).
+  the trace (on a kit before cortex #1333, 2026-10-09, openai-agents/langgraph MCP tool calls
+  stray to their own traces — the SDK's background task; counted honestly by the script).
 - `http://dg.localtest.me:8080/ui/traces/<trace-id>/flow` — the interaction tree,
   with `demo-client → psp-mock:9091` and `demo-client → api.travel-partner.example:9091`.
 - `http://dg.localtest.me:8080/ui/risk` — the trace as the top alert, critical/block.

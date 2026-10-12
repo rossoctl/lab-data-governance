@@ -199,7 +199,7 @@ main e63a4f98 (the merge of #1333):
 | app | pytest summary | notes |
 |---|---|---|
 | travel_advisor, `risk` without #290 | `15 passed, 3 skipped` or `14 passed, 3 skipped, 1 xfailed` | the three skips are the lab module, L13 (no alerts processor on this branch) and L16 (no sole-consumer lock); L14 passes when the model makes the partner call and xfails when it skips it. KNOWN rows: the content-kind gap on L1/L6, the stale-callee record (#279) on the risk scenarios |
-| travel_advisor, with #290 | `16 passed, 2 skipped` or `15 passed, 2 skipped, 1 xfailed` | as above with L16 run: one process drains, no duplicate version, no restart |
+| travel_advisor, with #290 (predicted: #290 is open, no run with it deployed is on record here; `docs/live-runs/travel_advisor-r2-with-fixes.md` is the run with its branch merged locally) | `16 passed, 2 skipped` or `15 passed, 2 skipped, 1 xfailed` | as above with L16 run: one process drains, no duplicate version, no restart |
 | lineage_lab | `9 passed, 1 skipped, 1 xfailed` | the skip is the travel module; R8 xfails on the classifier finding (last four digits read as PCI). KNOWN rows: the stale-callee record (#279) |
 
 Anything else is a finding. A preflight failure names the pin, the expected value and the

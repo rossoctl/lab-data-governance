@@ -75,8 +75,11 @@ def _well_formed(rec: Any) -> bool:
         if not isinstance(rec.get("name"), str):
             return False
     elif rec["kind"] == "store":
-        if not isinstance(rec.get("store"), str):
+        if not isinstance(rec.get("store"), str) or not isinstance(rec.get("endpoint"), (str, type(None))):
             return False
+        for k in ("ts", "ms"):
+            if k in rec and rec[k] is not None and not isinstance(rec[k], (int, float)):
+                return False
     return True
 
 
@@ -233,17 +236,21 @@ def compare(dg, trace_id: str, records: list[dict], fleet, *, skew_seconds: floa
     # request span on the sidecar's (the kit instruments urllib3): pair them by
     # pod, endpoint host and the record's window (ts is the record's end, ms
     # its duration), on an edge the fleet declares as http. A store with no
-    # such edge is dark by construction.
+    # such edge is dark by construction; a store ON such an edge with no span
+    # is a sidecar miss (a kit that stopped instrumenting the client), asserted.
     http_edges = {(caller, callee) for caller, callee, proto in fleet.edges if proto == "http"}
-    store_pairs, dark = [], []
+    store_pairs, store_unpaired, dark = [], [], []
     for r in stores:
         host = short_host((r.get("endpoint") or "").split("//", 1)[-1])
+        if (r["pod"], host) not in http_edges:
+            dark.append(r)
+            continue
         cands = [s for s in unmatched_spans.values() if s["self_id"] == r["pod"] and s["direction"] == "outbound"
-                 and s["peer"] == host] if (r["pod"], host) in http_edges else []
+                 and s["peer"] == host]
         ts, ms = r.get("ts"), (r.get("ms") or 0) / 1000
         best = min(cands, key=lambda s: abs(s["started_at"].timestamp() - (float(ts) - ms)) if ts else 0) if cands else None
         if best is None:
-            dark.append(r)
+            store_unpaired.append({"pod": r["pod"], "host": host, "store": r["store"], "op": r.get("op")})
             continue
         del unmatched_spans[best["span_id"]]
         started = best["started_at"].timestamp()
@@ -284,7 +291,7 @@ def compare(dg, trace_id: str, records: list[dict], fleet, *, skew_seconds: floa
         "digest_mismatch": digest_bad, "digest_unaligned": digest_unaligned,
         "timing_violations": [p for p in pairs + store_pairs if not p["timing_ok"]],
         "tools": [{"pod": r["pod"], "name": r["name"], "error": r.get("error")} for r in tools],
-        "store_pairs": store_pairs,
+        "store_pairs": store_pairs, "store_unpaired": store_unpaired,
         "dark_hops": [{"pod": r["pod"], "store": r["store"], "op": r.get("op"), "verb": r.get("verb"),
                        "table": r.get("table")} for r in dark],
         "ledger_pods": ledger_pods, "tree_pods": tree_pods,
@@ -318,6 +325,8 @@ def assert_consistent(c: dict, checks=None) -> None:
     expect(checks, "ledger.ledger_only_undeclared", "exchanges the app made that no sidecar recorded and no declaration covers",
            [], c["ledger_only_undeclared"])
     expect(checks, "ledger.table_only", "sidecar exchanges the app's ledger does not know", [], c["table_only"])
+    expect(checks, "ledger.store_unpaired", "store acts on a declared http edge with no sidecar span (the client no longer instrumented?)",
+           [], c["store_unpaired"])
     expect(checks, "ledger.digest_mismatch", "captured payload differs from what the app sent/received (aligned pairs)", [],
            [(p["pod"], p["dir"], p["host"], p["jsonrpc_method"], p["req_digest"], p["resp_digest"]) for p in c["digest_mismatch"]])
     expect(checks, "ledger.timing_violations", "spans outside the app's send window (exchanges and store acts)", [],
