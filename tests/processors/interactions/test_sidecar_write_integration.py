@@ -46,14 +46,15 @@ def _snapshot(dsn: str) -> dict:
                 "JOIN entities ce ON ce.id = i.callee_entity_id"
             ).fetchall()
         }
-        for iid, leg_type, occurred_at, payload_hash, error, seq in conn.execute(
-            "SELECT interaction_id, leg_type, occurred_at, payload_hash, error, seq "
-            "FROM interaction_legs"
+        for iid, leg_type, occurred_at, payload_hash, kind, error, seq in conn.execute(
+            "SELECT interaction_id, leg_type, occurred_at, payload_hash, content_kind, "
+            "error, seq FROM interaction_legs"
         ).fetchall():
             assert iid in ix, f"orphan leg {iid}/{leg_type}"  # legs never outlive parents
             ix[iid]["legs"][leg_type] = {
                 "occurred": occurred_at is not None,
                 "hash": payload_hash,
+                "kind": kind,
                 "error": error,
                 "seq": seq,
             }
@@ -119,8 +120,12 @@ def _assert_golden(snap: dict) -> None:
     # The echo pair are leg-less connectors of the tool interaction.
     assert snap["spans"][golden.D1] == (I3, "connector", None)
     assert snap["spans"][golden.D2] == (I3, "connector", None)
-    # 7 payloads: I1-resp and I4-resp share a content hash (agent echoes the llm).
+    # 7 payloads: I1-resp and I4-resp share a content hash (agent echoes the llm)
+    # — one row, and each leg keeps its own kind (#286).
     assert snap["payloads"] == 7
+    assert snap["ix"][I1]["legs"]["response"]["hash"] == snap["ix"][I4]["legs"]["response"]["hash"]
+    assert snap["ix"][I1]["legs"]["response"]["kind"] == "agent_response"
+    assert snap["ix"][I4]["legs"]["response"]["kind"] == "llm_completion"
     # 8 entity_spans: each of the 4 interactions records its caller + callee
     # 'discovered_via' its (distinct) anchor span (4 × 2, no dedup).
     assert snap["entity_spans"] == 8
@@ -453,11 +458,10 @@ def test_mcp_plumbing_kinds_through_write_path(configured_db: str):
     assert (snap["ix"][j2]["req"], snap["ix"][j2]["resp"]) == (False, True)
     assert (snap["ix"][j3]["req"], snap["ix"][j3]["resp"]) == (False, False)
     assert set(snap["ix"][j3]["legs"]) == {"request", "response"}  # complete, bodyless
-    # The bodied halves carry the new content kinds into interaction_payloads.
+    # The bodied halves carry the new content kinds on their legs.
     with psycopg.connect(dsn) as conn:
         kinds = {r[0] for r in conn.execute(
-            "SELECT p.content_kind FROM interaction_legs l "
+            "SELECT l.content_kind FROM interaction_legs l "
             "JOIN interactions i ON i.id = l.interaction_id "
-            "JOIN interaction_payloads p ON p.content_hash = l.payload_hash "
-            "WHERE i.trace_id = %s", (_T3,)).fetchall()}
+            "WHERE i.trace_id = %s AND l.payload_hash IS NOT NULL", (_T3,)).fetchall()}
     assert kinds == {"mcp_lifecycle_request", "mcp_lifecycle_result", "tool_discovery_result"}

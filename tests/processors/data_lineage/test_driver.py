@@ -34,8 +34,8 @@ def _entity(conn: psycopg.Connection, *, eid: str, kind: str, natural_key: str) 
 
 def _payload(conn: psycopg.Connection, content_hash: str) -> None:
     conn.execute(
-        "INSERT INTO interaction_payloads (content_hash, content_kind, content, byte_size) "
-        "VALUES (%s, 'unknown', %s::jsonb, 2) ON CONFLICT (content_hash) DO NOTHING",
+        "INSERT INTO interaction_payloads (content_hash, content, byte_size) "
+        "VALUES (%s, %s::jsonb, 2) ON CONFLICT (content_hash) DO NOTHING",
         (content_hash, '{}'),
     )
 

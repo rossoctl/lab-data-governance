@@ -2,7 +2,9 @@
 
 The `P-interactions` derived tables carry four closed-set columns:
 `entities.kind`, `entity_spans.role`, `interaction_spans.role`, and
-`interaction_payloads.content_kind`. The `spans` table stores its one
+`content_kind` (on `interaction_legs` since migration 0022 — it was on
+`interaction_payloads` until issue #286 moved it to the reference, see the
+note at the end). The `spans` table stores its one
 closed-set column (`spans.kind`) as `TEXT` (ADR-0002 era; migration `0002`
 deliberately relaxed it to nullable for flexibility). We **diverge** from
 that precedent for `P-interactions`: the three **structural** enums become
@@ -13,7 +15,7 @@ Postgres `ENUM` types, while `content_kind` stays `TEXT`.
 - `CREATE TYPE entity_kind AS ENUM ('user','client','agent','tool','llm','service')`
 - `CREATE TYPE entity_span_role AS ENUM ('discovered_via','identified_via')`
 - `CREATE TYPE interaction_span_role AS ENUM ('anchor','info','connector')`
-- `interaction_payloads.content_kind` is `TEXT`, validated in code by the
+- `interaction_legs.content_kind` is `TEXT`, validated in code by the
   **Payload extraction rule**.
 
 ## Why
@@ -53,3 +55,16 @@ Postgres `ENUM` types, while `content_kind` stays `TEXT`.
   change").
 - Migrations use raw `op.execute("CREATE TYPE ...")` (ADR-0005: Alembic
   without the SQLAlchemy ORM), so no ORM enum coupling.
+
+## Note (2026-10-08, issue #286): the column moved to the leg
+
+`interaction_payloads` is one row per distinct bytes, referenced from every
+leg that carries them. A content kind is the role the bytes played on one
+leg — an agent that returns its LLM's completion verbatim makes one row that
+is `llm_completion` on one leg and `agent_response` on the other — so on the
+shared row it could only hold the first writer's kind. Migration 0022 moves
+it to `interaction_legs.content_kind`, nullable (a plain-http leg has no
+semantic body kind, as its `payload_hash` is NULL). Everything above about
+TEXT-vs-ENUM is unchanged: the vocabulary still churns in code
+(`sidecar_facts.CONTENT_KINDS`). The classifier no longer reads a kind at
+all (ADR-0024).

@@ -161,8 +161,12 @@ def _self_key(span: Span) -> str:
 
 @dataclasses.dataclass
 class _Payload:
+    """One content-addressed body: bytes only. The **Content kind** is not
+    here — it is the role the bytes played on a leg, so it rides on the leg
+    (``_Row.request_content_kind`` / ``response_content_kind``, migration
+    0022). The same bytes referenced from two legs are one row with two kinds."""
+
     content_hash: str
-    content_kind: str
     content: Any
     byte_size: int
 
@@ -211,6 +215,11 @@ class _Row:
     error: bool | None
     request_payload: _Payload | None
     response_payload: _Payload | None
+    # The legs' content kinds, from the exchange's facts (``classify``), None
+    # for a protocol with no semantic body kind. Stored on the leg, never on the
+    # shared payload row (issue #286).
+    request_content_kind: str | None
+    response_content_kind: str | None
     seq: int
     response_span_id: str | None
     resp_seq: int | None
@@ -219,6 +228,7 @@ class _Row:
 def _mk_payload(content_kind: str | None, value: Any) -> _Payload | None:
     """Content-address one body. None when the body is absent OR the protocol
     carries no semantic content kind — the row stays complete with a NULL hash.
+    The kind is only the gate here; it is stored on the leg (``_legs_of``).
 
     Absence is judged on the RAW attribute, before ``_coerce``: a wire body
     that decodes to JSON ``null`` still produces a payload row (content null,
@@ -228,7 +238,7 @@ def _mk_payload(content_kind: str | None, value: Any) -> _Payload | None:
         return None
     content = _coerce(value)
     canon = _canonical_bytes(content)
-    return _Payload(_hash_payload(canon), content_kind, content, len(canon))
+    return _Payload(_hash_payload(canon), content, len(canon))
 
 
 def _outcome_error(resp: Span | None) -> bool | None:
@@ -479,6 +489,8 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
             error=_outcome_error(resp),
             request_payload=req_pl,
             response_payload=resp_pl,
+            request_content_kind=kinds.req_content_kind,
+            response_content_kind=kinds.resp_content_kind,
             seq=req.seq,
             response_span_id=resp.span_id if resp is not None else None,
             resp_seq=resp.seq if resp is not None else None,
@@ -526,18 +538,24 @@ def _upsert_payload(tx: db.Transaction, pl: _Payload | None) -> str | None:
     if pl is None:
         return None
     tx.execute(
-        "INSERT INTO interaction_payloads (content_hash, content_kind, content, byte_size) "
-        "VALUES (%s, %s, %s::jsonb, %s) ON CONFLICT (content_hash) DO NOTHING",
-        (pl.content_hash, pl.content_kind, json.dumps(pl.content, default=str), pl.byte_size),
+        "INSERT INTO interaction_payloads (content_hash, content, byte_size) "
+        "VALUES (%s, %s::jsonb, %s) ON CONFLICT (content_hash) DO NOTHING",
+        (pl.content_hash, json.dumps(pl.content, default=str), pl.byte_size),
     )
     return pl.content_hash
 
 
-def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None]]:
+def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, str | None, bool | None]]:
     """Project one row into OBSERVED legs: (leg_type, occurred_at, payload_hash,
-    error). The request leg always exists; the response leg only when the
-    response span does — its absence IS the in-flight signal (never fabricated,
-    matching the graph adapter's rule).
+    content_kind, error). The request leg always exists; the response leg only
+    when the response span does — its absence IS the in-flight signal (never
+    fabricated, matching the graph adapter's rule).
+
+    ``content_kind`` is the leg's own: the role its body played, from the
+    exchange's facts. It is a fact of the exchange, not of the capture, so it is
+    stamped even when ``capture_io`` left the leg bodyless; it is None only for
+    a protocol with no semantic body kind (plain http). The shared payload row
+    carries no kind (issue #286, migration 0022).
 
     Request-leg ``error`` is None: the wire carries no request-side outcome —
     ``lineage.outcome`` is a completion fact and belongs to the response leg (a
@@ -550,10 +568,11 @@ def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None]]:
     request span exists, and the request leg is inserted first — either in the
     same transaction (request emitted first) or in an earlier drain (response
     still in flight)."""
-    legs: list[tuple[str, Any, str | None, bool | None]] = [(
+    legs: list[tuple[str, Any, str | None, str | None, bool | None]] = [(
         "request",
         row.started_at,
         row.request_payload.content_hash if row.request_payload else None,
+        row.request_content_kind,
         None,
     )]
     if row.response_span_id is not None:
@@ -561,6 +580,7 @@ def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None]]:
             "response",
             row.ended_at,
             row.response_payload.content_hash if row.response_payload else None,
+            row.response_content_kind,
             row.error,
         ))
     return legs
@@ -623,17 +643,18 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
     #    once-assigned value — the post-#123 DB-owned model shared with the
     #    streaming branch of state.flush (only cosmetic nextval gaps on replay).
     for row in want.values():
-        for leg_type, occurred_at, payload_hash, error in _legs_of(row):
+        for leg_type, occurred_at, payload_hash, content_kind, error in _legs_of(row):
             tx.execute(
                 "INSERT INTO interaction_legs (interaction_id, leg_type, "
-                "occurred_at, payload_hash, error) "
-                "VALUES (%s, %s, %s, %s, %s) "
+                "occurred_at, payload_hash, content_kind, error) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
                 "occurred_at = EXCLUDED.occurred_at, "
                 "payload_hash = EXCLUDED.payload_hash, "
+                "content_kind = EXCLUDED.content_kind, "
                 "error = EXCLUDED.error",
                 (row.interaction_id, leg_type, occurred_at, payload_hash,
-                 error),
+                 content_kind, error),
             )
 
     # 4. Delete this trace's interactions no longer justified by `want` — the

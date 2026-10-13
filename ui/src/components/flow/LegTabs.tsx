@@ -15,6 +15,12 @@ export type Leg = {
   /** The leg's payload content hash. Non-null by construction: a leg that
    *  carried no payload contributes no tab at all (see the note below). */
   hash: string;
+  /** The role the body played on THIS leg (`llm_completion`,
+   *  `agent_response`, …). It is the leg's fact, not the payload's: the same
+   *  hash under two legs can carry two kinds, which is why the Payload pane
+   *  reads it from here and not from the fetched payload resource (#286).
+   *  Null when the protocol has no semantic body kind. */
+  kind: string | null;
   /**
    * What is currently known about this leg's lineage: a derived triple, "not
    * derived yet", or "the read failed" — three states, never one overloaded
@@ -127,7 +133,7 @@ export function LegTabs({ legs }: { legs: Leg[] }) {
  * exactly one statement of the three sections in the codebase.
  */
 function LegPanel({ leg }: { leg: Leg }) {
-  const { label, hash, lineage } = leg;
+  const { label, hash, kind, lineage } = leg;
   const [section, setSection] = useState<Section>('payload');
 
   // ONE payload read per leg, shared by the two sections that need it (Payload
@@ -228,7 +234,7 @@ function LegPanel({ leg }: { leg: Leg }) {
             <>
               <DetailList
                 pairs={[
-                  ['kind', payload.content_kind],
+                  ['kind', kind ?? '—'],
                   ['hash', payload.content_hash],
                   ['bytes', String(payload.byte_size)],
                 ]}

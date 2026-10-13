@@ -282,7 +282,7 @@ def snapshot(dsn: str) -> dict[str, list]:
                 "FROM interaction_spans ORDER BY trace_id, span_id"
             ),
             "payloads": rows(
-                "SELECT content_hash, content_kind, byte_size FROM interaction_payloads "
+                "SELECT content_hash, byte_size FROM interaction_payloads "
                 "ORDER BY content_hash"
             ),
         }
