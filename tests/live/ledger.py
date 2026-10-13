@@ -199,7 +199,8 @@ def compare(dg, trace_id: str, records: list[dict], fleet, *, skew_seconds: floa
     for r in out_starts + in_ends:
         k = key_of_out(r) if r["dir"] == "out" else key_of_in(r)
         want = _ledger_digests(r.get("req")) if isinstance(r.get("req"), dict) else set()
-        cands = [s for s in unmatched_spans.values() if key_of_span(s) == k]
+        cands = [s for s in unmatched_spans.values() if key_of_span(s) == k
+                 and _same_path(r.get("path"), s["path"])]
         # Prefer the candidates whose captured input is what the app sent, and
         # among them (two identical requests in one trace, such as two MCP
         # `initialize` calls) or among all (a bodyless exchange has no digest)
@@ -301,6 +302,17 @@ def compare(dg, trace_id: str, records: list[dict], fleet, *, skew_seconds: floa
         "counts": {"records": len(records), "out": len(out_starts), "in": len(in_ends), "spans": len(spans),
                    "pairs": len(pairs)},
     }
+
+
+def _same_path(ledger_path: str | None, span_path: str | None) -> bool:
+    """When both the app's record and the sidecar's span name a path they must
+    agree (query string aside); a side without one constrains nothing. Without
+    this a bypassed probe — the client's ``/healthz`` on first use, no span by
+    contract — takes the span of the real call that follows it on the same pod,
+    peer and method, and the real call reads as unobserved."""
+    if not ledger_path or not span_path:
+        return True
+    return ledger_path.split("?", 1)[0] == span_path.split("?", 1)[0]
 
 
 def _declared_dark(fleet, r: dict) -> bool:
