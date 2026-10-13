@@ -24,6 +24,14 @@ burst of records for the same trace coalesces at the NOTIFY layer but NOT at
 the drain layer — each record past the cursor still drives its own recompute;
 all but the last are typically idempotent no-ops once the rollup reflects the
 latest state.
+
+The cursor is a ``seq`` watermark, so this stream inherits the repo's
+insert-allocation caveat (``docs/PROJECT.md`` §3): a ``seq`` allocated earlier
+but committed later than one the drain has already passed is skipped. It
+cannot happen while records have one writer committing serially: the
+leg-ready consumer, which drains only while holding its sole-consumer lock.
+Another concurrent writer (a manual ``compute_interaction_risk`` beside it)
+would reopen it.
 """
 
 from __future__ import annotations

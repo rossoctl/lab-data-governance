@@ -15,7 +15,10 @@
 #
 # Same image as the receiver — one repo-root Containerfile, one image;
 # deployments differ only by `command:` (issue #38). Single replica,
-# no-surge rollout: single-cursor drainer, like 70/80/91.
+# no-surge rollout: single-cursor drainer, like 70/80/91. Unlike those, an
+# overlap is not made safe by idempotency alone (the risk write is
+# order-sensitive), so the process also holds a sole-consumer advisory lock:
+# a pod that starts while an evicted or exiting one still runs waits for it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

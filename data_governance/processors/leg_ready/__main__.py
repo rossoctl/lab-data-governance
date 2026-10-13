@@ -17,7 +17,11 @@ conditions 1 and 2), with the engine's write committing atomically with the
 leg-ready cursor advance. ``RISK_ENGINE_OBSERVER=off`` restores the bare
 metric-increment delivery (an operational escape hatch — e.g. running the lineage
 pipeline with no OPA deployed; with the observer on and OPA unreachable the stream
-holds, by design, rather than skipping legs).
+holds, by design, rather than skipping legs). It drains only while holding the
+``consumer:leg_ready`` session lock (``db.session_lock``), so a second instance —
+an evicted or still-exiting pod overlapping its replacement — waits instead of
+draining beside it, and it re-checks the lock before every drain, exiting if the
+lock's connection died.
 
 Before processing any legs the entry point runs the schema-version check (issue #10,
 ADR-0002): it reads ``alembic_version.version_num`` and refuses to start if that does
@@ -138,7 +142,31 @@ def main() -> int:
     try:
         # `dsn` drives the dedicated LISTEN connection for low-latency wake (issue
         # #71); the drain itself still uses the pool db.configure() set up.
-        driver.run(stop_event, dsn, observer=observer)
+        # One drainer at a time. The risk engine computes a record from the
+        # evidence it read BEFORE its write transaction, so two drainers can
+        # land an older computation after a newer one, and the trace trigger's
+        # seq watermark assumes this is the tables' one serial writer.
+        # maxSurge: 0 does not stop an evicted or still-exiting pod from
+        # overlapping its replacement; the replacement waits here until the
+        # old process's connection closes.
+        # The lock's session is re-checked at every wake and before every
+        # leg's write: if it died (a Postgres restart, a terminated backend)
+        # the lock went with it, and run() raises db.LockLost rather than
+        # write unprotected — the process exits 5 and its restart waits for
+        # the lock like any other.
+        log.info("waiting for the sole-consumer lock %r", driver.PROCESSOR_NAME)
+        try:
+            with db.session_lock(
+                f"consumer:{driver.PROCESSOR_NAME}", dsn, stop=stop_event
+            ) as lock:
+                log.info("sole-consumer lock held")
+                driver.run(stop_event, dsn, observer=observer, guard=lock.check)
+        except db.LockWaitStopped:
+            log.info("stopped while waiting for the sole-consumer lock")
+        except db.LockLost as exc:
+            sys.stderr.write(f"sole-consumer lock lost (LockLost: {exc}); exiting\n")
+            log.error("sole-consumer lock lost: %s; exiting", exc)
+            return 5
     finally:
         # Stop the metrics surface (no in-flight writes) before closing the pool.
         metrics_server.stop(grace=1.0)

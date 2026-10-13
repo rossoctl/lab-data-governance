@@ -17,22 +17,24 @@ commits atomically with the stream's cursor advance.
     actually differs from the latest stored one (FR-DAS-014 idempotency).
     A prior version is never mutated (FR-DAS-013/032 immutability).
 
-Both writes (the policy decision and the risk record) allocate their next
-``version`` in-statement (``SELECT COALESCE(MAX(version), 0) + 1 ...``)
-rather than read-then-write, so two concurrent recomputes racing on the same
-interaction collide on the table's ``UNIQUE (interaction_id, version)``
-index rather than silently double-writing the same version. Each collision
-is recovered where it happens, so a race never escapes the interaction it
-belongs to: ``_get_or_refresh_decision`` retries the decision refresh, and
-``compute_interaction_risk`` retries the record write. Either retry re-reads
-what the winner committed, so it reuses the cached decision rather than
-calling OPA again, and re-checks idempotency — the winner's write may make
-the second attempt a no-op.
+Concurrent recomputes of one interaction are serialized, not retried. Both
+writes (the policy decision and the risk record) are a read → compare →
+insert, and each runs under :data:`_LOCK_SQL`, a transaction-scoped advisory
+lock keyed on the interaction: a second writer waits for the first to
+commit, then reads what it committed — the cached decision under the same
+evidence fingerprint, or a risk record identical to its own — and writes
+nothing. Without the lock the two statements interleave: racers that insert
+together collide on ``UNIQUE (interaction_id, version)``, and a racer that
+read before the other committed but inserts after it writes an identical
+duplicate version, which no retry can see because nothing failed.
 
-Recovering the decision race here rather than at the caller is what keeps
-the split path (issue #158) equivalent to the self-contained one: the
-leg-ready observer sees no collision, so one interaction losing a race never
-holds the stream for the unrelated legs queued behind it.
+The lock is what keeps the split path (issue #158) equivalent to the
+self-contained one: a race is settled inside the interaction it concerns, so
+the leg-ready observer never sees it and never holds the stream for the
+unrelated legs queued behind it. Versions are still allocated in-statement
+(``SELECT COALESCE(MAX(version), 0) + 1 ...``), so the unique index remains
+the backstop against a writer that bypasses the lock — it fails loudly
+instead of double-writing.
 """
 
 from __future__ import annotations
@@ -40,9 +42,6 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import Callable
-from decimal import Decimal
-
-import psycopg
 
 from data_governance import db
 from data_governance.risk.engine import utils
@@ -57,7 +56,14 @@ __all__ = ["RecordWrite", "compute_interaction_risk", "prepare_interaction_risk"
 # consumer's per-leg delivery transaction — issue #158).
 RecordWrite = Callable[[db.Transaction], None]
 
-_MAX_ATTEMPTS = 2
+# Serializes the writers of one interaction's risk state until the enclosing
+# transaction ends (see the module docstring). Parameter: _lock_key(...).
+_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
+
+
+def _lock_key(interaction_id: str) -> str:
+    return f"risk:interaction:{interaction_id}"
+
 
 _LATEST_DECISION_SQL = (
     "SELECT version, risk_level, enforcement_type, allowed_actions, "
@@ -161,40 +167,19 @@ def _decision_params(
     }
 
 
+def _cached_decision(
+    tx: db.Transaction, interaction_id: str, fingerprint: str
+) -> utils.PolicyDecision | None:
+    """The interaction's latest stored decision when it was made from the
+    evidence *fingerprint* names, else ``None``."""
+    row = tx.fetch_one(_LATEST_DECISION_SQL, (interaction_id,))
+    if row is None:
+        return None
+    stored = _row_to_stored_decision(row)
+    return stored.decision if stored.evidence_fingerprint == fingerprint else None
+
+
 def _get_or_refresh_decision(
-    *,
-    interaction_id: str,
-    opa_client: OpaClient,
-    evidence,
-) -> utils.PolicyDecision:
-    """:func:`_get_or_refresh_decision_once`, retried once on a
-    ``UNIQUE (interaction_id, version)`` collision from a racing concurrent
-    recompute of the same interaction.
-
-    The retry re-enters through the cache lookup, so when the winner decided
-    from the same evidence its committed decision is simply reused and OPA is
-    not called again; when the winner decided from different evidence the
-    insert takes the next version. Retrying here, rather than leaving it to
-    the caller, keeps the race contained to the one interaction it concerns:
-    the leg-ready observer never sees the collision, so unrelated legs behind
-    this one are not held (a decision race is interaction-scoped, unlike an
-    OPA outage, which is not).
-    """
-    last_error: psycopg.errors.UniqueViolation | None = None
-    for _attempt_number in range(_MAX_ATTEMPTS):
-        try:
-            return _get_or_refresh_decision_once(
-                interaction_id=interaction_id,
-                opa_client=opa_client,
-                evidence=evidence,
-            )
-        except psycopg.errors.UniqueViolation as exc:
-            last_error = exc
-            continue
-    raise last_error
-
-
-def _get_or_refresh_decision_once(
     *,
     interaction_id: str,
     opa_client: OpaClient,
@@ -206,22 +191,25 @@ def _get_or_refresh_decision_once(
     No transaction is held across the OPA HTTP round-trip (issue #158): the
     cache lookup and the decision insert each run in their own short
     transaction, with the network call in between holding nothing. The
-    decision insert commits independently of any later risk-record write —
-    deliberately: the decision is a cache keyed by evidence fingerprint, so
-    if the record write later rolls back (leg re-delivered, ADR-0007), the
-    committed decision is simply reused on the retry with no second OPA
-    call.
+    insert re-checks the cache under the interaction lock first: a concurrent
+    recompute that missed the cache at the same moment may have committed
+    its decision meanwhile, and when it decided from the same evidence that
+    decision is reused and this call's OPA answer discarded.
+
+    The decision insert commits independently of any later risk-record
+    write — deliberately: the decision is a cache keyed by evidence
+    fingerprint, so if the record write later rolls back (leg re-delivered,
+    ADR-0007), the committed decision is simply reused on the retry with no
+    second OPA call.
     """
     fingerprint = utils.fingerprint(
         evidence.legs, evidence.classifications, evidence.anchor
     )
 
     with db.transaction() as tx:
-        row = tx.fetch_one(_LATEST_DECISION_SQL, (interaction_id,))
-    if row is not None:
-        stored = _row_to_stored_decision(row)
-        if stored.evidence_fingerprint == fingerprint:
-            return stored.decision
+        cached = _cached_decision(tx, interaction_id, fingerprint)
+    if cached is not None:
+        return cached
 
     opa_input = utils.build_opa_input(
         legs=evidence.legs,
@@ -245,6 +233,10 @@ def _get_or_refresh_decision_once(
         policy_version=opa_decision.policy_version,
     )
     with db.transaction() as tx:
+        tx.execute(_LOCK_SQL, (_lock_key(interaction_id),))
+        cached = _cached_decision(tx, interaction_id, fingerprint)
+        if cached is not None:
+            return cached
         tx.execute(
             _INSERT_DECISION_SQL,
             _decision_params(
@@ -365,8 +357,9 @@ def prepare_interaction_risk(
     record insert commits atomically with the stream's cursor advance
     (ADR-0007: a write failure rolls the cursor back and the leg is
     re-delivered, never silently skipped). The closure re-checks idempotency
-    at write time (FR-DAS-014): identical to the latest stored version ⇒ no
-    insert, no NOTIFY.
+    at write time (FR-DAS-014), under the interaction lock so no concurrent
+    writer can interleave: identical to the latest stored version ⇒ no
+    insert, no NOTIFY. The lock is held until the caller's transaction ends.
 
     Raises whatever gathering or deciding raises —
     :class:`~.evidence.InteractionNotFoundError`, the typed
@@ -394,6 +387,7 @@ def prepare_interaction_risk(
     )
 
     def write(tx: db.Transaction) -> None:
+        tx.execute(_LOCK_SQL, (_lock_key(interaction_id),))
         latest_row = tx.fetch_one(_LATEST_RISK_RECORD_SQL, (interaction_id,))
         if _normalized_latest_record(latest_row) == normalized:
             return
@@ -407,23 +401,11 @@ def compute_interaction_risk(interaction_id: str, *, opa_client: OpaClient) -> N
     the self-contained entry point (prepare + write in an own transaction).
 
     Idempotent: if the freshly-computed record is identical to the latest
-    stored version, nothing is written and no NOTIFY fires. Retries once on
-    a ``UNIQUE (interaction_id, version)`` collision from a racing concurrent
-    recompute — the retry re-gathers evidence and re-checks idempotency, so a
-    retry that lost the race to a winner whose write already matches simply
-    becomes a no-op. In practice this loop covers the *record* write:
-    :func:`_get_or_refresh_decision` already absorbs a decision-insert race
-    itself, so the split path recovers from that one without this entry
-    point.
+    stored version, nothing is written and no NOTIFY fires — including when
+    a concurrent recompute of the same interaction got there first (see the
+    module docstring: writers are serialized, so the second one sees the
+    first one's record and no-ops).
     """
-    last_error: psycopg.errors.UniqueViolation | None = None
-    for _attempt_number in range(_MAX_ATTEMPTS):
-        try:
-            write = prepare_interaction_risk(interaction_id, opa_client=opa_client)
-            with db.transaction() as tx:
-                write(tx)
-            return
-        except psycopg.errors.UniqueViolation as exc:
-            last_error = exc
-            continue
-    raise last_error
+    write = prepare_interaction_risk(interaction_id, opa_client=opa_client)
+    with db.transaction() as tx:
+        write(tx)

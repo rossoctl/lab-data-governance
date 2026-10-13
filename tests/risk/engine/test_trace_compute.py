@@ -20,13 +20,13 @@ concern, not this one's.
 
 from __future__ import annotations
 
-import threading
 from decimal import Decimal
 
 import psycopg
 import pytest
 
 from data_governance.risk.engine.trace_compute import compute_trace_risk
+from tests.risk.engine.interleave import read_between_write_and_commit
 
 _TID = "trace-tx-1"
 _ENT_A = "ent-tx-a"
@@ -385,53 +385,33 @@ def test_prior_version_row_is_never_mutated(seeded: str):
     assert row == (version_1_row[0], version_1_row[1])
 
 
-# --- retry on UNIQUE (trace_id, version) collision -----------------------------
+# --- concurrent recomputes of one trace (serialized) ---------------------------
 
 
-def test_racing_computes_collide_and_the_retry_recovers(seeded: str, monkeypatch):
-    """Two concurrent ``compute_trace_risk(_TID)`` calls both compute the same
-    next version (both see no existing row -> both target version 1) and race
-    to insert. A barrier holds both threads right before their
-    ``INSERT ... trace_risk_records`` so they submit concurrently: one wins,
-    the other's insert hits ``trace_risk_records_version_uq``, is caught by
-    the retry loop, and retries — the retry re-gathers current records and
-    re-checks idempotency, so it becomes a silent no-op against the winner's
-    already-matching row. Final state: no unhandled exception, exactly one
-    row, no duplicate/missing version."""
+def test_a_rollup_read_before_the_other_writer_commits_writes_nothing(
+    seeded: str, monkeypatch
+):
+    """The in-transaction mode the trace trigger uses: the second recompute
+    reads the latest trace record while the first has inserted but not
+    committed, then inserts after the commit. Unserialized that is a silent,
+    identical version 2; under the trace lock the second recompute cannot
+    read until the first commits, and writes nothing."""
     with psycopg.connect(seeded) as conn:
         _insert_risk_record(conn, interaction_id="ix-tx-1", risk_level="high")
         conn.commit()
 
-    barrier = threading.Barrier(2)
-    real_execute = psycopg.Cursor.execute
+    def recompute(tx) -> None:
+        compute_trace_risk(_TID, tx=tx)
 
-    def _gated_execute(self, sql, params=None, *args, **kwargs):
-        if isinstance(sql, str) and "INSERT INTO trace_risk_records" in sql:
-            barrier.wait(timeout=5)
-        return real_execute(self, sql, params, *args, **kwargs)
-
-    monkeypatch.setattr(psycopg.Cursor, "execute", _gated_execute)
-
-    errors: list[BaseException] = []
-
-    def _run() -> None:
-        try:
-            compute_trace_risk(_TID)
-        except BaseException as exc:  # noqa: BLE001 - surfaced to the main thread below
-            errors.append(exc)
-
-    t1 = threading.Thread(target=_run)
-    t2 = threading.Thread(target=_run)
-    t1.start()
-    t2.start()
-    t1.join(timeout=10)
-    t2.join(timeout=10)
+    errors = read_between_write_and_commit(
+        recompute,
+        recompute,
+        read_marker="FROM trace_risk_records WHERE trace_id = %s",
+        monkeypatch=monkeypatch,
+    )
 
     assert errors == []
     assert _all_trace_versions(seeded) == [1]
-    row = _latest_trace_row(seeded)
-    assert row is not None
-    assert row[1] == "high"
 
 
 # --- corner cases -------------------------------------------------------------------
