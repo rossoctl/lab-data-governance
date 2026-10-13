@@ -86,3 +86,27 @@ def test_golden_otlp_replay_via_load_trace(otlp_harness):
     drain(0)
 
     _assert_golden(_snapshot(otlp_harness.dsn))
+
+
+def test_reid_copy_derives_the_same_shape(otlp_harness):
+    """A ``--reid`` copy of the fixture must be a trace the producer could have
+    emitted: the processor must not refuse it, and it must derive the golden
+    shape under the new ids. Interaction ids are keyed on trace and exchange
+    id, so only the shape is compared, not the ids."""
+    _reset_derived(otlp_harness.dsn)
+
+    rc = load_trace.main(
+        [str(_FIXTURE), "--reid", "--transport", "grpc",
+         "--endpoint", otlp_harness.grpc_endpoint]
+    )
+    assert rc == 0
+    assert otlp_harness.rows.row_count() == 10
+
+    drain(0)  # raised ValueError on the copy before the remap fix
+
+    snap = _snapshot(otlp_harness.dsn)
+    assert snap["entities"] == golden.ENTITIES
+    assert len(snap["ix"]) == 4
+    roots = [i for i in snap["ix"].values() if i["parent"] is None]
+    assert len(roots) == 1
+    assert all(len(i["legs"]) == 2 for i in snap["ix"].values())
