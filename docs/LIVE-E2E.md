@@ -59,6 +59,7 @@ export E2E_KUBE_CONTEXT=kind-rossoctl
 export E2E_AGENT_EXAMPLES_SNP=$PWD/agent-examples-snp
 export E2E_CORTEX_DIR=$PWD/cortex
 cd lab-data-governance && uv sync        # creates .venv (docs/DEVELOPMENT.md); the commands below run from here
+# The three exports must be set in every shell that runs steps 1–7 (a second terminal for a long build too).
 ```
 
 The repo commits no lockfile, so the Python test environment is the one input the pins do not
@@ -95,7 +96,7 @@ its plugins by build tag and refuses an untagged build; the script asks the clon
 
 ### 2. Data governance, from this checkout
 
-Always run it: it is idempotent (about six minutes with cached layers), and there is no command that
+Always run it: it is idempotent (six to ten minutes with cached layers), and there is no command that
 tells whether a stack already on the cluster came from this checkout. Step 7's preflight compares
 the DG pods' image ids with the images this step builds, so a stack built elsewhere is refused, not
 accepted. These are the repo's own install steps (`docs/RISK-E2E-REPRODUCE.md` §1):
@@ -118,6 +119,8 @@ checkout's migration head (the Postgres StatefulSet is not rolled and keeps its 
 verifies the head. `build-and-load.sh` first refreshes the gitignored `uv.lock`; the working tree stays clean.
 `unchanged` from `kubectl apply` means the manifests are the same as the resident stack's, not the
 images (the tags are fixed): the restart line is what moves the pods onto the images just built.
+`configured` on the Postgres secret and StatefulSet is expected on a cluster that ran an older
+checkout: the StatefulSet's pod is not restarted and keeps its data.
 
 If the cluster runs a data-governance stack from another branch, replace it before this step with
 the repo's own uninstall, `deploy/dg.sh component uninstall` (it reverts the collector tee and
@@ -174,6 +177,7 @@ not in the local store`: the step that builds that image was skipped (1, 2 or 3)
 ### 6. Exclusive use
 
 Make sure nothing else drives traffic, rolls pods or changes the OPA catalog on this cluster
+(`kubectl get pods -A --sort-by=.status.startTime | tail` shows no roll you did not start)
 until the run ends (principle 6).
 
 ### 7. Run
@@ -193,14 +197,15 @@ design, and the tier asserts what the deployment claims, never what another PR w
 pass `-x`: a scenario that needs L1's trace skips itself when L1 did not run, and the rest must
 still run.
 
-Expected today, with `E2E_VARIANT=rogue` and `E2E_DESTRUCTIVE=1`, on a kit at or after cortex
-main e63a4f98 (the merge of #1333):
+Expected today, with booking-agent deployed under `E2E_VARIANT=rogue` (step 4; the test reads
+`ROSSOCTL_VARIANT` off the Deployment, setting the variable on the pytest command does nothing) and
+`E2E_DESTRUCTIVE=1` on the pytest command, on a kit at or after cortex main e63a4f98 (the merge of #1333):
 
 | app | pytest summary | notes |
 |---|---|---|
-| travel_advisor, `risk` without #290 | `15 passed, 3 skipped` or `14 passed, 3 skipped, 1 xfailed` | the three skips are the lab module, L13 (no alerts processor on this branch) and L16 (no sole-consumer lock); L14 passes when the model makes the partner call and xfails when it skips it. KNOWN rows: the content-kind gap on L1/L6, the stale-callee record (#279) on the risk scenarios |
-| travel_advisor, with #290 (predicted: #290 is open, no run with it deployed is on record here; `docs/live-runs/travel_advisor-r2-with-fixes.md` is the run with its branch merged locally) | `16 passed, 2 skipped` or `15 passed, 2 skipped, 1 xfailed` | as above with L16 run: one process drains, no duplicate version, no restart |
-| lineage_lab | `9 passed, 1 skipped, 1 xfailed` | the skip is the travel module; R8 xfails on the classifier finding (last four digits read as PCI). KNOWN rows: the stale-callee record (#279) |
+| travel_advisor, `risk` (#290 merged) | `16 passed, 2 skipped` or `15 passed, 2 skipped, 1 xfailed` | the two skips are the lab module and L13 (no alerts processor on this branch); L14 passes when the model makes the partner call and xfails when it skips it; L16 runs: one process drains, no duplicate version, no restart. KNOWN rows: the stale-callee record (#279) on the risk scenarios (L7, L10–L12, L15 on the 2026-10-13 runs); the content-kind gap and booking-agent's stale tool-call parent may read KNOWN on some turns |
+| travel_advisor, a branch without #290 | `15 passed, 3 skipped` or `14 passed, 3 skipped, 1 xfailed` | as above with L16 skipped (no sole-consumer lock) |
+| lineage_lab | `9 passed, 1 skipped, 1 xfailed` | the skip is the travel module; R8 xfails on the classifier finding (last four digits read as PCI). KNOWN rows: the stale-callee record (#279), and R8's `partner.verdict` (the classifier finding behind its xfail) |
 
 Anything else is a finding. A preflight failure names the pin, the expected value and the
 observed one, and sends no traffic.
@@ -321,9 +326,10 @@ travel_advisor, so the lab starts at R2).
 
 - **KNOWN rows** sit inside scenarios that pass. A check listed under a declared gap, or one that
   fails on a filed defect, is recorded as KNOWN with its reason; the scenario's verdict stays green and the
-  report header counts KNOWN rows apart from pass. Today: the content-kind gap and booking-agent's
-  stale tool-call parent (travel), and the risk record that keeps a stale callee (#279) wherever a
-  callee's echo arrives after the record was computed (seen on lab rows, sometimes on L7).
+  report header counts KNOWN rows apart from pass. Today: the risk record that keeps a stale callee
+  (#279) wherever a callee's echo arrives after the record was computed (lab rows and the risk
+  scenarios of travel); the content-kind gap and booking-agent's stale tool-call parent (travel) may
+  appear on some turns.
 - **L6 was red** until agent-examples-snp #17: every delegation to a peer shared one A2A context
   id, so one guest's data reached the other's prompt. On an app commit before that fix the two
   `isolation-*.leak` rows fail and the report names the finding.
