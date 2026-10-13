@@ -1,46 +1,46 @@
-# Live run 2026-10-13T075234Z-6d916fd
+# Live run 2026-10-13T105742Z-3f72a25
 
-cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d916fd` · destructive True
+cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `3f72a25` · destructive True
 
-**Scenarios**: 14 passed · 2 skipped · 1 xfail  
-**Rows**: 510 — 401 pass · 0 FAIL · 8 KNOWN · 101 recorded  
+**Scenarios**: 15 passed · 1 skipped · 1 xfail  
+**Rows**: 517 — 410 pass · 0 FAIL · 5 KNOWN · 102 recorded  
 **Preflight**: 99 pins, mismatches: none  
-**Capabilities**: alerts=False health=False ledger=True consumer_lock=False  
+**Capabilities**: alerts=False health=False ledger=True consumer_lock=True  
 **Catalog**: test catalog proved live by ['E2E-INT-DATA', 'E2E-PI-INT']; shipped catalog restored and proved; `catalog-after.yaml` present.
 
 | scenario | outcome | s | reason / failure |
 |---|---|---:|---|
-| L1_baseline_turn | passed | 101.8 |  |
+| L1_baseline_turn | passed | 95.9 |  |
 | L2_ledger_matches_the_tables | passed | 1.2 |  |
-| L3_abandoned_exchange | passed | 63.1 |  |
-| L4_no_payload_interaction | passed | 15.8 |  |
-| L5_simultaneous_legs | passed | 20.1 |  |
-| L6_cross_trace_isolation | passed | 135.5 |  |
-| L7_known_payloads_to_the_psp | passed | 31.2 |  |
-| L8_mixed_levels_in_one_trace | passed | 18.9 |  |
-| L9_incremental_legs_reversion | passed | 0.1 |  |
-| L10_idempotency | passed | 18.1 |  |
-| L11_response_only_pii_is_not_sent | passed | 15.8 |  |
-| L12_opa_outage_holds_the_cursor | passed | 34.6 |  |
-| L16_two_leg_ready_consumers | skipped | 0.0 | no granted sole-consumer lock in pg_locks when capabilities were probed (lab-dg #290 not deployed, or leg-ready was b… |
+| L3_abandoned_exchange | passed | 64.8 |  |
+| L4_no_payload_interaction | passed | 19.6 |  |
+| L5_simultaneous_legs | passed | 19.8 |  |
+| L6_cross_trace_isolation | passed | 134.6 |  |
+| L7_known_payloads_to_the_psp | passed | 28.5 |  |
+| L8_mixed_levels_in_one_trace | passed | 16.2 |  |
+| L9_incremental_legs_reversion | passed | 0.0 |  |
+| L10_idempotency | passed | 15.8 |  |
+| L11_response_only_pii_is_not_sent | passed | 19.8 |  |
+| L12_opa_outage_holds_the_cursor | passed | 33.5 |  |
+| L16_two_leg_ready_consumers | passed | 31.3 |  |
 | L17_truncated_host_is_classified | passed | 15.6 |  |
 | L13_alert_supersession | skipped | 0.0 | no alerts processor on the deployed branch (capabilities.alerts=False) |
-| L14_rogue_partner_notification | xfail | 69.7 | the booking agent did not call notify_partner this turn (rogue; booking statuses ['over_budget', 'confirmed']): the m… |
-| L15_cut_stream_is_not_ok | passed | 81.4 |  |
+| L14_rogue_partner_notification | xfail | 69.8 | the booking agent did not call notify_partner this turn (rogue; booking statuses ['over_budget', 'confirmed']): the m… |
+| L15_cut_stream_is_not_ok | passed | 65.1 |  |
 
 **Known findings reproduced**: risk record keeps the stale peer.host callee (#279)
 
-## L1_baseline_turn — passed (101.8 s)
+## L1_baseline_turn — passed (95.9 s)
 
 > L1 — one scripted turn under a minted trace id, and nothing else (#161 scenario 1).
 
-41 rows: 36 pass · 0 FAIL · 1 KNOWN · 4 recorded
+41 rows: 37 pass · 0 FAIL · 0 KNOWN · 4 recorded
 
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `turn.state` | the turn finished | ["completed", "input-required"] | input-required | pass |  |
-| `turn.answer` | the turn answered | non-empty | 294 chars | pass |  |
-| `settle` | settled |  | 18.0 s · 9 polls · 108 spans | recorded | absent streams ['risk_alerts'] |
+| `turn.answer` | the turn answered | non-empty | 386 chars | pass |  |
+| `settle` | settled |  | 19.3 s · 10 polls · 108 spans | recorded | absent streams ['risk_alerts'] |
 | `forest.interactions` | interactions derived |  | 36 | recorded |  |
 | `forest.derived` | interactions derived | >= 1 | 36 | pass |  |
 | `forest.roots` | roots = injected entries | 1 | 1 | pass |  |
@@ -58,7 +58,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `audit.S3` | no span without lineage.exchange.id in the trace (producer purity) | 0 | 0 | pass | soundness |
 | `audit.S4` | caller/callee entities and leg payloads exist | {"entities": 0, "payloads": 0} | {"entities": 0, "payloads": 0} | pass | soundness |
 | `audit.S5` | caller/callee kinds follow the contract's table | as classified | 0 kind violations | pass | soundness |
-| `audit.S5.content` | content kinds follow the contract's table (payload identity is content+kind) | as classified | 5 content-kind violations | KNOWN | soundness; known gap content-kind-collision |
+| `audit.S5.content` | content kinds follow the contract's table (each leg carries its own kind) | as classified | 0 content-kind violations | pass | soundness |
 | `audit.S6` | legs mirror spans: request always, response iff response span, payload iff captured, error iff outcome failed | mirror | 0 violations | pass | soundness |
 | `audit.S7` | caller = anchor's self, callee = echo's self or peer.host (llm: host/model) | from facts | 0 violations | pass | soundness |
 | `audit.S8` | a child's request never precedes its parent's request | 0 | 0 | pass | soundness |
@@ -78,7 +78,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `audit.F1` | the entry request payload carries the text the driver sent | ["Maya Park", "acct_001"] | {"captured_chars": 506, "missing": []} | pass | fidelity |
 | `audit.F2` | the entry response payload is the reply the driver received | Your trip to Japan has been successfully booked! Here are the details:  - **Trip | Your trip to Japan has been successfully booked! Here are the details:  - **Trip | pass | fidelity |
 | `audit.I1` | ids are the contract's uuid5 (trace/anchor; natural_key) | 0 | {"entities": 0, "interactions": 0} | pass | invariance |
-| `audit.I3` | a quiet re-read after 12s changes no lineage row | {"attached": 108, "interactions": 36, "legs": 72, "shape": "fbbf5e06-40c1-52d4-8860-2b8b2c7e1c2e", "spans": 108} | {"attached": 108, "interactions": 36, "legs": 72, "shape": "fbbf5e06-40c1-52d4-8860-2b8b2c7e1c2e", "spans": 108} | pass | invariance |
+| `audit.I3` | a quiet re-read after 12s changes no lineage row | {"attached": 108, "interactions": 36, "legs": 72, "shape": "97d5f626-eb2a-55d6-86fa-af2a7bee0a1f", "spans": 108} | {"attached": 108, "interactions": 36, "legs": 72, "shape": "97d5f626-eb2a-55d6-86fa-af2a7bee0a1f", "spans": 108} | pass | invariance |
 
 ## L2_ledger_matches_the_tables — passed (1.2 s)
 
@@ -107,7 +107,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `ledger.pods` | pods whose ledger carries the trace / in the tree |  | ['booking-agent', 'charge-card', 'create-booking', 'get-flights', 'get-payment-info', 'get-weather', 'payment-agent',… | recorded |  |
 | `ledger.pods_without` | pods that wrote no ledger line in the window |  | ["demo-client", "notify-partner", "send-notification"] | recorded |  |
 
-## L3_abandoned_exchange — passed (63.1 s)
+## L3_abandoned_exchange — passed (64.8 s)
 
 > L3 — an exchange the far end never answers (#161 scenarios 4 and 6, the lineage half; the record's versions are L9's).
 
@@ -116,8 +116,8 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `probe.outcome` | the client gave up on the sink | client_timeout | client_timeout | pass |  |
-| `probe.held` | the sink never answered (client held ≥ 44 s) | ≥ 44 s | 45.4 s | pass |  |
-| `settle` | settled |  | 17.5 s · 9 polls · 110 spans | recorded | absent streams ['risk_alerts'] |
+| `probe.held` | the sink never answered (client held ≥ 44 s) | ≥ 44 s | 45.2 s | pass |  |
+| `settle` | settled |  | 19.3 s · 10 polls · 110 spans | recorded | absent streams ['risk_alerts'] |
 | `span.present` | a response span exists for the abandoned exchange | present | present | pass |  |
 | `span.outcome` | response span lineage.outcome | abandoned | abandoned | pass |  |
 | `span.status` | response span http.status_code |  |  | pass |  |
@@ -137,7 +137,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `forest.depth` | depth histogram |  | {"0": 2, "1": 13, "2": 15, "3": 1, "4": 5, "5": 1} | recorded |  |
 | `forest.parent_sources` | inbound parent sources |  | {"tracestate": 18} | recorded |  |
 
-## L4_no_payload_interaction — passed (15.8 s)
+## L4_no_payload_interaction — passed (19.6 s)
 
 > L4 — an exchange with no body either way (#161 scenario 8, the lineage half; its record is read in L7).
 
@@ -146,7 +146,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `probe.outcome` | the GET was answered (404 is fine) | ["ok", "http_error"] | http_error | pass |  |
-| `settle` | settled |  | 15.4 s · 8 polls · 112 spans | recorded | absent streams ['risk_alerts'] |
+| `settle` | settled |  | 19.2 s · 10 polls · 112 spans | recorded | absent streams ['risk_alerts'] |
 | `legs.request.payload` | request leg payload hash |  |  | pass |  |
 | `legs.response.payload` | response leg payload hash |  |  | pass |  |
 | `forest.interactions` | interactions derived |  | 38 | recorded |  |
@@ -162,7 +162,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `forest.depth` | depth histogram |  | {"0": 3, "1": 13, "2": 15, "3": 1, "4": 5, "5": 1} | recorded |  |
 | `forest.parent_sources` | inbound parent sources |  | {"tracestate": 18} | recorded |  |
 
-## L5_simultaneous_legs — passed (20.1 s)
+## L5_simultaneous_legs — passed (19.8 s)
 
 > L5 — simultaneous legs inside one trace (#161 scenarios 2, 3).
 
@@ -171,7 +171,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `probes.outcomes` | the four probes' outcomes |  | {"card_ext": "ok", "cred_int": "ok", "nobody_get": "http_error", "pi_int": "ok"} | recorded |  |
-| `settle` | settled |  | 19.5 s · 10 polls · 120 spans | recorded | absent streams ['risk_alerts'] |
+| `settle` | settled |  | 19.3 s · 10 polls · 120 spans | recorded | absent streams ['risk_alerts'] |
 | `probes.interactions` | four simultaneous probes derive four distinct interactions | 4 | 4 | pass |  |
 | `forest.interactions` | interactions derived |  | 42 | recorded |  |
 | `forest.derived` | interactions derived | >= 1 | 42 | pass |  |
@@ -186,21 +186,21 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `forest.depth` | depth histogram |  | {"0": 7, "1": 13, "2": 15, "3": 1, "4": 5, "5": 1} | recorded |  |
 | `forest.parent_sources` | inbound parent sources |  | {"tracestate": 18} | recorded |  |
 
-## L6_cross_trace_isolation — passed (135.5 s)
+## L6_cross_trace_isolation — passed (134.6 s)
 
 > L6 — two users at once stay two traces (#161 scenario 5).
 
-121 rows: 91 pass · 0 FAIL · 2 KNOWN · 28 recorded
+121 rows: 93 pass · 0 FAIL · 0 KNOWN · 28 recorded
 
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `turn.maya.state` | the turn finished | ["completed", "input-required"] | input-required | pass |  |
-| `turn.maya.answer` | the turn answered | non-empty | 295 chars | pass |  |
+| `turn.maya.answer` | the turn answered | non-empty | 290 chars | pass |  |
 | `turn.noa.state` | the turn finished | ["completed", "input-required"] | input-required | pass |  |
-| `turn.noa.answer` | the turn answered | non-empty | 888 chars | pass |  |
-| `settle-fe18ad6f` | settled |  | 15.2 s · 8 polls · 128 spans | recorded | absent streams ['risk_alerts'] |
-| `settle-a9cebf9d` | settled |  | 13.0 s · 7 polls · 100 spans | recorded | absent streams ['risk_alerts'] |
-| `forest-fe18ad6f.interactions` | interactions derived |  | 42 | recorded |  |
+| `turn.noa.answer` | the turn answered | non-empty | 974 chars | pass |  |
+| `settle-28dabe69` | settled |  | 13.0 s · 7 polls · 128 spans | recorded | absent streams ['risk_alerts'] |
+| `settle-19dcd198` | settled |  | 13.0 s · 7 polls · 108 spans | recorded | absent streams ['risk_alerts'] |
+| `forest-28dabe69.interactions` | interactions derived |  | 42 | recorded |  |
 | `forest.derived` | interactions derived | >= 1 | 42 | pass |  |
 | `forest.roots` | roots = injected entries | 1 | 1 | pass |  |
 | `forest.orphans` | orphan interactions | 0 | 0 | pass |  |
@@ -212,32 +212,32 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `forest.not_collapsed` | interactions > entries (hops hang under the roots) | > 1 | 42 | pass |  |
 | `forest.depth` | depth histogram |  | {"0": 1, "1": 13, "2": 20, "3": 2, "4": 5, "5": 1} | recorded |  |
 | `forest.parent_sources` | inbound parent sources |  | {"tracestate": 22} | recorded |  |
-| `audit-fe18ad6f.S1` | every span of the trace is attached to exactly one interaction | {"twice": 0, "unattached": 0} | {"twice": 0, "unattached": 0} | pass | soundness |
-| `audit-fe18ad6f.S2` | one anchor per interaction; two spans (bare callee) or four (sidecar'd) | 1 anchor, 2¦4 spans | 0 violations | pass | soundness |
-| `audit-fe18ad6f.S3` | no span without lineage.exchange.id in the trace (producer purity) | 0 | 0 | pass | soundness |
-| `audit-fe18ad6f.S4` | caller/callee entities and leg payloads exist | {"entities": 0, "payloads": 0} | {"entities": 0, "payloads": 0} | pass | soundness |
-| `audit-fe18ad6f.S5` | caller/callee kinds follow the contract's table | as classified | 0 kind violations | pass | soundness |
-| `audit-fe18ad6f.S5.content` | content kinds follow the contract's table (payload identity is content+kind) | as classified | 5 content-kind violations | KNOWN | soundness; known gap content-kind-collision |
-| `audit-fe18ad6f.S6` | legs mirror spans: request always, response iff response span, payload iff captured, error iff outcome failed | mirror | 0 violations | pass | soundness |
-| `audit-fe18ad6f.S7` | caller = anchor's self, callee = echo's self or peer.host (llm: host/model) | from facts | 0 violations | pass | soundness |
-| `audit-fe18ad6f.S8` | a child's request never precedes its parent's request | 0 | 0 | pass | soundness |
-| `audit-fe18ad6f.S9` | a child's response never follows its parent's response by more than 0.5s | 0 | 0 | pass | soundness |
-| `audit-fe18ad6f.S10` | forest law: roots = unstamped entries, all the entry's; no orphan | {"entry": "demo-client", "orphans": 0, "roots=entries": true} | {"entries": 1, "entry_ids": ["demo-client"], "orphans": 0, "roots": 1} | pass | soundness |
-| `audit-fe18ad6f.S11` | every observed edge is in the declared topology | declared only | 0 undeclared | pass | soundness |
-| `audit-fe18ad6f.S12` | one entity per workload, of its declared kind | one kind each | {"two kinds": {}, "wrong kind": {}} | pass | soundness |
-| `audit-fe18ad6f.S14` | every declared non-HTTP egress port is excluded from interception on its pod | all declared ports excluded | all excluded | pass | soundness |
-| `audit-fe18ad6f.C1` | every entity the turn deterministically involves is in the turn's tree; LLM-chosen coverage reported | 3 deterministic | 3 | pass | completeness |
-| `audit-fe18ad6f.C2` | every deterministic edge of the turn is in the turn's tree; LLM-chosen coverage reported | 2 deterministic | 2 | pass | completeness |
-| `audit-fe18ad6f.C3` | every protocol the turn uses (outside the declared gaps) appears in the tree | ["a2a", "inference"] | ["a2a", "http", "inference", "mcp"] | pass | completeness |
-| `audit-fe18ad6f.C4` | the tree is as deep as the topology (longest declared path) | 1 | 5 | pass | completeness |
-| `audit-fe18ad6f.C5` | no activity of the app in the window sits outside the turn, the known traces and the declared gaps | 0 | 0 | pass | completeness |
-| `audit-fe18ad6f.I4` | no critical risk record on a stray trace of the window (nothing of ours leaked there) | 0 | 0 | pass | invariance |
-| `audit-fe18ad6f.S13` | no foreign (non-sidecar) span in the window | 0 | 0 | pass | soundness |
-| `audit-fe18ad6f.C7` | every entity the turn deterministically involves was observed by some sidecar in the window (any trace); the rest rep… | 3 | 3 | pass | completeness |
-| `audit-fe18ad6f.F1` | the entry request payload carries the text the driver sent | ["Maya Park"] | {"captured_chars": 506, "missing": []} | pass | fidelity |
-| `audit-fe18ad6f.I1` | ids are the contract's uuid5 (trace/anchor; natural_key) | 0 | {"entities": 0, "interactions": 0} | pass | invariance |
-| `audit-fe18ad6f.I3` | a quiet re-read after 0s changes no lineage row | {"attached": 128, "interactions": 42, "legs": 84, "shape": "76a77710-fea2-5c09-a479-9b12a8fe5eed", "spans": 128} | {"attached": 128, "interactions": 42, "legs": 84, "shape": "76a77710-fea2-5c09-a479-9b12a8fe5eed", "spans": 128} | pass | invariance |
-| `ledger.joined` | ledger records joined to this trace | records > 0 and pairs > 0 | {"in": 23, "out": 41, "pairs": 62, "records": 375, "spans": 64} | pass | pods without a record in the window: ['demo-client', 'send-notification'] (is ROSSOCTL_LEDGER=stdout on the fleet?) |
+| `audit-28dabe69.S1` | every span of the trace is attached to exactly one interaction | {"twice": 0, "unattached": 0} | {"twice": 0, "unattached": 0} | pass | soundness |
+| `audit-28dabe69.S2` | one anchor per interaction; two spans (bare callee) or four (sidecar'd) | 1 anchor, 2¦4 spans | 0 violations | pass | soundness |
+| `audit-28dabe69.S3` | no span without lineage.exchange.id in the trace (producer purity) | 0 | 0 | pass | soundness |
+| `audit-28dabe69.S4` | caller/callee entities and leg payloads exist | {"entities": 0, "payloads": 0} | {"entities": 0, "payloads": 0} | pass | soundness |
+| `audit-28dabe69.S5` | caller/callee kinds follow the contract's table | as classified | 0 kind violations | pass | soundness |
+| `audit-28dabe69.S5.content` | content kinds follow the contract's table (each leg carries its own kind) | as classified | 0 content-kind violations | pass | soundness |
+| `audit-28dabe69.S6` | legs mirror spans: request always, response iff response span, payload iff captured, error iff outcome failed | mirror | 0 violations | pass | soundness |
+| `audit-28dabe69.S7` | caller = anchor's self, callee = echo's self or peer.host (llm: host/model) | from facts | 0 violations | pass | soundness |
+| `audit-28dabe69.S8` | a child's request never precedes its parent's request | 0 | 0 | pass | soundness |
+| `audit-28dabe69.S9` | a child's response never follows its parent's response by more than 0.5s | 0 | 0 | pass | soundness |
+| `audit-28dabe69.S10` | forest law: roots = unstamped entries, all the entry's; no orphan | {"entry": "demo-client", "orphans": 0, "roots=entries": true} | {"entries": 1, "entry_ids": ["demo-client"], "orphans": 0, "roots": 1} | pass | soundness |
+| `audit-28dabe69.S11` | every observed edge is in the declared topology | declared only | 0 undeclared | pass | soundness |
+| `audit-28dabe69.S12` | one entity per workload, of its declared kind | one kind each | {"two kinds": {}, "wrong kind": {}} | pass | soundness |
+| `audit-28dabe69.S14` | every declared non-HTTP egress port is excluded from interception on its pod | all declared ports excluded | all excluded | pass | soundness |
+| `audit-28dabe69.C1` | every entity the turn deterministically involves is in the turn's tree; LLM-chosen coverage reported | 3 deterministic | 3 | pass | completeness |
+| `audit-28dabe69.C2` | every deterministic edge of the turn is in the turn's tree; LLM-chosen coverage reported | 2 deterministic | 2 | pass | completeness |
+| `audit-28dabe69.C3` | every protocol the turn uses (outside the declared gaps) appears in the tree | ["a2a", "inference"] | ["a2a", "http", "inference", "mcp"] | pass | completeness |
+| `audit-28dabe69.C4` | the tree is as deep as the topology (longest declared path) | 1 | 5 | pass | completeness |
+| `audit-28dabe69.C5` | no activity of the app in the window sits outside the turn, the known traces and the declared gaps | 0 | 0 | pass | completeness |
+| `audit-28dabe69.I4` | no critical risk record on a stray trace of the window (nothing of ours leaked there) | 0 | 0 | pass | invariance |
+| `audit-28dabe69.S13` | no foreign (non-sidecar) span in the window | 0 | 0 | pass | soundness |
+| `audit-28dabe69.C7` | every entity the turn deterministically involves was observed by some sidecar in the window (any trace); the rest rep… | 3 | 3 | pass | completeness |
+| `audit-28dabe69.F1` | the entry request payload carries the text the driver sent | ["Maya Park"] | {"captured_chars": 506, "missing": []} | pass | fidelity |
+| `audit-28dabe69.I1` | ids are the contract's uuid5 (trace/anchor; natural_key) | 0 | {"entities": 0, "interactions": 0} | pass | invariance |
+| `audit-28dabe69.I3` | a quiet re-read after 0s changes no lineage row | {"attached": 128, "interactions": 42, "legs": 84, "shape": "31be40b9-be2b-5d79-9541-06d61fa59e17", "spans": 128} | {"attached": 128, "interactions": 42, "legs": 84, "shape": "31be40b9-be2b-5d79-9541-06d61fa59e17", "spans": 128} | pass | invariance |
+| `ledger.joined` | ledger records joined to this trace | records > 0 and pairs > 0 | {"in": 23, "out": 41, "pairs": 62, "records": 384, "spans": 64} | pass | pods without a record in the window: ['demo-client', 'send-notification'] (is ROSSOCTL_LEDGER=stdout on the fleet?) |
 | `ledger.malformed` | log lines carrying the ledger prefix that were not records | {} | {} | pass |  |
 | `ledger.ledger_only_undeclared` | exchanges the app made that no sidecar recorded and no declaration covers | [] | [] | pass |  |
 | `ledger.table_only` | sidecar exchanges the app's ledger does not know | [] | [] | pass |  |
@@ -252,49 +252,49 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `ledger.store_pairs` | store records paired with the sidecar's http span (S3 over http) |  | 1 | recorded | get-flights→minio s3/GetObject |
 | `ledger.dark_hops` | store records under the trace with no span by construction |  | 5 | recorded |  |
 | `ledger.tools` | tool records under the trace |  | 8 | recorded |  |
-| `ledger.strays` | self-reported strays (ambient trace null, fresh sent trace) |  | 9 | recorded |  |
+| `ledger.strays` | self-reported strays (ambient trace null, fresh sent trace) |  | 10 | recorded |  |
 | `ledger.pods` | pods whose ledger carries the trace / in the tree |  | ['booking-agent', 'charge-card', 'create-booking', 'get-flights', 'get-payment-info', 'get-weather', 'notify-partner'… | recorded |  |
 | `ledger.pods_without` | pods that wrote no ledger line in the window |  | ["demo-client", "send-notification"] | recorded |  |
-| `isolation-fe18ad6f.own` | own guest (Maya Park) captured in this trace | ≥ 1 hop | 33 hops | pass |  |
-| `isolation-fe18ad6f.leak` | the other turn's guest (Noa Levi) in this trace's payloads | [] | [] | pass |  |
-| `forest-a9cebf9d.interactions` | interactions derived |  | 33 | recorded |  |
-| `forest.derived` | interactions derived | >= 1 | 33 | pass |  |
+| `isolation-28dabe69.own` | own guest (Maya Park) captured in this trace | ≥ 1 hop | 33 hops | pass |  |
+| `isolation-28dabe69.leak` | the other turn's guest (Noa Levi) in this trace's payloads | [] | [] | pass |  |
+| `forest-19dcd198.interactions` | interactions derived |  | 36 | recorded |  |
+| `forest.derived` | interactions derived | >= 1 | 36 | pass |  |
 | `forest.roots` | roots = injected entries | 1 | 1 | pass |  |
 | `forest.orphans` | orphan interactions | 0 | 0 | pass |  |
 | `forest.unpaired` | request spans without a response twin | 0 | 0 | pass |  |
 | `forest.dup_anchors` | anchor spans mapped to two interactions | 0 | 0 | pass |  |
-| `forest.unstamped` | unstamped request spans = entries | 1 | 1 | pass | inbound parent sources {'tracestate': 17} |
+| `forest.unstamped` | unstamped request spans = entries | 1 | 1 | pass | inbound parent sources {'tracestate': 18} |
 | `forest.entry_caller` | every entry is the entry workload | demo-client | ["demo-client"] | pass |  |
 | `forest.escaped` | other traces the entry workload started in the window | [] | [] | pass |  |
-| `forest.not_collapsed` | interactions > entries (hops hang under the roots) | > 1 | 33 | pass |  |
-| `forest.depth` | depth histogram |  | {"0": 1, "1": 13, "2": 15, "3": 1, "4": 3} | recorded |  |
-| `forest.parent_sources` | inbound parent sources |  | {"tracestate": 17} | recorded |  |
-| `audit-a9cebf9d.S1` | every span of the trace is attached to exactly one interaction | {"twice": 0, "unattached": 0} | {"twice": 0, "unattached": 0} | pass | soundness |
-| `audit-a9cebf9d.S2` | one anchor per interaction; two spans (bare callee) or four (sidecar'd) | 1 anchor, 2¦4 spans | 0 violations | pass | soundness |
-| `audit-a9cebf9d.S3` | no span without lineage.exchange.id in the trace (producer purity) | 0 | 0 | pass | soundness |
-| `audit-a9cebf9d.S4` | caller/callee entities and leg payloads exist | {"entities": 0, "payloads": 0} | {"entities": 0, "payloads": 0} | pass | soundness |
-| `audit-a9cebf9d.S5` | caller/callee kinds follow the contract's table | as classified | 0 kind violations | pass | soundness |
-| `audit-a9cebf9d.S5.content` | content kinds follow the contract's table (payload identity is content+kind) | as classified | 5 content-kind violations | KNOWN | soundness; known gap content-kind-collision |
-| `audit-a9cebf9d.S6` | legs mirror spans: request always, response iff response span, payload iff captured, error iff outcome failed | mirror | 0 violations | pass | soundness |
-| `audit-a9cebf9d.S7` | caller = anchor's self, callee = echo's self or peer.host (llm: host/model) | from facts | 0 violations | pass | soundness |
-| `audit-a9cebf9d.S8` | a child's request never precedes its parent's request | 0 | 0 | pass | soundness |
-| `audit-a9cebf9d.S9` | a child's response never follows its parent's response by more than 0.5s | 0 | 0 | pass | soundness |
-| `audit-a9cebf9d.S10` | forest law: roots = unstamped entries, all the entry's; no orphan | {"entry": "demo-client", "orphans": 0, "roots=entries": true} | {"entries": 1, "entry_ids": ["demo-client"], "orphans": 0, "roots": 1} | pass | soundness |
-| `audit-a9cebf9d.S11` | every observed edge is in the declared topology | declared only | 0 undeclared | pass | soundness |
-| `audit-a9cebf9d.S12` | one entity per workload, of its declared kind | one kind each | {"two kinds": {}, "wrong kind": {}} | pass | soundness |
-| `audit-a9cebf9d.S14` | every declared non-HTTP egress port is excluded from interception on its pod | all declared ports excluded | all excluded | pass | soundness |
-| `audit-a9cebf9d.C1` | every entity the turn deterministically involves is in the turn's tree; LLM-chosen coverage reported | 3 deterministic | 3 | pass | completeness |
-| `audit-a9cebf9d.C2` | every deterministic edge of the turn is in the turn's tree; LLM-chosen coverage reported | 2 deterministic | 2 | pass | completeness |
-| `audit-a9cebf9d.C3` | every protocol the turn uses (outside the declared gaps) appears in the tree | ["a2a", "inference"] | ["a2a", "http", "inference", "mcp"] | pass | completeness |
-| `audit-a9cebf9d.C4` | the tree is as deep as the topology (longest declared path) | 1 | 4 | pass | completeness |
-| `audit-a9cebf9d.C5` | no activity of the app in the window sits outside the turn, the known traces and the declared gaps | 0 | 0 | pass | completeness |
-| `audit-a9cebf9d.I4` | no critical risk record on a stray trace of the window (nothing of ours leaked there) | 0 | 0 | pass | invariance |
-| `audit-a9cebf9d.S13` | no foreign (non-sidecar) span in the window | 0 | 0 | pass | soundness |
-| `audit-a9cebf9d.C7` | every entity the turn deterministically involves was observed by some sidecar in the window (any trace); the rest rep… | 3 | 3 | pass | completeness |
-| `audit-a9cebf9d.F1` | the entry request payload carries the text the driver sent | ["Noa Levi"] | {"captured_chars": 505, "missing": []} | pass | fidelity |
-| `audit-a9cebf9d.I1` | ids are the contract's uuid5 (trace/anchor; natural_key) | 0 | {"entities": 0, "interactions": 0} | pass | invariance |
-| `audit-a9cebf9d.I3` | a quiet re-read after 0s changes no lineage row | {"attached": 100, "interactions": 33, "legs": 66, "shape": "6658eace-22c7-572a-ac85-457617bd543b", "spans": 100} | {"attached": 100, "interactions": 33, "legs": 66, "shape": "6658eace-22c7-572a-ac85-457617bd543b", "spans": 100} | pass | invariance |
-| `ledger.joined` | ledger records joined to this trace | records > 0 and pairs > 0 | {"in": 18, "out": 32, "pairs": 48, "records": 375, "spans": 50} | pass | pods without a record in the window: ['demo-client', 'send-notification'] (is ROSSOCTL_LEDGER=stdout on the fleet?) |
+| `forest.not_collapsed` | interactions > entries (hops hang under the roots) | > 1 | 36 | pass |  |
+| `forest.depth` | depth histogram |  | {"0": 1, "1": 13, "2": 15, "3": 1, "4": 5, "5": 1} | recorded |  |
+| `forest.parent_sources` | inbound parent sources |  | {"tracestate": 18} | recorded |  |
+| `audit-19dcd198.S1` | every span of the trace is attached to exactly one interaction | {"twice": 0, "unattached": 0} | {"twice": 0, "unattached": 0} | pass | soundness |
+| `audit-19dcd198.S2` | one anchor per interaction; two spans (bare callee) or four (sidecar'd) | 1 anchor, 2¦4 spans | 0 violations | pass | soundness |
+| `audit-19dcd198.S3` | no span without lineage.exchange.id in the trace (producer purity) | 0 | 0 | pass | soundness |
+| `audit-19dcd198.S4` | caller/callee entities and leg payloads exist | {"entities": 0, "payloads": 0} | {"entities": 0, "payloads": 0} | pass | soundness |
+| `audit-19dcd198.S5` | caller/callee kinds follow the contract's table | as classified | 0 kind violations | pass | soundness |
+| `audit-19dcd198.S5.content` | content kinds follow the contract's table (each leg carries its own kind) | as classified | 0 content-kind violations | pass | soundness |
+| `audit-19dcd198.S6` | legs mirror spans: request always, response iff response span, payload iff captured, error iff outcome failed | mirror | 0 violations | pass | soundness |
+| `audit-19dcd198.S7` | caller = anchor's self, callee = echo's self or peer.host (llm: host/model) | from facts | 0 violations | pass | soundness |
+| `audit-19dcd198.S8` | a child's request never precedes its parent's request | 0 | 0 | pass | soundness |
+| `audit-19dcd198.S9` | a child's response never follows its parent's response by more than 0.5s | 0 | 0 | pass | soundness |
+| `audit-19dcd198.S10` | forest law: roots = unstamped entries, all the entry's; no orphan | {"entry": "demo-client", "orphans": 0, "roots=entries": true} | {"entries": 1, "entry_ids": ["demo-client"], "orphans": 0, "roots": 1} | pass | soundness |
+| `audit-19dcd198.S11` | every observed edge is in the declared topology | declared only | 0 undeclared | pass | soundness |
+| `audit-19dcd198.S12` | one entity per workload, of its declared kind | one kind each | {"two kinds": {}, "wrong kind": {}} | pass | soundness |
+| `audit-19dcd198.S14` | every declared non-HTTP egress port is excluded from interception on its pod | all declared ports excluded | all excluded | pass | soundness |
+| `audit-19dcd198.C1` | every entity the turn deterministically involves is in the turn's tree; LLM-chosen coverage reported | 3 deterministic | 3 | pass | completeness |
+| `audit-19dcd198.C2` | every deterministic edge of the turn is in the turn's tree; LLM-chosen coverage reported | 2 deterministic | 2 | pass | completeness |
+| `audit-19dcd198.C3` | every protocol the turn uses (outside the declared gaps) appears in the tree | ["a2a", "inference"] | ["a2a", "http", "inference", "mcp"] | pass | completeness |
+| `audit-19dcd198.C4` | the tree is as deep as the topology (longest declared path) | 1 | 5 | pass | completeness |
+| `audit-19dcd198.C5` | no activity of the app in the window sits outside the turn, the known traces and the declared gaps | 0 | 0 | pass | completeness |
+| `audit-19dcd198.I4` | no critical risk record on a stray trace of the window (nothing of ours leaked there) | 0 | 0 | pass | invariance |
+| `audit-19dcd198.S13` | no foreign (non-sidecar) span in the window | 0 | 0 | pass | soundness |
+| `audit-19dcd198.C7` | every entity the turn deterministically involves was observed by some sidecar in the window (any trace); the rest rep… | 3 | 3 | pass | completeness |
+| `audit-19dcd198.F1` | the entry request payload carries the text the driver sent | ["Noa Levi"] | {"captured_chars": 505, "missing": []} | pass | fidelity |
+| `audit-19dcd198.I1` | ids are the contract's uuid5 (trace/anchor; natural_key) | 0 | {"entities": 0, "interactions": 0} | pass | invariance |
+| `audit-19dcd198.I3` | a quiet re-read after 0s changes no lineage row | {"attached": 108, "interactions": 36, "legs": 72, "shape": "ac6fcb53-b876-53e9-96ec-118d8659a897", "spans": 108} | {"attached": 108, "interactions": 36, "legs": 72, "shape": "ac6fcb53-b876-53e9-96ec-118d8659a897", "spans": 108} | pass | invariance |
+| `ledger.joined` | ledger records joined to this trace | records > 0 and pairs > 0 | {"in": 19, "out": 35, "pairs": 52, "records": 384, "spans": 54} | pass | pods without a record in the window: ['demo-client', 'send-notification'] (is ROSSOCTL_LEDGER=stdout on the fleet?) |
 | `ledger.malformed` | log lines carrying the ledger prefix that were not records | {} | {} | pass |  |
 | `ledger.ledger_only_undeclared` | exchanges the app made that no sidecar recorded and no declaration covers | [] | [] | pass |  |
 | `ledger.table_only` | sidecar exchanges the app's ledger does not know | [] | [] | pass |  |
@@ -302,21 +302,21 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `ledger.digest_mismatch` | captured payload differs from what the app sent/received (aligned pairs) | [] | [] | pass |  |
 | `ledger.timing_violations` | spans outside the app's send window (exchanges and store acts) | [] | [] | pass |  |
 | `ledger.tree_in_ledger` | entities in the tree whose pod wrote a ledger but not for this trace | [] | [] | pass |  |
-| `ledger.pairs` | ledger exchange ⟷ request span pairs |  | 48 | recorded | out 32 in 18 of 50 spans |
-| `ledger.digest_unaligned` | pairs whose reductions are not aligned (recorded) |  | 17 | recorded |  |
+| `ledger.pairs` | ledger exchange ⟷ request span pairs |  | 52 | recorded | out 35 in 19 of 54 spans |
+| `ledger.digest_unaligned` | pairs whose reductions are not aligned (recorded) |  | 18 | recorded |  |
 | `ledger.unledgered_spans` | spans of pods that wrote no ledger line |  | 1 | recorded | demo-client |
 | `ledger.ledger_only_declared` | ledger-only exchanges covered by a declaration or a bypass path |  | 2 | recorded |  |
 | `ledger.store_pairs` | store records paired with the sidecar's http span (S3 over http) |  | 1 | recorded | get-flights→minio s3/GetObject |
 | `ledger.dark_hops` | store records under the trace with no span by construction |  | 5 | recorded |  |
-| `ledger.tools` | tool records under the trace |  | 6 | recorded |  |
+| `ledger.tools` | tool records under the trace |  | 7 | recorded |  |
 | `ledger.strays` | self-reported strays (ambient trace null, fresh sent trace) |  | 10 | recorded |  |
-| `ledger.pods` | pods whose ledger carries the trace / in the tree |  | ['booking-agent', 'create-booking', 'get-flights', 'get-payment-info', 'get-weather', 'payment-agent', 'research-agen… | recorded |  |
+| `ledger.pods` | pods whose ledger carries the trace / in the tree |  | ['booking-agent', 'charge-card', 'create-booking', 'get-flights', 'get-payment-info', 'get-weather', 'payment-agent',… | recorded |  |
 | `ledger.pods_without` | pods that wrote no ledger line in the window |  | ["demo-client", "send-notification"] | recorded |  |
-| `isolation-a9cebf9d.own` | own guest (Noa Levi) captured in this trace | ≥ 1 hop | 24 hops | pass |  |
-| `isolation-a9cebf9d.leak` | the other turn's guest (Maya Park) in this trace's payloads | [] | [] | pass |  |
+| `isolation-19dcd198.own` | own guest (Noa Levi) captured in this trace | ≥ 1 hop | 24 hops | pass |  |
+| `isolation-19dcd198.leak` | the other turn's guest (Maya Park) in this trace's payloads | [] | [] | pass |  |
 | `isolation.shared_record_ids` | risk record ids shared by the two traces | [] | [] | pass |  |
 
-## L7_known_payloads_to_the_psp — passed (31.2 s)
+## L7_known_payloads_to_the_psp — passed (28.5 s)
 
 > L7 — the first read of the risk tables: known payloads to the PSP inside L1's trace (#161 scenarios 9, 10, 12, 13), and the risk shape of everything group A left in T.
 
@@ -325,7 +325,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `probes.outcomes` | the three probes were answered | ["ok¦http_error", "ok", "ok"] | ["ok", "ok", "ok"] | pass |  |
-| `settle` | settled |  | 17.3 s · 9 polls · 126 spans | recorded | absent streams ['risk_alerts'] |
+| `settle` | settled |  | 15.0 s · 8 polls · 126 spans | recorded | absent streams ['risk_alerts'] |
 | `benign.findings` | benign request leg findings | 0 | 0 | pass |  |
 | `benign.level` | benign request leg sensitivity level | PUBLIC | PUBLIC | pass |  |
 | `benign.verdict` | benign record verdict | none/allow | none/allow | pass |  |
@@ -364,24 +364,24 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `forest.parent_sources` | inbound parent sources |  | {"tracestate": 18} | recorded |  |
 | `audit.R1` | every current record's evidenced legs are the interaction's legs (one flow per leg) | records = legs present | {"legs_without_record": 0, "mismatch": 0} | pass | risk |
 | `risk.one_record_per_interaction` | exactly one current risk record per live interaction | 45 records | 45 records | pass |  |
-| `risk.records_in_trace` | every current record names this trace | {'86369ee9380cf2fb3395cc658887f3be'} | {'86369ee9380cf2fb3395cc658887f3be'} | pass |  |
+| `risk.records_in_trace` | every current record names this trace | {'6969ee95a77da34899d04605522b0331'} | {'6969ee95a77da34899d04605522b0331'} | pass |  |
 | `risk.no_scatter` | the interactions' records live in one trace | 1 | 1 | pass |  |
 | `risk.trace_record` | a trace risk record exists | present | present | pass |  |
 | `risk.trace_count` | trace record interaction count = live interactions | 45 | 45 | pass |  |
 | `risk.trace_modes` | aggregation modes | ["severity_max", "severity_max"] | ["severity_max", "severity_max"] | pass |  |
 | `risk.contributing` | contributing ids = the current record set (AC-DAS-009) | 45 ids | 45 ids | pass |  |
 | `risk.no_ghost_contributes` | ghost records contributing to the rollup | [] | [] | pass |  |
-| `risk.ghosts` | ghost records (of deleted interactions) |  | 6 | recorded |  |
-| `risk.trace_verdict` | trace record |  | v72 critical/block | recorded |  |
-| `risk.entity_set` | trace record entity set = interactions' callers and callees | 19 entities | 20 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['718c8605-17cd-5c9f-9ac6-d648f057fe7a', 'fb5ad… |
+| `risk.ghosts` | ghost records (of deleted interactions) |  | 2 | recorded |  |
+| `risk.trace_verdict` | trace record |  | v68 critical/block | recorded |  |
+| `risk.entity_set` | trace record entity set = interactions' callers and callees | 19 entities | 20 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['70c2ab2d-931e-5291-877f-9d0e20a32834', 'fb5ad… |
 | `risk.rules_union` | trace rules = union of record rules | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-INVERT", "E2E-PI-INT"] | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-INVERT", "E2E-PI-INT"] | pass |  |
 | `risk.unclassified_legs` | payload-bearing legs without a classification | [] | [] | pass |  |
 | `risk.pending_records` | current records computed on a pending leg | {} | {} | pass |  |
 | `risk.no_alert_rows` | alert rows with no alerts processor deployed | 0 | 0 | pass |  |
-| `turn.finding_counts` | finding counts across the turn's legs |  | [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5,… | recorded |  |
-| `turn.multi_version` | interactions of T with ≥ 2 record versions from natural leg timing |  | 21 | recorded |  |
+| `turn.finding_counts` | finding counts across the turn's legs |  | [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5,… | recorded |  |
+| `turn.multi_version` | interactions of T with ≥ 2 record versions from natural leg timing |  | 20 | recorded |  |
 
-## L8_mixed_levels_in_one_trace — passed (18.9 s)
+## L8_mixed_levels_in_one_trace — passed (16.2 s)
 
 > L8 — eight probes fired at once into a fresh trace, under the test catalog (#161 scenarios 11, 13, 14), plus the destination names.
 
@@ -390,7 +390,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `probes.outcomes` | every probe was answered | ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"] | ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"] | pass |  |
-| `settle` | settled |  | 17.3 s · 9 polls · 16 spans | recorded | absent streams ['risk_alerts'] |
+| `settle` | settled |  | 15.1 s · 8 polls · 16 spans | recorded | absent streams ['risk_alerts'] |
 | `card_ext.peer_host` | card_ext: peer.host as sent | api.travel-partner.example:9091 | api.travel-partner.example:9091 | pass |  |
 | `card_int.peer_host` | card_int: peer.host as sent | psp-mock:9091 | psp-mock:9091 | pass |  |
 | `pi_int.peer_host` | pi_int: peer.host as sent | psp-mock:9091 | psp-mock:9091 | pass |  |
@@ -456,7 +456,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `forest.depth` | depth histogram |  | {"0": 8} | recorded |  |
 | `forest.parent_sources` | inbound parent sources |  | {} | recorded |  |
 | `risk.one_record_per_interaction` | exactly one current risk record per live interaction | 8 records | 8 records | pass |  |
-| `risk.records_in_trace` | every current record names this trace | {'fd65dec2a450dd0d7cd0c152fc7114e7'} | {'fd65dec2a450dd0d7cd0c152fc7114e7'} | pass |  |
+| `risk.records_in_trace` | every current record names this trace | {'efd080af6ce50ff9bdebd701c05a5806'} | {'efd080af6ce50ff9bdebd701c05a5806'} | pass |  |
 | `risk.no_scatter` | the interactions' records live in one trace | 1 | 1 | pass |  |
 | `risk.trace_record` | a trace risk record exists | present | present | pass |  |
 | `risk.trace_count` | trace record interaction count = live interactions | 8 | 8 | pass |  |
@@ -471,7 +471,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `risk.pending_records` | current records computed on a pending leg | {} | {} | pass |  |
 | `risk.no_alert_rows` | alert rows with no alerts processor deployed | 0 | 0 | pass |  |
 
-## L9_incremental_legs_reversion — passed (0.1 s)
+## L9_incremental_legs_reversion — passed (0.0 s)
 
 > L9 — a leg that arrives late re-versions the record (#161 scenario 4, the risk half of L3's exchange).
 
@@ -485,9 +485,9 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `versions.verdicts` | every version's verdict (from the request leg alone) | critical/block | ["critical/block"] | pass |  |
 | `decisions.fingerprints` | distinct evidence fingerprints (OPA re-consulted) | ≥ 2 | 2 | pass |  |
 | `record.response_summary` | record response summary | {"payload": null} | {"payload": null} | pass |  |
-| `turn.multi_version` | interactions of T with ≥ 2 versions from natural leg timing |  | 21 | recorded |  |
+| `turn.multi_version` | interactions of T with ≥ 2 versions from natural leg timing |  | 20 | recorded |  |
 
-## L10_idempotency — passed (18.1 s)
+## L10_idempotency — passed (15.8 s)
 
 > L10 — unchanged evidence writes no new version (FR-DAS-014).
 
@@ -496,7 +496,7 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `probe.outcome` | the probe was answered | ok | ok | pass |  |
-| `settle` | settled |  | 17.4 s · 9 polls · 128 spans | recorded | absent streams ['risk_alerts'] |
+| `settle` | settled |  | 15.1 s · 8 polls · 128 spans | recorded | absent streams ['risk_alerts'] |
 | `old.history_untouched` | L7's internal record history unchanged | 1 | 1 | pass |  |
 | `old.fingerprints_untouched` | L7's internal decision fingerprints unchanged | 1 | 1 | pass |  |
 | `new.versions` | the new interaction's versions by legs evidenced (leg timing) |  | [["request", "response"]] | recorded |  |
@@ -508,22 +508,22 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | `trace.no_drift` | interactions of T re-versioned without new evidence | {} | {} | pass |  |
 | `trace.contributing` | the new record contributes to the rollup | present | present | pass |  |
 | `risk.one_record_per_interaction` | exactly one current risk record per live interaction | 46 records | 46 records | pass |  |
-| `risk.records_in_trace` | every current record names this trace | {'86369ee9380cf2fb3395cc658887f3be'} | {'86369ee9380cf2fb3395cc658887f3be'} | pass |  |
+| `risk.records_in_trace` | every current record names this trace | {'6969ee95a77da34899d04605522b0331'} | {'6969ee95a77da34899d04605522b0331'} | pass |  |
 | `risk.no_scatter` | the interactions' records live in one trace | 1 | 1 | pass |  |
 | `risk.trace_record` | a trace risk record exists | present | present | pass |  |
 | `risk.trace_count` | trace record interaction count = live interactions | 46 | 46 | pass |  |
 | `risk.trace_modes` | aggregation modes | ["severity_max", "severity_max"] | ["severity_max", "severity_max"] | pass |  |
 | `risk.contributing` | contributing ids = the current record set (AC-DAS-009) | 46 ids | 46 ids | pass |  |
 | `risk.no_ghost_contributes` | ghost records contributing to the rollup | [] | [] | pass |  |
-| `risk.ghosts` | ghost records (of deleted interactions) |  | 6 | recorded |  |
-| `risk.trace_verdict` | trace record |  | v73 critical/block | recorded |  |
-| `risk.entity_set` | trace record entity set = interactions' callers and callees | 19 entities | 20 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['718c8605-17cd-5c9f-9ac6-d648f057fe7a', 'fb5ad… |
+| `risk.ghosts` | ghost records (of deleted interactions) |  | 2 | recorded |  |
+| `risk.trace_verdict` | trace record |  | v69 critical/block | recorded |  |
+| `risk.entity_set` | trace record entity set = interactions' callers and callees | 19 entities | 20 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['70c2ab2d-931e-5291-877f-9d0e20a32834', 'fb5ad… |
 | `risk.rules_union` | trace rules = union of record rules | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-INVERT", "E2E-PI-INT"] | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-INVERT", "E2E-PI-INT"] | pass |  |
 | `risk.unclassified_legs` | payload-bearing legs without a classification | [] | [] | pass |  |
 | `risk.pending_records` | current records computed on a pending leg | {} | {} | pass |  |
 | `risk.no_alert_rows` | alert rows with no alerts processor deployed | 0 | 0 | pass |  |
 
-## L11_response_only_pii_is_not_sent — passed (15.8 s)
+## L11_response_only_pii_is_not_sent — passed (19.8 s)
 
 > L11 — data that only comes BACK from an external host was not sent to it (#271, fixed by #274: one flow per leg).
 
@@ -532,29 +532,29 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `probe.outcome` | the reflector answered 200 | ok/200 | ok/200 | pass |  |
-| `settle` | settled |  | 15.2 s · 8 polls · 130 spans | recorded | absent streams ['risk_alerts'] |
+| `settle` | settled |  | 19.3 s · 10 polls · 130 spans | recorded | absent streams ['risk_alerts'] |
 | `legs.payloads` | both legs carry a payload | both | both | pass |  |
 | `request.findings` | request leg findings (benign arguments) | 0 | 0 | pass |  |
 | `response.pii` | response leg classifies PII | PII in tags, findings > 0 | {"findings": 5, "tags": ["PI", "PII"]} | pass |  |
 | `record.no_external_pii_rule` | external-sharing PII rules fired (#271: response-only PII is not sent) | [] | [] | pass |  |
 | `record.verdict` | record verdict | none/allow | none/allow | pass |  |
 | `risk.one_record_per_interaction` | exactly one current risk record per live interaction | 47 records | 47 records | pass |  |
-| `risk.records_in_trace` | every current record names this trace | {'86369ee9380cf2fb3395cc658887f3be'} | {'86369ee9380cf2fb3395cc658887f3be'} | pass |  |
+| `risk.records_in_trace` | every current record names this trace | {'6969ee95a77da34899d04605522b0331'} | {'6969ee95a77da34899d04605522b0331'} | pass |  |
 | `risk.no_scatter` | the interactions' records live in one trace | 1 | 1 | pass |  |
 | `risk.trace_record` | a trace risk record exists | present | present | pass |  |
 | `risk.trace_count` | trace record interaction count = live interactions | 47 | 47 | pass |  |
 | `risk.trace_modes` | aggregation modes | ["severity_max", "severity_max"] | ["severity_max", "severity_max"] | pass |  |
 | `risk.contributing` | contributing ids = the current record set (AC-DAS-009) | 47 ids | 47 ids | pass |  |
 | `risk.no_ghost_contributes` | ghost records contributing to the rollup | [] | [] | pass |  |
-| `risk.ghosts` | ghost records (of deleted interactions) |  | 6 | recorded |  |
-| `risk.trace_verdict` | trace record |  | v74 critical/block | recorded |  |
-| `risk.entity_set` | trace record entity set = interactions' callers and callees | 20 entities | 21 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['718c8605-17cd-5c9f-9ac6-d648f057fe7a', 'fb5ad… |
+| `risk.ghosts` | ghost records (of deleted interactions) |  | 2 | recorded |  |
+| `risk.trace_verdict` | trace record |  | v70 critical/block | recorded |  |
+| `risk.entity_set` | trace record entity set = interactions' callers and callees | 20 entities | 21 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['70c2ab2d-931e-5291-877f-9d0e20a32834', 'fb5ad… |
 | `risk.rules_union` | trace rules = union of record rules | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-INVERT", "E2E-PI-INT"] | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-INVERT", "E2E-PI-INT"] | pass |  |
 | `risk.unclassified_legs` | payload-bearing legs without a classification | [] | [] | pass |  |
 | `risk.pending_records` | current records computed on a pending leg | {} | {} | pass |  |
 | `risk.no_alert_rows` | alert rows with no alerts processor deployed | 0 | 0 | pass |  |
 
-## L12_opa_outage_holds_the_cursor — passed (34.6 s)
+## L12_opa_outage_holds_the_cursor — passed (33.5 s)
 
 > L12 — OPA unreachable: the leg stream holds, nothing is skipped, catch-up writes exactly one version (#158 acceptance). Opt-in with E2E_DESTRUCTIVE=1: it scales the OPA deployment to zero, a shared component of whatever cluster the tier runs against.
 
@@ -563,36 +563,44 @@ cluster `kind-rossoctl` · app `travel-advisor` · ns `travel-advisor` · DG `6d
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `probe.outcome` | the probe was answered while OPA was down | ok | ok | pass |  |
-| `outage.backlog_held` | leg-ready backlog across three polls (held, not skipped) | > 0 each | [285, 285, 285] | pass |  |
+| `outage.backlog_held` | leg-ready backlog across three polls (held, not skipped) | > 0 each | [176, 176, 176] | pass |  |
 | `outage.derived` | the probe's interaction derived while OPA was down | present | present | pass |  |
 | `outage.no_record` | risk records written with OPA unreachable | 0 | 0 | pass |  |
-| `settle` | settled |  | 13.0 s · 7 polls · 132 spans | recorded | absent streams ['risk_alerts'] |
+| `settle` | settled |  | 12.9 s · 7 polls · 132 spans | recorded | absent streams ['risk_alerts'] |
 | `catchup.versions` | versions after catch-up | 1 | 1 | pass |  |
 | `catchup.verdict` | verdict after catch-up | critical/block | critical/block | pass |  |
 | `catchup.no_duplicates` | interactions re-versioned by the catch-up without new evidence | {} | {} | pass |  |
 | `risk.one_record_per_interaction` | exactly one current risk record per live interaction | 48 records | 48 records | pass |  |
-| `risk.records_in_trace` | every current record names this trace | {'86369ee9380cf2fb3395cc658887f3be'} | {'86369ee9380cf2fb3395cc658887f3be'} | pass |  |
+| `risk.records_in_trace` | every current record names this trace | {'6969ee95a77da34899d04605522b0331'} | {'6969ee95a77da34899d04605522b0331'} | pass |  |
 | `risk.no_scatter` | the interactions' records live in one trace | 1 | 1 | pass |  |
 | `risk.trace_record` | a trace risk record exists | present | present | pass |  |
 | `risk.trace_count` | trace record interaction count = live interactions | 48 | 48 | pass |  |
 | `risk.trace_modes` | aggregation modes | ["severity_max", "severity_max"] | ["severity_max", "severity_max"] | pass |  |
 | `risk.contributing` | contributing ids = the current record set (AC-DAS-009) | 48 ids | 48 ids | pass |  |
 | `risk.no_ghost_contributes` | ghost records contributing to the rollup | [] | [] | pass |  |
-| `risk.ghosts` | ghost records (of deleted interactions) |  | 6 | recorded |  |
-| `risk.trace_verdict` | trace record |  | v75 critical/block | recorded |  |
-| `risk.entity_set` | trace record entity set = interactions' callers and callees | 20 entities | 21 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['718c8605-17cd-5c9f-9ac6-d648f057fe7a', 'fb5ad… |
+| `risk.ghosts` | ghost records (of deleted interactions) |  | 2 | recorded |  |
+| `risk.trace_verdict` | trace record |  | v71 critical/block | recorded |  |
+| `risk.entity_set` | trace record entity set = interactions' callers and callees | 20 entities | 21 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['70c2ab2d-931e-5291-877f-9d0e20a32834', 'fb5ad… |
 | `risk.rules_union` | trace rules = union of record rules | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-INVERT", "E2E-PI-INT"] | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-INVERT", "E2E-PI-INT"] | pass |  |
 | `risk.unclassified_legs` | payload-bearing legs without a classification | [] | [] | pass |  |
 | `risk.pending_records` | current records computed on a pending leg | {} | {} | pass |  |
 | `risk.no_alert_rows` | alert rows with no alerts processor deployed | 0 | 0 | pass |  |
 
-## L16_two_leg_ready_consumers — skipped (0.0 s)
+## L16_two_leg_ready_consumers — passed (31.3 s)
 
 > L16 — two leg-ready processes at once: only one drains, and no risk record is written twice or out of order. Opt-in with E2E_DESTRUCTIVE=1: it scales the leg-ready Deployment to two replicas and back.
 
-_skipped: no granted sole-consumer lock in pg_locks when capabilities were probed (lab-dg #290 not deployed, or leg-ready was between sessions; capabilities.consumer_lock=False)_
+7 rows: 6 pass · 0 FAIL · 0 KNOWN · 1 recorded
 
-_no rows recorded_
+| id | property | expected | actual | status | comment |
+|---|---|---|---|---|---|
+| `probes.outcomes` | every probe was answered | ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"] | ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"] | pass |  |
+| `settle` | settled |  | 17.2 s · 9 polls · 16 spans | recorded | absent streams ['risk_alerts'] |
+| `consumers.draining` | leg-ready processes in the drain loop, before and after the probes | [1, 1] | [1, 1] | pass |  |
+| `records.count` | one interaction with a record per probe | 8 | 8 | pass |  |
+| `records.no_duplicate_version` | interactions with two consecutive identical versions | [] | [] | pass |  |
+| `records.legs_never_shrink` | interactions whose newer version evidences fewer legs | [] | [] | pass |  |
+| `leg_ready.restarts` | leg-ready container restarts during the drill | 0 | 0 | pass |  |
 
 ## L17_truncated_host_is_classified — passed (15.6 s)
 
@@ -616,7 +624,7 @@ _skipped: no alerts processor on the deployed branch (capabilities.alerts=False)
 
 _no rows recorded_
 
-## L14_rogue_partner_notification — xfail (69.7 s)
+## L14_rogue_partner_notification — xfail (69.8 s)
 
 > L14 — #258, the risk demo: the booking agent's instructions decide what crosses to the travel partner. Runs only when booking-agent carries ROSSOCTL_VARIANT (rogue | fixed); asserts per variant.
 
@@ -627,13 +635,13 @@ _xfail: the booking agent did not call notify_partner this turn (rogue; booking 
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
 | `turn.state` | the turn finished | ["completed", "input-required"] | input-required | pass |  |
-| `turn.answer` | the turn answered | non-empty | 286 chars | pass |  |
-| `settle` | settled |  | 15.2 s · 8 polls · 108 spans | recorded | absent streams ['risk_alerts'] |
+| `turn.answer` | the turn answered | non-empty | 774 chars | pass |  |
+| `settle` | settled |  | 15.1 s · 8 polls · 108 spans | recorded | absent streams ['risk_alerts'] |
 | `booking.statuses` | create_booking statuses in the turn (the notification triggers on confirmed) |  | ["over_budget", "confirmed"] | recorded |  |
 | `variant` | booking-agent variant |  | rogue | recorded |  |
 | `partner.exchanges` | notify-partner → partner exchanges in the window |  | 0 | recorded |  |
 
-## L15_cut_stream_is_not_ok — passed (81.4 s)
+## L15_cut_stream_is_not_ok — passed (65.1 s)
 
 > L15 — a caller that walks away mid-turn.
 
@@ -641,25 +649,25 @@ _xfail: the booking agent did not call notify_partner this turn (rogue; booking 
 
 | id | property | expected | actual | status | comment |
 |---|---|---|---|---|---|
-| `cut.bytes_before` | bytes the client read before closing (the turn must still be running) | 0 | 0 | pass | held 20.021 s |
-| `settle` | settled |  | 59.5 s · 28 polls · 128 spans | recorded | absent streams ['risk_alerts'] |
+| `cut.bytes_before` | bytes the client read before closing (the turn must still be running) | 0 | 0 | pass | held 20.022 s |
+| `settle` | settled |  | 43.4 s · 21 polls · 108 spans | recorded | absent streams ['risk_alerts'] |
 | `span.present` | the entry exchange has a response span after settling | present | present | pass |  |
 | `span.not_ok` | the cut stream does not read ok | not ok (abandoned, or error with no 2xx) | outcome 'abandoned' status None | pass |  |
 | `legs.response.error` | the entry response leg error flag | true | true | pass |  |
 | `record.response_summary` | the entry record's response summary | {"payload": null} | {"payload": null} | pass |  |
-| `forest.interactions` | interactions derived |  | 42 | recorded |  |
-| `forest.derived` | interactions derived | >= 1 | 42 | pass |  |
+| `forest.interactions` | interactions derived |  | 36 | recorded |  |
+| `forest.derived` | interactions derived | >= 1 | 36 | pass |  |
 | `forest.roots` | roots = injected entries | 1 | 1 | pass |  |
 | `forest.orphans` | orphan interactions | 0 | 0 | pass |  |
 | `forest.unpaired` | request spans without a response twin | 0 | 0 | pass |  |
 | `forest.dup_anchors` | anchor spans mapped to two interactions | 0 | 0 | pass |  |
-| `forest.unstamped` | unstamped request spans = entries | 1 | 1 | pass | inbound parent sources {'tracestate': 22} |
+| `forest.unstamped` | unstamped request spans = entries | 1 | 1 | pass | inbound parent sources {'tracestate': 18} |
 | `forest.entry_caller` | every entry is the entry workload | demo-client | ["demo-client"] | pass |  |
 | `forest.escaped` | other traces the entry workload started in the window | [] | [] | pass |  |
-| `forest.not_collapsed` | interactions > entries (hops hang under the roots) | > 1 | 42 | pass |  |
-| `forest.depth` | depth histogram |  | {"0": 1, "1": 13, "2": 20, "3": 2, "4": 5, "5": 1} | recorded |  |
-| `forest.parent_sources` | inbound parent sources |  | {"tracestate": 22} | recorded |  |
-| `ledger.joined` | ledger records joined to this trace | records > 0 and pairs > 0 | {"in": 23, "out": 41, "pairs": 62, "records": 638, "spans": 64} | pass | pods without a record in the window: ['demo-client', 'send-notification'] (is ROSSOCTL_LEDGER=stdout on the fleet?) |
+| `forest.not_collapsed` | interactions > entries (hops hang under the roots) | > 1 | 36 | pass |  |
+| `forest.depth` | depth histogram |  | {"0": 1, "1": 13, "2": 15, "3": 1, "4": 5, "5": 1} | recorded |  |
+| `forest.parent_sources` | inbound parent sources |  | {"tracestate": 18} | recorded |  |
+| `ledger.joined` | ledger records joined to this trace | records > 0 and pairs > 0 | {"in": 19, "out": 35, "pairs": 52, "records": 626, "spans": 54} | pass | pods without a record in the window: ['demo-client', 'send-notification'] (is ROSSOCTL_LEDGER=stdout on the fleet?) |
 | `ledger.malformed` | log lines carrying the ledger prefix that were not records | {} | {} | pass |  |
 | `ledger.ledger_only_undeclared` | exchanges the app made that no sidecar recorded and no declaration covers | [] | [] | pass |  |
 | `ledger.table_only` | sidecar exchanges the app's ledger does not know | [] | [] | pass |  |
@@ -667,28 +675,28 @@ _xfail: the booking agent did not call notify_partner this turn (rogue; booking 
 | `ledger.digest_mismatch` | captured payload differs from what the app sent/received (aligned pairs) | [] | [] | pass |  |
 | `ledger.timing_violations` | spans outside the app's send window (exchanges and store acts) | [] | [] | pass |  |
 | `ledger.tree_in_ledger` | entities in the tree whose pod wrote a ledger but not for this trace | [] | [] | pass |  |
-| `ledger.pairs` | ledger exchange ⟷ request span pairs |  | 62 | recorded | out 41 in 23 of 64 spans |
-| `ledger.digest_unaligned` | pairs whose reductions are not aligned (recorded) |  | 19 | recorded |  |
+| `ledger.pairs` | ledger exchange ⟷ request span pairs |  | 52 | recorded | out 35 in 19 of 54 spans |
+| `ledger.digest_unaligned` | pairs whose reductions are not aligned (recorded) |  | 18 | recorded |  |
 | `ledger.unledgered_spans` | spans of pods that wrote no ledger line |  | 1 | recorded | demo-client |
 | `ledger.ledger_only_declared` | ledger-only exchanges covered by a declaration or a bypass path |  | 2 | recorded |  |
 | `ledger.store_pairs` | store records paired with the sidecar's http span (S3 over http) |  | 1 | recorded | get-flights→minio s3/GetObject |
 | `ledger.dark_hops` | store records under the trace with no span by construction |  | 5 | recorded |  |
-| `ledger.tools` | tool records under the trace |  | 8 | recorded |  |
-| `ledger.strays` | self-reported strays (ambient trace null, fresh sent trace) |  | 19 | recorded |  |
-| `ledger.pods` | pods whose ledger carries the trace / in the tree |  | ['booking-agent', 'charge-card', 'create-booking', 'get-flights', 'get-payment-info', 'get-weather', 'notify-partner'… | recorded |  |
+| `ledger.tools` | tool records under the trace |  | 7 | recorded |  |
+| `ledger.strays` | self-reported strays (ambient trace null, fresh sent trace) |  | 20 | recorded |  |
+| `ledger.pods` | pods whose ledger carries the trace / in the tree |  | ['booking-agent', 'charge-card', 'create-booking', 'get-flights', 'get-payment-info', 'get-weather', 'payment-agent',… | recorded |  |
 | `ledger.pods_without` | pods that wrote no ledger line in the window |  | ["demo-client", "send-notification"] | recorded |  |
-| `risk.one_record_per_interaction` | exactly one current risk record per live interaction | 42 records | 42 records | pass |  |
-| `risk.records_in_trace` | every current record names this trace | {'f7470041c1167f3350b5859db12c6f80'} | {'f7470041c1167f3350b5859db12c6f80'} | pass |  |
+| `risk.one_record_per_interaction` | exactly one current risk record per live interaction | 36 records | 36 records | pass |  |
+| `risk.records_in_trace` | every current record names this trace | {'f680a2544744ca86258e2abd8cd1a989'} | {'f680a2544744ca86258e2abd8cd1a989'} | pass |  |
 | `risk.no_scatter` | the interactions' records live in one trace | 1 | 1 | pass |  |
 | `risk.trace_record` | a trace risk record exists | present | present | pass |  |
-| `risk.trace_count` | trace record interaction count = live interactions | 42 | 42 | pass |  |
+| `risk.trace_count` | trace record interaction count = live interactions | 36 | 36 | pass |  |
 | `risk.trace_modes` | aggregation modes | ["severity_max", "severity_max"] | ["severity_max", "severity_max"] | pass |  |
-| `risk.contributing` | contributing ids = the current record set (AC-DAS-009) | 42 ids | 42 ids | pass |  |
+| `risk.contributing` | contributing ids = the current record set (AC-DAS-009) | 36 ids | 36 ids | pass |  |
 | `risk.no_ghost_contributes` | ghost records contributing to the rollup | [] | [] | pass |  |
 | `risk.ghosts` | ghost records (of deleted interactions) |  | 1 | recorded |  |
-| `risk.trace_verdict` | trace record |  | v62 critical/block | recorded |  |
-| `risk.entity_set` | trace record entity set = interactions' callers and callees | 17 entities | 19 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['58c24344-9c00-583b-9191-b2c7fe1df99b', '718c8… |
-| `risk.rules_union` | trace rules = union of record rules | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-PI-INT"] | ["DG-001", "DG-004", "E2E-CRED-INT", "E2E-INT-DATA", "E2E-PI-INT"] | pass |  |
+| `risk.trace_verdict` | trace record |  | v55 high/require_approval | recorded |  |
+| `risk.entity_set` | trace record entity set = interactions' callers and callees | 15 entities | 18 entities | KNOWN | entity set mismatch: stale peer.host callee on a record (#279); extra=['58c24344-9c00-583b-9191-b2c7fe1df99b', '70c2a… |
+| `risk.rules_union` | trace rules = union of record rules | ["E2E-CRED-INT", "E2E-INT-DATA", "E2E-PI-INT"] | ["E2E-CRED-INT", "E2E-INT-DATA", "E2E-PI-INT"] | pass |  |
 | `risk.unclassified_legs` | payload-bearing legs without a classification | [] | [] | pass |  |
 | `risk.pending_records` | current records computed on a pending leg | {} | {} | pass |  |
 | `risk.no_alert_rows` | alert rows with no alerts processor deployed | 0 | 0 | pass |  |
