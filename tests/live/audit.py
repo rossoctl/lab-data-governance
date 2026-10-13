@@ -170,13 +170,13 @@ def read(dg, trace_id: str, *, lead: int = 5, tail: int = 60,
             (trace_id,)):
         inters.setdefault(iid, Interaction(iid, None, {}, {}, {}, {})).spans[sid] = role
     if inters:
-        for iid, leg, at, ph, err, ck in dg.q("""
+        for iid, leg, at, ph, err, ck, exists in dg.q("""
                 SELECT l.interaction_id, l.leg_type::text, l.occurred_at, l.payload_hash, l.error,
-                       p.content_kind
+                       l.content_kind, (p.content_hash IS NOT NULL)
                 FROM interaction_legs l LEFT JOIN interaction_payloads p ON p.content_hash = l.payload_hash
                 WHERE l.interaction_id = ANY(%s)""", (list(inters),)):
             inters[iid].legs[leg] = {"occurred_at": at, "payload_hash": ph, "error": err,
-                                     "content_kind": ck, "payload_exists": ck is not None or ph is None}
+                                     "content_kind": ck, "payload_exists": exists or ph is None}
     return Snapshot(trace_id, spans, inters, (start, end), frozenset(probe_parents))
 
 
@@ -331,11 +331,11 @@ def soundness(au: Audit, snap: Snapshot, fleet: Fleet, *, skew_seconds: float = 
         rq, rs = content_kinds(d, p, a.a("mcp.method"))
         for leg, want in (("request", rq), ("response", rs)):
             got = i.legs.get(leg, {}).get("content_kind")
-            if i.legs.get(leg, {}).get("payload_hash") and got != want:
+            if leg in i.legs and got != want:  # the leg's own kind (lab-dg #286), body or not
                 ck_bad[f"{i.id}/{leg}"] = {"expected": want, "observed": got}
     au.add("S5", "soundness", "caller/callee kinds follow the contract's table",
            not kind_bad, "as classified", f"{len(kind_bad)} kind violations", kind_bad)
-    au.add("S5.content", "soundness", "content kinds follow the contract's table (payload identity is content+kind)",
+    au.add("S5.content", "soundness", "content kinds follow the contract's table (each leg carries its own kind)",
            not ck_bad, "as classified", f"{len(ck_bad)} content-kind violations", ck_bad)
     # S6 legs mirror spans
     leg_bad = {}
