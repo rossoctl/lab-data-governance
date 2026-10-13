@@ -74,3 +74,7 @@ classification/output/
 /docs/REVIEWER-QUICKSTART.md
 /docs/reading-the-sidecar-algorithm.md
 tests/live/pins.*.local.yaml
+
+# Demo tooling output (demos/*/*/runs/ — turn transcripts, pod logs, the keep list).
+demos/*/*/runs/*
+!demos/*/*/runs/.gitkeep

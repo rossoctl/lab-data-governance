@@ -46,3 +46,7 @@ tests
 # failure mode above). The Node stage regenerates both inside the build.
 ui/node_modules
 ui/dist
+
+# Demo tooling output (demos/*/*/runs/: pod logs and turn transcripts) — never
+# part of the image and would make the context vary with what was last run.
+demos
