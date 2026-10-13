@@ -950,7 +950,10 @@ present on both the `GET /api/traces` collection rows and the
   resource-oriented and namespaced: JSON resources under `/api/`
   (`/api/traces`, `/api/traces/{tid}`, `/api/traces/{tid}/spans[/{sid}[/children]]`,
   the interaction/entity sub-resources, the cross-trace interaction feed
-  `/api/interactions?since_seq&limit`, `/api/payloads/{hash}`); HTML pages
+  `/api/interactions?since_seq&limit`, `/api/payloads/{hash}`, and one
+  stream, `/api/traces/{tid}/events` — Server-Sent Events carrying the
+  **Trace version** token so an open trace page re-reads only when the
+  derived picture changed, ADR-0034); HTML pages
   and JS assets under `/ui/`. The single `GET /spans` pass-through was retired
   in favour of these — the library `get_spans` (and its `root_only` /
   `parent_id` parameters) is unchanged; only the HTTP surface was reshaped.
