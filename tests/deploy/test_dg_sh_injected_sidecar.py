@@ -1,26 +1,9 @@
-"""Behavioural tests for dg.sh detecting a WEBHOOK-INJECTED pod-level sidecar.
+"""Tests for read-only detection of webhook-injected sidecars.
 
-The platform injection WEBHOOK can attach the AuthBridge `authbridge-proxy`
-sidecar (e.g. when the rossoctl UI adds an agent). The webhook injects at the
-POD level: the admitted Pod gets the sidecar container, but the owning
-Deployment's `.spec.template.spec.containers` stays clean (app container only).
-
-dg.sh's original sidecar detection was ENTIRELY Deployment-template based, so for
-a webhook-injected sidecar it saw the clean template, returned `none`, and
-reported `sidecar=none` for a workload whose live Pod is in fact running
-`authbridge-proxy`. These tests pin the fix: detection FALLS BACK to the live Pod
-when the Deployment template shows no sidecar, and resolves the sidecar's
-pipeline ConfigMap from the Pod spec in that case. This detection matters for
-`instrument` too — but under the revised, kit-only contract (ADR-0032) its role
-is now to SEE an injected sidecar so `instrument` correctly SKIPS the entity
-(it already has a sidecar), never to route it to an in-place pipeline edit (that
-edit was clobbered by the operator on the next roll — findings doc).
-
-Same harness as ``test_dg_sh_namespace_status.py`` /
-``test_dg_sh_instrument.py``: the real script runs as a subprocess with a **fake
-``kubectl``** on a synthetic ``PATH`` — no live cluster. The fake here ALSO
-serves ``kubectl get pods ... -o json`` so a workload can carry a sidecar in its
-live Pod but not in its Deployment template (the injected case).
+Admission adds AuthBridge to the Pod, not the Deployment template. Status must
+therefore fall back to the live Pod and resolve its pipeline ConfigMap there.
+These tests do not exercise sidecar injection; Data Governance only instruments
+existing, trusted Rossoctl proxies.
 """
 
 from __future__ import annotations
@@ -32,6 +15,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.deploy.fake_configmap_kubectl import CONFIGMAP_KUBECTL
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -272,36 +257,7 @@ if [[ "$*" == *"get"* && "$*" == *"authbridge-runtime-config"* ]]; then
   printf '%s' "${EGRESS_ENFORCEMENT:-enforce}"; exit 0
 fi
 
-# ---- ConfigMap fetch ---------------------------------------------------------
-if [[ "$*" == *"get"* && ( "$*" == *"configmap"* || "$*" == *" cm "* || "$*" == *" cm"* ) ]]; then
-  cmname=""; prev=""
-  for a in "$@"; do
-    case "$prev" in configmap|cm|configmaps) cmname="$a"; break ;; esac
-    prev="$a"
-  done
-  if [[ "$cmname" == "$CM_FORCE_NOTFOUND" ]]; then
-    printf '%s\n' "Error from server (NotFound): configmaps \"${cmname}\" not found" >&2
-    exit 1
-  fi
-  if [[ "${CM_GET_FAILS:-0}" == "1" ]]; then
-    printf '%s\n' "Error from server (InternalError): an error on the server (\"\") has prevented the request from succeeding" >&2
-    exit 1
-  fi
-  f="$FIXDIR/cm-${cmname}.json"
-  if [[ -n "$cmname" && -f "$f" ]]; then
-    python3 - "$f" <<'PY'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-data = doc.get("data") or {}
-inner = " ".join(f"{k}:{v}" for k, v in data.items())
-sys.stdout.write("map[" + inner + "]")
-PY
-    exit 0
-  fi
-  printf '%s\n' "Error from server (NotFound): configmaps \"${cmname}\" not found" >&2
-  exit 1
-fi
-
+""" + CONFIGMAP_KUBECTL + r"""
 # ---- Pod fetch (INJECTED-sidecar detection) ----------------------------------
 # `kubectl get pods -n <ns> -l app.kubernetes.io/name=<entity> --field-selector=status.phase=Running -o json`
 # Tested BEFORE the deployment branch because "pods" and "deploy" are distinct
@@ -385,8 +341,9 @@ def sandbox(tmp_path: Path):
     sysdir.mkdir()
     fixdir = tmp_path / "fixtures"
     fixdir.mkdir()
-    cortex = tmp_path / "cortex"
-    kitdir = cortex / "authbridge" / "lineage-attach"
+    # A FAKE lineage-attach kit dir dg.sh is pointed at via DG_LINEAGE_ATTACH_DIR
+    # (the seam that replaced --cortex-local-path when ADR-0033 vendored the kit).
+    kitdir = tmp_path / "lineage-attach"
     kitdir.mkdir(parents=True)
     log = tmp_path / "kubectl.log"
 
@@ -400,18 +357,13 @@ def sandbox(tmp_path: Path):
         if src and Path(tool).name not in _CONTROLLED:
             (sysdir / tool).symlink_to(src)
 
-    # A stub #852 kit so the instrument-path preflight resolves (the injected
-    # case we test is SKIPPED — it already has a sidecar — so the kit must NOT
-    # run, but the preflight still checks the kit is present).
-    _STUB_SIDECAR_PATCH = 'echo "sidecar-patch.sh stub should not run for proxy" >&2\nexit 0\n'
+    # A stub kit so status and instrument-path setup can resolve.
     _STUB_BUILD_SHIM = 'echo "build-otel-shim.sh stub" >&2\nexit 0\n'
-    _STUB_ATTACH = 'echo "attach-lineage.sh stub" >&2\nexit 0\n'
 
     class _Sandbox:
         def __init__(self) -> None:
             self.bindir = bindir
             self.fixdir = fixdir
-            self.cortex = cortex
             self.kitdir = kitdir
             self.log = log
             self.get_fails = False
@@ -421,9 +373,15 @@ def sandbox(tmp_path: Path):
             self.envflags: dict[str, str] = {}
             _make_bin(bindir, "docker", "exit 0\n")
             _make_bin(bindir, "podman", "exit 0\n")
-            _make_bin(kitdir, "sidecar-patch.sh", _STUB_SIDECAR_PATCH)
             _make_bin(kitdir, "build-otel-shim.sh", _STUB_BUILD_SHIM)
-            _make_bin(kitdir, "attach-lineage.sh", _STUB_ATTACH)
+            # The sourced / build-input companions require_vendored_kit checks for
+            # (both shims are build inputs; ADR-0033 D4).
+            for f in ("container-runtime.sh", "Dockerfile.otel-shim",
+                      "otel-instrumentors.txt",
+                      "lineage-propagate-hook.py", "rossoctl_turnspan.py",
+                      "rossoctl_turnspan.pth", "attest-otel-shim.py",
+                      "reconcile-existing-proxy.py"):
+                (kitdir / f).write_text("# stub\n")
             self._write_kubectl()
             self.set_namespace({})
 
@@ -513,20 +471,21 @@ def sandbox(tmp_path: Path):
                 return []
             return [ln for ln in log.read_text().splitlines() if ln.strip()]
 
-        def run(self, *args: str, cortex_path: str | None = "__default__", **kw):
+        def run(self, *args: str, kit_dir: str | None = "__default__", **kw):
             env = dict(os.environ)
             env["PATH"] = f"{bindir}:{sysdir}"
             env["KUBECTL_LOG"] = str(log)
             env["FIXDIR"] = str(fixdir)
             env.setdefault("KIND_CLUSTER", "rossoctl")
+            # Point dg.sh at the FAKE stub kit via the DG_LINEAGE_ATTACH_DIR test
+            # seam (replaces the retired --cortex-local-path flag; ADR-0033).
+            if kit_dir == "__default__":
+                env["DG_LINEAGE_ATTACH_DIR"] = str(self.kitdir)
+            elif kit_dir is not None:
+                env["DG_LINEAGE_ATTACH_DIR"] = kit_dir
             env.update(self.envflags)
             env.update(kw.pop("env", {}) or {})
-            argv = ["bash", str(DG_SH)]
-            if cortex_path == "__default__":
-                argv += ["--cortex-local-path", str(cortex)]
-            elif cortex_path is not None:
-                argv += ["--cortex-local-path", cortex_path]
-            argv += list(args)
+            argv = ["bash", str(DG_SH), *args]
             return subprocess.run(
                 argv, capture_output=True, text=True, env=env, timeout=120, **kw
             )
@@ -567,24 +526,24 @@ def test_status_detects_injected_proxy_sidecar_from_pod(sandbox) -> None:
     )
 
 
-def test_status_injected_plugin_wired_via_pod_resolved_cm(sandbox) -> None:
+def test_status_injected_lineage_wired_via_pod_resolved_cm(sandbox) -> None:
     """Plugin detection must still work for the injected case: the pipeline CM is
     resolved from the POD's volume→configMap.name, then scanned for the plugin.
-    A wired CM → plugin=yes."""
+    A wired CM → lineage=yes."""
     sandbox.set_namespace(
         {"research-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": True}}
     )
     r = sandbox.run("namespace", "travel-advisor", "status")
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
-    assert "plugin=yes" in line, (
-        f"a wired plugin (resolved via the pod CM) must report plugin=yes; line={line!r}"
+    assert "lineage=yes" in line, (
+        f"a wired plugin (resolved via the pod CM) must report lineage=yes; line={line!r}"
     )
-    assert "plugin=no" not in line, f"must not misreport a wired plugin; line={line!r}"
+    assert "lineage=no" not in line, f"must not misreport a wired plugin; line={line!r}"
 
 
-def test_status_injected_plugin_absent_via_pod_resolved_cm(sandbox) -> None:
-    """An injected sidecar whose pod-resolved CM lacks the plugin → plugin=no."""
+def test_status_injected_lineage_absent_via_pod_resolved_cm(sandbox) -> None:
+    """An injected sidecar whose pod-resolved CM lacks the plugin → lineage=no."""
     sandbox.set_namespace(
         {"research-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": False}}
     )
@@ -592,10 +551,10 @@ def test_status_injected_plugin_absent_via_pod_resolved_cm(sandbox) -> None:
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
     assert "sidecar=present" in line and "type=proxy" in line, line
-    assert "plugin=no" in line, (
-        f"an injected sidecar with an unwired CM must report plugin=no; line={line!r}"
+    assert "lineage=no" in line, (
+        f"an injected sidecar with an unwired CM must report lineage=no; line={line!r}"
     )
-    assert "plugin=yes" not in line, line
+    assert "lineage=yes" not in line, line
 
 
 def test_status_detects_injected_envoy_sidecar_from_pod(sandbox) -> None:
@@ -625,7 +584,7 @@ def test_status_template_embedded_proxy_still_detected(sandbox) -> None:
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
     assert "sidecar=present" in line and "type=proxy" in line, line
-    assert "plugin=yes" in line, line
+    assert "lineage=yes" in line, line
 
 
 def test_status_template_embedded_envoy_still_detected(sandbox) -> None:
@@ -646,7 +605,7 @@ def test_status_no_sidecar_anywhere_reports_none(sandbox) -> None:
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "search-destinations").lower()
     assert "sidecar=none" in line and "type=none" in line, line
-    assert "plugin=no" in line, line
+    assert "lineage=no" in line, line
 
 
 # ===========================================================================
@@ -697,105 +656,11 @@ def test_status_pod_read_failure_does_not_abort_other_entities(sandbox) -> None:
 
 
 # ===========================================================================
-# instrument: an injected-only sidecar is DETECTED (pod fallback) and SKIPPED
-# — instrument only wires lineage onto no-sidecar entities (ADR-0032 revised).
-# The pod fallback exists so an injected sidecar is SEEN (→ skipped), never so
-# it is edited in place (that edit was clobbered by the operator — findings doc).
-# ===========================================================================
-
-
-def test_instrument_injected_proxy_is_skipped(sandbox) -> None:
-    """An entity whose proxy sidecar is ONLY in the live Pod (webhook-injected,
-    clean Deployment template) must be DETECTED via the pod fallback and SKIPPED
-    — it already has a sidecar. Nothing is mutated (no in-place edit — that was
-    clobbered by the operator), the kit is not driven, and the run exits 0."""
-    sandbox.set_namespace(
-        {"legacy-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": False}}
-    )
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode == 0, r.stderr
-    calls = " ".join(sandbox.kubectl_calls())
-    for m in ("apply", "patch", "rollout restart", "edit", "replace", "delete"):
-        assert m not in calls, (
-            f"a skipped injected-proxy entity must mutate nothing; found {m!r} in calls={calls!r}"
-        )
-    combined = (r.stdout + r.stderr).lower()
-    assert "skip" in combined and "proxy" in combined and "sidecar" in combined, (
-        f"the injected proxy entity must be reported skipped, naming its sidecar; got:\n{combined}"
-    )
-
-
-def test_instrument_injected_proxy_pod_read_failure_dies_loud(sandbox) -> None:
-    """The mutating `instrument` verb must NOT proceed on a pod-read failure: the
-    injected-sidecar fallback there uses the loud-die get_pod_json, so a
-    transient/RBAC failure of the pod probe halts loud rather than silently
-    misclassifying the entity as no-sidecar and WRONGLY instrumenting it (the
-    kit would inject a second sidecar onto an entity that already has one). The
-    deployment template shows no sidecar, so the fallback IS reached."""
-    sandbox.set_namespace(
-        {"legacy-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": False}}
-    )
-    sandbox.set_pod_get_fails(True)  # breaks ONLY the pod read
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode != 0, (
-        f"a pod-read failure in the instrument fallback must die loud; stdout={r.stdout!r}"
-    )
-    combined = (r.stdout + r.stderr).lower()
-    assert combined.strip(), "a failed pod read must not exit with EMPTY output"
-
-
-def test_instrument_injected_proxy_does_not_drive_envoy_kit(sandbox) -> None:
-    """An injected-proxy entity is skipped (already has a sidecar); the envoy-only
-    kit must not be invoked for it (guards against the pod-fallback misclassifying
-    it as no-sidecar → kit envoy-inject onto an already-sidecarred entity)."""
-    sandbox.set_namespace(
-        {"legacy-agent": {"template_sidecar": None, "pod_sidecar": "proxy", "lineage": False}}
-    )
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode == 0, r.stderr
-    # The sidecar-patch.sh stub prints to stderr if it ever runs.
-    assert "sidecar-patch.sh stub should not run" not in (r.stdout + r.stderr), (
-        f"an injected proxy entity must NOT drive the envoy kit; got:\n{r.stdout}\n{r.stderr}"
-    )
-
-
-def test_instrument_no_running_pod_refuses_on_unconfirmed_none(sandbox) -> None:
-    """A template that shows NO sidecar and has NO Running pod to confirm it must
-    make `instrument` refuse and mutate nothing. get_pod_json returns exit 0 with
-    {"items":[]} when the Deployment is scaled to 0 (or just-applied), and
-    detect_sidecar_type prints 'none' for an empty listing too — so trusting that
-    'none' would attach a SECOND sidecar onto an entity that actually carries a
-    webhook-injected one (visible only once a Pod is admitted). The instrument
-    path must distinguish an EMPTY pod read from a CONFIRMED no-sidecar read and
-    die loud on the former."""
-    sandbox.set_namespace(
-        {"legacy-agent": {"template_sidecar": None, "no_pod": True}}
-    )
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode != 0, (
-        f"instrument must refuse on an unconfirmed 'none' (no Running pod); stdout={r.stdout!r}"
-    )
-    combined = (r.stdout + r.stderr).lower()
-    assert "no running pod" in combined or "no pod" in combined, (
-        f"the refusal must explain there is no Running pod to confirm from; got:\n{combined}"
-    )
-    # Nothing mutated, and the kit was never driven.
-    calls = " ".join(sandbox.kubectl_calls())
-    for m in ("apply", "patch", "rollout restart", "edit", "replace", "delete"):
-        assert m not in calls, (
-            f"a refused (unconfirmed-none) entity must mutate nothing; found {m!r} in calls={calls!r}"
-        )
-    assert "sidecar-patch.sh stub should not run" not in (r.stdout + r.stderr) and (
-        "build-otel-shim.sh stub" not in (r.stdout + r.stderr)
-    ), f"the kit must NOT be driven on an unconfirmed 'none'; got:\n{r.stdout}\n{r.stderr}"
-
-
-# ===========================================================================
 # status: a NATIVE sidecar — an initContainer (restartPolicy: Always), the
 # shape the #852 kit attaches (dg.sh ~line 761). The bug (task 1): detection
 # inspected `.spec[.template.spec].containers` ONLY, never `initContainers`, so
 # an instrumented pod running `envoy-proxy` as a native sidecar was reported
-# sidecar=none/type=none/plugin=no. Detection must union the two container lists.
+# sidecar=none/type=none/lineage=no. Detection must union the two container lists.
 # ===========================================================================
 
 
@@ -820,25 +685,25 @@ def test_status_detects_native_envoy_sidecar_in_template(sandbox) -> None:
     )
 
 
-def test_status_native_envoy_plugin_wired_via_init_resolved_cm(sandbox) -> None:
+def test_status_native_envoy_lineage_wired_via_init_resolved_cm(sandbox) -> None:
     """Plugin detection must work for the native shape too: the pipeline CM is
     resolved from the initContainer sidecar's volume→configMap.name, then scanned
-    for the plugin. A wired CM → plugin=yes."""
+    for the plugin. A wired CM → lineage=yes."""
     sandbox.set_namespace(
         {"research-agent": {"template_sidecar": "envoy", "native": True, "lineage": True}}
     )
     r = sandbox.run("namespace", "travel-advisor", "status")
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
-    assert "plugin=yes" in line, (
+    assert "lineage=yes" in line, (
         f"a wired plugin (CM resolved via the init-container sidecar) must report "
-        f"plugin=yes; line={line!r}"
+        f"lineage=yes; line={line!r}"
     )
-    assert "plugin=no" not in line, f"must not misreport a wired plugin; line={line!r}"
+    assert "lineage=no" not in line, f"must not misreport a wired plugin; line={line!r}"
 
 
-def test_status_native_envoy_plugin_absent_via_init_resolved_cm(sandbox) -> None:
-    """A native envoy sidecar whose init-resolved CM lacks the plugin → plugin=no
+def test_status_native_envoy_lineage_absent_via_init_resolved_cm(sandbox) -> None:
+    """A native envoy sidecar whose init-resolved CM lacks the plugin → lineage=no
     (still sidecar=present type=envoy — the sidecar is seen, the plugin is not)."""
     sandbox.set_namespace(
         {"research-agent": {"template_sidecar": "envoy", "native": True, "lineage": False}}
@@ -847,10 +712,10 @@ def test_status_native_envoy_plugin_absent_via_init_resolved_cm(sandbox) -> None
     assert r.returncode == 0, r.stderr
     line = _entity_line(r.stdout, "research-agent").lower()
     assert "sidecar=present" in line and "type=envoy" in line, line
-    assert "plugin=no" in line, (
-        f"a native sidecar with an unwired CM must report plugin=no; line={line!r}"
+    assert "lineage=no" in line, (
+        f"a native sidecar with an unwired CM must report lineage=no; line={line!r}"
     )
-    assert "plugin=yes" not in line, line
+    assert "lineage=yes" not in line, line
 
 
 def test_status_detects_native_proxy_sidecar_in_template(sandbox) -> None:
@@ -891,31 +756,4 @@ def test_status_proxy_init_alone_is_not_a_sidecar(sandbox) -> None:
     line = _entity_line(r.stdout, "search-destinations").lower()
     assert "sidecar=none" in line and "type=none" in line, (
         f"a lone proxy-init init container is NOT a sidecar; line={line!r}"
-    )
-
-
-# ===========================================================================
-# instrument: a native envoy sidecar already in the template is DETECTED (via
-# the initContainers union) and SKIPPED — instrument must not re-inject onto an
-# entity the kit already instrumented (ADR-0032: only no-sidecar entities).
-# ===========================================================================
-
-
-def test_instrument_native_envoy_is_skipped(sandbox) -> None:
-    """An entity already carrying a native envoy sidecar (kit-attached, in the
-    template's initContainers) must be DETECTED and SKIPPED — the kit is not
-    driven again and nothing is mutated. Guards the idempotency of a re-run of
-    `instrument` on an already-instrumented namespace."""
-    sandbox.set_namespace(
-        {"research-agent": {"template_sidecar": "envoy", "native": True, "lineage": True}}
-    )
-    r = sandbox.run("namespace", "travel-advisor", "instrument")
-    assert r.returncode == 0, r.stderr
-    assert "sidecar-patch.sh stub should not run" not in (r.stdout + r.stderr), (
-        f"an already-instrumented (native envoy) entity must NOT be re-driven "
-        f"through the kit; got:\n{r.stdout}\n{r.stderr}"
-    )
-    combined = (r.stdout + r.stderr).lower()
-    assert "skip" in combined, (
-        f"a native-envoy entity must be reported skipped; got:\n{combined}"
     )

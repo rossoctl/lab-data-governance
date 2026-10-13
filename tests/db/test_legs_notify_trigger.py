@@ -1,6 +1,6 @@
 """Tests for the interaction_legs NOTIFY trigger migration (issue #115).
 
-Migration 0010 makes ``interaction_legs`` a *notified* stream. The cursorable
+Migration 0012 makes ``interaction_legs`` a *notified* stream. The cursorable
 half already exists (migration 0009 gave the table ``seq`` from
 ``interaction_legs_seq`` plus the ``interaction_legs_seq_idx`` cursor index);
 this revision adds the announcement so a downstream lineage deriver can
@@ -318,11 +318,11 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
 
 
 # NOTE: the "applying the chain lands on head" assertion moved on to
-# ``test_data_lineage_migration.py`` when 0011 (``lineage_metadata``) landed —
+# ``test_data_lineage_migration.py`` when 0013 (``lineage_metadata``) landed —
 # that pin travels with whichever revision is head, exactly as this file
 # inherited it from ``test_classifications_migration.py``. What stays here is
 # this revision's own place in the chain (above) and the downgrade round-trip
-# below, both of which are about 0010 specifically rather than about head.
+# below, both of which are about 0012 specifically rather than about head.
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
@@ -341,7 +341,7 @@ def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
     assert _function_exists(pg_dsn, "dg_notify_legs")
     assert _trigger_exists(pg_dsn, "dg_legs_notify")
 
-    # Down one revision to 0009: function + trigger gone, table + cursor stay.
+    # Down to 0009: function + trigger gone, table + cursor stay.
     command.downgrade(cfg, "0009_interaction_legs")
     assert not _function_exists(pg_dsn, "dg_notify_legs")
     assert not _trigger_exists(pg_dsn, "dg_legs_notify")

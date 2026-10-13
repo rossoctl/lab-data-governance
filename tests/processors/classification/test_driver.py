@@ -32,7 +32,6 @@ def _insert_payload(
     dsn: str,
     *,
     content_hash: str,
-    content_kind: str = "unknown",
     content: str = "{}",
 ) -> int:
     """Insert a content-addressed payload row (DEFAULT-allocated seq) the way
@@ -40,9 +39,9 @@ def _insert_payload(
     with psycopg.connect(dsn) as conn:
         (seq,) = conn.execute(
             "INSERT INTO interaction_payloads "
-            "(content_hash, content_kind, content, byte_size) "
-            "VALUES (%s, %s, %s::jsonb, %s) RETURNING seq",
-            (content_hash, content_kind, content, len(content)),
+            "(content_hash, content, byte_size) "
+            "VALUES (%s, %s::jsonb, %s) RETURNING seq",
+            (content_hash, content, len(content)),
         ).fetchone()
         conn.commit()
     return int(seq)
@@ -170,9 +169,7 @@ def test_classification_tap_does_not_fire_on_rollback(configured_db: str) -> Non
     nothing. A naive out-of-transaction / autocommit tap would fire here and fail
     this test — which the happy-path test above cannot catch.
     """
-    payload = driver.Payload(
-        content_hash="rollback0", content_kind="unknown", content="{}", seq=1
-    )
+    payload = driver.Payload(content_hash="rollback0", content="{}", seq=1)
 
     with psycopg.connect(configured_db, autocommit=True) as listener:
         listener.execute("LISTEN dg_interaction_leg_ready")
@@ -254,10 +251,10 @@ def test_crash_mid_payload_re_processes_from_same_cursor_without_duplicate(
     # Make classifying "boom" raise, simulating a crash after "ok" committed.
     real_classify = driver.verdict.classify
 
-    def _boom(content_hash, content_kind, content, **kwargs):  # noqa: ANN001 — test stub
+    def _boom(content_hash, content, **kwargs):  # noqa: ANN001 — test stub
         if content_hash == "boom":
             raise RuntimeError("crash mid-payload")
-        return real_classify(content_hash, content_kind, content, **kwargs)
+        return real_classify(content_hash, content, **kwargs)
 
     monkeypatch.setattr(driver.verdict, "classify", _boom)
 
@@ -322,12 +319,7 @@ def test_injected_detector_findings_land_in_the_written_row(configured_db: str) 
         '{"messages": [{"message.role": "user", '
         '"message.content": "John Smith 123-45-6789"}]}'
     )
-    _insert_payload(
-        configured_db,
-        content_hash="ner",
-        content_kind="llm_chat_prompt",
-        content=content,
-    )
+    _insert_payload(configured_db, content_hash="ner", content=content)
     detector = _FakeDetector([(0, 10, "PN"), (11, 22, "SSN")])
 
     driver.drain(0, detector=detector)
@@ -355,7 +347,6 @@ def test_drain_without_a_detector_keeps_the_null_default(configured_db: str) -> 
     _insert_payload(
         configured_db,
         content_hash="clean79",
-        content_kind="llm_chat_prompt",
         content='{"messages": [{"message.role": "user", "message.content": "Book a flight."}]}',
     )
     driver.drain(0)
@@ -371,7 +362,7 @@ def test_injected_detector_stamps_its_model_version(configured_db: str) -> None:
     writes: image tag ↔ ``model_version`` (ADR-0023/0024). A drain with an
     injected model_version writes that version, distinguishing model-era rows from
     the #78 no-model generation (model_version=1)."""
-    _insert_payload(configured_db, content_hash="mv", content_kind="unknown")
+    _insert_payload(configured_db, content_hash="mv")
     detector = _FakeDetector([])
 
     driver.drain(0, detector=detector, model_version=2)

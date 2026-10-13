@@ -19,6 +19,7 @@
 #
 # Usage:
 #   ./deploy/build-and-load.sh           # uses defaults
+#   ./deploy/build-and-load.sh --reuse-classification
 #
 # Environment overrides (mostly for CI / non-default setups):
 #   KIND_CLUSTER     Kind cluster name to load into (default: rossoctl)
@@ -27,6 +28,14 @@
 #   CONTAINER_TOOL   docker | podman (default: auto-detect, prefers docker)
 
 set -euo pipefail
+
+REUSE_CLASSIFICATION=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reuse-classification) REUSE_CLASSIFICATION=1; shift ;;
+        *) echo "error: unknown build-and-load option: $1" >&2; exit 2 ;;
+    esac
+done
 
 KIND_CLUSTER="${KIND_CLUSTER:-rossoctl}"
 IMAGE_REPO="${IMAGE_REPO:-data-governance}"
@@ -75,6 +84,21 @@ if ! command -v kind >/dev/null 2>&1; then
     exit 1
 fi
 
+# A fresh Kind node still needs the classification image loaded, even when its
+# expensive model image is reused. Check the host cache before building the
+# shared image so this mode fails without leaving a partially prepared install.
+CACHED_CLASSIFICATION_IMAGE=""
+if [[ "${REUSE_CLASSIFICATION}" -eq 1 ]]; then
+    if "${CONTAINER_TOOL}" image inspect "${CLASSIFICATION_DOCKERIO}" >/dev/null 2>&1; then
+        CACHED_CLASSIFICATION_IMAGE="${CLASSIFICATION_DOCKERIO}"
+    elif "${CONTAINER_TOOL}" image inspect "${CLASSIFICATION_IMAGE}" >/dev/null 2>&1; then
+        CACHED_CLASSIFICATION_IMAGE="${CLASSIFICATION_IMAGE}"
+    else
+        echo "error: --reuse-classification requires ${CLASSIFICATION_IMAGE} in the local ${CONTAINER_TOOL} image cache" >&2
+        exit 2
+    fi
+fi
+
 # Refresh uv.lock to match pyproject.toml BEFORE either build. Both Containerfiles
 # `COPY ... uv.lock` and run `uv sync --frozen`, which ABORTS if the lockfile is
 # missing or out of sync with pyproject.toml — and uv.lock is .gitignored, so a
@@ -100,14 +124,16 @@ fi
 # step the classification build would bake the pointer, not the weights, and the
 # model load would fail at startup. `git lfs pull` is idempotent — a no-op once
 # the object is present.
-if ! command -v git-lfs >/dev/null 2>&1 && ! git lfs version >/dev/null 2>&1; then
-    echo "error: git-lfs is required to materialize the ~500 MB model weights " \
-         "for the classification image; install it from https://git-lfs.com" >&2
-    exit 1
+if [[ "${REUSE_CLASSIFICATION}" -eq 0 ]]; then
+    if ! command -v git-lfs >/dev/null 2>&1 && ! git lfs version >/dev/null 2>&1; then
+        echo "error: git-lfs is required to materialize the ~500 MB model weights " \
+             "for the classification image; install it from https://git-lfs.com" >&2
+        exit 1
+    fi
+    echo ">> Materializing git-LFS model weights (classification/model/)"
+    git -C "${REPO_ROOT}" lfs install --local
+    git -C "${REPO_ROOT}" lfs pull --include="classification/model/**"
 fi
-echo ">> Materializing git-LFS model weights (classification/model/)"
-git -C "${REPO_ROOT}" lfs install --local
-git -C "${REPO_ROOT}" lfs pull --include="classification/model/**"
 
 # Compute the UI version stamp HERE on the host (short SHA + commit date): the
 # .git tree is not in the image build context, so vite.config.ts cannot derive
@@ -145,14 +171,20 @@ kind load docker-image "${UI_DOCKERIO}" --name "${KIND_CLUSTER}"
 # Containerfile.classification with the classification extra (torch/transformers)
 # and the baked-in model weights. Built and loaded as its own image because its
 # dependency closure diverges too heavily to share the receiver/UI image.
-echo ">> Building ${CLASSIFICATION_IMAGE} from ${REPO_ROOT}/Containerfile.classification"
-"${CONTAINER_TOOL}" build \
-    -f "${REPO_ROOT}/Containerfile.classification" \
-    -t "${CLASSIFICATION_IMAGE}" \
-    "${REPO_ROOT}"
+if [[ "${REUSE_CLASSIFICATION}" -eq 1 ]]; then
+    echo ">> Reusing cached ${CACHED_CLASSIFICATION_IMAGE} (no classification build)"
+    "${CONTAINER_TOOL}" tag "${CACHED_CLASSIFICATION_IMAGE}" "${CLASSIFICATION_IMAGE}"
+    "${CONTAINER_TOOL}" tag "${CACHED_CLASSIFICATION_IMAGE}" "${CLASSIFICATION_DOCKERIO}"
+else
+    echo ">> Building ${CLASSIFICATION_IMAGE} from ${REPO_ROOT}/Containerfile.classification"
+    "${CONTAINER_TOOL}" build \
+        -f "${REPO_ROOT}/Containerfile.classification" \
+        -t "${CLASSIFICATION_IMAGE}" \
+        "${REPO_ROOT}"
 
-echo ">> Tagging ${CLASSIFICATION_IMAGE} as its docker.io/* alias"
-"${CONTAINER_TOOL}" tag "${CLASSIFICATION_IMAGE}" "${CLASSIFICATION_DOCKERIO}"
+    echo ">> Tagging ${CLASSIFICATION_IMAGE} as its docker.io/* alias"
+    "${CONTAINER_TOOL}" tag "${CLASSIFICATION_IMAGE}" "${CLASSIFICATION_DOCKERIO}"
+fi
 
 echo ">> Loading ${CLASSIFICATION_DOCKERIO} into Kind cluster '${KIND_CLUSTER}'"
 kind load docker-image "${CLASSIFICATION_DOCKERIO}" --name "${KIND_CLUSTER}"

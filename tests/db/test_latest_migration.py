@@ -11,8 +11,9 @@ from __future__ import annotations
 import psycopg
 
 
-def test_head_is_0020(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on the current head revision (0020 —
+def test_head_is_0022(migrated_dsn: str) -> None:
+    """Applying the chain to head lands on the current head revision (0022,
+    `main`'s content_kind-on-the-leg revision (#288), parent 0020; before that 0020 —
     ``entities.namespace``, chained after 0019).
 
     The chain is LINEAR. Merging `main`'s lineage chain (0012-0015) into this
@@ -38,4 +39,4 @@ def test_head_is_0020(migrated_dsn: str) -> None:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0020_entity_namespace"
+    assert version == "0022_content_kind_on_legs"

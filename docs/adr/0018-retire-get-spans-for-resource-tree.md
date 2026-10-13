@@ -73,3 +73,18 @@ is reshaped; the REST handlers still call `get_spans` underneath.
   identical `TraceListingEntry` shape (including **Trace counts**) as one element
   of `GET /api/traces` — the cold-open caller reads `.listing_root` and ignores
   the rest, but the shape is honest for future detail-header use.
+
+## 2026-09-29 amendment: CONNECT-only collection visibility
+
+`GET /api/traces` omits **Standalone CONNECT traces** by default when
+`DG_FF_HIDE_CONNECT_ONLY_TRACES` is enabled. The filter is applied to the
+listing-root query before ordering and pagination. It requires the complete
+AuthBridge outbound CONNECT signature and that every span in the trace belongs
+to the root's exchange; neither span count nor the mere presence of a nested
+CONNECT span is a filter criterion.
+
+This changes collection membership, not resource shape or addressability.
+`GET /api/traces/{tid}` and every trace-scoped sub-resource remain unfiltered,
+and all spans remain stored. Disabling the process-wide feature flag restores
+the complete collection after an API restart. This reversible visibility policy
+amends the listing contract here rather than introducing a separate ADR.

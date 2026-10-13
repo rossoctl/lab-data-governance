@@ -33,6 +33,11 @@ The lineage reads are one per grain (ADR-0028 D14):
   ``&source=<natural-key>`` — one data source's reachability from an entity, upstream
   or downstream. Both query parameters are required (ADR-0028 D15).
 
+One stream beside the reads (ADR-0034): ``GET /api/traces/{tid}/events`` is a
+Server-Sent Events stream of ``change`` events carrying the trace's version
+token, so an open trace page re-reads only when the derived picture changed.
+See :mod:`data_governance.api.live`.
+
 Every handler is a thin adapter over the retrieval library: the span reads call
 ``get_spans``; the flow reads call **Interaction retrieval** (``get_interactions``
 / ``get_interactions_feed`` / ``get_entities`` / ``get_interaction_spans`` /
@@ -49,10 +54,12 @@ encodes the returned dataclasses to the wire (ADR-0005).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import datetime as dt
 import json
 import threading
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import uvicorn
@@ -71,12 +78,14 @@ from data_governance import db, retrieval
 from data_governance.risk.api import http as risk_http
 from data_governance.risk.api import metrics_routes, risk_routes, rules_routes
 from data_governance.risk.rules import catalog
+from data_governance.api.live import ChangeHub, trace_events_handler
 
 __all__ = ["SpansApiServer", "build_app"]
 
 _UI_DIR = Path(__file__).parent / "ui"
 
 DEFAULT_PORT = 8080
+DEFAULT_HIDE_CONNECT_ONLY_TRACES = True
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +211,8 @@ async def _traces_handler(request: Request) -> Response:
     Was ``GET /spans?root_only=true&time_from&time_to``. Returns
     ``{"traces": [TraceListingEntry]}`` — the trace-shaped feed the
     recent-traces view reads. ``time_from`` / ``time_to`` still window the
-    listing-root selection; the library ``get_spans`` is unchanged underneath.
+    listing-root selection. The process-wide feature flag controls whether
+    standalone CONNECT traces participate in this collection.
     """
     params = request.query_params
     try:
@@ -214,6 +224,7 @@ async def _traces_handler(request: Request) -> Response:
             time_from=time_from,
             time_to=time_to,
             root_only=True,
+            hide_connect_only_traces=request.app.state.hide_connect_only_traces,
             **kwargs,
         )
     except ValueError as exc:
@@ -674,8 +685,28 @@ async def _payload_handler(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
-def build_app() -> Starlette:
-    """Build and return the Starlette application."""
+@contextlib.asynccontextmanager
+async def _lifespan(app: Starlette) -> AsyncIterator[None]:
+    """Run the change hub for the server's lifetime (ADR-0034)."""
+    hub: ChangeHub = app.state.change_hub
+    hub.start(asyncio.get_running_loop())
+    try:
+        yield
+    finally:
+        hub.stop()
+
+
+def build_app(
+    *,
+    hide_connect_only_traces: bool = DEFAULT_HIDE_CONNECT_ONLY_TRACES,
+    listen_dsn: str | None = None,
+) -> Starlette:
+    """Build the Starlette application with process-wide listing policy.
+
+    *listen_dsn* is the libpq URL the change hub's ``LISTEN`` session uses
+    (ADR-0015: a dedicated session connection, not the pool). ``None`` builds
+    an app whose change streams run on their poll backstop alone.
+    """
     routes: list = [
         Route("/healthz", endpoint=_healthz_handler, methods=["GET"]),
         Route("/api/traces", endpoint=_traces_handler, methods=["GET"]),
@@ -770,6 +801,14 @@ def build_app() -> Starlette:
             endpoint=_payload_handler,
             methods=["GET"],
         ),
+        # The trace's change stream (ADR-0034). A sub-resource of the trace, like
+        # its reads, because that is its scope: one stream answers "did THIS
+        # trace change", and nothing cross-trace.
+        Route(
+            "/api/traces/{tid:str}/events",
+            endpoint=trace_events_handler,
+            methods=["GET"],
+        ),
         Route("/", endpoint=_root_redirect_handler, methods=["GET"]),
         # DAS rule catalog (issue #113). rules_routes.routes() already orders
         # /risk/rules/categories before the /risk/rules/{rule_id} catch-all,
@@ -788,10 +827,14 @@ def build_app() -> Starlette:
     # created it, every route that consults the catalog (/risk/rules*, the
     # metrics leaderboards) answers 503 with the FR-DAS-081 triple rather
     # than a bare 500 — or the packaged catalog, which OPA would not enforce.
-    return Starlette(
+    app = Starlette(
         routes=routes,
+        lifespan=_lifespan,
         exception_handlers={catalog.CatalogUnavailable: _catalog_unavailable_handler},
     )
+    app.state.hide_connect_only_traces = hide_connect_only_traces
+    app.state.change_hub = ChangeHub(listen_dsn)
+    return app
 
 
 async def _catalog_unavailable_handler(
@@ -819,15 +862,24 @@ class SpansApiServer:
         *,
         host: str = "0.0.0.0",
         port: int = DEFAULT_PORT,
+        hide_connect_only_traces: bool = DEFAULT_HIDE_CONNECT_ONLY_TRACES,
+        listen_dsn: str | None = None,
     ) -> None:
         self.host = host
         self.port = port
+        self.hide_connect_only_traces = hide_connect_only_traces
+        self.listen_dsn = listen_dsn
+        self.app: Starlette | None = None
         self._server: object | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        self.app = build_app(
+            hide_connect_only_traces=self.hide_connect_only_traces,
+            listen_dsn=self.listen_dsn,
+        )
         config = uvicorn.Config(
-            app=build_app(),
+            app=self.app,
             host=self.host,
             port=self.port,
             log_level="warning",

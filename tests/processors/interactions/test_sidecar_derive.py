@@ -41,7 +41,7 @@ def test_golden_rows_endpoints_and_parenting():
 
     i1 = rows[golden.A1]
     assert (i1.caller.natural_key, i1.callee.natural_key) == (
-        "user:alice", "agent:team1/weather-service")
+        "client:(unknown)", "agent:team1/weather-service")
     assert i1.parent_anchor_span_id is None  # the root
 
     i3 = rows[golden.B3]
@@ -52,6 +52,25 @@ def test_golden_rows_endpoints_and_parenting():
     i2 = rows[golden.B1]
     assert i2.callee.natural_key == f"llm:{golden._LLM_HOST}/qwen2.5:7b"
     assert i2.caller.natural_key == "agent:team1/weather-service"
+
+
+def test_authenticated_client_id_wins_over_subject_at_inbound_boundary():
+    """The platform-authenticated OAuth client names the caller; the human
+    subject remains span metadata and must not turn the transport caller into a
+    user entity."""
+    spans = golden.build_spans()
+    entry = next(span for span in spans if span.span_id == golden.A1)
+    entry.attributes["lineage.principal.client"] = "demo-client"
+
+    row = _rows_by_anchor(plan_trace(golden.TRACE, spans))[golden.A1]
+
+    assert row.caller.natural_key == "client:demo-client"
+
+
+def test_subject_without_client_id_keeps_anonymous_transport_caller():
+    """A human subject is evidence, not the OAuth transport-client identity."""
+    row = _rows_by_anchor(plan_trace(golden.TRACE, golden.build_spans()))[golden.A1]
+    assert row.caller.natural_key == "client:(unknown)"
 
 
 def test_golden_rows_carry_the_response_span_and_seqs():
@@ -379,7 +398,7 @@ def test_non_pod_entities_have_no_namespace():
     client, an LLM endpoint and a ``peer.host`` fallback have none."""
     plan = plan_trace(golden.TRACE, golden.build_spans())
     rows = _rows_by_anchor(plan)
-    assert rows[golden.A1].caller.namespace is None     # user:alice
+    assert rows[golden.A1].caller.namespace is None     # client:(unknown)
     assert rows[golden.B1].callee.namespace is None     # the llm endpoint
     assert rows[golden.B1].caller.namespace == "team1"  # the agent pod
     spans = [s for s in golden.build_spans() if s.span_id not in (golden.D1, golden.D2)]

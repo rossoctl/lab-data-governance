@@ -13,7 +13,7 @@ copy of the entity **set** and extend it with the entity name", "the **set** of
 entities is merged and extended with the entity".
 
 **Why the column could not keep its name.** ``entity_path`` promised a *path* — a
-sequence, something a consumer may legitimately read hop-by-hop. Migration 0011
+sequence, something a consumer may legitimately read hop-by-hop. Migration 0013
 documented it as "the ORDERED list of entities ... Array, not JSONB, because order
 is the whole point". That promise was never safely keepable: a ``merge`` unions two
 branches that arrived through different entities, and there is no single truthful
@@ -37,14 +37,14 @@ its sets — purely so a re-derivation of identical lineage produces byte-identi
 rows and idempotency stays observable. That sort is serialization, not semantics:
 nothing may infer flow order from the array position.
 
-Migration 0011 is deliberately **left as it was**: it recorded the shape that was
+Migration 0013 is deliberately **left as it was**: it recorded the shape that was
 correct when it shipped, and rewriting applied history to look like it always knew
 better hides the fact that the spec moved. The *why* lives here, in the revision
 that made the change (ADR-0028 records the decision).
 
 Per ADR-0002/0005 the DDL is hand-written ``op.execute(...)`` — no SQLAlchemy ORM
 models, no autogenerate. Reversible: the downgrade renames back, so a rollback to
-0012 leaves a schema 0012's code can read.
+0014 leaves a schema 0014's code can read.
 
 The revision id is terse (``0015_lineage_entities_rename``, not
 ``0013_rename_entity_path_to_entities``) because Alembic's ``alembic_version``
@@ -76,6 +76,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Symmetric rename back, so 0012-era code finds the column it expects. Data is
+    # Symmetric rename back, so 0014-era code finds the column it expects. Data is
     # untouched in both directions; only the promise the name makes differs.
     op.execute("ALTER TABLE lineage_metadata RENAME COLUMN entities TO entity_path")

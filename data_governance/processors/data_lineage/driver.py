@@ -3,7 +3,7 @@
 The generic drain/poll/LISTEN-wake loop lives in
 :mod:`data_governance.processors._driver`; this module supplies the data-lineage
 *stream spec* — the ``interaction_legs`` batch-fetch, the per-leg procedure, and
-the ``dg_legs_inserted`` channel (migration 0010) / ``data_lineage`` cursor name —
+the ``dg_legs_inserted`` channel (migration 0012) / ``data_lineage`` cursor name —
 mirroring the P-classification adapter (``processors/classification/driver.py``).
 
 **Re-derive-per-leg.** The shared loop's grain is one item, one transaction; data
@@ -20,7 +20,7 @@ re-deriving a trace as its later legs arrive converges rather than duplicating.
 The upsert must take the DO UPDATE path (not DO NOTHING): re-derivation genuinely
 changes a leg's lineage as its trace fills in, and ``interaction_legs`` rows are
 themselves rewritten in place when P-interactions re-derives a trace — which is why
-migration 0010's NOTIFY trigger covers UPDATE as well as INSERT. Insert-if-absent
+migration 0012's NOTIFY trigger covers UPDATE as well as INSERT. Insert-if-absent
 would freeze the first, most partial answer.
 
 **The drain has two arms** (:func:`_drain_spec`, issue #137). The cursor arm is the
@@ -29,7 +29,7 @@ revisit a leg it has already passed, and three things can leave such a leg's lin
 wrong or absent:
 
 - P-interactions preserves a leg's ``seq`` across a re-derive (replay determinism), so
-  a leg **rewritten in place** sits behind the cursor and the 0010 wake finds nothing
+  a leg **rewritten in place** sits behind the cursor and the 0012 wake finds nothing
   past it — leaving lineage derived from the old payload while the trace still claims
   ``complete``.
 - A leg whose **producer entity row had not landed yet** is skipped without a lineage
@@ -49,7 +49,7 @@ absent-payload cutoff, issue #120). So for a leg whose trace has legs to derive,
 ``process_leg`` writes three things: the upsert above, a delete of the trace's rows
 **that this derivation did not produce** (:func:`_delete_stale` — scoped by set
 membership, never by ``seq >= stop``), and the trace-level status in
-``lineage_trace_status`` (migration 0012). Why the delete exists and why its scoping
+``lineage_trace_status`` (migration 0014). Why the delete exists and why its scoping
 must be set membership: ADR-0028 D9. All three writes share the loop's one
 transaction, so a trace's metadata and its coverage claim can never disagree. A
 trace we cannot see yet gets none of the three — no status row, which is how
@@ -91,7 +91,7 @@ log = logging.getLogger(__name__)
 # independent cursors.
 PROCESSOR_NAME = "data_lineage"
 
-# Channel the legs-write trigger (migration 0010) notifies on. Must match the
+# Channel the legs-write trigger (migration 0012) notifies on. Must match the
 # ``pg_notify('dg_legs_inserted', '')`` in dg_notify_legs().
 NOTIFY_CHANNEL = "dg_legs_inserted"
 
@@ -293,7 +293,7 @@ def _upsert_status(
     story: the partial→complete transition, when a late payload arrives, is a plain
     overwrite of that single row with no earlier, longer answer left behind to
     shadow it. Why the status is persisted here rather than derived on read:
-    ADR-0028 D8 (migration 0012).
+    ADR-0028 D8 (migration 0014).
 
     ``stopped_at_seq`` is written as NULL for a complete trace, which the table's
     CHECK constraint pairs with the status so a half-written claim ("partial, but I
@@ -401,7 +401,7 @@ def _fetch_stale_traces(tx: db.Transaction, cursor: int, limit: int) -> list[str
     deliberately PRESERVES its ``seq`` (``interactions/state.py`` omits ``seq`` from
     the upsert's ``DO UPDATE SET``, so replay and crash recovery cannot reshuffle
     seqs a consumer already delivered). :func:`_fetch_batch` drains ``seq > cursor``.
-    A rewritten leg therefore sits *behind* the cursor: migration 0010's trigger does
+    A rewritten leg therefore sits *behind* the cursor: migration 0012's trigger does
     wake us, we drain, we find nothing past the cursor, and the lineage derived from
     the old payload survives — while ``lineage_trace_status`` still says
     ``complete``. Over-reporting is the safe direction for a governance tool; serving
@@ -433,7 +433,7 @@ def _fetch_stale_traces(tx: db.Transaction, cursor: int, limit: int) -> list[str
        deliberately NOT a D6 payload gap (see
        ``test_an_unknown_producer_is_not_a_payload_gap``) — and the driver then
        advances the cursor past it. The entity arriving later is not itself a legs
-       write, so migration 0010's trigger does not fire; without this branch the leg
+       write, so migration 0012's trigger does not fire; without this branch the leg
        has no lineage forever and the trace still reports ``complete``. This is also
        what recovers predicate 2's own precondition: once the entity lands, the leg is
        re-derived and gains the row it never had.
@@ -701,7 +701,7 @@ def run(stop_event: threading.Event, dsn: str, matcher: Matcher | None = None) -
     *stop_event* is set. See :func:`_driver.run`.
 
     Passes the two-arm :func:`_drain_spec` through ``_driver.run``'s ``drain_fn``
-    seam so each wake also sweeps for rewritten legs (issue #137). Migration 0010's
+    seam so each wake also sweeps for rewritten legs (issue #137). Migration 0012's
     trigger covers UPDATE, so a re-derive does wake us; the poll backstop bounds the
     latency if a notification is missed."""
     _driver.run(_spec(matcher), stop_event, dsn, drain_fn=_drain_spec)

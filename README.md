@@ -51,6 +51,13 @@ and the collector tee), and instruments a namespace's agents/tools for lineage.
 ./deploy/dg.sh component uninstall   # the inverse (add --keep-data to keep the PVC)
 ```
 
+On a Podman-backed Kind cluster, set `CONTAINER_TOOL=podman` and
+`KIND_EXPERIMENTAL_PROVIDER=podman`. If the classification image is already
+cached on the host, use
+`./deploy/dg.sh component install --reuse-classification` to load it into a
+fresh Kind node while rebuilding only the shared receiver/UI image. The
+command checks that the cached image exists before starting the build.
+
 `component install` is idempotent; add `--no-build` to skip the image build when
 only manifests changed. It performs a `rollout restart` for you — this is
 **load-bearing and easy to forget**: the manifests pin `:latest` with
@@ -68,14 +75,19 @@ To make DG observe a namespace, instrument its agents and tools for lineage:
 
 ```sh
 ./deploy/dg.sh namespaces list                 # namespaces DG can instrument
-./deploy/dg.sh namespace <ns> instrument       # instrument every entity in <ns>
-./deploy/dg.sh namespace <ns> instrument <e>   # instrument a single entity
+./deploy/dg.sh namespace <ns> instrument       # instrument trusted agents/tools in <ns>
+./deploy/dg.sh namespace <ns> instrument <e>   # instrument one trusted entity
 ./deploy/dg.sh namespace <ns> status           # instrumentation state of <ns>
 ```
 
-Instrumentation is one-way and mode-preserving; the reasoning is recorded in
+Instrumentation is one-way and mode-preserving. Rossoctl-managed agents/tools
+are selected by `rossoctl.io/type`, retain their enforcing sidecars and auth,
+and are converged by rolling the application shim before hot-reloading the
+proxy pipeline. Namespace-wide activation completes all preflight checks, then
+rolls tools before agents, alphabetically within each group. `status` reports
+subsequent drift. The reasoning is recorded in
 [ADR-0031](docs/adr/0031-non-reversible-namespace-lineage-activation.md) and
-[ADR-0032](docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md), and the
+[ADR-0033](docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md), and the
 CLI design in [`docs/cli.md`](docs/cli.md).
 
 ### 3. Worked example: the travel-advisor demo
@@ -106,6 +118,10 @@ and the expected trace shape) lives with the `agent-examples` project.
 - `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE` — connection-pool sizing (default 1 / 10).
 - `DB_POOL_TIMEOUT` — seconds to wait for a connection from the pool before
   raising `PoolTimeout` (default 30).
+- `DG_FF_HIDE_CONNECT_ONLY_TRACES` — when true (the default), omit each
+  **Standalone CONNECT trace** from `GET /api/traces`. Its spans remain
+  stored and directly accessible. Accepted values are `true/1/yes/on` and
+  `false/0/no/off`; any other configured value prevents API startup.
 
 ## Where to go next
 

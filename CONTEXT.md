@@ -32,6 +32,12 @@ beyond the shared id; "tree shape" is derived from `parent_id` links at query
 time.
 _Avoid_: "request", "session" — those imply semantics v1 does not assign.
 
+**Standalone CONNECT trace**:
+A **Trace** consisting only of an opaque outbound CONNECT tunnel exchange that
+arrived without causal context. It proves that a TCP tunnel to a destination was
+attempted, but cannot reveal the HTTP operations or payloads carried inside that
+tunnel. It is transport evidence rather than application activity.
+
 **Listing root**:
 The one **Span** chosen to represent a **Trace** in a UI listing row. Defined as
 the trace's earliest **Real root** if one exists, otherwise its earliest
@@ -143,8 +149,12 @@ it is *not* the input to `Entity.kind = service` identity. Always qualify.
 The stable, kind-specific identity string for an **Entity**. One row per
 `(kind, natural_key)` in `entities`. Format per kind:
 - `user` → `user:<kagenti.user.id>`
-- `client` → `client:<host-or-ip>` (preferring `peer.service`, then
-  `client.address` host, then `client.address` IP)
+- `client` → `client:<identity>`: sidecar inbound traffic uses the authenticated
+  OAuth `lineage.principal.client` value when present and `client:(unknown)`
+  when absent (a human `lineage.principal.sub` remains evidence, not caller
+  identity); other derivations use host-or-IP, preferring `peer.service`, then
+  `client.address` host, then `client.address` IP. These sources intentionally
+  share the client natural-key namespace, so equal values denote one client.
 - `agent` → `agent:(<project_name>,<canonical_service_name>)`
 - `tool` (in-process) →
   `tool:<owning_agent_natural_key>:<tool_name>`
@@ -454,6 +464,13 @@ fields are never edited in place — host-fill-in for an
 `llm:(unknown)/MODEL` happens by per-interaction retarget onto a
 distinct `llm:<host>/<model>` row, not by mutating the unresolved row.
 
+Issue #256 adds one narrow hard-delete exception for the sidecar algorithm:
+unnamespaced `agent:<host>:<port>` and `tool:<host>:<port>` peer identities are
+provisional transport artifacts. After a trace reconcile they are deleted only
+when no interaction endpoint and no `entity_spans` evidence row anywhere still
+references them. Namespaced canonical workload entities and every other entity
+kind retain the normal persistent lifecycle.
+
 **P-interactions**:
 The processor that reads stored **Spans** and derives **Entities**,
 **Interactions**, and **Payloads**, writing them to the `entities`,
@@ -555,7 +572,10 @@ response bodies, (2) canonicalizes each into a normalized form per its
 `content_hash`. Load-bearing for dedup quality and analytics correctness.
 
 **Content kind**:
-The semantic shape of a **Payload**. Closed enum defined by `P-interactions`
+The role a **Payload**'s bytes played on one **Interaction leg** (`llm_completion`,
+`agent_response`, …) — a property of the leg, not of the bytes: the same
+content-addressed **Payload** row can sit under two kinds on two legs (issue
+#286). Closed enum defined by `P-interactions`
 (initial members: `llm_chat_prompt`, `llm_completion`, `tool_call_arguments`,
 `tool_call_result`, `http_request_body`, `http_response_body`,
 `agent_message`, `unknown`); adding a kind is a code change. Unlike the three
@@ -570,9 +590,11 @@ non-`unknown` kind has its own canonicalization rule under the
 attributes the processor did not recognise: the **Payload** is still stored
 (raw bytes, no canonicalization, hash over the raw bytes) so the
 **Interaction** still carries a `request_payload_hash` /
-`response_payload_hash` and analytics can measure classifier coverage by
-filtering `content_kind = 'unknown'`. Stored on
-`interaction_payloads.content_kind`.
+`response_payload_hash`. Today no writer emits `unknown`: the three
+algorithms stamp a kind from their own extraction, and a protocol with no
+semantic body kind leaves the leg's kind NULL. Stored on
+`interaction_legs.content_kind` (migration 0022); the payload row itself
+carries no kind.
 
 **Classification**:
 The data-governance verdict on the sensitivity of one **Payload** — its
@@ -648,13 +670,14 @@ JSONB.
 
 **Text projection rule**:
 The processor-side rule by which **P-classification** projects a **Payload**'s
-JSONB `content` into its **Classifiable text**, one branch per **Content
-kind** (e.g. concatenate message bodies for `llm_chat_prompt`, take the result
-string for `tool_call_result`). Like the **Payload extraction rule** it
-mirrors, this is a closed set enforced in code that churns as content kinds
-mature. `unknown` (and any kind without a branch) falls back to serializing
-the whole `content` JSONB to a canonical string — best-effort classification
-that also marks the projection-coverage gap.
+JSONB `content` into its **Classifiable text**. A function of the content
+alone — it recognises shapes, not **Content kinds** (a bare string is the
+text; the LLM message envelope projects to its message bodies), because the
+kind is the referencing leg's and one payload row can sit under two kinds
+(issue #286); that is what makes one **Classification** per `content_hash`
+sound. Anything else falls back to serializing the whole `content` JSONB to a
+canonical string — best-effort classification that also marks the
+projection-coverage gap.
 
 **Data lineage**:
 Where one **Payload**'s content originated and what it passed through. Carried
@@ -787,8 +810,11 @@ declared per-entity taxonomy table; reading it is **deferred**, so today the ans
 is `Entity.kind` defaults — `tool` ✓, `llm` ✗, `agent` ✗ — in the same one named
 place as the **Accumulating entity** predicate
 (`processors/data_lineage/memory.py`), because the same deferred table supplies
-both. The taxonomy's other two columns have no consumer: `target` is unread, and
-`location` (internal/external) is a placeholder with no v1 semantics.
+both. Of the taxonomy's other two columns: `target` is unread **by the
+derivation** — no operation or traversal branch consults it — but does back the
+read-path `list destinations` (`processors/data_lineage/memory.py`'s
+`is_entity_target`, `TARGET_KINDS`; `retrieval/lineage_graph.py`); `location`
+(internal/external) is a placeholder with no v1 semantics.
 _Avoid_: inferring source-hood from a tool's name, description or payload sizes —
 considered and rejected (only one of eight tools in the live corpus even carries
 `tool.description`). The accepted cost is that a pass-through delegation tool
@@ -883,7 +909,9 @@ anchored on its current **Listing root**. Is the element type of the
 singular: `{trace_id, listing_root, counts, in_time_window}`, where
 `listing_root` is the anchor **Span**, `counts` is its **Trace counts**,
 and `in_time_window` reports whether the anchor is **In-window**. The
-collection and singular return the identical shape.
+collection and singular return the identical shape. Collection membership may
+omit a **Standalone CONNECT trace** under the deployment's default visibility
+policy; the singular resource remains addressable when its `trace_id` is known.
 Eventually consistent: the listing root, and therefore the row's display
 fields, may change as late spans arrive or **Finalization** advances a
 span's `seq`. Identity is `trace_id`; everything else is derived. The UI
@@ -1009,7 +1037,10 @@ usable by non-UI consumers.
   resource-oriented and namespaced: JSON resources under `/api/`
   (`/api/traces`, `/api/traces/{tid}`, `/api/traces/{tid}/spans[/{sid}[/children]]`,
   the interaction/entity sub-resources, the cross-trace interaction feed
-  `/api/interactions?since_seq&limit`, `/api/payloads/{hash}`); HTML pages
+  `/api/interactions?since_seq&limit`, `/api/payloads/{hash}`, and one
+  stream, `/api/traces/{tid}/events` — Server-Sent Events carrying the
+  **Trace version** token so an open trace page re-reads only when the
+  derived picture changed, ADR-0034); HTML pages
   and JS assets under `/ui/`. The single `GET /spans` pass-through was retired
   in favour of these — the library `get_spans` (and its `root_only` /
   `parent_id` parameters) is unchanged; only the HTTP surface was reshaped.

@@ -91,6 +91,10 @@ spec:
             # OPA after `rollout restart deploy/opa`.
             - name: RISK_RULES_SOURCE
               value: /policies/rules_source.json
+            # Default-on listing policy. The spans remain stored and directly
+            # addressable; only CONNECT-only rows in GET /api/traces are hidden.
+            - name: DG_FF_HIDE_CONNECT_ONLY_TRACES
+              value: "true"
           ports:
             - name: http
               containerPort: 8080

@@ -161,8 +161,12 @@ def _self_key(span: Span) -> str:
 
 @dataclasses.dataclass
 class _Payload:
+    """One content-addressed body: bytes only. The **Content kind** is not
+    here — it is the role the bytes played on a leg, so it rides on the leg
+    (``_Row.request_content_kind`` / ``response_content_kind``, migration
+    0022). The same bytes referenced from two legs are one row with two kinds."""
+
     content_hash: str
-    content_kind: str
     content: Any
     byte_size: int
 
@@ -211,6 +215,11 @@ class _Row:
     error: bool | None
     request_payload: _Payload | None
     response_payload: _Payload | None
+    # The legs' content kinds, from the exchange's facts (``classify``), None
+    # for a protocol with no semantic body kind. Stored on the leg, never on the
+    # shared payload row (issue #286).
+    request_content_kind: str | None
+    response_content_kind: str | None
     seq: int
     response_span_id: str | None
     resp_seq: int | None
@@ -219,6 +228,7 @@ class _Row:
 def _mk_payload(content_kind: str | None, value: Any) -> _Payload | None:
     """Content-address one body. None when the body is absent OR the protocol
     carries no semantic content kind — the row stays complete with a NULL hash.
+    The kind is only the gate here; it is stored on the leg (``_legs_of``).
 
     Absence is judged on the RAW attribute, before ``_coerce``: a wire body
     that decodes to JSON ``null`` still produces a payload row (content null,
@@ -228,7 +238,7 @@ def _mk_payload(content_kind: str | None, value: Any) -> _Payload | None:
         return None
     content = _coerce(value)
     canon = _canonical_bytes(content)
-    return _Payload(_hash_payload(canon), content_kind, content, len(canon))
+    return _Payload(_hash_payload(canon), content, len(canon))
 
 
 def _outcome_error(resp: Span | None) -> bool | None:
@@ -270,15 +280,15 @@ def _callee(kinds: Kinds, req: Span, echo: Span | None) -> _Entity:
 
 
 def _caller(kinds: Kinds, req: Span, self_kind_of: dict[str, str]) -> _Entity:
-    """Caller identity from facts. Inbound: user:<principal.sub>, or the
-    anonymous client:(unknown) — the wire carries no caller address (contract
-    v1.4 removed ``lineage.peer.addr``). Outbound: this pod's self.id, of the
-    kind this trace already knows the pod to be (``_self_kinds``), else the
-    table's default."""
+    """Caller identity from facts. Inbound: the authenticated OAuth client when
+    present, otherwise client:(unknown).  The human subject remains available
+    on the evidence span but does not name the transport caller. Outbound: this
+    pod's self.id, of the kind this trace
+    already knows the pod to be (``_self_kinds``), else the table's default."""
     if _direction(req) == "inbound":
-        sub = _attr(req, "lineage.principal.sub")
-        if sub:
-            return _Entity("user", str(sub))
+        client = _attr(req, "lineage.principal.client")
+        if client:
+            return _Entity("client", str(client))
         return _Entity("client", _UNKNOWN)
     return _self_entity(self_kind_of.get(_self_key(req), kinds.caller_kind), req)
 
@@ -307,9 +317,11 @@ def _self_kinds(reqs: dict[str, Span]) -> dict[str, str]:
     egress — a weather tool fetching a forecast over http, a booking tool
     delegating over a2a — would otherwise be minted twice, ``tool:X`` for what
     it serves and ``agent:X`` for what it calls (seen live 2026-09-01). Read off
-    the whole trace, so any arrival order gives the same plan; the stored
-    ``entities`` row minted under a partial trace is not withdrawn (global,
-    upsert-only — ADR-0030), only re-pointed away from.
+    the whole trace, so any arrival order gives the same plan. A host:port
+    agent/tool entity minted under a partial trace is retired after reconciliation
+    only when no interaction or entity-span evidence anywhere still references
+    it; all canonical and non-agent/tool entities remain global and upsert-only
+    (ADR-0030's issue-#256 revision).
     """
     served: dict[str, set[str]] = {}
     sent: dict[str, set[str]] = {}
@@ -360,7 +372,8 @@ class _Plan:
 def derive_trace(tx: db.Transaction, trace_id: str) -> None:
     """Reconcile one trace's interaction graph from ALL its spans. Idempotent;
     order-independent. Deletes this trace's derived rows no longer justified by
-    the current span set (trace-scoped — ``entities`` is global, upsert-only)."""
+    the current span set, then retires only globally unreferenced provisional
+    host:port agent/tool entities."""
     _write(tx, plan_trace(trace_id, _fetch_trace_spans(tx, trace_id)))
 
 
@@ -476,6 +489,8 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
             error=_outcome_error(resp),
             request_payload=req_pl,
             response_payload=resp_pl,
+            request_content_kind=kinds.req_content_kind,
+            response_content_kind=kinds.resp_content_kind,
             seq=req.seq,
             response_span_id=resp.span_id if resp is not None else None,
             resp_seq=resp.seq if resp is not None else None,
@@ -523,18 +538,24 @@ def _upsert_payload(tx: db.Transaction, pl: _Payload | None) -> str | None:
     if pl is None:
         return None
     tx.execute(
-        "INSERT INTO interaction_payloads (content_hash, content_kind, content, byte_size) "
-        "VALUES (%s, %s, %s::jsonb, %s) ON CONFLICT (content_hash) DO NOTHING",
-        (pl.content_hash, pl.content_kind, json.dumps(pl.content, default=str), pl.byte_size),
+        "INSERT INTO interaction_payloads (content_hash, content, byte_size) "
+        "VALUES (%s, %s::jsonb, %s) ON CONFLICT (content_hash) DO NOTHING",
+        (pl.content_hash, json.dumps(pl.content, default=str), pl.byte_size),
     )
     return pl.content_hash
 
 
-def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None]]:
+def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, str | None, bool | None]]:
     """Project one row into OBSERVED legs: (leg_type, occurred_at, payload_hash,
-    error). The request leg always exists; the response leg only when the
-    response span does — its absence IS the in-flight signal (never fabricated,
-    matching the graph adapter's rule).
+    content_kind, error). The request leg always exists; the response leg only
+    when the response span does — its absence IS the in-flight signal (never
+    fabricated, matching the graph adapter's rule).
+
+    ``content_kind`` is the leg's own: the role its body played, from the
+    exchange's facts. It is a fact of the exchange, not of the capture, so it is
+    stamped even when ``capture_io`` left the leg bodyless; it is None only for
+    a protocol with no semantic body kind (plain http). The shared payload row
+    carries no kind (issue #286, migration 0022).
 
     Request-leg ``error`` is None: the wire carries no request-side outcome —
     ``lineage.outcome`` is a completion fact and belongs to the response leg (a
@@ -547,10 +568,11 @@ def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None]]:
     request span exists, and the request leg is inserted first — either in the
     same transaction (request emitted first) or in an earlier drain (response
     still in flight)."""
-    legs: list[tuple[str, Any, str | None, bool | None]] = [(
+    legs: list[tuple[str, Any, str | None, str | None, bool | None]] = [(
         "request",
         row.started_at,
         row.request_payload.content_hash if row.request_payload else None,
+        row.request_content_kind,
         None,
     )]
     if row.response_span_id is not None:
@@ -558,6 +580,7 @@ def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, bool | None]]:
             "response",
             row.ended_at,
             row.response_payload.content_hash if row.response_payload else None,
+            row.response_content_kind,
             row.error,
         ))
     return legs
@@ -571,7 +594,9 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
     ``interactions`` (legs carry no trace_id), so that delete must run while the
     stale parent rows still exist."""
     trace_id, want, anchor_ids = plan.trace_id, plan.want, plan.anchor_ids
-    # 1. entities (global, upsert-only — NEVER deleted here) + payloads.
+    # 1. entities + payloads.  Canonical pod entities are global and upserted.
+    #    A host:port agent/tool created before its inbound echo is provisional;
+    #    it is retired at the end of reconciliation once nothing references it.
     entity_id_of: dict[str, str] = {}
     for row in want.values():
         for ent in (row.caller, row.callee):
@@ -618,17 +643,18 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
     #    once-assigned value — the post-#123 DB-owned model shared with the
     #    streaming branch of state.flush (only cosmetic nextval gaps on replay).
     for row in want.values():
-        for leg_type, occurred_at, payload_hash, error in _legs_of(row):
+        for leg_type, occurred_at, payload_hash, content_kind, error in _legs_of(row):
             tx.execute(
                 "INSERT INTO interaction_legs (interaction_id, leg_type, "
-                "occurred_at, payload_hash, error) "
-                "VALUES (%s, %s, %s, %s, %s) "
+                "occurred_at, payload_hash, content_kind, error) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
                 "occurred_at = EXCLUDED.occurred_at, "
                 "payload_hash = EXCLUDED.payload_hash, "
+                "content_kind = EXCLUDED.content_kind, "
                 "error = EXCLUDED.error",
                 (row.interaction_id, leg_type, occurred_at, payload_hash,
-                 error),
+                 content_kind, error),
             )
 
     # 4. Delete this trace's interactions no longer justified by `want` — the
@@ -700,3 +726,20 @@ def _write(tx: db.Transaction, plan: _Plan) -> None:
                 "ON CONFLICT (trace_id, span_id, entity_id, role) DO NOTHING",
                 (entity_id_of[ent.natural_key], trace_id, row.anchor_span_id),
             )
+
+    # 7. Retire only clearly provisional agent/tool peer identities after every
+    #    trace-scoped reference has been reconciled.  The two NOT EXISTS guards
+    #    make this safe across traces and preserve evidence-only entities.  Do
+    #    not apply the host:port heuristic to service/llm rows: those are stable
+    #    endpoint identities by contract.
+    tx.execute(
+        "DELETE FROM entities e "
+        "WHERE e.namespace IS NULL "
+        "AND e.kind IN ('agent', 'tool') "
+        "AND e.natural_key ~ '^(agent|tool):[^/[:space:]]+:[0-9]+$' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM interactions i "
+        "  WHERE i.caller_entity_id = e.id OR i.callee_entity_id = e.id"
+        ") "
+        "AND NOT EXISTS (SELECT 1 FROM entity_spans es WHERE es.entity_id = e.id)"
+    )

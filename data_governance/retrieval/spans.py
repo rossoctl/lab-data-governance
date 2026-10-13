@@ -160,6 +160,7 @@ def get_spans(
     time_to: dt.datetime | int | None = None,
     root_only: bool = False,
     order: Literal["asc", "desc"] | None = None,
+    hide_connect_only_traces: bool = False,
 ) -> GetSpansResult:
     """Read spans from the database, cursor-paginated by ``seq``.
 
@@ -191,6 +192,11 @@ def get_spans(
         ``"asc"`` (default) or ``"desc"``. Only meaningful for the
         bare-cursor / ``trace_id`` / ``span_id`` paths; ``root_only``
         sorts by listing-root ``started_at desc`` regardless.
+    hide_connect_only_traces:
+        When true, omit **Standalone CONNECT traces** from the multi-trace
+        ``root_only`` listing. Stored spans and single-trace reads are never
+        affected. A standalone CONNECT trace is rooted by an unparented
+        AuthBridge outbound CONNECT request and contains no other exchange.
     """
     _validate_params(
         limit=limit,
@@ -213,6 +219,7 @@ def get_spans(
             trace_id=trace_id,
             time_from=time_from_dt,
             time_to=time_to_dt,
+            hide_connect_only_traces=hide_connect_only_traces,
         )
 
     if parent_id is not None:
@@ -488,6 +495,7 @@ def _query_listing_roots(
     trace_id: str | None,
     time_from: dt.datetime | None,
     time_to: dt.datetime | None,
+    hide_connect_only_traces: bool,
 ) -> GetSpansResult:
     """Return one listing root per trace, plus per-trace counts.
 
@@ -514,6 +522,7 @@ def _query_listing_roots(
         limit=limit,
         time_from=time_from,
         time_to=time_to,
+        hide_connect_only_traces=hide_connect_only_traces,
     )
 
 
@@ -558,6 +567,7 @@ def _listing_roots_paginated(
     limit: int,
     time_from: dt.datetime | None,
     time_to: dt.datetime | None,
+    hide_connect_only_traces: bool,
 ) -> GetSpansResult:
     """Multi-trace listing-root query.
 
@@ -622,8 +632,39 @@ def _listing_roots_paginated(
             FROM candidates
         )
         SELECT {_SELECT_COLS}
-        FROM ranked
+        FROM ranked r
         WHERE rn = 1
+          AND (
+            NOT %s
+            OR NOT (
+              r.parent_id IS NULL
+              AND r.attributes @> '{{
+                "http.method": "CONNECT",
+                "url.scheme": "tcp",
+                "lineage.role": "request",
+                "lineage.direction": "outbound",
+                "lineage.parent.source": "none"
+              }}'::jsonb
+              AND COALESCE(
+                r.resource_attributes @> '{{
+                  "authbridge.component": "lineage-telemetry"
+                }}'::jsonb,
+                FALSE
+              )
+              AND COALESCE(
+                r.attributes ->> 'lineage.exchange.id' = r.span_id,
+                FALSE
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM spans member
+                WHERE member.trace_id = r.trace_id
+                  AND member.attributes ->> 'lineage.exchange.id'
+                      IS DISTINCT FROM
+                      r.attributes ->> 'lineage.exchange.id'
+              )
+            )
+          )
     """
 
     # Composite keyset cursor: resolve caller's seq to (started_at, span_id)
@@ -637,7 +678,7 @@ def _listing_roots_paginated(
     # anchor the keyset at an interior row and exclude rows that should appear
     # on the next page.
     outer_conditions: list[str] = []
-    outer_params: list[Any] = list(window_params)
+    outer_params: list[Any] = [*window_params, hide_connect_only_traces]
 
     with _repeatable_read() as tx:
         if cursor is not None:

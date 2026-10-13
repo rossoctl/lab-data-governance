@@ -82,12 +82,20 @@ class InteractionLegView:
     time, the response leg's the completion time); ``None`` if the leg's
     timestamp is absent. ``payload_hash`` references the leg's **Payload**
     (request vs response body), ``None`` when the leg carries no body.
+    ``content_kind`` is the role that body played on THIS leg, as the writer
+    stored it (migration 0022) — the same payload row can be ``llm_completion``
+    on one leg and ``agent_response`` on another; ``None`` for a protocol with
+    no semantic body kind, and ``None`` on legs written before 0022 until their
+    trace is re-derived. The interaction's ``kinds.request_content_kind`` /
+    ``response_content_kind`` are a separate, read-time re-derivation from the
+    anchor span (ADR-0030); the leg column is the fact of record for the leg.
     ``error`` is the leg's tri-state error (``True`` / ``False`` / ``None``).
     """
 
     leg_type: str
     occurred_at: str | None
     payload_hash: str | None
+    content_kind: str | None
     error: bool | None
     seq: int
 
@@ -449,18 +457,19 @@ def _assemble_interactions(
     # the sequence diagram draws request-then-response.
     leg_rows = tx.fetch_all(
         "SELECT interaction_id::text, leg_type::text, occurred_at, "
-        "payload_hash, error, seq "
+        "payload_hash, content_kind, error, seq "
         "FROM interaction_legs WHERE interaction_id = ANY(%s) "
         "ORDER BY interaction_id, leg_type",
         (ids,),
     )
     legs_by_ix: dict[str, list[InteractionLegView]] = {}
-    for iid, leg_type, occurred_at, payload_hash, error, seq in leg_rows:
+    for iid, leg_type, occurred_at, payload_hash, content_kind, error, seq in leg_rows:
         legs_by_ix.setdefault(iid, []).append(
             InteractionLegView(
                 leg_type=leg_type,
                 occurred_at=occurred_at.isoformat() if occurred_at else None,
                 payload_hash=payload_hash,
+                content_kind=content_kind,
                 error=error,
                 seq=seq,
             )

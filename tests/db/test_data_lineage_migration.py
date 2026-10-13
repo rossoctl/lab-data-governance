@@ -1,6 +1,6 @@
 """Tests for the ``lineage_metadata`` derived-table migration (issue #117).
 
-Migration 0011 adds the store for intra-trace **data lineage** (ADR-0028): one
+Migration 0013 adds the store for intra-trace **data lineage** (ADR-0028): one
 row per interaction leg that received lineage, holding the metadata triple.
 
 The two assertions that carry design weight:
@@ -143,7 +143,7 @@ def test_has_the_metadata_triple_and_seq(migrated_dsn: str) -> None:
     row's own ``seq`` and the secondary-index ``payload_hash``.
 
     The third column is ``entities``, renamed from ``entity_path`` by migration
-    0013 when the spec redefined it as an unordered set (ADR-0028)."""
+    0015 when the spec redefined it as an unordered set (ADR-0028)."""
     cols = _columns(migrated_dsn, TABLE)
     assert set(cols) == {
         "interaction_id",
@@ -266,12 +266,12 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
 
 
     # The head-pin assertion lives with whichever revision is head; it moved on to
-    # ``test_lineage_trace_status_migration.py`` when 0012 landed, the same way this
+    # ``test_lineage_trace_status_migration.py`` when 0014 landed, the same way this
     # file inherited it from ``test_legs_notify_trigger.py``.
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
-    """upgrade -> downgrade(0010) -> upgrade drops and re-adds the table, leaving
+    """upgrade -> downgrade(0012) -> upgrade drops and re-adds the table, leaving
     ``interaction_legs`` (and the ``leg_type`` ENUM it shares) intact."""
     from alembic import command
 

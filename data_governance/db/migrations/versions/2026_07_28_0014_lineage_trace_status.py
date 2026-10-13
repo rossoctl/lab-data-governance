@@ -13,7 +13,7 @@ ADR alongside:
 
   - Derived-on-read would have to infer the gap from the persisted rows, and it
     cannot. Before this revision the driver re-derived a whole trace per arriving
-    leg and **upserted without deleting** (the write path 0011 shipped), so rows
+    leg and **upserted without deleting** (the write path 0013 shipped), so rows
     from an earlier, longer derivation outlived a later, shorter one; "no lineage
     row past seq N" is therefore not a reliable signal. Inferring the gap from
     ``interaction_legs.payload_hash IS NULL`` instead would work, but it
@@ -44,7 +44,7 @@ Shape:
                         convention for closed value sets, so the column cannot
                         hold a third reading of the same fact. **NOT NULL**, which
                         is what makes absence of the ROW the only way to express
-                        "unknown" (the ``lineage_metadata`` convention from 0011):
+                        "unknown" (the ``lineage_metadata`` convention from 0013):
                         a present row always makes a definite claim, and there is
                         no in-band NULL for a reader to reinterpret as
                         ``complete``. Why unknown must never collapse into
@@ -67,7 +67,7 @@ What this revision deliberately does NOT add — these stay open in ADR-0028 D6:
 - **No reason/classification column.** Telling *not captured* from *redacted*
   (data flowed but is opaque) from *genuinely empty* from *response in-flight* is
   deferred; a column now would fix that open choice by accident, exactly as a
-  status column in 0011 would have fixed this one.
+  status column in 0013 would have fixed this one.
 - **No per-leg or per-path taint marking.** This ticket stops the WHOLE trace at
   the gap; taint/reachability cutoff (poisoning only the paths through the gap)
   is deferred, and would be per-leg state rather than this trace-level row.
@@ -113,7 +113,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # 0011's lineage_metadata and 0009's leg_type ENUM are not this revision's to
+    # 0013's lineage_metadata and 0009's leg_type ENUM are not this revision's to
     # remove; the lineage_status ENUM is, and only this table uses it.
     op.execute("DROP TABLE IF EXISTS lineage_trace_status")
     op.execute("DROP TYPE IF EXISTS lineage_status")

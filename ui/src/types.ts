@@ -110,7 +110,6 @@ export interface Classification {
 /** A payload row addressed by content hash (`GET /api/payloads/{hash}`). */
 export interface Payload {
   content_hash: string;
-  content_kind: string;
   content: unknown;
   byte_size: number;
   /** The inlined **Classification** verdict (ADR-0024); `null` during the

@@ -10,7 +10,6 @@ P-classification has not run, the verdict object once its row lands, and
 from __future__ import annotations
 
 import psycopg
-import pytest
 
 from data_governance import retrieval
 
@@ -18,8 +17,8 @@ from data_governance import retrieval
 def _insert_payload(conn: psycopg.Connection, *, content_hash: str) -> None:
     conn.execute(
         "INSERT INTO interaction_payloads "
-        "(content_hash, content_kind, content, byte_size) "
-        "VALUES (%s, 'unknown', '{}'::jsonb, 2)",
+        "(content_hash, content, byte_size) "
+        "VALUES (%s, '{}'::jsonb, 2)",
         (content_hash,),
     )
 
@@ -49,7 +48,6 @@ def test_payload_without_classification_reports_null(configured_db: str) -> None
     view = retrieval.get_payload("unclassified")
     assert view is not None
     assert view.content_hash == "unclassified"
-    assert view.content_kind == "unknown"
     assert view.byte_size == 2
     assert view.classification is None
 

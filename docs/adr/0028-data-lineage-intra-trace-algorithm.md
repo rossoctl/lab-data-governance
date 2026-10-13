@@ -240,7 +240,7 @@ tidying and are silent in every test that only exercises derived traces. There i
 no default. Unknown is a third value and it must stay expressible end to end.
 
 Two things make this hard to get wrong at the storage layer, and they are why the
-schema-level statements of it are worth keeping (migration 0012): `status` is
+schema-level statements of it are worth keeping (migration 0014): `status` is
 `NOT NULL`, and a CHECK constraint pairs it with `stopped_at_seq`. So a *present*
 row always makes a definite claim, absence of the **row** is the only way to say
 "unknown", and there is no in-band NULL for an editor to reinterpret. The
@@ -272,7 +272,7 @@ paths through the gap); it stops the whole trace at the gap.
 
 **Shipped** with issue #120: the cutoff in `traversal.derive_trace_lineage`
 (which now returns a trace-level `TraceLineage`), the status in
-`lineage_trace_status` (migration `0012`), on
+`lineage_trace_status` (migration `0014`), on
 `GET /api/traces/{tid}/data-lineage` beside `legs`, and as a warning at the top
 of the flow view.
 
@@ -342,7 +342,7 @@ decision because it is a deliberate departure from the pattern — and from the
 
 **Why a derivation shrinks.** Lineage is re-derived per arriving leg, and legs
 are themselves rewritten in place when P-interactions re-derives a trace
-(migration 0010's NOTIFY trigger covers UPDATE for exactly this reason — though
+(migration 0012's NOTIFY trigger covers UPDATE for exactly this reason — though
 covering UPDATE only delivers the *wake*; making the rewritten leg reachable at all
 took D13). If a
 re-derivation leaves a leg without a payload, D6 truncates: the trace that
@@ -443,15 +443,15 @@ transformation sets beside it use. The null / empty-set / populated three-state
 handling is unchanged and unrelated: "not yet derived", "derived, passed through
 nothing" and "derived, passed through these" remain three distinct readings.
 
-Migration 0011 is left as it shipped. It recorded the shape that was correct at the
+Migration 0013 is left as it shipped. It recorded the shape that was correct at the
 time; rewriting applied history to look like it always knew better would hide that
 the spec moved.
 
 **The rename is NOT a backward-compatible migration — accepted, with an
-operational consequence.** 0013 renames the column in one step, so a reader still
+operational consequence.** 0015 renames the column in one step, so a reader still
 running pre-rename code fails hard: `column m.entity_path does not exist`. Not a
 degraded read — a broken one. Observed in practice on the Kind cluster: applying
-`90-data-lineage.yaml` ran its migrate init container to 0013 while the API pod
+`90-data-lineage.yaml` ran its migrate init container to 0015 while the API pod
 still queried `entity_path`, and every lineage read stayed broken until the other
 deployments were restarted onto the new image.
 
@@ -623,7 +623,7 @@ inconsistency rather than as two different facts.
 ### D13 — The drain needs a second, non-cursored arm to catch legs rewritten in place
 
 D9 established that a re-derivation must delete stale rows as well as upsert, and
-justified it by noting that legs are rewritten in place and that migration 0010's
+justified it by noting that legs are rewritten in place and that migration 0012's
 trigger covers UPDATE "for exactly this reason". That is true about the *wake* and
 was wrong about the *reach*: covering UPDATE means the consumer is notified, not that
 it can still see the rewritten leg. It could not.
@@ -804,7 +804,7 @@ not — it was a different and false answer.
 **The signature.** `fanout(entity, source)` / `fanin(entity, source)`, served as
 `GET /api/traces/{tid}/entities/{eid}/data-lineage-graph?direction=fanin|fanout`
 `&source=<natural-key>`. `source` is a **data source natural key** as stored in
-`lineage_metadata.data_sources` — lineage stores keys, not entity ids (ADR-0027, D5) —
+`lineage_metadata.data_sources` — lineage stores keys, not entity ids (ADR-0028, D5) —
 so the accepted values are exactly what `list sources` returns. The two reads are keyed
 the same way deliberately: list, then drill in.
 

@@ -699,6 +699,113 @@ const GRID_ORIGIN = NODE_DIAMETER;
  * CENTRE in PF topology, which is why the diameter is what the origin offset is
  * expressed in.
  */
+/** One node's glide: from where it is drawn to where its cell now is. */
+type NodeMove = {
+  id: string;
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+};
+
+/** A glide in flight. Both methods are idempotent and safe after completion. */
+type NodeGlide = {
+  /** Stop where things are; nothing moves further. */
+  cancel(): void;
+  /** Put every node still in flight at its destination, now. */
+  finish(): void;
+};
+
+/** How long a node takes to reach a new cell. Short enough to read as "it moved
+ * there", long enough to be seen moving. */
+const GLIDE_MS = 350;
+
+function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3;
+}
+
+/**
+ * Glide the given nodes from `from` to `to` over `durationMs` (ADR-0034).
+ *
+ * A LIVE picture changes under the reader: a re-derived trace can move an
+ * entity's cell when its call depth or chronology changes, and a node that
+ * jumps between two frames is a node the reader has to find again. Interpolating
+ * the position through PF's own `setPosition` (a MobX action, so each frame
+ * re-renders exactly the node and the edges anchored to it) keeps the eye on it.
+ * The edges need nothing: their endpoints follow the live anchors, as they do
+ * for a drag.
+ *
+ * THE READER WINS. If a node is found somewhere other than where the previous
+ * frame left it, the reader is dragging it, and it is dropped from the glide
+ * rather than fought over. A reader who prefers reduced motion, or an
+ * environment without `requestAnimationFrame`, gets the destination at once —
+ * the same end state, without the frames.
+ */
+function glideNodes(
+  controller: Visualization,
+  moves: readonly NodeMove[],
+  durationMs: number = GLIDE_MS,
+): NodeGlide {
+  const place = (t: number, inFlight: Set<string>, lastSet: Map<string, Point>) => {
+    const e = easeOutCubic(t);
+    for (const m of moves) {
+      if (!inFlight.has(m.id)) continue;
+      const node = controller.getNodeById(m.id);
+      if (!node) {
+        inFlight.delete(m.id);
+        continue;
+      }
+      const prev = lastSet.get(m.id);
+      const at = node.getPosition();
+      if (prev !== undefined && (at.x !== prev.x || at.y !== prev.y)) {
+        // Moved by someone else since the last frame — the reader is dragging it.
+        inFlight.delete(m.id);
+        continue;
+      }
+      const next = new Point(m.from.x + (m.to.x - m.from.x) * e, m.from.y + (m.to.y - m.from.y) * e);
+      node.setPosition(next);
+      lastSet.set(m.id, next);
+    }
+  };
+  const inFlight = new Set(moves.map((m) => m.id));
+  // Seeded with where the push put each node, so a grab BEFORE the first frame
+  // is seen as the reader's move too, not only one between frames.
+  const lastSet = new Map<string, Point>(moves.map((m) => [m.id, new Point(m.from.x, m.from.y)]));
+  const reduced =
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
+  if (reduced || raf === null) {
+    place(1, inFlight, lastSet);
+    return { cancel() {}, finish() {} };
+  }
+  let done = false;
+  let handle = 0;
+  const started = performance.now();
+  const frame = () => {
+    if (done) return;
+    // Our own clock, not the frame's timestamp argument: the two need not share
+    // an origin (jsdom's do not), and a negative `t` would fling nodes away.
+    const t = Math.max(0, Math.min(1, (performance.now() - started) / durationMs));
+    place(t, inFlight, lastSet);
+    if (t < 1 && inFlight.size > 0) handle = raf(frame);
+    else done = true;
+  };
+  handle = raf(frame);
+  return {
+    cancel() {
+      if (done) return;
+      done = true;
+      cancelAnimationFrame(handle);
+    },
+    finish() {
+      if (done) return;
+      done = true;
+      cancelAnimationFrame(handle);
+      place(1, inFlight, lastSet);
+    },
+  };
+}
+
 function gridPosition({ column, row }: { column: number; row: number }): { x: number; y: number } {
   return {
     x: GRID_ORIGIN + column * COLUMN_STEP_X * COLUMN_DIRECTION,
@@ -2327,8 +2434,15 @@ function DirectedEdge({
  * defect, and nothing here needs to change — the two ends still track the drag
  * exactly, which is what keeps the arrow attached to the node.
  */
+// OBSERVERS, both renderers (ADR-0034). Since the model is merged in place rather
+// than rebuilt, an element's `data` (its highlight role, its selected flag, its
+// lineage facts) CHANGES on a push instead of arriving on a fresh element — and
+// `element.getData()` is a MobX `observable.ref`, so only an observer repaints
+// when it does. `CurvedEdge` already was one, for the same reason (it reads the
+// live anchors); these two read only `data`, which used to be constant per
+// element and no longer is.
 const DraggableKindColouredNode = withDragNode()(
-  withSelection({ raiseOnSelect: false })(KindColouredNode),
+  withSelection({ raiseOnSelect: false })(observer(KindColouredNode)),
 );
 
 /**
@@ -2377,7 +2491,7 @@ const DraggableKindColouredNode = withDragNode()(
  * Computed ONCE at module scope for the same reason the drag HOC is: a fresh HOC
  * identity per render is a new component type and would remount every edge.
  */
-const SelectableDirectedEdge = withSelection({ raiseOnSelect: false })(DirectedEdge);
+const SelectableDirectedEdge = withSelection({ raiseOnSelect: false })(observer(DirectedEdge));
 
 /**
  * The graph renderer. Pan/zoom, plus SELECTABLE so a click on empty canvas can
@@ -2737,6 +2851,10 @@ export function EntityGraph({
    */
   const draggedPositions = useRef(new Map<string, { x: number; y: number }>());
 
+  /** The glide in flight from the last model push, if any — see `glideNodes`. */
+  const moveRef = useRef<NodeGlide | null>(null);
+  useEffect(() => () => moveRef.current?.cancel(), []);
+
   // Harvest the current positions before a rebuild throws them away. Runs on
   // every model push, so the positions carried forward are always the last ones
   // the user actually saw — including a drag that happened between two pushes.
@@ -2818,15 +2936,31 @@ export function EntityGraph({
 
   // Push the derived spec into the topology model whenever it changes.
   useEffect(() => {
-    if (positionsTraceId.current !== traceId) {
+    const sameTrace = positionsTraceId.current === traceId;
+    if (!sameTrace) {
       positionsTraceId.current = traceId;
       draggedPositions.current = new Map();
+      moveRef.current?.cancel();
     } else {
-      // Same trace: carry the reader's own placements across the rebuild. Harvest
-      // BEFORE `fromModel` replaces the elements, since it reads them off the
-      // live graph.
+      // Same trace: a glide still in flight is put at its destination first, so
+      // the harvest reads settled positions (a node in flight is not a dragged
+      // one), then the reader's own placements are carried across the push.
+      // Harvest BEFORE `fromModel`, since it reads them off the live graph.
+      moveRef.current?.finish();
       harvestDraggedPositions();
     }
+    moveRef.current = null;
+    // Where every node is drawn RIGHT NOW, so one whose cell changed can glide
+    // there instead of jumping (ADR-0034, `glideNodes`). Same trace only: a new
+    // trace is a new picture and its nodes start at their cells.
+    const drawnAt = new Map<string, { x: number; y: number }>();
+    if (sameTrace && controller.hasGraph()) {
+      for (const node of controller.getGraph().getNodes()) {
+        const at = node.getPosition();
+        drawnAt.set(node.getId(), { x: at.x, y: at.y });
+      }
+    }
+    const moves: NodeMove[] = [];
     // The layered cell of every node, keyed by id — what `edgeBendpoints` needs to
     // know which spans an edge crosses. Built from the same `spec.nodes` the node
     // models come from, so an edge can never be routed against a cell the node is
@@ -2865,7 +2999,15 @@ export function EntityGraph({
         // depth across, chronology down — unless the reader has moved it, in which
         // case where they put it wins. This is the ONLY place the two can
         // disagree, so there is no third notion of "where a node is".
-        const { x, y } = draggedPositions.current.get(n.id) ?? gridPosition(n);
+        const to = draggedPositions.current.get(n.id) ?? gridPosition(n);
+        const from = drawnAt.get(n.id);
+        if (from !== undefined && (from.x !== to.x || from.y !== to.y)) {
+          moves.push({ id: n.id, from, to });
+        }
+        // An existing node is pushed where it is DRAWN and glided to `to` after
+        // the push; a new node appears at `to`. The model and the picture never
+        // disagree about where a node is.
+        const { x, y } = from ?? to;
         return {
           id: n.id,
           type: 'dg-entity',
@@ -2956,13 +3098,20 @@ export function EntityGraph({
         } satisfies EdgeData,
       })),
     };
-    // `false` for merge, unchanged: the model is fully re-derived, so a stale node
-    // from a previous trace must not survive. The reader's own placements survive
-    // it by being re-applied as the node models' `x`/`y` above — which is a
-    // deliberately narrower thing to preserve than "merge the old elements", and
-    // is keyed by node id so a position for an entity this trace does not have is
-    // simply never asked for.
-    controller.fromModel(model, false);
+    // `true` for merge (ADR-0034): an element whose id is in the new model is
+    // updated in place (`setModel`) and keeps its DOM, and one that is not — a node
+    // from a previous trace, an interaction a re-derivation dropped — is removed;
+    // PF's `fromModel` does both under `merge`. This was `false` ("the model is
+    // fully re-derived, so a stale node from a previous trace must not survive"),
+    // which is still true and still what happens, but it was achieved by
+    // destroying every element and recreating it, so every push — a selection, a
+    // highlight, a poll — repainted the whole picture from a reset viewport. A
+    // live page pushes on every derived write, and a picture that flickers on
+    // each one cannot be watched. The reader's own placements still survive by
+    // being re-applied as the node models' `x`/`y` above, keyed by node id, so a
+    // position for an entity this trace does not have is simply never asked for.
+    controller.fromModel(model, true);
+    moveRef.current = moves.length > 0 ? glideNodes(controller, moves) : null;
     // `highlightKey` (a content digest) rather than `highlight` itself — see its
     // note. `highlight` is read INSIDE the effect and is deliberately not a
     // dependency; the digest changing is exactly when re-reading it matters.
@@ -3383,7 +3532,9 @@ export function ExecutionFlowGraph({
   return (
     graphReadState({
       isLoading: entitiesQ.isLoading || interactionsQ.isLoading,
-      isError: entitiesQ.isError || interactionsQ.isError,
+      // `isLoadingError`: a failed BACKGROUND re-read (the page is live, ADR-0034)
+      // keeps the picture it has rather than replacing it with the failure alert.
+      isError: entitiesQ.isLoadingError || interactionsQ.isLoadingError,
       nodeCount: spec.nodes.length,
     }) ?? (
       <EntityGraph
@@ -3724,7 +3875,9 @@ export function LineageGraph({
 
   const readState = graphReadState({
     isLoading: entitiesQ.isLoading || interactionsQ.isLoading,
-    isError: entitiesQ.isError || interactionsQ.isError,
+    // Same `isLoadingError` rule as `ExecutionFlowGraph`: keep the picture on a
+    // failed background re-read.
+    isError: entitiesQ.isLoadingError || interactionsQ.isLoadingError,
     nodeCount: spec.nodes.length,
   });
   if (readState) return readState;

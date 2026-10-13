@@ -22,6 +22,9 @@ derivation stays behind the interface (ADR-0005):
   ``status=None`` (*unknown*, never ``complete`` — ADR-0028 D6) before the trace
   has been derived, and empty before the lineage migration has run — never an
   error.
+- :mod:`.trace_version` — the **Trace version** (``get_trace_version``): one
+  opaque token per trace that changes whenever its derived picture does, so a
+  live reader can ask "anything new?" with one cheap read (ADR-0034).
 - :mod:`.lineage_graph` — the other two **Data lineage** grains (ADR-0028 D14):
   ``get_lineage_graph`` walks **one data source's** lineage upstream (``fanin``) or
   downstream (``fanout``) from an **Entity**, and ``get_lineage_summary`` serves a
@@ -117,6 +120,7 @@ from data_governance.retrieval.spans import (
     TraceCounts,
     get_spans,
 )
+from data_governance.retrieval.trace_version import get_trace_version
 
 __all__ = [
     # spans
@@ -143,6 +147,8 @@ __all__ = [
     "get_interaction_spans",
     "get_interactions",
     "get_interactions_feed",
+    # trace version (ADR-0034)
+    "get_trace_version",
     # payloads
     "ClassificationView",
     "PayloadView",

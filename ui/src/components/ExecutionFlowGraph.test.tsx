@@ -2196,8 +2196,10 @@ describe('ExecutionFlowGraph', () => {
     // drag does not freeze the rest of the layout in place. e3 is now a CALLEE of e1
     // rather than isolated, so it joins e2 in column 1 at the next row down — which
     // also confirms the untouched nodes were re-derived rather than carried over.
+    // e3 GLIDES there rather than jumping (ADR-0034, see the live re-read block
+    // below), so its arrival is awaited.
     expect(nodeAt('e2')).toEqual(cell(1, 0));
-    expect(nodeAt('e3')).toEqual(cell(1, 1));
+    await waitFor(() => expect(nodeAt('e3')).toEqual(cell(1, 1)));
   });
 
   it('keeps a moved node where it was put when the SELECTION changes', async () => {
@@ -5231,5 +5233,131 @@ describe('entity shapes by kind (issue #218)', () => {
       expect(nodeData('e1').kind).toBe('agent');
       expect(nodeData('e4').kind).toBe('user');
     });
+  });
+});
+
+/**
+ * THE LIVE RE-READ (ADR-0034). The trace page re-reads on every derived write, so
+ * a push is no longer a rare event; this block pins what a push must and must not
+ * do to a picture a reader is watching.
+ */
+describe('live re-read (ADR-0034)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+    capturedController = null;
+    modelPushes = 0;
+    const real = Visualization.prototype.fromModel;
+    const capture = (vis: Visualization) => {
+      capturedController = vis;
+      modelPushes += 1;
+    };
+    vi.spyOn(Visualization.prototype, 'fromModel').mockImplementation(function (
+      this: Visualization,
+      ...args: Parameters<Visualization['fromModel']>
+    ) {
+      capture(this);
+      return real.apply(this, args);
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const ONE = [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })];
+  const TWO = [
+    mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+    mkIx({ id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
+  ];
+
+  it('pushes nothing when a re-read returns the same data', async () => {
+    // Structural sharing: identical JSON keeps the arrays' identity, so `spec` keeps
+    // its identity and the model effect does not run. A live page re-reads on every
+    // change event; one that changed nothing must not repaint anything.
+    mockApi(ENTITIES, ONE);
+    const { poll } = renderGraph('T1');
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const pushesAfterFirstPaint = modelPushes;
+    mockApi(ENTITIES, ONE);
+    await poll();
+    // Give a wrongly-triggered effect every chance to run before asserting it did not.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(modelPushes).toBe(pushesAfterFirstPaint);
+  });
+
+  it('keeps an existing node\'s DOM across a re-read that adds to the picture', async () => {
+    // Merge, not rebuild: the e1 element on screen before the push is the same DOM
+    // node after it. A recreated node is what used to make every push flicker.
+    mockApi(ENTITIES, ONE);
+    const { poll } = renderGraph('T1');
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const e1Before = document.querySelector('[data-id="e1"]');
+    expect(e1Before).not.toBeNull();
+    mockApi(ENTITIES, TWO);
+    await poll();
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+    expect(document.querySelector('[data-id="e1"]')).toBe(e1Before);
+  });
+
+  it('glides a node whose cell changed, and ends exactly on the new cell', async () => {
+    mockApi(ENTITIES, ONE);
+    const { poll } = renderGraph('T1');
+    await waitFor(() => expect(nodeAt('e3')).toEqual(cell(2, 0)));
+    const from = cell(2, 0);
+    const to = cell(1, 1);
+    mockApi(ENTITIES, TWO);
+    await poll();
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+    // In flight: on the segment between the two cells, never anywhere else.
+    const during = nodeAt('e3');
+    if (during === null) throw new Error('e3 vanished mid-glide');
+    expect(during.x).toBeGreaterThanOrEqual(Math.min(from.x, to.x));
+    expect(during.x).toBeLessThanOrEqual(Math.max(from.x, to.x));
+    expect(during.y).toBeGreaterThanOrEqual(Math.min(from.y, to.y));
+    expect(during.y).toBeLessThanOrEqual(Math.max(from.y, to.y));
+    // Arrival: exactly the cell, not "close to it".
+    await waitFor(() => expect(nodeAt('e3')).toEqual(to));
+    // And the untouched node never moved.
+    expect(nodeAt('e1')).toEqual(cell(0, 0));
+  });
+
+  it('leaves a node alone once the reader grabs it mid-glide', async () => {
+    mockApi(ENTITIES, ONE);
+    const { poll } = renderGraph('T1');
+    await waitFor(() => expect(nodeAt('e3')).toEqual(cell(2, 0)));
+    mockApi(ENTITIES, TWO);
+    await poll();
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+    // The reader takes hold of e3 while it is still on its way.
+    moveNode('e3', 900, 900);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 450));
+    });
+    expect(nodeAt('e3')).toEqual({ x: 900, y: 900 });
+  });
+
+  it('settles a glide in flight before the next push harvests positions', async () => {
+    // A push during a glide must not read a node mid-flight as "dragged there".
+    // Two pushes back to back: the second must still see e3 end on its new cell.
+    mockApi(ENTITIES, ONE);
+    const { poll } = renderGraph('T1');
+    await waitFor(() => expect(nodeAt('e3')).toEqual(cell(2, 0)));
+    mockApi(ENTITIES, TWO);
+    await poll();
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+    // Immediately re-read with a change elsewhere (a response leg flips to error),
+    // while e3 is still gliding.
+    mockApi(ENTITIES, [
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2', any_error: true }, 1),
+      mkIx({ id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
+    ]);
+    await poll();
+    await waitFor(() => expect(nodeAt('e3')).toEqual(cell(1, 1)));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 450));
+    });
+    expect(nodeAt('e3')).toEqual(cell(1, 1));
   });
 });

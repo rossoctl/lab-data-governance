@@ -1042,7 +1042,7 @@ def get_lineage_summary(trace_id: str) -> GetLineageSummaryResult:
         # to be: it lands in migration 0004 together with `entities` and
         # `interactions`, so the `interactions` probe already covers it (the same
         # reasoning `interactions._derived_tables_exist` states for probing one table
-        # of that migration). Only `lineage_metadata` (0011) needed its own probe,
+        # of that migration). Only `lineage_metadata` (0013) needed its own probe,
         # because it is a *different* revision.
         kinds = sorted(TARGET_KINDS)
         placeholders = ", ".join(["%s"] * len(kinds))

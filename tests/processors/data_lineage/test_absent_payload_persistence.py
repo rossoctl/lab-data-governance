@@ -48,8 +48,8 @@ def _entity(conn: psycopg.Connection, *, eid: str, kind: str, natural_key: str) 
 
 def _payload(conn: psycopg.Connection, content_hash: str) -> None:
     conn.execute(
-        "INSERT INTO interaction_payloads (content_hash, content_kind, content, byte_size) "
-        "VALUES (%s, 'unknown', %s::jsonb, 2) ON CONFLICT (content_hash) DO NOTHING",
+        "INSERT INTO interaction_payloads (content_hash, content, byte_size) "
+        "VALUES (%s, %s::jsonb, 2) ON CONFLICT (content_hash) DO NOTHING",
         (content_hash, "{}"),
     )
 
@@ -73,7 +73,7 @@ def _leg(
 ) -> None:
     """Write (or rewrite) one leg. A ``None`` hash is an ABSENT payload — the D6
     gap. Rewriting re-allocates ``seq`` from the sequence, exactly as
-    P-interactions' in-place re-derivation does (migration 0010's trigger covers
+    P-interactions' in-place re-derivation does (migration 0012's trigger covers
     UPDATE for this reason).
 
     ``original_seq`` was dropped from ``interaction_legs`` by

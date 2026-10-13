@@ -64,9 +64,12 @@ uv run pytest
 The sidecar-based lineage pipeline: the AuthBridge lineage sidecar captures each
 agent turn as two facts-only spans per HTTP exchange, the interactions processor
 derives them with `INTERACTIONS_ALGORITHM=sidecar`, and the DG UI renders the
-per-request interaction forest. The producer side (the AuthBridge sidecar plugin
-+ the lineage-attach kit with its own runbook) lives in the sibling `cortex`
-repo under `authbridge/lineage-attach/`; the wire between the two is
+per-request interaction forest. The AuthBridge sidecar plugin (the producer)
+lives in the sibling `cortex` repo, while the **lineage-attach kit** that wires
+it onto a workload (originally cortex PR #852) is **vendored into this repo** at
+[`../deploy/lineage-attach/`](../deploy/lineage-attach/) — see
+[ADR-0033](adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md).
+The wire between producer and consumer is
 [`sidecar-wire-contract.md`](sidecar-wire-contract.md).
 
 ## Loading a trace or a fixture
@@ -97,6 +100,9 @@ preserved), making it read as just-arrived in the UI.
 sending (printing the new id), so re-loading a fixture you have already ingested
 reads as genuinely new data — a plain re-replay is a no-op because span upserts
 are finalization-only and the interactions cursor has already passed those seqs.
+Ids a span names inside itself (`lineage.exchange.id`, links, event attributes,
+a `tracestate` member such as `lineage-parent` on an application's own spans)
+follow the rewrite, so the copy is a trace the producers could have emitted.
 
 Takes a full path, `*.json` path, or bare stem. Override the target with
 `--endpoint` (gRPC wants a bare `host:port`, HTTP wants a full URL):

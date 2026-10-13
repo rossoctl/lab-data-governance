@@ -542,6 +542,14 @@ def test_ui_deployment_runs_api(ui_deployment: dict) -> None:
     )
 
 
+def test_ui_deployment_enables_connect_only_filter(ui_deployment: dict) -> None:
+    """The manifest states the default trace-listing policy explicitly."""
+    pod_spec = ui_deployment["spec"]["template"]["spec"]
+    main = pod_spec["containers"][0]
+    env = {entry["name"]: entry for entry in main.get("env") or []}
+    assert env["DG_FF_HIDE_CONNECT_ONLY_TRACES"]["value"] == "true"
+
+
 def test_ui_deployment_has_probes(ui_deployment: dict) -> None:
     """Probes on /healthz keep the UI backend's rolling updates honest."""
     pod_spec = ui_deployment["spec"]["template"]["spec"]

@@ -1,6 +1,6 @@
 """Tests for the ``lineage_trace_status`` derived-table migration (issue #120).
 
-Migration 0012 adds the trace-level **complete/partial** status for data lineage
+Migration 0014 adds the trace-level **complete/partial** status for data lineage
 (ADR-0028 D6). This resolves the ADR's open item on *where* that status lives: a
 dedicated table keyed by trace, rather than derived on read.
 
@@ -200,8 +200,8 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
-    """upgrade -> downgrade(0011) -> upgrade drops and re-adds the table, leaving
-    ``lineage_metadata`` (0011's, not this revision's to remove) intact."""
+    """upgrade -> downgrade(0013) -> upgrade drops and re-adds the table, leaving
+    ``lineage_metadata`` (0013's, not this revision's to remove) intact."""
     from alembic import command
 
     from data_governance.db.migrate import _alembic_config
@@ -215,7 +215,7 @@ def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
     command.downgrade(cfg, "0013_lineage_metadata")
     assert not _table_exists(pg_dsn, TABLE)
     assert _table_exists(pg_dsn, "lineage_metadata"), (
-        "the metadata table is 0011's, not this revision's to remove"
+        "the metadata table is 0013's, not this revision's to remove"
     )
 
     command.upgrade(cfg, "head")

@@ -39,7 +39,7 @@ Two absences are **graceful shapes, not errors**:
 
 **Trace-level ``complete``/``partial`` status** (ADR-0028 D6, issue #120) rides on
 the result beside the legs, read straight from ``lineage_trace_status`` (migration
-0012) — a **lookup, not a recomputation**. Nothing on this path may re-derive the
+0014) — a **lookup, not a recomputation**. Nothing on this path may re-derive the
 cutoff from ``interaction_legs.payload_hash IS NULL``: that would put a second copy
 of D6's rule in this module's SQL, free to drift from the traversal that actually
 produced the rows (ADR-0028 D8 for why the dedicated table beat derived-on-read).
@@ -153,7 +153,7 @@ class GetDataLineageResult:
 def _lineage_tables_exist(tx: db.Transaction) -> bool:
     """Whether every table this read needs exists on this DB.
 
-    ``lineage_metadata`` is migration 0011 while ``interactions`` /
+    ``lineage_metadata`` is migration 0013 while ``interactions`` /
     ``interaction_legs`` (which the trace scoping joins through) are 0004 —
     separate revisions, so all three are probed rather than one standing in for
     the rest as in :func:`.interactions._derived_tables_exist` (there the derived
@@ -173,10 +173,10 @@ def _lineage_tables_exist(tx: db.Transaction) -> bool:
 
 
 def _status_table_exists(tx: db.Transaction) -> bool:
-    """Whether ``lineage_trace_status`` (migration 0012) exists on this DB.
+    """Whether ``lineage_trace_status`` (migration 0014) exists on this DB.
 
     Probed **separately** from :func:`_lineage_tables_exist`, not folded into its
-    count: 0012 is a later revision than 0011, so a deployment mid-upgrade can
+    count: 0014 is a later revision than 0013, so a deployment mid-upgrade can
     legitimately have the metadata and not the status. Folding them would make that
     window serve an empty leg list — throwing away lineage that is right there —
     when the honest answer is "here are the legs, coverage unknown".
@@ -268,7 +268,7 @@ def _lineage_view(row: tuple) -> DataLineageView | None:
     """Shape a ``lineage_metadata`` LEFT JOIN slice into the nullable triple.
 
     The join columns are all-NULL exactly when no lineage row exists for the leg,
-    because every metadata column in migration 0011 is ``NOT NULL`` — so probing
+    because every metadata column in migration 0013 is ``NOT NULL`` — so probing
     ``seq`` (also NOT NULL, and never defaulted) unambiguously separates "not yet
     derived" from a derived origin whose triple is genuinely empty.
     """

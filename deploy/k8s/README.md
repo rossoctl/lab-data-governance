@@ -27,11 +27,12 @@ verbs and adds namespace lineage activation:
 
 ```sh
 ./deploy/dg.sh component install     # build + kind-load + apply + collector tee + rollout
+./deploy/dg.sh component install --reuse-classification  # reuse cached model image
 ./deploy/dg.sh component status      # deployments present/ready + is the tee wired
 ./deploy/dg.sh component uninstall   # the inverse; --keep-data preserves the Postgres PVC
 
 ./deploy/dg.sh namespaces list                              # user namespaces
-./deploy/dg.sh --cortex-local-path <cortex> namespace <ns> instrument [<entity>]
+./deploy/dg.sh namespace <ns> instrument [<entity>]         # activate lineage (vendored kit)
 ./deploy/dg.sh namespace <ns> status [<entity>]             # read-only: did activation take?
 ```
 
@@ -42,71 +43,43 @@ The raw steps remain here so you can drive them individually; `dg.sh` is the
 primary path, not a replacement that hides them. `component install` is
 idempotent (pass `--no-build` when the images are already loaded), and it
 performs the load-bearing `rollout restart` for you.
+Pass `--reuse-classification` to build/load the shared image while loading an
+already cached classification image into a fresh Kind cluster without rebuilding
+or pushing it. The script fails before building if that cached image is absent.
 
 The design and its boundary decisions live in
 [`../../docs/cli.md`](../../docs/cli.md),
 [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.md)
-(namespace activation is **non-reversible** and **mode-preserving** — no
-`reset`, no sidecar-mode switch in v1), and
+(namespace activation is non-reversible),
 [ADR-0032](../../docs/adr/0032-dg-sh-builds-on-cortex-lineage-attach-kit.md)
-(`instrument` drives the cortex lineage-attach kit rather than a vendored
-generator).
+(the retired sidecar-attachment design), and
+[ADR-0033](../../docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md)
+(the current existing-proxy contract).
 
 ### Namespace lineage activation (`dg.sh namespace instrument`)
 
-`dg.sh namespace <ns> instrument [<entity>]` switches on lineage telemetry for
-the agents/tools in a namespace (all of them, or the single named `<entity>`),
-so their traffic produces the facts-only spans the interactions processor
-consumes. It is **additive-only and never switches a namespace's sidecar mode**,
-and it is **non-reversible in v1** (to undo, delete/redeploy the workloads); its
-read-only partner `dg.sh namespace <ns> status [<entity>]` reports, per entity,
-sidecar presence, sidecar type, and whether the `lineage-telemetry` plugin is
-wired. See ADR-0031 for why.
+`dg.sh namespace <ns> instrument [<entity>]` activates lineage for Rossoctl-managed agents and tools. Namespace-wide instrumentation selects only workloads with a trusted `rossoctl.io/type=agent|tool` label; an explicitly named untrusted workload is rejected. Every selected workload must have an admitted `authbridge-proxy` sidecar. Data Governance never injects or replaces a sidecar.
 
-`instrument` — and **only** `instrument` — needs a cortex checkout on disk,
-passed with `--cortex-local-path <dir>` (or the `CORTEX_LOCAL_PATH` env var).
-`dg.sh` locates the lineage-attach kit under
-`<dir>/authbridge/lineage-attach/`; a missing path or an absent kit is a
-**refuse-and-mutate-nothing preflight** (it fails loud and changes nothing). The
-component verbs (`install`/`uninstall`/`status`) and `namespace status` never
-touch cortex.
+The command validates all selected workloads before mutation: running pods,
+proxy environment, plugin catalog, admission-owned ConfigMaps, and attested
+two-shim images. It then rolls tools before agents, alphabetically within each
+group. Bare, legacy component-labelled workloads are skipped in namespace-wide
+instrumentation and remain visible in read-only `status`. A selected workload
+with an Envoy or otherwise nonconforming proxy fails closed before mutation.
 
-`instrument` wires lineage onto **no-sidecar entities only**, delegated wholesale
-to the cortex kit, which injects an envoy lineage sidecar (and, for a Python app,
-bakes the propagate-only shim). Any entity that **already has a sidecar** — proxy
-or envoy, template- or webhook-injected — is **skipped, mutating nothing**
-(ADR-0032). Retrofitting lineage onto an existing sidecar is not a supported
-route: the platform's enforcing proxy sidecar 401s the demo's plain MCP/A2A
-calls, and an in-place edit of a webhook-injected (operator-owned) pipeline
-ConfigMap is clobbered on the next roll — see ADR-0032 for the live-validation
-findings behind this revision. Because the only wiring path is the kit's
-no-sidecar inject, there is no `egressEnforcement` warning: proxy entities are
-never touched.
+After preflight, it rolls each application onto the shim image with `LINEAGE_PROPAGATE=1`, reconciles the newly admitted AuthBridge ConfigMap while preserving authentication, and verifies the live hot-reloaded pipeline.
 
-This `dg.sh namespace instrument` no-sidecar path is the **productized form of
-the ad-hoc lineage-attach recipe** the root `CLAUDE.md` § 3a and
-`LINEAGE-PROXY-SIDECAR-RECIPE.md` document (the hand-run `instrument-one.sh`
-loop): where a namespace's agents/tools ship with no sidecar, `dg.sh`
-**supersedes** that manual recipe for the productized flow.
+`dg.sh namespace <ns> status [<entity>]` is read-only and includes trusted and legacy component-labelled agents/tools. It may report `sidecar=none` diagnostically, but that state cannot be instrumented.
+
+See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.md), [ADR-0033](../../docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md), and [the CLI guide](../../docs/cli.md).
 
 ### End-to-end operator scenario
 
-The full flow, in one place — from a bare rossoctl cluster to observing the
-trace in the UI:
-
-1. Install rossoctl on the cluster.
-2. `./deploy/dg.sh component install`.
-3. Install the agents/tools (via the rossoctl UI, or an `agent-examples`-style
-   deploy — **install only**, do not run them yet).
-4. `./deploy/dg.sh --cortex-local-path <cortex-checkout> namespace <ns> instrument`
-   on the namespace holding those workloads — the path locates the cortex
-   lineage-attach kit. (Scope to one entity by appending its
-   `app.kubernetes.io/name`.)
-5. Run the agents.
-6. Observe the resulting traces in the data-governance UI at
-   **<http://dg.localtest.me:8080/>** (see "UI access via the rossoctl shared
-   Gateway" below). Confirm activation took with
-   `./deploy/dg.sh namespace <ns> status`.
+1. Install Rossoctl and the Data Governance component.
+2. Deploy/import agents and tools through the Rossoctl UI or CLI.
+3. Run `./deploy/dg.sh namespace <ns> instrument`.
+4. Run the agents.
+5. Verify with `./deploy/dg.sh namespace <ns> status` and the Data Governance UI.
 
 ## Topology summary
 
@@ -162,9 +135,9 @@ trace in the UI:
   data_governance.db.migrate` to head (ADR-0002). A DB consumer with **no
   Service and no container ports** — and, unlike both siblings, no Prometheus
   `/metrics` surface at all (issue #117 ships no counters). It drains
-  `interaction_legs` by `seq`, woken by migration 0010's `dg_legs_inserted`
-  NOTIFY channel, and writes `lineage_metadata` (migration 0011/0013) plus
-  `lineage_trace_status` (migration 0012), advancing its own `processor_state`
+  `interaction_legs` by `seq`, woken by migration 0012's `dg_legs_inserted`
+  NOTIFY channel, and writes `lineage_metadata` (migration 0013) plus
+  `lineage_trace_status` (migration 0014), advancing its own `processor_state`
   cursor (the `data_lineage` row). Single replica for the same no-inter-pod-lock
   reason, `maxSurge:0` rollout; a brief overlap is safe because each derivation
   is a deterministic function of committed state written entirely inside the
@@ -216,6 +189,7 @@ The `deploy/build-and-load.sh` helper does both steps in one shot:
 
 ```sh
 ./deploy/build-and-load.sh
+./deploy/build-and-load.sh --reuse-classification  # cache must contain classification image
 ```
 
 It builds the image from `Containerfile` (multi-stage `uv sync --frozen`
@@ -227,6 +201,9 @@ weights and builds + loads the separate P-classification image
 (issue #79 / ADR-0022 — the fat torch + baked-weights image, distinct from
 the slim shared image). Override the cluster name with `KIND_CLUSTER=...` and
 the tag with `IMAGE_TAG=...` if needed.
+With `--reuse-classification`, it verifies the local cached image, skips the
+classification build and git-LFS fetch, and loads that image into the selected
+Kind cluster alongside the newly built shared image.
 
 > **git-LFS required.** The classification image bakes a ~500 MB git-LFS model
 > artifact; `build-and-load.sh` runs `git lfs pull` before building so the real
@@ -309,7 +286,7 @@ previous image.
 That is harmless for an additive migration (a new table or column an old
 reader never selects). It is **not** harmless for a rename or a drop: the
 old code keeps selecting a column that no longer exists and its reads fail
-outright. This happened with migration 0013, which renamed
+outright. This happened with migration 0015, which renamed
 `lineage_metadata.entity_path` to `entities` — applying only
 `90-data-lineage.yaml` moved the schema to head while the API pod still
 queried `entity_path`, and every lineage read returned

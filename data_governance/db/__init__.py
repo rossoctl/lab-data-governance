@@ -294,7 +294,7 @@ class Listener:
 
 
 @contextmanager
-def listen(channel: str, dsn: str) -> Iterator[Listener]:
+def listen(channel: str | Sequence[str], dsn: str) -> Iterator[Listener]:
     """Open a dedicated autocommit connection, ``LISTEN`` on *channel*, yield a
     :class:`Listener`.
 
@@ -303,16 +303,26 @@ def listen(channel: str, dsn: str) -> Iterator[Listener]:
     the pool — a session-scoped ``LISTEN`` on an autocommit connection is a
     different connection shape than the pool provides (ADR-0015).
 
-    *channel* must be a bare SQL identifier (``LISTEN`` cannot bind it as a
-    parameter); a non-identifier raises :class:`ValueError`.
+    *channel* is one channel name or a sequence of them; a consumer that wakes
+    on several streams (the UI's live change hub, ADR-0034) registers them all
+    on this one session rather than holding one connection per channel.
+    Each must be a bare SQL identifier (``LISTEN`` cannot bind it as a
+    parameter); a non-identifier raises :class:`ValueError` before any
+    connection is opened. An empty sequence is a :class:`ValueError` too — a
+    listener on nothing would only ever time out, which is a bug, not a wait.
     """
-    if not _CHANNEL_RE.match(channel):
-        raise ValueError(
-            f"LISTEN channel must be a bare SQL identifier, got {channel!r}"
-        )
+    channels = [channel] if isinstance(channel, str) else list(channel)
+    if not channels:
+        raise ValueError("listen() needs at least one channel")
+    for name in channels:
+        if not _CHANNEL_RE.match(name):
+            raise ValueError(
+                f"LISTEN channel must be a bare SQL identifier, got {name!r}"
+            )
     conn = psycopg.connect(dsn, autocommit=True)
     try:
-        conn.execute(f"LISTEN {channel}")
+        for name in channels:
+            conn.execute(f"LISTEN {name}")
         yield Listener(conn)
     finally:
         conn.close()
