@@ -267,12 +267,16 @@ kubectl apply -f deploy/k8s/                                        # usually a 
 kubectl -n data-governance rollout restart \
   deployment/data-governance-receiver deployment/data-governance-ui \
   deployment/data-governance-interactions deployment/data-governance-classification \
-  deployment/data-governance-data-lineage
+  deployment/data-governance-data-lineage deployment/data-governance-leg-ready \
+  deployment/data-governance-risk-trace-trigger deployment/data-governance-risk-alerts
 kubectl -n data-governance rollout status deployment/data-governance-receiver --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-ui --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-interactions --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-classification --timeout=180s
 kubectl -n data-governance rollout status deployment/data-governance-data-lineage --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-leg-ready --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-risk-trace-trigger --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-risk-alerts --timeout=120s
 ```
 
 The `rollout restart` is the step that's easy to forget: the manifests
