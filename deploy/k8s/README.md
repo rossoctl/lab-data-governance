@@ -17,6 +17,7 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `85-leg-ready.yaml`           | `Deployment` for the leg-ready consumer + risk engine (no Service) |
 | `90-data-lineage.yaml`        | `Deployment` for the P-data-lineage processor (no Service)  |
 | `91-risk-trace-trigger.yaml`  | `Deployment` for the trace-risk-trigger processor (no Service) |
+| `92-risk-alerts.yaml`         | `Deployment` for the alerts processor (no Service) |
 | `95-opa.yaml`                 | `Service` + `Deployment` for the OPA policy server; its policy ConfigMap comes from `deploy/create-opa-configmap.sh` |
 
 ## Primary entry point: `deploy/dg.sh`
@@ -159,6 +160,14 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   `python -m data_governance.processors.risk.trace_trigger`, `maxSurge:0`.
   Drains `interaction_risk_records` by `seq` (migration 0019) and recomputes
   the trace's risk rollup once per new record. Pure DB, no OPA call.
+- **Alerts Deployment.** **Single replica** running
+  `python -m data_governance.processors.risk.alerts`, `maxSurge:0`. Drains
+  `trace_risk_records` by `seq` (migration 0023) and opens, counts or
+  supersedes the trace's alert per new record (issue #104). No OPA call; it
+  mounts the `opa-policy` ConfigMap to name rules in alert titles, and until
+  that ConfigMap exists a record that fired a rule stops the processor (it
+  restarts and retries). `RISK_ALERT_MIN_RISK_LEVEL` (default `low`) is the
+  alert floor.
 - **OPA Deployment + Service.** Stock `openpolicyagent/opa`, version-pinned,
   serving `http://opa:8181` inside the namespace. It loads its policy from
   the `opa-policy` ConfigMap, which **is not in these manifests**: run

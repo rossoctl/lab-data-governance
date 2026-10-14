@@ -962,11 +962,14 @@ def test_L13_alert_supersession(env, kube, dg, capabilities, catalog, run_record
     because the assertions are a sequence: T is already critical, so a
     medium head superseded by critical could never be observed there.
 
-    Drive: PI-only→internal (trace medium) → settle; card→external (trace
-    critical) → settle; the same card probe again → settle. Expect after
-    step 1: one open alert at medium; after step 2: one open alert at
-    critical, the medium alert's superseded_by pointing at it and its
-    status untouched; after step 3: still one head, duplicate_count 1.
+    Drive: benign→internal (trace none) → settle; PI-only→internal (trace
+    medium) → settle; card→external (trace critical) → settle; the same
+    card probe again → settle. Expect after step 0: no alert (AC-DAS-002's
+    clean arm); after step 1: one open alert at medium; after step 2: one
+    open alert at critical, the medium alert's superseded_by pointing at it
+    and its status untouched, its title and description exactly FR-DAS-042's
+    under the deployed test catalog (AC-DAS-026); after step 3: still one
+    head, duplicate_count 1.
     """
     if not capabilities.alerts:
         pytest.skip("no alerts processor on the deployed branch (capabilities.alerts=False)")
@@ -975,6 +978,12 @@ def test_L13_alert_supersession(env, kube, dg, capabilities, catalog, run_record
         T5 = mint_trace_id()
         state["T5"] = T5
         state["traces"].add(T5)
+
+        probe(kube, trace_id=T5, parent_id=mint_span_id(), label="benign_int", payload=benign())
+        _settle(ch, env, dg, capabilities, T5, rec, tag="-0")
+        a0 = shape.trace_alerts(dg, T5)
+        rec.write("alerts-0.json", a0)
+        ch.check("step0.none", "after the benign probe: alerts", 0, len(a0))
 
         probe(kube, trace_id=T5, parent_id=mint_span_id(), label="pi_int", payload=pi_only())
         _settle(ch, env, dg, capabilities, T5, rec, tag="-1")
@@ -997,6 +1006,12 @@ def test_L13_alert_supersession(env, kube, dg, capabilities, catalog, run_record
         ch.check("step2.superseded", "the medium alert's superseded_by points at the critical head",
                  heads[0]["id"] if heads else None, prior["superseded_by"])
         ch.check("step2.prior_status", "the superseded alert's status untouched", first_status, prior["status"])
+        if heads:
+            title, description = shape.expected_alert_text(dg, T5, heads[0]["rules"], RULES)
+            ch.check("step2.title", "head title (FR-DAS-042: lead rule — risky interactions' entities)",
+                     title, heads[0]["title"])
+            ch.check("step2.description", "head description (rule explanations, most severe first)",
+                     description, heads[0]["description"])
 
         probe(kube, trace_id=T5, parent_id=mint_span_id(), label="card_ext_again", payload=card_pii(),
               host=EXTERNAL_HOST)

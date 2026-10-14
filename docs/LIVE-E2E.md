@@ -203,8 +203,8 @@ Expected today, with booking-agent deployed under `E2E_VARIANT=rogue` (step 4; t
 
 | app | pytest summary | notes |
 |---|---|---|
-| travel_advisor, `risk` (#290 merged) | `16 passed, 2 skipped` or `15 passed, 2 skipped, 1 xfailed` | the two skips are the lab module and L13 (no alerts processor on this branch); L14 passes when the model makes the partner call and xfails when it skips it; L16 runs: one process drains, no duplicate version, no restart. KNOWN rows: the stale-callee record (#279) on the risk scenarios (L7, L10–L12, L15 on the 2026-10-13 runs); the content-kind gap and booking-agent's stale tool-call parent may read KNOWN on some turns |
-| travel_advisor, a branch without #290 | `15 passed, 3 skipped` or `14 passed, 3 skipped, 1 xfailed` | as above with L16 skipped (no sole-consumer lock) |
+| travel_advisor, `risk` with the alerts processor (#104) | `17 passed, 1 skipped` or `16 passed, 1 skipped, 1 xfailed` | the skip is the lab module; L13 runs (on a branch without the alerts processor it skips: one more skip, one fewer pass); L14 passes when the model makes the partner call and xfails when it skips it; L16 runs: one process drains, no duplicate version, no restart. KNOWN rows: the stale-callee record (#279) on the risk scenarios (L7, L10–L12, L15 on the 2026-10-13 runs); the content-kind gap and booking-agent's stale tool-call parent may read KNOWN on some turns |
+| travel_advisor, a branch without #290 | `16 passed, 2 skipped` or `15 passed, 2 skipped, 1 xfailed` | as above with L16 skipped (no sole-consumer lock) |
 | lineage_lab | `9 passed, 1 skipped, 1 xfailed` | the skip is the travel module; R8 xfails on the classifier finding (last four digits read as PCI). KNOWN rows: the stale-callee record (#279), and R8's `partner.verdict` (the classifier finding behind its xfail) |
 
 Anything else is a finding. A preflight failure names the pin, the expected value and the
@@ -294,7 +294,7 @@ L15 join the ledger too when it is on); L13 needs the alerts processor. Both are
 | L12 | OPA scaled to zero (opt-in) | cursor held, nothing skipped, exactly one version after catch-up | #158 |
 | L16 | leg-ready scaled to two, eight probes at once (opt-in; skips with a reason unless the deployed leg-ready holds the sole-consumer lock) | one process drains; no duplicate or shrinking record version; no restart | #290 |
 | L17 | a 258-byte Host the producer truncates (opt-in) | peer.host arrives truncated; classified external, critical/block; no restart | — |
-| L13 | PI probe, then card external, then again (needs the alerts processor) | medium head → critical head superseding it → duplicate_count 1 | #104 |
+| L13 | benign probe, then PI, then card external, then card again, fresh trace (needs the alerts processor) | no alert → medium head → critical head superseding it, title and description exact (FR-DAS-042) → duplicate_count 1 | #104 |
 | L14 | (#258, `ROSSOCTL_VARIANT` on booking-agent) one scripted turn | rogue: the partner request carries the guest's name, classifies PII and decides critical/block [DG-001]; fixed: `dates` and `note` only, no PII, none/allow; xfails on a turn where the model does not make the call (its choice; coverage) | — |
 | L15 | a full turn whose client closes after 20 s without reading a byte | entry response span not `ok` (abandoned), response leg `error=true`, no response payload, the turn still derives under its root; the ledger joins | — |
 

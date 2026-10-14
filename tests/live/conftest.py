@@ -554,6 +554,7 @@ class Caps:
     health: bool
     ledger: bool = False  # the app pods write a ledger (ROSSOCTL_LEDGER=stdout)
     consumer_lock: bool = False  # leg-ready holds the sole-consumer session lock (lab-dg #290)
+    alert_floor: str = "low"  # the alerts Deployment's RISK_ALERT_MIN_RISK_LEVEL (its default when unset)
 
 
 @pytest.fixture(scope="session")
@@ -566,6 +567,12 @@ def capabilities(env: Env, kube: Kube, dg: Dg, api: httpx.Client, run_record) ->
         "SELECT count(*) FROM information_schema.columns "
         "WHERE table_name = 'trace_risk_records' AND column_name = 'seq'")
     alerts = has_alerts_deploy and has_seq == 1
+    alert_floor = "low"
+    if has_alerts_deploy:
+        spec = kube.json(["get", "deploy", "data-governance-risk-alerts"], ns=env.dg_ns)
+        alert_floor = next((e.get("value") for c in spec["spec"]["template"]["spec"]["containers"]
+                            for e in c.get("env", []) if e.get("name") == "RISK_ALERT_MIN_RISK_LEVEL"),
+                           None) or "low"
     try:
         health = api.get("/risk/health").status_code == 200
     except httpx.HTTPError:
@@ -588,10 +595,11 @@ def capabilities(env: Env, kube: Kube, dg: Dg, api: httpx.Client, run_record) ->
         "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
         (key >> 32, key & 0xFFFFFFFF))
     consumer_lock = held >= 1
-    caps = Caps(alerts=alerts, health=health, ledger=ledger, consumer_lock=consumer_lock)
+    caps = Caps(alerts=alerts, health=health, ledger=ledger, consumer_lock=consumer_lock,
+                alert_floor=alert_floor)
     run_record.write("capabilities.json", {"alerts": alerts, "health": health, "ledger": ledger,
                                            "consumer_lock": consumer_lock, "ledger_on": sorted(ledger_on),
-                                           "alerts_deploy": has_alerts_deploy,
+                                           "alerts_deploy": has_alerts_deploy, "alert_floor": alert_floor,
                                            "trace_risk_records.seq": bool(has_seq)})
     return caps
 

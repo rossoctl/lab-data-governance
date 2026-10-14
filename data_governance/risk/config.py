@@ -38,9 +38,11 @@ __all__ = [
     "INTERACTION_RISK_WRITTEN_CHANNEL_NAME",
     "TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS",
     "TRACE_RISK_WRITTEN_CHANNEL_NAME",
+    "ALERTS_POLL_FALLBACK_INTERVAL_SECONDS",
     "FANOUT_BATCH_SIZE",
     "METRICS_REFRESH_INTERVAL_SECONDS",
     "PROCESSOR_NAME_TRACE_TRIGGER",
+    "PROCESSOR_NAME_ALERTS",
     "TRACE_AGGREGATION_RISK_LEVEL_MODE",
     "TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE",
     "OPA_BASE_URL",
@@ -130,6 +132,9 @@ TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS = _int_env(
 TRACE_RISK_WRITTEN_CHANNEL_NAME = _str_env(
     "RISK_ALERTS_TRIGGER_CHANNEL_NAME", "dg_trace_risk_written"
 )
+ALERTS_POLL_FALLBACK_INTERVAL_SECONDS = _int_env(
+    "RISK_ALERTS_POLL_FALLBACK_INTERVAL_SECONDS", 10
+)
 
 # --- risk.fanout.* -----------------------------------------------------------
 
@@ -143,6 +148,7 @@ METRICS_REFRESH_INTERVAL_SECONDS = _int_env("RISK_METRICS_REFRESH_INTERVAL_SECON
 # Carved out now so #102 cannot collide on a processor_name.
 
 PROCESSOR_NAME_TRACE_TRIGGER = "risk_trace_trigger"
+PROCESSOR_NAME_ALERTS = "risk_alerts"
 
 # --- risk.trace_aggregation.* (issue #102) -----------------------------------
 # How interaction-level risk/enforcement values are rolled up into a trace

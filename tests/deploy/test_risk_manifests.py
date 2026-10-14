@@ -144,3 +144,65 @@ def test_ui_starts_before_the_opa_policy_configmap_exists(ui_deployment: dict) -
     pod = ui_deployment["spec"]["template"]["spec"]
     (volume,) = [v for v in pod["volumes"] if v["name"] == "policy"]
     assert volume["configMap"]["optional"] is True
+
+
+# ---------------------------------------------------------------------------
+# Alerts processor Deployment (issues #104/#175)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def alerts_deployment(docs: list[dict]) -> dict:
+    deps = _by_kind(docs, "Deployment", "data-governance-risk-alerts")
+    assert len(deps) == 1, "expected exactly one Deployment named data-governance-risk-alerts"
+    return deps[0]
+
+
+def test_alerts_single_replica_no_surge(alerts_deployment: dict) -> None:
+    spec = alerts_deployment["spec"]
+    assert spec["replicas"] == 1
+    rolling = spec["strategy"]["rollingUpdate"]
+    assert rolling["maxSurge"] == 0
+    assert rolling["maxUnavailable"] == 1
+
+
+def test_alerts_runs_on_receiver_image_with_command_override(alerts_deployment: dict) -> None:
+    (container,) = alerts_deployment["spec"]["template"]["spec"]["containers"]
+    assert container["image"] == "data-governance/receiver:latest"
+    assert container["command"] == ["python", "-m", "data_governance.processors.risk.alerts"]
+
+
+def test_alerts_has_migrate_init_container(alerts_deployment: dict) -> None:
+    pod = alerts_deployment["spec"]["template"]["spec"]
+    (init,) = pod["initContainers"]
+    assert init["command"] == ["python", "-m", "data_governance.db.migrate"]
+
+
+def test_alerts_has_no_service_and_no_ports(docs: list[dict], alerts_deployment: dict) -> None:
+    label = "data-governance-risk-alerts"
+    for svc in (d for d in docs if d.get("kind") == "Service"):
+        selector = (svc.get("spec") or {}).get("selector") or {}
+        assert selector.get("app.kubernetes.io/name") != label
+    (container,) = alerts_deployment["spec"]["template"]["spec"]["containers"]
+    assert "ports" not in container
+
+
+def test_alerts_name_rules_from_the_deployed_catalog(alerts_deployment: dict) -> None:
+    """Alert titles/descriptions name rules from the catalog OPA enforces:
+    the pod mounts the `opa-policy` ConfigMap (optional, so it starts before
+    the ConfigMap exists) and RISK_RULES_SOURCE points at its
+    `rules_source.json` key — the same wiring as the UI (40-ui.yaml)."""
+    pod = alerts_deployment["spec"]["template"]["spec"]
+    (container,) = pod["containers"]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+
+    (volume,) = [v for v in pod["volumes"] if v["name"] == "policy"]
+    cm = volume["configMap"]
+    assert cm["name"] == "opa-policy" and cm["optional"] is True
+    (item,) = cm["items"]
+    assert item["key"] == "rules_source.json"
+
+    (mount,) = [m for m in container["volumeMounts"] if m["name"] == volume["name"]]
+    assert mount["readOnly"] is True
+    assert "subPath" not in mount, "a subPath mount is never updated in place"
+    assert env["RISK_RULES_SOURCE"] == f"{mount['mountPath']}/{item['path']}"

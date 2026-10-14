@@ -240,10 +240,53 @@ def current_trace(dg, trace_id: str) -> dict | None:
 def trace_alerts(dg, trace_id: str) -> list[dict]:
     rows = dg.q("""
         SELECT alert_id::text, trace_risk_record_id::text, risk_level, title,
-               triggered_rule_ids, status, duplicate_count, superseded_by::text
+               triggered_rule_ids, status, duplicate_count, superseded_by::text, description
         FROM alerts WHERE trace_id = %s ORDER BY "timestamp", alert_id""", (trace_id,))
     return [{"id": r[0], "record": r[1], "level": r[2], "title": r[3], "rules": sorted(r[4]),
-             "status": r[5], "duplicates": r[6], "superseded_by": r[7]} for r in rows]
+             "status": r[5], "duplicates": r[6], "superseded_by": r[7], "description": r[8]}
+            for r in rows]
+
+
+# Alertable levels, most severe first. The floor is the deployed one
+# (conftest's capabilities read RISK_ALERT_MIN_RISK_LEVEL off the Deployment).
+ALERT_LEVELS = ("critical", "high", "medium", "low")
+CLOSED_ALERT_STATUSES = ("resolved", "false_positive")
+
+
+def highest_alertable_level(dg, trace_id: str, floor: str = "low") -> str | None:
+    """The most severe level any version of the trace's risk record reached,
+    when it is at or above the floor; else None. Alerts follow the trace's
+    history, not its latest version: a recompute that lowers the level
+    counts a duplicate on the open alert and leaves it at the higher level
+    (#104, FR-DAS-043)."""
+    reached = {r[0] for r in dg.q(
+        "SELECT DISTINCT trace_risk_level FROM trace_risk_records WHERE trace_id = %s", (trace_id,))}
+    for level in ALERT_LEVELS[: ALERT_LEVELS.index(floor) + 1]:
+        if level in reached:
+            return level
+    return None
+
+
+def expected_alert_text(dg, trace_id: str, rule_ids: list[str], catalog_rules: dict) -> tuple[str, str]:
+    """FR-DAS-042's title and description for an alert naming *rule_ids*,
+    derived independently of the generator: the lead rule is the most severe
+    by the deployed catalog's risk level (ties by rule id; an id outside the
+    catalog ranks last and contributes no explanation), the names are the
+    entities of the trace's interactions whose current record fired a rule."""
+    def rank(rule_id: str) -> tuple[int, str]:
+        level = catalog_rules.get(rule_id, {}).get("rule_decision", {}).get("risk_level")
+        return (ALERT_LEVELS.index(level) if level in ALERT_LEVELS else len(ALERT_LEVELS), rule_id)
+    ranked = sorted(rule_ids, key=rank)
+    lead = catalog_rules.get(ranked[0], {}).get("rule_name") or ranked[0]
+    risky = [ix for ix, r in current_records(dg, trace_id).items() if r["rules"]]
+    names = sorted({r[0] for r in dg.q("""
+        SELECT e.display_name FROM interactions i
+        JOIN entities e ON e.id IN (i.caller_entity_id, i.callee_entity_id)
+        WHERE i.id = ANY(%s)""", (risky,))})
+    title = f"{lead} — {', '.join(names)}" if names else lead
+    explanations = [catalog_rules[r]["rule_decision"]["explanation"] for r in ranked
+                    if catalog_rules.get(r, {}).get("rule_decision", {}).get("explanation")]
+    return title, "; ".join(explanations)
 
 
 def _real(rules: list[str]) -> set[str]:
@@ -343,11 +386,21 @@ def assert_risk_shape(dg, trace_id: str, caps, *, alert_heads: int | None = None
 
     alerts = trace_alerts(dg, trace_id) if caps.alerts else []
     if caps.alerts:
-        heads = [a for a in alerts if a["superseded_by"] is None]
-        if alert_heads is not None:
-            expect(checks, "risk.alert_heads", "open alert heads", alert_heads, len(heads))
-        if heads:
-            expect(checks, "risk.alert_level", "open alert level = trace level", trace["level"], heads[-1]["level"])
+        # Every trace the tier reads: one open alert once the trace's risk
+        # reached the floor, at the highest level reached (a later, lower
+        # version counts a duplicate on it); none for a trace that never did
+        # (AC-DAS-002 both ways). Nothing in the tier closes an alert.
+        reached = highest_alertable_level(dg, trace_id, caps.alert_floor)
+        heads = [a for a in alerts
+                 if a["superseded_by"] is None and a["status"] not in CLOSED_ALERT_STATUSES]
+        expect(checks, "risk.alert_heads", "open alert heads (1 once the trace reached the floor, else 0)",
+               alert_heads if alert_heads is not None else (1 if reached else 0), len(heads))
+        if reached:
+            expect(checks, "risk.alert_level", "open alert level = the highest level the trace reached",
+                   reached, heads[-1]["level"] if heads else None)
+        ids = {a["id"] for a in alerts}
+        expect(checks, "risk.alert_chain", "superseded alerts that point outside this trace's alerts", [],
+               sorted(a["id"] for a in alerts if a["superseded_by"] and a["superseded_by"] not in ids))
     else:
         (n,) = dg.one("SELECT count(*) FROM alerts WHERE trace_id = %s", (trace_id,))
         expect(checks, "risk.no_alert_rows", "alert rows with no alerts processor deployed", 0, n)
