@@ -88,7 +88,7 @@ visit the cell.
 
 | payload | classification | internal | external | sink |
 |---|---|---|---|---|
-| `benign()` — "healthy, ok" | no findings, PUBLIC | none / allow, no rule — L7 | not driven | — |
+| `benign()` — "healthy, ok" | no findings, PUBLIC | none / allow, no rule — L7, L13 | not driven | — |
 | `card_pii()` — PAN, CVV, name, email | PI · PII · PCI, RESTRICTED, identity bundle | none / allow, no real rule (fallback `0000`) — L5, L7, L8, L10 | critical / block, DG-001 · DG-004 · E2E-INVERT, allowed `[redact]`, 0.95, DG-001's explanation alone — L5, L7, L8 (L12, L13) | critical / block from the request leg alone; v1 `[request]` → v2 `[request, response]`, outcome `abandoned` — L3, L9 |
 | `pi_only()` — age, city, budget, month | PI, INTERNAL, no bundle | medium / escalate, E2E-INT-DATA · E2E-PI-INT, allowed `[log]`, 0.3, two rules' explanations joined — L5, L8 (L13) | not driven | — |
 | `credential()` — a password, no username | PI · CREDENTIALS, RESTRICTED | high / require_approval, E2E-CRED-INT, allowed `[audit]`, 0.7 — L5, L8 | critical / block, DG-004 · E2E-CRED-EXT, no DG-001 (no PII), 0.95 — L8 | — |
@@ -148,8 +148,11 @@ the honest number and every record and report names the gap.
 - the trace's real rules (minus the `0000` fallback sentinel) == the union of the records' rules;
 - every payload-bearing leg has a `payload_classifications` row, and no current record was
   computed on a pending leg (`classification_pending` in its summary);
-- alerts: when an alerts processor is deployed, the expected number of open heads and the open
-  head's level == the trace level; otherwise no alerts rows at all.
+- alerts: when an alerts processor is deployed, one open alert once any version of the trace's
+  risk reached the floor (the alerts Deployment's `RISK_ALERT_MIN_RISK_LEVEL`, `low` when unset),
+  at the highest level reached — a later, lower version counts a
+  duplicate on it, so the latest level is not the expectation — and none for a trace that never
+  did; every superseded alert points at an alert of the same trace. Otherwise no alerts rows at all.
 
 Shape is asserted for turns and probes alike. Exact content (rules, decision, allowed actions,
 confidence, explanation, versions, fingerprints) is asserted for probes only. Counts (spans,
@@ -176,7 +179,7 @@ LLM's plan varies between turns, the shape does not.
 | L12 | card → external with OPA scaled to zero, then back | leg-ready holds the cursor, nothing skipped, exactly one version after catch-up | `E2E_DESTRUCTIVE=1` |
 | L16 | leg-ready scaled to two, eight card → external probes at once, fresh trace | one process in the drain loop throughout; every probe recorded; no two consecutive identical versions, no version with fewer legs; no leg-ready restart | `E2E_DESTRUCTIVE=1`, the sole-consumer lock (#290) |
 | L17 | card → the PSP under a 258-byte Host (the producer truncates it to `…[truncated]`) | peer.host arrives truncated; the trace settles; critical/block; no leg-ready restart | `E2E_DESTRUCTIVE=1` |
-| L13 | PI probe, card → external, the same again, fresh trace | one open alert medium → superseded by critical → `duplicate_count` 1 | alerts processor |
+| L13 | benign probe, PI probe, card → external, the same again, fresh trace | no alert → one open alert medium → superseded by critical, title and description exact → `duplicate_count` 1 | alerts processor |
 | **C. the app's behaviour** | | | |
 | L14 | (#258, `ROSSOCTL_VARIANT` on booking-agent) one scripted turn | rogue: the partner request carries the guest's name, classifies PII, critical/block [DG-001]; fixed: `dates` and `note` only, no PII, none/allow; xfails on a turn where the model does not make the call | variant |
 | L15 | a full turn whose client closes after 20 s without reading | the entry response span is not `ok` (abandoned), response leg `error=true`, no response payload, the rest of the turn derives under the root; the ledger joins | runs last |

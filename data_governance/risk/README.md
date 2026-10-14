@@ -34,6 +34,10 @@ flowchart TB
 
     TRR[("trace_risk_records")]
 
+    ALERTSP["risk.alerts processor"]
+
+    ALERTS[("alerts")]
+
     subgraph api["/risk/* API (data_governance.risk.api)"]
         RROUTES["/risk/interactions*\n/risk/traces*"]
         RULES["/risk/rules*"]
@@ -53,6 +57,7 @@ flowchart TB
     COMP --> IPD
     COMP --> IRR
     IRR -->|pg_notify| TRACETRIGGER --> TRR
+    TRR -->|pg_notify| ALERTSP --> ALERTS
 
     IRR --> RROUTES
     TRR --> RROUTES
@@ -102,6 +107,11 @@ flowchart TB
    trace's current interaction risk records, aggregates them
    (`trace_aggregate.py`), and writes a new `trace_risk_records` version —
    again, only if it differs from the latest.
+6a. **Alerts.** Every `trace_risk_records` insert fires
+   `pg_notify(dg_trace_risk_written, ...)` (migration 0023). The
+   `risk.alerts` processor drains that stream by `seq` and, per record
+   (`risk/alerts/generate.py`), opens the trace's alert, counts a duplicate
+   on it, or supersedes it with a higher-level one (issue #104).
 7. **Serving.** `risk/api/risk_routes.py`, `rules_routes.py`, and
    `metrics_routes.py` expose the records, the rule catalog, and dashboard
    aggregates; the Risk UI (`ui/src/pages/risk/`) consumes them.
@@ -145,7 +155,7 @@ no rules baked into the container.
 
 ## Running the processors
 
-Both processors are plain Python entry points; in-cluster they run as the
+The three processors are plain Python entry points; in-cluster they run as the
 `data-governance/receiver:latest` image with a `command:` override (no
 dedicated image), one replica each (no inter-pod lock over the shared
 cursor):
@@ -157,10 +167,14 @@ python -m data_governance.processors.leg_ready
 
 # risk.trace_trigger: recomputes trace-level risk on every new interaction record
 python -m data_governance.processors.risk.trace_trigger
+
+# risk.alerts: opens / counts / supersedes alerts on every new trace record
+python -m data_governance.processors.risk.alerts
 ```
 
-See [`deploy/k8s/85-leg-ready.yaml`](../../deploy/k8s/85-leg-ready.yaml) and
-[`deploy/k8s/91-risk-trace-trigger.yaml`](../../deploy/k8s/91-risk-trace-trigger.yaml)
+See [`deploy/k8s/85-leg-ready.yaml`](../../deploy/k8s/85-leg-ready.yaml),
+[`deploy/k8s/91-risk-trace-trigger.yaml`](../../deploy/k8s/91-risk-trace-trigger.yaml) and
+[`deploy/k8s/92-risk-alerts.yaml`](../../deploy/k8s/92-risk-alerts.yaml)
 for the k8s manifests, and
 [`deploy/k8s/README.md`](../../deploy/k8s/README.md) for the full
 build/load/apply/restart procedure shared by every component in this repo.
@@ -197,15 +211,19 @@ grouped by concern (defaults in parentheses):
 - `RISK_TRACE_AGGREGATION_RISK_LEVEL_MODE` (`severity_max`)
 - `RISK_TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE` (`severity_max`)
 
-**Trace-risk stream** (migration 0023: `trace_risk_records.seq` + NOTIFY, for the alerts processor, #104)
-- `RISK_ALERTS_TRIGGER_CHANNEL_NAME` (`dg_trace_risk_written`) — the trigger names the channel itself, so an override must change both
+**Alerts** (`processors/risk/alerts/`, `risk/alerts/`)
+- `RISK_ALERT_MIN_RISK_LEVEL` (`low`) — the floor; an unknown value stops the processor (exit 5)
+- `RISK_ALERTS_TRIGGER_CHANNEL_NAME` (`dg_trace_risk_written`) — migration 0023's
+  trigger names the channel itself, so an override must change both
+- `RISK_ALERTS_POLL_FALLBACK_INTERVAL_SECONDS` (`10`)
+- `RISK_RULES_SOURCE` — the catalog alert titles name rules from (the
+  `opa-policy` ConfigMap in-cluster, as for `/risk/rules`)
+- Not consumed yet (dedup strategies and volume limits, issue #105):
+  `RISK_ALERT_DEDUP_STRATEGY` (`time_window,risk_threshold`),
+  `RISK_ALERT_DEDUP_TIME_WINDOW_MINUTES` (`5`), `RISK_ALERT_MAX_DAILY_ALERTS` (`1000`),
+  `RISK_ALERT_VOLUME_WARNING_PCT` (`90`)
 
-**Alerting thresholds** (consumed by the alerts/metrics layer)
-- `RISK_ALERT_MIN_RISK_LEVEL` (`low`)
-- `RISK_ALERT_DEDUP_STRATEGY` (`time_window,risk_threshold`)
-- `RISK_ALERT_DEDUP_TIME_WINDOW_MINUTES` (`5`)
-- `RISK_ALERT_MAX_DAILY_ALERTS` (`1000`)
-- `RISK_ALERT_VOLUME_WARNING_PCT` (`90`)
+**Storage** (not consumed yet)
 - `RISK_STORAGE_RETENTION_DAYS` (`365`)
 
 **API pagination limits** (`risk/api/*_routes.py`) — each has a `_DEFAULT_LIMIT` /
@@ -221,9 +239,10 @@ grouped by concern (defaults in parentheses):
 **Shared with every processor in this repo**
 - `DATABASE_URL` (required), `LOG_LEVEL` (`INFO`),
   `LEG_READY_METRICS_PORT` (`9094`),
-  `RISK_TRACE_TRIGGER_METRICS_PORT` (`9095`)
+  `RISK_TRACE_TRIGGER_METRICS_PORT` (`9095`),
+  `RISK_ALERTS_METRICS_PORT` (`9096`)
 
-`tests/risk/test_config.py` covers every default and its env-override.
+`tests/risk/test_config.py` asserts the `risk/config.py` defaults and, for most of them, an env override.
 
 ## Testing
 
@@ -251,7 +270,10 @@ Relevant test locations:
   gathering (no OPA needed)
 - `tests/risk/engine/test_compute.py`, `test_trace_compute.py`, `test_utils.py`
   — engine unit tests
+- `tests/risk/alerts/` — alert generation, supersession, title/description,
+  and the two concurrency guards
 - `tests/processors/risk/trace_trigger/test_driver.py`,
+  `tests/processors/risk/alerts/test_driver.py`,
   `tests/processors/leg_ready/` (via `tests/processors/leg_ready/test_risk_observer.py`)
   — processor-level driver tests
 - `tests/deploy/test_risk_manifests.py`, `test_opa_manifest.py` — k8s manifest
@@ -264,13 +286,14 @@ Relevant test locations:
 | `interaction_policy_decisions` | `risk/engine/compute.py` | Cached OPA decisions, keyed by evidence fingerprint |
 | `interaction_risk_records` | `risk/engine/compute.py` | Versioned per-interaction risk verdicts |
 | `trace_risk_records` | `risk/engine/trace_compute.py` | Versioned per-trace aggregated risk verdicts |
-| `alerts` | (schema only in this increment) | Alert records for the dashboard/alerting surface |
+| `alerts` | `risk/alerts/generate.py` | Alert records: one open alert per trace, superseded when its level rises |
 
-All are append-only/versioned, FK-free by convention (mirrors the derived
+The risk records are append-only/versioned (`alerts` changes only
+`duplicate_count` and `superseded_by` on an existing row), all FK-free by convention (mirrors the derived
 `interactions`/`entities` tables — see `CONTEXT.md`'s **Interaction risk
-record** entry). `processor_state` rows for `leg_ready` and
-`risk_trace_trigger` are created on first cursor advance, not seeded by
-migration.
+record** entry). `processor_state` rows for `leg_ready`,
+`risk_trace_trigger` and `risk_alerts` are created on first cursor advance,
+not seeded by migration.
 
 ## HTTP API
 

@@ -313,3 +313,12 @@ def test_trace_risk_written_channel_default_and_override(monkeypatch: pytest.Mon
     assert cfg.TRACE_RISK_WRITTEN_CHANNEL_NAME != cfg.INTERACTION_RISK_WRITTEN_CHANNEL_NAME
     monkeypatch.setenv("RISK_ALERTS_TRIGGER_CHANNEL_NAME", "dg_custom")
     assert _reload().TRACE_RISK_WRITTEN_CHANNEL_NAME == "dg_custom"
+
+
+def test_alerts_consumer_defaults_and_override(monkeypatch: pytest.MonkeyPatch):
+    cfg = _reload()
+    assert cfg.ALERTS_POLL_FALLBACK_INTERVAL_SECONDS == 10
+    assert cfg.PROCESSOR_NAME_ALERTS == "risk_alerts"
+    assert cfg.PROCESSOR_NAME_ALERTS != cfg.PROCESSOR_NAME_TRACE_TRIGGER
+    monkeypatch.setenv("RISK_ALERTS_POLL_FALLBACK_INTERVAL_SECONDS", "3")
+    assert _reload().ALERTS_POLL_FALLBACK_INTERVAL_SECONDS == 3

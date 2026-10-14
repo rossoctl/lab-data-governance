@@ -2,8 +2,8 @@
  * Alerts/incidents card (issue #169's FR-DAS-050c). Sourced from
  * `GET /risk/traces` rather than a dedicated `/risk/alerts` endpoint:
  * `/risk/alerts` does not exist yet — backend #110 (alert endpoints) is
- * still open, as are #104/#105 (alert generation/supersession), so the
- * `alerts` table has no writer. #169 anticipated exactly this case
+ * still open. The `alerts` table has a writer since #104 (the alerts
+ * processor), but no API route reads it yet. #169 anticipated exactly this case
  * ("confirm against the live API; if neither cleanly supports
  * group-by-workflow server-side, group client-side"): this card groups
  * `/risk/traces` records by `trace_id` via `groupTraceRisksByWorkflow`
