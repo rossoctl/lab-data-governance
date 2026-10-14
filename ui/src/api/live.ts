@@ -42,9 +42,10 @@
  * Re-reading once at that point closes the window at the cost of one extra
  * round of the page's small reads per open — cheaper than being wrong once.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { apiPath } from './client';
+import { useEntities, useInteractions } from './hooks';
 
 export type LiveMode = 'stream' | 'poll' | 'off';
 
@@ -141,4 +142,43 @@ export function useTraceLive(traceId: string): LiveMode {
   }, [queryClient, traceId]);
 
   return mode;
+}
+
+/**
+ * The trace's entities and interactions as ONE reading, for the views that draw
+ * the two together (the graph tabs and the flow tables).
+ *
+ * A change event re-reads both, as two requests that land at different moments.
+ * Drawn as they land, the picture passes through a state the trace was never in:
+ * the new entity is there but the interaction that reaches it is not yet, so the
+ * layout parks it in the unconnected column, and a moment later it moves to its
+ * real cell — a node that appears in the wrong place and then travels. So while
+ * either read is in flight the previous pair is kept, and the two are swapped in
+ * together once both have landed.
+ *
+ * Only for a re-read of the SAME trace. A different trace is a different picture,
+ * and its reads are passed through as they are (the loading state covers the gap).
+ *
+ * The queries are returned as well, for their loading/error flags.
+ */
+export function useEntitiesAndInteractions(traceId: string) {
+  const entitiesQ = useEntities(traceId);
+  const interactionsQ = useInteractions(traceId);
+  const latest = { traceId, entities: entitiesQ.data, interactions: interactionsQ.data };
+  const [held, setHeld] = useState(latest);
+  const take =
+    held.traceId !== traceId || (!entitiesQ.isFetching && !interactionsQ.isFetching);
+  if (
+    take &&
+    (held.traceId !== latest.traceId ||
+      held.entities !== latest.entities ||
+      held.interactions !== latest.interactions)
+  ) {
+    // React's "adjust state while rendering": re-renders before anything commits.
+    setHeld(latest);
+  }
+  const reading = take ? latest : held;
+  const entities = useMemo(() => reading.entities ?? [], [reading.entities]);
+  const interactions = useMemo(() => reading.interactions ?? [], [reading.interactions]);
+  return { entities, interactions, entitiesQ, interactionsQ };
 }

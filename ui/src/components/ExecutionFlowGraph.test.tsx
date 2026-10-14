@@ -289,6 +289,11 @@ function clickBackground() {
  * a bug can live in either — a correct decision emitted under the wrong class name
  * would show here and not there, and vice versa.
  */
+/** The title (the interaction's summary) PF holds on one edge's data. */
+function edgeTitle(id: string): string | undefined {
+  return (capturedController?.getEdgeById(id)?.getData() as { title?: string } | undefined)?.title;
+}
+
 function edgeData(id: string): {
   isSelected: boolean;
   highlight: string;
@@ -1859,7 +1864,7 @@ describe('ExecutionFlowGraph', () => {
     // drag does not freeze the rest of the layout in place. e3 is now a CALLEE of e1
     // rather than isolated, so it joins e2 in column 1 at the next row down — which
     // also confirms the untouched nodes were re-derived rather than carried over.
-    // e3 GLIDES there rather than jumping (ADR-0034, see the live re-read block
+    // e3 MOVES there rather than jumping (ADR-0034, see the live re-read block
     // below), so its arrival is awaited.
     expect(nodeAt('e2')).toEqual(cell(1, 0));
     await waitFor(() => expect(nodeAt('e3')).toEqual(cell(1, 1)));
@@ -3702,7 +3707,7 @@ describe('live re-read (ADR-0034)', () => {
     expect(document.querySelector('[data-id="e1"]')).toBe(e1Before);
   });
 
-  it('glides a node whose cell changed, and ends exactly on the new cell', async () => {
+  it('moves a node whose cell changed, and ends exactly on the new cell', async () => {
     mockApi(ENTITIES, ONE);
     const { poll } = renderGraph('T1');
     await waitFor(() => expect(nodeAt('e3')).toEqual(cell(2, 0)));
@@ -3713,7 +3718,7 @@ describe('live re-read (ADR-0034)', () => {
     await waitFor(() => expect(edgeEls()).toHaveLength(4));
     // In flight: on the segment between the two cells, never anywhere else.
     const during = nodeAt('e3');
-    if (during === null) throw new Error('e3 vanished mid-glide');
+    if (during === null) throw new Error('e3 vanished mid-move');
     expect(during.x).toBeGreaterThanOrEqual(Math.min(from.x, to.x));
     expect(during.x).toBeLessThanOrEqual(Math.max(from.x, to.x));
     expect(during.y).toBeGreaterThanOrEqual(Math.min(from.y, to.y));
@@ -3724,7 +3729,7 @@ describe('live re-read (ADR-0034)', () => {
     expect(nodeAt('e1')).toEqual(cell(0, 0));
   });
 
-  it('leaves a node alone once the reader grabs it mid-glide', async () => {
+  it('leaves a node alone once the reader grabs it mid-move', async () => {
     mockApi(ENTITIES, ONE);
     const { poll } = renderGraph('T1');
     await waitFor(() => expect(nodeAt('e3')).toEqual(cell(2, 0)));
@@ -3739,26 +3744,94 @@ describe('live re-read (ADR-0034)', () => {
     expect(nodeAt('e3')).toEqual({ x: 900, y: 900 });
   });
 
-  it('settles a glide in flight before the next push harvests positions', async () => {
-    // A push during a glide must not read a node mid-flight as "dragged there".
-    // Two pushes back to back: the second must still see e3 end on its new cell.
+  it('gives a node in flight its new target instead of snapping it there (ADR-0034)', async () => {
+    // A push that lands while e3 is still on its way must neither jump e3 to its
+    // destination nor read it as "dragged there": e3 keeps moving and ends on its cell.
     mockApi(ENTITIES, ONE);
     const { poll } = renderGraph('T1');
     await waitFor(() => expect(nodeAt('e3')).toEqual(cell(2, 0)));
     mockApi(ENTITIES, TWO);
     await poll();
     await waitFor(() => expect(edgeEls()).toHaveLength(4));
-    // Immediately re-read with a change elsewhere (a response leg flips to error),
-    // while e3 is still gliding.
+    // Immediately re-read with a change elsewhere (i1 is renamed), while e3 is
+    // still on its way.
     mockApi(ENTITIES, [
-      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2', any_error: true }, 1),
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2', summary: 'renamed' }, 1),
       mkIx({ id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
     ]);
     await poll();
+    await waitFor(() => expect(edgeTitle('i1:request')).toBe('renamed'));
+    // The second push did not finish the move for it.
+    expect(nodeAt('e3')).not.toEqual(cell(1, 1));
     await waitFor(() => expect(nodeAt('e3')).toEqual(cell(1, 1)));
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 450));
+      await new Promise((r) => setTimeout(r, 300));
     });
     expect(nodeAt('e3')).toEqual(cell(1, 1));
+  });
+
+  it('draws a new entity on its real cell, never parked while its call is still being read', async () => {
+    // A change event re-reads entities and interactions as two requests. Here the
+    // entities answer lands first: e3 exists, the call that reaches it is not read
+    // yet. Drawn then, e3 would sit in the unconnected (trailing) column and move a
+    // moment later. The graph waits for both reads and draws e3 once, on its cell.
+    const pair = [ENTITIES[0], ENTITIES[1]];
+    mockApi(pair, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]);
+    const { poll } = renderGraph('T1');
+    await waitFor(() => expect(nodeEls()).toHaveLength(2));
+
+    let release!: () => void;
+    const interactionsHeld = new Promise<void>((r) => (release = r));
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
+      if (url.endsWith('/interactions')) {
+        await interactionsHeld;
+        return { ok: true, status: 200, json: async () => ({ interactions: TWO }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
+    void poll();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
+    // Entities are in, interactions are not: the old picture stands.
+    expect(nodeAt('e3')).toBeNull();
+    expect(nodeEls()).toHaveLength(2);
+
+    await act(async () => release());
+    await waitFor(() => expect(nodeAt('e3')).not.toBeNull());
+    // Its first appearance is its real cell (depth 1, second in chronology).
+    expect(nodeAt('e3')).toEqual(cell(1, 1));
+  });
+
+  it("moves an existing edge's bend with its nodes rather than jumping it to the new route", async () => {
+    // i2 (e1→e3) is an adjacent-column call until e2→e3 makes e3 one column deeper;
+    // then it skips a column and its route lifts. The bend travels there.
+    const S1 = [
+      mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+      mkIx({ id: 'i2', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
+    ];
+    mockApi(ENTITIES, S1);
+    const { poll } = renderGraph('T1');
+    await waitFor(() => expect(nodeAt('e3')).toEqual(cell(1, 1)));
+    const [before] = bendsOf('i2:request');
+
+    mockApi(ENTITIES, [...S1, mkIx({ id: 'i3', caller_entity_id: 'e2', callee_entity_id: 'e3' }, 5)]);
+    await poll();
+    await waitFor(() => expect(edgeEls()).toHaveLength(6));
+    const [during] = bendsOf('i2:request');
+    await waitFor(() => expect(nodeAt('e3')).toEqual(cell(2, 0)));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    const [after] = bendsOf('i2:request');
+
+    expect(after).not.toEqual(before);
+    // In flight: on the segment from the old bend to the new one, not yet at the end.
+    expect(during).not.toEqual(after);
+    expect(during.x).toBeGreaterThanOrEqual(Math.min(before.x, after.x));
+    expect(during.x).toBeLessThanOrEqual(Math.max(before.x, after.x));
+    expect(during.y).toBeGreaterThanOrEqual(Math.min(before.y, after.y));
+    expect(during.y).toBeLessThanOrEqual(Math.max(before.y, after.y));
   });
 });

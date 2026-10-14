@@ -76,7 +76,7 @@ import { getConnectorStartPoint } from '@patternfly/react-topology/dist/esm/comp
 // observables were created by. Still a LEAF module, not the barrel: `index.js` does
 // `export * from './mobx-exports'`, which is how the barrel would otherwise be the
 // only route to it.
-import { observer } from '@patternfly/react-topology/dist/esm/mobx-exports';
+import { action, observer } from '@patternfly/react-topology/dist/esm/mobx-exports';
 import {
   TopologyControlBar,
   createTopologyControlButtons,
@@ -161,7 +161,9 @@ import '@patternfly/react-topology/dist/esm/css/topology-view.css';
 import '@patternfly/react-topology/dist/esm/css/topology-controlbar.css';
 
 import { useEntities, useInteractions, useLineageReachability, useLineageSummary } from '../api/hooks';
+import { useEntitiesAndInteractions } from '../api/live';
 import { deriveGraph, type GraphEdgeSpec, type GraphNodeSpec, type GraphSpec } from '../lib/graph';
+import { Motion, type Movable } from '../lib/motion';
 import {
   deriveReachabilityHighlight,
   deriveSourceHighlight,
@@ -550,118 +552,54 @@ const GRID_ORIGIN = NODE_DIAMETER;
  * CENTRE in PF topology, which is why the diameter is what the origin offset is
  * expressed in.
  */
-/** One node's glide: from where it is drawn to where its cell now is. */
-type NodeMove = {
-  id: string;
-  from: { x: number; y: number };
-  to: { x: number; y: number };
-};
-
-/** A glide in flight. Both methods are idempotent and safe after completion. */
-type NodeGlide = {
-  /** Stop where things are; nothing moves further. */
-  cancel(): void;
-  /** Put every node still in flight at its destination, now. */
-  finish(): void;
-};
-
-/** How long a node takes to reach a new cell. Short enough to read as "it moved
- * there", long enough to be seen moving. */
-const GLIDE_MS = 350;
-
-function easeOutCubic(t: number): number {
-  return 1 - (1 - t) ** 3;
-}
-
-/**
- * Glide the given nodes from `from` to `to` over `durationMs` (ADR-0034).
- *
- * A LIVE picture changes under the reader: a re-derived trace can move an
- * entity's cell when its call depth or chronology changes, and a node that
- * jumps between two frames is a node the reader has to find again. Interpolating
- * the position through PF's own `setPosition` (a MobX action, so each frame
- * re-renders exactly the node and the edges anchored to it) keeps the eye on it.
- * The edges need nothing: their endpoints follow the live anchors, as they do
- * for a drag.
- *
- * THE READER WINS. If a node is found somewhere other than where the previous
- * frame left it, the reader is dragging it, and it is dropped from the glide
- * rather than fought over. A reader who prefers reduced motion, or an
- * environment without `requestAnimationFrame`, gets the destination at once —
- * the same end state, without the frames.
- */
-function glideNodes(
-  controller: Visualization,
-  moves: readonly NodeMove[],
-  durationMs: number = GLIDE_MS,
-): NodeGlide {
-  const place = (t: number, inFlight: Set<string>, lastSet: Map<string, Point>) => {
-    const e = easeOutCubic(t);
-    for (const m of moves) {
-      if (!inFlight.has(m.id)) continue;
-      const node = controller.getNodeById(m.id);
-      if (!node) {
-        inFlight.delete(m.id);
-        continue;
-      }
-      const prev = lastSet.get(m.id);
-      const at = node.getPosition();
-      if (prev !== undefined && (at.x !== prev.x || at.y !== prev.y)) {
-        // Moved by someone else since the last frame — the reader is dragging it.
-        inFlight.delete(m.id);
-        continue;
-      }
-      const next = new Point(m.from.x + (m.to.x - m.from.x) * e, m.from.y + (m.to.y - m.from.y) * e);
-      node.setPosition(next);
-      lastSet.set(m.id, next);
-    }
-  };
-  const inFlight = new Set(moves.map((m) => m.id));
-  // Seeded with where the push put each node, so a grab BEFORE the first frame
-  // is seen as the reader's move too, not only one between frames.
-  const lastSet = new Map<string, Point>(moves.map((m) => [m.id, new Point(m.from.x, m.from.y)]));
-  const reduced =
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : null;
-  if (reduced || raf === null) {
-    place(1, inFlight, lastSet);
-    return { cancel() {}, finish() {} };
-  }
-  let done = false;
-  let handle = 0;
-  const started = performance.now();
-  const frame = () => {
-    if (done) return;
-    // Our own clock, not the frame's timestamp argument: the two need not share
-    // an origin (jsdom's do not), and a negative `t` would fling nodes away.
-    const t = Math.max(0, Math.min(1, (performance.now() - started) / durationMs));
-    place(t, inFlight, lastSet);
-    if (t < 1 && inFlight.size > 0) handle = raf(frame);
-    else done = true;
-  };
-  handle = raf(frame);
-  return {
-    cancel() {
-      if (done) return;
-      done = true;
-      cancelAnimationFrame(handle);
-    },
-    finish() {
-      if (done) return;
-      done = true;
-      cancelAnimationFrame(handle);
-      place(1, inFlight, lastSet);
-    },
-  };
-}
-
 function gridPosition({ column, row }: { column: number; row: number }): { x: number; y: number } {
   return {
     x: GRID_ORIGIN + column * COLUMN_STEP_X * COLUMN_DIRECTION,
     y: GRID_ORIGIN + row * ROW_STEP_Y,
   };
+}
+
+/**
+ * A node, as something `Motion` can move (ADR-0034). Read and written through PF's
+ * own position, so a drag and a move are the same observable and the edges'
+ * endpoints follow either without being told.
+ */
+function nodeMovable(controller: Visualization, id: string): Movable {
+  return {
+    read: () => controller.getNodeById(id)?.getPosition(),
+    write: (p) => controller.getNodeById(id)?.setPosition(new Point(p.x, p.y)),
+  };
+}
+
+/**
+ * An edge's ONE bendpoint — the apex its arc passes through — as something `Motion`
+ * can move. The bendpoint is stored geometry, not an anchor (see `edgeBendpoints`),
+ * so without this it would jump to its new route at the push while the two nodes at
+ * its ends were still on their way, and the arc would lean the wrong way for the
+ * length of the move. Only single-bendpoint routes move; a self-call has none.
+ */
+function bendpointMovable(controller: Visualization, id: string): Movable {
+  return {
+    read: () => {
+      const bendpoints = controller.getEdgeById(id)?.getBendpoints();
+      return bendpoints?.length === 1 ? bendpoints[0] : undefined;
+    },
+    write: (p) => controller.getEdgeById(id)?.setBendpoints([new Point(p.x, p.y)]),
+  };
+}
+
+/** One frame's writes as one MobX action, so the observers redraw once per frame. */
+function inOneAction(fn: () => void): void {
+  action(fn)();
+}
+
+/** The reader asked the system for less motion: moves land at once. */
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
 }
 
 /**
@@ -2047,9 +1985,17 @@ export function EntityGraph({
    */
   const draggedPositions = useRef(new Map<string, { x: number; y: number }>());
 
-  /** The glide in flight from the last model push, if any — see `glideNodes`. */
-  const moveRef = useRef<NodeGlide | null>(null);
-  useEffect(() => () => moveRef.current?.cancel(), []);
+  /**
+   * What moves a node (or an edge's bendpoint) whose place changed on a push,
+   * instead of jumping it there (ADR-0034, `lib/motion`). One per graph, kept across
+   * pushes: a push that lands while things are still moving gives them new targets
+   * rather than finishing or restarting their moves.
+   */
+  const motionRef = useRef<Motion | null>(null);
+  if (motionRef.current === null) {
+    motionRef.current = new Motion({ batch: inOneAction, instant: prefersReducedMotion() });
+  }
+  useEffect(() => () => motionRef.current?.stop(), []);
 
   // Harvest the current positions before a rebuild throws them away. Runs on
   // every model push, so the positions carried forward are always the last ones
@@ -2061,11 +2007,15 @@ export function EntityGraph({
   // trace's data is revised by a later poll and its call depth changes) would be
   // overwritten by the harvested copy of the OLD arithmetic, and the picture would
   // silently stop matching the code.
-  const harvestDraggedPositions = useCallback(() => {
+  //
+  // A node still MOVING is not a dragged one: it is between two cells on its way to
+  // the newer one, so `inFlight` skips it and the push gives it its next target.
+  const harvestDraggedPositions = useCallback((inFlight: (id: string) => boolean) => {
     if (!controller.hasGraph()) return;
     for (const node of controller.getGraph().getNodes()) {
       const data = node.getData() as NodeData | undefined;
       if (!data) continue;
+      if (inFlight(node.getId())) continue;
       const at = node.getPosition();
       const home = gridPosition(data);
       if (at.x === home.x && at.y === home.y) continue;
@@ -2132,31 +2082,35 @@ export function EntityGraph({
 
   // Push the derived spec into the topology model whenever it changes.
   useEffect(() => {
+    const motion = motionRef.current!;
     const sameTrace = positionsTraceId.current === traceId;
     if (!sameTrace) {
       positionsTraceId.current = traceId;
       draggedPositions.current = new Map();
-      moveRef.current?.cancel();
+      motion.stop();
     } else {
-      // Same trace: a glide still in flight is put at its destination first, so
-      // the harvest reads settled positions (a node in flight is not a dragged
-      // one), then the reader's own placements are carried across the push.
+      // Same trace: the reader's own placements are carried across the push.
       // Harvest BEFORE `fromModel`, since it reads them off the live graph.
-      moveRef.current?.finish();
-      harvestDraggedPositions();
+      harvestDraggedPositions((id) => motion.isMoving(`node:${id}`));
     }
-    moveRef.current = null;
-    // Where every node is drawn RIGHT NOW, so one whose cell changed can glide
-    // there instead of jumping (ADR-0034, `glideNodes`). Same trace only: a new
-    // trace is a new picture and its nodes start at their cells.
+    // Where every node and every bendpoint is drawn RIGHT NOW. The push writes an
+    // existing element back where it is drawn, and `motion` then moves it to its
+    // new place — so a push never jumps anything (ADR-0034, `lib/motion`). Same
+    // trace only: a new trace is a new picture and starts on its cells.
     const drawnAt = new Map<string, { x: number; y: number }>();
+    const drawnBend = new Map<string, { x: number; y: number }>();
     if (sameTrace && controller.hasGraph()) {
       for (const node of controller.getGraph().getNodes()) {
         const at = node.getPosition();
         drawnAt.set(node.getId(), { x: at.x, y: at.y });
       }
+      for (const edge of controller.getGraph().getEdges()) {
+        const bendpoints = edge.getBendpoints();
+        if (bendpoints.length === 1) drawnBend.set(edge.getId(), { x: bendpoints[0].x, y: bendpoints[0].y });
+      }
     }
-    const moves: NodeMove[] = [];
+    const nodeTargets: Array<[string, { x: number; y: number }]> = [];
+    const bendTargets: Array<[string, { x: number; y: number }]> = [];
     // The layered cell of every node, keyed by id — what `edgeBendpoints` needs to
     // know which spans an edge crosses. Built from the same `spec.nodes` the node
     // models come from, so an edge can never be routed against a cell the node is
@@ -2181,10 +2135,8 @@ export function EntityGraph({
         // disagree, so there is no third notion of "where a node is".
         const to = draggedPositions.current.get(n.id) ?? gridPosition(n);
         const from = drawnAt.get(n.id);
-        if (from !== undefined && (from.x !== to.x || from.y !== to.y)) {
-          moves.push({ id: n.id, from, to });
-        }
-        // An existing node is pushed where it is DRAWN and glided to `to` after
+        if (from !== undefined) nodeTargets.push([n.id, to]);
+        // An existing node is pushed where it is DRAWN and moved to `to` after
         // the push; a new node appears at `to`. The model and the picture never
         // disagree about where a node is.
         const { x, y } = from ?? to;
@@ -2215,38 +2167,46 @@ export function EntityGraph({
           } satisfies NodeData,
         };
       }),
-      edges: spec.edges.map((e) => ({
-        id: e.id,
-        type: 'dg-interaction',
-        source: e.source,
-        target: e.target,
-        // A self-call's source and target are the same point, so its path has zero
-        // length and is invisible. `dashed` at least marks the node as carrying one;
-        // PF has no self-loop routing in 5.4, and `CurvedEdge` deliberately did not
-        // add one — see its `curvePath`, and the `edgeBendpoints` early return, for
-        // why a self-loop arc would need a second notion of curvature beside the
-        // bendpoint. Unchanged by the curve work; still the weakest thing on this
-        // graph.
-        edgeStyle: e.isSelfCall ? EdgeStyle.dashed : EdgeStyle.solid,
-        // THE ROUTING, and the apex the drawn arc bends through. One point for every
-        // edge that connects two distinct cells — a small parity-signed bow for the
-        // adjacent-column pair (so a request and its response separate rather than
-        // retrace one line), a larger detour for an edge that skips columns or stays
-        // within one. Empty ONLY for a self-call, which has nowhere to bend to. See
-        // `edgeBendpoints`, and `controlThrough` for how the arc is made to pass
-        // through this point exactly rather than at half its offset.
-        bendpoints: edgeBendpoints(e, cellById),
-        data: {
-          ...e,
-          highlight: roleOf(e.id, highlight, false),
-          // Per INTERACTION, so both legs of the selected one are marked — see
-          // EdgeData. A primitive comparison, so this adds nothing the effect's
-          // dependency list cannot express (`selectedInteractionId` is itself the
-          // digest, unlike the highlight's object).
-          isSelected: selectedInteractionId != null && e.interactionId === selectedInteractionId,
-          lineage: edgeLineageFactsOf(e.id, highlight),
-        } satisfies EdgeData,
-      })),
+      edges: spec.edges.map((e) => {
+        const route = edgeBendpoints(e, cellById);
+        const drawn = drawnBend.get(e.id);
+        // Same rule as a node: an existing one-bend route is pushed where it is
+        // drawn and moved to its new route with the nodes at its ends.
+        const moves = drawn !== undefined && route.length === 1;
+        if (moves) bendTargets.push([e.id, { x: route[0][0], y: route[0][1] }]);
+        return {
+          id: e.id,
+          type: 'dg-interaction',
+          source: e.source,
+          target: e.target,
+          // A self-call's source and target are the same point, so its path has zero
+          // length and is invisible. `dashed` at least marks the node as carrying one;
+          // PF has no self-loop routing in 5.4, and `CurvedEdge` deliberately did not
+          // add one — see its `curvePath`, and the `edgeBendpoints` early return, for
+          // why a self-loop arc would need a second notion of curvature beside the
+          // bendpoint. Unchanged by the curve work; still the weakest thing on this
+          // graph.
+          edgeStyle: e.isSelfCall ? EdgeStyle.dashed : EdgeStyle.solid,
+          // THE ROUTING, and the apex the drawn arc bends through. One point for every
+          // edge that connects two distinct cells — a small parity-signed bow for the
+          // adjacent-column pair (so a request and its response separate rather than
+          // retrace one line), a larger detour for an edge that skips columns or stays
+          // within one. Empty ONLY for a self-call, which has nowhere to bend to. See
+          // `edgeBendpoints`, and `controlThrough` for how the arc is made to pass
+          // through this point exactly rather than at half its offset.
+          bendpoints: moves ? [[drawn.x, drawn.y] as PointTuple] : route,
+          data: {
+            ...e,
+            highlight: roleOf(e.id, highlight, false),
+            // Per INTERACTION, so both legs of the selected one are marked — see
+            // EdgeData. A primitive comparison, so this adds nothing the effect's
+            // dependency list cannot express (`selectedInteractionId` is itself the
+            // digest, unlike the highlight's object).
+            isSelected: selectedInteractionId != null && e.interactionId === selectedInteractionId,
+            lineage: edgeLineageFactsOf(e.id, highlight),
+          } satisfies EdgeData,
+        };
+      }),
     };
     // `true` for merge (ADR-0034): an element whose id is in the new model is
     // updated in place (`setModel`) and keeps its DOM, and one that is not — a node
@@ -2261,7 +2221,8 @@ export function EntityGraph({
     // being re-applied as the node models' `x`/`y` above, keyed by node id, so a
     // position for an entity this trace does not have is simply never asked for.
     controller.fromModel(model, true);
-    moveRef.current = moves.length > 0 ? glideNodes(controller, moves) : null;
+    for (const [id, to] of nodeTargets) motion.moveTo(`node:${id}`, nodeMovable(controller, id), to);
+    for (const [id, to] of bendTargets) motion.moveTo(`edge:${id}`, bendpointMovable(controller, id), to);
     // `highlightKey` (a content digest) rather than `highlight` itself — see its
     // note. `highlight` is read INSIDE the effect and is deliberately not a
     // dependency; the digest changing is exactly when re-reading it matters.
@@ -2645,11 +2606,9 @@ export function ExecutionFlowGraph({
   selectedInteractionId?: string | null;
   onSelectInteraction?: (interactionId: string | null) => void;
 }) {
-  const entitiesQ = useEntities(traceId);
-  const interactionsQ = useInteractions(traceId);
-
-  const entities = useMemo(() => entitiesQ.data ?? [], [entitiesQ.data]);
-  const interactions = useMemo(() => interactionsQ.data ?? [], [interactionsQ.data]);
+  // One reading of the two, so a re-read never draws a half-updated trace — see
+  // `useEntitiesAndInteractions`.
+  const { entities, interactions, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
 
   const spec = useMemo(() => deriveGraph(entities, interactions), [entities, interactions]);
 
