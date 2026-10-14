@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { Motion, SMOOTH_TIME_MS, type Movable, type XY } from './motion';
+import { describe, it, expect, vi } from 'vitest';
+import { ENTER_MS, Motion, SMOOTH_TIME_MS, fadeIn, type Movable, type XY } from './motion';
 
 /** A hand-cranked clock and frame queue: `frame()` advances time and runs one frame. */
 function rig(options: { instant?: boolean } = {}) {
@@ -204,5 +204,35 @@ describe('Motion', () => {
     alive = false;
     run(r, 50);
     expect(r.pending).toBe(false);
+  });
+});
+
+describe('fadeIn', () => {
+  const el = () => ({ animate: vi.fn() }) as unknown as Element & { animate: ReturnType<typeof vi.fn> };
+
+  it('fades from transparent to opaque over the arrival’s length, easing out', () => {
+    const e = el();
+    fadeIn(e, { bornAt: 1000, durationMs: ENTER_MS }, 1000);
+    expect(e.animate).toHaveBeenCalledWith([{ opacity: 0 }, { opacity: 1 }], {
+      duration: ENTER_MS,
+      delay: -0,
+      easing: 'ease-out',
+    });
+  });
+
+  it('picks a fade up where it stands: an element rebuilt mid-fade does not replay it', () => {
+    const e = el();
+    fadeIn(e, { bornAt: 1000, durationMs: ENTER_MS }, 1300);
+    expect(e.animate.mock.calls[0][1].delay).toBe(-300);
+  });
+
+  it('draws at once an element rebuilt after its fade is over', () => {
+    const e = el();
+    fadeIn(e, { bornAt: 1000, durationMs: ENTER_MS }, 1000 + ENTER_MS);
+    expect(e.animate).not.toHaveBeenCalled();
+  });
+
+  it('does nothing where there are no Web Animations', () => {
+    expect(() => fadeIn({} as Element, { bornAt: 0, durationMs: ENTER_MS }, 0)).not.toThrow();
   });
 });

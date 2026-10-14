@@ -163,7 +163,7 @@ import '@patternfly/react-topology/dist/esm/css/topology-controlbar.css';
 import { useEntities, useInteractions, useLineageReachability, useLineageSummary } from '../api/hooks';
 import { useEntitiesAndInteractions } from '../api/live';
 import { deriveGraph, type GraphEdgeSpec, type GraphNodeSpec, type GraphSpec } from '../lib/graph';
-import { Motion, type Movable } from '../lib/motion';
+import { ENTER_MS, ENTER_MS_REDUCED, Motion, fadeIn, type Arrival, type Movable } from '../lib/motion';
 import {
   deriveReachabilityHighlight,
   deriveSourceHighlight,
@@ -286,6 +286,8 @@ type NodeData = GraphNodeSpec & {
   highlight: HighlightRole;
   lineage: NodeLineageFacts;
   kindColoured: boolean;
+  /** Set while a node that arrived on a live push is fading in (ADR-0034). */
+  arrival?: Arrival;
 };
 /**
  * An edge's `data`: its derived spec, its highlight role, and whether its parent
@@ -311,6 +313,8 @@ type EdgeData = GraphEdgeSpec & {
   highlight: HighlightRole;
   isSelected: boolean;
   lineage: EdgeLineageFacts;
+  /** Set while an edge that arrived on a live push is fading in, as on a node. */
+  arrival?: Arrival;
 };
 
 /**
@@ -599,6 +603,25 @@ function prefersReducedMotion(): boolean {
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+/**
+ * A ref for the element that fades in when `arrival` is set (`lib/motion` `fadeIn`).
+ * Keyed on the arrival's two numbers, so React calls it once per DOM element rather
+ * than once per render: a re-render does not restart the fade, and a remount (a
+ * layer hoist) resumes it.
+ */
+function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => void {
+  const bornAt = arrival?.bornAt;
+  const durationMs = arrival?.durationMs;
+  return useCallback(
+    (el: SVGGElement | null) => {
+      if (el !== null && bornAt !== undefined && durationMs !== undefined) {
+        fadeIn(el, { bornAt, durationMs }, performance.now());
+      }
+    },
+    [bornAt, durationMs],
   );
 }
 
@@ -1001,8 +1024,12 @@ function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof Defa
   // `data` is missing — the conservative direction, since a stray kind hue on the
   // Lineage tab would compete with the source colouring.
   const colour = data?.kindColoured ? kindColorVar(data.kind) : nodeNeutralColorVar();
+  // On this wrapper, not on `DefaultNode`'s own group: the highlight dims that group
+  // by `opacity`, and the fade multiplies with the dim instead of overriding it.
+  const fadeRef = useFadeIn(data?.arrival);
   return (
     <g
+      ref={fadeRef}
       // The exact variables PF's own topology-components.css reads for a node's
       // outline and its label text (`.pf-topology__node__background` →
       // `--pf-topology__node__background--Stroke`, `.pf-topology__node__label__text`
@@ -1171,6 +1198,8 @@ const CurvedEdge = observer(function CurvedEdge({
   // they do on a `DefaultEdge` — including its 200ms in/out delays, which exist to
   // stop the layer hoist flickering as the pointer crosses an edge.
   const [hover, hoverRef] = useHover<SVGGElement>();
+  // On a group of its own around PF's, for the reason `KindColouredNode` gives.
+  const fadeRef = useFadeIn((element.getData() as EdgeData | undefined)?.arrival);
 
   if (!isEdge(element)) throw new Error('CurvedEdge must be used only on Edge elements');
 
@@ -1251,79 +1280,81 @@ const CurvedEdge = observer(function CurvedEdge({
 
   return (
     <Layer id={dragging || hover ? TOP_LAYER : undefined}>
-      {/* `data-test-id="edge-handler"` is PF's own attribute on this group and the
-          existing tests target it to click an edge — kept, spelling included (it is
-          `data-test-id`, not the `data-testid` RTL looks for). */}
-      <g
-        ref={hoverRef}
-        data-test-id="edge-handler"
-        className={groupClassName}
-        onClick={onSelect}
-        onContextMenu={onContextMenu}
-      >
-        <path className="pf-topology__edge__background" d={backgroundPath} />
-        <path
-          className={linkClassName}
-          d={linkPath}
-          style={{
-            animationDuration: `${
-              animationDuration ?? getEdgeAnimationDuration(element.getEdgeAnimationSpeed())
-            }s`,
-          }}
-        />
-        {showTag && (
-          <g transform={`scale(${hover ? tagScale : 1})`}>
-            {/* THE TAG STILL SITS ON THE CHORD MIDPOINT, not on the curve, because
-                `DefaultConnectorTag` computes its own translate from the two points it
-                is given (`start + (end - start) * 0.5`) and takes no position
-                override. Handing it the curve's apex instead — which IS available, it
-                is the bendpoint — was considered and rejected: the apex is where the
-                two legs of a pair are FURTHEST apart, but the tag is a small filled
-                rect and putting it exactly on the drawn line hides that line under it
-                at the one place the reader uses to tell the two arcs apart. The chord
-                midpoint leaves the label just inside its own arc, off the stroke, and
-                the parity-signed bow keeps the request's and response's labels on
-                opposite sides — which is the collision this graph actually had to
-                fix. */}
-            <DefaultConnectorTag
-              className={tagClass}
-              startPoint={element.getStartPoint().scale(tagPositionScale)}
-              endPoint={element.getEndPoint().scale(tagPositionScale)}
-              tag={tag}
-              status={tagStatus}
-            />
-          </g>
-        )}
-        {/* THE TERMINALS, each aimed with an explicit `startPoint` sampled from the
-            curve (see TANGENT_SAMPLE_T). Without the override PF re-derives the aim
-            from `edge.getBendpoints()` itself — the chord from the last bendpoint to
-            the end — which on a bowed edge is visibly off the curve's heading at the
-            node, i.e. an arrowhead pointing somewhere the line does not go. This is
-            the single most noticeable way a curved fork goes wrong, so the override is
-            not an optimisation. */}
-        <DefaultConnectorTerminal
-          className={startTerminalClass}
-          isTarget={false}
-          edge={element}
-          size={startTerminalSize}
-          terminalType={startTerminalType}
-          status={startTerminalStatus}
-          highlight={dragging || hover}
-          startPoint={tangentToStart}
-          endPoint={startPoint}
-        />
-        <DefaultConnectorTerminal
-          className={endTerminalClass}
-          isTarget
-          edge={element}
-          size={endTerminalSize}
-          terminalType={endTerminalType}
-          status={endTerminalStatus}
-          highlight={dragging || hover}
-          startPoint={tangentToEnd}
-          endPoint={endPoint}
-        />
-        {children}
+      <g ref={fadeRef}>
+        {/* `data-test-id="edge-handler"` is PF's own attribute on this group and the
+            existing tests target it to click an edge — kept, spelling included (it is
+            `data-test-id`, not the `data-testid` RTL looks for). */}
+        <g
+          ref={hoverRef}
+          data-test-id="edge-handler"
+          className={groupClassName}
+          onClick={onSelect}
+          onContextMenu={onContextMenu}
+        >
+          <path className="pf-topology__edge__background" d={backgroundPath} />
+          <path
+            className={linkClassName}
+            d={linkPath}
+            style={{
+              animationDuration: `${
+                animationDuration ?? getEdgeAnimationDuration(element.getEdgeAnimationSpeed())
+              }s`,
+            }}
+          />
+          {showTag && (
+            <g transform={`scale(${hover ? tagScale : 1})`}>
+              {/* THE TAG STILL SITS ON THE CHORD MIDPOINT, not on the curve, because
+                  `DefaultConnectorTag` computes its own translate from the two points it
+                  is given (`start + (end - start) * 0.5`) and takes no position
+                  override. Handing it the curve's apex instead — which IS available, it
+                  is the bendpoint — was considered and rejected: the apex is where the
+                  two legs of a pair are FURTHEST apart, but the tag is a small filled
+                  rect and putting it exactly on the drawn line hides that line under it
+                  at the one place the reader uses to tell the two arcs apart. The chord
+                  midpoint leaves the label just inside its own arc, off the stroke, and
+                  the parity-signed bow keeps the request's and response's labels on
+                  opposite sides — which is the collision this graph actually had to
+                  fix. */}
+              <DefaultConnectorTag
+                className={tagClass}
+                startPoint={element.getStartPoint().scale(tagPositionScale)}
+                endPoint={element.getEndPoint().scale(tagPositionScale)}
+                tag={tag}
+                status={tagStatus}
+              />
+            </g>
+          )}
+          {/* THE TERMINALS, each aimed with an explicit `startPoint` sampled from the
+              curve (see TANGENT_SAMPLE_T). Without the override PF re-derives the aim
+              from `edge.getBendpoints()` itself — the chord from the last bendpoint to
+              the end — which on a bowed edge is visibly off the curve's heading at the
+              node, i.e. an arrowhead pointing somewhere the line does not go. This is
+              the single most noticeable way a curved fork goes wrong, so the override is
+              not an optimisation. */}
+          <DefaultConnectorTerminal
+            className={startTerminalClass}
+            isTarget={false}
+            edge={element}
+            size={startTerminalSize}
+            terminalType={startTerminalType}
+            status={startTerminalStatus}
+            highlight={dragging || hover}
+            startPoint={tangentToStart}
+            endPoint={startPoint}
+          />
+          <DefaultConnectorTerminal
+            className={endTerminalClass}
+            isTarget
+            edge={element}
+            size={endTerminalSize}
+            terminalType={endTerminalType}
+            status={endTerminalStatus}
+            highlight={dragging || hover}
+            startPoint={tangentToEnd}
+            endPoint={endPoint}
+          />
+          {children}
+        </g>
       </g>
     </Layer>
   );
@@ -1997,6 +2028,15 @@ export function EntityGraph({
   }
   useEffect(() => () => motionRef.current?.stop(), []);
 
+  /**
+   * When each node and edge that arrived on a live push appeared, keyed
+   * `node:<id>` / `edge:<id>`, so it fades in rather than popping in (ADR-0034).
+   * Only a push onto a picture already drawn for the SAME trace counts as an arrival:
+   * a first paint and a new trace appear at once. Kept for a fade's length, so a push
+   * that lands mid-fade carries the arrival over and the fade runs on.
+   */
+  const arrivals = useRef(new Map<string, number>());
+
   // Harvest the current positions before a rebuild throws them away. Runs on
   // every model push, so the positions carried forward are always the last ones
   // the user actually saw — including a drag that happened between two pushes.
@@ -2087,6 +2127,7 @@ export function EntityGraph({
     if (!sameTrace) {
       positionsTraceId.current = traceId;
       draggedPositions.current = new Map();
+      arrivals.current = new Map();
       motion.stop();
     } else {
       // Same trace: the reader's own placements are carried across the push.
@@ -2099,16 +2140,30 @@ export function EntityGraph({
     // trace only: a new trace is a new picture and starts on its cells.
     const drawnAt = new Map<string, { x: number; y: number }>();
     const drawnBend = new Map<string, { x: number; y: number }>();
-    if (sameTrace && controller.hasGraph()) {
+    const drawnEdges = new Set<string>();
+    const live = sameTrace && controller.hasGraph();
+    if (live) {
       for (const node of controller.getGraph().getNodes()) {
         const at = node.getPosition();
         drawnAt.set(node.getId(), { x: at.x, y: at.y });
       }
       for (const edge of controller.getGraph().getEdges()) {
+        drawnEdges.add(edge.getId());
         const bendpoints = edge.getBendpoints();
         if (bendpoints.length === 1) drawnBend.set(edge.getId(), { x: bendpoints[0].x, y: bendpoints[0].y });
       }
     }
+    // A thing not drawn before this push arrives now; one whose fade is over is forgotten.
+    const now = performance.now();
+    const fadeMs = prefersReducedMotion() ? ENTER_MS_REDUCED : ENTER_MS;
+    for (const [key, bornAt] of arrivals.current) {
+      if (now - bornAt >= fadeMs) arrivals.current.delete(key);
+    }
+    const arrivalOf = (key: string, drawn: boolean): Arrival | undefined => {
+      if (live && !drawn && !arrivals.current.has(key)) arrivals.current.set(key, now);
+      const bornAt = arrivals.current.get(key);
+      return bornAt === undefined ? undefined : { bornAt, durationMs: fadeMs };
+    };
     const nodeTargets: Array<[string, { x: number; y: number }]> = [];
     const bendTargets: Array<[string, { x: number; y: number }]> = [];
     // The layered cell of every node, keyed by id — what `edgeBendpoints` needs to
@@ -2164,6 +2219,7 @@ export function EntityGraph({
             // rather than on a new "which tab" prop that would be a second way to say
             // the same thing and could contradict it.
             kindColoured: highlight === undefined,
+            arrival: arrivalOf(`node:${n.id}`, from !== undefined),
           } satisfies NodeData,
         };
       }),
@@ -2204,6 +2260,7 @@ export function EntityGraph({
             // digest, unlike the highlight's object).
             isSelected: selectedInteractionId != null && e.interactionId === selectedInteractionId,
             lineage: edgeLineageFactsOf(e.id, highlight),
+            arrival: arrivalOf(`edge:${e.id}`, drawnEdges.has(e.id)),
           } satisfies EdgeData,
         };
       }),

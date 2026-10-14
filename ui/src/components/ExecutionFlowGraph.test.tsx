@@ -12,6 +12,7 @@ import { Visualization } from '@patternfly/react-topology/dist/esm/Visualization
 import { SELECTION_EVENT } from '@patternfly/react-topology/dist/esm/behavior/useSelection';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { ExecutionFlowGraph, LineageGraph } from './ExecutionFlowGraph';
+import { ENTER_MS } from '../lib/motion';
 import type {
   Entity,
   Interaction,
@@ -3833,5 +3834,84 @@ describe('live re-read (ADR-0034)', () => {
     expect(during.x).toBeLessThanOrEqual(Math.max(before.x, after.x));
     expect(during.y).toBeGreaterThanOrEqual(Math.min(before.y, after.y));
     expect(during.y).toBeLessThanOrEqual(Math.max(before.y, after.y));
+  });
+  describe('fade in', () => {
+    // jsdom has no Web Animations; a recording stand-in says which elements were faded.
+    // Edges only: jsdom culls a node's content (see `nodeData`), so a node's fade is
+    // read off the `arrival` its renderer is handed.
+    let animate: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      animate = vi.fn();
+      Object.defineProperty(Element.prototype, 'animate', { value: animate, configurable: true, writable: true });
+    });
+    afterEach(() => {
+      delete (Element.prototype as { animate?: unknown }).animate;
+    });
+    const faded = () =>
+      (animate.mock.contexts as Element[]).map((el) => el.closest('[data-id]')?.getAttribute('data-id')).sort();
+    const arrivalOf = (id: string) =>
+      (capturedController?.getNodeById(id)?.getData() as { arrival?: { bornAt: number; durationMs: number } })
+        ?.arrival;
+
+    it('fades in a node that arrives on a live push, with its edges, and nothing already drawn', async () => {
+      mockApi([ENTITIES[0], ENTITIES[1]], [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]);
+      const { poll } = renderGraph('T1');
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+      mockApi(ENTITIES, TWO);
+      await poll();
+      await waitFor(() => expect(edgeEls()).toHaveLength(4));
+      expect(faded()).toEqual(['i2:request', 'i2:response']);
+      expect(arrivalOf('e3')).toEqual({ bornAt: expect.any(Number), durationMs: ENTER_MS });
+      expect(arrivalOf('e1')).toBeUndefined();
+      expect(arrivalOf('e2')).toBeUndefined();
+      for (const [keyframes, options] of animate.mock.calls) {
+        expect(keyframes).toEqual([{ opacity: 0 }, { opacity: 1 }]);
+        expect(options).toMatchObject({ duration: ENTER_MS, easing: 'ease-out' });
+        expect(options.delay).toBeLessThanOrEqual(0);
+      }
+    });
+
+    it('draws the first picture at once', async () => {
+      mockApi(ENTITIES, TWO);
+      renderGraph('T1');
+      await waitFor(() => expect(edgeEls()).toHaveLength(4));
+      expect(animate).not.toHaveBeenCalled();
+      expect(['e1', 'e2', 'e3'].map(arrivalOf)).toEqual([undefined, undefined, undefined]);
+    });
+
+    it('draws a new trace at once', async () => {
+      mockApi(ENTITIES, ONE);
+      const { rerender } = renderGraph('T1');
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+      mockApi(ENTITIES, TWO);
+      rerender(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <MemoryRouter>
+            <ExecutionFlowGraph traceId="T2" />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(edgeEls()).toHaveLength(4));
+      expect(animate).not.toHaveBeenCalled();
+      expect(arrivalOf('e3')).toBeUndefined();
+    });
+
+    it('does not restart a fade when a later push re-renders the element', async () => {
+      mockApi([ENTITIES[0], ENTITIES[1]], [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]);
+      const { poll } = renderGraph('T1');
+      await waitFor(() => expect(edgeEls()).toHaveLength(2));
+      mockApi(ENTITIES, TWO);
+      await poll();
+      await waitFor(() => expect(edgeEls()).toHaveLength(4));
+      const after = animate.mock.calls.length;
+      const born = arrivalOf('e3');
+      expect(born).toBeDefined();
+      // Within the fade: another push touches e3 and its edges again.
+      mockApi(ENTITIES, [...TWO, mkIx({ id: 'i3', caller_entity_id: 'e2', callee_entity_id: 'e3' }, 5)]);
+      await poll();
+      await waitFor(() => expect(edgeEls()).toHaveLength(6));
+      expect(arrivalOf('e3')).toEqual(born);
+      expect(animate.mock.calls.length).toBe(after + 2); // i3's two legs, nothing else
+    });
   });
 });

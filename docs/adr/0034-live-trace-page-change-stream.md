@@ -121,7 +121,14 @@ moment slows the motion down instead of skipping it.
 The reader wins: a node found somewhere other than where the last frame left
 it is being dragged and is let go; a node still moving at the next push is not
 harvested as "dragged there". `prefers-reduced-motion` gets the destination at
-once. Identical data from a refetch keeps its identity through structural
+once. A node or edge that arrives on a push **fades in** over 0.8 s, easing
+out, instead of popping in; a first paint and a new trace appear at once. The
+fade is longer than a move on purpose — it marks what is new — and it is timed
+from the arrival, so a re-render does not restart it and a remount (a hovered
+edge hoisted to the top layer) resumes it. It sits on a wrapper group, so it
+multiplies with the highlight's dim instead of overriding it.
+`prefers-reduced-motion` keeps the fade, which moves nothing, at 0.2 s.
+Identical data from a refetch keeps its identity through structural
 sharing, so a change event that changed nothing visible pushes nothing.
 
 ### One reading of entities and interactions

@@ -220,3 +220,44 @@ export class Motion {
     }
   };
 }
+
+/**
+ * How long a node or edge that arrives on a live push takes to fade in. Longer than a
+ * move on purpose: the fade is what tells the reader "this one is new", so it is
+ * still faint a moment after its neighbours have settled.
+ */
+export const ENTER_MS = 800;
+
+/**
+ * The same fade for a reader who asked for less motion. A fade moves nothing, so it
+ * stays; it is only shorter.
+ */
+export const ENTER_MS_REDUCED = 200;
+
+/** When a thing arrived on a live push, and how long its fade lasts. */
+export interface Arrival {
+  readonly bornAt: number;
+  readonly durationMs: number;
+}
+
+/**
+ * Fade `el` in from wherever `arrival`'s fade stands at `now`.
+ *
+ * The fade is timed from the ARRIVAL, not from this call: the delay is negative by
+ * the time already gone. A DOM element that is rebuilt mid-fade (PF moves a hovered
+ * edge into the top layer, which remounts it) picks the fade up where it was instead
+ * of replaying it, and one rebuilt after the fade is over is drawn at once.
+ *
+ * Web Animations rather than a CSS class: an animation started on the element is not
+ * touched by a React re-render, whereas a class's animation timing would have to be
+ * re-stated on every render and a changed delay jumps a running animation.
+ */
+export function fadeIn(el: Element, arrival: Arrival, now: number): void {
+  const elapsed = now - arrival.bornAt;
+  if (elapsed >= arrival.durationMs || typeof el.animate !== 'function') return;
+  el.animate([{ opacity: 0 }, { opacity: 1 }], {
+    duration: arrival.durationMs,
+    delay: -Math.max(0, elapsed),
+    easing: 'ease-out',
+  });
+}
