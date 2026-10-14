@@ -437,7 +437,7 @@ def test_insert_into_unrelated_table_does_not_notify(migrated_dsn: str) -> None:
                 "VALUES ('unrelated', 1, now(), 'low', 0, 0)"
             )
         got = _drain_notifies(listener, timeout=1.5)
-    assert got == [], f"trace_risk_records insert must not notify; got {got!r}"
+    assert got == [], f"trace_risk_records insert must not notify dg_interaction_risk_written; got {got!r}"
 
 
 # --- migration chain -----------------------------------------------------------
