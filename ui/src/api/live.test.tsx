@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
-import { LIVE_POLL_MS, TRACE_LIVE_KEYS, useTraceLive } from './live';
+import { LIVE_POLL_MS, TRACE_LIVE_KEYS, useEntitiesAndInteractions, useTraceLive } from './live';
 
 /**
  * A stand-in for the browser's EventSource: records the URL it was opened on,
@@ -197,5 +197,77 @@ describe('useTraceLive', () => {
     act(() => vi.advanceTimersByTime(LIVE_POLL_MS * 3));
     expect(invalidate).not.toHaveBeenCalled();
     expect(FakeEventSource.instances).toHaveLength(0);
+  });
+});
+
+describe('useEntitiesAndInteractions — one reading of the two (ADR-0034)', () => {
+  type Reply = { entities: string[]; interactions: string[] };
+  /** Per-trace replies; `hold` keeps that trace's interactions read open until released. */
+  let replies: Record<string, Reply>;
+  let hold: Promise<void> | null;
+
+  beforeEach(() => {
+    hold = null;
+    replies = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const tid = /traces\/([^/]+)\//.exec(url)?.[1] ?? '';
+        const r = replies[tid];
+        if (url.endsWith('/entities')) {
+          return { ok: true, status: 200, json: async () => ({ entities: r.entities.map((id) => ({ id })) }) };
+        }
+        if (hold) await hold;
+        return { ok: true, status: 200, json: async () => ({ interactions: r.interactions.map((id) => ({ id })) }) };
+      }),
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const ids = (xs: ReadonlyArray<{ id: string }>) => xs.map((x) => x.id);
+
+  function setup(initial: string) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const hook = renderHook(({ tid }) => useEntitiesAndInteractions(tid), {
+      wrapper,
+      initialProps: { tid: initial },
+    });
+    return { client, ...hook };
+  }
+
+  it('keeps the previous pair while either read is in flight, then swaps both together', async () => {
+    replies.T1 = { entities: ['e1'], interactions: ['i1'] };
+    const { client, result } = setup('T1');
+    await waitFor(() => expect(ids(result.current.interactions)).toEqual(['i1']));
+
+    replies.T1 = { entities: ['e1', 'e2'], interactions: ['i1', 'i2'] };
+    let release!: () => void;
+    hold = new Promise<void>((r) => (release = r));
+    act(() => void client.invalidateQueries());
+    // The entities answer is in; the interactions answer is not.
+    await waitFor(() => expect(result.current.entitiesQ.data?.length).toBe(2));
+    expect(ids(result.current.entities)).toEqual(['e1']);
+    expect(ids(result.current.interactions)).toEqual(['i1']);
+
+    await act(async () => release());
+    await waitFor(() => expect(ids(result.current.interactions)).toEqual(['i1', 'i2']));
+    expect(ids(result.current.entities)).toEqual(['e1', 'e2']);
+  });
+
+  it('never shows one trace\'s pair under another trace', async () => {
+    replies.T1 = { entities: ['a1'], interactions: ['ai'] };
+    replies.T2 = { entities: ['b1'], interactions: ['bi'] };
+    const { result, rerender } = setup('T1');
+    await waitFor(() => expect(ids(result.current.entities)).toEqual(['a1']));
+    rerender({ tid: 'T2' });
+    // Never the T1 pair, however the T2 reads are going.
+    expect(ids(result.current.entities)).not.toContain('a1');
+    await waitFor(() => expect(ids(result.current.entities)).toEqual(['b1']));
+    // Back to T1 (cached, re-read in the background): T1's own data, not T2's.
+    rerender({ tid: 'T1' });
+    expect(ids(result.current.entities)).toEqual(['a1']);
   });
 });
