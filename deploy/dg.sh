@@ -57,6 +57,9 @@ DG_ROLLOUT_DEPLOYMENTS=(
     data-governance-interactions
     data-governance-classification
     data-governance-data-lineage
+    data-governance-leg-ready
+    data-governance-risk-trace-trigger
+    data-governance-risk-alerts
 )
 # The --keep-data teardown deletes these deployments individually while
 # preserving the Postgres PVC.
@@ -300,7 +303,7 @@ component_install() {
     # 4. rollout restart + status the load-bearing deployments (the
     #    :latest/IfNotPresent cycle step — apply alone will not pick up a fresh
     #    image).
-    err ">> component install: rolling all five data-governance deployments"
+    err ">> component install: rolling the data-governance deployments"
     local d timeout
     for d in "${DG_ROLLOUT_DEPLOYMENTS[@]}"; do
         kubectl -n "${DG_NAMESPACE}" rollout restart "deployment/${d}" \
