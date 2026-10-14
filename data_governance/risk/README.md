@@ -197,6 +197,9 @@ grouped by concern (defaults in parentheses):
 - `RISK_TRACE_AGGREGATION_RISK_LEVEL_MODE` (`severity_max`)
 - `RISK_TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE` (`severity_max`)
 
+**Trace-risk stream** (migration 0023: `trace_risk_records.seq` + NOTIFY, for the alerts processor, #104)
+- `RISK_ALERTS_TRIGGER_CHANNEL_NAME` (`dg_trace_risk_written`) — the trigger names the channel itself, so an override must change both
+
 **Alerting thresholds** (consumed by the alerts/metrics layer)
 - `RISK_ALERT_MIN_RISK_LEVEL` (`low`)
 - `RISK_ALERT_DEDUP_STRATEGY` (`time_window,risk_threshold`)

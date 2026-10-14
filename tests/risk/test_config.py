@@ -302,3 +302,14 @@ def test_internal_url_whitelist_patterns_explicit_empty_means_no_whitelist(monke
     monkeypatch.setenv("RISK_INTERNAL_URL_WHITELIST_PATTERNS", "")
     cfg = _reload()
     assert cfg.INTERNAL_URL_WHITELIST_PATTERNS == []
+
+
+# --- risk.alerts.* (issues #175/#104) -------------------------------------------
+
+
+def test_trace_risk_written_channel_default_and_override(monkeypatch: pytest.MonkeyPatch):
+    cfg = _reload()
+    assert cfg.TRACE_RISK_WRITTEN_CHANNEL_NAME == "dg_trace_risk_written"
+    assert cfg.TRACE_RISK_WRITTEN_CHANNEL_NAME != cfg.INTERACTION_RISK_WRITTEN_CHANNEL_NAME
+    monkeypatch.setenv("RISK_ALERTS_TRIGGER_CHANNEL_NAME", "dg_custom")
+    assert _reload().TRACE_RISK_WRITTEN_CHANNEL_NAME == "dg_custom"

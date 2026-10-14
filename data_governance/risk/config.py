@@ -6,8 +6,9 @@ codebase). Each PRD dotted name (e.g. ``alert.min_risk_level``) maps to a
 ``RISK_``-prefixed upper-snake env var (``RISK_ALERT_MIN_RISK_LEVEL``).
 
 Only the backbone-relevant §10 parameters are defined here: alerting,
-storage retention, the trace-risk NOTIFY-trigger channel/poll-fallback
-interval, the fan-out batch size, and the metrics refresh interval. The
+storage retention, the two risk NOTIFY-trigger channels (interaction risk
+written, trace risk written) and their poll-fallback intervals, the fan-out
+batch size, and the metrics refresh interval. The
 remaining ``api.*.default_limit`` parameters belong to whichever issue
 implements the endpoint that consumes them; issue #113 (rule catalog) owns
 ``API_RISK_RULES_DEFAULT_LIMIT``/``API_RISK_RULES_MAX_LIMIT``, issue #109
@@ -36,6 +37,7 @@ __all__ = [
     "STORAGE_RETENTION_DAYS",
     "INTERACTION_RISK_WRITTEN_CHANNEL_NAME",
     "TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS",
+    "TRACE_RISK_WRITTEN_CHANNEL_NAME",
     "FANOUT_BATCH_SIZE",
     "METRICS_REFRESH_INTERVAL_SECONDS",
     "PROCESSOR_NAME_TRACE_TRIGGER",
@@ -111,13 +113,22 @@ STORAGE_RETENTION_DAYS = _int_env("RISK_STORAGE_RETENTION_DAYS", 365)
 
 # --- risk.trace_trigger.* ----------------------------------------------------
 
-# Channel the dg_interaction_risk_written trigger (migration 0010) notifies
-# on; the future Trace Risk Processor (#102) listens here.
+# Channel the dg_interaction_risk_written trigger (migration 0016) notifies
+# on; the trace-trigger processor (#102/#164) listens here.
 INTERACTION_RISK_WRITTEN_CHANNEL_NAME = _str_env(
     "RISK_TRACE_TRIGGER_CHANNEL_NAME", "dg_interaction_risk_written"
 )
 TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS = _int_env(
     "RISK_TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS", 10
+)
+
+# --- risk.alerts.* (issues #175/#104) ----------------------------------------
+# Channel migration 0023's statement-level dg_trace_risk_notify trigger fires
+# on; a consumer of new trace risk versions (the alert generator) listens here.
+# The trigger names the channel itself, so an override must change both.
+
+TRACE_RISK_WRITTEN_CHANNEL_NAME = _str_env(
+    "RISK_ALERTS_TRIGGER_CHANNEL_NAME", "dg_trace_risk_written"
 )
 
 # --- risk.fanout.* -----------------------------------------------------------
