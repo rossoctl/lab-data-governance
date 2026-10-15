@@ -368,6 +368,18 @@ function edgeData(id: string): {
 }
 
 /**
+ * Lift PF's viewport culling so a node's CONTENT renders under jsdom.
+ *
+ * The surface has zero size there, so `Visualization.shouldRenderNode` finds every node
+ * out of view and the node's `<g>` stays empty (see {@link nodeData}). A node's role and
+ * accessible name live on that content, so the keyboard / screen-reader cases need it
+ * drawn. Undone by each block's `vi.restoreAllMocks()`.
+ */
+function renderNodeContent() {
+  vi.spyOn(Visualization.prototype, 'shouldRenderNode').mockReturnValue(true);
+}
+
+/**
  * One node's `data`, read off the model PF holds.
  *
  * THE ONLY HONEST WAY to assert a node's lineage treatment in jsdom. A node's inner
@@ -2094,6 +2106,21 @@ describe('ExecutionFlowGraph', () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+
+  it('gives each NODE its nodeTitle as an accessible name, but no tab stop here (issue #152)', async () => {
+    // The hover `<title>` alone is not an accessible name: inside a role-less `<g>` no
+    // screen reader reaches it. On THIS tab a node click selects nothing (no
+    // `onSelectEntity` is wired — see FlowTables), so the node is a named graphic, not
+    // a button: a tab stop that does nothing on Enter would be a false affordance.
+    renderNodeContent();
+    mockApi(ENTITIES, [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' })]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
+
+    const node = await screen.findByRole('img', { name: 'agent — agent:(p,a)' });
+    expect(node).not.toHaveAttribute('tabindex');
+    expect(screen.queryByRole('button', { name: /agent:\(p,a\)/ })).toBeNull();
+  });
   it('deselects on a background click', async () => {
     // The empty canvas is a deselect, matching the panel's own close button and the
     // tables (where selecting nothing is how a reader gets back to no selection).
@@ -4237,6 +4264,66 @@ describe('LineageGraph', () => {
   });
 
   // --- JOB 2: fan-in AND fan-out, with the traversed LEGS lit.
+
+  // --- Nodes by keyboard (issue #152). On THIS tab a node click selects the entity,
+  // so a node is a button, wired the way the edges are: role, tab stop, a name a screen
+  // reader announces, `aria-pressed`, and Enter/Space through PF's own `onSelect`.
+
+  it('makes each node a focusable button named by its nodeTitle', async () => {
+    renderNodeContent();
+    // The handler is what makes a node a button; FlowTables always wires it here.
+    renderLineage({ selectedEntityId: 'e2', onSelectEntity: vi.fn() });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
+
+    const e1 = await screen.findByRole('button', { name: /^agent — agent:\(p,a\)/ });
+    expect(e1).toHaveAttribute('tabindex', '0');
+    expect(e1).toHaveAttribute('aria-pressed', 'false');
+    // The selection is the APP's (`?eid`), not PF's click state, so a selection
+    // restored from the URL is announced too.
+    expect(screen.getByRole('button', { name: /^tool — tool:\(p,svc\)/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  it('carries the lineage claims in the node name, not only in the hover text', async () => {
+    renderNodeContent();
+    renderLineage({ selectedEntityId: 'e2', fanin: FANIN_E1, onSelectEntity: vi.fn() });
+    await waitFor(() => expect(nodeData('e1').lineage.isUpstream).toBe(true));
+
+    expect(
+      await screen.findByRole('button', { name: /agent:\(p,a\).*upstream of the selected entity/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('selects an entity from a node with Enter and with Space', async () => {
+    renderNodeContent();
+    const onSelectEntity = vi.fn();
+    renderLineage({ onSelectEntity });
+    const e1 = await screen.findByRole('button', { name: /^agent — agent:\(p,a\)/ });
+
+    act(() => {
+      fireEvent.keyDown(e1, { key: 'Enter' });
+    });
+    expect(onSelectEntity).toHaveBeenLastCalledWith('e1');
+
+    act(() => {
+      fireEvent.keyDown(screen.getByRole('button', { name: /^llm — / }), { key: ' ' });
+    });
+    expect(onSelectEntity).toHaveBeenLastCalledWith('e3');
+  });
+
+  it('ignores other keys on a node', async () => {
+    renderNodeContent();
+    const onSelectEntity = vi.fn();
+    renderLineage({ onSelectEntity });
+    const e1 = await screen.findByRole('button', { name: /^agent — agent:\(p,a\)/ });
+
+    for (const key of ['a', 'Tab', 'ArrowRight', 'Escape']) {
+      fireEvent.keyDown(e1, { key });
+    }
+    expect(onSelectEntity).not.toHaveBeenCalled();
+  });
 
   it('lights the fan-in route and dims the rest', async () => {
     // e1 → e2's request leg is the upstream route. The response leg is on neither
