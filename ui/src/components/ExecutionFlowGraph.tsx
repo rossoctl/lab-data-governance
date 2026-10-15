@@ -408,6 +408,18 @@ type NodeData = GraphNodeSpec & {
    * should replace this roll-up rather than sit beside it.
    */
   riskLevel?: string;
+  /**
+   * A click on this node selects its entity (`onSelectEntity` is wired), so the node
+   * is a BUTTON to assistive technology and the keyboard. Where it is not, the node is
+   * a named graphic: a tab stop that does nothing on Enter would be a false affordance.
+   */
+  isSelectable: boolean;
+  /**
+   * This node's entity is the app's selected one (`?eid`). From the app's selection,
+   * not PF's click state, for the reason {@link EntityGraphProps.selectedInteractionId}
+   * gives: a selection restored from the URL has no click behind it.
+   */
+  isSelected: boolean;
 };
 /**
  * An edge's `data`: its derived spec, its highlight role, and whether its parent
@@ -1433,8 +1445,31 @@ function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof Defa
       : data?.kindColoured
         ? kindColorVar(data.kind)
         : nodeNeutralColorVar();
+  // KEYBOARD AND SCREEN-READER ACCESS, on the same terms the edges get it (see
+  // `DirectedEdge`): an SVG `<g>` is inert and a `<title>` inside a role-less `<g>` is
+  // no accessible name, so the role, the name and — where a node click selects an
+  // entity — the tab stop and the Enter/Space handler go on this wrapper. Activation
+  // reuses PF's own `onSelect` from `withSelection`, the identical path a click takes,
+  // including its toggle-to-deselect. The tab order is document order, which puts the
+  // nodes after every edge, in entity order.
+  const a11y: React.SVGProps<SVGGElement> = data?.isSelectable
+    ? {
+        role: 'button',
+        tabIndex: 0,
+        className: 'dg-graph-node-focus',
+        'aria-label': nodeTitle(data),
+        'aria-pressed': data.isSelected,
+        onKeyDown: (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          // Space would otherwise scroll the surface's container.
+          e.preventDefault();
+          rest.onSelect?.(e as unknown as React.MouseEvent);
+        },
+      }
+    : { role: 'img', 'aria-label': nodeTitle(data) };
   return (
     <g
+      {...a11y}
       // The exact variables PF's own topology-components.css reads for a node's
       // outline and its label text (`.pf-topology__node__background` →
       // `--pf-topology__node__background--Stroke`, `.pf-topology__node__label__text`
@@ -2560,6 +2595,12 @@ export interface EntityGraphProps {
    */
   selectedInteractionId?: string | null;
   /**
+   * The flow view's selected ENTITY id (its `?eid`), or `null`. Drives the node's
+   * `aria-pressed`, from the app's selection for the same reason as
+   * `selectedInteractionId`. Only meaningful where `onSelectEntity` is wired.
+   */
+  selectedEntityId?: string | null;
+  /**
    * Fired with the clicked edge's parent INTERACTION id.
    *
    * An ID, not the `Interaction` object, and that is the seam: this component holds a
@@ -2780,6 +2821,7 @@ export function EntityGraph({
   traceId,
   highlight,
   selectedInteractionId = null,
+  selectedEntityId = null,
   onSelectInteraction,
   onSelectEntity,
   notices,
@@ -2948,6 +2990,10 @@ export function EntityGraph({
       ].join('|')
     : '';
 
+  // A primitive for the model effect's dependency list: whether a node click does
+  // anything is what decides if a node is a button (see `NodeData.isSelectable`).
+  const nodesSelectable = onSelectEntity !== undefined;
+
   // Push the derived spec into the topology model whenever it changes.
   useEffect(() => {
     const sameTrace = positionsTraceId.current === traceId;
@@ -3058,6 +3104,8 @@ export function EntityGraph({
             // the same thing and could contradict it.
             kindColoured: highlight === undefined,
             riskLevel: riskLevelByNode.get(n.id),
+            isSelectable: nodesSelectable,
+            isSelected: n.id === selectedEntityId,
           } satisfies NodeData,
         };
       }),
@@ -3147,6 +3195,9 @@ export function EntityGraph({
     // forever. `classificationByInteraction` joins them for the same reason again —
     // both the tag string and the hover-text record are baked into element `data`,
     // and both existing tabs pass `undefined` forever.
+    //
+    // `selectedEntityId` and `nodesSelectable` are primitives baked into the node
+    // `data` the same way, so they are listed directly for the same reason.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     controller,
@@ -3158,6 +3209,8 @@ export function EntityGraph({
     riskLevelByInteraction,
     classificationByInteraction,
     hideEdgeLabels,
+    selectedEntityId,
+    nodesSelectable,
   ]);
 
   /**
@@ -3905,6 +3958,7 @@ export function LineageGraph({
       traceId={traceId}
       highlight={highlight}
       selectedInteractionId={selectedInteractionId}
+      selectedEntityId={selectedEntityId}
       onSelectInteraction={onSelectInteraction}
       onSelectEntity={onSelectEntity}
       testId="lineage-graph"

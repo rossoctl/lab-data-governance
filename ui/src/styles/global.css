@@ -1210,7 +1210,8 @@ body {
    `outline` rather than a stroke change so it cannot be confused with the selected
    treatment above (focus and selection are different states and a reader tabbing
    through must be able to see which arrow is focused without it looking selected). */
-.dg-graph-edge-focus:focus-visible {
+.dg-graph-edge-focus:focus-visible,
+.dg-graph-node-focus:focus-visible {
   outline: 2px solid var(--dg-color-label);
   /* Negative offset keeps the ring inside the element's own box, so a focused arrow
      near the surface's rounded `overflow: hidden` edge is not clipped. */
