@@ -3404,6 +3404,9 @@ const SUMMARY_WITH_SOURCE: WireLineageSummary = {
  *
  * `null` for any of them means "make that read fail", which is how the fourth state
  * (a failed read, distinct from the server's three) is exercised.
+ *
+ * `hold` keeps a direction's read IN FLIGHT until the given promise settles, which is
+ * how the loading window — a fifth thing a reader can be looking at — is exercised.
  */
 function mockLineageApi(opts: {
   entities?: Entity[] | null;
@@ -3411,6 +3414,7 @@ function mockLineageApi(opts: {
   summary?: WireLineageSummary | null;
   fanin?: LineageReachability | null;
   fanout?: LineageReachability | null;
+  hold?: { fanin?: Promise<void>; fanout?: Promise<void> };
 }) {
   const entities = opts.entities === undefined ? ENTITIES : opts.entities;
   const interactions =
@@ -3427,6 +3431,7 @@ function mockLineageApi(opts: {
       if (!/[?&]source=/.test(url)) return { ok: false, status: 400, json: async () => ({}) };
       // The direction is read off the query string, exactly as the server requires it.
       const wantFanin = url.includes('direction=fanin');
+      await (wantFanin ? opts.hold?.fanin : opts.hold?.fanout);
       const chosen = wantFanin ? opts.fanin : opts.fanout;
       if (chosen === null) return fail;
       return ok(chosen ?? mkReach(wantFanin ? 'fanin' : 'fanout'));
@@ -3464,6 +3469,7 @@ function renderLineage(
     summary?: WireLineageSummary | null;
     fanin?: LineageReachability | null;
     fanout?: LineageReachability | null;
+    hold?: { fanin?: Promise<void>; fanout?: Promise<void> };
   } = {},
 ) {
   const entities = over.entities ?? ENTITIES;
@@ -3480,6 +3486,7 @@ function renderLineage(
     summary,
     fanin: over.fanin,
     fanout: over.fanout,
+    hold: over.hold,
   });
   return renderWithProviders(
     <LineageGraph
@@ -4251,6 +4258,65 @@ describe('LineageGraph', () => {
     // The node is marked upstream, and NOT downstream — the two claims stay apart.
     expect(nodeData('e1').lineage).toMatchObject({ isUpstream: true, isDownstream: false });
     expect(nodeData('e1').lineage.hops).toBe(1);
+  });
+
+  it('dims NOTHING while the reachability reads are in flight (issue #153)', async () => {
+    // A question was asked but its answer has not arrived. Dimming the rest now would
+    // draw exactly the `no-adjacent` picture — "nothing reached" — for "not known yet",
+    // the absence-vs-unknown collapse ADR-0028 is disciplined against. The text alerts
+    // already say "Loading"; the graph must not contradict them.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    renderLineage({
+      selectedEntityId: 'e2',
+      fanin: FANIN_E1,
+      fanout: FANOUT_E1,
+      hold: { fanin: gate, fanout: gate },
+    });
+    await waitFor(() => expect(nodeEls()).toHaveLength(3));
+    await waitFor(() => expect(screen.getByText(/Loading fanin lineage/i)).toBeInTheDocument());
+
+    // Counted rather than `toBeNull()`'d: a failing `toBeNull` on an SVG element
+    // crashes the matcher's printer instead of reporting the element.
+    expect(document.querySelectorAll('.dg-graph-edge--dimmed').length).toBe(0);
+    // Nodes are read through their data (jsdom does not render DefaultNode's class).
+    // The clicked node is still marked: the reader can see what was asked.
+    expect(['e1', 'e2', 'e3'].map((id) => nodeData(id).highlight)).toEqual(['none', 'selected', 'none']);
+
+    // Once both answers land, the entity outside them (e3) dims as before.
+    release();
+    await waitFor(() => expect(nodeData('e3').highlight).toBe('dimmed'));
+  });
+
+  it('dims the rest once an EMPTY answer lands, though the lit sets never changed', async () => {
+    // `no-adjacent` both ways: the lit sets are empty while loading AND after, so the
+    // only thing that changes when the answer lands is that it is no longer pending.
+    // The model must still repaint, or "loading" would stay drawn as the final answer.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    renderLineage({ selectedEntityId: 'e2', hold: { fanin: gate, fanout: gate } });
+    await waitFor(() => expect(screen.getByText(/Loading fanin lineage/i)).toBeInTheDocument());
+    expect(nodeData('e3').highlight).toBe('none');
+
+    release();
+    await waitFor(() => expect(nodeData('e3').highlight).toBe('dimmed'));
+    expect(nodeData('e1').highlight).toBe('dimmed');
+  });
+
+  it('dims nothing while ONE direction is still loading, and still lights the half that landed', async () => {
+    // Fan-in answered, fan-out in flight. Dimming now would paint every entity outside
+    // the fan-in answer as "not downstream" before the downstream walk has answered.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    renderLineage({ selectedEntityId: 'e2', fanin: FANIN_E1, fanout: FANOUT_E1, hold: { fanout: gate } });
+    await waitFor(() => expect(nodeData('e1').lineage.isUpstream).toBe(true));
+    expect(screen.getByText(/Loading fanout lineage/i)).toBeInTheDocument();
+
+    expect(document.querySelectorAll('.dg-graph-edge--dimmed').length).toBe(0);
+    expect(['e1', 'e2', 'e3'].map((id) => nodeData(id).highlight)).toEqual(['source', 'selected', 'none']);
+
+    release();
+    await waitFor(() => expect(nodeData('e3').highlight).toBe('dimmed'));
   });
 
   it('lights the fan-out route, distinguishably from fan-in', async () => {

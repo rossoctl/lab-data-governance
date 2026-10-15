@@ -480,6 +480,14 @@ export interface GraphHighlight {
   /** Edge ids (`<interaction>:<leg_type>`) in the answer — the traversed route. */
   edgeIds: readonly string[];
   /**
+   * An answer is still IN FLIGHT, so nothing may be dimmed yet (issue #153).
+   *
+   * Dimming says "not part of the answer", and an answer that has not arrived has no
+   * standing to say that: with the sets still empty it would draw exactly the
+   * `no-adjacent` picture for "not known yet". What has landed is still lit.
+   */
+  isAnswerPending?: boolean;
+  /**
    * The **Lineage reachability** overlay (ADR-0028 D14/D15), when the caller has
    * one. Omitted by the Execution Flow tab, which draws the plain graph.
    *
@@ -579,7 +587,10 @@ function roleOf(id: string, h: GraphHighlight | undefined, isNode: boolean): Hig
   // `'source'` for a node in the answer, `'carrier'` for an edge that delivered it
   // — two names because the two are different claims and the stylesheet treats
   // them differently (a lit arrow reads as a route, a lit node as an origin).
-  return inAnswer ? (isNode ? 'source' : 'carrier') : 'dimmed';
+  if (inAnswer) return isNode ? 'source' : 'carrier';
+  // A question asked but NOT YET ANSWERED is the other half of the guard above: the
+  // empty-answer dimming is only true once the answer is in (see `isAnswerPending`).
+  return h.isAnswerPending ? 'none' : 'dimmed';
 }
 
 /**
@@ -2914,6 +2925,9 @@ export function EntityGraph({
         highlight.selectedNodeId ?? '',
         highlight.nodeIds.join(','),
         highlight.edgeIds.join(','),
+        // Pending is CONTENT too: an empty answer (`no-adjacent`) leaves every set above
+        // unchanged when it lands, and only this flag says the roles must now dim.
+        highlight.isAnswerPending ? 'pending' : '',
         // The reachability sets are part of the CONTENT, so they belong in the digest:
         // they are baked into the element `data` exactly as the roles are, and a
         // digest that ignored them would leave the source colouring painted from a
@@ -3824,6 +3838,9 @@ export function LineageGraph({
       selectedNodeId: reachability.selectedNodeId,
       nodeIds: reachability.litNodeIds,
       edgeIds: reachability.litEdgeIds,
+      // EITHER direction, not both: with one half landed, dimming would paint every
+      // entity outside it as absent from the half still being walked.
+      isAnswerPending: reachability.fanin.isLoading || reachability.fanout.isLoading,
       reachability: {
         dataSourceNodeIds: sources.sourceNodeIds,
         chosenSourceNodeId: sources.chosenSourceNodeId,
