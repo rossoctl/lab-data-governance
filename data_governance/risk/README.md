@@ -40,6 +40,7 @@ flowchart TB
 
     subgraph api["/risk/* API (data_governance.risk.api)"]
         RROUTES["/risk/interactions*\n/risk/traces*"]
+        AROUTES["/risk/alerts*"]
         RULES["/risk/rules*"]
         METRICS["/risk/metrics/*"]
     end
@@ -61,6 +62,7 @@ flowchart TB
 
     IRR --> RROUTES
     TRR --> RROUTES
+    ALERTS --> AROUTES
     RULES -.-> BUNDLE
     IRR --> METRICS
     TRR --> METRICS
@@ -112,9 +114,10 @@ flowchart TB
    `risk.alerts` processor drains that stream by `seq` and, per record
    (`risk/alerts/generate.py`), opens the trace's alert, counts a duplicate
    on it, or supersedes it with a higher-level one (issue #104).
-7. **Serving.** `risk/api/risk_routes.py`, `rules_routes.py`, and
-   `metrics_routes.py` expose the records, the rule catalog, and dashboard
-   aggregates; the Risk UI (`ui/src/pages/risk/`) consumes them.
+7. **Serving.** `risk/api/risk_routes.py`, `alert_routes.py`, `rules_routes.py`,
+   and `metrics_routes.py` expose the records, the alerts, the rule catalog, and
+   dashboard aggregates; the Risk UI (`ui/src/pages/risk/`) consumes all but
+   the alerts (its Alerts card still reads `/risk/traces`).
 
 For a worked end-to-end reproduction against a live cluster and a real
 upstream app, see
@@ -230,7 +233,7 @@ grouped by concern (defaults in parentheses):
 `_MAX_LIMIT` pair: `RISK_API_RISK_RULES_*` (50/200),
 `RISK_API_RISK_INTERACTIONS_*` (50/500), `RISK_API_RISK_INTERACTIONS_HISTORY_*`
 (50/500), `RISK_API_RISK_TRACES_*` (50/200),
-`RISK_API_RISK_TRACES_HISTORY_*` (50/200),
+`RISK_API_RISK_TRACES_HISTORY_*` (50/200), `RISK_API_RISK_ALERTS_*` (50/200),
 `RISK_API_METRICS_TOP_RULES_*` (10/50), `RISK_API_METRICS_TOP_TRACES_*` (10/50)
 
 **Metrics refresh**
@@ -305,6 +308,11 @@ not seeded by migration.
 | `GET` | `/risk/traces` | List current-version trace risk records |
 | `GET` | `/risk/traces/{trace_id}` | The **Forest**: trace risk + nested interactions + legs |
 | `GET` | `/risk/traces/{trace_id}/history` | Every trace-risk version, oldest-first |
+| `GET` | `/risk/alerts` | List alerts, newest first; superseded ones only with `include_superseded=true` |
+| `GET` | `/risk/alerts/by-status/{status}` | `/risk/alerts` with `status` taken from the path |
+| `GET` | `/risk/alerts/by-risk-level/{risk_level}` | `/risk/alerts` with `risk_level` taken from the path |
+| `GET` | `/risk/alerts/by-enforcement-type/{enforcement_type}` | `/risk/alerts` with `enforcement_type` taken from the path |
+| `GET` | `/risk/alerts/{alert_id}` | One alert, superseded or not |
 | `GET` | `/risk/rules` | List the rule catalog |
 | `GET` | `/risk/rules/categories` | Rule category counts |
 | `GET` | `/risk/rules/{rule_id}` | One rule's detail |

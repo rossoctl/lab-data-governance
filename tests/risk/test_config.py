@@ -214,6 +214,17 @@ def test_risk_interactions_default_limit_malformed_falls_back(
     assert "RISK_API_RISK_INTERACTIONS_DEFAULT_LIMIT" in capsys.readouterr().err
 
 
+def test_risk_alerts_api_defaults_and_env(monkeypatch: pytest.MonkeyPatch):
+    cfg = _reload()
+    assert cfg.API_RISK_ALERTS_DEFAULT_LIMIT == 50
+    assert cfg.API_RISK_ALERTS_MAX_LIMIT == 200
+    monkeypatch.setenv("RISK_API_RISK_ALERTS_DEFAULT_LIMIT", "14")
+    monkeypatch.setenv("RISK_API_RISK_ALERTS_MAX_LIMIT", "104")
+    cfg = _reload()
+    assert cfg.API_RISK_ALERTS_DEFAULT_LIMIT == 14
+    assert cfg.API_RISK_ALERTS_MAX_LIMIT == 104
+
+
 def test_new_risk_api_constants_are_all_exported():
     cfg = _reload()
     for name in (
@@ -225,6 +236,8 @@ def test_new_risk_api_constants_are_all_exported():
         "API_RISK_TRACES_MAX_LIMIT",
         "API_RISK_TRACES_HISTORY_DEFAULT_LIMIT",
         "API_RISK_TRACES_HISTORY_MAX_LIMIT",
+        "API_RISK_ALERTS_DEFAULT_LIMIT",
+        "API_RISK_ALERTS_MAX_LIMIT",
     ):
         assert name in cfg.__all__
 

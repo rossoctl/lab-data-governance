@@ -44,6 +44,10 @@ derivation stays behind the interface (ADR-0005):
   after that reduction (AC-DAS-016). Pagination is DB-level keyset, not the bounded
   in-memory ``http.paginate`` — see the module docstring for why an offset cursor is
   wrong here.
+- :mod:`.alerts` — the read path over ``alerts`` (issue #110's read half):
+  ``list_alerts`` (filtered, keyset-paged, superseded alerts left out by default) and
+  ``get_alert``. Not versioned like the risk tables: a level rise links rows through
+  ``superseded_by`` rather than inserting a version.
 
 Only the public surface is re-exported here. Consumers of the private
 row-mapping helpers (``spans._COLUMNS`` / ``spans._row_to_span`` — the
@@ -53,6 +57,13 @@ that reach-in rather than laundering it through the package root.
 
 from __future__ import annotations
 
+from data_governance.retrieval.alerts import (
+    SORT_TIMESTAMP_DESC,
+    AlertPage,
+    AlertView,
+    get_alert,
+    list_alerts,
+)
 from data_governance.retrieval.interactions import (
     DestinationView,
     EntitySpanEvidenceView,
@@ -186,4 +197,10 @@ __all__ = [
     "get_trace_risk_history",
     "list_interaction_risk",
     "list_trace_risk",
+    # DAS alert reads (issue #110)
+    "SORT_TIMESTAMP_DESC",
+    "AlertPage",
+    "AlertView",
+    "get_alert",
+    "list_alerts",
 ]
