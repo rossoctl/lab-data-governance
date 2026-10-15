@@ -693,9 +693,9 @@ describe('deriveGraph', () => {
     // property of the code.
     //
     // A cycle cannot be drawn strictly left-to-right (that is a property of cycles),
-    // so the honest claim is not a particular column but that the answer is finite,
-    // TIGHTLY bounded and repeatable. The ceiling is `n - 1` — the longest simple
-    // path — so a 2-cycle yields two adjacent columns and not a runaway spread.
+    // so the answer must be finite, tightly bounded and repeatable: the request that
+    // closes the loop is drawn backwards and the rest is laid out as a chain, so a
+    // 2-cycle yields two adjacent columns and not a runaway spread.
     const entities = [ent('A'), ent('B')];
     const interactions = [ixReqOnly('ab', 'A', 'B', 1), ixReqOnly('ba', 'B', 'A', 2)];
 
@@ -708,43 +708,58 @@ describe('deriveGraph', () => {
     // Exactly two columns for two nodes: the pair reads left-to-right on its first
     // request and the return request is the one backwards edge.
     expect(new Set(g.nodes.map((n) => n.column)).size).toBe(2);
-    // Repeatable — the ceiling does not make the result depend on anything but input.
+    // Repeatable — the result depends on nothing but the input.
     expect(deriveGraph(entities, interactions).nodes.map((n) => n.column)).toEqual(
       g.nodes.map((n) => n.column),
     );
   });
 
-  it('does not drift a cycle rightward as unrelated entities are added', () => {
-    // The columns are NORMALISED so the leftmost occupied one is 0, and this is what
-    // pins it. `assignColumns`' ceiling is `n - 1` over ALL nodes and a cycle relaxes
-    // until it hits that ceiling — so before normalisation, adding entities that
-    // participate in no edge whatsoever *moved the cycle*: `A⇄B` alone sat in columns
-    // 0 and 1, but `A⇄B` plus eight isolated entities sat in 8 and 9, leaving columns
-    // 0-7 empty and the renderer drawing a growing blank left gutter.
-    //
-    // It also vacated `GraphNodeSpec.column`'s documented contract that `0` means "an
-    // entity nothing ever calls". On a wholly cyclic graph NO node held column 0.
-    //
-    // The sibling cycle tests above pass either way — they assert `column <= n - 1`
-    // and a distinct-column count, both true before and after — so `min === 0` is the
-    // assertion that actually catches this.
-    const cycle = [ixReqOnly('ab', 'A', 'B', 1), ixReqOnly('ba', 'B', 'A', 2)];
-    // Explicit lambda, not `.map(ent)`: `ent`'s second parameter is a `Partial<Entity>`
-    // override, and a bare reference would hand it the array index.
-    const bystanders = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8'].map((id) => ent(id));
+  // Issue #147. The cycle's columns used to depend on the PARITY of the node count: the
+  // two nodes leapfrogged each other up to an `n - 1` ceiling, so one extra entity with
+  // no edge at all mirrored the graph. The old guard used eight bystanders, an even
+  // count, and passed by coincidence; every count from 0 to 9 is asserted now, and the
+  // columns are asserted EXACTLY rather than "the same as without bystanders".
+  it.each([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])(
+    'keeps A⇄B as A=0, B=1 with %i unrelated entities present',
+    (k) => {
+      const cycle = [ixReqOnly('ab', 'A', 'B', 1), ixReqOnly('ba', 'B', 'A', 2)];
+      // Explicit lambda, not `.map(ent)`: `ent`'s second parameter is a `Partial<Entity>`
+      // override, and a bare reference would hand it the array index.
+      const bystanders = Array.from({ length: k }, (_, i) => ent(`x${i}`));
+      const g = deriveGraph([ent('A'), ent('B'), ...bystanders], cycle);
 
-    const bare = deriveGraph([ent('A'), ent('B')], cycle);
-    const padded = deriveGraph([ent('A'), ent('B'), ...bystanders], cycle);
+      // A is the caller of the first request, so it reads first; B's request back to
+      // A is the one backwards edge.
+      expect([col(g, 'A'), col(g, 'B')]).toEqual([0, 1]);
+    },
+  );
 
-    // Someone occupies column 0 in both, regardless of how many bystanders exist.
-    expect(Math.min(...bare.nodes.map((n) => n.column))).toBe(0);
-    expect(Math.min(...padded.nodes.map((n) => n.column))).toBe(0);
-    // And the cycle itself sits in the same two columns either way — the bystanders
-    // are parked in a trailing column, they do not push the cycle.
-    const colOf = (g: ReturnType<typeof deriveGraph>, id: string) =>
-      g.nodes.find((n) => n.id === id)!.column;
-    expect(colOf(padded, 'A')).toBe(colOf(bare, 'A'));
-    expect(colOf(padded, 'B')).toBe(colOf(bare, 'B'));
+  it.each([1, 2, 3, 4, 5])(
+    'does not move A⇄B for an unrelated chain of %i request(s) elsewhere in the trace',
+    (len) => {
+      // The same bug through a part of the graph that DOES have edges: capping the
+      // ceiling by "nodes in an edge" would still have let this chain set the parity.
+      const ids = Array.from({ length: len + 1 }, (_, i) => `c${i}`);
+      const chain = ids.slice(1).map((to, i) => ixReqOnly(`ch${i}`, ids[i], to, 10 + i));
+      const g = deriveGraph(
+        [ent('A'), ent('B'), ...ids.map((id) => ent(id))],
+        [ixReqOnly('ab', 'A', 'B', 1), ixReqOnly('ba', 'B', 'A', 2), ...chain],
+      );
+
+      expect([col(g, 'A'), col(g, 'B')]).toEqual([0, 1]);
+      expect(ids.map((id) => col(g, id))).toEqual(ids.map((_, i) => i));
+    },
+  );
+
+  it('puts an entity called FROM a cycle to the right of its caller', () => {
+    // The old ceiling also stopped everything downstream of a cycle: B → C landed C in
+    // A's column, or to the left of B.
+    const g = deriveGraph(
+      [ent('A'), ent('B'), ent('C')],
+      [ixReqOnly('ab', 'A', 'B', 1), ixReqOnly('ba', 'B', 'A', 2), ixReqOnly('bc', 'B', 'C', 3)],
+    );
+
+    expect([col(g, 'A'), col(g, 'B'), col(g, 'C')]).toEqual([0, 1, 2]);
   });
 
   it('does not park a response-only interaction as unconnected', () => {
@@ -763,9 +778,8 @@ describe('deriveGraph', () => {
   });
 
   it('terminates on a THREE-node request cycle, still within n-1 columns', () => {
-    // The longer cycle, where a bound derived from the PASS count rather than from
-    // the column would let the nodes spread far past the node count. `n - 1` is the
-    // tightest bound that cannot distort an acyclic answer.
+    // The longer cycle: still finite and within the node count, because the request
+    // that closes the loop is set aside before the columns are counted.
     const g = deriveGraph(
       [ent('a'), ent('b'), ent('c')],
       [ixReqOnly('i1', 'a', 'b', 1), ixReqOnly('i2', 'b', 'c', 2), ixReqOnly('i3', 'c', 'a', 3)],
@@ -777,34 +791,31 @@ describe('deriveGraph', () => {
     expect([col(g, 'a'), col(g, 'b'), col(g, 'c')]).toEqual([0, 1, 2]);
   });
 
-  it('can leave two request-connected nodes in ONE column, but only under the ceiling', () => {
-    // The residue a cycle leaves, and worth pinning because it is the ONLY way a
-    // request edge ends up within a column: the longest-path rule otherwise puts every
-    // target strictly right of its source. Here a→c, b→a, c→b relaxes against a ceiling
-    // of 2 and leaves b and c sharing a column, so c→b runs inside it.
-    //
-    // The renderer needs this case to exist (it is what `edgeBendpoints`' same-column
-    // branch routes), so the layout must be honest that it can produce it rather than
-    // claiming every edge crosses a column boundary.
-    //
-    // Expected columns are `0, 1, 1` and not the `1, 2, 2` this asserted before the
-    // normalisation pass: the relaxation still produces 1/2/2, but columns are now
-    // shifted so the leftmost occupied one is 0. Only the RELATIVE column is
-    // load-bearing (the renderer multiplies it by a step; edge routing reads the
-    // difference), and the shift is what stops a cycle drifting rightward with the count
-    // of unrelated entities — see the drift test above. The claim under test is
-    // unchanged: two request-connected nodes share one column.
+  it('draws the request that CLOSES a loop backwards, never inside a column', () => {
+    // a→c, b→a, c→b. The first two requests make a chain b→a→c; c→b, at seq 3, is
+    // the request that closes the loop, so it is the one drawn backwards. Every other
+    // request points strictly right, so no request edge ever runs within a column.
     const g = deriveGraph(
       [ent('a'), ent('b'), ent('c')],
       [ixReqOnly('i1', 'a', 'c', 1), ixReqOnly('i2', 'b', 'a', 2), ixReqOnly('i3', 'c', 'b', 3)],
     );
 
+    expect([col(g, 'b'), col(g, 'a'), col(g, 'c')]).toEqual([0, 1, 2]);
+  });
+
+  it('can leave two edge-connected nodes in ONE column through a response-only leg', () => {
+    // The residue that remains, and worth pinning because the renderer needs it to
+    // exist (it is what `edgeBendpoints`' same-column branch routes): `a` calls `b` and
+    // `c`, which puts both in column 1, and an interaction from `b` to `c` that carries
+    // only its response leg draws an arrow between them without a request to order
+    // them. Same column, different rows — two distinct cells, so the within-column edge
+    // has somewhere to bow to.
+    const g = deriveGraph(
+      [ent('a'), ent('b'), ent('c')],
+      [ixReqOnly('i1', 'a', 'b', 1), ixReqOnly('i2', 'a', 'c', 2), ixRespOnly('i3', 'b', 'c', 3)],
+    );
+
     expect([col(g, 'a'), col(g, 'b'), col(g, 'c')]).toEqual([0, 1, 1]);
-    // The point of the fixture, stated independently of the absolute offset.
-    expect(col(g, 'b')).toBe(col(g, 'c'));
-    expect(col(g, 'a')).toBeLessThan(col(g, 'b'));
-    // Same column, different rows — so they are still two distinct cells and the
-    // within-column edge has somewhere to bow to.
     expect(row(g, 'b')).not.toBe(row(g, 'c'));
   });
 
