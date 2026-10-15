@@ -1046,31 +1046,31 @@ describe('ExecutionFlowGraph', () => {
     // the chord sits INSIDE the column it bows out of — over the very nodes the
     // detour exists to avoid drawing through.
     //
-    // THE FIXTURE IS THE CYCLIC ONE, borrowed from 'bows a WITHIN-COLUMN edge out to
-    // the side of its column' rather than invented: the column rule is longest-path,
-    // so an ordinary request edge ALWAYS lands its target strictly right of its
-    // source and can never be within-column. Only where the `n - 1` ceiling binds —
-    // on a cycle — do two request-connected nodes share a column. e1 → e3, e2 → e1,
-    // e3 → e2 relaxes to columns 1, 2, 2, so `c` (e3 → e2) runs within column 2. An
-    // earlier draft of this test used a plain two-callee shape and its own premise
-    // guard caught that the edge was not same-column at all.
+    // THE FIXTURE IS THE RESPONSE-ONLY ONE, borrowed from 'bows a WITHIN-COLUMN edge
+    // out to the side of its column' rather than invented: a request edge never runs
+    // within a column (its target lands strictly right of its source, and a request
+    // that would close a loop is drawn backwards), so the same-column case is an
+    // interaction carrying only its RESPONSE leg. e1 calls e2 and e3 (both column 1),
+    // and `c` (e2 → e3, response only) runs within column 1. An earlier draft of this
+    // test used a plain two-callee shape and its own premise guard caught that the
+    // edge was not same-column at all.
     mockApi(ENTITIES, [
-      mkIx({ id: 'a', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 1),
-      mkIx({ id: 'b', caller_entity_id: 'e2', callee_entity_id: 'e1' }, 3),
-      mkIx({ id: 'c', caller_entity_id: 'e3', callee_entity_id: 'e2' }, 5),
+      mkIx({ id: 'a', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+      mkIx({ id: 'b', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
+      mkIx({ id: 'c', caller_entity_id: 'e2', callee_entity_id: 'e3', legs: [mkLeg('response', 5)] }, 5),
     ]);
     renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
 
-    await waitFor(() => expect(edgeEls()).toHaveLength(6));
+    await waitFor(() => expect(edgeEls()).toHaveLength(5));
 
     // GUARD THE PREMISE rather than assume it: this case only tests what it claims if
     // the two endpoints really did land in the same column, i.e. the anchors differ
     // in x by no more than a node's own width. (Kept because it already earned its
     // keep once — see the fixture note above.)
-    const { from, to } = parseQuad(linkD('c:request'));
+    const { from, to } = parseQuad(linkD('c:response'));
     expect(Math.abs(from.x - to.x)).toBeLessThanOrEqual(2 * 20);
 
-    expect(distanceToCurve('c:request', tagAt('c:request'))).toBeLessThanOrEqual(TOLERANCE);
+    expect(distanceToCurve('c:response', tagAt('c:response'))).toBeLessThanOrEqual(TOLERANCE);
   });
 
   it("keeps a pair's two tags SEPARATED, each outside its own leg's bow", async () => {
@@ -1688,13 +1688,9 @@ describe('ExecutionFlowGraph', () => {
     // horizontal, so the bend goes off to the SIDE of the column rather than above or
     // below it.
     //
-    // Reaching this case takes a REQUEST CYCLE, and that is a fact about the layout
-    // rather than an awkward fixture: the column rule is longest-path, so a plain
-    // request edge always lands its target strictly right of its source and can never
-    // be within-column. Only where the `n - 1` column ceiling binds — on a cycle —
-    // do two request-connected nodes share a column. e1 → e2, e2 → e3, e3 → e1 is a
-    // three-node cycle; the ceiling is 2, so e3's request back to e1 cannot deepen
-    // e1 and stays inside the span.
+    // A three-node request cycle e1 → e2 → e3 → e1: the chain reads left-to-right and
+    // e3's request back to e1, the one that closes the loop, is drawn backwards across
+    // two columns.
     mockApi(ENTITIES, [
       mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
       mkIx({ id: 'i2', caller_entity_id: 'e2', callee_entity_id: 'e3' }, 3),
@@ -1716,28 +1712,25 @@ describe('ExecutionFlowGraph', () => {
   });
 
   it('bows a WITHIN-COLUMN edge out to the side of its column', async () => {
-    // The same-column branch, on the smallest graph that actually reaches it. Two
-    // request-connected nodes can only share a column where the `n - 1` ceiling binds,
-    // and this cyclic shape is the minimal one: e1 → e3, e2 → e1, e3 → e2 relaxes to
-    // columns 1, 2, 2 (the ceiling is 2), so e3 → e2 runs WITHIN column 2.
-    //
-    // Found by enumerating the small digraphs rather than guessed at, because the
-    // longest-path rule means an ordinary request edge NEVER lands within a column —
-    // which is itself the point: this branch handles the residue a cycle leaves, not
-    // an everyday shape.
+    // The same-column branch, on the smallest graph that actually reaches it. A request
+    // edge NEVER lands within a column — the column rule puts its target strictly right
+    // of its source, and a request that would close a loop is drawn backwards — so the
+    // residue this branch handles is an interaction that carries only its RESPONSE leg:
+    // e1 calls e2 and e3 (both column 1), and e2 → e3 has no request to order them, so
+    // its response arrow runs WITHIN column 1.
     mockApi(ENTITIES, [
-      mkIx({ id: 'a', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 1),
-      mkIx({ id: 'b', caller_entity_id: 'e2', callee_entity_id: 'e1' }, 3),
-      mkIx({ id: 'c', caller_entity_id: 'e3', callee_entity_id: 'e2' }, 5),
+      mkIx({ id: 'a', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1),
+      mkIx({ id: 'b', caller_entity_id: 'e1', callee_entity_id: 'e3' }, 3),
+      mkIx({ id: 'c', caller_entity_id: 'e2', callee_entity_id: 'e3', legs: [mkLeg('response', 5)] }, 5),
     ]);
     renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
 
-    await waitFor(() => expect(edgeEls()).toHaveLength(6));
+    await waitFor(() => expect(edgeEls()).toHaveLength(5));
     // The premise: e2 and e3 share a column, stacked on different rows.
     expect(nodeAt('e2')!.x).toBe(nodeAt('e3')!.x);
     expect(nodeAt('e2')!.y).not.toBe(nodeAt('e3')!.y);
 
-    const bend = bendsOf('c:request');
+    const bend = bendsOf('c:response');
     expect(bend).toHaveLength(1);
     // Off to the SIDE — the bend leaves the column's own x, so the arrow bows around
     // whatever sits between the two rows instead of running down through it…
