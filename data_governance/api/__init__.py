@@ -76,7 +76,12 @@ from starlette.staticfiles import StaticFiles
 
 from data_governance import db, retrieval
 from data_governance.risk.api import http as risk_http
-from data_governance.risk.api import metrics_routes, risk_routes, rules_routes
+from data_governance.risk.api import (
+    alert_routes,
+    metrics_routes,
+    risk_routes,
+    rules_routes,
+)
 from data_governance.risk.rules import catalog
 from data_governance.api.live import ChangeHub, trace_events_handler
 
@@ -817,9 +822,11 @@ def build_app(
         # DAS interaction/trace risk reads (issue #109). risk_routes.routes()
         # orders each pair's /history route before its {id} route.
         *risk_routes.routes(),
+        # DAS alert reads (issue #110). alert_routes.routes() lists the by-*
+        # wrappers before /risk/alerts/{alert_id}.
+        *alert_routes.routes(),
         # DAS dashboard metrics (issue #111). All six paths are literal (no
-        # {param}), so unlike the two route lists above there is no ordering
-        # hazard to defuse here.
+        # {param}), so there is no route order to keep here.
         *metrics_routes.routes(),
     ]
     # The rule catalog is read from the opa-policy ConfigMap on a cluster

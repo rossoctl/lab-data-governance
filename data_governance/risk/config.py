@@ -13,7 +13,8 @@ remaining ``api.*.default_limit`` parameters belong to whichever issue
 implements the endpoint that consumes them; issue #113 (rule catalog) owns
 ``API_RISK_RULES_DEFAULT_LIMIT``/``API_RISK_RULES_MAX_LIMIT``, issue #109
 (interaction/trace risk reads) owns the
-``API_RISK_INTERACTIONS_*``/``API_RISK_TRACES_*`` pairs below, and issue #111
+``API_RISK_INTERACTIONS_*``/``API_RISK_TRACES_*`` pairs below, issue #110
+(alert reads) owns ``API_RISK_ALERTS_*``, and issue #111
 (dashboard metrics API) owns the ``API_METRICS_TOP_RULES_*``/
 ``API_METRICS_TOP_TRACES_*`` pairs.
 
@@ -59,6 +60,8 @@ __all__ = [
     "API_RISK_TRACES_MAX_LIMIT",
     "API_RISK_TRACES_HISTORY_DEFAULT_LIMIT",
     "API_RISK_TRACES_HISTORY_MAX_LIMIT",
+    "API_RISK_ALERTS_DEFAULT_LIMIT",
+    "API_RISK_ALERTS_MAX_LIMIT",
     "API_METRICS_TOP_RULES_DEFAULT_LIMIT",
     "API_METRICS_TOP_RULES_MAX_LIMIT",
     "API_METRICS_TOP_TRACES_DEFAULT_LIMIT",
@@ -220,6 +223,13 @@ API_RISK_TRACES_HISTORY_DEFAULT_LIMIT = _int_env(
 API_RISK_TRACES_HISTORY_MAX_LIMIT = _int_env(
     "RISK_API_RISK_TRACES_HISTORY_MAX_LIMIT", 200
 )
+
+# --- api.risk_alerts.* (issue #110) -----------------------------------------
+# Pagination default/maximum for /risk/alerts and its by-* wrappers. The max
+# is the issue's 200.
+
+API_RISK_ALERTS_DEFAULT_LIMIT = _int_env("RISK_API_RISK_ALERTS_DEFAULT_LIMIT", 50)
+API_RISK_ALERTS_MAX_LIMIT = _int_env("RISK_API_RISK_ALERTS_MAX_LIMIT", 200)
 
 # --- api.metrics.* (issue #111) ---------------------------------------------
 # Default/max limits for the top-N leaderboards under /risk/metrics/top-rules
