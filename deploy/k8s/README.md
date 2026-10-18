@@ -169,7 +169,7 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   `RISK_INHERITED_LABELS` (default `off`): `on` hands each flow the labels that
   reached it through label lineage, makes a leg ready only once label lineage
   has derived it (a stopped label-lineage processor holds the stream, with a
-  WARNING per wake), and drains `risk_recompute_requests`.
+  WARNING per wake once one leg has waited 30 s), and drains `risk_recompute_requests`.
 - **Trace-risk-trigger Deployment.** **Single replica** running
   `python -m data_governance.processors.risk.trace_trigger`, `maxSurge:0`.
   Drains `interaction_risk_records` by `seq` (migration 0019) and recomputes

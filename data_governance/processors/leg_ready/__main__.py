@@ -85,6 +85,18 @@ def main() -> int:
         )
         return 2
 
+    # RISK_INHERITED_LABELS decides this consumer's readiness and its recompute
+    # drain: an unsupported value (`all`, a typo) stops it here with the message,
+    # before any DB work, rather than as a traceback mid-drain.
+    from data_governance.risk.config import inherited_labels_mode
+
+    try:
+        mode = inherited_labels_mode()
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
+    log.info("inherited labels %s (RISK_INHERITED_LABELS)", mode)
+
     db.configure(dsn)
 
     # Defence-in-depth schema-version check (issue #10, ADR-0002). The consumer does
