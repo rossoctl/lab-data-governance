@@ -26,6 +26,7 @@ import type {
   RuleListItem,
   RuleCategoriesResponse,
   TraceRiskDetailResponse,
+  AlertListResponse,
 } from './types';
 
 /** Shared root every risk query key nests under. */
@@ -188,6 +189,33 @@ export function useTraceRiskDetail(traceId: string | undefined): UseQueryResult<
   return useQuery({
     queryKey: riskQueryKey('traces', traceId, 'detail'),
     queryFn: () => riskFetchJson<TraceRiskDetailResponse>(`/traces/${traceId}`),
+    enabled: traceId !== undefined,
+  });
+}
+
+/** One page of the risk alert API's list, at its maximum page size. */
+export const TRACE_ALERTS_LIMIT = 200;
+
+/**
+ * Every alert of one trace, superseded included, OLDEST FIRST (the
+ * supersession chain in the order it was written). `GET /risk/alerts?trace_id=`
+ * (issue #110, read half) with `include_superseded=true` — the list hides
+ * superseded alerts by default — and one page at the API's maximum limit: a
+ * trace gets a new alert only when its level rises, so a chain never comes
+ * near it. The API serves newest first (`timestamp_desc`, ties by id); the
+ * page is reversed, keeping that order's tie-break. `next_cursor` stays on the
+ * result so a caller can say when the oldest alerts were cut.
+ */
+export function useTraceAlerts(traceId: string | undefined): UseQueryResult<AlertListResponse> {
+  return useQuery({
+    queryKey: riskQueryKey('alerts', { trace_id: traceId }),
+    queryFn: () =>
+      riskFetchJson<AlertListResponse>('/alerts', {
+        trace_id: traceId,
+        include_superseded: 'true',
+        limit: TRACE_ALERTS_LIMIT,
+      }),
+    select: (page) => ({ ...page, items: [...page.items].reverse() }),
     enabled: traceId !== undefined,
   });
 }

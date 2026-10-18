@@ -124,8 +124,12 @@ describe('RiskTraceDetailPage content (#170)', () => {
     detail?: Record<string, unknown> | { status: number; body: Record<string, unknown> };
     entities?: Record<string, unknown> | { status: number };
     rules?: Record<string, unknown>;
+    alerts?: Record<string, unknown>;
   } = {}) {
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.startsWith('/risk/alerts')) {
+        return { ok: true, status: 200, json: async () => overrides.alerts ?? { items: [], next_cursor: null } };
+      }
       if (url.includes('/traces/') && url.includes('/entities')) {
         if (overrides.entities && 'status' in overrides.entities) {
           return { ok: false, status: overrides.entities.status, json: async () => ({ error: 'failed' }) };
@@ -192,6 +196,66 @@ describe('RiskTraceDetailPage content (#170)', () => {
       String(url).includes('/risk/traces/'),
     );
     expect(detailCalls).toHaveLength(1);
+  });
+
+  const alert = (over: Record<string, unknown>) => ({
+    alert_id: 'a', timestamp: '2026-10-14T10:00:00Z', trace_id: 't1',
+    trace_risk_record_id: 'r', risk_level: 'low', enforcement_type: null,
+    title: 'T', description: 'D', involved_entities: [], triggered_rule_ids: [],
+    status: 'new', alert_type: 'standard', assigned_to: null, dedup_key: null,
+    duplicate_count: 0, superseded_by: null, ...over,
+  });
+
+  it('reads the trace alerts from the alert API, superseded included, one full page', async () => {
+    mockFetchRouter();
+    renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+    await screen.findByText('No alerts');
+    const alertCalls = (fetch as ReturnType<typeof vi.fn>).mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.startsWith('/risk/alerts'));
+    expect(alertCalls).toHaveLength(1);
+    const params = new URL(alertCalls[0], 'http://ui').searchParams;
+    expect(params.get('trace_id')).toBe('t1');
+    expect(params.get('include_superseded')).toBe('true');
+    expect(params.get('limit')).toBe('200');
+  });
+
+  it('lists the trace alerts oldest first, naming the current one and the superseder', async () => {
+    // The API serves newest first; the panel shows the chain in the order it was written.
+    mockFetchRouter({
+      alerts: {
+        items: [
+          alert({ alert_id: 'a2', title: 'second', risk_level: 'critical', duplicate_count: 3 }),
+          alert({ alert_id: 'a1', title: 'first', superseded_by: 'a2' }),
+        ],
+        next_cursor: null,
+      },
+    });
+    renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+    const table = await screen.findByLabelText('Trace alerts');
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(within(rows[0]).getByText('first')).toBeInTheDocument();
+    expect(within(rows[0]).getByText('#2')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('second')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('current')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('3')).toBeInTheDocument();
+    expect(screen.queryByText('The oldest alerts of this trace are not shown.')).not.toBeInTheDocument();
+  });
+
+  it('says when the oldest alerts were cut', async () => {
+    mockFetchRouter({ alerts: { items: [alert({ alert_id: 'a1' })], next_cursor: 'more' } });
+    renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+    await screen.findByLabelText('Trace alerts');
+    expect(screen.getByText('The oldest alerts of this trace are not shown.')).toBeInTheDocument();
+  });
+
+  it('says so when the trace has no alert', async () => {
+    mockFetchRouter();
+    renderWithProviders(harness(), { route: '/risk/traces/t1' });
+    expect(await screen.findByText('No alerts')).toBeInTheDocument();
   });
 
   it('cold-opens with ?violation=2 selecting violation 2, no click needed', async () => {
