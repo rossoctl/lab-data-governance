@@ -164,6 +164,7 @@ import '@patternfly/react-topology/dist/esm/css/topology-controlbar.css';
 import { useEntities, useInteractions, useLineageReachability, useLineageSummary } from '../api/hooks';
 import { useEntitiesAndInteractions } from '../api/live';
 import { deriveGraph, type GraphEdgeSpec, type GraphNodeSpec, type GraphSpec } from '../lib/graph';
+import { requestLegsOnly } from '../lib/flow';
 import { ENTER_MS, ENTER_MS_REDUCED, Motion, fadeIn, type Arrival, type Movable } from '../lib/motion';
 import {
   deriveReachabilityHighlight,
@@ -3648,12 +3649,15 @@ export function ExecutionFlowGraph({
   onContextMenuInteraction,
   riskLevelByInteraction,
   classificationByInteraction,
+  edgesPerInteraction = false,
 }: {
   traceId: string;
   selectedInteractionId?: string | null;
   onSelectInteraction?: (interactionId: string | null) => void;
   /** The label lineage overlay (`lib/labelTrack`), when values are tracked. */
   highlight?: GraphHighlight;
+  /** One edge per interaction (its request leg) instead of one per leg — `requestLegsOnly`. The parallel-groups notice is off then, as on the risk page, for the reason given on `hideParallelGroupsNotice`. */
+  edgesPerInteraction?: boolean;
   onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
   /**
    * The trace page's risk layer: the two risk seams of {@link EntityGraph}
@@ -3665,7 +3669,8 @@ export function ExecutionFlowGraph({
 }) {
   // One reading of the two, so a re-read never draws a half-updated trace — see
   // `useEntitiesAndInteractions`.
-  const { entities, interactions, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
+  const { entities, interactions: allLegs, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
+  const interactions = useMemo(() => (edgesPerInteraction ? requestLegsOnly(allLegs) : allLegs), [edgesPerInteraction, allLegs]);
 
   const spec = useMemo(() => deriveGraph(entities, interactions), [entities, interactions]);
 
@@ -3686,6 +3691,7 @@ export function ExecutionFlowGraph({
         onContextMenuInteraction={onContextMenuInteraction}
         riskLevelByInteraction={riskLevelByInteraction}
         classificationByInteraction={classificationByInteraction}
+        hideParallelGroupsNotice={edgesPerInteraction}
       />
     )
   );
@@ -3800,8 +3806,11 @@ export function LineageGraph({
   onSelectInteraction,
   onSelectEntity,
   riskLevelByInteraction,
+  edgesPerInteraction = false,
 }: {
   traceId: string;
+  /** One edge per interaction (its request leg) instead of one per leg — see `ExecutionFlowGraph`'s prop of the same name. */
+  edgesPerInteraction?: boolean;
   /**
    * The trace page's risk layer: edge colours by risk level, passed straight
    * through to {@link EntityGraph} — see {@link EntityGraphProps.riskLevelByInteraction}.
@@ -3915,7 +3924,17 @@ export function LineageGraph({
 
   // Derived ONCE and handed to both the highlight and the renderer, so the
   // highlight can only ever name elements that are actually on screen.
-  const spec = useMemo(() => deriveGraph(entities, interactions), [entities, interactions]);
+  const drawn = useMemo(() => (edgesPerInteraction ? requestLegsOnly(interactions) : interactions), [edgesPerInteraction, interactions]);
+  const spec = useMemo(() => deriveGraph(entities, drawn), [entities, drawn]);
+  // With edges per interaction the served route is still resolved against the
+  // per-LEG graph, then each response leg folds onto its interaction's one arrow
+  // — otherwise a hop through a response leg, how an agent mostly receives
+  // data (ADR-0025), would light its nodes and not the arrow between them.
+  const fullSpec = useMemo(() => (edgesPerInteraction ? deriveGraph(entities, interactions) : spec), [edgesPerInteraction, entities, interactions, spec]);
+  const foldEdges = useCallback(
+    (ids: readonly string[]) => (edgesPerInteraction ? [...new Set(ids.map((id) => id.replace(/:response$/, ':request')))].sort() : [...ids]),
+    [edgesPerInteraction],
+  );
 
   const sources = useMemo(
     () =>
@@ -3946,7 +3965,7 @@ export function LineageGraph({
           isError: reach.fanout.isError,
           isLoading: reach.fanout.isLoading,
         },
-        graph: spec,
+        graph: fullSpec,
       }),
     [
       selectedEntityId,
@@ -3957,7 +3976,7 @@ export function LineageGraph({
       reach.fanout.data,
       reach.fanout.isError,
       reach.fanout.isLoading,
-      spec,
+      fullSpec,
     ],
   );
 
@@ -3974,7 +3993,7 @@ export function LineageGraph({
     () => ({
       selectedNodeId: reachability.selectedNodeId,
       nodeIds: reachability.litNodeIds,
-      edgeIds: reachability.litEdgeIds,
+      edgeIds: foldEdges(reachability.litEdgeIds),
       // EITHER direction, not both: with one half landed, dimming would paint every
       // entity outside it as absent from the half still being walked.
       isAnswerPending: reachability.fanin.isLoading || reachability.fanout.isLoading,
@@ -3983,8 +4002,8 @@ export function LineageGraph({
         chosenSourceNodeId: sources.chosenSourceNodeId,
         upstreamNodeIds: reachability.fanin.nodeIds,
         downstreamNodeIds: reachability.fanout.nodeIds,
-        upstreamEdgeIds: reachability.fanin.edgeIds,
-        downstreamEdgeIds: reachability.fanout.edgeIds,
+        upstreamEdgeIds: foldEdges(reachability.fanin.edgeIds),
+        downstreamEdgeIds: foldEdges(reachability.fanout.edgeIds),
         // Both walks' frontiers, unioned: a node the reader cannot yet see through is
         // provisional regardless of which direction discovered that.
         frontierNodeIds: [
@@ -4002,7 +4021,7 @@ export function LineageGraph({
         ]),
       },
     }),
-    [reachability, sources.sourceNodeIds, sources.chosenSourceNodeId],
+    [reachability, sources.sourceNodeIds, sources.chosenSourceNodeId, foldEdges],
   );
 
   // Friendly names for the natural keys the notices quote, from the same helper
@@ -4046,6 +4065,7 @@ export function LineageGraph({
       onSelectInteraction={onSelectInteraction}
       onSelectEntity={onSelectEntity}
       riskLevelByInteraction={riskLevelByInteraction}
+      hideParallelGroupsNotice={edgesPerInteraction}
       testId="lineage-graph"
       /* THE LEGEND, in its own slot so it renders BELOW the graph rather than above it
          with the notices. A colour with no key is a puzzle, so every treatment the

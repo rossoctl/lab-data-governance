@@ -283,6 +283,18 @@ export interface FlatRow {
  * parent interaction so a click still opens that interaction's detail panel
  * (legs have no selection of their own).
  */
+/**
+ * The interactions with their request leg only, for the graph views' "edges per
+ * interaction" mode: one arrow per call, as the risk trace page
+ * draws, instead of one per leg. `deriveGraph` already draws one edge for a
+ * request-only interaction (the path a call whose response has not arrived
+ * takes), so nothing in `lib/graph.ts` changes. The rows and the sequence
+ * diagram are per leg by nature and are not affected.
+ */
+export function requestLegsOnly(interactions: readonly Interaction[]): Interaction[] {
+  return interactions.map((ix) => ({ ...ix, legs: ix.legs.filter((l) => l.leg_type === 'request') }));
+}
+
 export function flatLegRows(interactions: readonly Interaction[]): FlatRow[] {
   return interactions
     .flatMap((ix) => (ix.legs ?? []).map((leg) => ({ ix, leg })))
