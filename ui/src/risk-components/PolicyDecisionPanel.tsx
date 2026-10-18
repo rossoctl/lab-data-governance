@@ -18,6 +18,8 @@ import { EnforcementChip } from './EnforcementChip';
 import { joinOrNone } from '../lib/joinOrNone';
 import { SensitivityBadge } from '../components/SensitivityBadge';
 import { LabelLineageTable } from '../components/LabelLineageTable';
+import { useLabelTrack } from '../components/flow/labelTrack';
+import { namedByRules, trackedValueOf } from '../lib/labelTrack';
 import type { HopLinks } from '../lib/hopLinks';
 import { useLegLabels } from '../api/hooks';
 import { regulatoryTagsOf, classificationLevelsOf, carriedOfSummary } from '../lib/classificationSummary';
@@ -256,6 +258,7 @@ function ValuesOnPayload({
 }) {
   const labelsQ = useLegLabels(traceId, interactionId);
   const [params] = useSearchParams();
+  const track = useLabelTrack();
   const links: HopLinks = {
     sameTrace: (hop: LineageHop): To => {
       const next = new URLSearchParams(params);
@@ -269,11 +272,27 @@ function ValuesOnPayload({
         return leg ? [leg] : [];
       })
     : [];
+  // The decision-derived default for tracking on the graph:
+  // the carried-in values whose labels the fired rules name. The reader starts
+  // there and unticks or adds in the list below.
+  const named = legs.flatMap((leg) =>
+    leg.labels
+      .filter((l) => namedByRules(l, rules))
+      .map((l) => trackedValueOf(interactionId, leg, l))
+      .filter((v): v is NonNullable<typeof v> => v != null),
+  );
   return (
     <div data-testid="values-on-payload" style={{ marginTop: '1rem' }}>
       <Title headingLevel="h4" size="md">
         Values on this payload and where each came from
       </Title>
+      {track.available && named.length > 0 && (
+        <div style={{ marginTop: '0.375rem', fontSize: '0.85rem' }}>
+          <Button variant="link" isInline onClick={() => track.replace([...track.tracked.values(), ...named])}>
+            Track on the graph the {named.length} {named.length === 1 ? 'value' : 'values'} whose labels the rules name
+          </Button>
+        </div>
+      )}
       {rules.length > 0 && (
         <Table aria-label="Fired rules and their criteria" variant="compact" style={{ marginTop: '0.5rem' }}>
           <Thead>
@@ -308,7 +327,13 @@ function ValuesOnPayload({
               <Title headingLevel="h5" size="md">
                 {leg.leg_type === 'request' ? 'Request' : 'Response'} #{leg.seq}
               </Title>
-              <LabelLineageTable leg={leg} lineageStatus={labelsQ.data.lineageStatus} traceId={traceId} links={links} />
+              <LabelLineageTable
+                leg={leg}
+                lineageStatus={labelsQ.data.lineageStatus}
+                traceId={traceId}
+                interactionId={interactionId}
+                links={links}
+              />
             </div>
           ))}
         </>

@@ -7,7 +7,7 @@ import { ConnectorCell } from './ConnectorCell';
 import type { ConnectorRole } from './connectorColor';
 import { EntityCell } from './EntityCell';
 import { PinDot } from './PinDot';
-import { rowProps } from './rowChrome';
+import { rowProps, trackProps } from './rowChrome';
 import { StatusText } from './StatusText';
 
 /**
@@ -24,6 +24,8 @@ export function FlatLegsTable({
   selectedId,
   pinColor,
   onSelect,
+  litEdgeIds = null,
+  onContextMenuInteraction,
 }: {
   rows: readonly FlatRow[];
   /** Per-row connector drawing roles, index-aligned with `rows`. */
@@ -32,6 +34,10 @@ export function FlatLegsTable({
   selectedId: string | null;
   pinColor: Map<string, string>;
   onSelect: (ix: Interaction) => void;
+  /** The label lineage overlay's lit legs (`<interaction>:<leg_type>`); `null` = nothing tracked. See `InteractionDiagramProps.litEdgeIds`. */
+  litEdgeIds?: readonly string[] | null;
+  /** A right-click on a row, with its interaction and leg: opens the track picker (see `InteractionDiagramProps.onContextMenuInteraction`). */
+  onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
 }) {
   return (
     <Table aria-label="Interactions (flat)" variant="compact">
@@ -62,6 +68,15 @@ export function FlatLegsTable({
               isClickable
               onRowClick={() => onSelect(ix)}
               {...rowProps(selectedId === ix.id)}
+              {...trackProps(litEdgeIds, [`${ix.id}:${leg.leg_type}`])}
+              onContextMenu={
+                onContextMenuInteraction
+                  ? (e) => {
+                      e.preventDefault();
+                      onContextMenuInteraction(ix.id, leg.leg_type, { x: e.clientX, y: e.clientY });
+                    }
+                  : undefined
+              }
             >
               <Td dataLabel="Seq" className="dg-mono">
                 {leg.seq}

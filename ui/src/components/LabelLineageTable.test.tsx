@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { LabelLineageTable } from './LabelLineageTable';
+import { LabelTrackContext } from './flow/labelTrack';
 import type { LegLabels, LineageHop } from '../types';
 
 const T = 't1';
@@ -70,5 +71,49 @@ describe('LabelLineageTable', () => {
     render(<MemoryRouter><LabelLineageTable leg={{ ...LEG, labels: [{ ...LEG.labels[0], carried_in: [origin] }] }} lineageStatus="complete" traceId={T} links={links} /></MemoryRouter>);
     expect(screen.getAllByTestId('trace-boundary')).toHaveLength(2); // born at and previous hop are the same leg
     expect(screen.getAllByRole('link', { name: /#1 a → b/ })[0]).toHaveAttribute('href', '/traces/t0/flow?iid=o');
+  });
+});
+
+describe('LabelLineageTable — tracking on the graph (the label lineage overlay)', () => {
+  const trackable = { key: 'x/request/PID/0-1/v', interactionId: 'x', legType: 'request' as const, text: 'v', entityType: 'PID', chains: LEG.labels[0].carried_in[0].chains! };
+  function withTrack(tracked: Map<string, typeof trackable>, set = vi.fn(), replace = vi.fn()) {
+    render(
+      <MemoryRouter>
+        <LabelTrackContext.Provider value={{ available: true, tracked, set, replace }}>
+          <LabelLineageTable leg={LEG} lineageStatus="complete" traceId={T} interactionId="x" />
+        </LabelTrackContext.Provider>
+      </MemoryRouter>,
+    );
+    return { set, replace };
+  }
+
+  it('offers no tick box where no page provides tracking, nor without the interaction id', () => {
+    render(<MemoryRouter><LabelLineageTable leg={LEG} lineageStatus="complete" traceId={T} interactionId="x" /></MemoryRouter>);
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByText(/Track on the graph/)).toBeNull();
+  });
+
+  it('ticks a value into the tracked set and out of it, and marks a tracked value', async () => {
+    const { set } = withTrack(new Map());
+    const box = screen.getByRole('checkbox', { name: 'Track v (PID) on the graph' });
+    expect(box).not.toBeChecked();
+    expect(screen.getByTestId('lineage-value')).not.toHaveAttribute('data-tracked');
+    await userEvent.click(box);
+    expect(set).toHaveBeenCalledWith(trackable.key, expect.objectContaining({ key: trackable.key, text: 'v', entityType: 'PID' }));
+  });
+
+  it('shows a tracked value as ticked and marked, and offers to untrack the leg', async () => {
+    const { replace } = withTrack(new Map([[trackable.key, trackable]]));
+    expect(screen.getByRole('checkbox', { name: 'Track v (PID) on the graph' })).toBeChecked();
+    expect(screen.getByTestId('lineage-value')).toHaveAttribute('data-tracked', 'true');
+    await userEvent.click(screen.getByRole('button', { name: 'none on this leg' }));
+    expect(replace).toHaveBeenCalledWith([]);
+  });
+
+  it('tracks every carried-in value of the leg at once, keeping what was tracked elsewhere', async () => {
+    const other = { ...trackable, key: 'y/request/DATE/0-1/w', interactionId: 'y', text: 'w', entityType: 'DATE' };
+    const { replace } = withTrack(new Map([[other.key, other]]));
+    await userEvent.click(screen.getByRole('button', { name: 'all 1 on this leg' }));
+    expect(replace.mock.calls[0][0].map((v: { key: string }) => v.key)).toEqual([other.key, trackable.key]);
   });
 });

@@ -334,6 +334,7 @@ function LegPanel({
               })()}
               lineageStatus={labelsQ.data.lineageStatus}
               traceId={traceId ?? ''}
+              interactionId={interactionId ?? undefined}
             />
           ) : labelsQ.isError ? (
             <div style={{ color: 'var(--dg-color-error)', fontSize: '0.85rem' }}>Failed to load label lineage.</div>
@@ -361,7 +362,12 @@ function LegPanel({
  * the same convention the Classification tab's origin links use. Plain text
  * outside a router.
  */
-function LabelLineagePane(props: { leg: Parameters<typeof LabelLineageTable>[0]['leg']; lineageStatus: Parameters<typeof LabelLineageTable>[0]['lineageStatus']; traceId: string }) {
+function LabelLineagePane(props: {
+  leg: Parameters<typeof LabelLineageTable>[0]['leg'];
+  lineageStatus: Parameters<typeof LabelLineageTable>[0]['lineageStatus'];
+  traceId: string;
+  interactionId?: string;
+}) {
   const routed = useInRouterContext();
   return routed ? <RoutedLabelLineagePane {...props} /> : <LabelLineageTable {...props} />;
 }

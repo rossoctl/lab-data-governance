@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
   Title,
@@ -30,6 +30,16 @@ import { EntitiesTable } from './flow/EntitiesTable';
 import { FlatLegsTable } from './flow/FlatLegsTable';
 import { FlowDetailPanel } from './flow/FlowDetailPanel';
 import { HopHoverContext } from './flow/hopHover';
+import { LabelTrackContext, type LabelTrack } from './flow/labelTrack';
+import { TrackBanner } from './flow/TrackBanner';
+import { TrackPicker, type PickerTarget } from './flow/TrackPicker';
+import {
+  deriveLabelTrackHighlight,
+  toGraphHighlight,
+  trackableValues,
+  type TrackedValue,
+} from '../lib/labelTrack';
+import type { LegLabels } from '../types';
 import { InteractionsTable } from './flow/InteractionsTable';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import type { Selection } from './flow/selection';
@@ -229,6 +239,58 @@ export function FlowTables({
   // The interaction a lineage hop in the detail panel is pointing at; the
   // sequence diagram lights its legs (see `flow/hopHover.ts`).
   const [hoveredInteractionId, setHoveredInteractionId] = useState<string | null>(null);
+  // The values tracked on the graph (label lineage, `lib/labelTrack`): ticked in
+  // the detail panel's Label lineage tab or by a right-click on a leg. One set
+  // for all four views, so the picture does not change with the presentation.
+  const [tracked, setTracked] = useState<ReadonlyMap<string, TrackedValue>>(() => new Map());
+  // The track picker (the check menu), open for one interaction at a point.
+  const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const labelTrack = useMemo<LabelTrack>(
+    () => ({
+      available: true,
+      tracked,
+      set: (key, value) =>
+        setTracked((prev) => {
+          const next = new Map(prev);
+          if (value == null) next.delete(key);
+          else next.set(key, value);
+          return next;
+        }),
+      replace: (values) => setTracked(new Map(values.map((v) => [v.key, v]))),
+    }),
+    [tracked],
+  );
+  const trackHighlight = useMemo(
+    () => (tracked.size === 0 ? null : deriveLabelTrackHighlight([...tracked.values()], interactions, traceId)),
+    [tracked, interactions, traceId],
+  );
+  // Tracking is per trace: a new trace starts with nothing tracked.
+  useEffect(() => {
+    setTracked(new Map());
+    setPicker(null);
+  }, [traceId]);
+  const closePicker = useCallback(() => setPicker(null), []);
+  /**
+   * The right-click on a leg: select its interaction (the detail panel opens),
+   * track every carried-in value of THAT leg (added to what is tracked), and open
+   * the picker there so the reader can untick or add. Reads the same labels
+   * resource the Label lineage tab reads.
+   */
+  function trackAllOf(interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) {
+    selectInteractionById(interactionId);
+    setPicker({ interactionId, legType, at });
+    void fetchJson<{ legs?: LegLabels[] }>(`/traces/${traceId}/interactions/${interactionId}/labels`)
+      .then((r) => {
+        const values = trackableValues(interactionId, (r.legs ?? []).filter((l) => l.leg_type === legType));
+        if (values.length === 0) return;
+        setTracked((prev) => {
+          const next = new Map(prev);
+          for (const v of values) next.set(v.key, v);
+          return next;
+        });
+      })
+      .catch(() => {});
+  }
   // Persisted **Data lineage** for the whole trace (ADR-0028), read ONCE per
   // trace and keyed per leg — not per payload expansion. TanStack caches on
   // `traceId`, so the panel switching between rows/legs never re-fetches.
@@ -559,7 +621,28 @@ export function FlowTables({
   }
 
   return (
+    <LabelTrackContext.Provider value={labelTrack}>
     <div>
+      <TrackBanner
+        tracked={[...tracked.values()]}
+        foreignHops={trackHighlight?.foreignHops ?? 0}
+        onRemove={(key) => labelTrack.set(key, null)}
+        onClear={() => setTracked(new Map())}
+        onChoose={
+          selectedInteractionId != null
+            ? (at) => setPicker({ interactionId: selectedInteractionId, legType: 'request', at })
+            : undefined
+        }
+      />
+      {picker && (
+            <TrackPicker
+              // Keyed by target: a right-click on another leg is a new picker (its own folded/open state), not a re-render of the old one.
+              key={`${picker.interactionId}/${picker.legType}`}
+              traceId={traceId}
+              target={picker}
+              onClose={closePicker}
+            />
+          )}
       {/* The trace-level lineage-coverage warning (issue #120), OUTSIDE the
           tables' gutter div: the detail panel floats over that gutter, and the
           truncation must stay readable precisely when someone is drilling into a
@@ -774,6 +857,8 @@ export function FlowTables({
           <Suspense fallback={<Spinner aria-label="Loading execution flow graph" />}>
             <ExecutionFlowGraph
               traceId={traceId}
+              highlight={trackHighlight ? toGraphHighlight(trackHighlight) : undefined}
+              onContextMenuInteraction={trackAllOf}
               // The graph's EDGES are the interaction click target this tab used to
               // lack — one edge is one leg, and clicking it opens the same detail
               // panel a Flat-table row click opens, through the same
@@ -815,6 +900,8 @@ export function FlowTables({
             interactions={displayedInteractions}
             selectedId={selectedInteractionId}
             hoveredId={hoveredInteractionId}
+            litEdgeIds={trackHighlight?.edgeIds ?? null}
+            onContextMenuInteraction={trackAllOf}
             onSelect={selectInteraction}
           />
         ) : legView === 'flat' ? (
@@ -824,6 +911,8 @@ export function FlowTables({
             entById={entById}
             selectedId={selectedInteractionId}
             pinColor={pinColor}
+            litEdgeIds={trackHighlight?.edgeIds ?? null}
+            onContextMenuInteraction={trackAllOf}
             onSelect={selectInteraction}
           />
         ) : (
@@ -833,6 +922,8 @@ export function FlowTables({
             depthById={depthById}
             selectedId={selectedInteractionId}
             pinColor={pinColor}
+            litEdgeIds={trackHighlight?.edgeIds ?? null}
+            onContextMenuInteraction={trackAllOf}
             onSelect={selectInteraction}
           />
         )}
@@ -855,5 +946,6 @@ export function FlowTables({
         </HopHoverContext.Provider>
       )}
     </div>
+    </LabelTrackContext.Provider>
   );
 }

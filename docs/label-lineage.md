@@ -115,6 +115,17 @@ interaction on the sequence diagram. The decision is payload-level and lineage i
 value that met a rule, because neither the engine nor OPA records one; the reader sees which value
 carries the labels the rules name.
 
+**Tracking values on the graphs (the overlay).** An edge on the graphs is a leg, one payload, and the
+decision is on that payload; label lineage is per value. So a value's chain is not "the path of an
+edge": the reader ticks the values to track (in the Label lineage tab, or by a right-click on a leg,
+which tracks that leg's carried-in values; on the risk page the default is the carried-in values whose
+labels the fired rules name), and the union of their routes is painted over the graph that is already
+there: the legs those values sat on lit, every other leg dimmed, on the execution-flow graph, the
+sequence diagram and the Tree and Flat tables alike (`lib/labelTrack`, pure; the pages only paint the
+sets). A banner names what is tracked, each removable; hops in other traces are counted, not drawn.
+Tracking is per trace and per page visit. The risk page's graph draws request legs only
+(`toFlowInteractions`), so a value's response-leg hops are not lit there.
+
 ## What this does not do yet
 
 - No comparison other than byte equality: a re-spaced number (`123 45 6789`), a re-cased name or a

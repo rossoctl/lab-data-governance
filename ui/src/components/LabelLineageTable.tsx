@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { Button, Label } from '@patternfly/react-core';
+import { Button, Checkbox, Label } from '@patternfly/react-core';
 import { Link } from 'react-router-dom';
 import type { LabelOrigin, LegLabel, LegLabels, LineageHop, LineageStatus } from '../types';
 import { SensitivityBadge } from './SensitivityBadge';
 import { LabelLineage } from './LabelLineage';
 import { NO_HOP_LINKS, hopText, otherTraceHref, type HopLinks } from '../lib/hopLinks';
+import { trackableValues, trackedValueOf } from '../lib/labelTrack';
+import { useLabelTrack } from './flow/labelTrack';
 
 /**
  * The per-leg **Label lineage** view: one block per value label lineage carried
@@ -22,18 +24,47 @@ export function LabelLineageTable({
   leg,
   lineageStatus,
   traceId,
+  interactionId,
   links = NO_HOP_LINKS,
 }: {
   /** The labels read's row for this leg; `null` when the read has none. */
   leg: LegLabels | null;
   lineageStatus: LineageStatus;
   traceId: string;
+  /** The leg's interaction: the identity of its values under tracking. Without it the tick boxes are not offered. */
+  interactionId?: string;
   links?: HopLinks;
 }) {
   const rows = (leg?.labels ?? []).filter((l) => l.carried_in.length > 0);
   const foundOnly = (leg?.labels ?? []).length - rows.length;
+  const track = useLabelTrack();
+  const trackable = track.available && interactionId != null && leg != null ? trackableValues(interactionId, [leg]) : [];
+  const trackedHere = trackable.filter((v) => track.tracked.has(v.key)).length;
   return (
     <div data-testid="label-lineage-table">
+      {/* Tracking on the graphs (lib/labelTrack): the legs the ticked values sat
+          on are lit on every view, the rest dimmed. Offered only where a page
+          provides the tracking (the trace page, the risk trace page). */}
+      {trackable.length > 0 && (
+        <div className="dg-lineage-track-bar">
+          <span style={{ color: 'var(--dg-color-muted)' }}>Track on the graph:</span>{' '}
+          <Button variant="link" isInline onClick={() => track.replace([...track.tracked.values(), ...trackable])}>
+            all {trackable.length} on this leg
+          </Button>
+          {trackedHere > 0 && (
+            <>
+              {' · '}
+              <Button
+                variant="link"
+                isInline
+                onClick={() => track.replace([...track.tracked.values()].filter((v) => !trackable.some((t) => t.key === v.key)))}
+              >
+                none on this leg
+              </Button>
+            </>
+          )}
+        </div>
+      )}
       {lineageStatus === null && (
         <div style={{ color: 'var(--dg-color-muted)', fontSize: '0.8rem', marginBottom: '0.375rem' }}>
           Label lineage: not derived for this trace
@@ -46,7 +77,17 @@ export function LabelLineageTable({
       ) : (
         <ul className="dg-lineage-values" aria-label="Label lineage">
           {rows.map((l, i) => (
-            <Row key={`${l.entity_type}-${l.start}-${l.end}-${i}`} label={l} traceId={traceId} links={links} />
+            <Row
+              key={`${l.entity_type}-${l.start}-${l.end}-${i}`}
+              label={l}
+              traceId={traceId}
+              links={links}
+              tracking={
+                track.available && interactionId != null && leg != null
+                  ? { value: trackedValueOf(interactionId, leg, l), track }
+                  : null
+              }
+            />
           ))}
         </ul>
       )}
@@ -82,13 +123,34 @@ function previousHops(label: LegLabel): LineageHop[] {
   return [...seen.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
 }
 
-function Row({ label, traceId, links }: { label: LegLabel; traceId: string; links: HopLinks }) {
+function Row({
+  label,
+  traceId,
+  links,
+  tracking,
+}: {
+  label: LegLabel;
+  traceId: string;
+  links: HopLinks;
+  /** The value's tracked shape and the page's tracking, when offered; `value` is null for a value with no chains. */
+  tracking: { value: ReturnType<typeof trackedValueOf>; track: ReturnType<typeof useLabelTrack> } | null;
+}) {
   const [open, setOpen] = useState(false);
   const chains = label.carried_in.reduce((n, o) => n + (o.chains?.length ?? 0), 0);
   const prev = previousHops(label);
+  const tracked = tracking?.value != null && tracking.track.tracked.has(tracking.value.key);
   return (
-    <li className="dg-lineage-value" data-testid="lineage-value">
+    <li className="dg-lineage-value" data-testid="lineage-value" data-tracked={tracked ? 'true' : undefined}>
       <div className="dg-lineage-value__head">
+        {tracking?.value != null && (
+          <Checkbox
+            id={`track-${tracking.value.key}`}
+            className="dg-lineage-value__track"
+            aria-label={`Track ${label.text} (${label.entity_type}) on the graph`}
+            isChecked={tracked}
+            onChange={(_e, checked) => tracking.track.set(tracking.value!.key, checked ? tracking.value : null)}
+          />
+        )}
         <span className="dg-mono">{label.text}</span>{' '}
         <Label isCompact color="orange">{label.entity_type}</Label>{' '}
         {label.sensitivity_level && <SensitivityBadge level={label.sensitivity_level} />}{' '}

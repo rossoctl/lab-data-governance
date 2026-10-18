@@ -449,6 +449,8 @@ type EdgeData = GraphEdgeSpec & {
   highlight: HighlightRole;
   isSelected: boolean;
   lineage: EdgeLineageFacts;
+  /** A right-click on the arrow (see `EntityGraphProps.onContextMenuInteraction`). */
+  onContextMenu?: (e: React.MouseEvent) => void;
   /**
    * This edge's leg's INTERACTION risk level, looked up from the caller's
    * `riskLevelByInteraction` map (issue #170) by `e.interactionId` — see
@@ -505,6 +507,13 @@ export interface GraphHighlight {
    * `no-adjacent` picture for "not known yet". What has landed is still lit.
    */
   isAnswerPending?: boolean;
+  /**
+   * A question was asked with NO node selected, so the rest may dim. The label
+   * lineage overlay (`lib/labelTrack`) asks "where were these values" — a question
+   * about edges, with no subject node — and without this the `selectedNodeId`
+   * guard in `roleOf` would read it as "nothing asked" and dim nothing.
+   */
+  isQuestion?: boolean;
   /**
    * The **Lineage reachability** overlay (ADR-0028 D14/D15), when the caller has
    * one. Omitted by the Execution Flow tab, which draws the plain graph.
@@ -599,7 +608,7 @@ function roleOf(id: string, h: GraphHighlight | undefined, isNode: boolean): Hig
   // Note this deliberately keys on `selectedNodeId`, not on whether the sets are
   // empty: a selected entity whose answer is legitimately empty (`no-adjacent`)
   // SHOULD dim the rest, because a question was asked and the answer is "nothing".
-  if (h.selectedNodeId === null) return 'none';
+  if (h.selectedNodeId === null && !h.isQuestion) return 'none';
   if (isNode && h.selectedNodeId === id) return 'selected';
   const inAnswer = isNode ? h.nodeIds.includes(id) : h.edgeIds.includes(id);
   // `'source'` for a node in the answer, `'carrier'` for an edge that delivered it
@@ -2185,6 +2194,7 @@ function DirectedEdge({
       // which is why this is an addition to them rather than the only way in.
       role="button"
       tabIndex={0}
+      onContextMenu={data?.onContextMenu}
       // Named so the focus ring can be stated on the element that actually RECEIVES
       // focus. `dg-graph-edge` itself lands on PF's inner `<g>` (via `className`), which
       // is not focusable, so a `:focus-visible` rule keyed on it would never match.
@@ -2595,6 +2605,12 @@ export interface EntityGraphProps {
    */
   onSelectInteraction?: (interactionId: string | null) => void;
   /**
+   * A right-click on an edge, with that leg's interaction id and leg type: the
+   * shortcut to tracking the values on that leg (`lib/labelTrack`). The browser's
+   * own menu is suppressed only when a handler is given.
+   */
+  onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
+  /**
    * Fired with the clicked NODE's entity id.
    *
    * An id for the same reason `onSelectInteraction` takes one: the graph holds a
@@ -2802,6 +2818,7 @@ export function EntityGraph({
   selectedInteractionId = null,
   selectedEntityId = null,
   onSelectInteraction,
+  onContextMenuInteraction,
   onSelectEntity,
   notices,
   controls,
@@ -2962,6 +2979,13 @@ export function EntityGraph({
    * per render, so the join is not worth avoiding — and `?? ''` keeps "no highlight"
    * a stable, distinct value rather than colliding with an empty highlight.
    */
+  /** The right-click callback as a latest-value ref (the same reasoning as
+   *  `onSelectRef` below); `hasContextMenu` is the primitive the model effect
+   *  depends on. */
+  const onContextMenuRef = useRef(onContextMenuInteraction);
+  onContextMenuRef.current = onContextMenuInteraction;
+  const hasContextMenu = onContextMenuInteraction != null;
+
   const highlightKey = highlight
     ? [
         highlight.selectedNodeId ?? '',
@@ -2970,6 +2994,7 @@ export function EntityGraph({
         // Pending is CONTENT too: an empty answer (`no-adjacent`) leaves every set above
         // unchanged when it lands, and only this flag says the roles must now dim.
         highlight.isAnswerPending ? 'pending' : '',
+        highlight.isQuestion ? 'question' : '',
         // The reachability sets are part of the CONTENT, so they belong in the digest:
         // they are baked into the element `data` exactly as the roles are, and a
         // digest that ignored them would leave the source colouring painted from a
@@ -3180,6 +3205,13 @@ export function EntityGraph({
             // digest, unlike the highlight's object).
             isSelected: selectedInteractionId != null && e.interactionId === selectedInteractionId,
             lineage: edgeLineageFactsOf(e.id, highlight),
+            onContextMenu: hasContextMenu
+              ? (ev: React.MouseEvent) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  onContextMenuRef.current?.(e.interactionId, e.legType, { x: ev.clientX, y: ev.clientY });
+                }
+              : undefined,
             riskLevel: riskLevelByInteraction?.get(e.interactionId),
             classification: classificationByInteraction?.get(e.interactionId),
             arrival: arrivalOf(`edge:${e.id}`, drawnEdges.has(e.id)),
@@ -3239,6 +3271,7 @@ export function EntityGraph({
     hideEdgeLabels,
     selectedEntityId,
     nodesSelectable,
+    hasContextMenu,
   ]);
 
   /**
@@ -3611,10 +3644,15 @@ export function ExecutionFlowGraph({
   traceId,
   selectedInteractionId = null,
   onSelectInteraction,
+  highlight,
+  onContextMenuInteraction,
 }: {
   traceId: string;
   selectedInteractionId?: string | null;
   onSelectInteraction?: (interactionId: string | null) => void;
+  /** The label lineage overlay (`lib/labelTrack`), when values are tracked. */
+  highlight?: GraphHighlight;
+  onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
 }) {
   // One reading of the two, so a re-read never draws a half-updated trace — see
   // `useEntitiesAndInteractions`.
@@ -3635,6 +3673,8 @@ export function ExecutionFlowGraph({
         traceId={traceId}
         selectedInteractionId={selectedInteractionId}
         onSelectInteraction={onSelectInteraction}
+        highlight={highlight}
+        onContextMenuInteraction={onContextMenuInteraction}
       />
     )
   );

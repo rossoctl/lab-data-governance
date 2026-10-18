@@ -3,6 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { PolicyDecisionPanel } from './PolicyDecisionPanel';
+import { LabelTrackContext } from '../components/flow/labelTrack';
 import type { Entity } from '../lib/flow';
 import type { ForestInteraction, InteractionRisk, RuleListItem } from '../risk-api/types';
 
@@ -401,6 +402,38 @@ describe('PolicyDecisionPanel — values on this payload', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Hide the values' }));
     expect(screen.queryByTestId('values-on-payload')).toBeNull();
+  });
+
+  it('offers to track the values whose labels the rules name, and only where a page provides tracking', async () => {
+    const DATE = {
+      text: '2033-03-29', start: 38, end: 48, entity_type: 'DATE', sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'],
+      found_here: true,
+      carried_in: [{ ...LABELS.legs[0].labels[0].carried_in[0], origin_interaction_id: 'i-user', origin_seq: 78059,
+        chains: [[hop(78059, 'origin', 'i-user', 'client', 'advisor'), hop(83053, 'here', 'i1', 'notify-partner', 'partner')]] }],
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({
+      ...LABELS, legs: [{ ...LABELS.legs[0], labels: [...LABELS.legs[0].labels, DATE] }],
+    }) })));
+    const replace = vi.fn();
+    const violation = mkViolation({}, { triggered_rule_ids: ['DG-001', 'DG-004'], classification_summary: SUMMARY });
+    const { unmount } = renderWithProviders(<PolicyDecisionPanel violation={violation} ruleIndex={RULES} entities={ENTITIES} />);
+    await userEvent.click(screen.getByRole('button', { name: /Show the values/ }));
+    await screen.findByRole('heading', { name: 'Request #83053' });
+    expect(screen.queryByRole('button', { name: /whose labels the rules name/ })).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    unmount();
+
+    renderWithProviders(
+      <LabelTrackContext.Provider value={{ available: true, tracked: new Map(), set: vi.fn(), replace }}>
+        <PolicyDecisionPanel violation={violation} ruleIndex={RULES} entities={ENTITIES} />
+      </LabelTrackContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Show the values/ }));
+    const button = await screen.findByRole('button', { name: 'Track on the graph the 1 value whose labels the rules name' });
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    await userEvent.click(button);
+    // The PID (PII, RESTRICTED) is named by DG-001 and DG-004; the date (PI, INTERNAL) by neither.
+    expect(replace.mock.calls[0][0].map((v: { text: string; entityType: string }) => `${v.text} ${v.entityType}`)).toEqual(['BK-83CE5F PID']);
   });
 
   it('has no toggle when nothing was carried in', () => {

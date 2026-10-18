@@ -130,8 +130,13 @@ function mkReach(direction: 'fanin' | 'fanout') {
   };
 }
 
-function mockFetch(over: { sources?: string[]; fanin?: unknown; fanout?: unknown } = {}) {
+function mockFetch(over: { sources?: string[]; fanin?: unknown; fanout?: unknown; labels?: unknown } = {}) {
   (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+    // The per-interaction labels read, before the `/interactions/`
+    // evidence branch below, which would answer it with `{spans}`.
+    if (url.includes('/labels')) {
+      return { ok: true, status: 200, json: async () => over.labels ?? { legs: [], lineage_status: 'complete' } };
+    }
     // THE TWO LINEAGE-TAB READS FIRST, and the order is load-bearing rather than
     // stylistic: the reachability URL is `/entities/<eid>/data-lineage-graph`, which
     // also matches the `/entities/` evidence branch below. Matched after it, a
@@ -2396,5 +2401,136 @@ describe('FlowTables', () => {
     );
     // And it must NOT be the too-weak bare selector on its own.
     expect(css).not.toMatch(/(^|\})\s*tr\[data-dg-selected='active'\]\s*\{/);
+  });
+});
+
+
+describe('FlowTables — tracking values on the graph (the label lineage overlay)', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+  /** A live booking trace's shape, cut down: the PID on i1's request came from i0's response. */
+  const hop = (seq: number, role: string, iid: string, leg: string) => ({
+    interaction_id: iid, leg_type: leg, seq, trace_id: 'T1', caller: 'a', callee: 'b',
+    text: 'BK-83CE5F', start: 16, end: 25, role, excerpt: null,
+  });
+  const LABELS = {
+    lineage_status: 'complete',
+    legs: [{
+      leg_type: 'request', payload_hash: 'h1', seq: 1,
+      found: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'] },
+      carried: { max_level: 'RESTRICTED', regulatory_tags: ['PII'], origin_count: 1 },
+      labels: [{
+        text: 'BK-83CE5F', start: 16, end: 25, entity_type: 'PID', sensitivity_level: 'RESTRICTED',
+        regulatory_tags: ['PII'], found_here: false,
+        carried_in: [{
+          origin_interaction_id: 'i0', origin_leg_type: 'response', origin_seq: 0, caller: 'a', callee: 'b',
+          unit_text: 'BK-83CE5F', unit_value: 'BK-83CE5F', match_kind: 'whole', origin_trace_id: null,
+          chains: [[hop(0, 'origin', 'i0', 'response'), hop(1, 'here', 'i1', 'request')]],
+        }],
+      }],
+    }],
+  };
+  const TWO = [
+    { ...INTERACTIONS[0], id: 'i0', summary: 'earlier', legs: [
+      { leg_type: 'request', occurred_at: '2026-05-01T11:59:00Z', payload_hash: null, error: false, seq: -1 },
+      { leg_type: 'response', occurred_at: '2026-05-01T11:59:01Z', payload_hash: null, error: false, seq: 0 },
+    ] },
+    withLegHashes('h1', null),
+  ];
+
+  function mockFetchTwo() {
+    mockFetch({ labels: LABELS });
+    const base = (fetch as ReturnType<typeof vi.fn>).getMockImplementation()!;
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: TWO }) };
+      return base(url);
+    });
+  }
+
+  it('a right-click on a diagram row selects it and tracks that leg\'s carried-in values: the banner, lit and dimmed rows, then Clear', async () => {
+    mockFetchTwo();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} initialLegView="diagram" />,
+    );
+    const rows = await screen.findAllByTestId('dg-seq-message');
+    expect(rows).toHaveLength(4);
+    expect(screen.queryByTestId('track-banner')).toBeNull();
+
+    // A right-click on i1's RESPONSE tracks nothing: the labels read has no response leg.
+    fireEvent.contextMenu(rows[3]);
+    await screen.findByText('agent calls search');
+    expect(screen.queryByTestId('track-banner')).toBeNull();
+    fireEvent.contextMenu(rows[2]); // i1's request
+    const banner = await screen.findByTestId('track-banner');
+    expect(banner).toHaveTextContent('Tracking 1 value on the graph');
+    expect(banner).toHaveTextContent('BK-83CE5F PID');
+    // The picker opened at the pointer, the value ticked; Done closes it, "Choose values…" reopens it.
+    const picker = screen.getByRole('dialog', { name: 'Track values on the graph' });
+    await waitFor(() => expect(within(picker).getByRole('checkbox', { name: /BK-83CE5F/ })).toBeChecked());
+    await userEvent.click(within(picker).getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await userEvent.click(within(banner).getByRole('button', { name: 'Choose values…' }));
+    expect(screen.getByRole('dialog', { name: 'Track values on the graph' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    // The detail panel opened on the right-clicked interaction.
+    expect(await screen.findByText('agent calls search')).toBeInTheDocument();
+    // i0's response and i1's request are lit; the other two legs dimmed.
+    const tracks = () => screen.getAllByTestId('dg-seq-message').map((el) => [el.getAttribute('data-seq'), el.getAttribute('data-track')]);
+    await waitFor(() => expect(tracks()).toEqual([['-1', 'dimmed'], ['0', 'lit'], ['1', 'lit'], ['2', 'dimmed']]));
+
+    await userEvent.click(within(banner).getByRole('button', { name: 'Clear' }));
+    expect(screen.queryByTestId('track-banner')).toBeNull();
+    expect(document.querySelector('[data-track]')).toBeNull();
+  });
+
+  it('the same tracked set lights the Flat and Tree rows, a row right-click opens the picker, and the tab\'s tick box unticks it', async () => {
+    mockFetchTwo();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} initialLegView="diagram" />,
+    );
+    const rows = await screen.findAllByTestId('dg-seq-message');
+    fireEvent.contextMenu(rows[2]);
+    await screen.findByTestId('track-banner');
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    // Flat: one row per leg.
+    await userEvent.click(screen.getByRole('tab', { name: 'Flat' }));
+    const flat = await screen.findByLabelText('Interactions (flat)');
+    await waitFor(() =>
+      expect([...flat.querySelectorAll('tbody tr')].map((tr) => tr.getAttribute('data-dg-track'))).toEqual(['dimmed', 'lit', 'lit', 'dimmed']),
+    );
+    // Tree: one row per interaction, lit when any of its legs is.
+    await userEvent.click(screen.getByRole('tab', { name: 'Tree' }));
+    const tree = await screen.findByLabelText('Interactions');
+    await waitFor(() =>
+      expect([...tree.querySelectorAll('tbody tr')].map((tr) => tr.getAttribute('data-dg-track'))).toEqual(['lit', 'lit']),
+    );
+    // A right-click on a table row opens the picker for that interaction too.
+    fireEvent.contextMenu(tree.querySelectorAll('tbody tr')[1]);
+    const picker = await screen.findByRole('dialog', { name: 'Track values on the graph' });
+    await waitFor(() => expect(within(picker).getByRole('checkbox', { name: /BK-83CE5F/ })).toBeChecked());
+    await userEvent.click(within(picker).getByRole('button', { name: 'Done' }));
+
+    // The Label lineage tab shows the value ticked; unticking it clears the overlay.
+    await userEvent.click(screen.getByRole('tab', { name: 'Request: Label lineage' }));
+    const box = await screen.findByRole('checkbox', { name: 'Track BK-83CE5F (PID) on the graph' });
+    expect(box).toBeChecked();
+    await userEvent.click(box);
+    await waitFor(() => expect(screen.queryByTestId('track-banner')).toBeNull());
+    expect(document.querySelector('[data-dg-track]')).toBeNull();
+  });
+
+  it('starts a new trace with nothing tracked', async () => {
+    mockFetchTwo();
+    const { rerender } = renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} initialLegView="diagram" />,
+    );
+    fireEvent.contextMenu((await screen.findAllByTestId('dg-seq-message'))[2]);
+    await screen.findByTestId('track-banner');
+    rerender(<FlowTablesWithLegTabs traceId="T2" pins={new PinStore()} onPinsChange={() => {}} initialLegView="diagram" />);
+    await waitFor(() => expect(screen.queryByTestId('track-banner')).toBeNull());
   });
 });

@@ -5702,3 +5702,52 @@ describe('live re-read (ADR-0034)', () => {
     });
   });
 });
+
+describe('ExecutionFlowGraph — the label lineage overlay', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('dims the rest for a question with no selected node, lighting the listed legs and their nodes', async () => {
+    mockApi(ENTITIES, [mkIx({ id: 'i1' }, 1), mkIx({ id: 'i2' }, 3)]);
+    renderWithProviders(
+      <ExecutionFlowGraph
+        traceId="T1"
+        highlight={{ selectedNodeId: null, nodeIds: ['e1'], edgeIds: ['i1:response'], isQuestion: true }}
+      />,
+    );
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+    expect(document.querySelector('[data-id="i1:response"] .dg-graph-edge--carrier')).not.toBeNull();
+    expect(document.querySelector('[data-id="i1:request"] .dg-graph-edge--dimmed')).not.toBeNull();
+    expect(document.querySelectorAll('.dg-graph-edge--dimmed')).toHaveLength(3);
+    expect(document.querySelectorAll('.dg-graph-edge--carrier')).toHaveLength(1);
+  });
+
+  it('dims nothing for the same sets without the question flag (the Lineage tab\'s no-selection rule holds)', async () => {
+    mockApi(ENTITIES, [mkIx({ id: 'i1' }, 1)]);
+    renderWithProviders(
+      <ExecutionFlowGraph traceId="T1" highlight={{ selectedNodeId: null, nodeIds: ['e1'], edgeIds: ['i1:response'] }} />,
+    );
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    expect(document.querySelector('.dg-graph-edge--dimmed')).toBeNull();
+    expect(document.querySelector('.dg-graph-edge--carrier')).toBeNull();
+  });
+
+  it('reports a right-click on an arrow with its interaction, and nothing without a handler', async () => {
+    mockApi(ENTITIES, [mkIx({ id: 'i1' }, 1)]);
+    const onContextMenuInteraction = vi.fn();
+    const { rerender } = renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const focusEl = () => document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!;
+    fireEvent.contextMenu(focusEl());
+    expect(onContextMenuInteraction).not.toHaveBeenCalled();
+    rerender(<ExecutionFlowGraph traceId="T1" onContextMenuInteraction={onContextMenuInteraction} />);
+    await waitFor(() => {
+      fireEvent.contextMenu(focusEl());
+      expect(onContextMenuInteraction).toHaveBeenCalledWith('i1', 'request', { x: 0, y: 0 });
+    });
+  });
+});
