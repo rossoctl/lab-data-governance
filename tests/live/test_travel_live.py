@@ -13,8 +13,9 @@ A. **Lineage and the plugin** (L1–L6): nothing is read from the risk
 B. **Classification and risk** (L7–L13): known bytes under the deployed
    test catalog, ``catalog_e2e.json``; versions, idempotency, the outage
    drill, alerts.
-C. **The app's behaviour** (L14–L15): the rogue partner variant, then the
-   cut turn, which runs last because its upstream keeps working for
+C. **The app's behaviour** (L14, L18, L15): the rogue partner variant, the
+   booking reference's label on that turn (label lineage, when deployed),
+   then the cut turn, which runs last because its upstream keeps working for
    minutes.
 
 Every property a scenario examines is one row of its table
@@ -43,6 +44,7 @@ from pathlib import Path
 import pytest
 
 from tests.live import audit, checks, driver, ledger, settle, shape
+from tests.live import labels as L
 from tests.live.checks import Checks
 from tests.live.driver import (
     EXTERNAL_HOST, IPV6_HOST, LONG_HOST, PSP_NOBODY_URL, REFLECT_HOST, REFLECT_URL, SINK_HOST,
@@ -842,11 +844,16 @@ def test_L12_opa_outage_holds_the_cursor(env, kube, dg, capabilities, catalog, r
 # --- L16 (opt-in, destructive) -------------------------------------------------
 
 
-def _draining_leg_ready(dg) -> int:
+def _draining_leg_ready(dg, kube, env) -> int:
     """leg-ready processes inside the drain loop: each holds a LISTEN
-    connection on the leg-ready channel for its wake-up."""
-    (n,) = dg.one("SELECT count(*) FROM pg_stat_activity WHERE query = %s",
-                  ("LISTEN dg_interaction_leg_ready",))
+    connection on the leg-ready channel for its wake-up. Other consumers
+    listen on the same channel (the label-lineage processor), so only
+    connections from leg-ready's own pods count — their IPs read off the
+    Deployment's pods at probe time."""
+    pods = kube.json(["get", "pod", "-l", "app.kubernetes.io/name=data-governance-leg-ready"], ns=env.dg_ns)["items"]
+    ips = sorted({p["status"]["podIP"] for p in pods if p.get("status", {}).get("podIP")})
+    (n,) = dg.one("SELECT count(*) FROM pg_stat_activity WHERE query = %s AND host(client_addr) = ANY(%s)",
+                  ("LISTEN dg_interaction_leg_ready", ips))
     return int(n)
 
 
@@ -889,12 +896,12 @@ def test_L16_two_leg_ready_consumers(env, kube, dg, capabilities, catalog, run_r
             state.setdefault("traces", set()).add(T3)
             specs = [dict(trace_id=T3, parent_id=mint_span_id(), label=f"card_ext_{i}", payload=card_pii(),
                           host=EXTERNAL_HOST) for i in range(8)]
-            draining = [_draining_leg_ready(dg)]
+            draining = [_draining_leg_ready(dg, kube, env)]
             results = probes_concurrent(kube, specs)
             rec.write("probes.json", [r.__dict__ for r in results])
             ch.check("probes.outcomes", "every probe was answered", ["ok"] * len(specs), [r.outcome for r in results])
             _settle(ch, env, dg, capabilities, T3, rec)
-            draining.append(_draining_leg_ready(dg))
+            draining.append(_draining_leg_ready(dg, kube, env))
             rec.write("draining.json", draining)
             ch.check("consumers.draining", "leg-ready processes in the drain loop, before and after the probes",
                      [1, 1], draining)
@@ -1090,6 +1097,7 @@ def test_L14_rogue_partner_notification(env, kube, dg, capabilities, catalog, fl
                   "summary": r[5] if isinstance(r[5], dict) else json.loads(r[5] or "{}"),
                   "fields": _fields(r[6]), "input_head": (r[6] or "")[:200]} for r in rows]
         rec.write("partner_exchanges.json", {"variant": variant, "exchanges": found})
+        state["L14"] = {"trace": T, "variant": variant, "exchanges": found}
         ch.record("variant", "booking-agent variant", variant)
         ch.record("partner.exchanges", "notify-partner → partner exchanges in the window", len(found),
                   comment=("in the turn's trace" if found and found[-1]["in_turn_trace"] else "in another trace") if found else None)
@@ -1112,6 +1120,82 @@ def test_L14_rogue_partner_notification(env, kube, dg, capabilities, catalog, fl
                      x["fields"], ok=bool(x["fields"]) and set(x["fields"]) <= {"dates", "note"})
             ch.check("partner.pii", "fixed: no personal data reached the partner", "no PII in tags", sorted(tags), ok="PII" not in tags)
             ch.check("partner.verdict", "fixed: the partner record verdict", "none/allow", f"{x['risk']}/{x['enforcement']}")
+
+
+# --- L18: the booking reference's label (label lineage) -------------------------
+
+
+def test_L18_booking_reference_carries_its_label(env, dg, capabilities, run_record, state):
+    """L18 — the booking-reference case, on L14's turn (no traffic of its own).
+    Needs: label lineage deployed (``capabilities.labels``), L14 run under
+    ROSSOCTL_VARIANT=rogue, and the partner call made in the turn's trace.
+    Skips otherwise: L14 not run or not rogue; no partner call this turn (the
+    model's choice, L14's xfail); the exchange landed in another trace (a stale
+    tool-call parent, a declared gap) — label lineage reads one conversation,
+    so where it landed is recorded and nothing is asserted.
+
+    Expect, labels: create_booking's response carries the booking id (BK-…)
+    beside the guest's name, and the classifier reads the id there as a unit
+    of its own (measured on a lab run: PID, PII). That unit reaches
+    notify-partner's request (booking-agent → notify-partner, tools/call) and
+    the partner request (notify-partner → api.travel-partner.example) whole,
+    origin create-booking's response. Under the rogue variant the guest's name
+    reaches the partner request too.
+    Expect, decision: the rogue agent sends the name, so the partner record is
+    critical/block [DG-001] with or without lineage. With inherited labels on
+    (leg-ready RISK_INHERITED_LABELS=on) its request summary carries the
+    inherited labels, PII among them; off, the stock decision with no inherited
+    entry. (The case where the reference alone decides — the partner sent only
+    booking_id and dates — needs the notify_partner field limit, not in the
+    pinned app: there the stock decision allows and lineage blocks.)
+    """
+    rec = run_record.scenario("L18")
+    with Checks("L18", rec) as ch:
+        if not capabilities.labels:
+            pytest.skip("label lineage is not deployed (capabilities.labels)")
+        l14 = state.get("L14") or pytest.skip("L14 did not run")
+        if l14["variant"] != "rogue":
+            pytest.skip(f"booking-agent runs the {l14['variant']} variant; the case is the rogue one")
+        if not l14["exchanges"]:
+            pytest.skip("no partner call on L14's turn (the model's choice, L14's xfail)")
+        T, x = l14["trace"], l14["exchanges"][-1]
+        ch.record("partner.in_turn_trace", "the partner exchange sits in the turn's trace", x["in_turn_trace"])
+        if not x["in_turn_trace"]:
+            pytest.skip(f"the partner exchange landed in trace {x['trace']}, not the turn's {T}: "
+                        "label lineage reads one conversation (recorded)")
+        ids = sorted({(json.loads(r[0] or "{}") or {}).get("id") for r in dg.q(
+            "SELECT attributes->>'output.value' FROM spans WHERE trace_id = %s "
+            "AND name = 'booking-agent mcp create_booking response'", (T,))} - {None})
+        ch.record("booking.ids", "booking ids create_booking returned in the turn", ids)
+        lab = L.read(dg, T)
+        L.write(run_record, "L18", lab)
+        partner = L.into(lab, x["interaction"])
+        notify = [e for e in lab["edges"] if e["to_callee"] == "notify-partner" and e["to_leg"] == "request"]
+        ch.record("labels.partner", "units into the partner request (type, value, kind, origin/leg)",
+                  sorted({(e["entity_type"], e["value"], e["kind"], f"{e['origin']}/{e['origin_leg']}")
+                          for e in partner}))
+        ref = [e for e in partner if e["value"] in ids and e["origin"] == "create-booking"
+               and e["origin_leg"] == "response" and e["kind"] == "whole"]
+        ch.check("labels.reference_reaches_partner",
+                 "the booking id reaches the partner request whole from create-booking's response",
+                 "present", "present" if ref else "absent", ok=bool(ref))
+        ch.check("labels.reference_reaches_notify",
+                 "the booking id reaches notify-partner's request whole from create-booking's response",
+                 "present", "present" if [e for e in notify if e["value"] in ids and e["origin"] == "create-booking"]
+                 else "absent", ok=any(e["value"] in ids and e["origin"] == "create-booking" for e in notify))
+        ch.check("labels.reference_pii", "the reference's unit carries PII (born beside the guest's name)",
+                 "PII", sorted({t for e in ref for t in e["tags"]}), ok=any("PII" in e["tags"] for e in ref),
+                 comment="measured on a lab run as PID/PII; another reading is a classifier finding")
+        ch.check("partner.verdict", "rogue: the partner record verdict (the name is sent)", "critical/block",
+                 f"{x['risk']}/{x['enforcement']}")
+        inherited = ((x["summary"] or {}).get("request") or {}).get("inherited")
+        if capabilities.inherited_labels:
+            ch.check("labels.decision_carries", "flag on: the partner record carries the inherited labels",
+                     L.inherited_tags(partner), (inherited or {}).get("regulatory_tags", []))
+            ch.check("labels.decision_pii", "flag on: PII among the inherited labels on the decision", "PII",
+                     (inherited or {}).get("regulatory_tags", []), ok="PII" in (inherited or {}).get("regulatory_tags", []))
+        else:
+            ch.check("labels.decision_off", "flag off: the stock decision, no inherited entry", None, inherited)
 
 
 # --- L15 (runs last) -----------------------------------------------------------
