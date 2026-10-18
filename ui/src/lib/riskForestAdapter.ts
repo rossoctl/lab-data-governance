@@ -54,7 +54,7 @@
  */
 import type { Entity, Interaction, InteractionLeg } from './flow';
 import type { ForestInteraction } from '../risk-api/types';
-import { regulatoryTagsOf, classificationLevelsOf } from './classificationSummary';
+import { regulatoryTagsOf, classificationLevelsOf, carriedOfSummary } from './classificationSummary';
 import type { InteractionClassification } from './classificationSummary';
 
 /**
@@ -191,6 +191,12 @@ export function riskLevelByInteraction(forest: readonly ForestInteraction[]): Ma
  * same cases `riskLevelByInteraction` above has no entry for, plus a
  * classified-but-both-empty leg (which the wire shape doesn't currently
  * produce, but this function doesn't assume it never will).
+ *
+ * CARRIED-IN LABELS (label lineage, `carriedOfSummary`) add a `carried` key,
+ * and only when some leg has them, so an entry without them is the same
+ * `{tags, levels}` as before. They also make an entry for an interaction
+ * whose legs are pending or payload-less: its visible tag stays `''`, its
+ * hover text says what was carried in.
  */
 export function classificationByInteraction(
   forest: readonly ForestInteraction[],
@@ -200,7 +206,9 @@ export function classificationByInteraction(
     if (ix.risk == null) continue;
     const tags = regulatoryTagsOf(ix.risk.classification_summary);
     const levels = classificationLevelsOf(ix.risk.classification_summary);
-    if (tags.length > 0 || levels.length > 0) map.set(ix.interaction_id, { tags, levels });
+    const carried = carriedOfSummary(ix.risk.classification_summary);
+    if (carried != null) map.set(ix.interaction_id, { tags, levels, carried });
+    else if (tags.length > 0 || levels.length > 0) map.set(ix.interaction_id, { tags, levels });
   }
   return map;
 }

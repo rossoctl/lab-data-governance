@@ -84,10 +84,14 @@ const INTERACTION_EVIDENCE = [
   { span_id: 'span-xyz', role: 'anchor', parent_id: 'root-span', kind: 'CLIENT', service_name: 'svc', leg_type: 'request' },
 ];
 
+/** Nothing carried in, lineage derived: the Classification tab is the
+ *  classifier's verdict alone. */
+const NO_LABELS = { legs: [], lineage_status: 'complete' };
+
 /** Stub every `/api/` call the flow view makes; the payload's classification
  *  slice is caller-supplied so one helper serves both the populated and the
- *  null-verdict cases. */
-async function stubFlowApi(page: Page, classification: unknown) {
+ *  null-verdict cases, and so is the labels read (found here / carried in). */
+async function stubFlowApi(page: Page, classification: unknown, labels: unknown = NO_LABELS) {
   const json = (body: unknown) => ({
     status: 200,
     contentType: 'application/json',
@@ -97,6 +101,11 @@ async function stubFlowApi(page: Page, classification: unknown) {
     const url = route.request().url();
     if (url.includes(`/api/traces/${TID}/interactions/${IID}/spans`)) {
       return route.fulfill(json({ spans: INTERACTION_EVIDENCE }));
+    }
+    // Before the generic `/interactions` branch, which would answer it with
+    // `{interactions}`.
+    if (url.includes(`/api/traces/${TID}/interactions/${IID}/labels`)) {
+      return route.fulfill(json(labels));
     }
     if (url.includes(`/api/traces/${TID}/interactions`)) {
       return route.fulfill(json({ interactions: INTERACTIONS }));
@@ -196,4 +205,57 @@ test('a null classification renders as "not yet classified", not a PUBLIC verdic
 
   await expect(page.getByText(/not yet classified/i)).toBeVisible();
   await expect(page.getByText('PUBLIC')).toHaveCount(0);
+});
+
+test('labels carried in show beside what the classifier found here', async ({ page }) => {
+  await stubFlowApi(
+    page,
+    {
+      sensitivity_level: 'INTERNAL',
+      regulatory_tags: ['PI'],
+      contains_identity_bundle: false,
+      is_personalized: false,
+      primary_domain: 'person',
+      findings: [{ entity_type: 'OPID', start: 16, end: 25, text: 'BK-2850EB' }],
+      model_version: 2,
+    },
+    {
+      lineage_status: 'complete',
+      legs: [
+        {
+          leg_type: 'request', payload_hash: REQ_HASH, seq: 1,
+          found: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'] },
+          carried: { max_level: 'RESTRICTED', regulatory_tags: ['PI', 'PII'], origin_count: 2 },
+          labels: [
+            {
+              text: 'BK-2850EB', start: 16, end: 25, entity_type: 'PID', sensitivity_level: 'RESTRICTED',
+              regulatory_tags: ['PII'], found_here: false,
+              carried_in: [{
+                origin_interaction_id: 'ix-0', origin_leg_type: 'response', origin_seq: 90574,
+                caller: 'booking-agent', callee: 'create-booking',
+                unit_text: 'BK-2850EB', unit_value: 'BK-2850EB', match_kind: 'whole', origin_trace_id: null,
+              }],
+            },
+            {
+              text: 'BK-2850EB', start: 16, end: 25, entity_type: 'OPID', sensitivity_level: 'INTERNAL',
+              regulatory_tags: ['PI'], found_here: true,
+              carried_in: [{
+                origin_interaction_id: 'ix-00', origin_leg_type: 'response', origin_seq: 91707,
+                caller: 'booking-agent', callee: 'qwen2.5:7b',
+                unit_text: 'BK-2850EB', unit_value: 'BK-2850EB', match_kind: 'whole', origin_trace_id: null,
+              }],
+            },
+          ],
+        },
+      ],
+    },
+  );
+  await openRequestClassification(page);
+
+  await expect(page.getByText('Found here (classifier)')).toBeVisible();
+  await expect(page.getByText('Carried in (label lineage)')).toBeVisible();
+  await expect(page.getByText('from 2 earlier steps')).toBeVisible();
+  const labels = page.getByLabel('Labels');
+  await expect(labels.getByText('PID', { exact: true })).toBeVisible();
+  await expect(labels.getByText('booking-agent → create-booking, response #90574')).toBeVisible();
 });

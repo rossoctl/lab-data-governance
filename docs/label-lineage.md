@@ -75,6 +75,22 @@ Set on `85-leg-ready.yaml` only; leg-ready alone decides what inherited labels d
   each leg carries now. With `off` the requests are left alone (one row per interaction).
 - `all` — rejected at leg-ready's startup: it would forward origins from other conversations.
 
+## Reading it
+
+`GET /api/traces/{tid}/interactions/{iid}/labels` (`retrieval.get_leg_labels`) serves, per
+payload-bearing leg, the classifier's findings on the payload (**found here**) beside the edges into
+the leg at its current payload hash (**carried in**), each with its origin leg, `seq`, caller ->
+callee, `unit_text` / `unit_value`, `match_kind` and `origin_trace_id` (null for this trace; the
+trace page does not link an origin in another one). `retrieval.labels.merge` pairs them per
+(span, entity type): a finding claims the same-type edges whose span overlaps its own (the extent rule
+can widen a number past what the classifier marked), an unclaimed edge group is a carried-in row,
+and two labels never fold into one. `lineage_status` is null when the trace is not derived (or 0024
+has not run), never `complete`. The trace page's Classification tab shows this as facts about the
+payload; it never says a label was used, because the API pod does not read `RISK_INHERITED_LABELS`.
+The risk pages say "used in this decision" only from the record's
+`classification_summary.<leg>.inherited`, which leg-ready writes only for edges it forwarded. Which
+rule a label fired is not stored, and no page claims it.
+
 ## What this does not do yet
 
 - No comparison other than byte equality: a re-spaced number (`123 45 6789`), a re-cased name or a
@@ -90,7 +106,10 @@ Set on `85-leg-ready.yaml` only; leg-ready alone decides what inherited labels d
   payloads (ADR-0024's runbook) does not either: truncate the label tables with them (the manifest's recovery).
 - No cap on the work per trace: a value repeated many times, or a conversation that echoes the same facts
   turn after turn, grows candidates and edges with the product of copies and carriers.
-- No UI.
+- A labels row both found here and carried in shows the higher of the two levels and the union of
+  the tags, and does not say which source gave which. When a same-type edge carries a higher level
+  than the classifier's finding on the payload, the row reads as if the classifier found that level
+  there. Not seen in live data yet; the fix is to split the row when the levels differ.
 
 ## Roadmap
 

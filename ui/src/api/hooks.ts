@@ -20,6 +20,8 @@ import type {
   TraceListingEntry,
   SpanEvidence,
   Payload,
+  InteractionLabels,
+  LegLabels,
   Entity,
   Interaction,
   DataLineageLeg,
@@ -361,6 +363,45 @@ export function useLineageSummary(traceId: string): UseQueryResult<LineageSummar
         status: r.status ?? null,
         stoppedAtSeq: r.stopped_at_seq ?? null,
       })),
+  });
+}
+
+/**
+ * One interaction's **Labels** — per leg, what the classifier found on the
+ * payload beside what label lineage carried into it.
+ * `GET /api/traces/{tid}/interactions/{iid}/labels`.
+ *
+ * One read per INTERACTION, not per leg: both leg tabs read the one cached
+ * entry. Keyed `['leg-labels', traceId, iid]` so the live page's
+ * `['leg-labels', traceId]` prefix invalidation re-reads it when label lineage
+ * lands after classification. A body without a `legs` array is a failed read,
+ * so the view stays the classifier's alone rather than claiming lineage was not
+ * derived; a `lineage_status` other than the two strings is `null` (not
+ * derived), never `'complete'`.
+ */
+export function useLegLabels(
+  traceId: string,
+  interactionId: string | null,
+  enabled = true,
+): UseQueryResult<InteractionLabels> {
+  return useQuery({
+    enabled: enabled && interactionId !== null,
+    queryKey: ['leg-labels', traceId, interactionId],
+    queryFn: () =>
+      fetchJson<{ legs?: unknown; lineage_status?: unknown }>(
+        `/traces/${traceId}/interactions/${interactionId}/labels`,
+      ).then((r): InteractionLabels => {
+        if (!Array.isArray(r.legs)) throw new Error('labels: no legs in the response');
+        return {
+          byLeg: new Map(
+            (r.legs as LegLabels[])
+              .filter((leg) => typeof leg?.leg_type === 'string' && Array.isArray(leg.labels))
+              .map((leg) => [leg.leg_type, leg]),
+          ),
+          lineageStatus:
+            r.lineage_status === 'complete' || r.lineage_status === 'partial' ? r.lineage_status : null,
+        };
+      }),
   });
 }
 

@@ -244,4 +244,68 @@ describe('PolicyDecisionPanel', () => {
 
     expect(screen.getByText('critical')).toBeInTheDocument();
   });
+
+  // Label lineage: the live partner policy event (trace e06cd67d…,
+  // notify-partner → api.travel-partner.example:8000) fired DG-001 (PII) and
+  // DG-004 (RESTRICTED) while the classifier read this payload as PI /
+  // INTERNAL; the PII and RESTRICTED came in with the text, in `inherited`.
+  describe('Carried in row', () => {
+    const INHERITED = { count: 5, kinds: ['whole'], max_level: 'RESTRICTED', recombined: false, regulatory_tags: ['PI', 'PII'] };
+    const PARTNER = {
+      request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], finding_count: 3, inherited: INHERITED },
+      response: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], finding_count: 3, inherited: INHERITED },
+    };
+
+    function row(term: string) {
+      return screen.getByText(term, { exact: true }).closest('.pf-v5-c-description-list__group') as HTMLElement;
+    }
+
+    it('shows the highest carried level, the carried tags and "used in this decision", beside the classifier rows left as they were', () => {
+      renderPanel(
+        mkViolation({}, { triggered_rule_ids: ['DG-001', 'DG-004'], classification_summary: PARTNER }),
+        new Map([['DG-001', mkRule()]]),
+        ENTITIES,
+      );
+
+      expect(row('Regulatory tags')).toHaveTextContent(/^Regulatory tagsPI$/);
+      expect(row('Classification')).toHaveTextContent(/^ClassificationINTERNAL$/);
+      const carried = row('Carried in');
+      expect(within(carried).getByText('RESTRICTED')).toBeInTheDocument();
+      expect(carried).toHaveTextContent('RESTRICTED PI, PII — used in this decision');
+      // The edge count never reaches the screen.
+      expect(carried).not.toHaveTextContent('5');
+    });
+
+    it('has no Carried in row without inherited, and never says "none carried"', () => {
+      renderPanel(
+        mkViolation({}, { classification_summary: { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'] } } }),
+        new Map([['DG-001', mkRule()]]),
+        ENTITIES,
+      );
+
+      expect(screen.queryByText('Carried in')).not.toBeInTheDocument();
+      expect(screen.queryByText(/used in this decision/)).not.toBeInTheDocument();
+    });
+
+    it('shows what a pending leg carried in, beside "none" from the classifier', () => {
+      renderPanel(
+        mkViolation({}, { classification_summary: { request: { classification_pending: true, inherited: INHERITED } } }),
+        new Map([['DG-001', mkRule()]]),
+        ENTITIES,
+      );
+
+      expect(row('Regulatory tags')).toHaveTextContent(/^Regulatory tagsnone$/);
+      expect(row('Carried in')).toHaveTextContent('RESTRICTED PI, PII — used in this decision');
+    });
+
+    it('prints no "none" for a carried level without tags', () => {
+      renderPanel(
+        mkViolation({}, { classification_summary: { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited: { max_level: 'RESTRICTED', regulatory_tags: [] } } } }),
+        new Map([['DG-001', mkRule()]]),
+        ENTITIES,
+      );
+
+      expect(row('Carried in')).toHaveTextContent(/^Carried inRESTRICTED — used in this decision$/);
+    });
+  });
 });

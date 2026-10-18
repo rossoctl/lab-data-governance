@@ -3,8 +3,8 @@
 The token is compared for equality only, so the tests assert exactly that:
 it is stable while nothing changes, and it changes on each kind of derived
 write a live page cares about — a leg, an entity attribution, a lineage row,
-a lineage status flip, a risk record, each write to an alert — and never
-because of another trace.
+a lineage status flip, a label-lineage derivation, a risk record, each write
+to an alert — and never because of another trace.
 """
 
 from __future__ import annotations
@@ -130,6 +130,47 @@ def test_each_derived_write_changes_the_token(configured_db: str, raw_conn) -> N
     )
     raw_conn.commit()
     step()  # …and its flip to complete, with no new row anywhere
+
+
+def _derive_labels(conn, trace_id: str, *, status: str, edge_count: int) -> None:
+    """The status row the label-lineage processor upserts per derivation."""
+    conn.execute(
+        "INSERT INTO label_lineage_trace_status (trace_id, status, unclassified_legs, "
+        "unanchored_findings, derived_legs, edge_count, matcher) "
+        "VALUES (%s, %s, 0, 0, 1, %s, 'exact') "
+        "ON CONFLICT (trace_id) DO UPDATE SET status = EXCLUDED.status, "
+        "edge_count = EXCLUDED.edge_count, derived_at = now()",
+        (trace_id, status, edge_count),
+    )
+    conn.commit()
+
+
+def test_each_label_lineage_derivation_changes_the_token(configured_db: str, raw_conn) -> None:
+    """Label lineage writes after classification and fires no notification the
+    page hears: its status row is the mark. Each derivation stamps ``derived_at``,
+    so a re-derivation with the same counts still reads as changed."""
+    _seed_entity(raw_conn, entity_id="e1", trace_id=_TID, span_id="s1")
+    before = retrieval.get_trace_version(_TID)
+    _derive_labels(raw_conn, _TID, status="partial", edge_count=0)
+    first = retrieval.get_trace_version(_TID)
+    assert first != before
+    _derive_labels(raw_conn, _TID, status="complete", edge_count=5)
+    second = retrieval.get_trace_version(_TID)
+    assert second != first
+    _derive_labels(raw_conn, _TID, status="complete", edge_count=5)
+    assert retrieval.get_trace_version(_TID) != second
+    # Another trace's derivation leaves this token alone.
+    settled = retrieval.get_trace_version(_TID)
+    _derive_labels(raw_conn, "elsewhere", status="complete", edge_count=1)
+    assert retrieval.get_trace_version(_TID) == settled
+
+
+def test_without_label_lineage_the_token_is_unchanged(configured_db: str, raw_conn) -> None:
+    """No status row (not derived) or no table (before 0024): no ``lab`` mark."""
+    assert retrieval.get_trace_version(_TID) == "legs=0;ix=0;es=0;lin=0;st=@0;irr=0;trr=0;al=0"
+    raw_conn.execute("DROP TABLE label_lineage_trace_status")
+    raw_conn.commit()
+    assert retrieval.get_trace_version(_TID) == "legs=0;ix=0;es=0;lin=0;st=@0;irr=0;trr=0;al=0"
 
 
 def test_each_risk_write_changes_the_token(configured_db: str, raw_conn) -> None:

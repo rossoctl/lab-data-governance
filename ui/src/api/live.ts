@@ -58,7 +58,8 @@ export const LIVE_POLL_MS = 2000;
 /**
  * The query-key heads this page keeps live, each scoped by `traceId` as its
  * second element (see `hooks.ts`). A prefix match, so `['lineage-graph', tid]`
- * covers every direction/entity/source variant under it.
+ * covers every direction/entity/source variant under it, and
+ * `['leg-labels', tid]` every interaction's labels.
  *
  * NOT the span tree (`span`, `span-children`): it is keyset-paginated with its
  * own expand/reveal state and a Refresh button, and re-fetching its pages
@@ -72,6 +73,7 @@ export const TRACE_LIVE_KEYS = [
   'data-lineage',
   'lineage-summary',
   'lineage-graph',
+  'leg-labels',
 ] as const;
 
 /**

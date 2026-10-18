@@ -337,6 +337,45 @@ describe('riskForestAdapter', () => {
       expect(map.has('ix2')).toBe(false);
       expect(map.has('ix3')).toBe(false);
     });
+
+    // Label lineage's `inherited` block: the classifier's own tags and level
+    // stay as they were; what was carried in rides beside them as `carried`.
+    it('adds carried when a leg has inherited labels, leaving tags and levels the classifier\'s', () => {
+      const inherited = { count: 5, kinds: ['whole'], max_level: 'RESTRICTED', recombined: false, regulatory_tags: ['PI', 'PII'] };
+      const forest = [
+        forestInteraction({
+          interaction_id: 'ix1',
+          risk: risk({
+            classification_summary: {
+              request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited },
+              response: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited },
+            },
+          }),
+        }),
+      ];
+      const map = classificationByInteraction(forest);
+      expect(map.get('ix1')).toEqual({
+        tags: ['PI'],
+        levels: ['INTERNAL'],
+        carried: { tags: ['PI', 'PII'], level: 'RESTRICTED' },
+      });
+    });
+
+    it('makes an entry for an interaction whose only content is carried in (pending/payload-less legs)', () => {
+      const forest = [
+        forestInteraction({
+          interaction_id: 'ix1',
+          risk: risk({
+            classification_summary: {
+              request: { classification_pending: true, inherited: { regulatory_tags: ['PII'], max_level: 'RESTRICTED' } },
+              response: { payload: null },
+            },
+          }),
+        }),
+      ];
+      const map = classificationByInteraction(forest);
+      expect(map.get('ix1')).toEqual({ tags: [], levels: [], carried: { tags: ['PII'], level: 'RESTRICTED' } });
+    });
   });
 
   describe('violationsOf', () => {

@@ -11,7 +11,8 @@ import {
 import { RiskBadge } from './RiskBadge';
 import { EnforcementChip } from './EnforcementChip';
 import { joinOrNone } from '../lib/joinOrNone';
-import { regulatoryTagsOf, classificationLevelsOf } from '../lib/classificationSummary';
+import { SensitivityBadge } from '../components/SensitivityBadge';
+import { regulatoryTagsOf, classificationLevelsOf, carriedOfSummary } from '../lib/classificationSummary';
 import type { Entity } from '../lib/flow';
 import type { ForestInteraction, RuleListItem } from '../risk-api/types';
 
@@ -101,6 +102,7 @@ export function PolicyDecisionPanel({
     ...(d.data_destination_trust_level ? [d.data_destination_trust_level] : []),
   ]);
   const allowedActions = [...new Set(rules.flatMap((r) => r.allowed_actions))];
+  const carried = carriedOfSummary(risk.classification_summary);
 
   return (
     <Card data-testid="policy-decision-panel">
@@ -160,6 +162,21 @@ export function PolicyDecisionPanel({
             <DescriptionListTerm>Classification</DescriptionListTerm>
             <DescriptionListDescription>{joinOrNone(classificationLevelsOf(risk.classification_summary))}</DescriptionListDescription>
           </DescriptionListGroup>
+          {/* Labels the payload carried in from earlier in the trace (label
+              lineage). The two rows above stay the classifier's reading of
+              this payload. "Used in this decision" is what the record says:
+              the engine writes `inherited` only for labels it forwarded into
+              the OPA input. Which rule a label fired is not recorded, so the
+              row never says. No `inherited`, no row — never "none carried". */}
+          {carried && (
+            <DescriptionListGroup>
+              <DescriptionListTerm>Carried in</DescriptionListTerm>
+              <DescriptionListDescription>
+                {carried.level != null && <><SensitivityBadge level={carried.level} />{' '}</>}
+                {carried.tags.length > 0 && `${carried.tags.join(', ')} `}— used in this decision
+              </DescriptionListDescription>
+            </DescriptionListGroup>
+          )}
           <DescriptionListGroup>
             <DescriptionListTerm>Allowed actions</DescriptionListTerm>
             <DescriptionListDescription>{joinOrNone(allowedActions)}</DescriptionListDescription>

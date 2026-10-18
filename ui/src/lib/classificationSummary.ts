@@ -28,6 +28,8 @@
 export interface ClassifiedLegSummary {
   sensitivity_level?: unknown;
   regulatory_tags?: unknown;
+  /** Label lineage's block (see `carriedOf`); on any of the three shapes. */
+  inherited?: unknown;
 }
 
 /**
@@ -93,6 +95,68 @@ export function classificationLevelsOf(summary: Record<string, unknown> | null):
   return [...levels];
 }
 
+/** Sensitivity levels, lowest first — the classifier's ladder (`label_lineage/summary.py`'s `LEVELS`). */
+export const SENSITIVITY_LEVELS: readonly string[] = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'];
+
+/**
+ * The labels a leg's payload CARRIED IN — label lineage found the same text
+ * carrying them earlier in the trace — as opposed to what the classifier
+ * found reading this payload (`legTags`/`legLevel`, "Found here"). `level`
+ * is the highest of them.
+ */
+export interface CarriedLabels {
+  tags: readonly string[];
+  level: string | null;
+}
+
+/**
+ * The higher of two sensitivity levels on `SENSITIVITY_LEVELS`. A level off
+ * the ladder ranks below `PUBLIC`, so it never hides a known one but still
+ * shows when it is all there is.
+ */
+function higherLevel(a: string | null, b: string | null): string | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return SENSITIVITY_LEVELS.indexOf(b) > SENSITIVITY_LEVELS.indexOf(a) ? b : a;
+}
+
+/**
+ * One leg's `inherited` block — `{regulatory_tags, max_level, kinds,
+ * recombined, count}`, written by `risk/engine/utils.py`'s
+ * `classification_summary()` only when label lineage's edges into this leg
+ * were forwarded into the decision's OPA input. It rides on all three leg
+ * shapes, so a pending or payload-less leg can carry labels too. `count`
+ * counts edges, not labels, and is deliberately not read.
+ *
+ * `null` when the block is absent or malformed, or names neither a tag nor
+ * a level — never a claim the record does not make.
+ */
+export function carriedOf(leg: ClassifiedLegSummary): CarriedLabels | null {
+  const block = leg.inherited;
+  if (block == null || typeof block !== 'object') return null;
+  const { regulatory_tags: tags, max_level: level } = block as Record<string, unknown>;
+  const carried: CarriedLabels = {
+    tags: Array.isArray(tags) ? [...new Set(tags.filter((t): t is string => typeof t === 'string'))] : [],
+    level: typeof level === 'string' ? level : null,
+  };
+  return carried.tags.length > 0 || carried.level != null ? carried : null;
+}
+
+/** `carriedOf` across both legs: tags unioned first-seen, the highest level. `null` when no leg carried any. */
+export function carriedOfSummary(summary: Record<string, unknown> | null): CarriedLabels | null {
+  const tags = new Set<string>();
+  let level: string | null = null;
+  let any = false;
+  for (const leg of classifiedLegs(summary)) {
+    const carried = carriedOf(leg);
+    if (carried == null) continue;
+    any = true;
+    for (const tag of carried.tags) tags.add(tag);
+    level = higherLevel(level, carried.level);
+  }
+  return any ? { tags: [...tags], level } : null;
+}
+
 /**
  * An interaction's regulatory tags and sensitivity level(s), unioned and
  * deduplicated across whichever of its legs were actually classified. The
@@ -101,10 +165,14 @@ export function classificationLevelsOf(summary: Record<string, unknown> | null):
  * consumer that shows the tags on their own (the graph's visible edge tag)
  * and a consumer that shows both (its hover text) are reading the same
  * underlying verdict, not two independent facts.
+ *
+ * `carried` (label lineage, `carriedOfSummary`) is present only when some leg
+ * carried labels in. It feeds the hover text only, never the visible tag.
  */
 export interface InteractionClassification {
   tags: readonly string[];
   levels: readonly string[];
+  carried?: CarriedLabels;
 }
 
 /**
