@@ -15,13 +15,15 @@ HOW A STREAM LEARNS OF A CHANGE. The same two signals the processors use
 (ADR-0015, ADR-0027), in the same roles:
 
 - a **wake** from the one process-wide :class:`ChangeHub`, which holds a single
-  ``LISTEN`` session on the derivation's notify channels and fans each
-  notification out to every open stream. Latency only: the notifications carry
-  no payload, are global (any trace), and are missed if the session is down;
+  ``LISTEN`` session on the derivation's and the risk processors' notify
+  channels and fans each notification out to every open stream. Latency only:
+  the notifications carry no payload, are global (any trace), and are missed
+  if the session is down;
 - the **backstop**: every stream re-reads its token at least every
   :data:`BACKSTOP_SECONDS` regardless. This is the correctness guarantee — a
-  write the hub never heard of (the lineage processor fires no notify; the
-  ``LISTEN`` session may be reconnecting) is seen within one backstop.
+  write the hub never heard of (the lineage processor and the alert generator
+  fire no notify; the ``LISTEN`` session may be reconnecting) is seen within
+  one backstop.
 
 On either signal the stream re-reads the token and emits a ``change`` only if
 it differs. A wake is first allowed :data:`COALESCE_SECONDS` to let the burst
@@ -58,8 +60,17 @@ log = logging.getLogger(__name__)
 
 #: The derivation's own notify channels (migrations 0010 and 0012). A leg
 #: insert is where every interaction write lands; an entity insert is the one
-#: derived write that can precede any leg.
-CHANNELS: tuple[str, ...] = ("dg_legs_inserted", "dg_entity_ready")
+#: derived write that can precede any leg. Then the risk processors' (0016 and
+#: 0023): a risk record lands after derivation has gone quiet, so without
+#: these a trace's decision would wait for the backstop. An alert fires no
+#: notify of its own; it follows a trace risk record, whose wake usually
+#: covers it, and the backstop covers the rest.
+CHANNELS: tuple[str, ...] = (
+    "dg_legs_inserted",
+    "dg_entity_ready",
+    "dg_interaction_risk_written",
+    "dg_trace_risk_written",
+)
 
 #: Longest a stream waits before re-reading its token with no wake — the
 #: correctness backstop, and the keepalive cadence.
