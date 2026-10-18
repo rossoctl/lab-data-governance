@@ -243,12 +243,15 @@ def test_http_null_for_non_sidecar_anchor(seeded: str) -> None:
 def test_http_null_when_no_http_fact_present(seeded: str, configured_db: str) -> None:
     """A sidecar anchor with none of the three http facts (a listener that did
     not supply the method, response still in flight) has no http event at all —
-    a null, not an object of nulls."""
+    a null, not an object of nulls. ``lineage.protocol`` is not one of them: it
+    is on every sidecar span (contract §4), and the classifier raises without
+    it (#309), so the fixture carries it like a real anchor does."""
     _set_attrs(
         configured_db,
         "s-anchor",
         '{"lineage.role": "request", "lineage.direction": "outbound", '
-        '"lineage.exchange.id": "s-anchor", "lineage.self.id": "svc-a"}',
+        '"lineage.protocol": "http", "lineage.exchange.id": "s-anchor", '
+        '"lineage.self.id": "svc-a"}',
     )
     (ix,) = retrieval.get_interactions(seeded).interactions
     assert ix.kinds is not None  # the anchor IS sidecar-shaped

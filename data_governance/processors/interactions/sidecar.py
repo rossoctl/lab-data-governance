@@ -225,16 +225,17 @@ class _Row:
     resp_seq: int | None
 
 
-def _mk_payload(content_kind: str | None, value: Any) -> _Payload | None:
-    """Content-address one body. None when the body is absent OR the protocol
-    carries no semantic content kind — the row stays complete with a NULL hash.
-    The kind is only the gate here; it is stored on the leg (``_legs_of``).
+def _mk_payload(value: Any) -> _Payload | None:
+    """Content-address one body. None when the body is absent — the row stays
+    complete with a NULL hash. The leg's content kind is no gate here: every
+    protocol row names its kinds (``sidecar_facts``, issue #309), and the kind
+    is stored on the leg (``_legs_of``), never on the shared payload row.
 
     Absence is judged on the RAW attribute, before ``_coerce``: a wire body
     that decodes to JSON ``null`` still produces a payload row (content null,
     hash of ``b"null"``) — a captured body must stay distinguishable from
     ``capture_io`` being off."""
-    if content_kind is None or value is None:
+    if value is None:
         return None
     content = _coerce(value)
     canon = _canonical_bytes(content)
@@ -470,12 +471,8 @@ def plan_trace(trace_id: str, all_spans: list[Span]) -> _Plan:
         req = reqs[aid]
         resp = resps.get(aid)
         kinds = classify(req)
-        req_pl = _mk_payload(kinds.req_content_kind, _attr(req, "input.value"))
-        resp_pl = (
-            _mk_payload(kinds.resp_content_kind, _attr(resp, "output.value"))
-            if resp is not None
-            else None
-        )
+        req_pl = _mk_payload(_attr(req, "input.value"))
+        resp_pl = _mk_payload(_attr(resp, "output.value")) if resp is not None else None
         parent_anchor = _nearest_anchor(aid)
         want[_interaction_id(trace_id, aid)] = _Row(
             interaction_id=_interaction_id(trace_id, aid),
@@ -553,9 +550,9 @@ def _legs_of(row: _Row) -> list[tuple[str, Any, str | None, str | None, bool | N
 
     ``content_kind`` is the leg's own: the role its body played, from the
     exchange's facts. It is a fact of the exchange, not of the capture, so it is
-    stamped even when ``capture_io`` left the leg bodyless; it is None only for
-    a protocol with no semantic body kind (plain http). The shared payload row
-    carries no kind (issue #286, migration 0022).
+    stamped even when ``capture_io`` left the leg bodyless; every protocol row
+    names one, plain http included (issue #309). The shared payload row carries
+    no kind (issue #286, migration 0022).
 
     Request-leg ``error`` is None: the wire carries no request-side outcome —
     ``lineage.outcome`` is a completion fact and belongs to the response leg (a
