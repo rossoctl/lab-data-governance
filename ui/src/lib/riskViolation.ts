@@ -51,3 +51,20 @@ export function stepViolation(current: number, delta: -1 | 1, count: number): nu
   if (next > count) return count;
   return next;
 }
+
+/**
+ * The risk trace page's reading of a trace, as the trace page's risk layer
+ * spells it (risk is a layer on the trace page; the risk page
+ * stays for a transition period and links across): `?risk=1`, the same
+ * `?violation=`, and the risk page's `?interaction=` as the trace page's `?iid=`.
+ * The reverse translation lives on the trace page.
+ */
+export function traceLayerParams(riskPageParams: URLSearchParams): URLSearchParams {
+  const out = new URLSearchParams();
+  out.set('risk', '1');
+  const violation = riskPageParams.get('violation');
+  if (violation != null) out.set('violation', violation);
+  const interaction = riskPageParams.get('interaction');
+  if (interaction != null) out.set('iid', interaction);
+  return out;
+}

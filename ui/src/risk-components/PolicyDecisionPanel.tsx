@@ -97,10 +97,18 @@ export function PolicyDecisionPanel({
   violation,
   ruleIndex,
   entities,
+  selectionParam = 'interaction',
 }: {
   violation: ForestInteraction;
   ruleIndex: ReadonlyMap<string, RuleListItem> | undefined;
   entities?: readonly Entity[];
+  /**
+   * The URL param a hop link in the values panel writes to select its
+   * interaction on the page this card is on: `interaction` on the risk trace
+   * page, `iid` on the trace page (its risk layer). The card is otherwise the
+   * same on both.
+   */
+  selectionParam?: 'interaction' | 'iid';
 }) {
   const risk = violation.risk;
   // The values panel opens from the Carried in row and reads the labels then,
@@ -213,7 +221,12 @@ export function PolicyDecisionPanel({
           </DescriptionListGroup>
         </DescriptionList>
         {carried && valuesOpen && (
-          <ValuesOnPayload traceId={violation.trace_id} interactionId={violation.interaction_id} rules={rules} />
+          <ValuesOnPayload
+            traceId={violation.trace_id}
+            interactionId={violation.interaction_id}
+            rules={rules}
+            selectionParam={selectionParam}
+          />
         )}
       </CardBody>
     </Card>
@@ -251,10 +264,12 @@ function ValuesOnPayload({
   traceId,
   interactionId,
   rules,
+  selectionParam,
 }: {
   traceId: string;
   interactionId: string;
   rules: RuleListItem[];
+  selectionParam: 'interaction' | 'iid';
 }) {
   const labelsQ = useLegLabels(traceId, interactionId);
   const [params] = useSearchParams();
@@ -262,7 +277,7 @@ function ValuesOnPayload({
   const links: HopLinks = {
     sameTrace: (hop: LineageHop): To => {
       const next = new URLSearchParams(params);
-      next.set('interaction', hop.interaction_id);
+      next.set(selectionParam, hop.interaction_id);
       return { search: next.toString() };
     },
   };

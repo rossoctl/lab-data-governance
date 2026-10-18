@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_VIOLATION, parseViolationIndex, stepViolation } from './riskViolation';
+import { DEFAULT_VIOLATION, parseViolationIndex, stepViolation, traceLayerParams } from './riskViolation';
 
 describe('riskViolation', () => {
   describe('parseViolationIndex', () => {
@@ -60,6 +60,17 @@ describe('riskViolation', () => {
 
     it('clamps at the upper end without wrapping', () => {
       expect(stepViolation(3, 1, 3)).toBe(3);
+    });
+  });
+
+  describe('traceLayerParams (the risk page → the trace page with the layer on)', () => {
+    it('turns ?violation= and ?interaction= into ?risk=1&violation=&iid=', () => {
+      expect(traceLayerParams(new URLSearchParams('violation=2&interaction=i7')).toString()).toBe('risk=1&violation=2&iid=i7');
+    });
+
+    it('is ?risk=1 alone for a bare risk page URL, and ignores params it does not translate', () => {
+      expect(traceLayerParams(new URLSearchParams('')).toString()).toBe('risk=1');
+      expect(traceLayerParams(new URLSearchParams('window=7d')).toString()).toBe('risk=1');
     });
   });
 });

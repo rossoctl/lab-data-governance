@@ -3646,6 +3646,8 @@ export function ExecutionFlowGraph({
   onSelectInteraction,
   highlight,
   onContextMenuInteraction,
+  riskLevelByInteraction,
+  classificationByInteraction,
 }: {
   traceId: string;
   selectedInteractionId?: string | null;
@@ -3653,6 +3655,13 @@ export function ExecutionFlowGraph({
   /** The label lineage overlay (`lib/labelTrack`), when values are tracked. */
   highlight?: GraphHighlight;
   onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
+  /**
+   * The trace page's risk layer: the two risk seams of {@link EntityGraph}
+   * (`riskLevelByInteraction`, `classificationByInteraction`), passed straight
+   * through. Both `undefined` with the layer off, so this tab is as it was then.
+   */
+  riskLevelByInteraction?: ReadonlyMap<string, string>;
+  classificationByInteraction?: ReadonlyMap<string, InteractionClassification>;
 }) {
   // One reading of the two, so a re-read never draws a half-updated trace — see
   // `useEntitiesAndInteractions`.
@@ -3675,6 +3684,8 @@ export function ExecutionFlowGraph({
         onSelectInteraction={onSelectInteraction}
         highlight={highlight}
         onContextMenuInteraction={onContextMenuInteraction}
+        riskLevelByInteraction={riskLevelByInteraction}
+        classificationByInteraction={classificationByInteraction}
       />
     )
   );
@@ -3788,8 +3799,15 @@ export function LineageGraph({
   selectedInteractionId = null,
   onSelectInteraction,
   onSelectEntity,
+  riskLevelByInteraction,
 }: {
   traceId: string;
+  /**
+   * The trace page's risk layer: edge colours by risk level, passed straight
+   * through to {@link EntityGraph} — see {@link EntityGraphProps.riskLevelByInteraction}.
+   * Omitted with the layer off, so this tab's colours are unchanged then.
+   */
+  riskLevelByInteraction?: ReadonlyMap<string, string>;
   /**
    * The flow view's ALREADY-FETCHED reads, passed in rather than re-queried.
    *
@@ -4027,6 +4045,7 @@ export function LineageGraph({
       selectedEntityId={selectedEntityId}
       onSelectInteraction={onSelectInteraction}
       onSelectEntity={onSelectEntity}
+      riskLevelByInteraction={riskLevelByInteraction}
       testId="lineage-graph"
       /* THE LEGEND, in its own slot so it renders BELOW the graph rather than above it
          with the notices. A colour with no key is a puzzle, so every treatment the
