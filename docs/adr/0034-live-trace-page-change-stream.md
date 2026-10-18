@@ -95,7 +95,7 @@ entities/interactions and lineage reads now use `isLoadingError`: a read that
 never produced an answer is reported as failed; one that has an answer and
 could not refresh it keeps showing the answer.
 
-### The graph merges and glides instead of rebuilding
+### The graph merges and moves instead of rebuilding
 
 `EntityGraph` pushed every model with `fromModel(model, false)`, which
 destroys every element and recreates it — a full repaint from a reset viewport
@@ -106,14 +106,43 @@ not is removed (a node from another trace, an interaction a re-derivation
 dropped). The node and edge renderers became MobX observers to go with it —
 their `data` now changes on an element rather than arriving on a fresh one.
 
-A node whose layered cell changed **glides** there over 350 ms through PF's
-own `setPosition` (edges follow their anchors as they do for a drag). The
-reader wins: a node found somewhere other than where the last frame left it
-is being dragged and is dropped from the glide; a glide still in flight when
-the next push arrives is settled first, so a node mid-flight is never
-harvested as "dragged there". `prefers-reduced-motion` gets the destination
-at once. Identical data from a refetch keeps its identity through structural
+A node whose layered cell changed **moves** there instead of jumping
+(`ui/src/lib/motion.ts`), and so does the one bendpoint of an existing edge
+whose route changed — a bendpoint is stored geometry, so without that it would
+jump to the new route while the nodes at its ends were still travelling. Each
+thing that moves chases its target with a critically damped spring rather than
+playing a fixed-length tween: a push that lands while things are still moving
+(the normal case on a live page) just gives them new targets, keeping their
+position and speed, where a tween would have to finish (a jump) or restart
+from rest (a stop) — the first version did the former, and it showed. One
+frame's writes run in one MobX action, so the observers redraw once per frame,
+and one late frame advances the motion by at most two frames' worth, so a busy
+moment slows the motion down instead of skipping it.
+The reader wins: a node found somewhere other than where the last frame left
+it is being dragged and is let go; a node still moving at the next push is not
+harvested as "dragged there". `prefers-reduced-motion` gets the destination at
+once. A node or edge that arrives on a push **fades in** over 0.8 s, easing
+out, instead of popping in; a first paint and a new trace appear at once. The
+fade is longer than a move on purpose — it marks what is new — and it is timed
+from the arrival, so a re-render does not restart it and a remount (a hovered
+edge hoisted to the top layer) resumes it. It sits on a wrapper group, so it
+multiplies with the highlight's dim instead of overriding it.
+`prefers-reduced-motion` keeps the fade, which moves nothing, at 0.2 s.
+Identical data from a refetch keeps its identity through structural
 sharing, so a change event that changed nothing visible pushes nothing.
+
+### One reading of entities and interactions
+
+A change event re-reads entities and interactions as two requests, which land
+at different moments. Drawn as they landed, the graph passed through a state
+the trace was never in: a new entity whose call was not read yet has no edge,
+so the layout parked it in the unconnected column, and it moved to its real
+cell a moment later. The views that draw the two together (the graph tabs and
+the flow tables) now take them from `useEntitiesAndInteractions`, which keeps
+the previous pair while either read is in flight and swaps both in together.
+Each read is a whole-trace read in its own transaction and the processor
+commits a trace's derivation in one transaction per span, so the pair can
+still straddle a commit in a narrow window; the next change event corrects it.
 
 ## Consequences
 
