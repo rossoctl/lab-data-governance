@@ -491,6 +491,74 @@ def test_R9_llm_summary_leaves(env, kube, dg, capabilities, catalog, fleet, atta
     ch.finish()
 
 
+REF = "BK-7F3A21"
+
+
+def test_R14_the_identifier_alone(env, kube, dg, capabilities, catalog, fleet, attach, run_record, state):
+    """R14 — the identifier alone, where lineage alone decides. The plan writes a
+    record {id: BK-7F3A21, guest_name: Alice Moreno} to the store, reads it whole,
+    reads the id alone, and sends that second read to the external partner.
+    The classifier reads the same bytes by context (measured on a lab run):
+    beside the guest's name the id is a PID (PII);
+    alone in the store's answer it reads AAD (PI, CREDENTIALS); in the partner
+    request {"payload": {"id": …}} an OPID (PI).
+    Classification: lab-store's response #1 PN + PID (PII); response #2 the id
+    alone (AAD); the partner request OPID, PI — no PII.
+    Decision, flag off: the stock decision, allow (no PII, no CREDENTIALS at
+    the egress itself).
+    Labels: the id's PID unit found on lab-store's response #1 reaches the
+    partner request whole (lab-a holds both reads), PII among its tags; the
+    AAD unit of response #2 reaches it too. The name does not reach.
+    Decision, flag on: critical/block. The block comes from DG-001 on the
+    inherited PII — the id tagged PID beside the name at store answer #1 —
+    so lineage alone decides. The CREDENTIALS, DG-004 and E2E-CRED-EXT come
+    from the classifier's own AAD reading of the id alone at store answer #2,
+    which lineage carries to the egress as found."""
+    plan = {"mark": "R14", "steps": [
+        {"op": "mcp", "tool": "lab_store",
+         "args": {"op": "write", "key": "r14-alice", "payload": {"id": REF, "guest_name": "Alice Moreno"}}, "mark": "w"},
+        read("r14-alice", "whole"), read("r14-alice", "alone", fields=["id"]), send("$alone", "sent")]}
+    T, values, legs, ch = _run(env, kube, dg, capabilities, fleet, attach, run_record, state, "R14", plan)
+    ch.check("app.reads", "the store returned the record whole, then the id alone",
+             [{"id": REF, "guest_name": "Alice Moreno"}, {"id": REF}], [values["whole"], values["alone"]])
+    found = dg.q("""
+        SELECT p.content, pc.findings FROM interactions i JOIN entities e ON e.id = i.callee_entity_id
+        JOIN interaction_legs l ON l.interaction_id = i.id AND l.leg_type = 'response'
+        JOIN interaction_payloads p ON p.content_hash = l.payload_hash
+        JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
+        WHERE i.trace_id = %s AND e.natural_key LIKE %s""", (T, "%/lab-store"))
+    reading = {json.dumps(c, sort_keys=True): sorted((f["entity_type"], f["text"], tuple(f["regulatory_tags"]))
+                                                     for f in (fs or []) if f.get("text") == REF) for c, fs in found}
+    run_record.scenario("R14").write("store_readings.json", reading)
+    beside = reading.get(json.dumps({"guest_name": "Alice Moreno", "id": REF}, sort_keys=True), [])
+    alone = reading.get(json.dumps({"id": REF}, sort_keys=True), [])
+    ch.check("store.beside_the_name", "beside the guest's name the id is read as PII", "PII",
+             beside, ok=any("PII" in tags for _t, _x, tags in beside))
+    ch.check("store.alone", "alone in the store's answer the id is not read as PII", "no PII",
+             alone, ok=not any("PII" in tags for _t, _x, tags in alone))
+    eg = _egress(legs, EXTERNAL)
+    ch.check("partner.calls", "partner calls", 1, len(eg))
+    run_record.scenario("R14").write("egress_record.json", eg[0])
+    ch.check("partner.no_pii", "the partner request alone is not PII to the classifier", "no PII",
+             _tags(eg[0]["request"]), ok="PII" not in _tags(eg[0]["request"]))
+    edges = _labels(ch, dg, capabilities, run_record, "R14", T, eg[0])
+    if edges is not None:
+        pid = [e for e in edges if e["value"] == REF and e["origin"] == STORE and e["origin_leg"] == "response"
+               and "PII" in e["tags"]]
+        ch.check("labels.ref_pii_from_the_store", "the id's PII unit reaches the partner request whole from lab-store's response",
+                 "present", "present" if pid else "absent", ok=bool(pid),
+                 comment=f"{sorted({(e['entity_type'], tuple(e['tags'])) for e in edges if e['value'] == REF})}")
+        ch.check("labels.name_absent", "the name does not reach", [],
+                 [e["value"] for e in edges if e["entity_type"] == "PN"])
+    if capabilities.inherited_labels:
+        ch.check("partner.verdict_on", "flag on: lineage alone decides — critical/block with DG-001",
+                 "critical/block + DG-001", f"{_verdict(eg[0])} {eg[0]['rules']}",
+                 ok=_verdict(eg[0]) == "critical/block" and "DG-001" in eg[0]["rules"])
+    else:
+        ch.check("partner.verdict_off", "flag off: the stock decision", "none/allow", _verdict(eg[0]))
+    ch.finish()
+
+
 def test_R10_fan_in_two_agents_one_tool(env, kube, dg, capabilities, catalog, fleet, attach, run_record, state):
     """R10 — lab-b and lab-c, in parallel, each read a record and forward it to
     lab-tool-y while both are open; lab-a then sends both externally. Expect: the

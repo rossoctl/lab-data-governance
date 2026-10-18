@@ -206,7 +206,7 @@ Expected today, with booking-agent deployed under `E2E_VARIANT=rogue` (step 4; t
 | travel_advisor, `risk` with the alerts processor (#104) | `17 passed, 1 skipped` or `16 passed, 1 skipped, 1 xfailed` | the skip is the lab module; L13 runs (on a branch without the alerts processor it skips: one more skip, one fewer pass); L14 passes when the model makes the partner call and xfails when it skips it; L16 runs: one process drains, no duplicate version, no restart. KNOWN rows: the stale-callee record (#279) on the risk scenarios (L7, L10–L12, L15 on the 2026-10-13 runs); the content-kind gap and booking-agent's stale tool-call parent may read KNOWN on some turns |
 | travel_advisor, a branch without #290 | `16 passed, 2 skipped` or `15 passed, 2 skipped, 1 xfailed` | as above with L16 skipped (no sole-consumer lock) |
 | lineage_lab | `9 passed, 1 skipped, 1 xfailed` | the skip is the travel module; R8 xfails on the classifier finding (last four digits read as PCI). KNOWN rows: the stale-callee record (#279), and R8's `partner.verdict` (the classifier finding behind its xfail) |
-| either app, a branch with label lineage | one more test each: L18 (travel: passes on a rogue turn with the call in the turn's trace, else skips) and R6b (lab) | the stock rows' verdicts do not change with `RISK_INHERITED_LABELS=off` |
+| either app, a branch with label lineage | travel one more test, L18 (passes on a rogue turn with the call in the turn's trace, else skips); lab two more, R6b and R14 (lab `11 passed, 1 skipped, 1 xfailed`) | the stock rows' verdicts do not change with `RISK_INHERITED_LABELS=off` |
 
 Anything else is a finding. A preflight failure names the pin, the expected value and the
 observed one, and sends no traffic.
@@ -324,11 +324,12 @@ travel_advisor, so the lab starts at R2).
 | R9 | the record to the model, the model's summary sent | the inference request leg carries PII; what leaves is recorded |
 | R10 | two agents in parallel, one tool | fan-in derives as the plan says |
 | R11 | the same tool call on a pod-lifetime session and on a per-turn one | both derive under the turn (cortex #1333 carries the turn across the startup session; before it the pod-lifetime call sat in its own trace, and a kit without the bridge turns the row red) |
+| R14 | write `{id, guest_name}`, read it whole, read the id alone, send the id alone | the id is PII beside the name and no PII alone; flag off allow; with `RISK_INHERITED_LABELS=on` critical/block with DG-001 through lineage alone |
 
 ### Label rows
 
 Where the deployment carries label lineage (migration 0024's tables and the `label_lineage`
-cursor row: `capabilities.labels`), the lab rows and L18 also assert the catalogue's
+cursor row or a ready Deployment: `capabilities.labels`), the lab rows and L18 also assert the catalogue's
 `expected_label_propagation` column and write `labels.json` per scenario: which units reached the
 egress leg, whole, from which origin. With leg-ready's `RISK_INHERITED_LABELS=on`
 (`capabilities.inherited_labels`, read off the Deployment) they assert that the egress record
