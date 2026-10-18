@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { PolicyDecisionPanel } from './PolicyDecisionPanel';
+import { LabelTrackContext } from '../components/flow/labelTrack';
 import type { Entity } from '../lib/flow';
 import type { ForestInteraction, InteractionRisk, RuleListItem } from '../risk-api/types';
 
@@ -305,7 +307,158 @@ describe('PolicyDecisionPanel', () => {
         ENTITIES,
       );
 
-      expect(row('Carried in')).toHaveTextContent(/^Carried inRESTRICTED — used in this decision$/);
+      // The row's text, before its toggle to the values panel.
+      expect(row('Carried in')).toHaveTextContent(/^Carried inRESTRICTED — used in this decisionShow the values/);
     });
+  });
+});
+
+/**
+ * The values on the decided payload and where each came from, opened
+ * from the Carried in row. The labels read is the trace page's (`useLegLabels`),
+ * stubbed here with a live booking trace's partner request (trace 98134844…): the PID
+ * born at create-booking's response, carried through notify-partner's request.
+ */
+describe('PolicyDecisionPanel — values on this payload', () => {
+  const INHERITED = { count: 5, kinds: ['whole'], max_level: 'RESTRICTED', recombined: false, regulatory_tags: ['PI', 'PII'] };
+  const SUMMARY = { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], finding_count: 3, inherited: INHERITED } };
+  const hop = (seq: number, role: 'origin' | 'hop' | 'here', iid: string, caller: string, callee: string, trace = 't1') => ({
+    interaction_id: iid, leg_type: role === 'origin' ? 'response' : 'request', seq, trace_id: trace, caller, callee,
+    text: 'BK-83CE5F', start: 16, end: 25, role,
+    excerpt: role === 'origin' ? { text: '{"id": "BK-83CE5F", "guest_name": "<name>"}', start: 8, end: 17 } : null,
+  });
+  const LABELS = {
+    lineage_status: 'complete',
+    legs: [{
+      leg_type: 'request', payload_hash: 'h1', seq: 83053,
+      found: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'] },
+      carried: { max_level: 'RESTRICTED', regulatory_tags: ['PI', 'PII'], origin_count: 1 },
+      labels: [{
+        text: 'BK-83CE5F', start: 16, end: 25, entity_type: 'PID', sensitivity_level: 'RESTRICTED',
+        regulatory_tags: ['PII'], found_here: false,
+        carried_in: [{
+          origin_interaction_id: 'i-cb', origin_leg_type: 'response', origin_seq: 80565,
+          caller: 'booking-agent', callee: 'create-booking', unit_text: 'BK-83CE5F', unit_value: 'BK-83CE5F',
+          match_kind: 'whole', origin_trace_id: null,
+          chains: [[hop(80565, 'origin', 'i-cb', 'booking-agent', 'create-booking'),
+            hop(82049, 'hop', 'i-np', 'booking-agent', 'notify-partner'),
+            hop(83053, 'here', 'i1', 'notify-partner', 'partner')]],
+        }],
+      }],
+    }],
+  };
+  const labelsCalls = () =>
+    (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) => String(c[0]).includes('/labels'));
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('/labels')) return { ok: true, status: 200, json: async () => LABELS };
+      throw new Error(`unexpected fetch: ${url}`);
+    }));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const RULES = new Map([
+    ['DG-001', mkRule({ rule_id: 'DG-001', data_items: [{ regulatory_tags: ['PII'] }] })],
+    ['DG-004', mkRule({ rule_id: 'DG-004', rule_name: 'restricted_external_sharing', data_items: [{ classification_level: 'RESTRICTED' }] })],
+  ]);
+
+  it('opens from the Carried in row, reads the labels only then, and shows the rules\' criteria above the values', async () => {
+    renderWithProviders(
+      <PolicyDecisionPanel
+        violation={mkViolation({}, { triggered_rule_ids: ['DG-001', 'DG-004'], classification_summary: SUMMARY })}
+        ruleIndex={RULES}
+        entities={ENTITIES}
+      />,
+      { route: '/risk/traces/t1?violation=2' },
+    );
+    expect(screen.queryByTestId('values-on-payload')).toBeNull();
+    expect(labelsCalls()).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show the values and where each came from' }));
+    const panel = await screen.findByTestId('values-on-payload');
+    expect(labelsCalls()).toHaveLength(1);
+    expect(labelsCalls()[0][0]).toBe('/api/traces/t1/interactions/i1/labels');
+    expect(within(panel).getByRole('heading', { name: 'Values on this payload and where each came from' })).toBeInTheDocument();
+
+    // The fired rules and what each looks for, from the catalog.
+    const rules = within(panel).getByRole('grid', { name: 'Fired rules and their criteria' });
+    const ruleRows = within(rules).getAllByRole('row').slice(1).map((r) => r.textContent);
+    expect(ruleRows).toEqual(['DG-001tag PIIexternal, UNTRUSTED_EXTERNAL', 'DG-004level RESTRICTEDexternal, UNTRUSTED_EXTERNAL']);
+
+    // The leg, its lineage table: born at, the previous hop, the chains on demand.
+    await waitFor(() => expect(within(panel).getByRole('heading', { name: 'Request #83053' })).toBeInTheDocument());
+    const [row] = within(panel).getAllByTestId('lineage-value');
+    expect(row).toHaveTextContent('BK-83CE5F');
+    expect(within(row).getByRole('link', { name: /#80565/ })).toHaveAttribute('href', '/risk/traces/t1?violation=2&interaction=i-cb');
+    // A hop selects its interaction on this page, the other params kept.
+    expect(within(row).getByRole('link', { name: /#82049/ })).toHaveAttribute('href', '/risk/traces/t1?violation=2&interaction=i-np');
+    await userEvent.click(within(row).getByRole('button', { name: 'Show chain' }));
+    const lineage = within(panel).getByTestId('label-lineage');
+    expect(lineage).toHaveTextContent('born #80565 booking-agent → create-booking response');
+    expect(within(lineage).getByTestId('origin-excerpt').querySelector('mark')).toHaveTextContent('BK-83CE5F');
+    // Never a claim of cause.
+    expect(panel).not.toHaveTextContent(/why|caused|because/i);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Hide the values' }));
+    expect(screen.queryByTestId('values-on-payload')).toBeNull();
+  });
+
+  it('offers to track the values whose labels the rules name, and only where a page provides tracking', async () => {
+    const DATE = {
+      text: '2033-03-29', start: 38, end: 48, entity_type: 'DATE', sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'],
+      found_here: true,
+      carried_in: [{ ...LABELS.legs[0].labels[0].carried_in[0], origin_interaction_id: 'i-user', origin_seq: 78059,
+        chains: [[hop(78059, 'origin', 'i-user', 'client', 'advisor'), hop(83053, 'here', 'i1', 'notify-partner', 'partner')]] }],
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({
+      ...LABELS, legs: [{ ...LABELS.legs[0], labels: [...LABELS.legs[0].labels, DATE] }],
+    }) })));
+    const replace = vi.fn();
+    const violation = mkViolation({}, { triggered_rule_ids: ['DG-001', 'DG-004'], classification_summary: SUMMARY });
+    const { unmount } = renderWithProviders(<PolicyDecisionPanel violation={violation} ruleIndex={RULES} entities={ENTITIES} />);
+    await userEvent.click(screen.getByRole('button', { name: /Show the values/ }));
+    await screen.findByRole('heading', { name: 'Request #83053' });
+    expect(screen.queryByRole('button', { name: /whose labels the rules name/ })).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    unmount();
+
+    renderWithProviders(
+      <LabelTrackContext.Provider value={{ available: true, tracked: new Map(), set: vi.fn(), replace }}>
+        <PolicyDecisionPanel violation={violation} ruleIndex={RULES} entities={ENTITIES} />
+      </LabelTrackContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Show the values/ }));
+    const button = await screen.findByRole('button', { name: 'Track on the graph the 1 value whose labels the rules name' });
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    await userEvent.click(button);
+    // The PID (PII, RESTRICTED) is named by DG-001 and DG-004; the date (PI, INTERNAL) by neither.
+    expect(replace.mock.calls[0][0].map((v: { text: string; entityType: string }) => `${v.text} ${v.entityType}`)).toEqual(['BK-83CE5F PID']);
+  });
+
+  it('has no toggle when nothing was carried in', () => {
+    renderWithProviders(
+      <PolicyDecisionPanel
+        violation={mkViolation({}, { classification_summary: { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'] } } })}
+        ruleIndex={RULES}
+        entities={ENTITIES}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /Show the values/ })).toBeNull();
+    expect(labelsCalls()).toHaveLength(0);
+  });
+
+  it('says when the read failed, and never shows an empty chain for a value without one', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: 'down' }) })));
+    renderWithProviders(
+      <PolicyDecisionPanel
+        violation={mkViolation({}, { triggered_rule_ids: ['DG-001'], classification_summary: SUMMARY })}
+        ruleIndex={RULES}
+        entities={ENTITIES}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /Show the values/ }));
+    expect(await screen.findByText('The labels read failed.')).toBeInTheDocument();
+    expect(screen.queryByTestId('label-lineage')).toBeNull();
   });
 });

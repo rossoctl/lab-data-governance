@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { InteractionDiagram } from './InteractionDiagram';
@@ -432,5 +432,37 @@ describe('InteractionDiagram', () => {
       expect(req.innerHTML).toContain('var(--dg-tree-guide)');
       expect(req.innerHTML).not.toContain(riskLevelColorVar('critical'));
     });
+  });
+});
+
+describe('InteractionDiagram — the label lineage overlay', () => {
+  it('lights the listed legs and dims every other, and marks nothing when nothing is tracked', () => {
+    const { rerender } = renderWithProviders(
+      <InteractionDiagram entities={ENTITIES} interactions={[mkIx({ id: 'i1' }), mkIx({ id: 'i2', callee_entity_id: 'e3' }, 3)]} selectedId={null} onSelect={() => {}} />,
+    );
+    expect(document.querySelector('[data-track]')).toBeNull();
+    rerender(
+      <InteractionDiagram
+        entities={ENTITIES}
+        interactions={[mkIx({ id: 'i1' }), mkIx({ id: 'i2', callee_entity_id: 'e3' }, 3)]}
+        selectedId={null}
+        onSelect={() => {}}
+        litEdgeIds={['i1:response', 'i2:request']}
+      />,
+    );
+    const rows = messageEls().map((el) => [el.getAttribute('data-seq'), el.getAttribute('data-track')]);
+    expect(rows).toEqual([['1', 'dimmed'], ['2', 'lit'], ['3', 'lit'], ['4', 'dimmed']]);
+    expect(document.querySelectorAll('.dg-seq-row--lit')).toHaveLength(2);
+    expect(document.querySelectorAll('.dg-seq-row--dimmed')).toHaveLength(2);
+  });
+
+  it('reports a right-click on a message with its interaction and leg, and suppresses the browser menu', () => {
+    const onContextMenuInteraction = vi.fn();
+    renderWithProviders(
+      <InteractionDiagram entities={ENTITIES} interactions={[mkIx({ id: 'i1' })]} selectedId={null} onSelect={() => {}} onContextMenuInteraction={onContextMenuInteraction} />,
+    );
+    const prevented = !fireEvent.contextMenu(messageEls()[1]);
+    expect(onContextMenuInteraction).toHaveBeenCalledWith('i1', 'response', { x: 0, y: 0 });
+    expect(prevented).toBe(true);
   });
 });

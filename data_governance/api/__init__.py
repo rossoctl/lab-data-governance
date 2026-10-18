@@ -492,9 +492,12 @@ async def _interaction_labels_handler(request: Request) -> Response:
 
     Thin adapter over :func:`retrieval.get_leg_labels` — per payload-bearing leg,
     the labels the classifier found on the payload beside those label lineage
-    carried into it, with each carried label's origin. Same empty-on-unknown
-    convention as :func:`_interaction_spans_handler`; ``lineage_status`` is
-    ``null`` when the trace's label lineage is not derived (never defaulted).
+    carried into it, with each carried label's origin and, on the origin, the
+    ``chains`` the value travelled from there to this leg (every route, hops in
+    seq order, each hop with its trace id; see the retrieval module). Same
+    empty-on-unknown convention as :func:`_interaction_spans_handler`;
+    ``lineage_status`` is ``null`` when the trace's label lineage is not derived
+    (never defaulted).
     """
     trace_id = request.path_params.get("tid")
     interaction_id = request.path_params.get("iid")

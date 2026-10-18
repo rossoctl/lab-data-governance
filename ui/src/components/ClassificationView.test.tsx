@@ -300,3 +300,33 @@ describe('ClassificationView — found here and carried in', () => {
     expect(screen.getByLabelText('Labels')).toBeInTheDocument();
   });
 });
+
+describe('ClassificationView — the chains live on the Label lineage tab', () => {
+  it('adds no row under a value for its chains, even when the read carries them', () => {
+    const hop = (seq: number, role: 'origin' | 'hop' | 'here', iid: string) => ({
+      interaction_id: iid, leg_type: 'response' as const, seq, trace_id: 'e06cd67d', caller: 'booking-agent',
+      callee: 'create-booking', text: 'BK-2850EB', start: 0, end: 9, role, excerpt: null,
+    });
+    const withChains: LegLabels = {
+      ...REFERENCE_LEG,
+      labels: [
+        {
+          ...REFERENCE_LEG.labels[0],
+          carried_in: [{
+            ...REFERENCE_LEG.labels[0].carried_in[0],
+            chains: [[hop(90574, 'origin', 'efc92832'), hop(92738, 'here', 'f48567d1')]],
+          }],
+        },
+        REFERENCE_LEG.labels[1],
+      ],
+    };
+    render(
+      <MemoryRouter>
+        <ClassificationView classification={REFERENCE_VERDICT} labels={{ leg: withChains, lineageStatus: 'complete' }} />
+      </MemoryRouter>,
+    );
+    expect(within(screen.getByLabelText('Labels')).getAllByRole('row').slice(1)).toHaveLength(2);
+    expect(screen.queryByTestId('label-lineage')).toBeNull();
+    expect(screen.queryByText(/^born/)).toBeNull();
+  });
+});

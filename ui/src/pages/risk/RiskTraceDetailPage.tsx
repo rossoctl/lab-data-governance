@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   PageSection,
@@ -35,14 +35,29 @@ import { InteractionPanel } from '../../risk-components/InteractionPanel';
 import { ViolationStepper } from '../../risk-components/ViolationStepper';
 import { TraceAlertsPanel } from '../../risk-components/TraceAlertsPanel';
 import { LiveModeLabel } from '../../components/LiveModeLabel';
+import { LabelTrackContext, type LabelTrack } from '../../components/flow/labelTrack';
+import { TrackBanner } from '../../components/flow/TrackBanner';
+import { TrackPicker, type PickerTarget } from '../../components/flow/TrackPicker';
+import { fetchJson } from '../../api/client';
+import {
+  deriveLabelTrackHighlight,
+  namedByRules,
+  toGraphHighlight,
+  trackedValueOf,
+  type TrackedValue,
+} from '../../lib/labelTrack';
+import type { LegLabels } from '../../types';
+import type { RuleListItem } from '../../risk-api/types';
 
 /**
- * What a change to the trace re-reads: its risk detail and alerts, and the
- * entity list the graph names its nodes from. Not the rule catalog — it is not
- * per trace. Module-level, as `useTraceLive` requires (see `LiveKeys`).
+ * What a change to the trace re-reads: its risk detail and alerts, the entity
+ * list the graph names its nodes from, and the labels read the decision card's
+ * values panel shows (`['leg-labels', traceId]`, every interaction's, the same
+ * prefix the trace page keeps live). Not the rule catalog — it is not per trace.
+ * Module-level, as `useTraceLive` requires (see `LiveKeys`).
  */
 function riskPageLiveKeys(traceId: string): QueryKey[] {
-  return [['entities', traceId], ...riskTraceKeys(traceId)];
+  return [['entities', traceId], ['leg-labels', traceId], ...riskTraceKeys(traceId)];
 }
 
 // Written by DELETING the param at the default, never by setting it
@@ -169,6 +184,62 @@ export function RiskTraceDetailPage() {
   const classifications = useMemo(() => classificationByInteraction(forest), [forest]);
   const violations = useMemo(() => violationsOf(forest), [forest]);
 
+  // The values tracked on the graph (label lineage, `lib/labelTrack`), ticked in
+  // the decision card's values panel or by a right-click on an edge. The
+  // right-click's default is decision-derived: the carried-in values whose
+  // labels the interaction's fired rules name; every carried-in value when it
+  // fired none.
+  const [tracked, setTracked] = useState<ReadonlyMap<string, TrackedValue>>(() => new Map());
+  const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const closePicker = useCallback(() => setPicker(null), []);
+  const labelTrack = useMemo<LabelTrack>(
+    () => ({
+      available: true,
+      tracked,
+      set: (key, value) =>
+        setTracked((prev) => {
+          const next = new Map(prev);
+          if (value == null) next.delete(key);
+          else next.set(key, value);
+          return next;
+        }),
+      replace: (values) => setTracked(new Map(values.map((v) => [v.key, v]))),
+    }),
+    [tracked],
+  );
+  const trackHighlight = useMemo(
+    () => (tracked.size === 0 ? null : deriveLabelTrackHighlight([...tracked.values()], flowInteractions, traceId)),
+    [tracked, flowInteractions, traceId],
+  );
+  useEffect(() => {
+    setTracked(new Map());
+    setPicker(null);
+  }, [traceId]);
+  function trackDefaultOf(interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) {
+    handleSelectInteraction(interactionId);
+    setPicker({ interactionId, legType, at });
+    const ix = forest.find((i) => i.interaction_id === interactionId);
+    const rules: RuleListItem[] = (ix?.risk?.triggered_rule_ids ?? [])
+      .map((id) => catalog.data?.get(id))
+      .filter((r): r is RuleListItem => r != null);
+    void fetchJson<{ legs?: LegLabels[] }>(`/traces/${traceId}/interactions/${interactionId}/labels`)
+      .then((r) => {
+        const values = (r.legs ?? []).filter((leg) => leg.leg_type === legType).flatMap((leg) =>
+          leg.labels
+            .filter((l) => rules.length === 0 || namedByRules(l, rules))
+            .map((l) => trackedValueOf(interactionId, leg, l))
+            .filter((v): v is TrackedValue => v != null),
+        );
+        if (values.length === 0) return;
+        setTracked((prev) => {
+          const next = new Map(prev);
+          for (const v of values) next.set(v.key, v);
+          return next;
+        });
+      })
+      .catch(() => {});
+  }
+
   // Maps a clicked edge's interaction id back to its 1-based position in
   // `violations`, the same numbering `?violation=` uses — so a graph click
   // and the stepper always agree on what "violation N" means.
@@ -261,6 +332,7 @@ export function RiskTraceDetailPage() {
   const isNotFound = detail.data === null;
 
   return (
+    <LabelTrackContext.Provider value={labelTrack}>
     <PageSection>
       <Breadcrumb>
         <BreadcrumbItem
@@ -320,11 +392,33 @@ export function RiskTraceDetailPage() {
           <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
             Execution flow
           </Title>
+          <TrackBanner
+            tracked={[...tracked.values()]}
+            foreignHops={trackHighlight?.foreignHops ?? 0}
+            onRemove={(key) => labelTrack.set(key, null)}
+            onClear={() => setTracked(new Map())}
+            onChoose={
+              selectedInteractionId != null
+                ? (at) => setPicker({ interactionId: selectedInteractionId, legType: 'request', at })
+                : undefined
+            }
+          />
+          {picker && (
+            <TrackPicker
+              // Keyed by target: a right-click on another leg is a new picker (its own folded/open state), not a re-render of the old one.
+              key={`${picker.interactionId}/${picker.legType}`}
+              traceId={traceId}
+              target={picker}
+              onClose={closePicker}
+            />
+          )}
           <EntityGraph
             traceId={traceId}
             spec={graphSpec}
             selectedInteractionId={selectedInteractionId}
             onSelectInteraction={handleSelectInteraction}
+            highlight={trackHighlight ? toGraphHighlight(trackHighlight) : undefined}
+            onContextMenuInteraction={trackDefaultOf}
             riskLevelByInteraction={riskColours}
             classificationByInteraction={classifications}
             hideParallelGroupsNotice
@@ -366,6 +460,7 @@ export function RiskTraceDetailPage() {
         </>
       ) : null}
     </PageSection>
+    </LabelTrackContext.Provider>
   );
 }
 

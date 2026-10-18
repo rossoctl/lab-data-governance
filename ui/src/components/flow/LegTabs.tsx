@@ -4,6 +4,10 @@ import { CodeBlock, CodeBlockCode, Spinner, Tab, TabTitleText, Tabs } from '@pat
 import { useLegLabels, usePayload } from '../../api/hooks';
 import { DetailList } from '../DetailList';
 import { ClassificationView, type LegLabelsState } from '../ClassificationView';
+import { LabelLineageTable } from '../LabelLineageTable';
+import { useInRouterContext, useSearchParams, type To } from 'react-router-dom';
+import type { HopLinks } from '../../lib/hopLinks';
+import type { LineageHop } from '../../types';
 import { DataLineageView } from '../DataLineageView';
 import type { LineageState } from '../../types';
 
@@ -34,12 +38,13 @@ export type Leg = {
 /** The three facts under a leg, in tab order. Payload leads: it is the thing a
  *  reader most often opened the panel for, and the two derived facts read as
  *  commentary on it. */
-const SECTIONS = ['payload', 'classification', 'lineage'] as const;
+const SECTIONS = ['payload', 'classification', 'labels', 'lineage'] as const;
 type Section = (typeof SECTIONS)[number];
 
 const SECTION_LABEL: Record<Section, string> = {
   payload: 'Payload',
   classification: 'Classification',
+  labels: 'Label lineage',
   lineage: 'Data lineage',
 };
 
@@ -240,7 +245,7 @@ function LegPanel({
         activeKey={section}
         onSelect={(_e, key) => {
           setSection(key as Section);
-          if (key === 'classification') setLabelsWanted(true);
+          if (key === 'classification' || key === 'labels') setLabelsWanted(true);
         }}
         // `isSecondary` is what makes the nesting legible: PF draws the inner set
         // in its lighter, tighter secondary treatment against the primary leg
@@ -314,6 +319,29 @@ function LegPanel({
             />
           ))}
 
+        {/* Label lineage for THIS LEG: per carried-in value, where it
+            was born, the hop it came from last, and on demand the full chains.
+            Its own read (the same per-interaction labels read the
+            Classification tab shares), so a failed or unanswered read says so
+            here rather than reading as "nothing carried in". The row is pinned
+            to this pane's payload hash, as the Classification tab pins it. */}
+        {section === 'labels' &&
+          (labelsQ.isSuccess ? (
+            <LabelLineagePane
+              leg={(() => {
+                const row = labelsQ.data.byLeg.get(legType) ?? null;
+                return row != null && row.payload_hash !== hash ? null : row;
+              })()}
+              lineageStatus={labelsQ.data.lineageStatus}
+              traceId={traceId ?? ''}
+              interactionId={interactionId ?? undefined}
+            />
+          ) : labelsQ.isError ? (
+            <div style={{ color: 'var(--dg-color-error)', fontSize: '0.85rem' }}>Failed to load label lineage.</div>
+          ) : (
+            <Spinner size="md" aria-label={`Loading ${label} label lineage`} />
+          ))}
+
         {/* The P-data-lineage metadata for THIS LEG (issue #119): the payload's
             data sources, the transformations applied per source, and the
             unordered set of entities it passed through. An undelivered
@@ -326,4 +354,33 @@ function LegPanel({
       </div>
     </>
   );
+}
+
+/**
+ * `LabelLineageTable` with this view's hop links: a hop in this trace selects its
+ * interaction here (`?iid=`, the other params kept, the entity selection dropped),
+ * the same convention the Classification tab's origin links use. Plain text
+ * outside a router.
+ */
+function LabelLineagePane(props: {
+  leg: Parameters<typeof LabelLineageTable>[0]['leg'];
+  lineageStatus: Parameters<typeof LabelLineageTable>[0]['lineageStatus'];
+  traceId: string;
+  interactionId?: string;
+}) {
+  const routed = useInRouterContext();
+  return routed ? <RoutedLabelLineagePane {...props} /> : <LabelLineageTable {...props} />;
+}
+
+function RoutedLabelLineagePane(props: Parameters<typeof LabelLineagePane>[0]) {
+  const [params] = useSearchParams();
+  const links: HopLinks = {
+    sameTrace: (hop: LineageHop): To => {
+      const next = new URLSearchParams(params);
+      next.delete('eid');
+      next.set('iid', hop.interaction_id);
+      return { search: next.toString() };
+    },
+  };
+  return <LabelLineageTable {...props} links={links} />;
 }

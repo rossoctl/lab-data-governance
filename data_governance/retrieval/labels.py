@@ -16,6 +16,24 @@ side and never confused:
 (``risk/engine/evidence.py`` ``_INHERITED_SQL``): an edge derived from a payload
 the leg was rewritten away from is not shown.
 
+**Chains: the lineage of each carried-in value.** Every origin on a label carries
+``chains``, the walks back along ``from_*`` from this leg to the origin, one
+hop per payload the value sat on, in ``seq`` order from the origin (``role``
+``origin``) through the carriers (``hop``) to this leg (``here``). A value can
+reach a leg along several routes (the edges form a DAG), and every complete
+route is a chain; the UI collapses, this read does not. Each next hop is read
+at the payload the edge was derived from (``from_payload_hash``), so a chain
+is a chain of payloads, not of legs as they stand now; only the *to* leg is
+pinned to its current payload. The walk follows ``from_trace_id`` /
+``origin_trace_id`` into other traces, so this read is no longer scoped to one
+trace; every hop names its ``trace_id``. A cycle (the edges run from earlier to
+later ``seq``, so none should exist) stops at the repeated edge, and the depth
+is capped at :data:`MAX_CHAIN_DEPTH` and logged when hit; a walk that ends
+before the origin (an edge whose source has no edge of its own) is kept as a
+chain whose first hop is a ``hop``, never dressed up as an origin. The origin
+hop carries an ``excerpt`` of the origin payload's projected text around the
+unit, so the reader sees the value in the company it was born in.
+
 **A fact, not a decision.** Nothing here says whether a carried label reached a
 risk decision — that depends on ``RISK_INHERITED_LABELS``, which this pod does not
 read. The risk record's ``classification_summary.<leg>.inherited`` is the only
@@ -36,20 +54,36 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import logging
+
 from data_governance import db
 from data_governance.label_lineage.summary import LEVELS, highest
+from data_governance.processors.classification.projection import project
 
 __all__ = [
     "CarriedLabelsView",
     "FoundLabelsView",
     "GetLegLabelsResult",
+    "HopExcerpt",
     "LabelEdge",
     "LabelOriginView",
     "LabelView",
     "LegLabelsView",
+    "LineageHop",
+    "MAX_CHAIN_DEPTH",
     "get_leg_labels",
     "merge",
 ]
+
+log = logging.getLogger(__name__)
+
+#: The longest chain the walk follows before it stops and logs. Live traces run
+#: to a handful of hops; the cap is a guard against a data fault, not a limit a
+#: conversation can reach.
+MAX_CHAIN_DEPTH = 32
+
+#: Characters of the origin's projected text kept on each side of the unit.
+EXCERPT_MARGIN = 80
 
 
 # ---------------------------------------------------------------------------
@@ -58,12 +92,48 @@ __all__ = [
 
 
 @dataclass(frozen=True)
+class HopExcerpt:
+    """A window of a payload's projected text around the hop's span, with the
+    span re-based into it; an ellipsis stands where the window cut the text."""
+
+    text: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class LineageHop:
+    """One payload a value sat on, on its way from the origin to the leg read.
+    ``role`` is ``origin`` (the classifier found it here; ``text``/``start``/
+    ``end`` are the unit), ``hop`` (a carrier; the span the finder matched at
+    that payload, ``None`` when the edge has none) or ``here`` (the leg read).
+    ``seq`` and caller/callee are ``None`` when the leg is gone. ``trace_id`` is
+    always set; a hop in another trace names that trace. ``excerpt`` is set on
+    the origin hop when its payload is still stored."""
+
+    interaction_id: str
+    leg_type: str
+    seq: int | None
+    trace_id: str
+    caller: str | None
+    callee: str | None
+    text: str | None
+    start: int | None
+    end: int | None
+    role: str
+    excerpt: HopExcerpt | None = None
+
+
+@dataclass(frozen=True)
 class LabelOriginView:
     """Where one carried-in label was found by the classifier: the origin leg,
     its ``seq`` and caller/callee (``None`` when the origin leg is gone), what the
     classifier marked there (``unit_text``) and the value it denotes
     (``unit_value``; the two differ when the extent rule widened a number).
-    ``origin_trace_id`` is ``None`` for an origin in this trace."""
+    ``origin_trace_id`` is ``None`` for an origin in this trace. ``chains`` is
+    every route the value took from this origin to the leg (see the module
+    docstring), shortest first; empty only when the read was made without the
+    walk (:func:`merge` called bare)."""
 
     origin_interaction_id: str
     origin_leg_type: str
@@ -74,6 +144,7 @@ class LabelOriginView:
     unit_value: str
     match_kind: str
     origin_trace_id: str | None
+    chains: list[list[LineageHop]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -164,6 +235,11 @@ class LabelEdge:
     origin_seq: int | None = None
     caller: str | None = None
     callee: str | None = None
+    edge_id: str | None = None
+
+
+Chains = dict[str, list[list[LineageHop]]]
+"""The chains that end at each edge into the leg, keyed by ``edge_id``."""
 
 
 def _rank(level: str | None) -> int:
@@ -181,26 +257,42 @@ def _span(finding: dict[str, Any]) -> tuple[int, int] | None:
     return (start, end) if isinstance(start, int) and isinstance(end, int) else None
 
 
-def _origins(edges: Sequence[LabelEdge]) -> list[LabelOriginView]:
+def _chain_key(chain: Sequence[LineageHop]) -> tuple:
+    return (len(chain), tuple((h.seq is None, h.seq or 0, h.interaction_id, h.leg_type) for h in chain))
+
+
+def _origins(edges: Sequence[LabelEdge], chains: Chains | None = None) -> list[LabelOriginView]:
     """One origin per (origin leg, unit) — two carriers of one origin are two
-    edges but one origin — in origin ``seq`` order."""
-    by_unit: dict[tuple, LabelEdge] = {}
+    edges but one origin — in origin ``seq`` order. The origin's chains are the
+    chains of every edge in its group, shortest first, each once."""
+    by_unit: dict[tuple, list[LabelEdge]] = {}
     for e in edges:
         by_unit.setdefault((e.origin_interaction_id, e.origin_leg_type, e.origin_payload_hash,
-                            e.unit_start, e.unit_end), e)
-    ordered = sorted(by_unit.values(), key=lambda e: (
-        e.origin_seq is None, e.origin_seq or 0, e.origin_interaction_id, e.unit_start))
-    return [LabelOriginView(
-        origin_interaction_id=e.origin_interaction_id, origin_leg_type=e.origin_leg_type,
-        origin_seq=e.origin_seq, caller=e.caller, callee=e.callee,
-        unit_text=e.unit_text, unit_value=e.unit_value, match_kind=e.match_kind,
-        origin_trace_id=e.origin_trace_id,
-    ) for e in ordered]
+                            e.unit_start, e.unit_end), []).append(e)
+    ordered = sorted(by_unit.values(), key=lambda g: (
+        g[0].origin_seq is None, g[0].origin_seq or 0, g[0].origin_interaction_id, g[0].unit_start))
+    views = []
+    for group in ordered:
+        e = group[0]
+        seen: dict[tuple, list[LineageHop]] = {}
+        for edge in group:
+            for chain in (chains or {}).get(edge.edge_id or "", []):
+                seen.setdefault(_chain_key(chain), chain)
+        views.append(LabelOriginView(
+            origin_interaction_id=e.origin_interaction_id, origin_leg_type=e.origin_leg_type,
+            origin_seq=e.origin_seq, caller=e.caller, callee=e.callee,
+            unit_text=e.unit_text, unit_value=e.unit_value, match_kind=e.match_kind,
+            origin_trace_id=e.origin_trace_id,
+            chains=[seen[k] for k in sorted(seen)],
+        ))
+    return views
 
 
-def merge(findings: Sequence[dict[str, Any]], edges: Sequence[LabelEdge]) -> list[LabelView]:
+def merge(findings: Sequence[dict[str, Any]], edges: Sequence[LabelEdge],
+          chains: Chains | None = None) -> list[LabelView]:
     """Pair the classifier's *findings* with the carried-in *edges* per
-    ``(span, entity_type)``.
+    ``(span, entity_type)``. *chains* (by ``edge_id``) ride onto each origin;
+    without them every origin's ``chains`` is empty.
 
     Edges are grouped by ``(entity_type, matched span)``. A finding claims each
     same-type group whose span overlaps its own — overlap, not equality, because
@@ -253,7 +345,7 @@ def merge(findings: Sequence[dict[str, Any]], edges: Sequence[LabelEdge]) -> lis
             entity_type=str(f.get("entity_type", "")),
             sensitivity_level=highest(levels),
             regulatory_tags=sorted({*own_tags, *(t for e in carried for t in e.regulatory_tags)}),
-            found_here=True, carried_in=_origins(carried),
+            found_here=True, carried_in=_origins(carried, chains),
         ))
     for group in unclaimed:
         head = group[0]
@@ -262,7 +354,7 @@ def merge(findings: Sequence[dict[str, Any]], edges: Sequence[LabelEdge]) -> lis
             start=head.matched_start, end=head.matched_end, entity_type=head.entity_type,
             sensitivity_level=highest([e.sensitivity_level for e in group]),
             regulatory_tags=sorted({t for e in group for t in e.regulatory_tags}),
-            found_here=False, carried_in=_origins(group),
+            found_here=False, carried_in=_origins(group, chains),
         ))
     rows.sort(key=lambda r: (r.start is None, r.start or 0, -_rank(r.sensitivity_level), r.entity_type))
     return rows
@@ -312,7 +404,7 @@ _EDGES_SQL = (
     "       e.matched_text, e.matched_start, e.matched_end, "
     "       e.origin_interaction_id, e.origin_leg_type::text, e.origin_payload_hash, "
     "       e.unit_start, e.unit_end, e.unit_text, e.unit_value, e.match_kind, "
-    "       e.origin_trace_id, ol.seq, ce.display_name, ke.display_name "
+    "       e.origin_trace_id, ol.seq, ce.display_name, ke.display_name, e.edge_id "
     "FROM payload_label_edges e "
     "JOIN unnest(%s::text[], %s::text[]) AS cur(leg_type, payload_hash) "
     "  ON cur.leg_type = e.to_leg_type::text AND cur.payload_hash = e.to_payload_hash "
@@ -325,12 +417,164 @@ _EDGES_SQL = (
     "ORDER BY e.to_leg_type, e.matched_start NULLS LAST, e.entity_type, e.edge_id"
 )
 
+# The walk: from the edges into the leg (the anchors), each step reads the edge
+# into the current hop's FROM side at the payload the edge was derived from,
+# for the same origin unit and type. `path` is the edge ids walked, which is
+# the cycle guard; `depth` the cap. The walk stops at the origin, at a dead end
+# or at the cap; the Python side keeps the maximal paths only.
+_ORIGIN_MATCH = (
+    "n.origin_interaction_id = w.origin_interaction_id "
+    "AND n.origin_leg_type::text = w.origin_leg_type "
+    "AND n.origin_payload_hash = w.origin_payload_hash "
+    "AND n.unit_start = w.unit_start AND n.unit_end = w.unit_end "
+    "AND n.entity_type = w.entity_type"
+)
+_AT_ORIGIN = ("w.from_interaction_id = w.origin_interaction_id "
+              "AND w.from_leg_type = w.origin_leg_type")
+_CHAINS_SQL = (
+    "WITH RECURSIVE walk(start_edge, from_interaction_id, from_leg_type, from_payload_hash, "
+    "                    from_trace_id, origin_interaction_id, origin_leg_type, origin_payload_hash, "
+    "                    unit_start, unit_end, entity_type, path, depth) AS ("
+    "  SELECT e.edge_id, e.from_interaction_id, e.from_leg_type::text, e.from_payload_hash, "
+    "         COALESCE(e.from_trace_id, e.trace_id), e.origin_interaction_id, "
+    "         e.origin_leg_type::text, e.origin_payload_hash, e.unit_start, e.unit_end, "
+    "         e.entity_type, ARRAY[e.edge_id], 1 "
+    "  FROM payload_label_edges e WHERE e.edge_id = ANY(%s) "
+    "  UNION ALL "
+    "  SELECT w.start_edge, n.from_interaction_id, n.from_leg_type::text, n.from_payload_hash, "
+    "         COALESCE(n.from_trace_id, n.trace_id), w.origin_interaction_id, w.origin_leg_type, "
+    "         w.origin_payload_hash, w.unit_start, w.unit_end, w.entity_type, "
+    "         w.path || n.edge_id, w.depth + 1 "
+    "  FROM walk w JOIN payload_label_edges n "
+    "    ON n.to_interaction_id = w.from_interaction_id "
+    "   AND n.to_leg_type::text = w.from_leg_type "
+    "   AND n.to_payload_hash = w.from_payload_hash "
+    "   AND n.trace_id = w.from_trace_id "
+    f"   AND {_ORIGIN_MATCH} "
+    f"  WHERE NOT ({_AT_ORIGIN}) AND NOT (n.edge_id = ANY(w.path)) AND w.depth < %s"
+    ") "
+    f"SELECT w.start_edge, w.path, ({_AT_ORIGIN}) AS complete, w.depth FROM walk w"
+)
+
+# Both ends of every edge a chain walked: the to side (its trace is the edge's)
+# and the from side (its trace is `from_trace_id`, or the edge's when null).
+_HOPS_SQL = (
+    "SELECT e.edge_id, e.trace_id, "
+    "       e.to_interaction_id, e.to_leg_type::text, tl.seq, tc.display_name, tk.display_name, "
+    "       e.from_interaction_id, e.from_leg_type::text, e.from_payload_hash, "
+    "       COALESCE(e.from_trace_id, e.trace_id), fl.seq, fc.display_name, fk.display_name, "
+    "       e.matched_text, e.matched_start, e.matched_end, e.unit_text, e.unit_start, e.unit_end "
+    "FROM payload_label_edges e "
+    "LEFT JOIN interaction_legs tl ON tl.interaction_id = e.to_interaction_id AND tl.leg_type = e.to_leg_type "
+    "LEFT JOIN interactions ti ON ti.id = e.to_interaction_id "
+    "LEFT JOIN entities tc ON tc.id = ti.caller_entity_id "
+    "LEFT JOIN entities tk ON tk.id = ti.callee_entity_id "
+    "LEFT JOIN interaction_legs fl ON fl.interaction_id = e.from_interaction_id AND fl.leg_type = e.from_leg_type "
+    "LEFT JOIN interactions fi ON fi.id = e.from_interaction_id "
+    "LEFT JOIN entities fc ON fc.id = fi.caller_entity_id "
+    "LEFT JOIN entities fk ON fk.id = fi.callee_entity_id "
+    "WHERE e.edge_id = ANY(%s)"
+)
+
+_PAYLOADS_SQL = "SELECT content_hash, content FROM interaction_payloads WHERE content_hash = ANY(%s)"
+
+
+@dataclass(frozen=True)
+class _Side:
+    interaction_id: str
+    leg_type: str
+    seq: int | None
+    trace_id: str
+    caller: str | None
+    callee: str | None
+
+
+@dataclass(frozen=True)
+class _EdgeEnds:
+    to: _Side
+    frm: _Side
+    from_payload_hash: str
+    matched_text: str | None
+    matched_start: int | None
+    matched_end: int | None
+    unit_text: str
+    unit_start: int
+    unit_end: int
+
+
+def _excerpt(text: str, start: int, end: int) -> HopExcerpt | None:
+    """*text* cut to :data:`EXCERPT_MARGIN` around ``[start, end)``, the span
+    re-based; ``None`` when the span does not fit the text (a payload rewritten
+    since the derivation)."""
+    if not (0 <= start <= end <= len(text)):
+        return None
+    lo, hi = max(0, start - EXCERPT_MARGIN), min(len(text), end + EXCERPT_MARGIN)
+    head = "\u2026" if lo > 0 else ""
+    tail = "\u2026" if hi < len(text) else ""
+    return HopExcerpt(text=head + text[lo:hi] + tail,
+                      start=start - lo + len(head), end=end - lo + len(head))
+
+
+def _hop(side: _Side, role: str, text: str | None, start: int | None, end: int | None,
+         excerpt: HopExcerpt | None = None) -> LineageHop:
+    return LineageHop(interaction_id=side.interaction_id, leg_type=side.leg_type, seq=side.seq,
+                      trace_id=side.trace_id, caller=side.caller, callee=side.callee,
+                      text=text, start=start, end=end, role=role, excerpt=excerpt)
+
+
+def _read_chains(tx: db.Transaction, edge_ids: list[str]) -> Chains:
+    """Walk every chain that ends at one of *edge_ids* (see the module
+    docstring) and build its hops."""
+    if not edge_ids:
+        return {}
+    rows = tx.fetch_all(_CHAINS_SQL, (edge_ids, MAX_CHAIN_DEPTH))
+    # Every prefix of every walk is a row; a chain is a maximal one.
+    prefixes = {tuple(r[1][:-1]) for r in rows if len(r[1]) > 1}
+    leaves = [(r[0], tuple(r[1]), bool(r[2]), int(r[3])) for r in rows if tuple(r[1]) not in prefixes]
+    for start, path, complete, depth in leaves:
+        if not complete and depth >= MAX_CHAIN_DEPTH:
+            log.warning("label lineage chain from edge %s stopped at depth %d", start, depth)
+
+    walked = sorted({eid for _, path, _, _ in leaves for eid in path})
+    ends: dict[str, _EdgeEnds] = {}
+    for r in tx.fetch_all(_HOPS_SQL, (walked,)):
+        ends[r[0]] = _EdgeEnds(
+            to=_Side(r[2], r[3], None if r[4] is None else int(r[4]), r[1], r[5], r[6]),
+            frm=_Side(r[7], r[8], None if r[11] is None else int(r[11]), r[10], r[12], r[13]),
+            from_payload_hash=r[9], matched_text=r[14], matched_start=r[15], matched_end=r[16],
+            unit_text=r[17], unit_start=r[18], unit_end=r[19],
+        )
+    origin_hashes = sorted({ends[path[-1]].from_payload_hash for _, path, complete, _ in leaves
+                            if complete and path[-1] in ends})
+    texts: dict[str, str] = {}
+    if origin_hashes:
+        for h, content in tx.fetch_all(_PAYLOADS_SQL, (origin_hashes,)):
+            texts[h] = project(content)
+
+    chains: Chains = {}
+    for start, path, complete, _ in leaves:
+        if any(eid not in ends for eid in path):
+            continue  # an edge deleted between the two reads: a re-derivation in flight
+        last = ends[path[-1]]
+        if complete:
+            text = texts.get(last.from_payload_hash)
+            excerpt = None if text is None else _excerpt(text, last.unit_start, last.unit_end)
+            hops = [_hop(last.frm, "origin", last.unit_text, last.unit_start, last.unit_end, excerpt)]
+        else:
+            hops = [_hop(last.frm, "hop", None, None, None)]
+        for eid in reversed(path):
+            e = ends[eid]
+            hops.append(_hop(e.to, "here" if eid == start else "hop",
+                             e.matched_text, e.matched_start, e.matched_end))
+        chains.setdefault(start, []).append(hops)
+    return chains
+
 
 def get_leg_labels(trace_id: str, interaction_id: str) -> GetLegLabelsResult:
     """Read the found-here and carried-in labels of *interaction_id*'s
-    payload-bearing legs (see the module docstring). Empty for an unknown
-    interaction, one of another trace, or a DB without the interactions
-    migration."""
+    payload-bearing legs, each carried-in origin with the chains the value
+    travelled (see the module docstring). Empty for an unknown interaction, one
+    of another trace, or a DB without the interactions migration."""
     with db.transaction() as tx:
         if not _tables_exist(tx, ("interactions", "interaction_legs", "payload_classifications")):
             return GetLegLabelsResult()
@@ -339,6 +583,7 @@ def get_leg_labels(trace_id: str, interaction_id: str) -> GetLegLabelsResult:
             return GetLegLabelsResult()
 
         edges: dict[str, list[LabelEdge]] = {}
+        chains: Chains = {}
         status: str | None = None
         if _tables_exist(tx, ("payload_label_edges", "label_lineage_trace_status")):
             for r in tx.fetch_all(_EDGES_SQL, ([r[0] for r in legs], [r[1] for r in legs],
@@ -350,8 +595,10 @@ def get_leg_labels(trace_id: str, interaction_id: str) -> GetLegLabelsResult:
                     unit_start=r[10], unit_end=r[11], unit_text=r[12], unit_value=r[13],
                     match_kind=r[14], origin_trace_id=r[15],
                     origin_seq=None if r[16] is None else int(r[16]),
-                    caller=r[17], callee=r[18],
+                    caller=r[17], callee=r[18], edge_id=r[19],
                 ))
+            chains = _read_chains(tx, [e.edge_id for into in edges.values() for e in into
+                                       if e.edge_id is not None])
             row = tx.fetch_one(
                 "SELECT status FROM label_lineage_trace_status WHERE trace_id = %s",
                 (trace_id,),
@@ -368,6 +615,6 @@ def get_leg_labels(trace_id: str, interaction_id: str) -> GetLegLabelsResult:
                 found=None if level is None else FoundLabelsView(
                     sensitivity_level=level, regulatory_tags=list(tags or [])),
                 carried=_carried_summary(into),
-                labels=merge(findings or [], into),
+                labels=merge(findings or [], into, chains),
             ))
         return GetLegLabelsResult(legs=views, lineage_status=status)

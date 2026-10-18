@@ -57,15 +57,26 @@ function MessageRow({
   msg,
   row,
   isSelected,
+  isHovered,
+  track,
   width,
   onSelect,
+  onContextMenu,
   riskLevel,
 }: {
   msg: MessageSpec;
   row: number;
   isSelected: boolean;
+  /** The pointer rests on a lineage hop of this message's interaction (see
+   *  `InteractionDiagramProps.hoveredId`): the row takes the hover fill. */
+  isHovered: boolean;
+  /** The label lineage overlay's verdict on this leg: lit (a tracked value sat
+   *  on it), dimmed (values are tracked and it is not one of their legs), or
+   *  none (nothing tracked). See `InteractionDiagramProps.litEdgeIds`. */
+  track: 'lit' | 'dimmed' | 'none';
   width: number;
   onSelect: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   /**
    * This message's INTERACTION's risk level (issue #170), or `undefined` when
    * no risk map was supplied, or when one was but this interaction has no entry
@@ -101,7 +112,11 @@ function MessageRow({
 
   return (
     <g
-      className={`dg-seq-row${isSelected ? ' dg-seq-row--selected' : ''}`}
+      className={`dg-seq-row${isSelected ? ' dg-seq-row--selected' : ''}${isHovered ? ' dg-seq-row--hovered' : ''}${
+        track === 'none' ? '' : ` dg-seq-row--${track}`
+      }`}
+      data-track={track === 'none' ? undefined : track}
+      onContextMenu={onContextMenu}
       // Keyboard-reachable and announced as a button, matching the a11y discipline
       // the graph's controls and LegTabs follow: an SVG `<g>` is inert by default,
       // so the role/tabIndex/onKeyDown trio is what makes the row operable without
@@ -257,6 +272,23 @@ export interface InteractionDiagramProps {
    * participants over risk-coloured messages.
    */
   riskLevelByInteraction?: ReadonlyMap<string, string>;
+  /**
+   * The interaction a lineage hop in the detail panel is pointing at
+   * (`LabelLineage`, through `HopHoverContext`): its messages take the same hover
+   * fill a pointer on the row itself gives. Independent of the selection; `null`
+   * or absent lights nothing.
+   */
+  hoveredId?: string | null;
+  /**
+   * The label lineage overlay (`lib/labelTrack`): the `<interaction>:<leg_type>`
+   * ids of the legs the tracked values sat on. Absent or `null` = nothing
+   * tracked, nothing dimmed; a list (even empty) = a question was asked, so the
+   * listed messages are lit and every other one dimmed. Same contract as the
+   * graph's `GraphHighlight.edgeIds` with `isQuestion`.
+   */
+  litEdgeIds?: readonly string[] | null;
+  /** A right-click on a message, with its interaction and leg: the shortcut to tracking the values on that leg. */
+  onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
 }
 
 export function InteractionDiagram({
@@ -265,7 +297,11 @@ export function InteractionDiagram({
   selectedId,
   onSelect,
   riskLevelByInteraction,
+  hoveredId = null,
+  litEdgeIds = null,
+  onContextMenuInteraction,
 }: InteractionDiagramProps) {
+  const lit = useMemo(() => (litEdgeIds == null ? null : new Set(litEdgeIds)), [litEdgeIds]);
   const spec = useMemo(
     () => deriveSequenceDiagram(entities, interactions),
     [entities, interactions],
@@ -382,6 +418,16 @@ export function InteractionDiagram({
               // legs — because the selection is the INTERACTION, and lighting only
               // the clicked leg would imply legs are separately selectable.
               isSelected={selectedId === msg.interactionId}
+              isHovered={hoveredId === msg.interactionId}
+              track={lit == null ? 'none' : lit.has(`${msg.interactionId}:${msg.legType}`) ? 'lit' : 'dimmed'}
+              onContextMenu={
+                onContextMenuInteraction
+                  ? (e) => {
+                      e.preventDefault();
+                      onContextMenuInteraction(msg.interactionId, msg.legType, { x: e.clientX, y: e.clientY });
+                    }
+                  : undefined
+              }
               width={width}
               onSelect={() => {
                 const ix = ixById.get(msg.interactionId);
