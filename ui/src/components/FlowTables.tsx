@@ -11,7 +11,8 @@ import {
   TabTitleText,
 } from '@patternfly/react-core';
 
-import { useInteractions, useEntities, useDataLineage } from '../api/hooks';
+import { useDataLineage } from '../api/hooks';
+import { useEntitiesAndInteractions } from '../api/live';
 import { fetchJson } from '../api/client';
 import {
   computeInteractionDepths,
@@ -220,8 +221,9 @@ export function FlowTables({
   lineageSource = null,
   onLineageSourceChange,
 }: FlowTablesProps) {
-  const interactionsQ = useInteractions(traceId);
-  const entitiesQ = useEntities(traceId);
+  // One reading of the two, so a live re-read never shows (or hands the Lineage
+  // tab) a half-updated trace — see `useEntitiesAndInteractions`.
+  const { entities, interactions, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
   // Persisted **Data lineage** for the whole trace (ADR-0028), read ONCE per
   // trace and keyed per leg — not per payload expansion. TanStack caches on
@@ -245,8 +247,6 @@ export function FlowTables({
   const selectedEntityId = selection?.kind === 'entity' ? selection.id : null;
   const selectedInteractionId = selection?.kind === 'interaction' ? selection.id : null;
 
-  const interactions = useMemo(() => interactionsQ.data ?? [], [interactionsQ.data]);
-  const entities = useMemo(() => entitiesQ.data ?? [], [entitiesQ.data]);
   const entById = useMemo(() => {
     const m = new Map<string, Entity>();
     entities.forEach((e) => m.set(e.id, e));
