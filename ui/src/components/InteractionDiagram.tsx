@@ -57,6 +57,7 @@ function MessageRow({
   msg,
   row,
   isSelected,
+  isHovered,
   width,
   onSelect,
   riskLevel,
@@ -64,6 +65,9 @@ function MessageRow({
   msg: MessageSpec;
   row: number;
   isSelected: boolean;
+  /** The pointer rests on a lineage hop of this message's interaction (see
+   *  `InteractionDiagramProps.hoveredId`): the row takes the hover fill. */
+  isHovered: boolean;
   width: number;
   onSelect: () => void;
   /**
@@ -101,7 +105,7 @@ function MessageRow({
 
   return (
     <g
-      className={`dg-seq-row${isSelected ? ' dg-seq-row--selected' : ''}`}
+      className={`dg-seq-row${isSelected ? ' dg-seq-row--selected' : ''}${isHovered ? ' dg-seq-row--hovered' : ''}`}
       // Keyboard-reachable and announced as a button, matching the a11y discipline
       // the graph's controls and LegTabs follow: an SVG `<g>` is inert by default,
       // so the role/tabIndex/onKeyDown trio is what makes the row operable without
@@ -257,6 +261,13 @@ export interface InteractionDiagramProps {
    * participants over risk-coloured messages.
    */
   riskLevelByInteraction?: ReadonlyMap<string, string>;
+  /**
+   * The interaction a lineage hop in the detail panel is pointing at
+   * (`LabelLineage`, through `HopHoverContext`): its messages take the same hover
+   * fill a pointer on the row itself gives. Independent of the selection; `null`
+   * or absent lights nothing.
+   */
+  hoveredId?: string | null;
 }
 
 export function InteractionDiagram({
@@ -265,6 +276,7 @@ export function InteractionDiagram({
   selectedId,
   onSelect,
   riskLevelByInteraction,
+  hoveredId = null,
 }: InteractionDiagramProps) {
   const spec = useMemo(
     () => deriveSequenceDiagram(entities, interactions),
@@ -382,6 +394,7 @@ export function InteractionDiagram({
               // legs — because the selection is the INTERACTION, and lighting only
               // the clicked leg would imply legs are separately selectable.
               isSelected={selectedId === msg.interactionId}
+              isHovered={hoveredId === msg.interactionId}
               width={width}
               onSelect={() => {
                 const ix = ixById.get(msg.interactionId);

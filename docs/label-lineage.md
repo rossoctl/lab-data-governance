@@ -91,6 +91,30 @@ The risk pages say "used in this decision" only from the record's
 `classification_summary.<leg>.inherited`, which leg-ready writes only for edges it forwarded. Which
 rule a label fired is not stored, and no page claims it.
 
+**The lineage of each value.** Every carried-in origin on a label carries `chains`: the routes
+the value took from the payload where the classifier found it to this leg, one hop per payload, in
+`seq` order, each hop with `role` (`origin` / `hop` / `here`), its interaction, leg, `seq`, caller ->
+callee, the span at that payload (the unit on the origin) and its `trace_id`. The walk follows the
+edges' `from_*` back from the leg, each next hop read at the payload the edge was derived from
+(`from_payload_hash`), so a chain is a chain of payloads; only the leg read is pinned to its current
+payload. A value that reached the leg two ways (the edges form a DAG) has two chains, every complete
+route, shortest first. The walk crosses into other traces through `from_trace_id` / `origin_trace_id`
+(no finder writes them yet; the read already follows them). A cycle stops at the repeated edge, the
+depth is capped (`MAX_CHAIN_DEPTH`, logged when hit), and a walk that ends before the origin is kept
+as a chain whose first hop is a `hop`, never shown as born there. The origin hop carries an `excerpt`
+of its payload's projected text around the unit.
+
+The UI keeps the Classification tab the classifier's (label lineage there is one more source of labels)
+and adds a **Label lineage** tab per leg (`LabelLineageTable`): one block per carried-in value with
+where it was born and the previous hop(s) at distance 1, each a link to that interaction, and "Show
+chains" for the full routes (`LabelLineage`: the first chain open, the rest folded under a count). The
+risk trace page's decision card opens the same view from its "Carried in" row, under the fired rules'
+criteria. A hop links to its interaction on the page it is on (`?iid=` / `?interaction=`), a hop in
+another trace is marked and links to that trace's flow view, and a hop under the pointer lights its
+interaction on the sequence diagram. The decision is payload-level and lineage is value-level: the panel never names the
+value that met a rule, because neither the engine nor OPA records one; the reader sees which value
+carries the labels the rules name.
+
 ## What this does not do yet
 
 - No comparison other than byte equality: a re-spaced number (`123 45 6789`), a re-cased name or a
@@ -98,7 +122,7 @@ rule a label fired is not stored, and no page claims it.
 - No fragments: a value split across fields or cut to its last four reaches nothing; `recombined`
   is always false.
 - No labels across conversations: no priors, no window, no cross-trace edges; `from_trace_id` and
-  `origin_trace_id` stay null.
+  `origin_trace_id` stay null (the labels read already walks them when a finder writes them).
 - No semantic judge. Data lineage keeps its own `SEMANTIC_MATCHER`; label lineage's finders are not offered there.
 - No floor on a unit's length: a short finding (a two-digit age, a misread word) is found wherever
   those bytes stand whole and bounded, so its labels travel as far as the bytes do.
@@ -110,6 +134,11 @@ rule a label fired is not stored, and no page claims it.
   the tags, and does not say which source gave which. When a same-type edge carries a higher level
   than the classifier's finding on the payload, the row reads as if the classifier found that level
   there. Not seen in live data yet; the fix is to split the row when the levels differ.
+- The chains show every hop's matched span but only the origin hop's payload text; a carrier's
+  excerpt would cost a payload read per hop and nothing asks for it yet.
+- No per-value cause: the engine and OPA decide the payload from its data items and record rule ids,
+  not the value that met a rule, so the values panel lists values and their lineage beside the rules'
+  criteria and leaves the match to the reader.
 
 ## Roadmap
 

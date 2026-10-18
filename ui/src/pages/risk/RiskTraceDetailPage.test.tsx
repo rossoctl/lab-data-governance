@@ -125,8 +125,12 @@ describe('RiskTraceDetailPage content (#170)', () => {
     entities?: Record<string, unknown> | { status: number };
     rules?: Record<string, unknown>;
     alerts?: Record<string, unknown>;
+    labels?: Record<string, unknown>;
   } = {}) {
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.includes('/labels')) {
+        return { ok: true, status: 200, json: async () => overrides.labels ?? { legs: [], lineage_status: 'complete' } };
+      }
       if (url.startsWith('/risk/alerts')) {
         return { ok: true, status: 200, json: async () => overrides.alerts ?? { items: [], next_cursor: null } };
       }
@@ -867,6 +871,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
         alerts: urls.filter((u) => u.startsWith('/risk/alerts')).length,
         entities: urls.filter((u) => u.includes('/entities')).length,
         rules: urls.filter((u) => u.startsWith('/risk/rules')).length,
+        labels: urls.filter((u) => u.includes('/labels')).length,
       };
     }
 
@@ -925,6 +930,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
         alerts: before.alerts + 1,
         entities: before.entities + 1,
         rules: before.rules, // the catalog is not per trace
+        labels: before.labels, // no values panel is open, so no labels read to repeat
       });
       expect(screen.getByTestId('location')).toHaveTextContent('interaction=i2');
       expect(screen.getByTestId('interaction-panel')).toBe(panel);
@@ -979,6 +985,43 @@ describe('RiskTraceDetailPage content (#170)', () => {
       await userEvent.click(screen.getByRole('button', { name: /previous/i }));
       await waitFor(() => expect(screen.getByText('2 of 3')).toBeInTheDocument());
       expect(within(screen.getByTestId('policy-decision-panel')).getByText('first inner')).toBeInTheDocument();
+    });
+
+    it('re-reads the open values panel\'s labels on a change', async () => {
+      const inherited = { count: 1, kinds: ['whole'], max_level: 'RESTRICTED', recombined: false, regulatory_tags: ['PII'] };
+      const labels = (seq: number) => ({
+        lineage_status: 'complete',
+        legs: [{
+          leg_type: 'request', payload_hash: 'h1', seq,
+          found: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'] },
+          carried: { max_level: 'RESTRICTED', regulatory_tags: ['PII'], origin_count: 1 },
+          labels: [],
+        }],
+      });
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [interaction({ risk: risk({ classification_summary: { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited } } }) })],
+        },
+        labels: labels(7),
+      });
+      renderWithProviders(harness(), { route: '/risk/traces/t1' });
+      await userEvent.click(await screen.findByRole('button', { name: /Show the values/ }));
+      await screen.findByRole('heading', { name: 'Request #7' });
+      await act(async () => FakeEventSource.last!.change('v1'));
+      await waitFor(() => expect(reads().detail).toBe(2));
+      const before = reads();
+
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [interaction({ risk: risk({ classification_summary: { request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited } } }) })],
+        },
+        labels: labels(8),
+      });
+      await act(async () => FakeEventSource.last!.change('v2'));
+      await screen.findByRole('heading', { name: 'Request #8' });
+      expect(reads().labels).toBe(before.labels + 1);
     });
 
     it('shows Polling while the stream errors, and Live again when it returns', async () => {

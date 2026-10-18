@@ -157,7 +157,8 @@ function LabelSources({ leg }: { leg: LegLabels }) {
 /**
  * One row per (span, type), in the server's order (by position, highest level
  * first). Region indexes the text the classifier read, not the JSON on the
- * Payload tab, so it stays a muted column.
+ * Payload tab, so it stays a muted column. The chains a value travelled are not
+ * here: the Label lineage tab shows them (`LabelLineageTable`).
  */
 function LabelsTable({ labels }: { labels: LegLabel[] }) {
   return (

@@ -1335,3 +1335,101 @@ body {
   outline: 2px solid var(--dg-color-label);
   outline-offset: -2px;
 }
+
+/* Label lineage: the chains under a labelled value (LabelLineage.tsx). A plain
+   list, one hop per line, the role word in a fixed column so the hops align. */
+.dg-label-lineage {
+  font-size: 0.85rem;
+  margin-top: 0.25rem;
+}
+
+.dg-label-lineage__chain {
+  list-style: none;
+  margin: 0 0 0.25rem 0;
+  padding: 0;
+}
+
+.dg-label-lineage__hop {
+  padding: 0.0625rem 0;
+}
+
+.dg-label-lineage__role {
+  display: inline-block;
+  min-width: 2.75rem;
+  color: var(--dg-color-muted);
+}
+
+.dg-label-lineage__hop--here .dg-label-lineage__role {
+  font-weight: 600;
+  color: inherit;
+}
+
+.dg-label-lineage__gap {
+  color: var(--dg-color-muted);
+  font-style: italic;
+}
+
+.dg-label-lineage__excerpt {
+  margin: 0.125rem 0 0.125rem 2.75rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 3px solid var(--dg-row-highlight);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+}
+
+.dg-label-lineage__excerpt mark {
+  background: var(--dg-row-highlight);
+  font-weight: 600;
+}
+
+.dg-label-lineage__more {
+  margin-left: 2.75rem;
+  font-size: 0.8rem;
+}
+
+/* The row under a labelled value that carries its lineage. */
+.dg-labels-lineage-row > td {
+  padding-top: 0 !important;
+}
+
+/* A hop of a lineage chain under the pointer lights its interaction's legs on the
+   sequence diagram, the same fill a pointer on the row itself gives. */
+.dg-seq-row--hovered .dg-seq-row-hit {
+  fill: var(--dg-row-highlight);
+  fill-opacity: 0.4;
+}
+
+/* The Label lineage tab's list: one block per carried-in value, the key words
+   in a fixed column so the links align (LabelLineageTable.tsx). */
+.dg-lineage-values {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.dg-lineage-value {
+  padding: 0.375rem 0;
+  border-bottom: 1px solid var(--pf-v5-global--BorderColor--100);
+}
+
+.dg-lineage-value:last-child {
+  border-bottom: none;
+}
+
+.dg-lineage-value__head {
+  font-weight: 600;
+  margin-bottom: 0.125rem;
+}
+
+.dg-lineage-value__line {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.0625rem 0;
+}
+
+.dg-lineage-value__key {
+  flex: 0 0 3.5rem;
+  color: var(--dg-color-muted);
+}

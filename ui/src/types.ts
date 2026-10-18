@@ -135,6 +135,35 @@ export interface LabelOrigin {
   match_kind: string;
   /** The origin's trace when it is another one; `null` for this trace. */
   origin_trace_id: string | null;
+  /**
+   * Every route the value took from this origin to the leg read, shortest
+   * first, each a list of hops in seq order (origin → carriers → here). Absent
+   * from a server that predates the walk; the UI then shows the origin alone.
+   */
+  chains?: LineageHop[][];
+}
+
+/**
+ * One payload a carried-in value sat on, on its way from where the classifier
+ * found it to the leg read. `role`: `origin` (born here; `text`/`start`/`end` are
+ * the unit the classifier marked), `hop` (a carrier; the span the finder matched
+ * at that payload, `null` when the edge has none) or `here` (the leg read).
+ * `trace_id` is always set; a hop in another trace names that trace. `excerpt`
+ * is set on the origin hop when its payload is still stored: a window of the
+ * payload's projected text with the unit re-based into it.
+ */
+export interface LineageHop {
+  interaction_id: string;
+  leg_type: 'request' | 'response';
+  seq: number | null;
+  trace_id: string;
+  caller: string | null;
+  callee: string | null;
+  text: string | null;
+  start: number | null;
+  end: number | null;
+  role: 'origin' | 'hop' | 'here';
+  excerpt: { text: string; start: number; end: number } | null;
 }
 
 /**

@@ -29,6 +29,7 @@ import { InteractionDiagram } from './InteractionDiagram';
 import { EntitiesTable } from './flow/EntitiesTable';
 import { FlatLegsTable } from './flow/FlatLegsTable';
 import { FlowDetailPanel } from './flow/FlowDetailPanel';
+import { HopHoverContext } from './flow/hopHover';
 import { InteractionsTable } from './flow/InteractionsTable';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import type { Selection } from './flow/selection';
@@ -225,6 +226,9 @@ export function FlowTables({
   // tab) a half-updated trace — see `useEntitiesAndInteractions`.
   const { entities, interactions, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // The interaction a lineage hop in the detail panel is pointing at; the
+  // sequence diagram lights its legs (see `flow/hopHover.ts`).
+  const [hoveredInteractionId, setHoveredInteractionId] = useState<string | null>(null);
   // Persisted **Data lineage** for the whole trace (ADR-0028), read ONCE per
   // trace and keyed per leg — not per payload expansion. TanStack caches on
   // `traceId`, so the panel switching between rows/legs never re-fetches.
@@ -810,6 +814,7 @@ export function FlowTables({
             entities={entities}
             interactions={displayedInteractions}
             selectedId={selectedInteractionId}
+            hoveredId={hoveredInteractionId}
             onSelect={selectInteraction}
           />
         ) : legView === 'flat' ? (
@@ -834,6 +839,7 @@ export function FlowTables({
       </div>
 
       {selection && (
+        <HopHoverContext.Provider value={setHoveredInteractionId}>
         <FlowDetailPanel
           traceId={traceId}
           selection={selection}
@@ -846,6 +852,7 @@ export function FlowTables({
           }}
           onNavigateToSpan={onNavigateToSpan}
         />
+        </HopHoverContext.Provider>
       )}
     </div>
   );

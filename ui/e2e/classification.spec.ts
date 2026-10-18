@@ -259,3 +259,59 @@ test('labels carried in show beside what the classifier found here', async ({ pa
   await expect(labels.getByText('PID', { exact: true })).toBeVisible();
   await expect(labels.getByText('booking-agent → create-booking, response #90574')).toBeVisible();
 });
+
+test('the Label lineage tab shows where a carried-in value came from, its chains on demand', async ({ page }) => {
+  const hop = (seq: number, role: string, iid: string, leg: string, text: string, start: number, end: number) => ({
+    interaction_id: iid, leg_type: leg, seq, trace_id: TID, caller: 'booking-agent', callee: 'create-booking',
+    text, start, end, role,
+    excerpt: role === 'origin' ? { text: '{"id": "BK-2850EB", "guest_name": "<name>"}', start: 8, end: 17 } : null,
+  });
+  await stubFlowApi(
+    page,
+    {
+      sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], contains_identity_bundle: false,
+      is_personalized: false, primary_domain: 'person', findings: [], model_version: 2,
+    },
+    {
+      lineage_status: 'complete',
+      legs: [{
+        leg_type: 'request', payload_hash: REQ_HASH, seq: 1,
+        found: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'] },
+        carried: { max_level: 'RESTRICTED', regulatory_tags: ['PII'], origin_count: 1 },
+        labels: [{
+          text: 'BK-2850EB', start: 16, end: 25, entity_type: 'PID', sensitivity_level: 'RESTRICTED',
+          regulatory_tags: ['PII'], found_here: false,
+          carried_in: [{
+            origin_interaction_id: 'ix-0', origin_leg_type: 'response', origin_seq: 90574,
+            caller: 'booking-agent', callee: 'create-booking',
+            unit_text: 'BK-2850EB', unit_value: 'BK-2850EB', match_kind: 'whole', origin_trace_id: null,
+            chains: [
+              [hop(90574, 'origin', 'ix-0', 'response', 'BK-2850EB', 8, 17), hop(1, 'here', IID, 'request', 'BK-2850EB', 16, 25)],
+              [hop(90574, 'origin', 'ix-0', 'response', 'BK-2850EB', 8, 17), hop(90600, 'hop', 'ix-llm', 'response', 'BK-2850EB', 0, 9),
+                hop(1, 'here', IID, 'request', 'BK-2850EB', 16, 25)],
+            ],
+          }],
+        }],
+      }],
+    },
+  );
+  await openRequestClassification(page);
+  // The Classification tab stays the classifier's plus the carried-in line; the chains are on their own tab.
+  await expect(page.getByText('Carried in (label lineage)')).toBeVisible();
+  await expect(page.getByTestId('label-lineage')).toHaveCount(0);
+  await page.getByRole('tab', { name: /Request: Label lineage/i }).click();
+
+  const table = page.getByTestId('label-lineage-table');
+  await expect(table).toBeVisible();
+  // Born at and the previous hop are links that select the interaction on this view.
+  await expect(table.getByRole('link', { name: /#90574/ }).first()).toHaveAttribute('href', /\?iid=ix-0$/);
+  await expect(table.getByRole('link', { name: /#90600/ })).toHaveAttribute('href', /\?iid=ix-llm$/);
+  // The chains open on demand: born (the origin payload, unit marked), the carriers, here.
+  await table.getByRole('button', { name: 'Show 2 chains' }).click();
+  const lineage = page.getByTestId('label-lineage');
+  await expect(lineage.getByText(/^born/).first()).toBeVisible();
+  await expect(lineage.getByTestId('origin-excerpt').first().locator('mark')).toHaveText('BK-2850EB');
+  await expect(lineage.getByRole('list', { name: 'Lineage chain' })).toHaveCount(1);
+  await lineage.getByRole('button', { name: '1 more chain' }).click();
+  await expect(lineage.getByRole('list', { name: 'Lineage chain' })).toHaveCount(2);
+});

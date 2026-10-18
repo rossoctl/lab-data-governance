@@ -37,12 +37,14 @@ import { TraceAlertsPanel } from '../../risk-components/TraceAlertsPanel';
 import { LiveModeLabel } from '../../components/LiveModeLabel';
 
 /**
- * What a change to the trace re-reads: its risk detail and alerts, and the
- * entity list the graph names its nodes from. Not the rule catalog — it is not
- * per trace. Module-level, as `useTraceLive` requires (see `LiveKeys`).
+ * What a change to the trace re-reads: its risk detail and alerts, the entity
+ * list the graph names its nodes from, and the labels read the decision card's
+ * values panel shows (`['leg-labels', traceId]`, every interaction's, the same
+ * prefix the trace page keeps live). Not the rule catalog — it is not per trace.
+ * Module-level, as `useTraceLive` requires (see `LiveKeys`).
  */
 function riskPageLiveKeys(traceId: string): QueryKey[] {
-  return [['entities', traceId], ...riskTraceKeys(traceId)];
+  return [['entities', traceId], ['leg-labels', traceId], ...riskTraceKeys(traceId)];
 }
 
 // Written by DELETING the param at the default, never by setting it

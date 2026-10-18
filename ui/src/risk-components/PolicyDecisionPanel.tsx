@@ -1,5 +1,7 @@
-import { Link } from 'react-router-dom';
+import { useState } from 'react';
+import { Link, useSearchParams, type To } from 'react-router-dom';
 import {
+  Button,
   Card,
   CardBody,
   CardTitle,
@@ -7,13 +9,20 @@ import {
   DescriptionListGroup,
   DescriptionListTerm,
   DescriptionListDescription,
+  Spinner,
+  Title,
 } from '@patternfly/react-core';
+import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { RiskBadge } from './RiskBadge';
 import { EnforcementChip } from './EnforcementChip';
 import { joinOrNone } from '../lib/joinOrNone';
 import { SensitivityBadge } from '../components/SensitivityBadge';
+import { LabelLineageTable } from '../components/LabelLineageTable';
+import type { HopLinks } from '../lib/hopLinks';
+import { useLegLabels } from '../api/hooks';
 import { regulatoryTagsOf, classificationLevelsOf, carriedOfSummary } from '../lib/classificationSummary';
 import type { Entity } from '../lib/flow';
+import type { LegLabels, LineageHop } from '../types';
 import type { ForestInteraction, RuleListItem } from '../risk-api/types';
 
 /** The rule ids resolved through the catalog index, each rendered as a link. */
@@ -92,6 +101,11 @@ export function PolicyDecisionPanel({
   entities?: readonly Entity[];
 }) {
   const risk = violation.risk;
+  // The values panel opens from the Carried in row and reads the labels then,
+  // not before (one read per interaction, the same cache entry the trace page
+  // fills; `live.ts` keeps it fresh under `leg-labels`). Declared before the
+  // guard below: a hook must run on every render.
+  const [valuesOpen, setValuesOpen] = useState(false);
   if (risk == null) return null; // See doc comment: callers only pass a `violationsOf` result.
 
   const rules = triggeredRules(risk.triggered_rule_ids, ruleIndex);
@@ -174,6 +188,20 @@ export function PolicyDecisionPanel({
               <DescriptionListDescription>
                 {carried.level != null && <><SensitivityBadge level={carried.level} />{' '}</>}
                 {carried.tags.length > 0 && `${carried.tags.join(', ')} `}— used in this decision
+                {/* Opens the values on this payload with their lineage, below
+                    the list. A toggle, not a row of its own: it is a view of
+                    this row's labels, value by value. */}
+                <div>
+                  <Button
+                    variant="link"
+                    isInline
+                    onClick={() => setValuesOpen((v) => !v)}
+                    aria-expanded={valuesOpen}
+                    data-testid="toggle-values"
+                  >
+                    {valuesOpen ? 'Hide the values' : 'Show the values and where each came from'}
+                  </Button>
+                </div>
               </DescriptionListDescription>
             </DescriptionListGroup>
           )}
@@ -182,8 +210,110 @@ export function PolicyDecisionPanel({
             <DescriptionListDescription>{joinOrNone(allowedActions)}</DescriptionListDescription>
           </DescriptionListGroup>
         </DescriptionList>
+        {carried && valuesOpen && (
+          <ValuesOnPayload traceId={violation.trace_id} interactionId={violation.interaction_id} rules={rules} />
+        )}
       </CardBody>
     </Card>
+  );
+}
+
+/** One rule's match criteria in words: what it looks for in the data items. */
+function dataItemCriteria(rule: RuleListItem): string {
+  const parts = rule.data_items.flatMap((d) => [
+    ...(d.regulatory_tags?.length ? [`tag ${d.regulatory_tags.join(' or ')}`] : []),
+    ...(d.classification_level ? [`level ${d.classification_level}`] : []),
+  ]);
+  return parts.length > 0 ? parts.join('; ') : 'any';
+}
+
+/** One rule's destination criteria in words. */
+function destinationCriteria(rule: RuleListItem): string {
+  const parts = rule.data_destinations.flatMap((d) => [
+    ...(d.data_destination_categories?.length ? [d.data_destination_categories.join(' or ')] : []),
+    ...(d.data_destination_trust_level ? [d.data_destination_trust_level] : []),
+  ]);
+  return parts.length > 0 ? parts.join(', ') : 'any';
+}
+
+/**
+ * The values on the decided interaction's payloads and where each came from
+ * (`LabelLineageTable`: born at, the previous hop, the chains on demand — the
+ * same view the trace page's Label lineage tab shows), under the fired rules'
+ * criteria. The reader sees which value carries the labels a rule names; nothing
+ * here says a value caused the decision — the engine records no such thing.
+ * A hop links to its interaction on this page (`?interaction=`); a hop in another
+ * trace goes to that trace's flow view.
+ */
+function ValuesOnPayload({
+  traceId,
+  interactionId,
+  rules,
+}: {
+  traceId: string;
+  interactionId: string;
+  rules: RuleListItem[];
+}) {
+  const labelsQ = useLegLabels(traceId, interactionId);
+  const [params] = useSearchParams();
+  const links: HopLinks = {
+    sameTrace: (hop: LineageHop): To => {
+      const next = new URLSearchParams(params);
+      next.set('interaction', hop.interaction_id);
+      return { search: next.toString() };
+    },
+  };
+  const legs: LegLabels[] = labelsQ.data
+    ? (['request', 'response'] as const).flatMap((t) => {
+        const leg = labelsQ.data.byLeg.get(t);
+        return leg ? [leg] : [];
+      })
+    : [];
+  return (
+    <div data-testid="values-on-payload" style={{ marginTop: '1rem' }}>
+      <Title headingLevel="h4" size="md">
+        Values on this payload and where each came from
+      </Title>
+      {rules.length > 0 && (
+        <Table aria-label="Fired rules and their criteria" variant="compact" style={{ marginTop: '0.5rem' }}>
+          <Thead>
+            <Tr>
+              <Th modifier="wrap">Rule</Th>
+              <Th modifier="wrap">Looks for</Th>
+              <Th modifier="wrap">Destination</Th>
+            </Tr>
+          </Thead>
+          <Tbody>
+            {rules.map((r) => (
+              <Tr key={r.rule_id}>
+                <Td dataLabel="Rule">
+                  <Link to={`/risk/rules/${r.rule_id}`}>{r.rule_id}</Link>
+                </Td>
+                <Td dataLabel="Looks for">{dataItemCriteria(r)}</Td>
+                <Td dataLabel="Destination">{destinationCriteria(r)}</Td>
+              </Tr>
+            ))}
+          </Tbody>
+        </Table>
+      )}
+      {labelsQ.isLoading ? (
+        <Spinner size="md" aria-label="Loading the values" />
+      ) : labelsQ.isError ? (
+        <div style={{ color: 'var(--dg-color-muted)' }}>The labels read failed.</div>
+      ) : labelsQ.data ? (
+        <>
+          {legs.length === 0 && <div style={{ marginTop: '0.5rem' }}>No labelled payload on this interaction.</div>}
+          {legs.map((leg) => (
+            <div key={leg.leg_type} style={{ marginTop: '0.75rem' }}>
+              <Title headingLevel="h5" size="md">
+                {leg.leg_type === 'request' ? 'Request' : 'Response'} #{leg.seq}
+              </Title>
+              <LabelLineageTable leg={leg} lineageStatus={labelsQ.data.lineageStatus} traceId={traceId} links={links} />
+            </div>
+          ))}
+        </>
+      ) : null}
+    </div>
   );
 }
 
