@@ -53,11 +53,11 @@ KINDS: dict[tuple[str, str], tuple[str, str, str | None, str | None]] = {
     ("inbound", "a2a"): ("user", "agent", "agent_request", "agent_response"),
     ("inbound", "mcp"): ("user", "tool", "tool_call_arguments", "tool_call_result"),
     ("inbound", "inference"): ("user", "llm", "llm_chat_prompt", "llm_completion"),
-    ("inbound", "http"): ("user", "agent", None, None),
+    ("inbound", "http"): ("user", "agent", "http_request_body", "http_response_body"),
     ("outbound", "a2a"): ("agent", "agent", "agent_request", "agent_response"),
     ("outbound", "mcp"): ("agent", "tool", "tool_call_arguments", "tool_call_result"),
     ("outbound", "inference"): ("agent", "llm", "llm_chat_prompt", "llm_completion"),
-    ("outbound", "http"): ("agent", "service", None, None),
+    ("outbound", "http"): ("agent", "service", "http_request_body", "http_response_body"),
 }
 MCP_LIFECYCLE = ("mcp_lifecycle_request", "mcp_lifecycle_result")
 MCP_DISCOVERY = ("tool_discovery_request", "tool_discovery_result")
