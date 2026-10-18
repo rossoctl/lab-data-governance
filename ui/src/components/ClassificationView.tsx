@@ -2,6 +2,7 @@ import { Label, LabelGroup, Title } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { ExclamationTriangleIcon } from '@patternfly/react-icons';
 import type { Classification, Finding } from '../types';
+import { SensitivityBadge } from './SensitivityBadge';
 
 /**
  * The **Classification** verdict for one **Payload** (CONTEXT.md), rendered
@@ -107,27 +108,5 @@ function FindingsTable({ findings }: { findings: Finding[] }) {
         ))}
       </Tbody>
     </Table>
-  );
-}
-
-/**
- * The escalation-ordered sensitivity palette (CONTEXT.md **Classification**):
- * PUBLIC (calm green) → INTERNAL (blue) → CONFIDENTIAL (orange) → RESTRICTED
- * (alarm red). An unknown level falls back to grey so a taxonomy the UI hasn't
- * caught up with (the model-derived set churns — issue #78) still renders.
- */
-const SENSITIVITY_COLOR: Record<string, React.ComponentProps<typeof Label>['color']> = {
-  PUBLIC: 'green',
-  INTERNAL: 'blue',
-  CONFIDENTIAL: 'orange',
-  RESTRICTED: 'red',
-};
-
-/** The document-level sensitivity level as a color-escalated badge. */
-function SensitivityBadge({ level }: { level: string }) {
-  return (
-    <Label isCompact color={SENSITIVITY_COLOR[level] ?? 'grey'}>
-      {level}
-    </Label>
   );
 }

@@ -412,6 +412,59 @@ describe('RiskTraceDetailPage content (#170)', () => {
       expect(screen.getByTestId('location')).not.toHaveTextContent('interaction=i2');
     });
 
+    // Label lineage's `inherited` block, shaped on the live partner leg
+    // (trace e06cd67d…, notify-partner → api.travel-partner.example:8000):
+    // the classifier read PI / INTERNAL here; PI, PII / RESTRICTED came in.
+    it('splits a leg with carried-in labels into Found here and Carried in, a pending leg included, with no count', async () => {
+      const inherited = { count: 5, kinds: ['whole'], max_level: 'RESTRICTED', recombined: false, regulatory_tags: ['PI', 'PII'] };
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [
+            interaction({
+              interaction_id: 'i1',
+              summary: 'travel-advisor/notify-partner → api.travel-partner.example:8000',
+              risk: risk({
+                triggered_rule_ids: ['DG-001', 'DG-004'],
+                classification_summary: {
+                  request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited },
+                  response: { payload: null },
+                },
+              }),
+            }),
+            interaction({
+              interaction_id: 'i3',
+              summary: 'plain call',
+              risk: risk({
+                interaction_id: 'i3',
+                risk_level: 'low',
+                enforcement_type: null,
+                triggered_rule_ids: [],
+                classification_summary: { request: { classification_pending: true, inherited } },
+              }),
+            }),
+          ],
+        },
+      });
+      renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+      const panel = await screen.findByTestId('interaction-panel');
+      await waitFor(() => expect(rowText(panel, 'Request leg')).toContain('Found here'));
+      expect(rowText(panel, 'Request leg')).toBe('Request legFound here INTERNAL · PICarried in RESTRICTED · PI, PII');
+      // A leg without the block reads as it always did.
+      expect(rowText(panel, 'Response leg')).toBe('Response legno payload');
+      expect(within(panel).getByRole('link', { name: 'Open in trace view' })).toHaveAttribute(
+        'href',
+        '/traces/t1/flow?iid=i1',
+      );
+
+      clickEdge('i3:request');
+      await waitFor(() => expect(within(panel).getByText('plain call')).toBeInTheDocument());
+      expect(rowText(panel, 'Request leg')).toBe('Request legFound here pendingCarried in RESTRICTED · PI, PII');
+      // `count` (edges, not labels) never reaches the screen.
+      expect(panel).not.toHaveTextContent('5');
+    });
+
     it('a plain-edge click keeps the policy event that a saved ?interaction= had opened', async () => {
       mockFetchRouter({
         detail: {
@@ -730,6 +783,32 @@ describe('RiskTraceDetailPage content (#170)', () => {
       expect(
         document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent,
       ).toBe('PII, GDPR');
+    });
+
+    it('keeps the visible tag the classifier\'s own and puts carried-in labels in the hover title only', async () => {
+      const inherited = { count: 5, kinds: ['whole'], max_level: 'RESTRICTED', recombined: false, regulatory_tags: ['PI', 'PII'] };
+      mockFetchRouter({
+        detail: {
+          trace_risk: { trace_id: 't1' },
+          interactions: [
+            interaction({
+              risk: risk({
+                classification_summary: {
+                  request: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited },
+                  response: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'], inherited },
+                },
+              }),
+            }),
+          ],
+        },
+      });
+      renderWithProviders(harness(), { route: '/risk/traces/t1' });
+
+      await waitFor(() => expect(screen.getByText('Policy events')).toBeInTheDocument());
+      expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe('PI');
+      expect(document.querySelector('[data-id="i1:request"] title')?.textContent).toMatch(
+        / — PI \(INTERNAL\) · carried in: PI, PII \(RESTRICTED\)$/,
+      );
     });
 
     it("shows no tag anywhere in the graph, and never the word 'none', when risk is null throughout", async () => {

@@ -11,8 +11,8 @@ import {
 import { RiskBadge } from './RiskBadge';
 import { EnforcementChip } from './EnforcementChip';
 import { joinOrNone } from '../lib/joinOrNone';
-import { classifiedLegEntries, legLevel, legTags } from '../lib/classificationSummary';
-import type { ClassifiedLegSummary } from '../lib/classificationSummary';
+import { carriedOf, classifiedLegEntries, legLevel, legTags } from '../lib/classificationSummary';
+import type { CarriedLabels, ClassifiedLegSummary } from '../lib/classificationSummary';
 import type { ForestInteraction } from '../risk-api/types';
 
 /**
@@ -28,6 +28,36 @@ function legText(leg: ClassifiedLegSummary): string {
   const tags = legTags(leg);
   if (level != null || tags.length > 0) return `${level ?? 'none'} · ${joinOrNone(tags)}`;
   return 'classification_pending' in leg ? 'pending' : 'no payload';
+}
+
+/** `LEVEL · TAG, TAG` for what a leg carried in, the same shape as `legText`. */
+function carriedText(carried: CarriedLabels): string {
+  return `${carried.level ?? 'none'} · ${joinOrNone(carried.tags)}`;
+}
+
+const SOURCE_STYLE = { color: 'var(--dg-color-muted)', marginRight: '0.5rem' } as const;
+
+/**
+ * One leg's row. With carried-in labels (label lineage, `carriedOf`) it is
+ * two lines: "Found here", the classifier's reading of this payload
+ * (`legText`, so "pending" and "no payload" too), and "Carried in". Without,
+ * it is `legText` alone, as before.
+ */
+function LegValue({ leg }: { leg: ClassifiedLegSummary }) {
+  const carried = carriedOf(leg);
+  if (carried == null) return <>{legText(leg)}</>;
+  return (
+    <>
+      <div>
+        <span style={SOURCE_STYLE}>Found here</span>{' '}
+        {legText(leg)}
+      </div>
+      <div>
+        <span style={SOURCE_STYLE}>Carried in</span>{' '}
+        {carriedText(carried)}
+      </div>
+    </>
+  );
 }
 
 /**
@@ -48,6 +78,8 @@ function legText(leg: ClassifiedLegSummary): string {
  * `ForestInteractionView`'s docstring — so the risk row says so instead of
  * hiding; a leg still being classified reads "pending", one with nothing to
  * classify "no payload", and an interaction with no leg at all "not classified".
+ * A leg that carried labels in says so on a second line (see `LegValue`);
+ * the edge count in the record never reaches the screen.
  */
 export function InteractionPanel({ interaction }: { interaction: ForestInteraction }) {
   const risk = interaction.risk;
@@ -71,7 +103,9 @@ export function InteractionPanel({ interaction }: { interaction: ForestInteracti
             legs.map(([name, leg]) => (
               <DescriptionListGroup key={name}>
                 <DescriptionListTerm>{name === 'request' ? 'Request leg' : 'Response leg'}</DescriptionListTerm>
-                <DescriptionListDescription>{legText(leg)}</DescriptionListDescription>
+                <DescriptionListDescription>
+                  <LegValue leg={leg} />
+                </DescriptionListDescription>
               </DescriptionListGroup>
             ))
           )}

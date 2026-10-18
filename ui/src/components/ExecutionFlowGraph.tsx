@@ -1325,6 +1325,10 @@ function edgeLineageSuffix(data: EdgeData | undefined): string {
  * `{tags: [], levels: ['PUBLIC']}` entry, by contrast, DOES render — as
  * `(PUBLIC)` with no tags before it — because that IS a real verdict.
  *
+ * Labels CARRIED IN (label lineage, `classification.carried`) follow as
+ * `· carried in: TAGS (LEVEL)`, only when present; the visible tag never
+ * shows them, so hover is where a reader finds them on the graph.
+ *
  * Placed BEFORE `edgeLineageSuffix` in both the `<title>` and `aria-label`
  * call sites, keeping that route parenthetical last in both strings.
  */
@@ -1333,7 +1337,13 @@ function edgeClassificationSuffix(data: EdgeData | undefined): string {
   if (!c) return '';
   const tags = c.tags.length > 0 ? c.tags.join(', ') : '';
   const levels = c.levels.length > 0 ? `(${c.levels.join(', ')})` : '';
-  const clause = [tags, levels].filter((s) => s !== '').join(' ');
+  const found = [tags, levels].filter((s) => s !== '').join(' ');
+  const carried = c.carried
+    ? `carried in: ${[c.carried.tags.join(', '), c.carried.level ? `(${c.carried.level})` : '']
+        .filter((s) => s !== '')
+        .join(' ')}`
+    : '';
+  const clause = [found, carried].filter((s) => s !== '').join(' · ');
   return clause === '' ? '' : ` — ${clause}`;
 }
 

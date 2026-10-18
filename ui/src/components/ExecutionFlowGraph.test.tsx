@@ -3050,6 +3050,48 @@ describe('EntityGraph risk colouring (issue #170)', () => {
         .getAttribute('aria-label');
       expect(labelled).toContain('PII (RESTRICTED) (on the upstream route)');
     });
+
+    // Label lineage: labels the payload carried in ride after the
+    // classifier's own as `· carried in: TAGS (LEVEL)`, in the tooltip, the
+    // `<title>` and the aria-label; the visible tag stays the classifier's.
+    // Shaped on the live partner leg (trace e06cd67d…, request #92738).
+    describe('carried-in labels', () => {
+      const PARTNER = { tags: ['PI'], levels: ['INTERNAL'], carried: { tags: ['PI', 'PII'], level: 'RESTRICTED' } };
+
+      it('appends the carried-in clause to the tooltip, <title> and aria-label, and leaves the visible tag unchanged', async () => {
+        renderWithClassification(new Map([['i1', PARTNER]]));
+        await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+        expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe('PI');
+        expect(document.querySelector('[data-id="i1:request"] title')?.textContent).toBe(
+          '#1 request — summary-i1 — PI (INTERNAL) · carried in: PI, PII (RESTRICTED)',
+        );
+        expect(screen.getByRole('button', { name: /seq 1, request:/i }).getAttribute('aria-label')).toBe(
+          'Interaction leg, seq 1, request: summary-i1 — PI (INTERNAL) · carried in: PI, PII (RESTRICTED)',
+        );
+
+        fireEvent.mouseEnter(document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!);
+        await waitFor(() => expect(screen.getByRole('tooltip')).toBeInTheDocument());
+        expect(screen.getByRole('tooltip').textContent).toBe('PI (INTERNAL) · carried in: PI, PII (RESTRICTED)');
+      });
+
+      it('says only what was carried in when the classifier has nothing for the edge, and draws no tag', async () => {
+        renderWithClassification(new Map([['i1', { tags: [], levels: [], carried: { tags: ['PII'], level: 'RESTRICTED' } }]]));
+        await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+        expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag')).toBeNull();
+        expect(document.querySelector('[data-id="i1:request"] title')?.textContent).toBe(
+          '#1 request — summary-i1 — carried in: PII (RESTRICTED)',
+        );
+      });
+
+      it('adds nothing when the entry has no carried key', async () => {
+        renderWithClassification(new Map([['i1', { tags: ['PI'], levels: ['INTERNAL'] }]]));
+        await waitFor(() => expect(edgeEls()).toHaveLength(2));
+
+        expect(document.querySelector('[data-id="i1:request"] title')?.textContent).toBe('#1 request — summary-i1 — PI (INTERNAL)');
+      });
+    });
   });
 
   /**
