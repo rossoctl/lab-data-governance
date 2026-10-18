@@ -9,13 +9,17 @@ import {
   Spinner,
   Split,
   SplitItem,
+  Switch,
   Alert,
   Breadcrumb,
   BreadcrumbItem,
 } from '@patternfly/react-core';
+import type { QueryKey } from '@tanstack/react-query';
 
 import { useTrace } from '../api/hooks';
-import { useTraceLive } from '../api/live';
+import { traceLiveKeys, useTraceLive } from '../api/live';
+import { riskTraceKeys, useTraceAlerts } from '../risk-api/hooks';
+import { TraceAlertsSection } from '../risk-components/TraceAlertsSection';
 import { PinStore, colorForSlot } from '../lib/pins';
 import { fetchJson } from '../api/client';
 import { SpanTree, type SpanTreeHandle } from '../components/SpanTree';
@@ -85,6 +89,29 @@ const LEGACY_LEGS_TO_VIEW: Record<string, ViewKey> = {
 };
 
 /**
+ * The trace page's live keys with the risk layer on: the trace's own plus the
+ * risk detail and alerts (`riskTraceKeys`), the way the risk trace page has
+ * them. Module-level, as `useTraceLive` requires; the layer off keeps
+ * `traceLiveKeys`, so a page with the layer off re-reads no risk query.
+ */
+function traceAndRiskLiveKeys(traceId: string): QueryKey[] {
+  return [...traceLiveKeys(traceId), ...riskTraceKeys(traceId)];
+}
+
+/**
+ * `?violation=` is written by DELETING the param at its default (1), the same
+ * convention the risk trace page documents, so the canonical URL for the first
+ * event stays clean.
+ */
+function writeViolation(params: URLSearchParams, next: number) {
+  if (next === 1) params.delete('violation');
+  else params.set('violation', String(next));
+}
+
+/** The two params the risk layer owns; carried between every view, the span tree included. */
+const RISK_PARAMS = ['risk', 'violation'] as const;
+
+/**
  * Trace-detail view: a FIVE-way switcher over one trace — Span tree | Interaction flow
  * | Interaction diagram | Execution Flow | Lineage. The first is the spans; the other
  * four are readings of the same entities/interactions pair of reads, which is why they
@@ -142,11 +169,49 @@ export function TraceDetailPage() {
   const { data: entry, isLoading, isLoadingError } = useTrace(traceId);
   const root = entry?.listing_root ?? null;
 
+  // THE RISK LAYER: `?risk=1` = on, absent = off (written by
+  // deleting the param, the repo's convention for defaults). One state for every
+  // view: the toggle sits beside the view tabs and `goToView` carries the param
+  // to and from the span tree. With the layer on, `FlowTables` reads the risk
+  // and paints it, the alerts section above its views included (see
+  // `FlowTablesProps.risk`); the span tree, which does not render that
+  // component, gets the alerts section from here (the same query, so one read);
+  // and the live keys gain the risk prefixes. Off, nothing about this page changes.
+  const risk = searchParams.get('risk') === '1';
+  const alerts = useTraceAlerts(risk && view === 'tree' ? traceId : undefined);
+  const handleRiskChange = useCallback(
+    (on: boolean) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (on) next.set('risk', '1');
+          else {
+            next.delete('risk');
+            next.delete('violation'); // the stepper's position means nothing with the layer off
+          }
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+  // The reverse cross link: this trace on the risk trace page, which stays for a
+  // transition period, carrying the open policy event and the selection
+  // (`?iid=` translated to that page's `?interaction=`).
+  const riskPageParams = new URLSearchParams();
+  const violationParam = searchParams.get('violation');
+  if (violationParam != null) riskPageParams.set('violation', violationParam);
+  const iidParam = searchParams.get('iid');
+  if (iidParam != null) riskPageParams.set('interaction', iidParam);
+  const riskPageQs = riskPageParams.toString();
+  const riskPageHref = `/risk/traces/${encodeURIComponent(traceId)}${riskPageQs ? `?${riskPageQs}` : ''}`;
+
   // THE PAGE IS LIVE while it is open (ADR-0034): one subscription to the trace's
   // change stream, owned here because liveness is a property of the page, not of
   // a tab. Every view below keeps reading through its own query hooks; this only
   // invalidates them when the trace's version token changes.
-  const live = useTraceLive(traceId);
+  const live = useTraceLive(traceId, risk ? traceAndRiskLiveKeys : traceLiveKeys);
 
   const selParam = searchParams.get('sel');
 
@@ -169,6 +234,14 @@ export function TraceDetailPage() {
       const isInteractionView = (k: ViewKey) => k !== 'tree';
       const keep = isInteractionView(v) && view !== null && isInteractionView(view);
       const carried = new URLSearchParams(keep ? searchParams : undefined);
+      // The risk layer is one state for every view, the span tree included, so its
+      // params cross the tree boundary that drops the rest.
+      if (!keep) {
+        for (const k of RISK_PARAMS) {
+          const value = searchParams.get(k);
+          if (value != null) carried.set(k, value);
+        }
+      }
       // `?legs` belongs to the flow view's own sub-tabs; carrying it onto a promoted
       // view would leave a dead param that the legacy redirect above would then bounce.
       if (v !== 'flow') carried.delete('legs');
@@ -184,7 +257,11 @@ export function TraceDetailPage() {
   // one the URL names. Used by the flow → tree span-link jump and
   // Add-to-highlights.
   const revealInTree = useCallback(
-    (spanIds: string[]) => {
+    (requested: readonly (string | null | undefined)[]) => {
+      // No navigation without a span id: a reveal asked for
+      // before the evidence has ids, or through a link whose id is null, must
+      // not land the tree on `?sel=undefined`.
+      const spanIds = requested.filter((id): id is string => typeof id === 'string' && id.length > 0);
       if (spanIds.length === 0) return;
       // Show the spinner from the instant the reveal is requested, so it covers
       // the tab switch + tree (re)mount latency, not just the async walk. The
@@ -193,9 +270,16 @@ export function TraceDetailPage() {
       revealTokenRef.current += 1;
       setIsRevealing(true);
       setPendingReveal(spanIds);
-      navigate(`../spans?sel=${encodeURIComponent(spanIds[0])}`, { relative: 'path' });
+      // The risk layer is one state for every view: this second route into the
+      // tree carries its params like `goToView` does.
+      const qs = new URLSearchParams({ sel: spanIds[0] });
+      for (const k of RISK_PARAMS) {
+        const value = searchParams.get(k);
+        if (value != null) qs.set(k, value);
+      }
+      navigate(`../spans?${qs.toString()}`, { relative: 'path' });
     },
-    [navigate],
+    [navigate, searchParams],
   );
 
   // URL → tree: when the spans tab is active and ?sel names a span, reveal it.
@@ -254,6 +338,9 @@ export function TraceDetailPage() {
   // Also keeps the detail panel's selectedSpan in sync.
   const handleSpanSelect = useCallback(
     (span: Span) => {
+      // The second writer of `?sel=` (the tree's own selection after a reveal):
+      // a span without an id names nothing and writes nothing.
+      if (!span.span_id) return;
       setSelectedSpan(span);
       revealedSelRef.current = span.span_id; // came from the tree; don't re-reveal
       setSearchParams(
@@ -397,6 +484,24 @@ export function TraceDetailPage() {
     [setSearchParams],
   );
 
+  // The graph views' edge mode (`?edges=interaction`; absent = per leg, the
+  // default, written by deleting the param). See `FlowTablesProps.edgesPerInteraction`.
+  const edgesPerInteraction = searchParams.get('edges') === 'interaction';
+  const handleEdgesPerInteractionChange = useCallback(
+    (perInteraction: boolean) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (perInteraction) next.set('edges', 'interaction');
+          else next.delete('edges');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
   const lineageSource: string | null = parseLineageSource(searchParams.get('src'));
   const handleLineageSourceChange = useCallback(
     (source: string) => {
@@ -427,7 +532,25 @@ export function TraceDetailPage() {
           next.delete('eid');
           if (sel?.iid) next.set('iid', sel.iid);
           else if (sel?.eid) next.set('eid', sel.eid);
+          // The risk layer's stepper position, in the same write as the selection
+          // (see `FlowSelection.violation`); untouched when the flow does not say.
+          if (sel?.violation != null) writeViolation(next, sel.violation);
           return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+  // A live re-read moved the open policy event: its position is rewritten in
+  // place, nothing else in the URL touched (see `FlowTablesProps.risk`).
+  const handleViolationChange = useCallback(
+    (next: number) => {
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          writeViolation(params, next);
+          return params;
         },
         { replace: true },
       );
@@ -512,6 +635,13 @@ export function TraceDetailPage() {
         <LiveModeLabel mode={live} />
       </Title>
 
+      {/* The view header: the five view tabs, and right after them the Risk
+          toggle (the layer, one state for every view) with the cross link to the
+          risk trace page, which stays for a transition period. After the tabs,
+          not at the far right: the detail panel floats fixed over the right of
+          the viewport, and a control pushed there would sit under it. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', flexWrap: 'wrap' }}>
+      <div style={{ minWidth: 0 }}>
       <Tabs
         activeKey={VIEW_TO_URL[view]}
         onSelect={(_e, key) => goToView(URL_TO_VIEW[String(key)] ?? 'tree')}
@@ -568,6 +698,21 @@ export function TraceDetailPage() {
         <Tab eventKey="graph" title={<TabTitleText>Execution Flow</TabTitleText>} />
         <Tab eventKey="lineage" title={<TabTitleText>Lineage</TabTitleText>} />
       </Tabs>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexShrink: 0 }} data-testid="risk-layer-controls">
+        <Switch
+          id="risk-layer"
+          label="Risk"
+          labelOff="Risk"
+          aria-label="Risk"
+          isChecked={risk}
+          onChange={(_e, on) => handleRiskChange(on)}
+        />
+        <Link to={riskPageHref} data-testid="open-risk-page">
+          Risk page for this trace
+        </Link>
+      </div>
+      </div>
 
       {isLoading ? (
         <Spinner aria-label="Loading trace" />
@@ -577,6 +722,10 @@ export function TraceDetailPage() {
         </Alert>
       ) : (
         <div style={{ marginTop: '1rem' }}>
+          {/* The risk layer's alerts on the span tree — the same section the risk
+              trace page and `FlowTables` render; the four interaction views get it
+              from `FlowTables`, inside its detail gutter. */}
+          {risk && view === 'tree' && <TraceAlertsSection alerts={alerts} />}
           {/* The tree stays MOUNTED for the page's lifetime and is merely hidden
               on the flow tab (display:none), so its expand/load/selection state
               survives a tab round-trip — otherwise switching to flow would
@@ -632,6 +781,11 @@ export function TraceDetailPage() {
               onShowInfraChange={handleShowInfraChange}
               lineageSource={lineageSource}
               onLineageSourceChange={handleLineageSourceChange}
+              risk={risk}
+              violation={violationParam}
+              onViolationChange={handleViolationChange}
+              edgesPerInteraction={edgesPerInteraction}
+              onEdgesPerInteractionChange={handleEdgesPerInteractionChange}
             />
           )}
         </div>

@@ -267,8 +267,15 @@ export function riskTraceKeys(traceId: string): QueryKey[] {
  */
 const RULE_CATALOG_INDEX_LIMIT = 200;
 
-export function useRuleCatalogIndex(): UseQueryResult<Map<string, RuleListItem>> {
+/**
+ * `enabled` is for the trace page's risk layer, which mounts this hook on every
+ * render and reads only while the layer is on (`FlowTables`): a disabled query
+ * makes no request, so a page with the layer off never touches `/risk/`.
+ */
+
+export function useRuleCatalogIndex(enabled = true): UseQueryResult<Map<string, RuleListItem>> {
   return useQuery({
+    enabled,
     queryKey: riskQueryKey('rules', 'catalog-index'),
     queryFn: () => riskFetchJson<RuleListResponse>('/rules', { limit: RULE_CATALOG_INDEX_LIMIT }),
     select: (data: RuleListResponse) => new Map(data.items.map((r) => [r.rule_id, r])),

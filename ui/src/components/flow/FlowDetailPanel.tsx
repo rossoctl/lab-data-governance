@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Button, Title } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import type { UseQueryResult } from '@tanstack/react-query';
@@ -30,6 +31,7 @@ export function FlowDetailPanel({
   onTogglePin,
   onClose,
   onNavigateToSpan,
+  layer,
 }: {
   traceId: string;
   selection: Selection;
@@ -39,6 +41,14 @@ export function FlowDetailPanel({
   onTogglePin: () => void;
   onClose: () => void;
   onNavigateToSpan?: (spanId: string) => void;
+  /**
+   * The risk layer's cards for this selection (the interaction's risk and, for
+   * a policy event, the stepper and the decision card), composed by `FlowTables`
+   * and rendered between the identity card and the leg tabs. Absent with the
+   * layer off, and the panel is as it was. A slot rather than typed props so
+   * this panel stays a renderer of the selection and knows nothing of risk.
+   */
+  layer?: ReactNode;
 }) {
   // The legs that actually carried a payload — built here rather than inline so
   // the middle card can be skipped when there are none (an entity selection, or
@@ -133,6 +143,8 @@ export function FlowDetailPanel({
         </div>
         <DetailList pairs={selection.fields} />
       </div>
+
+      {layer}
 
       {/* One outer tab per leg that actually carried a payload, named by the leg
           ('Request' / 'Response') — there is no umbrella 'Payloads' heading,

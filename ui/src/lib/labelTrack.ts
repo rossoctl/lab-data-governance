@@ -75,6 +75,31 @@ export function namedByRules(label: Pick<LegLabel, 'regulatory_tags' | 'sensitiv
   return false;
 }
 
+/**
+ * The right-click's default on a leg: which of its carried-in values start out
+ * tracked. With fired rules, the values whose labels those rules name (the
+ * decision-derived default); with none, every carried-in value of
+ * the leg. One function for the risk page and the trace page's risk layer, so
+ * the two defaults cannot drift.
+ */
+export function defaultTrackValues(
+  interactionId: string,
+  legs: Iterable<LegLabels>,
+  legType: 'request' | 'response',
+  rules: readonly RuleListItem[],
+): TrackedValue[] {
+  const out: TrackedValue[] = [];
+  for (const leg of legs) {
+    if (leg.leg_type !== legType) continue;
+    for (const label of leg.labels) {
+      if (rules.length > 0 && !namedByRules(label, rules)) continue;
+      const v = trackedValueOf(interactionId, leg, label);
+      if (v) out.push(v);
+    }
+  }
+  return out;
+}
+
 /** The sets the graphs paint for a set of tracked values, on the page's trace. */
 export interface LabelTrackHighlight {
   /** `<interaction>:<leg_type>` of every leg a tracked value sat on, in this trace. */

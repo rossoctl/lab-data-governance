@@ -81,7 +81,15 @@ function LegValue({ leg }: { leg: ClassifiedLegSummary }) {
  * A leg that carried labels in says so on a second line (see `LegValue`);
  * the edge count in the record never reaches the screen.
  */
-export function InteractionPanel({ interaction }: { interaction: ForestInteraction }) {
+export function InteractionPanel({
+  interaction,
+  showTraceLink = true,
+}: {
+  interaction: ForestInteraction;
+  /** The Payload row's "Open in trace view" link. Off when this panel is already
+   *  on the trace page (its risk layer), where the link would point at itself. */
+  showTraceLink?: boolean;
+}) {
   const risk = interaction.risk;
   const legs = classifiedLegEntries(risk?.classification_summary ?? null);
   const anyCarried = legs.some(([, leg]) => carriedOf(leg) != null);
@@ -124,14 +132,16 @@ export function InteractionPanel({ interaction }: { interaction: ForestInteracti
               )}
             </DescriptionListDescription>
           </DescriptionListGroup>
-          <DescriptionListGroup>
-            <DescriptionListTerm>Payload</DescriptionListTerm>
-            <DescriptionListDescription>
-              <Link to={`/traces/${interaction.trace_id}/flow?iid=${encodeURIComponent(interaction.interaction_id)}`}>
-                {anyCarried ? 'Open in trace view — see where each label came from' : 'Open in trace view'}
-              </Link>
-            </DescriptionListDescription>
-          </DescriptionListGroup>
+          {showTraceLink && (
+            <DescriptionListGroup>
+              <DescriptionListTerm>Payload</DescriptionListTerm>
+              <DescriptionListDescription>
+                <Link to={`/traces/${interaction.trace_id}/flow?iid=${encodeURIComponent(interaction.interaction_id)}`}>
+                  {anyCarried ? 'Open in trace view — see where each label came from' : 'Open in trace view'}
+                </Link>
+              </DescriptionListDescription>
+            </DescriptionListGroup>
+          )}
         </DescriptionList>
       </CardBody>
     </Card>

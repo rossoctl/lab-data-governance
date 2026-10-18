@@ -11,6 +11,7 @@ import {
   EmptyStateBody,
   Label,
 } from '@patternfly/react-core';
+import { ExternalLinkAltIcon } from '@patternfly/react-icons';
 import type { QueryKey } from '@tanstack/react-query';
 import { useEntities } from '../../api/hooks';
 import { useTraceLive } from '../../api/live';
@@ -28,22 +29,21 @@ import {
   classificationByInteraction,
   violationsOf,
 } from '../../lib/riskForestAdapter';
-import { parseViolationIndex, stepViolation } from '../../lib/riskViolation';
+import { parseViolationIndex, stepViolation, traceLayerParams } from '../../lib/riskViolation';
 import { EntityGraph } from '../../components/ExecutionFlowGraph';
 import { PolicyDecisionPanel } from '../../risk-components/PolicyDecisionPanel';
 import { InteractionPanel } from '../../risk-components/InteractionPanel';
 import { ViolationStepper } from '../../risk-components/ViolationStepper';
-import { TraceAlertsPanel } from '../../risk-components/TraceAlertsPanel';
+import { TraceAlertsSection } from '../../risk-components/TraceAlertsSection';
 import { LiveModeLabel } from '../../components/LiveModeLabel';
 import { LabelTrackContext, type LabelTrack } from '../../components/flow/labelTrack';
 import { TrackBanner } from '../../components/flow/TrackBanner';
 import { TrackPicker, type PickerTarget } from '../../components/flow/TrackPicker';
 import { fetchJson } from '../../api/client';
 import {
+  defaultTrackValues,
   deriveLabelTrackHighlight,
-  namedByRules,
   toGraphHighlight,
-  trackedValueOf,
   type TrackedValue,
 } from '../../lib/labelTrack';
 import type { LegLabels } from '../../types';
@@ -224,12 +224,7 @@ export function RiskTraceDetailPage() {
       .filter((r): r is RuleListItem => r != null);
     void fetchJson<{ legs?: LegLabels[] }>(`/traces/${traceId}/interactions/${interactionId}/labels`)
       .then((r) => {
-        const values = (r.legs ?? []).filter((leg) => leg.leg_type === legType).flatMap((leg) =>
-          leg.labels
-            .filter((l) => rules.length === 0 || namedByRules(l, rules))
-            .map((l) => trackedValueOf(interactionId, leg, l))
-            .filter((v): v is TrackedValue => v != null),
-        );
+        const values = defaultTrackValues(interactionId, r.legs ?? [], legType, rules);
         if (values.length === 0) return;
         setTracked((prev) => {
           const next = new Map(prev);
@@ -356,6 +351,19 @@ export function RiskTraceDetailPage() {
         )}
         <LiveModeLabel mode={live} />
       </Title>
+      {/* THE CROSS LINK: risk is now a layer on the trace page,
+          switchable on every one of its views; this page stays for a transition
+          period. The link opens the same trace there with the layer on, carrying
+          the open policy event (`?violation=`) and the selection (`?interaction=`
+          translated to the trace page's `?iid=`). No redirect. */}
+      <div className="pf-v5-u-mt-sm">
+        <Link
+          to={`/traces/${encodeURIComponent(traceId)}/graph?${traceLayerParams(searchParams).toString()}`}
+          data-testid="open-trace-layer"
+        >
+          Open in trace view with the risk layer <ExternalLinkAltIcon style={{ verticalAlign: '-0.125em' }} />
+        </Link>
+      </div>
 
       {detail.isLoading ? (
         <Spinner aria-label="Loading risk trace" />
@@ -371,23 +379,7 @@ export function RiskTraceDetailPage() {
         </EmptyState>
       ) : detail.data ? (
         <>
-          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
-            Alerts
-          </Title>
-          {alerts.isLoading ? (
-            <Spinner size="md" aria-label="Loading alerts" />
-          ) : alerts.isLoadingError ? (
-            <EmptyState>
-              <EmptyStateHeader titleText="Failed to load alerts" headingLevel="h4" />
-            </EmptyState>
-          ) : alerts.data && alerts.data.items.length > 0 ? (
-            <TraceAlertsPanel alerts={alerts.data.items} truncated={alerts.data.next_cursor != null} />
-          ) : (
-            <EmptyState>
-              <EmptyStateHeader titleText="No alerts" headingLevel="h4" />
-              <EmptyStateBody>No alert has been raised for this trace.</EmptyStateBody>
-            </EmptyState>
-          )}
+          <TraceAlertsSection alerts={alerts} />
 
           <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
             Execution flow

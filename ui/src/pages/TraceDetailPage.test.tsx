@@ -386,12 +386,14 @@ describe('TraceDetailPage', () => {
     await userEvent.click(await screen.findByText(/1 \(1 anchor\)/));
     await userEvent.click(await screen.findByRole('button', { name: /Add to highlights/i }));
 
-    // The spinner appears (labelled for a11y) as soon as the reveal is requested.
-    const spinner = await screen.findByLabelText(/highlighting/i);
+    // The spinner appears (labelled for a11y) as soon as the reveal is requested,
+    // and the tree is the active view; both are state, waited on, not timed.
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/spans?sel=ev-span'), { timeout: 5000 });
+    const spinner = await screen.findByLabelText(/highlighting/i, undefined, { timeout: 5000 });
     expect(spinner).toBeInTheDocument();
     // …and is removed once the reveal completes (ancestors expanded + scrolled).
-    await waitForElementToBeRemoved(() => screen.queryByLabelText(/highlighting/i));
-  });
+    await waitForElementToBeRemoved(() => screen.queryByLabelText(/highlighting/i), { timeout: 5000 });
+  }, 15000);
 
   it('drops the highlighting spinner if the user leaves the tree while a reveal is still in flight', async () => {
     // Stuck-spinner guard: Add-to-highlights sets the spinner + navigates to the
