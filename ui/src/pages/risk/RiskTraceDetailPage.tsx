@@ -12,7 +12,7 @@ import {
   Label,
 } from '@patternfly/react-core';
 import { useEntities } from '../../api/hooks';
-import { useTraceRiskDetail, useRuleCatalogIndex } from '../../risk-api/hooks';
+import { useTraceRiskDetail, useRuleCatalogIndex, useTraceAlerts } from '../../risk-api/hooks';
 import { RiskApiError } from '../../risk-api/client';
 import { deriveGraph } from '../../lib/graph';
 import {
@@ -27,6 +27,7 @@ import { EntityGraph } from '../../components/ExecutionFlowGraph';
 import { PolicyDecisionPanel } from '../../risk-components/PolicyDecisionPanel';
 import { InteractionPanel } from '../../risk-components/InteractionPanel';
 import { ViolationStepper } from '../../risk-components/ViolationStepper';
+import { TraceAlertsPanel } from '../../risk-components/TraceAlertsPanel';
 
 /**
  * Trace detail — the "Alert Execution" view (issue #170, parent #167): given
@@ -78,12 +79,18 @@ import { ViolationStepper } from '../../risk-components/ViolationStepper';
  * one once the engine computes that interaction's risk); one that names
  * nothing in the trace falls back to the open policy event. Like
  * `?violation=`, the selection is derived from the URL, never held in state.
+ *
+ * ALERTS (issues #104, #110): the trace's alert chain, superseded alerts
+ * included, read from `GET /risk/alerts?trace_id=` (`useTraceAlerts`), sits
+ * above the graph. Its own query, so a failure there never hides the rest of
+ * the page.
  */
 export function RiskTraceDetailPage() {
   const { traceId = '' } = useParams<{ traceId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const detail = useTraceRiskDetail(traceId);
+  const alerts = useTraceAlerts(traceId);
   const entities = useEntities(traceId);
   const catalog = useRuleCatalogIndex();
 
@@ -221,6 +228,24 @@ export function RiskTraceDetailPage() {
         </EmptyState>
       ) : detail.data ? (
         <>
+          <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
+            Alerts
+          </Title>
+          {alerts.isLoading ? (
+            <Spinner size="md" aria-label="Loading alerts" />
+          ) : alerts.isError ? (
+            <EmptyState>
+              <EmptyStateHeader titleText="Failed to load alerts" headingLevel="h4" />
+            </EmptyState>
+          ) : alerts.data && alerts.data.items.length > 0 ? (
+            <TraceAlertsPanel alerts={alerts.data.items} truncated={alerts.data.next_cursor != null} />
+          ) : (
+            <EmptyState>
+              <EmptyStateHeader titleText="No alerts" headingLevel="h4" />
+              <EmptyStateBody>No alert has been raised for this trace.</EmptyStateBody>
+            </EmptyState>
+          )}
+
           <Title headingLevel="h3" size="lg" className="pf-v5-u-mt-lg pf-v5-u-mb-sm">
             Execution flow
           </Title>

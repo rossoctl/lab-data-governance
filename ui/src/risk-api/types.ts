@@ -253,3 +253,30 @@ export interface TraceRiskDetailResponse {
   trace_risk: TraceRiskRecord;
   interactions: ForestInteraction[];
 }
+
+/** One `alerts` row, as `GET /risk/alerts` serves it (issue #110,
+ * `data_governance/risk/api/alert_routes.py`'s `alert_to_json`). */
+export interface RiskAlert {
+  alert_id: string;
+  timestamp: string;
+  trace_id: string;
+  trace_risk_record_id: string | null;
+  risk_level: string;
+  enforcement_type: string | null;
+  title: string;
+  description: string;
+  involved_entities: { entity_id: string; entity_kind: string; display_name: string }[];
+  triggered_rule_ids: string[];
+  status: string;
+  alert_type: string | null;
+  assigned_to: string | null;
+  dedup_key: string | null;
+  duplicate_count: number;
+  superseded_by: string | null;
+}
+
+/** `GET /risk/alerts` response body — keyset-paginated. */
+export interface AlertListResponse {
+  items: RiskAlert[];
+  next_cursor: string | null;
+}
