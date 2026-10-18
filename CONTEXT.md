@@ -522,7 +522,9 @@ leg is ready it stays ready (the only exception is the deferred
 re-classification hook, which would transiently un-ready legs; ADR-0027). The
 readiness event is surfaced on the **`dg_interaction_leg_ready`** channel, but
 that notification is *latency-only*: reliability comes from the consumer
-draining a **Readiness cursor**, not from the notify. See ADR-0027.
+draining a **Readiness cursor**, not from the notify. See ADR-0027. With
+`RISK_INHERITED_LABELS=on`, risk's readiness also requires label lineage's row for
+the leg at its current payload (`docs/label-lineage.md`).
 _Avoid_: conflating "leg written" (a row exists in `interaction_legs`) with
 "leg ready" (written *and* its payload, if any, classified) — the whole point
 of the readiness signal is that these are different instants for a

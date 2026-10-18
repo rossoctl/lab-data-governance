@@ -44,7 +44,7 @@ import json
 from collections.abc import Callable
 
 from data_governance import db
-from data_governance.risk.engine import utils
+from data_governance.risk.engine import labels, utils
 from data_governance.risk.engine.evidence import gather_evidence
 from data_governance.risk.engine.opa import OpaClient
 from data_governance.risk.rules.rego import FALLBACK_RULE_ID
@@ -203,7 +203,7 @@ def _get_or_refresh_decision(
     second OPA call.
     """
     fingerprint = utils.fingerprint(
-        evidence.legs, evidence.classifications, evidence.anchor
+        evidence.legs, evidence.classifications, evidence.anchor, evidence.inherited
     )
 
     with db.transaction() as tx:
@@ -218,6 +218,7 @@ def _get_or_refresh_decision(
         caller_entity_id=evidence.caller_entity_id,
         callee_entity_id=evidence.callee_entity_id,
         anchor=evidence.anchor,
+        inherited=evidence.inherited,
     )
     opa_decision = opa_client.evaluate(
         interaction_id=interaction_id,
@@ -286,6 +287,7 @@ def _record_params(
     legs: list[utils.LegEvidence],
     classifications: dict,
     decision: utils.PolicyDecision,
+    inherited: labels.Inherited | None = None,
 ) -> tuple[dict, dict]:
     """Build the params dict for both the insert and the idempotency
     comparison, returned together so callers can't drift them apart.
@@ -305,7 +307,7 @@ def _record_params(
     triggered rule).
     """
     legs_evidenced = utils.legs_evidenced(legs)
-    classification_summary = utils.classification_summary(classifications)
+    classification_summary = utils.classification_summary(classifications, inherited)
     confidence = utils.quantize_confidence(decision.confidence)
     fired_rule_ids = [r for r in decision.triggered_rules if r != FALLBACK_RULE_ID]
     policy_event_count = 1 if fired_rule_ids else 0
@@ -384,6 +386,7 @@ def prepare_interaction_risk(
         legs=evidence.legs,
         classifications=evidence.classifications,
         decision=decision,
+        inherited=evidence.inherited,
     )
 
     def write(tx: db.Transaction) -> None:

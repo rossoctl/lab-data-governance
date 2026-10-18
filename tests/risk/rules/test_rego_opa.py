@@ -623,3 +623,31 @@ linked if {
     assert linked(request_tags=["PII"], response_tags=["PHI"]) is True
     assert linked(request_tags=["PII"], response_tags=[]) is False
     assert linked(request_tags=[], response_tags=["PHI"]) is False
+
+
+# --- labels that reached the payload (label lineage, RISK_INHERITED_LABELS=on) ------
+#
+# An inherited label is one more data item on the flow it reached; the shipped
+# catalog must treat it exactly as a label the classifier found there.
+
+
+@pytest.mark.opa
+def test_an_inherited_pii_fires_dg001_on_the_egress_exactly_as_a_detected_one(opa_client, opa_base_url):
+    from data_governance.risk.engine import labels
+    from data_governance.risk.rules import catalog
+
+    put_response = _put_policy(opa_client, compile_policy(catalog.load_rules_source()))
+    assert put_response.status_code == 200, put_response.text
+
+    detected = _evaluate(opa_base_url, _leg_opa_input(request_tags=["PII"], response_tags=[]))
+    clean = _leg_opa_input(request_tags=[], response_tags=[])
+    assert _evaluate(opa_base_url, clean).enforcement_type != "block"
+
+    edge = labels.InheritedEdge(
+        trace_id="T", entity_type="SSN", regulatory_tags=("PII",), sensitivity_level="CONFIDENTIAL",
+        match_kind="whole", matched_text="123-45-6789", matched_start=12, matched_end=23,
+    )
+    clean["flows"]["request"]["data_items"].append(labels.data_item([edge]))
+    inherited = _evaluate(opa_base_url, clean)
+    assert inherited.enforcement_type == detected.enforcement_type == "block"
+    assert inherited.triggered_rules == detected.triggered_rules == ["DG-001"]

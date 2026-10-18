@@ -555,13 +555,20 @@ class Caps:
     ledger: bool = False  # the app pods write a ledger (ROSSOCTL_LEDGER=stdout)
     consumer_lock: bool = False  # leg-ready holds the sole-consumer session lock (lab-dg #290)
     alert_floor: str = "low"  # the alerts Deployment's RISK_ALERT_MIN_RISK_LEVEL (its default when unset)
+    labels: bool = False  # label lineage runs: migration 0024's four tables, and its cursor row or a ready Deployment
+    inherited_labels: bool = False  # leg-ready's Deployment says RISK_INHERITED_LABELS=on
+
+
+LABEL_TABLES = ("payload_label_edges", "leg_inherited_labels", "label_lineage_trace_status",
+                "risk_recompute_requests")
 
 
 @pytest.fixture(scope="session")
 def capabilities(env: Env, kube: Kube, dg: Dg, api: httpx.Client, run_record) -> Caps:
     """What the deployed branch runs. Never assumed: the alerts processor,
-    the health route and leg-ready's sole-consumer lock exist only on some
-    risk branches."""
+    the health route, leg-ready's sole-consumer lock and label lineage exist
+    only on some branches, and whether risk reads inherited labels is
+    leg-ready's RISK_INHERITED_LABELS, read off its Deployment."""
     has_alerts_deploy = kube.exists("deploy", "data-governance-risk-alerts", ns=env.dg_ns)
     (has_seq,) = dg.one(
         "SELECT count(*) FROM information_schema.columns "
@@ -595,12 +602,34 @@ def capabilities(env: Env, kube: Kube, dg: Dg, api: httpx.Client, run_record) ->
         "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
         (key >> 32, key & 0xFFFFFFFF))
     consumer_lock = held >= 1
+    # Label lineage: the tables exist and the processor runs — its cursor row is
+    # present, or (a fresh database where no leg has arrived yet, so no cursor
+    # has advanced) its Deployment has a ready replica.
+    (label_tables,) = dg.one(
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' "
+        "AND table_name = ANY(%s)", (list(LABEL_TABLES),))
+    (label_cursor,) = dg.one(
+        "SELECT count(*) FROM processor_state WHERE processor_name = 'label_lineage'")
+    label_deploy_ready = False
+    if kube.exists("deploy", "data-governance-label-lineage", ns=env.dg_ns):
+        spec = kube.json(["get", "deploy", "data-governance-label-lineage"], ns=env.dg_ns)
+        label_deploy_ready = (spec.get("status") or {}).get("readyReplicas", 0) >= 1
+    labels = label_tables == len(LABEL_TABLES) and (label_cursor == 1 or label_deploy_ready)
+    leg_ready = kube.json(["get", "deploy", "data-governance-leg-ready"], ns=env.dg_ns)
+    inherited_mode = next((e.get("value") for c in leg_ready["spec"]["template"]["spec"]["containers"]
+                           for e in c.get("env", []) if e.get("name") == "RISK_INHERITED_LABELS"), None)
+    inherited_labels = labels and (inherited_mode or "").strip().lower() == "on"
     caps = Caps(alerts=alerts, health=health, ledger=ledger, consumer_lock=consumer_lock,
-                alert_floor=alert_floor)
+                alert_floor=alert_floor, labels=labels, inherited_labels=inherited_labels)
     run_record.write("capabilities.json", {"alerts": alerts, "health": health, "ledger": ledger,
                                            "consumer_lock": consumer_lock, "ledger_on": sorted(ledger_on),
                                            "alerts_deploy": has_alerts_deploy, "alert_floor": alert_floor,
-                                           "trace_risk_records.seq": bool(has_seq)})
+                                           "trace_risk_records.seq": bool(has_seq),
+                                           "labels": labels, "label_tables": label_tables,
+                                           "label_lineage_cursor_row": bool(label_cursor),
+                                           "label_lineage_deploy_ready": label_deploy_ready,
+                                           "inherited_labels": inherited_labels,
+                                           "leg_ready.RISK_INHERITED_LABELS": inherited_mode})
     return caps
 
 

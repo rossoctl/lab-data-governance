@@ -37,6 +37,21 @@ against ``payload_classifications`` (PK ``content_hash``), so readiness is deriv
 fresh from the durable tables on every drain — reliability lives in the drain, not
 the ``dg_interaction_leg_ready`` notify (which is latency-only; ADR-0015/ADR-0027).
 
+Inherited labels (``RISK_INHERITED_LABELS=on``)
+-----------------------------------------------
+With the flag on, readiness also waits for label lineage: a payload-bearing leg is
+ready only once ``leg_inherited_labels`` holds its row at the leg's current
+``payload_hash``, so a decision never runs before label lineage has derived the
+leg. The row reflects what was classified at that moment: a leg whose inputs are
+classified later (on the lab traces an egress's inputs often have higher seqs)
+is decided first with the labels known then, and the labels that land later (a
+re-derivation changed an already-decided leg's summary) are queued by label
+lineage in ``risk_recompute_requests``; after the cursor arm,
+:func:`_drain_recompute_requests` re-delivers those interactions through the
+observer — never moving the cursor, fenced on it like the cursor arm — and claims
+each request by deleting it in the transaction of its write. The stale-callee
+case (#284) may later share this drain.
+
 Atomicity
 ---------
 Each delivered leg is handled in ONE transaction that runs the observer's write
@@ -54,11 +69,13 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
+import time
 from collections.abc import Callable
 
 from data_governance import db
 from data_governance.processors import _driver
 from data_governance.processors import readiness_cursor as rc
+from data_governance.risk import config as risk_config
 
 from . import metrics
 
@@ -168,8 +185,70 @@ SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
 """
 
 
+# With RISK_INHERITED_LABELS on: classified AND derived by label lineage at the
+# leg's current payload.
+_FETCH_WITH_LABELS_SQL = """
+SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
+       (l.payload_hash IS NULL
+        OR (pc.content_hash IS NOT NULL AND m.payload_hash = l.payload_hash)) AS ready
+  FROM interaction_legs l
+  LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
+  LEFT JOIN leg_inherited_labels m
+         ON m.interaction_id = l.interaction_id AND m.leg_type = l.leg_type
+ WHERE l.seq > %s
+ ORDER BY l.seq ASC
+ LIMIT %s
+"""
+
+
+_HELD_ON_LABELS_SQL = """
+SELECT pc.content_hash IS NOT NULL, m.payload_hash
+  FROM interaction_legs l
+  LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
+  LEFT JOIN leg_inherited_labels m ON m.interaction_id = l.interaction_id AND m.leg_type = l.leg_type
+ WHERE l.interaction_id = %s AND l.leg_type = %s
+"""
+
+
+#: How long one head leg may wait for label lineage's row before the hold is
+#: logged. A healthy derivation follows its classification within a wake or two
+#: (both processors wake on the same notify); a longer wait means label lineage
+#: is stopped, crash-looping or far behind.
+LABEL_HOLD_WARN_SECONDS = 30.0
+# (the held leg, since when) — one head at a time
+_label_hold: list = [None, 0.0]
+
+
+def _warn_if_waiting_for_labels(leg: Leg) -> None:
+    """Name the hold when the same head leg has been classified and waiting only
+    for label lineage's row for :data:`LABEL_HOLD_WARN_SECONDS` (a stopped or
+    crash-looping label-lineage processor holds this stream with the flag on; the
+    OPA hold says so per wake, and so does this, once it is not a race)."""
+    with db.transaction() as tx:
+        row = tx.fetch_one(_HELD_ON_LABELS_SQL, (leg.interaction_id, leg.leg_type))
+    waiting = row is not None and row[0] and row[1] != leg.payload_hash
+    key = (leg.interaction_id, leg.leg_type, leg.payload_hash)
+    if not waiting:
+        _label_hold[:] = [None, 0.0]
+        return
+    if _label_hold[0] != key:
+        _label_hold[:] = [key, time.monotonic()]
+    since = _label_hold[1]
+    if time.monotonic() - since >= LABEL_HOLD_WARN_SECONDS:
+        log.warning(
+            "leg seq=%d interaction_id=%s is classified and waits for label lineage's row at its "
+            "payload (RISK_INHERITED_LABELS=on) for %.0f s; holding cursor — is "
+            "data-governance-label-lineage running?",
+            leg.seq, leg.interaction_id, time.monotonic() - since,
+        )
+
+
+def _labels_on() -> bool:
+    return risk_config.inherited_labels_mode() == "on"
+
+
 def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[Leg]:
-    rows = tx.fetch_all(_FETCH_SQL, (cursor, limit))
+    rows = tx.fetch_all(_FETCH_WITH_LABELS_SQL if _labels_on() else _FETCH_SQL, (cursor, limit))
     return [
         Leg(
             interaction_id=r[0],
@@ -236,6 +315,19 @@ def _drain_spec(
     consumer already delivered rolls back and raises
     :class:`~data_governance.db.LockLost`.
     """
+    cursor = _drain_prefix(spec, cursor, observer, guard)
+    if observer is not None and _labels_on():
+        _drain_recompute_requests(cursor, observer, guard, spec.batch_size)
+    return cursor
+
+
+def _drain_prefix(
+    spec: _driver.StreamSpec[Leg],
+    cursor: int,
+    observer: Observer | None,
+    guard: Callable[[], None] | None,
+) -> int:
+    """The cursor arm of :func:`_drain_spec`: the contiguous ready prefix."""
     if guard is not None:
         guard()
     while True:
@@ -253,7 +345,10 @@ def _drain_spec(
             # Head-of-line block at the very first leg past the cursor: nothing
             # delivered, cursor held. Re-fetching would return the same blocked
             # legs, so stop this drain (the next wake re-evaluates them).
+            if _labels_on():
+                _warn_if_waiting_for_labels(min(batch, key=lambda leg: leg.seq))
             return cursor
+        _label_hold[:] = [None, 0.0]  # the head moved: a later hold starts its own clock
 
         by_seq = {leg.seq: leg for leg in batch}
         for item in result.delivered:
@@ -284,6 +379,90 @@ def _drain_spec(
             return cursor
         if len(batch) < spec.batch_size:
             return cursor
+
+
+# Requests whose interaction lies wholly at or below the cursor (one still ahead
+# will be delivered by the cursor arm with its labels in place) and whose every
+# leg is ready by the cursor arm's own predicate — a leg rewritten in place to a
+# payload not yet classified, or not yet derived by label lineage, holds its
+# request until it is, so a recompute never decides on a pending verdict.
+_RECOMPUTE_SQL = """
+SELECT r.interaction_id, r.requested_at, l.leg_type::text, l.payload_hash, l.seq
+  FROM risk_recompute_requests r
+  JOIN LATERAL (
+        SELECT leg_type, payload_hash, seq FROM interaction_legs
+         WHERE interaction_id = r.interaction_id ORDER BY seq DESC LIMIT 1
+       ) l ON true
+ WHERE l.seq <= %s
+   AND NOT EXISTS (
+        SELECT 1 FROM interaction_legs x
+          LEFT JOIN payload_classifications pc ON pc.content_hash = x.payload_hash
+          LEFT JOIN leg_inherited_labels m
+                 ON m.interaction_id = x.interaction_id AND m.leg_type = x.leg_type
+         WHERE x.interaction_id = r.interaction_id
+           AND x.payload_hash IS NOT NULL
+           AND (pc.content_hash IS NULL OR m.payload_hash IS DISTINCT FROM x.payload_hash))
+ ORDER BY r.requested_at, r.interaction_id
+ LIMIT %s
+"""
+
+
+_ORPHAN_REQUESTS_SQL = (
+    "DELETE FROM risk_recompute_requests r "
+    "WHERE NOT EXISTS (SELECT 1 FROM interaction_legs l WHERE l.interaction_id = r.interaction_id)"
+)
+
+
+def _drain_recompute_requests(
+    cursor: int,
+    observer: Observer,
+    guard: Callable[[], None] | None,
+    limit: int,
+) -> int:
+    """Re-deliver the interactions label lineage queued in
+    ``risk_recompute_requests`` (their inherited labels changed after this
+    consumer passed them). The observer re-gathers evidence — the fingerprint now
+    carries the labels — and its write commits with the request's delete; a
+    request re-queued meanwhile (a newer ``requested_at``) survives. A deferral
+    stops the pass, the request stays for the next wake. A request whose
+    interaction has no legs left is dropped. Never moves the cursor. Returns how
+    many were recomputed.
+
+    The write is fenced like the cursor arm's: its transaction first holds the
+    cursor row at the value this drain read (:func:`_advance_from` from the cursor
+    to itself, so a replacement that moved it makes this drain stop with
+    :class:`~data_governance.db.LockLost`), then claims the request by deleting it.
+    A request another consumer already took, or that was re-queued meanwhile,
+    claims nothing and the computation is dropped: an older computation never
+    lands after a newer one."""
+    with db.transaction() as tx:
+        tx.execute(_ORPHAN_REQUESTS_SQL)
+        rows = tx.fetch_all(_RECOMPUTE_SQL, (cursor, limit))
+    done = 0
+    for interaction_id, requested_at, leg_type, payload_hash, seq in rows:
+        if guard is not None:
+            guard()
+        leg = Leg(interaction_id=interaction_id, leg_type=leg_type, payload_hash=payload_hash,
+                  seq=int(seq), ready=True)
+        try:
+            write = observer(leg)
+        except LegDeferred as exc:
+            log.warning("recompute of interaction_id=%s deferred by observer (%s); retrying on next wake",
+                        interaction_id, exc.__cause__ or exc)
+            break
+        with db.transaction() as tx:
+            _advance_from(tx, PROCESSOR_NAME, cursor, cursor)
+            claimed = tx.fetch_one(
+                "DELETE FROM risk_recompute_requests WHERE interaction_id = %s AND requested_at = %s "
+                "RETURNING 1", (interaction_id, requested_at))
+            if claimed is None:
+                continue
+            if write is not None:
+                write(tx)
+        done += 1
+    if done:
+        log.info("recomputed %d interaction(s) whose inherited labels changed", done)
+    return done
 
 
 def _advance_from(tx: db.Transaction, processor_name: str, expected: int, seq: int) -> None:

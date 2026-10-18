@@ -18,6 +18,7 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `90-data-lineage.yaml`        | `Deployment` for the P-data-lineage processor (no Service)  |
 | `91-risk-trace-trigger.yaml`  | `Deployment` for the trace-risk-trigger processor (no Service) |
 | `92-risk-alerts.yaml`         | `Deployment` for the alerts processor (no Service) |
+| `93-label-lineage.yaml`       | `Deployment` for the P-label-lineage processor (no Service) |
 | `95-opa.yaml`                 | `Service` + `Deployment` for the OPA policy server; its policy ConfigMap comes from `deploy/create-opa-configmap.sh` |
 
 ## Primary entry point: `deploy/dg.sh`
@@ -147,6 +148,15 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   `simple`, the trivial always-match matcher (ADR-0028): lineage is complete but
   full of maybes, and setting it explicitly makes that visible. Sized like the
   interactions processor (no model, no inference).
+- **P-label-lineage processor Deployment.** **Single replica** running
+  `python -m data_governance.processors.label_lineage` on the shared image,
+  migrate init container, `maxSurge:0`; no Service, no ports, no metrics. It
+  drains `interaction_legs` readiness-gated on `dg_interaction_leg_ready` (a leg
+  is delivered once its payload is absent or classified), re-derives each
+  delivered trace and writes migration 0024's tables in the transaction that
+  advances its `label_lineage` cursor, then notifies the same channel.
+  `LABEL_MATCHER=exact` (the only finder; an unknown name exits 2). It reads no
+  risk configuration (`docs/label-lineage.md`).
 - **Leg-ready consumer Deployment (the risk engine).** **Single replica**
   running `python -m data_governance.processors.leg_ready` on the shared
   image, `maxSurge:0`. Delivers each ready interaction leg and, per leg,
@@ -156,6 +166,10 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   (WARNING per wake) rather than skipping legs;
   `RISK_ENGINE_OBSERVER=off` runs the bare consumer without OPA.
   `RISK_INTERNAL_URL_WHITELIST_PATTERNS` is load-bearing (see the manifest).
+  `RISK_INHERITED_LABELS` (default `off`): `on` hands each flow the labels that
+  reached it through label lineage, makes a leg ready only once label lineage
+  has derived it (a stopped label-lineage processor holds the stream, with a
+  WARNING per wake once one leg has waited 30 s), and drains `risk_recompute_requests`.
 - **Trace-risk-trigger Deployment.** **Single replica** running
   `python -m data_governance.processors.risk.trace_trigger`, `maxSurge:0`.
   Drains `interaction_risk_records` by `seq` (migration 0019) and recomputes
@@ -267,13 +281,15 @@ kubectl apply -f deploy/k8s/                                        # usually a 
 kubectl -n data-governance rollout restart \
   deployment/data-governance-receiver deployment/data-governance-ui \
   deployment/data-governance-interactions deployment/data-governance-classification \
-  deployment/data-governance-data-lineage deployment/data-governance-leg-ready \
+  deployment/data-governance-data-lineage deployment/data-governance-label-lineage \
+  deployment/data-governance-leg-ready \
   deployment/data-governance-risk-trace-trigger deployment/data-governance-risk-alerts
 kubectl -n data-governance rollout status deployment/data-governance-receiver --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-ui --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-interactions --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-classification --timeout=180s
 kubectl -n data-governance rollout status deployment/data-governance-data-lineage --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-label-lineage --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-leg-ready --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-risk-trace-trigger --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-risk-alerts --timeout=120s

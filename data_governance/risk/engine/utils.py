@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 
 from data_governance.processors.classification.verdict import Verdict
 from data_governance.risk.config import INTERNAL_URL_WHITELIST_PATTERNS
+from data_governance.risk.engine import labels
 from data_governance.risk.rules.catalog import ENFORCEMENT_ORDER, RISK_LEVEL_ORDER
 
 __all__ = [
@@ -150,6 +151,7 @@ def _verdict_summary(verdict: Verdict) -> dict[str, Any]:
 
 def classification_summary(
     classifications: dict[str, Verdict | object],
+    inherited: labels.Inherited | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The ``classification_summary`` JSONB shape, per leg.
 
@@ -161,6 +163,9 @@ def classification_summary(
 
     A leg absent from *classifications* is absent from the result entirely —
     never defaulted to "none" (explicit issue requirement).
+
+    *inherited* (``RISK_INHERITED_LABELS=on``) adds an ``inherited`` entry to a
+    leg that forwarded labels reached; without any, the summary is unchanged.
     """
     summary: dict[str, dict[str, Any]] = {}
     for leg_type, value in classifications.items():
@@ -170,6 +175,9 @@ def classification_summary(
             summary[leg_type] = {"payload": None}
         else:
             summary[leg_type] = _verdict_summary(value)
+        reached = inherited.forwarded(leg_type) if inherited is not None else []
+        if reached:
+            summary[leg_type]["inherited"] = labels.summary(reached)
     return summary
 
 
@@ -453,6 +461,7 @@ def build_opa_input(
     callee_entity_id: str | None,
     anchor: AnchorFacts | None = None,
     internal_patterns: list[str] | None = None,
+    inherited: labels.Inherited | None = None,
 ) -> dict[str, Any]:
     """Build the OPA runtime evaluation input for one interaction, conforming
     to ``opa_input.schema.json`` (which shares ``policy.schema.json``'s
@@ -495,6 +504,12 @@ def build_opa_input(
     author. ``span_ids`` has no corresponding field in the schema; it
     identifies the OTEL evidence behind this payload but carries no
     rule-relevant content of its own.
+
+    *inherited* (``RISK_INHERITED_LABELS=on``) appends to a flow's
+    ``data_items`` one more item: the labels that REACHED that leg's payload
+    through label lineage (:func:`labels.data_item`), so a rule on
+    ``regulatory_tags`` / ``classification_level`` fires on an inherited label
+    exactly as on a detected one. ``None`` (off) leaves the input unchanged.
     """
     if internal_patterns is None:
         internal_patterns = INTERNAL_URL_WHITELIST_PATTERNS
@@ -529,6 +544,9 @@ def build_opa_input(
             ),
             "requested_actions": [_LEG_TYPE_TO_ACTION[leg_type]],
         }
+        item = labels.data_item(inherited.forwarded(leg_type)) if inherited is not None else None
+        if item is not None:
+            flow["data_items"].append(item)
         if source is not None:
             flow["data_sources"] = [_data_source(source)]
         if destination is not None:
@@ -544,10 +562,14 @@ def _normalize_for_fingerprint(
     legs: list[LegEvidence],
     classifications: dict[str, Verdict | object],
     anchor: AnchorFacts | None = None,
+    inherited: labels.Inherited | None = None,
 ) -> dict[str, Any]:
+    # Forwarded inherited labels ride inside the classification summary (keyed
+    # only on a leg they reached), so a label landing after a decision changes
+    # the fingerprint and OPA is asked again.
     normalized: dict[str, Any] = {
         "legs_evidenced": legs_evidenced(legs),
-        "classification_summary": classification_summary(classifications),
+        "classification_summary": classification_summary(classifications, inherited),
     }
     # The anchor's RAW facts join the fingerprint (issue #163): a changed
     # destination/principal must re-trigger OPA, or the cached decision would
@@ -568,6 +590,7 @@ def fingerprint(
     legs: list[LegEvidence],
     classifications: dict[str, Verdict | object],
     anchor: AnchorFacts | None = None,
+    inherited: labels.Inherited | None = None,
 ) -> str:
     """A canonical fingerprint string over the evidence that feeds one
     interaction risk computation — the legs, their classifications, and the
@@ -579,5 +602,5 @@ def fingerprint(
     (DB round-trips return ``Decimal``/``list``/``dict`` types that mismatch
     freshly-computed Python values).
     """
-    normalized = _normalize_for_fingerprint(legs, classifications, anchor)
+    normalized = _normalize_for_fingerprint(legs, classifications, anchor, inherited)
     return json.dumps(normalized, sort_keys=True, default=str)

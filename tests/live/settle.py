@@ -26,7 +26,13 @@ STREAMS: list[tuple[str, str, str, int, str | None]] = [
      "risk_trace_trigger", 10, None),
     ("risk_alerts", "SELECT COALESCE(max(seq), 0) FROM trace_risk_records",
      "risk_alerts", 10, "alerts"),
+    ("label_lineage", "SELECT COALESCE(max(seq), 0) FROM interaction_legs", "label_lineage", 5, "labels"),
 ]
+
+# With inherited labels on, a label that lands after a decision is re-scored
+# through risk_recompute_requests, which leg-ready drains after its cursor arm:
+# outstanding requests are pending work like a cursor behind its head.
+_RECOMPUTE_SQL = "SELECT count(*) FROM risk_recompute_requests"
 
 _CURSOR_SQL = (
     "SELECT COALESCE((SELECT last_processed_seq FROM processor_state "
@@ -61,6 +67,8 @@ def pending(dg, caps) -> dict[str, int]:
         head = dg.one(head_sql)[0]
         cursor = dg.one(_CURSOR_SQL, (proc,))[0]
         out[name] = int(head) - int(cursor)
+    if getattr(caps, "inherited_labels", False):
+        out["risk_recompute_requests"] = int(dg.one(_RECOMPUTE_SQL)[0])
     return out
 
 

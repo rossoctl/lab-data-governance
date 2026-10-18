@@ -15,8 +15,11 @@
 # internal (short Service name) | external (dotted Host, under #270's whitelist rule) | none.
 # classification: the regulatory tags / level the classifier must assign to that leg's payload
 # (`-` = no payload). decision: risk_level/enforcement (+ rule ids) per leg under the SHIPPED
-# catalog; `allow` = none/allow. label_propagation: EMPTY until #272 — the labels that must travel
-# from the origin leg to the egress leg.
+# catalog; `allow` = none/allow. expected_label_propagation (#272, the exact finder): the labels
+# that travel from the origin leg to the egress leg, found byte for byte — a re-spaced, split or
+# redacted value is not the unit — and what the egress decision carries with leg-ready's
+# RISK_INHERITED_LABELS on (off: the stock decision, no inherited entry). Asserted only where label
+# lineage is deployed (capabilities.labels / inherited_labels).
 #
 # Classification values are PREDICTIONS from the classifier's tag table and ladder (SSN ⇒ PII,
 # RESTRICTED as a person-ID; PAN+CVV ⇒ PCI; name+email ⇒ PII, CONFIDENTIAL; account/amount ⇒
@@ -43,8 +46,25 @@ rows:
       notify-partner request: "allow (internal)"
       partner request: "critical/block [DG-001]"
     fixed_instructions: "the same agent told to send the booking id and dates only → partner request PI/INTERNAL → allow"
-    expected_label_propagation: ""
+    expected_label_propagation: "the rogue turn is also row R1b's (the booking reference)"
     status: built — agent-examples-snp notify_partner + ROSSOCTL_VARIANT; test_travel_live L14 asserts per variant on a turn where the model makes the call and xfails on one where it does not (qwen2.5:7b skips the required call on some turns) — coverage until a model that follows the second instruction block, or a deterministic notification in the tool
+
+  - id: R1b
+    title: "the booking reference — the booking id born beside the guest's name in create_booking's response reaches the partner"
+    app: travel_advisor (variant rogue)
+    transformation: forward
+    hop_shape: "booking-agent > create-booking (response: id BK-…, guest_name) > booking-agent > notify-partner => partner (external)"
+    framework: openai_agents, langgraph
+    datastore_origin: "create_booking's response (the booking row it INSERTed: id, guest_name, dates)"
+    egress: external
+    expected_graph: "R1's turn (L14's trace); the partner exchange in the turn's trace (another trace = a stale tool-call parent, recorded, not asserted)"
+    classification_per_leg:
+      create-booking response: "the booking id read as a unit of its own beside the name (measured on a lab run: PID, PII)"
+      partner request: "PII (the rogue agent sends the name)"
+    decision_per_leg:
+      partner request: "critical/block [DG-001] with or without lineage (the name is sent)"
+    expected_label_propagation: "the booking id reaches notify-partner's request and the partner request whole, origin create-booking's response, with the guest's name beside it; flag on: the partner record carries the inherited labels, PII among them; off: the stock decision, no inherited entry. Where the reference alone decides (the partner sent booking_id and dates only) the stock decision allows and lineage blocks — needs the notify_partner field limit, not in the pinned app"
+    status: built — test_travel_live L18 on L14's turn (skips without label lineage, without rogue, without the partner call, or when the exchange left the turn's trace)
 
   - id: R2
     title: "forward as is — PII read from the store leaves to the external partner unchanged"
@@ -63,7 +83,7 @@ rows:
       lab-store response: "allow (internal, receive)"
       lab-b request: "allow (internal)"
       lab-partner request: "critical/block [DG-001, DG-004]"
-    expected_label_propagation: ""
+    expected_label_propagation: "every unit of the record (SSN 123-45-6789, PN, EMAIL, PHONE, DOB) reaches the lab-partner request whole, origin lab-store response, via lab-b's inbound a2a request; decision unchanged (critical/block); flag on: the record carries the inherited PII"
     status: built — test_lab_live, green
 
   - id: R3
@@ -78,7 +98,7 @@ rows:
     classification_per_leg: "as R2"
     decision_per_leg:
       lab-partner request: "allow (internal)"
-    expected_label_propagation: ""
+    expected_label_propagation: "as R2 to the internal partner: the record's units reach the lab-partner request whole from lab-store's response; decision allow either way (the inherited item is RESTRICTED, no INTERNAL-level rule)"
     status: built — test_lab_live, green
 
   - id: R4
@@ -96,7 +116,7 @@ rows:
       lab-partner request: "PII, RESTRICTED"
     decision_per_leg:
       lab-partner request: "critical/block [DG-001, DG-004]"
-    expected_label_propagation: ""
+    expected_label_propagation: "the record's units reach the lab-partner request whole from lab-store's response (through lab-a's memory of the read and of lab-tool-x's annotated answer); decision unchanged (critical/block); flag on: the record carries the inherited PII"
     status: built — test_lab_live, green
 
   - id: R5
@@ -116,7 +136,7 @@ rows:
       lab-partner request: "PII (SSN), RESTRICTED"
     decision_per_leg:
       lab-partner request: "critical/block [DG-001, DG-004]"
-    expected_label_propagation: ""
+    expected_label_propagation: "the SSN reaches the lab-partner request whole, origin lab-tool-x response (the combined number is a new origin; the suffix that reached the tool is only its tail, not found); Alice Moreno whole from lab-store's first read; decision unchanged (critical/block)"
     status: built — test_lab_live, green
 
   - id: R6
@@ -134,8 +154,26 @@ rows:
       lab-partner request ×2: "none or PI each"
     decision_per_leg:
       lab-partner request ×2: "allow — each part alone is not PII (today's per-leg judgement; the lineage judgement is #272's)"
-    expected_label_propagation: "#272: the SSN's label must reach both parts"
+    expected_label_propagation: "exact match: the name reaches the egress whole (the split keeps it), so R6 blocks on the name as today; the SSN's parts are fragments — they reach nothing until fragments that recombine are built (R6b is the row without the name)"
     status: built — test_lab_live, green
+
+  - id: R6b
+    title: "split of a name-free record — the record read without its name, split into two parts, both sent externally in one payload"
+    app: lineage_lab
+    transformation: split
+    hop_shape: "demo-client > lab-a > lab-store [dark: record:alice ssn, public_note] > lab-a > lab-tool-x (split) > lab-a => lab-partner (external)"
+    framework: plan
+    datastore_origin: "postgres lab.records row alice, fields ssn and public_note"
+    egress: external
+    expected_graph: "root; lab-a→lab-store (mcp); lab-a→lab-tool-x (mcp); lab-a→lab-partner (http); 4 interactions"
+    classification_per_leg:
+      lab-store response: "PII (SSN), RESTRICTED"
+      lab-tool-x response: "{public_note, ssn_prefix}, {ssn_suffix} — the last four may read as a card code (as on R8)"
+      lab-partner request: "no PII"
+    decision_per_leg:
+      lab-partner request: "measured — no PII, so DG-001 does not fire; the classifier's own reading of the parts may decide (DG-004, as on R8), recorded"
+    expected_label_propagation: "the origin carries the SSN (lab-store's response holds 123-45-6789, which reaches lab-tool-x's request whole); the egress inherits nothing from it yet — no SSN edge into the lab-partner request, no PII among its inherited tags, recombined false; only the classifier's own reading of the parts may reach; decision unchanged by labels"
+    status: built — test_lab_live R6b; blocks through lineage only once fragments that recombine are built
 
   - id: R7
     title: "paraphrase, still risky — the SSN re-formatted ('social security no. 123 45 6789') leaves externally"
@@ -151,7 +189,7 @@ rows:
       lab-partner request: "same as above"
     decision_per_leg:
       lab-partner request: "critical/block if recognised, else allow (recorded)"
-    expected_label_propagation: ""
+    expected_label_propagation: "nothing from the store's SSN reaches the egress; the tool's own re-reading reaches the egress (the classifier's finding of '123 45 6789' on lab-tool-x's response, whole); the unchanged fields (PN, DOB, PHONE) reach whole from lab-store; the spelled-out email does not; decision unchanged"
     status: built — test_lab_live, green
 
   - id: R8
@@ -169,7 +207,7 @@ rows:
       lab-partner request: "none"
     decision_per_leg:
       lab-partner request: "predicted allow — MEASURED critical/block [DG-004, E2E-INVERT]: the classifier tags {public_note, ssn_last4: 6789, redacted} as PCI + PI, RESTRICTED (a four-digit fragment read as a card). Classifier finding; the row's prediction stands as the expectation and the test xfails with the measured cause"
-    expected_label_propagation: "#272: the origin label is dropped by the redaction — a sanctioned transformation"
+    expected_label_propagation: "nothing: no SSN edge into the lab-partner request (the last four are not the unit); what may reach is only the classifier's own reading of the four digits as a card code (lab-tool-x response), tags the egress's own classification already carries; decision unchanged by labels"
     status: built — test_lab_live R8, xfail (classifier finding)
 
   - id: R9
@@ -188,7 +226,7 @@ rows:
     decision_per_leg:
       llm request: "allow (the LLM is internal here: plaintext ollama on the host, classed by the whitelist)"
       lab-partner request: "critical/block iff the model repeated the SSN"
-    expected_label_propagation: ""
+    expected_label_propagation: "every identifier the model repeated byte for byte reaches the lab-partner request whole from lab-store's response (the SSN iff the summary repeats it); decision unchanged; flag on: the record carries what reached"
     status: built — test_lab_live, green
 
   - id: R10
@@ -237,3 +275,21 @@ rows:
       lab-partner request: "critical/block [DG-001, DG-004] iff complied"
     expected_label_propagation: ""
     status: proposed (#269)
+
+  - id: R14
+    title: "the identifier alone — a booking reference read as PII beside the guest's name and as no PII alone, sent alone to the external partner"
+    app: lineage_lab
+    transformation: forward
+    hop_shape: "demo-client > lab-a > lab-store [dark: write r14-alice {id, guest_name}] > lab-a > lab-store [dark: read whole] > lab-a > lab-store [dark: read fields=[id]] > lab-a => lab-partner (external)"
+    framework: plan
+    datastore_origin: "postgres lab.records row r14-alice written by the plan: {id: BK-7F3A21, guest_name: Alice Moreno}"
+    egress: external
+    expected_graph: "root; 3× lab-a→lab-store (mcp); lab-a→lab-partner (http); 5 interactions"
+    classification_per_leg:
+      "lab-store response 1 (whole)": "PN + PID (the id read as PII beside the name) — measured on a lab run"
+      "lab-store response 2 (the id alone)": "AAD (PI, CREDENTIALS) — measured; no PII"
+      lab-partner request: "OPID (PI) — measured; no PII"
+    decision_per_leg:
+      lab-partner request: "flag off: the stock decision, none/allow (measured)"
+    expected_label_propagation: "the id's PID unit found on lab-store's response #1 reaches the lab-partner request whole, PII among its tags (and the AAD unit of response #2); the name does not reach. Flag on: critical/block. The block comes from DG-001 on the inherited PII (the id tagged PID beside the name at store answer 1): lineage alone decides. The CREDENTIALS, DG-004 and E2E-CRED-EXT come from the classifier's own AAD reading of the id alone at store answer 2, which lineage carries as found"
+    status: "built — test_lab_live R14 (no app change needed: the lab's write and read(fields) suffice)"

@@ -57,6 +57,7 @@ DG_ROLLOUT_DEPLOYMENTS=(
     data-governance-interactions
     data-governance-classification
     data-governance-data-lineage
+    data-governance-label-lineage
     data-governance-leg-ready
     data-governance-risk-trace-trigger
     data-governance-risk-alerts

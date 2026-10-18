@@ -81,9 +81,12 @@ flowchart TB
 1. **Leg readiness.** `data_governance/processors/leg_ready/driver.py` drains
    `interaction_legs` in `seq` order using the contiguous-prefix readiness
    cursor: a leg is ready once it has no payload, or its payload has a
-   `payload_classifications` row. Each ready leg is handed to the risk
+   `payload_classifications` row — and, with `RISK_INHERITED_LABELS=on`, once
+   label lineage has derived it at its current payload (a `leg_inherited_labels`
+   row at the same hash). Each ready leg is handed to the risk
    `Observer` outside any transaction (this is where the OPA round-trip
-   happens).
+   happens). With the flag on, the interactions queued in
+   `risk_recompute_requests` are re-delivered after the cursor arm.
 2. **Evidence gathering.** `risk/engine/evidence.py` reads the interaction's
    legs, its anchor span's wire facts (`lineage.*`, `url.*` — see
    [`docs/sidecar-wire-contract.md`](../../docs/sidecar-wire-contract.md) §4
@@ -199,6 +202,10 @@ grouped by concern (defaults in parentheses):
 
 **Engine wiring** (`processors/leg_ready/__main__.py`)
 - `RISK_ENGINE_OBSERVER` (`on`; set `off`/`0`/`false` to disable)
+- `RISK_INHERITED_LABELS` (`off`) — `on` hands each flow the labels that reached
+  its payload through label lineage (`docs/label-lineage.md`) and gates readiness
+  on label lineage's row; `all` and any other value stop leg-ready at startup.
+  Parsed on first use, not at import.
 - `RISK_INTERNAL_URL_WHITELIST_PATTERNS` (empty) — comma-separated entries
   naming internal destinations when the engine builds anchor facts. An entry
   that parses as an address or network (`::1`, `10.96.0.0/16`) matches
@@ -290,6 +297,7 @@ Relevant test locations:
 | `interaction_risk_records` | `risk/engine/compute.py` | Versioned per-interaction risk verdicts |
 | `trace_risk_records` | `risk/engine/trace_compute.py` | Versioned per-trace aggregated risk verdicts |
 | `alerts` | `risk/alerts/generate.py` | Alert records: one open alert per trace, superseded when its level rises |
+| `risk_recompute_requests` | `processors/label_lineage` | Interactions whose inherited labels changed; drained (and deleted) by leg-ready with `RISK_INHERITED_LABELS=on` |
 
 The risk records are append-only/versioned (`alerts` changes only
 `duplicate_count` and `superseded_by` on an existing row), all FK-free by convention (mirrors the derived

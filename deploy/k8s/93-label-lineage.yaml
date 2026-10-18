@@ -1,0 +1,151 @@
+---
+# P-label-lineage processor Deployment — a DB consumer, NOT an inbound API.
+#
+# Derives label lineage (data_governance/label_lineage, docs/label-lineage.md):
+# for every payload of a trace, which classified units of earlier payloads are
+# still present in it. It drains `interaction_legs` by `seq`, readiness-gated
+# like the leg-ready consumer (85-leg-ready.yaml): a leg is delivered once its
+# payload is absent or classified, holding at the first unready one, woken by
+# `dg_interaction_leg_ready` with the poll as the correctness backstop. Each
+# delivered run re-derives each of its traces, once, and writes migration 0024's tables
+# (`payload_label_edges`, `leg_inherited_labels`, `label_lineage_trace_status`,
+# `risk_recompute_requests`) in the transaction that advances its own
+# `label_lineage` cursor in `processor_state`.
+# It reads no risk configuration: a changed inherited summary is always
+# written to `risk_recompute_requests`; leg-ready alone decides
+# (RISK_INHERITED_LABELS on 85-leg-ready.yaml) whether to act on it.
+#
+# Same slim image as the receiver (deployments differ only by `command:`), the
+# migrate init container like every sibling (ADR-0002), single replica with no
+# surge for the same single-cursor reason as 90-data-lineage.yaml: a brief
+# involuntary overlap is wasted work, not corruption, because a derivation is a
+# deterministic function of committed state written in one transaction.
+#
+# Recovery (also after re-classifying payloads, ADR-0024's runbook, which this
+# processor's stale arm does not see): truncate the four tables, reset the
+# `label_lineage` cursor row to 0, restart. The replay writes a recompute request for every interaction with
+# an edge again, and with leg-ready's RISK_INHERITED_LABELS=on it holds risk at
+# every leg the replay has not reached yet: run it with the flag off, or expect
+# a re-score of history when it catches up.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-governance-label-lineage
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: data-governance-label-lineage
+    app.kubernetes.io/part-of: data-governance
+spec:
+  replicas: 1
+  strategy:
+    # Single-cursor drainer: don't create a second pod during a rollout (see the
+    # header note — involuntary eviction can still briefly overlap; that window
+    # is made safe by the derivation being deterministic and wholly contained in
+    # one transaction, not by this strategy). maxSurge:0 + maxUnavailable:1 tears
+    # down the old pod before the replacement starts, the opposite of the
+    # receiver's surge-first rollout.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: data-governance-label-lineage
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: data-governance-label-lineage
+        app.kubernetes.io/part-of: data-governance
+    spec:
+      initContainers:
+        # ADR-0002: each pod runs `python -m data_governance.db.migrate` to
+        # head before the processor container starts. Alembic's version table
+        # makes this idempotent — running it from this pod as well as from the
+        # receiver replicas and the sibling processors is safe (all migrate to
+        # the same compiled head).
+        - name: migrate
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.db.migrate"]
+          # Note: ``DATABASE_URL`` must come AFTER the POSTGRES_* entries it
+          # references. Kubernetes only substitutes ``$(VAR)`` against names
+          # defined earlier in the same env list — a forward reference
+          # reaches the container as literal ``$(VAR)`` and breaks DSN
+          # parsing (issue #40). The
+          # ``test_container_env_placeholder_references_resolve_in_order``
+          # regression test in tests/deploy/test_manifests.py pins this across
+          # every manifest.
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"
+      containers:
+        # The processor container runs the label-lineage entry point. Like the
+        # receiver (PROJECT.md §3) and both siblings, it does NOT run Alembic
+        # itself — the init container is the schema-ordering gate. The entry
+        # point performs a defence-in-depth schema-version check on startup
+        # (issue #10, ADR-0002) and exits non-zero on mismatch, surfacing as
+        # CrashLoopBackOff.
+        - name: label-lineage
+          image: data-governance/receiver:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "data_governance.processors.label_lineage"]
+          # See the ordering note on the migrate init container above —
+          # ``DATABASE_URL`` must come after the POSTGRES_* entries it
+          # references (issue #40). Env block is the receiver's verbatim.
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-governance-postgres
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@data-governance-postgres:5432/$(POSTGRES_DB)"
+            # Which finder label lineage matches with (data_governance/
+            # label_lineage/find.py). "exact" is the only one registered and the
+            # code default, stated here so an operator reading the manifest sees
+            # it: the held value found byte for byte, bounded, nothing else. An
+            # unregistered name exits 2 before any DB work.
+            - name: LABEL_MATCHER
+              value: "exact"
+          # No ports, no Service, no probes, no metrics surface — the
+          # data-lineage processor's shape (90-data-lineage.yaml): k8s restarts
+          # on process exit; the startup checks surface a wrong image or a
+          # wrong config as CrashLoopBackOff. Sized like it: one whole trace is
+          # held in memory per delivered leg.
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              memory: "1Gi"

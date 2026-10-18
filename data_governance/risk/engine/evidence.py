@@ -20,7 +20,8 @@ import dataclasses
 
 from data_governance import db
 from data_governance.processors.classification.verdict import Verdict
-from data_governance.risk.engine import utils
+from data_governance.risk import config
+from data_governance.risk.engine import labels, utils
 
 __all__ = ["Evidence", "InteractionNotFoundError", "gather_evidence"]
 
@@ -45,6 +46,9 @@ class Evidence:
     # sites (and tests) remain valid.
     parent_interaction_id: str | None = None
     anchor: utils.AnchorFacts | None = None
+    # The label-lineage edges into each leg (RISK_INHERITED_LABELS=on); None
+    # when off, so nothing downstream changes shape.
+    inherited: labels.Inherited | None = None
 
 
 _INTERACTION_SQL = (
@@ -138,6 +142,38 @@ def _fetch_anchor(tx: db.Transaction, interaction_id: str) -> utils.AnchorFacts 
     return facts
 
 
+# Each leg's edges are pinned to the payload the leg carries NOW: an edge derived
+# from a payload the leg was rewritten away from must not reach OPA (the recompute
+# arm has no readiness predicate to hold it back).
+_INHERITED_SQL = (
+    "SELECT e.to_leg_type::text, e.trace_id, e.entity_type, e.regulatory_tags, e.sensitivity_level, "
+    "e.match_kind, e.matched_text, e.matched_start, e.matched_end, e.recombined, e.origin_trace_id "
+    "FROM payload_label_edges e "
+    "JOIN unnest(%s::text[], %s::text[]) AS cur(leg_type, payload_hash) "
+    "  ON cur.leg_type = e.to_leg_type::text AND cur.payload_hash = e.to_payload_hash "
+    "WHERE e.to_interaction_id = %s "
+    "ORDER BY e.to_leg_type, e.matched_start NULLS LAST, e.entity_type, e.edge_id"
+)
+
+
+def _fetch_inherited(
+    tx: db.Transaction, interaction_id: str, legs: list[utils.LegEvidence], mode: str
+) -> labels.Inherited:
+    """The label-lineage edges into the interaction's legs at their current
+    payloads — one indexed read, made only with the flag on."""
+    current = [leg for leg in legs if leg.payload_hash is not None]
+    by_leg: dict[str, list[labels.InheritedEdge]] = {}
+    rows = tx.fetch_all(_INHERITED_SQL, ([leg.leg_type for leg in current],
+                                         [leg.payload_hash for leg in current], interaction_id))
+    for r in rows:
+        by_leg.setdefault(r[0], []).append(labels.InheritedEdge(
+            trace_id=r[1], entity_type=r[2], regulatory_tags=tuple(r[3] or ()), sensitivity_level=r[4],
+            match_kind=r[5], matched_text=r[6], matched_start=r[7], matched_end=r[8],
+            recombined=bool(r[9]), origin_trace_id=r[10],
+        ))
+    return labels.Inherited(mode=mode, by_leg=by_leg)
+
+
 def _gather_classifications(
     tx: db.Transaction, legs: list[utils.LegEvidence]
 ) -> dict[str, Verdict | object]:
@@ -160,6 +196,7 @@ def gather_evidence(interaction_id: str) -> Evidence:
     exists for this id — callers must not aggregate/write against evidence
     that doesn't identify a real interaction.
     """
+    mode = config.inherited_labels_mode()
     with db.transaction() as tx:
         row = tx.fetch_one(_INTERACTION_SQL, (interaction_id,))
         if row is None:
@@ -177,4 +214,7 @@ def gather_evidence(interaction_id: str) -> Evidence:
             span_ids=_fetch_span_ids(tx, interaction_id),
             classifications=_gather_classifications(tx, legs),
             anchor=_fetch_anchor(tx, interaction_id),
+            inherited=(
+                _fetch_inherited(tx, interaction_id, legs, mode) if mode != "off" else None
+            ),
         )

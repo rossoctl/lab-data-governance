@@ -1,7 +1,8 @@
 """DAS configuration — PRD-SENTRY-001 v8 §10 parameters as env-backed constants.
 
-Plain module-level constants read via ``os.environ.get`` at import time,
-matching the rest of the repo (no pydantic/pydantic-settings anywhere in this
+Plain module-level constants read via ``os.environ.get`` at import time (one
+exception: ``RISK_INHERITED_LABELS``, parsed on first use by
+:func:`inherited_labels_mode`), matching the rest of the repo (no pydantic/pydantic-settings anywhere in this
 codebase). Each PRD dotted name (e.g. ``alert.min_risk_level``) maps to a
 ``RISK_``-prefixed upper-snake env var (``RISK_ALERT_MIN_RISK_LEVEL``).
 
@@ -26,6 +27,7 @@ there is nothing to configure yet.
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 
@@ -68,6 +70,7 @@ __all__ = [
     "API_METRICS_TOP_TRACES_MAX_LIMIT",
     "INTERNAL_URL_WHITELIST_PATTERNS",
     "RULES_SOURCE",
+    "inherited_labels_mode",
 ]
 
 
@@ -265,3 +268,38 @@ API_METRICS_TOP_TRACES_MAX_LIMIT = _int_env(
 # build_opa_input's docstring for the caveat.
 
 INTERNAL_URL_WHITELIST_PATTERNS = _list_env("RISK_INTERNAL_URL_WHITELIST_PATTERNS", [])
+
+# --- risk.inherited_labels ----------------------------------------------------
+# Whether the engine reads label lineage (migration 0024, the `label_lineage`
+# processor) and hands each flow the labels that REACHED its payload as one more
+# data item. `off` (the default): the engine never reads the label tables and the
+# OPA input, fingerprint and record are byte-identical to the engine without
+# label lineage. `on`: labels whose origin is in the same trace are forwarded,
+# leg readiness waits for the leg's label row, and the recompute requests label
+# lineage writes are drained. `all` would also forward origins found in other
+# conversations; it is rejected until cross-conversation label lineage exists.
+#
+# Read lazily (only leg-ready and the engine path consult it), so a typo stops
+# those, with this message, and nothing else that imports this module.
+
+INHERITED_LABELS_MODES = ("off", "on", "all")
+
+
+def parse_inherited_labels(raw: str | None) -> str:
+    """The ``RISK_INHERITED_LABELS`` mode, or ``ValueError`` for ``all`` or a typo.
+    Never falls back to ``off`` on a value it does not know."""
+    mode = (raw or "off").strip().lower()
+    if mode == "all":
+        raise ValueError(
+            "RISK_INHERITED_LABELS=all forwards labels from other conversations; it "
+            "arrives with cross-conversation label lineage (#273) — use off or on"
+        )
+    if mode not in INHERITED_LABELS_MODES:
+        raise ValueError(f"RISK_INHERITED_LABELS must be off or on; got {raw!r}")
+    return mode
+
+
+@functools.cache
+def inherited_labels_mode() -> str:
+    """The configured mode, parsed once per process on first use."""
+    return parse_inherited_labels(os.environ.get("RISK_INHERITED_LABELS"))
