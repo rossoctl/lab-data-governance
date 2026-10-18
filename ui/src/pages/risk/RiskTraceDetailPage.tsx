@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   PageSection,
@@ -11,9 +11,15 @@ import {
   EmptyStateBody,
   Label,
 } from '@patternfly/react-core';
+import type { QueryKey } from '@tanstack/react-query';
 import { useEntities } from '../../api/hooks';
-import { useTraceRiskDetail, useRuleCatalogIndex, useTraceAlerts } from '../../risk-api/hooks';
-import { RiskApiError } from '../../risk-api/client';
+import { useTraceLive } from '../../api/live';
+import {
+  useTraceRiskDetail,
+  useRuleCatalogIndex,
+  useTraceAlerts,
+  riskTraceKeys,
+} from '../../risk-api/hooks';
 import { deriveGraph } from '../../lib/graph';
 import {
   toFlowEntities,
@@ -28,6 +34,24 @@ import { PolicyDecisionPanel } from '../../risk-components/PolicyDecisionPanel';
 import { InteractionPanel } from '../../risk-components/InteractionPanel';
 import { ViolationStepper } from '../../risk-components/ViolationStepper';
 import { TraceAlertsPanel } from '../../risk-components/TraceAlertsPanel';
+import { LiveModeLabel } from '../../components/LiveModeLabel';
+
+/**
+ * What a change to the trace re-reads: its risk detail and alerts, and the
+ * entity list the graph names its nodes from. Not the rule catalog — it is not
+ * per trace. Module-level, as `useTraceLive` requires (see `LiveKeys`).
+ */
+function riskPageLiveKeys(traceId: string): QueryKey[] {
+  return [['entities', traceId], ...riskTraceKeys(traceId)];
+}
+
+// Written by DELETING the param at the default, never by setting it
+// explicitly — the same convention `RiskDashboardPage.tsx` documents for
+// `?window=`, so the canonical URL for violation 1 stays clean.
+function writeViolation(params: URLSearchParams, next: number | null) {
+  if (next == null || next === 1) params.delete('violation');
+  else params.set('violation', String(next));
+}
 
 /**
  * Trace detail — the "Alert Execution" view (issue #170, parent #167): given
@@ -84,6 +108,31 @@ import { TraceAlertsPanel } from '../../risk-components/TraceAlertsPanel';
  * included, read from `GET /risk/alerts?trace_id=` (`useTraceAlerts`), sits
  * above the graph. Its own query, so a failure there never hides the rest of
  * the page.
+ *
+ * THE PAGE IS LIVE while it is open (ADR-0034), like the trace page: one
+ * subscription to the trace's change stream (`useTraceLive`), which
+ * invalidates this page's reads of the trace (`riskPageLiveKeys`) whenever
+ * the trace's version token moves — and the token moves on risk records and
+ * alerts as well as on derivation. A re-read keeps what is held by id: a
+ * `?interaction=` stays on its interaction, and `EntityGraph` merges a new
+ * spec into its model in place and never re-fits, so the viewport, a zoom and
+ * a dragged node all stay. The open policy event is a position in
+ * `violations` (`?violation=N`, 1 when absent), and a re-read can shift it:
+ * the forest is in request order and an outer call's rule usually lands
+ * last, so an interaction EARLIER in the trace can gain its first rule after
+ * the reader picked a later one. So when a re-read changes `violations`, the
+ * event shown before it is looked up again by id and `?violation=` is
+ * rewritten (replace, before paint) to its new position — the stepper, the
+ * policy panel, the highlighted edge and the interaction panel stay on it.
+ * Only an event the re-read removes falls back to its position, and a
+ * `?violation=N` that is still out of range (shown as event 1 for now) is not
+ * held, so it lands on event N once N arrives. The URL stays the truth: the
+ * rewrite is what moves the page. The error branches below read
+ * `isLoadingError`, not `isError`, for the trace page's reason: a failed
+ * BACKGROUND re-read keeps the data it has instead of swapping the page out.
+ * A page opened before the trace had a risk record ("Trace not found", a
+ * settled `null`, see `useTraceRiskDetail`) keeps saying so through re-reads
+ * and fills in by itself once the record lands.
  */
 export function RiskTraceDetailPage() {
   const { traceId = '' } = useParams<{ traceId: string }>();
@@ -93,6 +142,7 @@ export function RiskTraceDetailPage() {
   const alerts = useTraceAlerts(traceId);
   const entities = useEntities(traceId);
   const catalog = useRuleCatalogIndex();
+  const live = useTraceLive(traceId, riskPageLiveKeys);
 
   // Memoized so its identity is stable across renders when detail.data is
   // unchanged — `?? []` would otherwise hand every useMemo below a fresh
@@ -133,10 +183,39 @@ export function RiskTraceDetailPage() {
   // interaction's risk was still null can start naming one once it is
   // computed, and the stepper must then show THAT event, not another.
   const requestedInteractionId = searchParams.get('interaction');
-  const violationIndex =
-    (requestedInteractionId != null ? violationIndexByInteractionId.get(requestedInteractionId) : undefined) ??
-    parseViolationIndex(searchParams.get('violation'), violations.length);
+  const byInteraction =
+    requestedInteractionId != null ? violationIndexByInteractionId.get(requestedInteractionId) : undefined;
+  const requestedViolation = searchParams.get('violation');
+  const violationIndex = byInteraction ?? parseViolationIndex(requestedViolation, violations.length);
   const violation = violationIndex != null ? violations[violationIndex - 1] : null;
+  // A `?violation=N` naming an event that has not arrived yet falls back to
+  // event 1 for now; that fallback is not the reader's pick, so it is not held.
+  const fellBack =
+    byInteraction === undefined && requestedViolation != null && String(violationIndex) !== requestedViolation;
+
+  // Holds the open policy event by id across a re-read (see header): the
+  // event shown with the previous `violations`, re-resolved when the list
+  // changes. A step or a click leaves the list as it was, so it never fires
+  // there; a `?interaction=` naming the event already resolves it by id.
+  const shownViolation = useRef<{ byId: Map<string, number>; id: string | null } | null>(null);
+  useLayoutEffect(() => {
+    const shown = shownViolation.current;
+    shownViolation.current = {
+      byId: violationIndexByInteractionId,
+      id: fellBack ? null : (violation?.interaction_id ?? null),
+    };
+    if (shown == null || shown.byId === violationIndexByInteractionId || shown.id == null) return;
+    const index = violationIndexByInteractionId.get(shown.id);
+    if (index == null || index === violationIndex) return;
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        writeViolation(params, index);
+        return params;
+      },
+      { replace: true },
+    );
+  }, [violationIndexByInteractionId, violation, violationIndex, fellBack, setSearchParams]);
 
   // A click on the graph's background deselects in `EntityGraph` (null) —
   // ignored here rather than clearing the panel, so a stray click never
@@ -155,14 +234,6 @@ export function RiskTraceDetailPage() {
         params.set('interaction', interactionId);
         return params;
       });
-  }
-
-  // Written by DELETING the param at the default, never by setting it
-  // explicitly — the same convention `RiskDashboardPage.tsx` documents for
-  // `?window=`, so the canonical URL for violation 1 stays clean.
-  function writeViolation(params: URLSearchParams, next: number | null) {
-    if (next == null || next === 1) params.delete('violation');
-    else params.set('violation', String(next));
   }
 
   // Also deletes `?interaction=`: the stepped-to policy event's interaction
@@ -187,8 +258,7 @@ export function RiskTraceDetailPage() {
   const selected = forest.find((ix) => ix.interaction_id === requestedInteractionId) ?? violation;
   const selectedInteractionId = selected?.interaction_id ?? null;
 
-  const isNotFound =
-    detail.isError && detail.error instanceof RiskApiError && detail.error.status === 404;
+  const isNotFound = detail.data === null;
 
   return (
     <PageSection>
@@ -212,6 +282,7 @@ export function RiskTraceDetailPage() {
             {violations.length} policy event{violations.length === 1 ? '' : 's'}
           </Label>
         )}
+        <LiveModeLabel mode={live} />
       </Title>
 
       {detail.isLoading ? (
@@ -221,7 +292,7 @@ export function RiskTraceDetailPage() {
           <EmptyStateHeader titleText="Trace not found" headingLevel="h4" />
           <EmptyStateBody>No trace with id {traceId} has a risk record.</EmptyStateBody>
         </EmptyState>
-      ) : detail.isError ? (
+      ) : detail.isLoadingError ? (
         <EmptyState>
           <EmptyStateHeader titleText="Failed to load" headingLevel="h4" />
           <EmptyStateBody>Could not load this trace. Try again later.</EmptyStateBody>
@@ -233,7 +304,7 @@ export function RiskTraceDetailPage() {
           </Title>
           {alerts.isLoading ? (
             <Spinner size="md" aria-label="Loading alerts" />
-          ) : alerts.isError ? (
+          ) : alerts.isLoadingError ? (
             <EmptyState>
               <EmptyStateHeader titleText="Failed to load alerts" headingLevel="h4" />
             </EmptyState>

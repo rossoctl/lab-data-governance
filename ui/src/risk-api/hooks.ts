@@ -10,11 +10,12 @@
 import {
   useQuery,
   useInfiniteQuery,
+  type QueryKey,
   type UseQueryResult,
   type UseInfiniteQueryResult,
   type InfiniteData,
 } from '@tanstack/react-query';
-import { riskFetchJson } from './client';
+import { RiskApiError, riskFetchJson } from './client';
 import { ALERT_RISK_LEVELS } from '../lib/riskAlertGroups';
 import type {
   RiskSummary,
@@ -184,11 +185,23 @@ export function useRuleCategories(): UseQueryResult<RuleCategoriesResponse> {
  * {@link useRiskTracesInfinite}'s `riskQueryKey('traces', { window })` — the
  * two must never collide in react-query's cache despite both nesting under
  * `riskQueryKey('traces', ...)`.
+ *
+ * A 404 (no risk record for this trace yet) settles as `null`, not an error:
+ * on a live page the record can still land, and an error with no data would
+ * go back to `pending` (and be retried) on every re-read, so the page would
+ * flip between its spinner and "Trace not found" until it did.
  */
-export function useTraceRiskDetail(traceId: string | undefined): UseQueryResult<TraceRiskDetailResponse> {
+export function useTraceRiskDetail(traceId: string | undefined): UseQueryResult<TraceRiskDetailResponse | null> {
   return useQuery({
     queryKey: riskQueryKey('traces', traceId, 'detail'),
-    queryFn: () => riskFetchJson<TraceRiskDetailResponse>(`/traces/${traceId}`),
+    queryFn: async () => {
+      try {
+        return await riskFetchJson<TraceRiskDetailResponse>(`/traces/${traceId}`);
+      } catch (e) {
+        if (e instanceof RiskApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
     enabled: traceId !== undefined,
   });
 }
@@ -218,6 +231,20 @@ export function useTraceAlerts(traceId: string | undefined): UseQueryResult<Aler
     select: (page) => ({ ...page, items: [...page.items].reverse() }),
     enabled: traceId !== undefined,
   });
+}
+
+/**
+ * The key prefixes of ONE trace's risk reads — {@link useTraceRiskDetail}'s and
+ * {@link useTraceAlerts}' — which the risk trace page invalidates when that
+ * trace's version token moves (`useTraceLive`, ADR-0034). Scoped so nothing
+ * else matches: `riskQueryKey('traces', traceId)` parts from the dashboard's
+ * `riskQueryKey('traces', { window })` at its third element, and the alerts
+ * prefix's `{ trace_id }` is matched as a partial object, so only an alerts
+ * key for this trace falls under it. Never {@link RISK_QUERY_KEY_ROOT}: that
+ * would refetch every mounted risk list on each change to one trace.
+ */
+export function riskTraceKeys(traceId: string): QueryKey[] {
+  return [riskQueryKey('traces', traceId), riskQueryKey('alerts', { trace_id: traceId })];
 }
 
 /**

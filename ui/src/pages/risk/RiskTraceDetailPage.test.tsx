@@ -747,4 +747,243 @@ describe('RiskTraceDetailPage content (#170)', () => {
       expect(within(graphSection as HTMLElement).queryByText(/\bnone\b/i)).not.toBeInTheDocument();
     });
   });
+
+  /**
+   * THE PAGE IS LIVE (ADR-0034), on the trace page's stream. jsdom has no
+   * EventSource, so the hook is off in every other test in this file; here a
+   * stand-in stream drives it, the way `TraceDetailPage.test.tsx` does.
+   */
+  describe('live: the page follows the trace change stream', () => {
+    class FakeEventSource {
+      static readonly CONNECTING = 0;
+      static readonly CLOSED = 2;
+      static last: FakeEventSource | null = null;
+      readyState = FakeEventSource.CONNECTING;
+      onerror: ((e: Event) => void) | null = null;
+      private listeners = new Map<string, Set<(e: Event) => void>>();
+      constructor(public readonly url: string) {
+        FakeEventSource.last = this;
+      }
+      addEventListener(type: string, fn: (e: Event) => void) {
+        if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+        this.listeners.get(type)!.add(fn);
+      }
+      removeEventListener() {}
+      close() {}
+      change(id: string) {
+        this.listeners.get('change')?.forEach((fn) => fn(new MessageEvent('change', { lastEventId: id })));
+      }
+    }
+
+    beforeEach(() => {
+      vi.stubGlobal('EventSource', FakeEventSource);
+      FakeEventSource.last = null;
+    });
+
+    /** How many times the page has read each of its sources so far. */
+    function reads() {
+      const urls = (fetch as ReturnType<typeof vi.fn>).mock.calls.map(([url]) => String(url));
+      return {
+        detail: urls.filter((u) => u.startsWith('/risk/traces/')).length,
+        alerts: urls.filter((u) => u.startsWith('/risk/alerts')).length,
+        entities: urls.filter((u) => u.includes('/entities')).length,
+        rules: urls.filter((u) => u.startsWith('/risk/rules')).length,
+      };
+    }
+
+    const forest = (weatherSummary: string) => ({
+      trace_risk: { trace_id: 't1' },
+      interactions: [
+        interaction({ interaction_id: 'i1', summary: 'only violation' }),
+        interaction({
+          interaction_id: 'i2',
+          summary: weatherSummary,
+          risk: risk({ interaction_id: 'i2', risk_level: 'low', enforcement_type: null, triggered_rule_ids: [] }),
+        }),
+      ],
+    });
+
+    it('re-reads detail, alerts and entities on a change, keeping ?interaction=, the panel and the viewport', async () => {
+      mockFetchRouter({ detail: forest('agent calls weather') });
+      renderWithProviders(
+        <>
+          <LocationProbe />
+          {harness()}
+        </>,
+        { route: '/risk/traces/t1?interaction=i2' },
+      );
+      const panel = await screen.findByTestId('interaction-panel');
+      await waitFor(() => expect(within(panel).getByText('agent calls weather')).toBeInTheDocument());
+      await screen.findByText('No alerts');
+      expect(FakeEventSource.last?.url).toBe('/api/traces/t1/events');
+      expect(screen.queryByTestId('live-mode')).toBeNull();
+
+      // The reader zoomed in; a re-read must not undo it.
+      const transform = () => document.querySelector('[data-surface="true"]')?.getAttribute('transform');
+      const fitted = transform();
+      await userEvent.click(screen.getByRole('button', { name: /^Zoom In$/i }));
+      await waitFor(() => expect(transform()).not.toBe(fitted));
+      const zoomed = transform();
+      const edgeBefore = document.querySelector('[data-id="i2:request"]');
+      expect(edgeBefore).not.toBeNull();
+
+      await act(async () => FakeEventSource.last!.change('v1'));
+      expect(screen.getByTestId('live-mode')).toHaveTextContent('Live');
+      await waitFor(() => expect(reads().detail).toBe(2)); // the first token re-reads once
+      const before = reads();
+
+      // The engine writes a new risk version and raises an alert.
+      mockFetchRouter({
+        detail: forest('agent calls weather, recomputed'),
+        alerts: { items: [alert({ alert_id: 'a1', title: 'raised mid-run' })], next_cursor: null },
+      });
+      await act(async () => FakeEventSource.last!.change('v2'));
+
+      await waitFor(() => expect(within(panel).getByText('agent calls weather, recomputed')).toBeInTheDocument());
+      expect(await screen.findByText('raised mid-run')).toBeInTheDocument();
+      expect(reads()).toEqual({
+        detail: before.detail + 1,
+        alerts: before.alerts + 1,
+        entities: before.entities + 1,
+        rules: before.rules, // the catalog is not per trace
+      });
+      expect(screen.getByTestId('location')).toHaveTextContent('interaction=i2');
+      expect(screen.getByTestId('interaction-panel')).toBe(panel);
+      expect(transform()).toBe(zoomed);
+      expect(document.querySelector('[data-id="i2:request"]')).toBe(edgeBefore);
+
+      // Same token again (a reconnect): nothing is re-read.
+      await act(async () => FakeEventSource.last!.change('v2'));
+      expect(reads().detail).toBe(before.detail + 1);
+    });
+
+    it('keeps a picked policy event when an earlier interaction gains its first rule', async () => {
+      // The outer call (i0) comes first in request order but its rule lands
+      // last, after the reader picked i2 — the second policy event so far.
+      const traced = (outerRuled: boolean) => ({
+        trace_risk: { trace_id: 't1' },
+        interactions: [
+          interaction({
+            interaction_id: 'i0',
+            summary: 'outer call',
+            risk: outerRuled
+              ? risk({ interaction_id: 'i0' })
+              : risk({ interaction_id: 'i0', risk_level: 'low', enforcement_type: null, triggered_rule_ids: [] }),
+          }),
+          interaction({ interaction_id: 'i1', summary: 'first inner', risk: risk({ interaction_id: 'i1' }) }),
+          interaction({ interaction_id: 'i2', summary: 'picked event', risk: risk({ interaction_id: 'i2' }) }),
+        ],
+      });
+      mockFetchRouter({ detail: traced(false) });
+      renderWithProviders(
+        <>
+          <LocationProbe />
+          {harness()}
+        </>,
+        { route: '/risk/traces/t1?violation=2' },
+      );
+      await waitFor(() => expect(screen.getByText('2 of 2')).toBeInTheDocument());
+      expect(within(screen.getByTestId('policy-decision-panel')).getByText('picked event')).toBeInTheDocument();
+
+      mockFetchRouter({ detail: traced(true) });
+      await act(async () => FakeEventSource.last!.change('v1'));
+
+      // Same event, now third of three: the URL follows it, nothing else moves.
+      await waitFor(() => expect(screen.getByText('3 of 3')).toBeInTheDocument());
+      expect(within(screen.getByTestId('policy-decision-panel')).getByText('picked event')).toBeInTheDocument();
+      expect(within(screen.getByTestId('interaction-panel')).getByText('picked event')).toBeInTheDocument();
+      expect(document.querySelector('[data-id="i2:request"] .dg-graph-edge--selected')).not.toBeNull();
+      expect(screen.getByTestId('location')).toHaveTextContent('violation=3');
+      expect(screen.getByTestId('location')).not.toHaveTextContent('interaction=');
+
+      // The stepper still steps from there.
+      await userEvent.click(screen.getByRole('button', { name: /previous/i }));
+      await waitFor(() => expect(screen.getByText('2 of 3')).toBeInTheDocument());
+      expect(within(screen.getByTestId('policy-decision-panel')).getByText('first inner')).toBeInTheDocument();
+    });
+
+    it('shows Polling while the stream errors, and Live again when it returns', async () => {
+      mockFetchRouter();
+      renderWithProviders(harness(), { route: '/risk/traces/t1' });
+      await screen.findByText('Policy events');
+
+      await act(async () => FakeEventSource.last!.change('v1'));
+      expect(screen.getByTestId('live-mode')).toHaveTextContent('Live');
+      await act(async () => FakeEventSource.last!.onerror?.(new Event('error')));
+      expect(screen.getByTestId('live-mode')).toHaveTextContent('Polling');
+      await act(async () => FakeEventSource.last!.change('v1'));
+      expect(screen.getByTestId('live-mode')).toHaveTextContent('Live');
+    });
+
+    it('keeps what it shows when a background re-read fails', async () => {
+      mockFetchRouter();
+      renderWithProviders(harness(), { route: '/risk/traces/t1' });
+      await screen.findByText('Policy events');
+
+      mockFetchRouter({ detail: { status: 500, body: { error: 'boom' } } });
+      await act(async () => FakeEventSource.last!.change('v1'));
+      await waitFor(() => expect(reads().detail).toBe(2));
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      expect(screen.getByText('Policy events')).toBeInTheDocument();
+      expect(screen.queryByText('Failed to load')).not.toBeInTheDocument();
+    });
+
+    it('fills in by itself when it was opened before the trace had a risk record', async () => {
+      mockFetchRouter({ detail: { status: 404, body: { error: 'not found' } } });
+      renderWithProviders(harness(), { route: '/risk/traces/t1' });
+      await screen.findByText('Trace not found');
+
+      mockFetchRouter();
+      await act(async () => FakeEventSource.last!.change('v1'));
+      expect(await screen.findByText('Policy events')).toBeInTheDocument();
+      expect(screen.queryByText('Trace not found')).not.toBeInTheDocument();
+    });
+
+    it('keeps saying "Trace not found" through re-reads, with no spinner in between', async () => {
+      mockFetchRouter({ detail: { status: 404, body: { error: 'not found' } } });
+      renderWithProviders(harness(), { route: '/risk/traces/t1' });
+      await screen.findByText('Trace not found');
+
+      let spun = false;
+      const observer = new MutationObserver(() => {
+        if (document.querySelector('[aria-label="Loading risk trace"]')) spun = true;
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      await act(async () => FakeEventSource.last!.change('v1'));
+      await waitFor(() => expect(reads().detail).toBe(2));
+      await act(async () => FakeEventSource.last!.change('v2'));
+      await waitFor(() => expect(reads().detail).toBe(3));
+      observer.disconnect();
+
+      expect(spun).toBe(false);
+      expect(screen.getByText('Trace not found')).toBeInTheDocument();
+    });
+
+    it('lands on a linked ?violation=N once event N arrives', async () => {
+      const traced = (n: number) => ({
+        trace_risk: { trace_id: 't1' },
+        interactions: ['i1', 'i2', 'i3'].slice(0, n).map((id) =>
+          interaction({ interaction_id: id, summary: `event ${id}`, risk: risk({ interaction_id: id }) }),
+        ),
+      });
+      mockFetchRouter({ detail: traced(2) });
+      renderWithProviders(
+        <>
+          <LocationProbe />
+          {harness()}
+        </>,
+        { route: '/risk/traces/t1?violation=3' },
+      );
+      await waitFor(() => expect(screen.getByText('1 of 2')).toBeInTheDocument());
+
+      mockFetchRouter({ detail: traced(3) });
+      await act(async () => FakeEventSource.last!.change('v1'));
+
+      await waitFor(() => expect(screen.getByText('3 of 3')).toBeInTheDocument());
+      expect(within(screen.getByTestId('policy-decision-panel')).getByText('event i3')).toBeInTheDocument();
+      expect(screen.getByTestId('location')).toHaveTextContent('violation=3');
+    });
+  });
 });

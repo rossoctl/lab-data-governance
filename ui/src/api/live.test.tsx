@@ -4,6 +4,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { LIVE_POLL_MS, TRACE_LIVE_KEYS, useEntitiesAndInteractions, useTraceLive } from './live';
 
+/** A page's own live keys, as the risk trace page passes them: module-level, so stable. */
+const otherPageKeys = (tid: string) => [['risk', 'traces', tid], ['entities', tid]];
+
 /**
  * A stand-in for the browser's EventSource: records the URL it was opened on,
  * lets a test deliver `change` events and errors, and reports `close()`.
@@ -102,6 +105,19 @@ describe('useTraceLive', () => {
 
     act(() => es.change('v2'));
     expect(invalidate).toHaveBeenCalledTimes(TRACE_LIVE_KEYS.length);
+  });
+
+  it("invalidates the keys a page passes instead of the trace page's, on the same stream", () => {
+    const { invalidate, wrapper } = setup();
+    renderHook(() => useTraceLive('T1', otherPageKeys), { wrapper });
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.instances[0].url).toBe('/api/traces/T1/events');
+
+    act(() => FakeEventSource.instances[0].change('v1'));
+    expect(invalidatedKeys(invalidate)).toEqual([
+      JSON.stringify(['risk', 'traces', 'T1']),
+      JSON.stringify(['entities', 'T1']),
+    ]);
   });
 
   it('polls while the stream is in error and stops the moment it recovers', () => {
