@@ -22,6 +22,11 @@ derivation stays behind the interface (ADR-0005):
   ``status=None`` (*unknown*, never ``complete`` — ADR-0028 D6) before the trace
   has been derived, and empty before the lineage migration has run — never an
   error.
+- :mod:`.labels` — the per-leg **Labels** read (``get_leg_labels``): for one
+  interaction's payload-bearing legs, what the classifier found on the payload
+  (*found here*) beside what label lineage carried into it (*carried in*, with each
+  origin's leg, ``seq`` and caller/callee), paired per span and type. A fact about
+  the payloads, never about a decision; found-here only before migration 0024.
 - :mod:`.trace_version` — the **Trace version** (``get_trace_version``): one
   opaque token per trace that changes whenever its derived picture does, so a
   live reader can ask "anything new?" with one cheap read (ADR-0034).
@@ -83,6 +88,15 @@ from data_governance.retrieval.interactions import (
     get_interaction_spans,
     get_interactions,
     get_interactions_feed,
+)
+from data_governance.retrieval.labels import (
+    CarriedLabelsView,
+    FoundLabelsView,
+    GetLegLabelsResult,
+    LabelOriginView,
+    LabelView,
+    LegLabelsView,
+    get_leg_labels,
 )
 from data_governance.retrieval.lineage import (
     DataLineageLegView,
@@ -164,6 +178,14 @@ __all__ = [
     "ClassificationView",
     "PayloadView",
     "get_payload",
+    # labels: found here / carried in (label lineage)
+    "CarriedLabelsView",
+    "FoundLabelsView",
+    "GetLegLabelsResult",
+    "LabelOriginView",
+    "LabelView",
+    "LegLabelsView",
+    "get_leg_labels",
     # data lineage
     "DataLineageLegView",
     "DataLineageView",

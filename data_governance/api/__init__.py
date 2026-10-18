@@ -487,6 +487,35 @@ async def _interaction_spans_handler(request: Request) -> Response:
     return _json_ok({"spans": [dataclasses.asdict(s) for s in result.spans]})
 
 
+async def _interaction_labels_handler(request: Request) -> Response:
+    """``GET /api/traces/{tid}/interactions/{iid}/labels``.
+
+    Thin adapter over :func:`retrieval.get_leg_labels` — per payload-bearing leg,
+    the labels the classifier found on the payload beside those label lineage
+    carried into it, with each carried label's origin. Same empty-on-unknown
+    convention as :func:`_interaction_spans_handler`; ``lineage_status`` is
+    ``null`` when the trace's label lineage is not derived (never defaulted).
+    """
+    trace_id = request.path_params.get("tid")
+    interaction_id = request.path_params.get("iid")
+    if not trace_id or not interaction_id:
+        return JSONResponse(
+            {"error": "trace_id and interaction_id required"}, status_code=400
+        )
+    try:
+        result = await asyncio.to_thread(
+            retrieval.get_leg_labels, trace_id, interaction_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return _json_ok(
+        {
+            "legs": [dataclasses.asdict(leg) for leg in result.legs],
+            "lineage_status": result.lineage_status,
+        }
+    )
+
+
 async def _entity_spans_handler(request: Request) -> Response:
     """``GET /api/traces/{tid}/entities/{eid}/spans``.
 
@@ -767,6 +796,14 @@ def build_app(
         Route(
             "/api/traces/{tid:str}/interactions/{iid:str}/spans",
             endpoint=_interaction_spans_handler,
+            methods=["GET"],
+        ),
+        # Found-here vs carried-in labels for one interaction's legs (label
+        # lineage, migration 0024). Per interaction, not per leg: both leg tabs
+        # read one response.
+        Route(
+            "/api/traces/{tid:str}/interactions/{iid:str}/labels",
+            endpoint=_interaction_labels_handler,
             methods=["GET"],
         ),
         Route(

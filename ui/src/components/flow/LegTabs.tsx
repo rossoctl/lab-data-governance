@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react';
 import { CodeBlock, CodeBlockCode, Spinner, Tab, TabTitleText, Tabs } from '@patternfly/react-core';
 
-import { usePayload } from '../../api/hooks';
+import { useLegLabels, usePayload } from '../../api/hooks';
 import { DetailList } from '../DetailList';
-import { ClassificationView } from '../ClassificationView';
+import { ClassificationView, type LegLabelsState } from '../ClassificationView';
 import { DataLineageView } from '../DataLineageView';
 import type { LineageState } from '../../types';
 
@@ -12,6 +12,8 @@ export type Leg = {
   /** `Request` / `Response` — the outer tab's label and the a11y qualifier for
    *  that leg's inner tab set. */
   label: string;
+  /** Which leg of the interaction this is — the key into the labels read. */
+  legType: 'request' | 'response';
   /** The leg's payload content hash. Non-null by construction: a leg that
    *  carried no payload contributes no tab at all (see the note below). */
   hash: string;
@@ -65,6 +67,9 @@ const SECTION_LABEL: Record<Section, string> = {
  *   - **Data lineage** is keyed by the leg, not the content hash (ADR-0028 D5),
  *     and comes from the one trace-scoped read the panel already holds. It is
  *     passed *in*, so selecting its tab fetches nothing.
+ *   - The **Labels** beside the verdict (found here / carried in) come from one
+ *     read per *interaction*, made the first time a Classification pane opens
+ *     and shared by both legs.
  *
  * `legs` carries only the legs that actually carried a payload — the panel's
  * existing guard, kept. Lineage is keyed on the leg rather than the hash, so a
@@ -76,7 +81,18 @@ const SECTION_LABEL: Record<Section, string> = {
  * nothing" conflation the tri-state discipline exists to prevent, so the leg
  * gets no tab instead.
  */
-export function LegTabs({ legs }: { legs: Leg[] }) {
+export function LegTabs({
+  legs,
+  traceId,
+  interactionId = null,
+}: {
+  legs: Leg[];
+  /** The trace and interaction the legs belong to, for the labels read (one per
+   *  interaction, shared by both legs). Without them the Classification pane is
+   *  the classifier's verdict alone. */
+  traceId?: string;
+  interactionId?: string | null;
+}) {
   // Which leg's pane is showing, tracked by label so the identity survives a
   // re-render. Component-local on purpose: no URL param, and it may reset when
   // the selected row changes — matching the disclosures this replaced.
@@ -122,7 +138,12 @@ export function LegTabs({ legs }: { legs: Leg[] }) {
         leg (a fresh mount per `key`) is the intended consequence: each leg opens
         on Payload.
       */}
-      <LegPanel key={active.label} leg={active} />
+      <LegPanel
+        key={active.label}
+        leg={active}
+        traceId={traceId}
+        interactionId={traceId ? interactionId : null}
+      />
     </div>
   );
 }
@@ -132,9 +153,38 @@ export function LegTabs({ legs }: { legs: Leg[] }) {
  * both legs — `Request` and `Response` are structurally identical, so there is
  * exactly one statement of the three sections in the codebase.
  */
-function LegPanel({ leg }: { leg: Leg }) {
-  const { label, hash, kind, lineage } = leg;
+function LegPanel({
+  leg,
+  traceId,
+  interactionId,
+}: {
+  leg: Leg;
+  traceId?: string;
+  interactionId: string | null;
+}) {
+  const { label, legType, hash, kind, lineage } = leg;
   const [section, setSection] = useState<Section>('payload');
+  // The labels read (found here / carried in) is per INTERACTION and lazy: it
+  // fires the first time a leg's Classification pane opens and stays enabled
+  // after, so tabbing away and back does not flip it off and on. The other leg
+  // reads the same cache entry, enabled or not.
+  const [labelsWanted, setLabelsWanted] = useState(false);
+  const labelsQ = useLegLabels(traceId ?? '', interactionId, labelsWanted);
+  // Only an answered read reaches the view: loading or failed is not "nothing
+  // carried in", so the view stays the classifier's alone until then. The read
+  // is pinned to the leg's current payload and to whether the classifier had
+  // read it; the payload read is not refreshed live and the labels read is, so
+  // when either disagrees with the payload this pane shows (one of the two
+  // reads is stale), it is treated as not answered. The classifier's verdict is
+  // never set beside another payload's labels, nor "Not yet classified" beside
+  // rows found here.
+  const legLabels = labelsQ.data?.byLeg.get(legType) ?? null;
+  const labelsFor = (classified: boolean): LegLabelsState | undefined =>
+    labelsQ.isSuccess &&
+    (legLabels == null ||
+      (legLabels.payload_hash === hash && (legLabels.found != null) === classified))
+      ? { leg: legLabels, lineageStatus: labelsQ.data.lineageStatus }
+      : undefined;
 
   // ONE payload read per leg, shared by the two sections that need it (Payload
   // and Classification — the verdict is an inlined field of the payload
@@ -188,7 +238,10 @@ function LegPanel({ leg }: { leg: Leg }) {
     <>
       <Tabs
         activeKey={section}
-        onSelect={(_e, key) => setSection(key as Section)}
+        onSelect={(_e, key) => {
+          setSection(key as Section);
+          if (key === 'classification') setLabelsWanted(true);
+        }}
         // `isSecondary` is what makes the nesting legible: PF draws the inner set
         // in its lighter, tighter secondary treatment against the primary leg
         // tabs above, so the two levels do not read as one flat row of five.
@@ -254,7 +307,12 @@ function LegPanel({ leg }: { leg: Leg }) {
             zero-Findings verdict — and, per `whenLoaded` above, distinct again
             from a read that has not landed. */}
         {section === 'classification' &&
-          whenLoaded((payload) => <ClassificationView classification={payload.classification} />)}
+          whenLoaded((payload) => (
+            <ClassificationView
+              classification={payload.classification}
+              labels={labelsFor(payload.classification != null)}
+            />
+          ))}
 
         {/* The P-data-lineage metadata for THIS LEG (issue #119): the payload's
             data sources, the transformations applied per source, and the

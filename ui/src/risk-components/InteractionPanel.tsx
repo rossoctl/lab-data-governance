@@ -84,6 +84,7 @@ function LegValue({ leg }: { leg: ClassifiedLegSummary }) {
 export function InteractionPanel({ interaction }: { interaction: ForestInteraction }) {
   const risk = interaction.risk;
   const legs = classifiedLegEntries(risk?.classification_summary ?? null);
+  const anyCarried = legs.some(([, leg]) => carriedOf(leg) != null);
 
   return (
     <Card data-testid="interaction-panel">
@@ -127,7 +128,7 @@ export function InteractionPanel({ interaction }: { interaction: ForestInteracti
             <DescriptionListTerm>Payload</DescriptionListTerm>
             <DescriptionListDescription>
               <Link to={`/traces/${interaction.trace_id}/flow?iid=${encodeURIComponent(interaction.interaction_id)}`}>
-                Open in trace view
+                {anyCarried ? 'Open in trace view — see where each label came from' : 'Open in trace view'}
               </Link>
             </DescriptionListDescription>
           </DescriptionListGroup>

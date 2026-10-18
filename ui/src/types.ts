@@ -118,6 +118,64 @@ export interface Payload {
 }
 
 /**
+ * Where one carried-in label was found by the classifier: the origin leg, its
+ * `seq` and caller/callee (`null` when that leg is gone), what the classifier
+ * marked there (`unit_text`) and the value it denotes (`unit_value` — the two
+ * differ when a number was widened to its whole extent).
+ */
+export interface LabelOrigin {
+  origin_interaction_id: string;
+  origin_leg_type: 'request' | 'response';
+  origin_seq: number | null;
+  caller: string | null;
+  callee: string | null;
+  unit_text: string;
+  unit_value: string;
+  /** `whole` from the exact finder; later finders write other kinds. */
+  match_kind: string;
+  /** The origin's trace when it is another one; `null` for this trace. */
+  origin_trace_id: string | null;
+}
+
+/**
+ * One label on one span of a leg's payload: `found_here` when the classifier
+ * found it on this payload, `carried_in` the origins label lineage reached it
+ * from (a label can be both). `start`/`end` index the projected text the
+ * classifier read, not the JSON on the Payload tab; `null` for a carried-in
+ * match with no span.
+ */
+export interface LegLabel {
+  text: string;
+  start: number | null;
+  end: number | null;
+  entity_type: string;
+  sensitivity_level: string | null;
+  regulatory_tags: string[];
+  found_here: boolean;
+  carried_in: LabelOrigin[];
+}
+
+/** One payload-bearing leg of `GET /api/traces/{tid}/interactions/{iid}/labels`. */
+export interface LegLabels {
+  leg_type: 'request' | 'response';
+  payload_hash: string;
+  seq: number;
+  /** The classifier's document-level verdict; `null` while unclassified. */
+  found: { sensitivity_level: string; regulatory_tags: string[] } | null;
+  /** What label lineage carried in; `origin_count` counts origin legs, not
+   *  edges. `null` when nothing was carried in. */
+  carried: { max_level: string | null; regulatory_tags: string[]; origin_count: number } | null;
+  labels: LegLabel[];
+}
+
+/** One interaction's labels, unwrapped by `useLegLabels`: the legs by type and
+ *  the trace's label-lineage status (`null` = not derived, never `complete`). */
+export interface InteractionLabels {
+  byLeg: Map<string, LegLabels>;
+  lineageStatus: LineageStatus;
+}
+
+/**
  * The **Data lineage metadata** triple for one **Interaction leg** (ADR-0028):
  * where the payload's data came from and what happened to it on the way.
  *

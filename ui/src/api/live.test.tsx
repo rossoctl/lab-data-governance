@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
+import { useLegLabels } from './hooks';
 import { LIVE_POLL_MS, TRACE_LIVE_KEYS, useEntitiesAndInteractions, useTraceLive } from './live';
 
 /** A page's own live keys, as the risk trace page passes them: module-level, so stable. */
@@ -285,5 +286,26 @@ describe('useEntitiesAndInteractions — one reading of the two (ADR-0034)', () 
     // Back to T1 (cached, re-read in the background): T1's own data, not T2's.
     rerender({ tid: 'T1' });
     expect(ids(result.current.entities)).toEqual(['a1']);
+  });
+});
+
+describe('the labels read is kept live', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('is keyed under a live head and the trace, so the trace prefix re-reads it', async () => {
+    // Label lineage lands after classification; the live page must re-read an
+    // open interaction's labels when the trace version moves.
+    expect(TRACE_LIVE_KEYS).toContain('leg-labels');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ legs: [], lineage_status: null }) })),
+    );
+    const { client, wrapper } = setup();
+    renderHook(() => useLegLabels('T1', 'ix-1'), { wrapper });
+    await waitFor(() =>
+      expect(client.getQueryCache().find({ queryKey: ['leg-labels', 'T1', 'ix-1'], exact: true })?.state.status)
+        .toBe('success'),
+    );
+    expect(client.getQueryCache().findAll({ queryKey: ['leg-labels', 'T1'] })).toHaveLength(1);
   });
 });

@@ -23,6 +23,7 @@ import { lineageOfLeg, type Selection } from './selection';
  * something is selected: an empty float is just clutter.
  */
 export function FlowDetailPanel({
+  traceId,
   selection,
   pins,
   lineageQ,
@@ -30,6 +31,7 @@ export function FlowDetailPanel({
   onClose,
   onNavigateToSpan,
 }: {
+  traceId: string;
   selection: Selection;
   pins: PinStore;
   /** The one trace-scoped lineage read; each leg's block is keyed off it. */
@@ -46,12 +48,14 @@ export function FlowDetailPanel({
   const legs: Leg[] = [
     selection.requestPayloadHash && {
       label: 'Request',
+      legType: 'request',
       hash: selection.requestPayloadHash,
       kind: selection.requestContentKind,
       lineage: lineageOfLeg(lineageQ, selection, 'request'),
     },
     selection.responsePayloadHash && {
       label: 'Response',
+      legType: 'response',
       hash: selection.responsePayloadHash,
       kind: selection.responseContentKind,
       lineage: lineageOfLeg(lineageQ, selection, 'response'),
@@ -139,7 +143,11 @@ export function FlowDetailPanel({
           such a leg). */}
       {legs.length > 0 && (
         <div className="dg-detail-card">
-          <LegTabs legs={legs} />
+          <LegTabs
+            legs={legs}
+            traceId={traceId}
+            interactionId={selection.kind === 'interaction' ? selection.id : null}
+          />
         </div>
       )}
 

@@ -835,6 +835,7 @@ export function FlowTables({
 
       {selection && (
         <FlowDetailPanel
+          traceId={traceId}
           selection={selection}
           pins={pins}
           lineageQ={lineageQ}

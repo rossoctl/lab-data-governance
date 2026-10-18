@@ -453,7 +453,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
       expect(rowText(panel, 'Request leg')).toBe('Request legFound here INTERNAL · PICarried in RESTRICTED · PI, PII');
       // A leg without the block reads as it always did.
       expect(rowText(panel, 'Response leg')).toBe('Response legno payload');
-      expect(within(panel).getByRole('link', { name: 'Open in trace view' })).toHaveAttribute(
+      expect(within(panel).getByRole('link', { name: 'Open in trace view — see where each label came from' })).toHaveAttribute(
         'href',
         '/traces/t1/flow?iid=i1',
       );

@@ -20,6 +20,10 @@ marks, not a diff:
 - ``lin``: the highest ``lineage_metadata.seq`` in the trace, plus the trace's
   lineage ``status``/``stopped_at_seq``. The lineage processor writes after the
   interactions processor and the status can flip with no new metadata row.
+- ``lab``: the trace's label-lineage status, edge count and ``derived_at``
+  (migration 0024). Label lineage writes after classification, and every
+  derivation stamps ``derived_at``. Only present once the trace has a status row,
+  so a token from before label lineage reads as it always did.
 - ``irr`` / ``trr``: the numbers of ``interaction_risk_records`` and
   ``trace_risk_records`` rows in the trace. Both tables are insert-only and
   versioned (migration 0016): a recompute is a new row, never an update, so
@@ -64,6 +68,7 @@ def get_trace_version(trace_id: str) -> str:
                 "interactions",
                 "lineage_metadata",
                 "lineage_trace_status",
+                "label_lineage_trace_status",
                 "trace_risk_records",
             ),
         )
@@ -117,7 +122,16 @@ def get_trace_version(trace_id: str) -> str:
             assert row is not None
             irr, trr = int(row[0]), int(row[1])
             alerts = row[2] or "0"
+        lab = ""
+        if "label_lineage_trace_status" in present:
+            row = tx.fetch_one(
+                "SELECT status, edge_count, derived_at FROM label_lineage_trace_status "
+                "WHERE trace_id = %s",
+                (trace_id,),
+            )
+            if row is not None:
+                lab = f";lab={row[0]}:{int(row[1])}@{row[2].isoformat()}"
     return (
         f"legs={legs};ix={ix};es={es};lin={lin};st={status}@{stopped};"
-        f"irr={irr};trr={trr};al={alerts}"
+        f"irr={irr};trr={trr};al={alerts}{lab}"
     )
