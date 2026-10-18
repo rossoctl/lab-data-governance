@@ -374,7 +374,7 @@ describe('useTraceRiskDetail', () => {
     expect(calledUrl).toBe('/risk/traces/t1');
   });
 
-  it('surfaces a 404 as an error rather than throwing past react-query', async () => {
+  it('settles a 404 (no risk record yet) as null, not an error', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: false,
       status: 404,
@@ -385,9 +385,23 @@ describe('useTraceRiskDetail', () => {
       }),
     });
 
+    // No record yet is an answer, not a failure: it settles as `null`, so a
+    // live page's re-reads keep it settled instead of going back to pending.
     const { result } = renderHook(() => useTraceRiskDetail('nope'), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toBeNull();
+  });
+
+  it('surfaces any other failure as an error rather than throwing past react-query', async () => {
+    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'boom', timestamp: '2026-08-02T00:00:00Z' }),
+    });
+
+    const { result } = renderHook(() => useTraceRiskDetail('t1'), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.isError).toBe(true));
-    expect((result.current.error as { status?: number })?.status).toBe(404);
+    expect((result.current.error as { status?: number })?.status).toBe(500);
   });
 
   it('does not fetch when traceId is undefined', async () => {

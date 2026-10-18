@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { RISK_QUERY_KEY_ROOT, RISK_PAGE_SIZE, riskQueryKey } from './hooks';
+import { QueryClient } from '@tanstack/react-query';
+import { RISK_QUERY_KEY_ROOT, RISK_PAGE_SIZE, riskQueryKey, riskTraceKeys } from './hooks';
 
 // Scaffold only, no hooks — issue #165 explicitly forbids pre-building hooks
 // for endpoints no issue yet consumes. This pins the query-key convention
@@ -50,5 +51,30 @@ describe('risk-api hooks scaffold', () => {
     const detailKey = riskQueryKey('traces', 't1', 'detail');
     const listKey = riskQueryKey('traces', { window: '24h' });
     expect(detailKey).not.toEqual(listKey);
+  });
+});
+
+describe('riskTraceKeys', () => {
+  it("covers one trace's risk detail and alerts, and nothing else in the risk cache", async () => {
+    // Matched the way the live stream invalidates them (prefix, partial objects),
+    // against the keys the hooks really use. The dashboard's list, another
+    // trace's reads and the rule catalog must stay untouched by a change to t1.
+    const client = new QueryClient();
+    const keys = {
+      detail: riskQueryKey('traces', 't1', 'detail'),
+      alerts: riskQueryKey('alerts', { trace_id: 't1' }),
+      list: riskQueryKey('traces', { window: '24h' }),
+      otherDetail: riskQueryKey('traces', 't2', 'detail'),
+      otherAlerts: riskQueryKey('alerts', { trace_id: 't2' }),
+      catalog: riskQueryKey('rules', 'catalog-index'),
+    };
+    for (const key of Object.values(keys)) client.setQueryData(key, {});
+    for (const queryKey of riskTraceKeys('t1')) {
+      await client.invalidateQueries({ queryKey, refetchType: 'none' });
+    }
+    const invalidated = Object.entries(keys)
+      .filter(([, key]) => client.getQueryState(key)?.isInvalidated)
+      .map(([name]) => name);
+    expect(invalidated).toEqual(['detail', 'alerts']);
   });
 });

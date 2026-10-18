@@ -11,10 +11,13 @@
  * nothing, and one that added an interaction re-renders exactly the views
  * deriving from it.
  *
- * ONE HOOK, ONE OWNER. `useTraceLive` is mounted once by the trace page; the
- * views underneath keep reading through their existing query hooks and know
- * nothing about liveness. That is the whole seam: liveness is a property of the
- * page being open, not of any one tab.
+ * ONE HOOK, ONE OWNER. `useTraceLive` is mounted once by the page showing the
+ * trace; the views underneath keep reading through their existing query hooks
+ * and know nothing about liveness. That is the whole seam: liveness is a
+ * property of the page being open, not of any one tab. Two pages own it: the
+ * trace page (the default keys, {@link traceLiveKeys}) and the risk trace page,
+ * whose reads — the trace's risk detail and alerts — are whole-trace reads too
+ * and are passed as its own {@link LiveKeys}. Same stream, same token.
  *
  * TWO MODES, decided by the browser's `EventSource`:
  *
@@ -43,7 +46,7 @@
  * round of the page's small reads per open — cheaper than being wrong once.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { apiPath } from './client';
 import { useEntities, useInteractions } from './hooks';
 
@@ -71,6 +74,19 @@ export const TRACE_LIVE_KEYS = [
   'lineage-graph',
 ] as const;
 
+/**
+ * Which queries a change re-reads, given the trace: key PREFIXES, each handed to
+ * `invalidateQueries` as it is. Called on every invalidation and listed in the
+ * stream effect's dependencies, so it must be a module-level function — a fresh
+ * one each render would reopen the stream on every render.
+ */
+export type LiveKeys = (traceId: string) => readonly QueryKey[];
+
+/** The trace page's live keys: every head in {@link TRACE_LIVE_KEYS}, scoped by trace. */
+export function traceLiveKeys(traceId: string): QueryKey[] {
+  return TRACE_LIVE_KEYS.map((head) => [head, traceId]);
+}
+
 /** The SSE event name the server emits — one, by design. */
 export const CHANGE_EVENT = 'change';
 
@@ -78,7 +94,7 @@ export function traceEventsPath(traceId: string): string {
   return apiPath(`/traces/${traceId}/events`);
 }
 
-export function useTraceLive(traceId: string): LiveMode {
+export function useTraceLive(traceId: string, liveKeys: LiveKeys = traceLiveKeys): LiveMode {
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<LiveMode>('off');
 
@@ -88,8 +104,8 @@ export function useTraceLive(traceId: string): LiveMode {
       return;
     }
     const invalidate = () => {
-      for (const head of TRACE_LIVE_KEYS) {
-        void queryClient.invalidateQueries({ queryKey: [head, traceId] });
+      for (const queryKey of liveKeys(traceId)) {
+        void queryClient.invalidateQueries({ queryKey });
       }
     };
 
@@ -139,7 +155,7 @@ export function useTraceLive(traceId: string): LiveMode {
       if (reopenTimer !== null) clearTimeout(reopenTimer);
       stopPolling();
     };
-  }, [queryClient, traceId]);
+  }, [queryClient, traceId, liveKeys]);
 
   return mode;
 }

@@ -12,7 +12,6 @@ import {
   Alert,
   Breadcrumb,
   BreadcrumbItem,
-  Label,
 } from '@patternfly/react-core';
 
 import { useTrace } from '../api/hooks';
@@ -24,6 +23,7 @@ import { SpanDetailPanel } from '../components/SpanDetailPanel';
 import { FlowTables, type FlowSelection } from '../components/FlowTables';
 import { parseLegViewKey, parseLineageSource, type LegViewKey } from '../lib/flow';
 import { HighlightLegend } from '../components/HighlightLegend';
+import { LiveModeLabel } from '../components/LiveModeLabel';
 import type { Span } from '../types';
 
 // The active view is a URL path segment. We keep an internal ViewKey for render
@@ -509,24 +509,7 @@ export function TraceDetailPage() {
 
       <Title headingLevel="h2" size="lg" style={{ marginTop: '0.5rem' }}>
         Trace detail
-        {/* The one visible fact about liveness: whether this page is on the
-            change stream or on its polling fallback. Not a control — there is no
-            way to switch it off, by design (ADR-0034). */}
-        {live !== 'off' && (
-          <Label
-            isCompact
-            color={live === 'stream' ? 'green' : 'gold'}
-            data-testid="live-mode"
-            style={{ marginLeft: '0.75rem', verticalAlign: 'middle' }}
-            title={
-              live === 'stream'
-                ? 'Updates arrive as the trace is derived'
-                : 'The change stream is down; re-reading every few seconds until it returns'
-            }
-          >
-            {live === 'stream' ? 'Live' : 'Polling'}
-          </Label>
-        )}
+        <LiveModeLabel mode={live} />
       </Title>
 
       <Tabs
