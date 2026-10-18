@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+from collections.abc import Sequence
 
 from data_governance.matching import Matcher
 
@@ -270,9 +271,13 @@ def derive_trace_lineage(
     # here by hash silently merged two distinct priors into one and dropped a whole
     # branch of the agent's provenance from the merge.
     lineage_of_leg: dict[LegKey, DataLineage] = {}
-    # Retained inbound legs per memory node, in arrival order (D2). An accumulating
-    # node's list grows; a memoryless node's is truncated to its last.
-    retained: dict[memory.MemoryNode, list[LegKey]] = {}
+    # D6's cutoff, found first: the traversal covers exactly the legs before the
+    # first absent payload, so only those are routed (an absent payload is never
+    # inbound to anything).
+    stop = next((i for i, leg in enumerate(ordered) if leg.payload_hash is None), None)
+    covered = ordered if stop is None else ordered[:stop]
+    # The inbound legs of every covered leg, per D1 routing and D2 memory.
+    inbound = inbound_sets(covered, entities)
     # The payload each leg carries, resolved to content where the caller supplied it.
     # The ops take payloads (the spec's signatures are over payloads, and a real
     # matcher needs content) while routing and metadata lookup key by leg — this map
@@ -286,33 +291,75 @@ def derive_trace_lineage(
     }
     result: dict[LegKey, LegLineage] = {}
 
-    for leg in ordered:
-        if leg.payload_hash is None:
-            # D6's cutoff. Stop the WHOLE traversal here: this leg gets no lineage
-            # and neither does anything after it, so the loop simply ends rather
-            # than continuing with a `continue`. Reporting the seq is what keeps
-            # the truncation from being silent.
-            return TraceLineage(
-                legs=result,
-                status=LineageStatus.PARTIAL,
-                stopped_at_seq=leg.seq,
-            )
+    for leg in covered:
         producer = entities.get(_producer_id(leg))
         if producer is not None:
-            result[(leg.interaction_id, leg.leg_type)] = _derive_leg(
-                leg, producer, retained, lineage_of_leg, payload_of_leg, matcher
+            key = (leg.interaction_id, leg.leg_type)
+            result[key] = _derive_leg(
+                leg, producer, inbound.get(key, ()), lineage_of_leg, payload_of_leg, matcher
             )
-        # Route this leg's payload to its consumer's memory AFTER deriving, so a leg
-        # never sees itself (D1 is "an interaction with LOWER sequence").
-        _route_inbound(leg, entities, retained)
 
+    if stop is not None:
+        # D6's cutoff: this leg gets no lineage and neither does anything after it.
+        # Reporting the seq is what keeps the truncation from being silent.
+        return TraceLineage(
+            legs=result,
+            status=LineageStatus.PARTIAL,
+            stopped_at_seq=ordered[stop].seq,
+        )
     return TraceLineage(legs=result)
+
+
+def inbound_sets(
+    legs: Sequence[Leg],
+    entities: dict[str, Entity],
+    *,
+    pair_responses: bool = False,
+) -> dict[LegKey, tuple[LegKey, ...]]:
+    """The inbound legs of every leg of *legs*, walking them **in the order given**.
+
+    D1 (a request is inbound to its callee, a response to its caller, and only
+    from an earlier leg) folded with D2 (an accumulating consumer retains every
+    prior, a memoryless one only its latest). Pure, and shared: data lineage walks
+    ``seq`` order over the legs before the D6 cutoff; label lineage walks wire
+    order over every leg. Each leg given is routed, so the caller passes exactly
+    the legs it wants routed. A leg whose producing entity is unknown gets no
+    entry; one whose consumer is unknown is routed nowhere.
+
+    ``pair_responses`` answers a memoryless entity's response with its own
+    interaction's request (when that request is among *legs*) instead of the
+    latest request the entity received: with two callers in flight, "latest" is
+    the other caller's question. Off by default, so data lineage keeps D2 exactly.
+    """
+    retained: dict[memory.MemoryNode, list[LegKey]] = {}
+    given = {(leg.interaction_id, leg.leg_type) for leg in legs}
+    result: dict[LegKey, tuple[LegKey, ...]] = {}
+    for leg in legs:
+        key = (leg.interaction_id, leg.leg_type)
+        producer = entities.get(_producer_id(leg))
+        if producer is not None:
+            own_request = (leg.interaction_id, "request")
+            if (
+                pair_responses
+                and leg.leg_type == "response"
+                and not memory.accumulates(producer)
+                and own_request in given
+            ):
+                result[key] = (own_request,)
+            else:
+                node = memory.memory_node_for_leg(producer, leg)
+                result[key] = tuple(retained.get(node, ()))
+        # Routed AFTER its own entry is read, so a leg never sees itself and sees
+        # only legs earlier in the order given (D1's "an interaction with LOWER
+        # sequence" when the order is seq; wire order for label lineage).
+        _route_inbound(leg, entities, retained)
+    return result
 
 
 def _derive_leg(
     leg: Leg,
     producer: Entity,
-    retained: dict[memory.MemoryNode, list[LegKey]],
+    inbound_legs: tuple[LegKey, ...],
     lineage_of_leg: dict[LegKey, DataLineage],
     payload_of_leg: dict[LegKey, Payload],
     matcher: Matcher,
@@ -320,10 +367,9 @@ def _derive_leg(
     """Select and run the op for one leg, recording its metadata so downstream legs
     can inherit it."""
     key = (leg.interaction_id, leg.leg_type)
-    node = memory.memory_node_for_leg(producer, leg)
     # Only priors whose own lineage was derived can be inherited from (a prior whose
     # producer was unknown, or whose payload was absent, has no metadata to give).
-    inbound_keys = tuple(k for k in retained.get(node, ()) if k in lineage_of_leg)
+    inbound_keys = tuple(k for k in inbound_legs if k in lineage_of_leg)
     # The matcher receives PAYLOADS, not leg keys — the op signatures the spec
     # defines are over payloads. Two distinct priors may hand it the same payload;
     # that is a real property of the data (content-addressed payloads dedupe), and
@@ -371,10 +417,11 @@ def _route_inbound(
     here is wrong. A leg cannot arrive twice (its key is unique), so no dedup guard
     is needed.
 
-    Only ever called with a payload-bearing leg: an absent payload ends the
-    traversal outright (D6), so a payload we do not have can never be routed as
-    inbound and can never make ``|inbound|`` lie about how many payloads reached
-    an entity.
+    In data lineage only payload-bearing legs reach here: the traversal hands
+    :func:`inbound_sets` the legs before the D6 cutoff, so a payload we do not have
+    can never be routed as inbound and can never make ``|inbound|`` lie about how
+    many payloads reached an entity. (Label lineage routes every leg; an absent
+    payload there simply carries nothing.)
     """
     consumer = entities.get(_consumer_id(leg))
     if consumer is None:
