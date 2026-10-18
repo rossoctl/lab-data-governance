@@ -95,6 +95,16 @@ def test_labels_wire_shape(seeded, api_server):
             "caller": "booking-agent", "callee": "create-booking",
             "unit_text": "BK-2850EB", "unit_value": "BK-2850EB", "match_kind": "whole",
             "origin_trace_id": None,
+            # The one chain: born at the origin (the unit, no stored payload here so
+            # no excerpt), carried straight to this leg (the matched span).
+            "chains": [[
+                {"interaction_id": _ORIGIN, "leg_type": "request", "seq": 1, "trace_id": _TID,
+                 "caller": "booking-agent", "callee": "create-booking",
+                 "text": "BK-2850EB", "start": 107, "end": 116, "role": "origin", "excerpt": None},
+                {"interaction_id": _IX, "leg_type": "request", "seq": 2, "trace_id": _TID,
+                 "caller": "booking-agent", "callee": "create-booking",
+                 "text": "BK-2850EB", "start": 16, "end": 25, "role": "here", "excerpt": None},
+            ]],
         }],
     }
     assert (opid["entity_type"], opid["found_here"], opid["carried_in"]) == ("OPID", True, [])
