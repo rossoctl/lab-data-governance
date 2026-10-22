@@ -304,13 +304,13 @@ test('the Data lineage tab shows where a carried-in value came from, its chains 
 
   const table = page.getByTestId('label-lineage-table');
   await expect(table).toBeVisible();
-  // Born at and the previous hop are links that select the interaction on this view.
+  // The origin and the previous hop are links that select the interaction on this view.
   await expect(table.getByRole('link', { name: /#90574/ }).first()).toHaveAttribute('href', /\?iid=ix-0$/);
   await expect(table.getByRole('link', { name: /#90600/ })).toHaveAttribute('href', /\?iid=ix-llm$/);
-  // The chains open on demand: born (the origin payload, unit marked), the carriers, here.
+  // The chains open on demand: the origin (its payload, unit marked), the carriers, the current leg.
   await table.getByRole('button', { name: 'Show 2 chains' }).click();
   const lineage = page.getByTestId('label-lineage');
-  await expect(lineage.getByText(/^born/).first()).toBeVisible();
+  await expect(lineage.getByText(/^origin/).first()).toBeVisible();
   await expect(lineage.getByTestId('origin-excerpt').first().locator('mark')).toHaveText('BK-2850EB');
   await expect(lineage.getByRole('list', { name: 'Lineage chain' })).toHaveCount(1);
   await lineage.getByRole('button', { name: '1 more chain' }).click();

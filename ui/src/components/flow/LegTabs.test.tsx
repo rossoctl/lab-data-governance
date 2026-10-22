@@ -273,7 +273,7 @@ describe('LegTabs', () => {
     expect(labelsCalls()).toHaveLength(1);
   });
 
-  it('has a Data lineage tab: born at, the previous hop, the chains on demand, a hop of another trace marked', async () => {
+  it('has a Data lineage tab: origin, the previous hop, the chains on demand, a hop of another trace marked', async () => {
     const hop = (seq: number, role: string, iid: string, trace: string) => ({
       interaction_id: iid, leg_type: 'response', seq, trace_id: trace, caller: 'booking-agent',
       callee: 'create-booking', text: 'BK-2850EB', start: 0, end: 9, role, excerpt: null,
@@ -295,7 +295,7 @@ describe('LegTabs', () => {
     expect(labelsCalls()).toHaveLength(1);
     const [row] = within(table).getAllByTestId('lineage-value');
     expect(row).toHaveTextContent('BK-2850EB');
-    // Born in another trace: marked and linked to that trace's flow view.
+    // Origin in another trace: marked and linked to that trace's flow view.
     expect(within(row).getByRole('link', { name: /#90574/ })).toHaveAttribute('href', '/traces/T0/flow?iid=ix-o');
     expect(within(row).getAllByTestId('trace-boundary')).toHaveLength(1);
     // One previous hop (both chains arrive through ix-p), linked with ?iid= and the entity selection dropped.
@@ -304,7 +304,7 @@ describe('LegTabs', () => {
     // The chains open on demand.
     expect(screen.queryByTestId('label-lineage')).toBeNull();
     await userEvent.click(within(row).getByRole('button', { name: 'Show 2 chains' }));
-    expect(screen.getByTestId('label-lineage')).toHaveTextContent(/^born #90574/);
+    expect(screen.getByTestId('label-lineage')).toHaveTextContent(/^origin #90574/);
   });
 
   it('keeps the Classification tab free of chains', async () => {
@@ -318,7 +318,8 @@ describe('LegTabs', () => {
     renderWithProviders(<LegTabs legs={[REQUEST]} traceId="T1" interactionId="ix-1" />);
     await userEvent.click(screen.getByRole('tab', { name: 'Request: Classification' }));
     await screen.findByText('Carried in (data lineage)');
-    expect(screen.queryByText(/^born/)).toBeNull();
+    expect(screen.queryByTestId('label-lineage')).toBeNull();
+    expect(screen.queryByText(/^origin/)).toBeNull();
   });
 
   it('never reads a failed labels read as "nothing carried in"', async () => {

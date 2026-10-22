@@ -171,7 +171,7 @@ function LabelsTable({ labels }: { labels: LegLabel[] }) {
           <Th modifier="wrap">Type</Th>
           <Th modifier="wrap">Sensitivity · tags</Th>
           <Th modifier="wrap">Source</Th>
-          <Th modifier="wrap">Came from</Th>
+          <Th modifier="wrap">Origin</Th>
           <Th modifier="wrap">Region</Th>
         </Tr>
       </Thead>
@@ -204,7 +204,7 @@ function LabelsTable({ labels }: { labels: LegLabel[] }) {
                 )}
               </span>
             </Td>
-            <Td dataLabel="Came from">
+            <Td dataLabel="Origin">
               {l.carried_in.map((o, j) => (
                 <div key={`${o.origin_interaction_id}-${o.origin_leg_type}-${j}`}>
                   <OriginLink origin={o} />

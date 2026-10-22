@@ -10,9 +10,9 @@ import { useLabelTrack } from './flow/labelTrack';
 
 /**
  * The per-leg label lineage view (the side panel's **Data lineage** tab): one
- * block per value label lineage carried into the payload, with where it was born
- * and the hop it came from last (the previous hop, distance 1 — several when the
- * value arrived by several routes),
+ * block per value label lineage carried into the payload, with its origin (where
+ * the classifier found it) and the previous hop (the hop it came from last,
+ * distance 1 — several when the value arrived by several routes),
  * each a link to that interaction. "Show chains" opens the full routes for the
  * value (`LabelLineage`). A stacked list, not a table: it has to read in the
  * ~500px detail panel, where five columns fold into slivers. Values the
@@ -158,7 +158,7 @@ function Row({
         <span>{label.regulatory_tags.join(', ')}</span>
       </div>
       <div className="dg-lineage-value__line">
-        <span className="dg-lineage-value__key">born at</span>
+        <span className="dg-lineage-value__key">origin</span>
         <span>
           {label.carried_in.map((o, j) => {
             const h = bornHop(o);
@@ -174,7 +174,7 @@ function Row({
         </span>
       </div>
       <div className="dg-lineage-value__line">
-        <span className="dg-lineage-value__key">from</span>
+        <span className="dg-lineage-value__key">previous</span>
         <span>
           {prev.length === 0 ? (
             <span style={{ color: 'var(--dg-color-muted)' }}>—</span>

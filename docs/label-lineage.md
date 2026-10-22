@@ -101,13 +101,14 @@ payload. A value that reached the leg two ways (the edges form a DAG) has two ch
 route, shortest first. The walk crosses into other traces through `from_trace_id` / `origin_trace_id`
 (no finder writes them yet; the read already follows them). A cycle stops at the repeated edge, the
 depth is capped (`MAX_CHAIN_DEPTH`, logged when hit), and a walk that ends before the origin is kept
-as a chain whose first hop is a `hop`, never shown as born there. The origin hop carries an `excerpt`
+as a chain whose first hop is a `hop`, never shown as the origin. The origin hop carries an `excerpt`
 of its payload's projected text around the unit.
 
 The UI keeps the Classification tab the classifier's (label lineage there is one more source of labels)
 and adds a tab per leg titled **Data lineage** (`LabelLineageTable`): one block per carried-in value with
-where it was born and the previous hop(s) at distance 1, each a link to that interaction, and "Show
-chains" for the full routes (`LabelLineage`: the first chain open, the rest folded under a count). The
+its **origin** (where the classifier found it) and the **previous** hop(s) at distance 1, each a
+link to that interaction, and "Show chains" for the full routes (`LabelLineage`: origin, then each
+carrier, then the **current** leg; the first chain open, the rest folded under a count). The
 risk trace page's decision card opens the same view from its "Carried in" row, under the fired rules'
 criteria. A hop links to its interaction on the page it is on (`?iid=` / `?interaction=`), a hop in
 another trace is marked and links to that trace's flow view, and a hop under the pointer lights its

@@ -55,7 +55,7 @@ function OriginChains({ origin, traceId, links }: { origin: LabelOrigin; traceId
   );
 }
 
-const ROLE_WORD: Record<LineageHop['role'], string> = { origin: 'born', hop: 'then', here: 'here' };
+const ROLE_WORD: Record<LineageHop['role'], string> = { origin: 'origin', hop: 'then', here: 'current' };
 
 function Chain({ hops, traceId, links }: { hops: LineageHop[]; traceId: string; links: HopLinks }) {
   const truncated = hops[0]?.role !== 'origin';
