@@ -3797,7 +3797,9 @@ export function LineageGraph({
   entities,
   interactions,
   status,
+  stoppedAtSeq,
   isLineageError,
+  isLineageLoading,
   selectedEntityId,
   lineageSource = null,
   onLineageSourceChange,
@@ -3828,17 +3830,18 @@ export function LineageGraph({
   entities: readonly Entity[];
   interactions: readonly Interaction[];
   /**
-   * The trace's coverage (ADR-0028 D6), from the flow view's `useDataLineage`.
-   *
-   * Still taken from the caller even though this tab no longer reads the former
-   * per-leg data-lineage map: the coverage banner above the tabs and this tab's
-   * repeat of it must quote ONE value, and the reachability responses carry their
-   * own `status` that could in principle be read at a different instant. Passing
-   * the caller's keeps the two agreeing.
+   * The trace's coverage (ADR-0028 D6), from the flow view's `useDataLineage`, for this
+   * view's coverage banner. Taken from the trace-level read rather than from the
+   * reachability responses, which carry their own `status` only once an entity and a
+   * source are chosen; the banner shows before either.
    */
   status: LineageStatus;
+  /** Where a `partial` derivation stopped (the leg seq), for the banner. */
+  stoppedAtSeq: number | null;
   /** The trace-scoped lineage read failed — nothing is known, not "no sources". */
   isLineageError: boolean;
+  /** The trace-scoped lineage read is still in flight — coverage not yet known. */
+  isLineageLoading: boolean;
   /** The flow view's `?eid` selection. THE one notion of "selected entity". */
   selectedEntityId: string | null;
   /**
@@ -4053,9 +4056,25 @@ export function LineageGraph({
     isError: entitiesQ.isLoadingError || interactionsQ.isLoadingError,
     nodeCount: spec.nodes.length,
   });
-  if (readState) return readState;
+  // THE TRACE-LEVEL COVERAGE (ADR-0028 D6), the one copy of this banner on the trace
+  // page. ABOVE the view, not among the notices: those sit below a graph sized to the
+  // viewport, so a reader opening a shared link would not see it, and the failure it
+  // prevents is taking the marked sources for the full set before anything is clicked.
+  // Shown before an entity or a source is chosen, and over the loading and empty
+  // states too, since it is about the trace rather than about the picture.
+  const coverage = (
+    <LineageCoverageAlert
+      status={status}
+      stoppedAtSeq={stoppedAtSeq}
+      isError={isLineageError}
+      isLoading={isLineageLoading}
+    />
+  );
+  if (readState) return <>{coverage}{readState}</>;
 
   return (
+    <>
+    {coverage}
     <EntityGraph
       spec={spec}
       traceId={traceId}
@@ -4286,21 +4305,6 @@ export function LineageGraph({
             </Alert>
           )}
 
-          {/* THE TRACE-LEVEL PREFIX (ADR-0028 D6). Reused verbatim rather than
-              reworded: the truncation is a fact about the whole trace, so the tab
-              must not invent a second phrasing of it. Only rendered for a selection —
-              the banner is already on screen above the tabs at all times (see
-              FlowTables), and this repeat exists so the caveat sits next to the answer
-              it qualifies. */}
-          {reachability.selectedNodeId !== null && !isLineageError && (
-            <LineageCoverageAlert
-              status={status}
-              stoppedAtSeq={null}
-              isError={false}
-              isLoading={false}
-            />
-          )}
-
           {/* PER-DIRECTION STATE. One component, rendered twice, so fan-in and
               fan-out cannot end up worded differently for the same state — and so
               each keeps its own four-way outcome rather than being merged into a
@@ -4322,6 +4326,7 @@ export function LineageGraph({
         </>
       }
     />
+    </>
   );
 }
 

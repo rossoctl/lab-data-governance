@@ -24,6 +24,10 @@ from two ways to five, each view owning a **path segment**:
 `?legs` keeps exactly its two pre-existing values (`tree` | `flat`) — see *Why these
 are top-level views* for why the promotion stopped there.
 
+(2026-10-22: the Lineage view is hidden — its tab is off the bar, and `/lineage`,
+`?src` and the legacy `?legs=lineage` redirect still open it. The trace-level
+coverage banner shows only inside it.)
+
 This supersedes ADR-0020's Consequences section. ADR-0020's *reasoning* is addressed
 below rather than waved past: the redundancy and dependency-cost arguments were
 correct about what they judged, and what changed is the thing being judged.

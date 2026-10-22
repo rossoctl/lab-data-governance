@@ -326,8 +326,8 @@ renders a plain `<a href="/risk">` that drops the `/ui` basename on click.
 
 **Deviation from a literal tab strip:** the issue's mockup language suggested
 tabs, but `Nav`'s items render `role="link"`, not `role="tab"`. This was a
-deliberate choice — `TraceDetailPage`'s five-way span/flow/diagram/graph/lineage
-switcher already owns `role="tab"`, and most of `e2e/smoke.spec.ts` selects on
+deliberate choice — `TraceDetailPage`'s view
+switcher (span tree, flow, diagram, graph) already owns `role="tab"`, and most of `e2e/smoke.spec.ts` selects on
 it. A second `role="tab"` strip for section-switching would be ambiguous to
 assistive tech and to tests reaching for "the tab named X". `Nav` still
 inherits the same dark-theme tokens and adds no new color.

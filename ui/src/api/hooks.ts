@@ -170,14 +170,15 @@ export function useEntitySpans(
 /**
  * Persisted **Data lineage** coverage for a whole trace: its status and where
  * derivation stopped. `GET /api/traces/{tid}/data-lineage` (ADR-0028, issues
- * #118 / #120). One fetch per trace, keyed on `traceId` alone; the coverage
- * warning and the Lineage tab read the one cached query. The response's per-leg
- * `legs` rows are not read.
+ * #118 / #120). One fetch per trace, keyed on `traceId` alone; its one reader is
+ * the Lineage view's coverage warning. The response's per-leg `legs` rows are not
+ * read.
  *
- * `enabled` gates the read for callers that have nothing to show yet. Note the
- * flow view no longer gates on having a selection the way {@link usePayload}
- * gates on a hash: since #120 the coverage warning is part of the view's first
- * paint, and a truncation a reader has to click to discover is not a warning.
+ * `enabled` gates the read for callers that have nothing to show yet: the flow
+ * view enables it on the Lineage view only. It does not gate on having a selection
+ * the way {@link usePayload} gates on a hash: the coverage warning is part of the
+ * view's first paint, and a truncation a reader has to click to discover is not a
+ * warning.
  *
  * A missing/absent `status` normalises to `null` — *unknown*, never
  * `'complete'`.

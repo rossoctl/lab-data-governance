@@ -701,7 +701,8 @@ Served at three grains (ADR-0028 D14): the per-leg triple
 a trace-level sources/destinations roll-up
 (`GET /api/traces/{tid}/data-lineage-summary`). The per-leg grain has no UI
 reader: the **Flow view** reads only the trace's **Lineage coverage** off that
-response.
+response, for the banner inside the Lineage view (a hidden view since 2026-10-22: no
+tab, its URL still opens it).
 
 **Lineage reachability** (fanin / fanout):
 Which **Entities** one **Data source**'s content reached from a selected entity
@@ -897,8 +898,8 @@ forest — the request/response **Interaction leg**s as an execution-flow list,
 each with its **Duration** and aggregated `error`, plus the per-**Interaction**
 and per-**Entity** span-evidence drill-in and the Req/Resp **Payload** cells
 carrying the inline **Classification** verdict and the per-leg label lineage
-(`docs/label-lineage.md`), with
-the trace's **Lineage coverage** warning above the tables when it is `partial`.
+(`docs/label-lineage.md`). The trace's **Lineage coverage** warning is not on the
+tables; it shows in the Lineage view.
 Backed entirely by **Interaction
 retrieval** and `payloads` retrieval; it is the primary consumer that motivated
 pulling those reads behind a typed interface. Trace-scoped and eventually

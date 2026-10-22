@@ -3531,7 +3531,9 @@ function renderLineage(
     onSelectInteraction?: (id: string | null) => void;
     onSelectEntity?: (id: string) => void;
     isLineageError?: boolean;
+    isLineageLoading?: boolean;
     status?: 'complete' | 'partial' | null;
+    stoppedAtSeq?: number | null;
     interactions?: Interaction[];
     entities?: Entity[];
     summary?: WireLineageSummary | null;
@@ -3562,7 +3564,9 @@ function renderLineage(
       entities={entities}
       interactions={interactions}
       status={over.status ?? 'complete'}
+      stoppedAtSeq={over.stoppedAtSeq ?? null}
       isLineageError={over.isLineageError ?? false}
+      isLineageLoading={over.isLineageLoading ?? false}
       selectedEntityId={over.selectedEntityId ?? null}
       lineageSource={'lineageSource' in over ? over.lineageSource : SOURCE_E1}
       onLineageSourceChange={over.onLineageSourceChange}
@@ -4012,7 +4016,9 @@ describe('LineageGraph', () => {
         entities={ENTITIES}
         interactions={[mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]}
         status="complete"
+        stoppedAtSeq={null}
         isLineageError={false}
+        isLineageLoading={false}
         selectedEntityId="e2"
         lineageSource="llm:api.example.com/gpt"
       />,
@@ -4929,6 +4935,39 @@ describe('LineageGraph', () => {
     );
   });
 
+  it('shows the partial coverage before anything is chosen, naming where it stopped', async () => {
+    // The view's one copy of the banner: no entity, no source, and it is already there,
+    // because the source colouring it qualifies is on screen from the first paint.
+    renderLineage({ selectedEntityId: null, lineageSource: null, status: 'partial', stoppedAtSeq: 7 });
+    await waitFor(() =>
+      expect(screen.getByText(/not the complete set of data sources/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/up to leg seq 7/i)).toBeInTheDocument();
+    // ABOVE the graph, not among the notices below it: the graph fills the viewport,
+    // so a banner after it is off screen when a shared link opens the view.
+    // Looked up AFTER the graph lands: the banner also paints over the loading state,
+    // and that earlier element is not the one beside the graph.
+    const graph = await screen.findByTestId('lineage-graph');
+    const banner = screen.getByText(/Data lineage for this trace is incomplete/i);
+    expect(banner.isConnected).toBe(true);
+    expect(graph.contains(banner)).toBe(false);
+    expect(banner.compareDocumentPosition(graph) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('says coverage is unknown on a failed read, and not yet known while it loads', async () => {
+    // Silence is the clean-coverage statement, so neither state may be silent.
+    const failed = renderLineage({ selectedEntityId: null, status: null, isLineageError: true });
+    await waitFor(() =>
+      expect(screen.getByText(/Data lineage coverage for this trace is unknown/i)).toBeInTheDocument(),
+    );
+    failed.unmount();
+
+    renderLineage({ selectedEntityId: null, status: null, isLineageLoading: true });
+    await waitFor(() =>
+      expect(screen.getByText(/Checking data lineage coverage for this trace/i)).toBeInTheDocument(),
+    );
+  });
+
   it('shows no coverage banner on a complete trace, or while the status is unknown', async () => {
     // Silence IS the no-truncation statement (LineageCoverageAlert's own rule), and a
     // `null` status warns about nothing because no truncation has been established.
@@ -4952,7 +4991,9 @@ describe('LineageGraph', () => {
         entities={[]}
         interactions={[]}
         status={null}
+        stoppedAtSeq={null}
         isLineageError={false}
+        isLineageLoading={false}
         selectedEntityId={null}
       />,
     );
@@ -4971,7 +5012,9 @@ describe('LineageGraph', () => {
         entities={[]}
         interactions={[]}
         status={null}
+        stoppedAtSeq={null}
         isLineageError={false}
+        isLineageLoading={false}
         selectedEntityId={null}
       />,
     );
@@ -5021,7 +5064,9 @@ describe('LineageGraph', () => {
         entities={ENTITIES}
         interactions={[mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]}
         status="complete"
+        stoppedAtSeq={null}
         isLineageError={false}
+        isLineageLoading={false}
         selectedEntityId="e2"
         lineageSource={SOURCE_E1}
       />,
@@ -5059,7 +5104,9 @@ describe('LineageGraph', () => {
         entities={ENTITIES}
         interactions={[mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)]}
         status="complete"
+        stoppedAtSeq={null}
         isLineageError={false}
+        isLineageLoading={false}
         selectedEntityId="e2"
         lineageSource={SOURCE_E1}
         selectedInteractionId="i1"

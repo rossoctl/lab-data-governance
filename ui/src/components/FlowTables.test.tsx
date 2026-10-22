@@ -1917,20 +1917,23 @@ describe('FlowTables', () => {
   }
 
   it('says coverage is unknown — not fine — when the lineage read fails', async () => {
-    // The absence of a banner is this view's "no truncation" statement (see the
+    // The absence of a banner is the Lineage view's "no truncation" statement (see the
     // `complete` case below). A failed read established NOTHING, so staying
     // silent would assert full coverage the view never obtained. It must still
     // not claim a truncation it cannot establish either — hence "unknown",
     // worded distinctly from the `partial` prefix warning.
     mockFetchWithLineageError();
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
     );
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/could not be loaded|unknown/i);
+    const alert = await screen.findByText(/Data lineage coverage for this trace is unknown/i);
+    // The alert itself, not the summary read's own "could not be loaded" alert beside it.
+    expect(alert.closest('[role="alert"]')).not.toBeNull();
+    const box = alert.closest('.pf-v5-c-alert');
+    expect(box?.textContent).toMatch(/could not be loaded/i);
     // No fabricated truncation: the prefix claim belongs to `partial` alone.
-    expect(alert.textContent).not.toMatch(/not the complete set of data sources/i);
-    expect(alert.textContent).not.toMatch(/derived only up to/i);
+    expect(box?.textContent).not.toMatch(/not the complete set of data sources/i);
+    expect(box?.textContent).not.toMatch(/derived only up to/i);
   });
 
   // --- the two-level tabs (leg → section) and the shared payload read --------
@@ -2141,18 +2144,18 @@ describe('FlowTables', () => {
   });
 
   // --- trace-level coverage (issue #120, ADR-0028 D6) ------------------------
-  // A partial trace must be UNMISTAKABLE: the flow view shows its tables before
-  // anything is selected, so a warning that only appeared inside an expanded
-  // payload would let a reader take the visible rows for the whole picture.
+  // The banner is about the old derivation's results, so it is shown in the one view
+  // that shows them, the Lineage view, and there before anything is selected. The
+  // tables view carries no copy of it.
 
-  it('reads lineage up front, not only once a row is selected', async () => {
+  it('reads lineage on the Lineage view up front, not only once something is selected', async () => {
     // #119 gated this read on there being a selection, because lineage only
-    // rendered inside an expanded payload. #120 moved the trace-level status to
-    // the top of the view, where it has to be on screen from the first render —
-    // so the laziness is deliberately gone. One fetch per trace either way.
+    // rendered inside an expanded payload. #120 made the trace-level status visible
+    // from the first render, so the laziness is deliberately gone. One fetch per
+    // trace either way.
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
     );
     await waitFor(() =>
       expect(
@@ -2163,36 +2166,86 @@ describe('FlowTables', () => {
     );
   });
 
-  it('warns that lineage is incomplete, and from where, on a partial trace', async () => {
-    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/incomplete/i);
-    // The stop position is named, so the reader knows where the picture ends
-    // rather than only that it does.
-    expect(alert.textContent).toMatch(/2/);
-  });
-
-  it('says the sources shown are not the full set on a partial trace', async () => {
+  it('warns in the Lineage view that lineage is incomplete, and from where, before any selection', async () => {
     // The acceptance criterion is about MEANING, not just a coloured box: the
-    // warning has to state that what is listed is a prefix. "Fewer rows" read as
-    // "fewer sources" is the exact failure this flag exists to prevent.
+    // warning has to state that what is marked is a prefix, and name where it ends.
+    // Nothing is selected and no source is chosen: the banner does not wait for them.
     mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
     );
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/not the complete set of data sources/i);
+    const title = await screen.findByText(/Data lineage for this trace is incomplete/i);
+    const box = title.closest('.pf-v5-c-alert');
+    expect(box?.textContent).toMatch(/up to leg seq 2/i);
+    expect(box?.textContent).toMatch(/not the complete set of data sources/i);
   });
 
-  it('shows no coverage warning on a complete trace', async () => {
-    mockFetchWithLineage(LINEAGE_LEGS, { status: 'complete', stopped_at_seq: null });
+  it('says coverage is not yet known in the Lineage view while the lineage read is in flight', async () => {
+    // Silence is the clean-coverage statement, so an in-flight read must not be silent.
+    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+    const impl = (fetch as ReturnType<typeof vi.fn>).getMockImplementation()!;
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) =>
+      url.endsWith('/data-lineage') ? new Promise(() => {}) : impl(url),
+    );
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
+    );
+    expect(await screen.findByText(/Checking data lineage coverage for this trace/i)).toBeInTheDocument();
+  });
+
+  it.each(['flat', 'diagram', 'graph'] as const)(
+    'shows no coverage banner and makes no lineage read on the %s view',
+    async (legView) => {
+      mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+      renderWithProviders(
+        <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView={legView} />,
+      );
+      await waitFor(() =>
+        expect(
+          (fetch as ReturnType<typeof vi.fn>).mock.calls.some((c) => String(c[0]).endsWith('/entities')),
+        ).toBe(true),
+      );
+      await new Promise((r) => setTimeout(r, 200));
+      expect(screen.queryByText(/Data lineage for this trace is incomplete/i)).toBeNull();
+      expect(
+        (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+          String(c[0]).endsWith('/data-lineage'),
+        ),
+      ).toHaveLength(0);
+    },
+  );
+
+  it('shows no coverage banner and makes no lineage read on the tables view', async () => {
+    // The banner left the every-view slot: it qualifies the old derivation's results,
+    // which only the Lineage view shows — and the read behind it is made there only.
+    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+    const partial = renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    expect(screen.queryByText(/Data lineage for this trace is incomplete/i)).toBeNull();
+    partial.unmount();
+
+    mockFetchWithLineageError();
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    expect(screen.queryByText(/coverage for this trace is unknown/i)).toBeNull();
+    expect(screen.queryByText(/Checking data lineage coverage/i)).toBeNull();
+    expect(
+      (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+        String(c[0]).endsWith('/data-lineage'),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('shows no coverage warning in the Lineage view on a complete trace', async () => {
+    mockFetchWithLineage(LINEAGE_LEGS, { status: 'complete', stopped_at_seq: null });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
+    );
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
     await waitFor(() =>
       expect(
         (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
@@ -2203,14 +2256,14 @@ describe('FlowTables', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('shows no coverage warning while the status is unknown', async () => {
+  it('shows no coverage warning in the Lineage view while the status is unknown', async () => {
     // `status: null` is "not derived yet". Warning about a truncation nobody has
     // established would train the reader to ignore the banner.
     mockFetchWithLineage(LINEAGE_LEGS, { status: null, stopped_at_seq: null });
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
     );
-    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
     await waitFor(() =>
       expect(
         (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
@@ -2219,22 +2272,6 @@ describe('FlowTables', () => {
       ).toHaveLength(1),
     );
     expect(screen.queryByRole('alert')).toBeNull();
-  });
-
-  it('keeps the partial warning visible while a row is selected', async () => {
-    // The detail panel floats over the tables; the warning must not be what it
-    // covers, or the truncation becomes invisible exactly when a reader is
-    // drilling into a payload's sources.
-    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    await screen.findByRole('alert');
-    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument(),
-    );
-    expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 
   it('scopes the active-row highlight selector to out-specify PF clickable rows', () => {

@@ -51,7 +51,6 @@ import {
 } from '../lib/labelTrack';
 import type { LegLabels } from '../types';
 import { InteractionsTable } from './flow/InteractionsTable';
-import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import type { Selection } from './flow/selection';
 import type { Entity, Interaction, SpanEvidence } from '../types';
 
@@ -306,8 +305,8 @@ export interface FlowTablesProps {
  * either" is no longer true: it owns the trace's `data-lineage-summary` (which is both
  * the source colouring and the choosable source list) plus the two directional
  * `data-lineage-graph` reads, gated on having BOTH an entity selection and a chosen
- * source. Only its trace-level `status` still comes from this component's
- * `useDataLineage`, so the coverage banner and the tab quote one value.
+ * source. Only its trace-level coverage (for its banner) still comes from this
+ * component's `useDataLineage`.
  *
  * This module owns only the composition and the selection/URL state; the tables,
  * the floating detail panel and the coverage banner live in ./flow, the sequence
@@ -432,16 +431,14 @@ export function FlowTables({
       })
       .catch(() => {});
   }
-  // Persisted **Data lineage** for the whole trace (ADR-0028), read ONCE per
-  // trace and keyed per leg — not per payload expansion. TanStack caches on
-  // `traceId`, so the panel switching between rows/legs never re-fetches.
+  // The trace's **Data lineage** coverage (ADR-0028 D6), read once per trace for the
+  // Lineage view's banner, and only on that view: no other view shows it.
   //
-  // NOT gated on a selection (as #119 had it): since #120 this read also carries
-  // the trace's complete/partial coverage, and that warning belongs on the first
-  // paint. A truncation a reader must select a row to discover cannot stop them
-  // reading the visible rows as the whole picture — which is the entire point of
-  // the flag (ADR-0028 D6).
-  const lineageQ = useDataLineage(traceId);
+  // NOT gated on a selection (as #119 had it): the banner belongs on the view's first
+  // paint. A truncation a reader must select something to discover cannot stop them
+  // reading the marked sources as the whole picture — which is the entire point of
+  // the flag.
+  const lineageQ = useDataLineage(traceId, legView === 'lineage');
   // Monotonic click token: each row click bumps it, and a click's async
   // evidence fetch only commits its setState if it is still the latest click.
   // Guards the out-of-order race where a slow fetch resolves after a later
@@ -930,23 +927,6 @@ export function FlowTables({
               onClose={closePicker}
             />
           )}
-      {/* The trace-level lineage-coverage warning (issue #120), OUTSIDE the
-          tables' gutter div: the detail panel floats over that gutter, and the
-          truncation must stay readable precisely when someone is drilling into a
-          payload's data sources. */}
-      <LineageCoverageAlert
-        status={lineageQ.data?.status ?? null}
-        stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
-        // `isLoadingError`, not `isError`: a failed BACKGROUND re-read (the page is
-        // live, ADR-0034) keeps the last answer, and the banner keeps quoting it.
-        // Only a read that never produced an answer is "unknown".
-        isError={lineageQ.isLoadingError}
-        // The `isLoading` gate above covers the interactions/entities reads only,
-        // so these tables are already on screen while the lineage read is in
-        // flight. The banner needs to know that, or its silence claims complete
-        // coverage before the answer exists.
-        isLoading={lineageQ.isLoading}
-      />
       {/* Tables container. While the detail panel is open it floats fixed on the
           right, so `dg-detail-gutter` reserves a right gutter derived from the
           panel's own width vars (global.css) — the tables shrink out from under
@@ -1114,10 +1094,15 @@ export function FlowTables({
               // reads (ADR-0028 D14/D15), which the tab queries itself — the
               // per-leg map answered a strictly weaker
               // question (one hop, composed client-side) and keeping it here would
-              // leave two suppliers of one answer. The trace's `status` still comes
-              // from this read, so the coverage banner and the tab quote one value.
+              // leave two suppliers of one answer. The trace's coverage still comes
+              // from this read, for the view's coverage banner.
               status={lineageQ.data?.status ?? null}
+              stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
+              // `isLoadingError`, not `isError`: a failed BACKGROUND re-read (the page is
+              // live, ADR-0034) keeps the last answer, and the banner keeps quoting it.
+              // Only a read that never produced an answer is "unknown".
               isLineageError={lineageQ.isLoadingError}
+              isLineageLoading={lineageQ.isLoading}
               selectedEntityId={selectedEntityId}
               // THE OTHER HALF OF THE QUESTION. The reachability read is
               // `fanin(entity, source)` / `fanout(entity, source)` with `source`
