@@ -87,7 +87,7 @@ can widen a number past what the classifier marked), an unclaimed edge group is 
 and two labels never fold into one. `lineage_status` is null when the trace is not derived (or 0024
 has not run), never `complete`. The trace page's Classification tab shows this as facts about the
 payload; it never says a label was used, because the API pod does not read `RISK_INHERITED_LABELS`.
-The risk pages say "used in this decision" only from the record's
+The risk layer says "used in this decision" only from the record's
 `classification_summary.<leg>.inherited`, which leg-ready writes only for edges it forwarded. Which
 rule a label fired is not stored, and no page claims it.
 
@@ -109,8 +109,8 @@ and adds a tab per leg titled **Data lineage** (`LabelLineageTable`): one block 
 its **origin** (where the classifier found it) and the **previous** hop(s) at distance 1, each a
 link to that interaction, and "Show chains" for the full routes (`LabelLineage`: origin, then each
 carrier, then the **current** leg; the first chain open, the rest folded under a count). The
-risk trace page's decision card opens the same view from its "Carried in" row, under the fired rules'
-criteria. A hop links to its interaction on the page it is on (`?iid=` / `?interaction=`), a hop in
+risk layer's decision card opens the same view from its "Carried in" row, under the fired rules'
+criteria. A hop links to its interaction on the trace page (`?iid=`), a hop in
 another trace is marked and links to that trace's flow view, and a hop under the pointer lights its
 interaction on the sequence diagram. The decision is payload-level and lineage is value-level: the panel never names the
 value that met a rule, because neither the engine nor OPA records one; the reader sees which value
@@ -119,13 +119,13 @@ carries the labels the rules name.
 **Tracking values on the graphs (the overlay).** An edge on the graphs is a leg, one payload, and the
 decision is on that payload; label lineage is per value. So a value's chain is not "the path of an
 edge": the reader ticks the values to track (in the Data lineage tab, or by a right-click on a leg,
-which tracks that leg's carried-in values; on the risk page the default is the carried-in values whose
+which tracks that leg's carried-in values; with the risk layer on the default is the carried-in values whose
 labels the fired rules name), and the union of their routes is painted over the graph that is already
 there: the legs those values sat on lit, every other leg dimmed, on the execution-flow graph, the
 sequence diagram and the Tree and Flat tables alike (`lib/labelTrack`, pure; the pages only paint the
 sets). A banner names what is tracked, each removable; hops in other traces are counted, not drawn.
-Tracking is per trace and per page visit. The risk page's graph draws request legs only
-(`toFlowInteractions`), so a value's response-leg hops are not lit there.
+Tracking is per trace and per page visit. With edges per interaction the graphs draw request legs
+only, and a value's response-leg hop lights its interaction's one arrow.
 
 ## What this does not do yet
 

@@ -38,26 +38,19 @@ export function parseViolationIndex(
 
 /**
  * Step the current 1-based violation position by `delta` (`-1` for
- * Previous, `+1` for Next), clamped at both ends without wrapping.
- *
- * Clamping rather than wrapping: the Previous/Next controls disable at the
- * ends (`ViolationStepper`), so this only ever needs to hold the position
- * steady there; a wrapping Next would make "N of N" ambiguous about which
- * neighbour it means.
+ * Previous, `+1` for Next), wrapping at both ends: Next on the last event goes
+ * to the first, Previous on the first to the last. With one event both land on
+ * it, so the stepper is never dead — a step is how the bar reopens a closed
+ * panel on a trace's only event.
  */
 export function stepViolation(current: number, delta: -1 | 1, count: number): number {
-  const next = current + delta;
-  if (next < 1) return 1;
-  if (next > count) return count;
-  return next;
+  return ((current - 1 + delta + count) % count) + 1;
 }
 
 /**
- * The risk trace page's reading of a trace, as the trace page's risk layer
- * spells it (risk is a layer on the trace page; the risk page
- * stays for a transition period and links across): `?risk=1`, the same
- * `?violation=`, and the risk page's `?interaction=` as the trace page's `?iid=`.
- * The reverse translation lives on the trace page.
+ * The old risk trace page's reading of a trace (`/risk/traces/<id>`, now a
+ * redirect), as the trace page's risk layer spells it: `?risk=1`, the same
+ * `?violation=`, and the old page's `?interaction=` as the trace page's `?iid=`.
  */
 export function traceLayerParams(riskPageParams: URLSearchParams): URLSearchParams {
   const out = new URLSearchParams();
@@ -67,4 +60,13 @@ export function traceLayerParams(riskPageParams: URLSearchParams): URLSearchPara
   const interaction = riskPageParams.get('interaction');
   if (interaction != null) out.set('iid', interaction);
   return out;
+}
+
+/**
+ * Where a trace's risk is read: the trace page's Execution Flow with the Risk
+ * layer on — the graph is the view that shows both the risk colours and the
+ * classification tags. `riskPageParams` are an old risk-page URL's, translated.
+ */
+export function traceRiskPath(traceId: string, riskPageParams = new URLSearchParams()): string {
+  return `/traces/${encodeURIComponent(traceId)}/graph?${traceLayerParams(riskPageParams).toString()}`;
 }

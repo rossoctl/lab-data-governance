@@ -1,3 +1,4 @@
+import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -11,9 +12,7 @@ import { TraceDetailPage } from './TraceDetailPage';
  * view tabs, `?risk=1` in the URL (absent = off), one state for every view, the
  * span tree included. On, the alerts section renders above the views, the flow
  * view reads and paints the risk (`FlowTables.risk.test.tsx` pins the contract
- * there), the live keys gain the risk prefixes, and the cross link to the risk
- * trace page — which stays for a transition period — carries the open event and
- * the selection. Off, the page is as it was: `TraceDetailPage.test.tsx` runs
+ * there), and the live keys gain the risk prefixes. Off, the page is as it was: `TraceDetailPage.test.tsx` runs
  * unchanged beside this file.
  */
 function harness() {
@@ -105,8 +104,10 @@ function alert(overrides: Record<string, unknown> = {}) {
 
 /** The base routing, reusable by a case that overrides one read. */
 let mockFetchBase: (url: string) => Promise<unknown> = async () => ({ ok: true, status: 200, json: async () => ({}) });
-function mockFetch(over: { forest?: unknown[]; alerts?: unknown[] } = {}) {
+function mockFetch(over: { forest?: unknown[]; alerts?: unknown[]; evidenceGate?: Promise<void> } = {}) {
   mockFetchBase = async (url: string) => {
+    // Holds every interaction's evidence read until the test releases it.
+    if (over.evidenceGate && /\/interactions\/[^/]+\/spans$/.test(url)) await over.evidenceGate;
     if (url.startsWith('/risk/rules')) return { ok: true, status: 200, json: async () => ({ items: [rule('DG-001'), rule('DG-002'), rule('DG-003')], next_cursor: null }) };
     if (url.startsWith('/risk/alerts')) return { ok: true, status: 200, json: async () => ({ items: over.alerts ?? [], next_cursor: null }) };
     if (url.startsWith('/risk/traces/')) return { ok: true, status: 200, json: async () => ({ trace_risk: { trace_id: 'T1' }, interactions: over.forest ?? FOREST }) };
@@ -141,9 +142,31 @@ function reads() {
 }
 const location = () => screen.getByTestId('location').textContent;
 const toggle = () => screen.getByRole('checkbox', { name: 'Risk' });
+const bar = () => screen.getByTestId('risk-bar');
+/** Click an edge once the graph has drawn its handler (PF's selection needs the `act`). */
+async function clickEdge(id: string) {
+  const handler = () => document.querySelector(`[data-id="${id}"] [data-test-id="edge-handler"]`);
+  await waitFor(() => expect(handler()).not.toBeNull());
+  act(() => {
+    fireEvent.click(handler()!);
+  });
+}
+/** The panel open on policy event `n` of `count`: the bar's stepper says so and the decision card is in the panel. */
+async function panelOnEvent(n: number, count: number) {
+  await waitFor(() => {
+    expect(within(bar()).getByText(`${n} of ${count}`)).toBeInTheDocument();
+    expect(within(screen.getByTestId('risk-layer')).getByTestId('policy-decision-panel')).toBeInTheDocument();
+  });
+}
 async function findGraph() {
   return screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 }
+const evidenceCalls = (path: string) =>
+  (fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) => String(u).includes(path)).length;
+/** Lets a released read land and every write it causes settle, so an assertion after it sees the end state. */
+const settle = () => act(() => new Promise((r) => setTimeout(r, 150)));
+const panelOpen = () => screen.queryByRole('button', { name: 'Close details' }) != null;
+const panelShows = (text: string) => screen.queryAllByText(text, { selector: 'dd *, dd' }).length > 0;
 
 describe('TraceDetailPage — the risk layer', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
@@ -169,13 +192,15 @@ describe('TraceDetailPage — the risk layer', () => {
     expect(await screen.findByText('PII left the boundary')).toBeInTheDocument();
     await waitFor(() => expect(reads()).toMatchObject({ detail: 1, alerts: 1, rules: 1 }));
     // The default selection opened event 1; step to event 2 so ?violation= is written…
-    const layer = await screen.findByTestId('risk-layer');
-    await userEvent.click(within(layer).getByRole('button', { name: /Next/ }));
+    await panelOnEvent(1, 2);
+    await userEvent.click(within(bar()).getByRole('button', { name: /Next/ }));
     await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1&violation=2'));
-    // …and switching the layer off drops both params, the position meaning nothing then.
+    // …and switching the layer off drops both params, the position meaning nothing then;
+    // the open event stays open, named by ?iid=.
     await userEvent.click(toggle());
-    expect(location()).toBe('/traces/T1/graph');
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i2'));
     await waitFor(() => expect(screen.queryByTestId('risk-layer')).toBeNull());
+    expect(screen.queryByTestId('risk-bar')).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Alerts' })).toBeNull();
   });
 
@@ -203,19 +228,9 @@ describe('TraceDetailPage — the risk layer', () => {
     renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1&violation=2' });
     await findGraph();
     const layer = await screen.findByTestId('risk-layer');
-    expect(within(layer).getByText('2 of 2')).toBeInTheDocument();
+    expect(within(bar()).getByText('2 of 2')).toBeInTheDocument();
     expect(within(within(layer).getByTestId('policy-decision-panel')).getByText('agent calls partner')).toBeInTheDocument();
     expect(toggle()).toBeChecked();
-  });
-
-  it('the reverse cross link carries the open event and the selection to the risk trace page', async () => {
-    mockFetch();
-    renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1&violation=2&iid=i0' });
-    await findGraph();
-    expect(screen.getByRole('link', { name: 'Risk page for this trace' })).toHaveAttribute(
-      'href',
-      '/risk/traces/T1?violation=2&interaction=i0',
-    );
   });
 
   it('restores the graph edge mode from ?edges=interaction and writes it back, deleting the per-leg default', async () => {
@@ -251,27 +266,27 @@ describe('TraceDetailPage — the risk layer', () => {
     expect(await screen.findByRole('heading', { name: 'Alerts' })).toBeInTheDocument();
   }, 15000);
 
-  // A selection only the layer made goes with the layer.
-  it('switching the layer off closes the default selection it opened, so the URL and the screen agree', async () => {
+  // Off, the panel stays on what was open, losing only its risk cards; the URL names it by ?iid=.
+  it('switching the layer off keeps the open interaction — the default or a plain pick — named by ?iid=', async () => {
     mockFetch();
     renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1' });
     await findGraph();
-    await within(await screen.findByTestId('risk-layer')).findByText('1 of 2');
+    await panelOnEvent(1, 2);
     expect(location()).toBe('/traces/T1/graph?risk=1');
     await userEvent.click(toggle());
-    await waitFor(() => expect(location()).toBe('/traces/T1/graph'));
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Close details' })).toBeNull());
-    expect(document.querySelector('.dg-graph-edge--selected')).toBeNull();
-    // A pick the reader made survives the toggle: it is in the URL.
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i1'));
+    expect(screen.getByRole('button', { name: 'Close details' })).toBeInTheDocument();
+    expect(screen.queryByTestId('risk-layer')).toBeNull();
+    expect(document.querySelector('.dg-graph-edge--selected')).not.toBeNull();
+    // Back on, the same event, its risk cards back.
     await userEvent.click(toggle());
-    await within(await screen.findByTestId('risk-layer')).findByText('1 of 2');
-    act(() => {
-      fireEvent.click(document.querySelector('[data-id="i0:request"] [data-test-id="edge-handler"]')!);
-    });
+    await panelOnEvent(1, 2);
+    await clickEdge('i0:request');
     await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1&iid=i0'));
     await userEvent.click(toggle());
     await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i0'));
     expect(screen.getByRole('button', { name: 'Close details' })).toBeInTheDocument();
+    expect(screen.queryByTestId('risk-layer')).toBeNull();
   });
 
   // A dismissal made with the layer off is not a dismissal of the layer.
@@ -293,25 +308,167 @@ describe('TraceDetailPage — the risk layer', () => {
     });
     await userEvent.click(toggle());
     await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1'));
-    const layer = await screen.findByTestId('risk-layer', undefined, { timeout: 5000 });
-    await within(layer).findByText('1 of 2', undefined, { timeout: 5000 });
+    await screen.findByTestId('risk-layer', undefined, { timeout: 5000 });
+    await within(bar()).findByText('1 of 2', undefined, { timeout: 5000 });
   }, 15000);
 
-  // A policy event picked by its edge is named by ?violation= only, which the toggle deletes — it goes too.
-  it('switching the layer off closes a policy event picked by its edge, since nothing in the URL names it', async () => {
+  // A policy event picked by its edge was named by ?violation= only, which the toggle deletes: ?iid= names it now.
+  it('switching the layer off keeps a policy event picked by its edge open, named by ?iid=', async () => {
     mockFetch();
     renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1' });
     await findGraph();
-    await within(await screen.findByTestId('risk-layer')).findByText('1 of 2');
-    act(() => {
-      fireEvent.click(document.querySelector('[data-id="i2:request"] [data-test-id="edge-handler"]')!);
-    });
+    await panelOnEvent(1, 2);
+    await clickEdge('i2:request');
     await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1&violation=2'));
     await userEvent.click(toggle());
-    await waitFor(() => expect(location()).toBe('/traces/T1/graph'));
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Close details' })).toBeNull());
-    expect(document.querySelector('.dg-graph-edge--selected')).toBeNull();
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i2'));
+    expect(screen.getByRole('button', { name: 'Close details' })).toBeInTheDocument();
+    expect(screen.queryByTestId('risk-layer')).toBeNull();
+    expect(document.querySelector('.dg-graph-edge--selected')).not.toBeNull();
   });
+
+  // A toggle supersedes a click still loading: landing later, it must not switch the layer back.
+  it('a click still loading when the layer is switched off does not switch it back on when it lands', async () => {
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1' });
+    await findGraph();
+    await panelOnEvent(1, 2);
+    let release!: () => void;
+    mockFetch({ evidenceGate: new Promise<void>((r) => (release = r)) });
+    await clickEdge('i2:request');
+    expect(evidenceCalls('/interactions/i2/spans')).toBe(1);
+    await userEvent.click(toggle());
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i1'));
+    await act(async () => release());
+    await settle();
+    expect(location()).toBe('/traces/T1/graph?iid=i1');
+    expect(toggle()).not.toBeChecked();
+    expect(panelShows('search calls partner')).toBe(true);
+  });
+
+  it('a click still loading when the layer is switched on does not switch it back off when it lands', async () => {
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/graph' });
+    await findGraph();
+    let release!: () => void;
+    mockFetch({ evidenceGate: new Promise<void>((r) => (release = r)) });
+    await clickEdge('i0:request');
+    await userEvent.click(toggle());
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1'));
+    await act(async () => release());
+    await panelOnEvent(1, 2);
+    expect(location()).toBe('/traces/T1/graph?risk=1');
+    expect(toggle()).toBeChecked();
+  });
+
+  // The default's own read, still loading when the layer goes off, must not open the panel after it.
+  it('switching the layer off while the default is still loading leaves the panel closed', async () => {
+    let release!: () => void;
+    mockFetch({ evidenceGate: new Promise<void>((r) => (release = r)) });
+    renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1' });
+    await findGraph();
+    await waitFor(() =>
+      expect((fetch as ReturnType<typeof vi.fn>).mock.calls.some(([u]) => String(u).includes('/interactions/i1/spans'))).toBe(true),
+    );
+    await userEvent.click(toggle());
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph'));
+    await act(async () => release());
+    await settle();
+    expect(panelOpen()).toBe(false);
+    expect(location()).toBe('/traces/T1/graph');
+  });
+
+  // A toggle supersedes clicks, not the URL: a ?iid= / ?eid= still loading lands all the same.
+  it('a ?iid= still loading when the layer is switched on or off lands all the same', async () => {
+    let release!: () => void;
+    mockFetch({ evidenceGate: new Promise<void>((r) => (release = r)) });
+    const on = renderWithProviders(harness(), { route: '/traces/T1/graph?iid=i0' });
+    await findGraph();
+    await waitFor(() => expect(evidenceCalls('/interactions/i0/spans')).toBe(1));
+    await userEvent.click(toggle());
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i0&risk=1'));
+    await act(async () => release());
+    await settle();
+    expect(panelShows('agent calls search')).toBe(true);
+    on.unmount();
+
+    mockFetch({ evidenceGate: new Promise<void>((r) => (release = r)) });
+    renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1&iid=i0' });
+    await findGraph();
+    await waitFor(() => expect(evidenceCalls('/interactions/i0/spans')).toBeGreaterThan(1));
+    await userEvent.click(toggle());
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i0'));
+    await act(async () => release());
+    await settle();
+    expect(panelShows('agent calls search')).toBe(true);
+    expect(location()).toBe('/traces/T1/graph?iid=i0');
+  });
+
+  it('a ?eid= still loading when the layer is switched on lands all the same', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mockFetch();
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (/\/entities\/[^/]+\/spans$/.test(url)) await gate;
+      return mockFetchBase(url);
+    });
+    renderWithProviders(harness(), { route: '/traces/T1/graph?eid=e2' });
+    await findGraph();
+    await waitFor(() => expect(evidenceCalls('/entities/e2/spans')).toBe(1));
+    await userEvent.click(toggle());
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?eid=e2&risk=1'));
+    await act(async () => release());
+    await settle();
+    expect(panelOpen()).toBe(true);
+  });
+
+  // Back across a toggle onto an entry that names its own ?iid=: the panel follows that entry.
+  it('Back from a policy event picked with the layer on to an entry naming another ?iid= opens that one', async () => {
+    mockFetch();
+    renderWithProviders(
+      <>
+        {harness()}
+        <BackButton />
+      </>,
+      { route: '/traces/T1/flow?iid=i0' },
+    );
+    await waitFor(() => expect(panelShows('agent calls search')).toBe(true), { timeout: 5000 });
+    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/ }));
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i0'));
+    await findGraph();
+    await userEvent.click(toggle());
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i0&risk=1'));
+    await clickEdge('i2:request');
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1&violation=2'));
+    await userEvent.click(screen.getByRole('button', { name: 'test-back' }));
+    await waitFor(() => expect(location()).toBe('/traces/T1/flow?iid=i0'));
+    await settle();
+    expect(location()).toBe('/traces/T1/flow?iid=i0');
+    expect(panelShows('agent calls search')).toBe(true);
+    expect(panelShows('agent calls partner')).toBe(false);
+  }, 20000);
+
+  // The toggle effect also runs when FlowTables mounts again on warm data; that is not a toggle.
+  it('under StrictMode, Back from the span tree to ?iid= remounts the flow and the restore lands', async () => {
+    mockFetch();
+    renderWithProviders(
+      <React.StrictMode>
+        {harness()}
+        <BackButton />
+      </React.StrictMode>,
+      { route: '/traces/T1/graph?iid=i0' },
+    );
+    await findGraph();
+    await waitFor(() => expect(panelShows('agent calls search')).toBe(true), { timeout: 5000 });
+    await userEvent.click(screen.getByRole('tab', { name: 'Span tree' }));
+    await waitFor(() => expect(location()).toMatch(/^\/traces\/T1\/spans/));
+    await waitFor(() => expect(screen.queryByTestId('execution-flow-graph')).toBeNull());
+    await userEvent.click(screen.getByRole('button', { name: 'test-back' }));
+    await waitFor(() => expect(location()).toBe('/traces/T1/graph?iid=i0'));
+    await findGraph();
+    await settle();
+    expect(panelShows('agent calls search')).toBe(true);
+  }, 20000);
 
   // A dismissal must not drop a later ?iid= restore — the URL owns a selection it names.
   it('after a dismissal, Back to a URL naming ?iid= reopens the panel on it', async () => {
@@ -324,10 +481,8 @@ describe('TraceDetailPage — the risk layer', () => {
       { route: '/traces/T1/graph?risk=1' },
     );
     await findGraph();
-    await within(await screen.findByTestId('risk-layer')).findByText('1 of 2');
-    act(() => {
-      fireEvent.click(document.querySelector('[data-id="i0:request"] [data-test-id="edge-handler"]')!);
-    });
+    await panelOnEvent(1, 2);
+    await clickEdge('i0:request');
     await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1&iid=i0'));
     await userEvent.click(screen.getByRole('tab', { name: 'Interactions and Entities' })); // a push: Back has somewhere to go
     await waitFor(() => expect(location()).toBe('/traces/T1/flow?risk=1&iid=i0'));
@@ -410,7 +565,7 @@ describe('TraceDetailPage — the risk layer', () => {
       renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1&violation=2' });
       await findGraph();
       const layer = await screen.findByTestId('risk-layer');
-      await within(layer).findByText('2 of 2');
+      await within(bar()).findByText('2 of 2');
       expect(within(within(layer).getByTestId('policy-decision-panel')).getByText('agent calls partner')).toBeInTheDocument();
 
       await act(async () => FakeEventSource.last!.change('v1'));
@@ -420,7 +575,7 @@ describe('TraceDetailPage — the risk layer', () => {
 
       await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1&violation=3'));
       const after = await screen.findByTestId('risk-layer');
-      expect(within(after).getByText('3 of 3')).toBeInTheDocument();
+      expect(within(bar()).getByText('3 of 3')).toBeInTheDocument();
       expect(within(within(after).getByTestId('policy-decision-panel')).getByText('agent calls partner')).toBeInTheDocument();
       // One evidence fetch for the held interaction, none for the one that moved into its old position.
       const evidence = (fetch as ReturnType<typeof vi.fn>).mock.calls.map(([u]) => String(u)).filter((u) => /\/interactions\/i[0-9]\/spans/.test(u));
@@ -432,7 +587,7 @@ describe('TraceDetailPage — the risk layer', () => {
       renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1&violation=3' });
       await findGraph();
       const layer = await screen.findByTestId('risk-layer');
-      await within(layer).findByText('1 of 2'); // event 3 has not arrived: event 1 for now
+      await within(bar()).findByText('1 of 2'); // event 3 has not arrived: event 1 for now
       expect(within(within(layer).getByTestId('policy-decision-panel')).getByText('search calls partner')).toBeInTheDocument();
       expect(location()).toBe('/traces/T1/graph?risk=1&violation=3'); // not held, not rewritten
 
@@ -442,7 +597,7 @@ describe('TraceDetailPage — the risk layer', () => {
       await act(async () => FakeEventSource.last!.change('v2'));
 
       const after = await screen.findByTestId('risk-layer');
-      await waitFor(() => expect(within(after).getByText('3 of 3')).toBeInTheDocument());
+      await waitFor(() => expect(within(bar()).getByText('3 of 3')).toBeInTheDocument());
       expect(within(within(after).getByTestId('policy-decision-panel')).getByText('agent calls partner')).toBeInTheDocument();
       expect(location()).toBe('/traces/T1/graph?risk=1&violation=3');
     });
@@ -452,19 +607,19 @@ describe('TraceDetailPage — the risk layer', () => {
       mockFetch();
       renderWithProviders(harness(), { route: '/traces/T1/graph?risk=1&iid=i2' });
       await findGraph();
-      const layer = await screen.findByTestId('risk-layer');
-      await within(layer).findByText('2 of 2');
+      await screen.findByTestId('risk-layer');
+      await within(bar()).findByText('2 of 2');
 
       await act(async () => FakeEventSource.last!.change('v1'));
       await waitFor(() => expect(reads().detail).toBe(2));
       mockFetch({ forest: FOREST_SHIFTED });
       await act(async () => FakeEventSource.last!.change('v2'));
       await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1&iid=i2&violation=3'));
-      await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('3 of 3')).toBeInTheDocument());
+      await waitFor(() => expect(within(bar()).getByText('3 of 3')).toBeInTheDocument());
 
-      await userEvent.click(within(screen.getByTestId('risk-layer')).getByRole('button', { name: /Previous/ }));
+      await userEvent.click(within(bar()).getByRole('button', { name: /Previous/ }));
       await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1&violation=2'));
-      await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('2 of 3')).toBeInTheDocument());
+      await waitFor(() => expect(within(bar()).getByText('2 of 3')).toBeInTheDocument());
       expect(within(within(screen.getByTestId('risk-layer')).getByTestId('policy-decision-panel')).getByText('search calls partner')).toBeInTheDocument();
     });
 
@@ -488,7 +643,7 @@ describe('TraceDetailPage — the risk layer', () => {
       act(() => {
         fireEvent.click(document.querySelector('[data-id="i2:request"] [data-test-id="edge-handler"]')!);
       });
-      await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('3 of 3')).toBeInTheDocument());
+      await waitFor(() => expect(within(bar()).getByText('3 of 3')).toBeInTheDocument());
     });
   });
 

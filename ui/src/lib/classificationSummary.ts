@@ -6,8 +6,8 @@
  *
  * ONE NARROWING, TWO CONSUMERS. This module used to be three module-private
  * functions inside `risk-components/PolicyDecisionPanel.tsx`. It was
- * extracted here (issue #170 follow-up: regulatory tags as edge labels on
- * the risk trace graph) once a second consumer — the execution-flow graph's
+ * extracted here (issue #170 follow-up: regulatory tags as edge labels)
+ * once a second consumer — the execution-flow graph's
  * edge tags, via `riskForestAdapter.classificationByInteraction` — needed the
  * identical defensive narrowing of the same wire shape. Duplicating it would
  * have meant two places that could silently disagree about what counts as "a
@@ -23,7 +23,7 @@
  * `{classification_pending: true}` (still running) and `{payload: null}`
  * (nothing to classify); neither carries tags or a sensitivity level, so
  * both pass this narrowing contributing nothing to the unions below (the
- * risk trace page's interaction panel tells them apart by key).
+ * risk layer's interaction panel tells them apart by key).
  */
 export interface ClassifiedLegSummary {
   sensitivity_level?: unknown;
@@ -54,8 +54,8 @@ export function classifiedLegs(summary: Record<string, unknown> | null): Classif
 export type LegName = 'request' | 'response';
 
 /**
- * `classifiedLegs` with each leg's name kept (issue #295: the risk trace
- * page's interaction panel shows the verdict PER LEG, where the unioned
+ * `classifiedLegs` with each leg's name kept (issue #295: the risk layer's
+ * interaction panel shows the verdict PER LEG, where the unioned
  * `regulatoryTagsOf`/`classificationLevelsOf` below would lose which leg
  * carried what). Same narrowing, same order: request, then response.
  */

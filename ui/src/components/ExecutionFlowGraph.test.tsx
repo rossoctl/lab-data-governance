@@ -2399,15 +2399,11 @@ describe('ExecutionFlowGraph', () => {
 });
 
 /**
- * `EntityGraph`'s risk-colour seam (issue #170's Alert Execution view), rendered
- * DIRECTLY rather than through `ExecutionFlowGraph`/`LineageGraph`.
+ * `EntityGraph`'s risk-colour seam (issue #170), rendered DIRECTLY rather than
+ * through `ExecutionFlowGraph`/`LineageGraph`.
  *
- * Neither tab wrapper fetches or passes `riskLevelByInteraction` — the Alert
- * Execution page owns its own risk read and derives its own `GraphSpec` via
- * `lib/riskForestAdapter.ts`, feeding both straight into `EntityGraph`, which is
- * exported for exactly this. Going through a tab wrapper here would mean
- * threading a prop neither tab has any use for just to reach a component that is
- * already reachable directly — so these cases build a small `GraphSpec` by hand
+ * The tab wrappers only pass `riskLevelByInteraction` through from the risk
+ * layer (`FlowTables.risk.test.tsx` covers that path), so these cases build a small `GraphSpec` by hand
  * (skipping `mockApi`/`useEntities`/`useInteractions` entirely) and mount
  * `EntityGraph` itself, reusing the SAME `capturedController`/`nodeData`/
  * `edgeData` helpers the tab tests above use, since both routes build the
@@ -2643,7 +2639,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
     expect(e1.kindColoured).toBe(true);
   });
 
-  it("suppresses the 'entity pair(s) with multiple interactions' notice when hideParallelGroupsNotice is set — the risk trace view draws request legs only, so the notice's response-leg premise never applies there", async () => {
+  it("suppresses the 'entity pair(s) with multiple interactions' notice when hideParallelGroupsNotice is set — with edges per interaction only request legs are drawn, so the notice's response-leg premise never applies", async () => {
     const spec = riskSpec();
     spec.parallelGroups = [{ key: 'e1|e2', edgeIds: ['i1:request', 'i1:response'] }];
     renderEntityGraph(spec, undefined, true);
@@ -2661,32 +2657,6 @@ describe('EntityGraph risk colouring (issue #170)', () => {
     expect(screen.getByText(/1 entity pair with multiple interactions/i)).toBeInTheDocument();
   });
 
-  it("blanks each edge's seq-number tag when hideEdgeLabels is set — the risk trace view has no Flat table to cross-reference the number against (issue #170)", async () => {
-    renderWithProviders(
-      <EntityGraph traceId="T1" spec={riskSpec()} hideEdgeLabels />,
-    );
-    await waitFor(() => expect(edgeEls()).toHaveLength(2));
-
-    // Asserted on the model data (the same way `riskLevel` is asserted above)
-    // AND on rendered DOM — the tag `<g>` disappears entirely, since
-    // `showTag`'s truthiness gate skips it for an empty string (this file's
-    // header on why the tag's `<text>` is genuinely observable under jsdom).
-    const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
-    const res = capturedController?.getEdgeById('i1:response')?.getData() as { label?: string };
-    expect(req.label).toBe('');
-    expect(res.label).toBe('');
-    expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag')).toBeNull();
-  });
-
-  it('leaves the seq-number tag data unchanged when hideEdgeLabels is omitted — a pure regression guard for the two existing tabs, which never pass it', async () => {
-    renderEntityGraph(riskSpec());
-    await waitFor(() => expect(edgeEls()).toHaveLength(2));
-
-    const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
-    expect(req.label).toBe('1');
-    expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe('1');
-  });
-
   /**
    * The classification-tag seam (issue #170 follow-up: regulatory tags as
    * edge labels). Same rendering approach as the risk-colour tests above —
@@ -2698,14 +2668,12 @@ describe('EntityGraph risk colouring (issue #170)', () => {
   describe('classification tags (issue #170 follow-up)', () => {
     function renderWithClassification(
       classificationByInteraction?: ReadonlyMap<string, { tags: readonly string[]; levels: readonly string[] }>,
-      hideEdgeLabels?: boolean,
     ) {
       return renderWithProviders(
         <EntityGraph
           traceId="T1"
           spec={riskSpec()}
           classificationByInteraction={classificationByInteraction}
-          hideEdgeLabels={hideEdgeLabels}
         />,
       );
     }
@@ -2770,14 +2738,6 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       expect(req.label).toBe('');
       expect(req.classification).toBeUndefined();
       expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag')).toBeNull();
-    });
-
-    it('takes precedence over hideEdgeLabels when both are supplied — the tag slot is the classification string, not blanked', async () => {
-      renderWithClassification(new Map([['i1', { tags: ['PII'], levels: ['RESTRICTED'] }]]), true);
-      await waitFor(() => expect(edgeEls()).toHaveLength(2));
-
-      const req = capturedController?.getEdgeById('i1:request')?.getData() as { label?: string };
-      expect(req.label).toBe('PII');
     });
 
     it('leaves the seq-number tag completely unchanged when the map is omitted entirely — the pure regression guard for both existing tabs', async () => {
@@ -3170,7 +3130,6 @@ describe('EntityGraph risk colouring (issue #170)', () => {
               ['i2', { tags: ['GDPR'], levels: ['INTERNAL'] }],
             ])
           }
-          hideEdgeLabels
         />,
       );
     }
@@ -3339,27 +3298,6 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       await waitFor(() => expect(visibleTooltips()[0]).toHaveTextContent('GDPR (INTERNAL)'));
       expect(visibleTooltips()).toHaveLength(1);
     });
-  });
-
-  // compactSurface (issue #170 follow-up): jsdom applies no stylesheet, so it
-  // cannot see the shorter rendered height itself — see this file's header on
-  // why CSS effects are asserted through className presence, never through a
-  // computed-style or layout assertion. The real height was confirmed in a
-  // browser (not part of this automated suite).
-  it('adds the dg-graph-surface--compact modifier class when compactSurface is set', async () => {
-    renderWithProviders(<EntityGraph traceId="T1" spec={riskSpec()} compactSurface />);
-    await waitFor(() => expect(edgeEls()).toHaveLength(2));
-
-    const surface = document.querySelector('.dg-graph-surface')!;
-    expect(surface).toHaveClass('dg-graph-surface--compact');
-  });
-
-  it('omits the dg-graph-surface--compact modifier class when compactSurface is omitted — a regression guard for the two existing tabs, which never pass it', async () => {
-    renderEntityGraph(riskSpec());
-    await waitFor(() => expect(edgeEls()).toHaveLength(2));
-
-    const surface = document.querySelector('.dg-graph-surface')!;
-    expect(surface).not.toHaveClass('dg-graph-surface--compact');
   });
 });
 
@@ -5151,11 +5089,11 @@ describe('LineageGraph', () => {
  * halves of the requirement are therefore checked where each is actually observable —
  * the shape decision on the model, the key in the DOM.
  *
- * THE THREE VIEWS ARE TESTED SEPARATELY, deliberately, even though all three render
+ * THE VIEWS ARE TESTED SEPARATELY, deliberately, even though all of them render
  * one `EntityGraph`. "Consistent across all graph views" is the requirement, and one
- * test on the shared component would pass while a call site opted out — the props
- * `EntityGraphProps` already offers for exactly that (`compactSurface`,
- * `hideEdgeLabels`, `legend`) are what make the opt-out plausible enough to pin.
+ * test on the shared component would pass while a call site opted out — the prop
+ * `EntityGraphProps` already offers for exactly that (`legend`) is what makes the
+ * opt-out plausible enough to pin.
  */
 describe('entity shapes by kind (issue #218)', () => {
   beforeEach(() => {
@@ -5179,7 +5117,7 @@ describe('entity shapes by kind (issue #218)', () => {
   });
 
   /**
-   * A direct-`spec` graph for the two call sites that pass one (the Risk view).
+   * A direct-`spec` graph for the risk-layer case below.
    *
    * ITS OWN LOCAL COPY rather than the `riskSpec` helper the risk-colouring block
    * already has: that one is scoped inside its own `describe` and names two kinds,
@@ -5374,10 +5312,9 @@ describe('entity shapes by kind (issue #218)', () => {
     });
   });
 
-  describe('the Risk trace-detail view', () => {
-    it('shapes its nodes by kind, and keeps the risk COLOURING that view adds', async () => {
-      // The third call site (`RiskTraceDetailPage` renders `EntityGraph` directly).
-      // Risk colour takes precedence over kind colour there by design — issue #170 —
+  describe('with the risk layer on', () => {
+    it('shapes its nodes by kind, and keeps the risk COLOURING the layer adds', async () => {
+      // Risk colour takes precedence over kind colour by design — issue #170 —
       // and shape is a different channel, so the two must COMPOSE: a high-risk agent
       // is a red hexagon, not a red ellipse. This is the assertion that fails if shape
       // were folded into the same precedence chain as colour.
@@ -5400,29 +5337,11 @@ describe('entity shapes by kind (issue #218)', () => {
       expect(nodeShape('e1')).toBe('hexagon');
       // The risk colour is still applied — shape did not displace it. Read off the
       // element rather than through the shared `nodeData` helper: `riskLevel` is not on
-      // that helper's declared shape (only this one view supplies it), and widening a
+      // that helper's declared shape (only the risk layer supplies it), and widening a
       // helper the whole file shares for one case is the wrong trade.
       const risk = (capturedController!.getNodeById('e1')!.getData() as { riskLevel?: string })
         .riskLevel;
       expect(risk).toBe('high');
-    });
-
-    it('renders the shape legend on this view as well', async () => {
-      // "Consistent across all graph views" includes the key, not only the shapes: a
-      // reader who meets a hexagon here must be able to find out what it means without
-      // switching tabs.
-      render(
-        <QueryClientProvider
-          client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-        >
-          <MemoryRouter>
-            <EntityGraph traceId="T1" spec={shapeSpec()} compactSurface hideEdgeLabels />
-          </MemoryRouter>
-        </QueryClientProvider>,
-      );
-      await waitFor(() => expect(screen.getByTestId('execution-flow-graph')).toBeInTheDocument());
-
-      expect(screen.getByRole('group', { name: /Entity shape legend/i })).toBeInTheDocument();
     });
   });
 

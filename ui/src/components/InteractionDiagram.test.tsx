@@ -351,10 +351,9 @@ describe('InteractionDiagram', () => {
     expect(screen.queryByText(/without a lifeline/i)).not.toBeInTheDocument();
   });
 
-  // --- Risk colouring (issue #170's Alert Execution view). The Flow tables'
-  // own mount of this component (above) never passes `riskLevelByInteraction`,
-  // so every case above this point already pins that the arrow colours are
-  // unaffected by this seam existing at all.
+  // --- Risk colouring (issue #170). The cases above never pass
+  // `riskLevelByInteraction` (the risk layer off), so every case above this point
+  // already pins that the arrow colours are unaffected by this seam existing at all.
 
   describe('risk colouring (issue #170)', () => {
     it("colours BOTH legs of an interaction by ITS OWN risk level, calling riskLevelColorVar rather than a hardcoded value", () => {

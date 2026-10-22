@@ -398,8 +398,8 @@ type NodeData = GraphNodeSpec & {
    * This node's ENTITY risk level, resolved when the caller supplied a
    * `riskLevelByInteraction` map (issue #170) — see
    * {@link EntityGraphProps.riskLevelByInteraction}. `undefined` when no map
-   * was supplied at all, which is what keeps both existing tabs' node colour
-   * unchanged; present (possibly `'unknown'`) whenever a map is passed, even
+   * was supplied at all, which is what keeps the node colour unchanged with
+   * the risk layer off; present (possibly `'unknown'`) whenever a map is passed, even
    * for a node with no incident edges in it.
    *
    * STOPGAP, not a first-class fact: the risk API has no per-entity risk
@@ -1389,9 +1389,7 @@ function edgeHoverText(data: EdgeData | undefined): string {
  * Execution Flow and Lineage tabs, and the endpoints as the two nodes the
  * arrow visibly connects. The one thing the graph cannot show, because
  * `edgeTagLabel` caps the drawn tag to two tokens, is the full tag list and
- * the level. So the tooltip now carries exactly that and nothing else, which
- * on the risk trace view (where `hideEdgeLabels` makes hover the ONLY route
- * to this information) is the whole reason the tooltip exists.
+ * the level. So the tooltip now carries exactly that and nothing else.
  *
  * Reuses `edgeClassificationSuffix` with its leading `' — '` separator
  * stripped rather than re-deriving the string: the tags/level formatting, the
@@ -1412,8 +1410,8 @@ function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof Defa
   // RISK TAKES PRECEDENCE (issue #170), same reasoning as the edge colour below:
   // a node's `riskLevel` is present only when a caller passed
   // `riskLevelByInteraction` at all (see `EntityGraphProps.riskLevelByInteraction`),
-  // which today is only the trace-detail view — both existing tabs leave it
-  // `undefined` and fall straight through to the unchanged branch beneath.
+  // which is only the risk layer — with it off the map is `undefined` and this
+  // falls straight through to the unchanged branch beneath.
   //
   // PER TAB OTHERWISE (see `NodeData.kindColoured`): Execution Flow paints entity
   // kind, because nothing else on that tab wants hue; Lineage paints every node
@@ -2101,8 +2099,8 @@ function DirectedEdge({
   // happened on the wire, not a risk grade, so it wins even over a critical risk
   // level. Risk colour is next, present only when the caller passed
   // `riskLevelByInteraction` AND this edge's interaction has an entry in it —
-  // both existing tabs never pass the map, so `data?.riskLevel` is always
-  // `undefined` for them and this falls straight through unchanged.
+  // with the risk layer off the map is not passed, so `data?.riskLevel` is
+  // `undefined` and this falls straight through unchanged.
   const colour = data?.isError
     ? 'var(--dg-color-error)'
     : data?.riskLevel !== undefined
@@ -2220,9 +2218,9 @@ function DirectedEdge({
       }}
     >
       {/* The interaction's summary, plus which leg of it this arrow is — the
-          hover text, now that the visible label is the compact seq number
-          (Execution Flow / Lineage tabs) or, on the risk trace view, the
-          regulatory-tag string (see `edgeClassificationSuffix`'s docstring —
+          hover text, now that the visible label is the compact seq number or,
+          with the risk layer on, the regulatory-tag string (see
+          `edgeClassificationSuffix`'s docstring —
           the hover text carries the FULL tags + level list either way, never
           truncated the way the visible tag is).
 
@@ -2692,12 +2690,11 @@ export interface EntityGraphProps {
   /** `data-testid` on the wrapper, so each tab is addressable as itself. */
   testId?: string;
   /**
-   * Interaction id -> risk level (issue #170's Alert Execution view), from
-   * `lib/riskForestAdapter.ts`'s `riskLevelByInteraction`. Omitted entirely
-   * by both existing tabs (Execution Flow, Lineage) — a colour a third view
-   * needs, not something either of them renders — which is what keeps their
-   * node/edge colours byte-for-byte unchanged: every risk-colour branch below
-   * is reached only when this is present.
+   * Interaction id -> risk level (issue #170), from
+   * `lib/riskForestAdapter.ts`'s `riskLevelByInteraction`. Passed only with
+   * the risk layer on, which is what keeps the node/edge colours byte-for-byte
+   * unchanged with it off: every risk-colour branch below is reached only when
+   * this is present.
    *
    * An interaction absent from the map (its `risk` was `null` — not yet
    * computed) gets no edge/node treatment at all, same as an absent map;
@@ -2707,17 +2704,16 @@ export interface EntityGraphProps {
   riskLevelByInteraction?: ReadonlyMap<string, string>;
   /**
    * Interaction id -> regulatory tags + sensitivity level(s) (issue #170
-   * follow-up: regulatory tags as edge labels on the risk trace graph), from
-   * `lib/riskForestAdapter.ts`'s `classificationByInteraction`. Omitted
-   * entirely by both existing tabs, same reasoning as
-   * {@link riskLevelByInteraction} immediately above — a label a third view
-   * needs, not something either of them renders.
+   * follow-up: regulatory tags as edge labels), from
+   * `lib/riskForestAdapter.ts`'s `classificationByInteraction`. Passed by the
+   * Execution Flow view with the risk layer on; omitted otherwise.
    *
    * WHEN SUPPLIED (checked by presence, not by whether a given edge has an
    * entry), this REPURPOSES the edge's visible tag slot: the tag becomes
    * `edgeTagLabel(classification?.tags ?? [])` instead of the seq number —
-   * see {@link hideEdgeLabels}'s doc for why presence, not per-edge hit, is
-   * the right test, and `lib/graph.ts`'s `label` docstring for why this
+   * presence, not per-edge hit, so a layer with zero classified interactions
+   * draws bare arrows rather than seq numbers — see `lib/graph.ts`'s `label`
+   * docstring for why this
    * happens at the renderer rather than by changing what `deriveGraph`
    * itself puts in `GraphEdgeSpec.label`. `''` for an edge with no entry
    * (drawn as no visible tag at all — `showTag`'s truthiness gate), never
@@ -2731,55 +2727,21 @@ export interface EntityGraphProps {
   classificationByInteraction?: ReadonlyMap<string, InteractionClassification>;
   /**
    * Suppress the built-in "N entity pair(s) with multiple interactions"
-   * notice (issue #170's Alert Execution view). That notice's whole premise
-   * is the request/response leg pair a completed interaction normally draws
-   * in the same channel — see the notice's own comment below, "a single
-   * completed interaction always puts two arrows... so counting edges would
-   * fire this notice on virtually every trace". The risk trace view draws
-   * request legs only (`riskForestAdapter.toFlowInteractions`), so a
-   * "multiple interactions" notice there is answering a question about
-   * response arrows that page never draws — noise, not a caveat. Both
-   * existing tabs omit this prop and keep the notice unchanged.
+   * notice. That notice's whole premise is the request/response leg pair a
+   * completed interaction normally draws in the same channel — see the
+   * notice's own comment below, "a single completed interaction always puts
+   * two arrows... so counting edges would fire this notice on virtually every
+   * trace". With one edge per interaction (request legs only) the notice is
+   * answering a question about response arrows that are not drawn — noise,
+   * not a caveat.
    */
   hideParallelGroupsNotice?: boolean;
-  /**
-   * Suppress each edge's visible `seq`-number tag (issue #170's Alert
-   * Execution view). That number is meaningful on the Execution Flow/Lineage
-   * tabs, where it is the trace-wide leg order a reader cross-references
-   * against the Flat table's own `seq` column — a table this view has no
-   * equivalent of. Here the arrows are the whole picture (one request leg
-   * per interaction, no table alongside them), so a bare number floating on
-   * every arrow is clutter with nothing to cross-reference, not information.
-   * The interaction's full summary is still available via the edge's
-   * `<title>` hover text either way. Both existing tabs omit this prop and
-   * keep their tags unchanged.
-   *
-   * STILL PASSED ALONGSIDE {@link classificationByInteraction} (issue #170
-   * follow-up), not replaced by it: `classificationByInteraction`'s presence
-   * takes precedence over this flag whenever both are supplied — a trace
-   * with zero classified interactions still draws bare arrows (this flag's
-   * job) rather than falling back to seq numbers once a classification map
-   * exists at all. The two flags answer different questions ("hide the seq
-   * number" vs. "show classification tags instead") and the risk trace view
-   * passes both because it wants both answers.
-   */
-  hideEdgeLabels?: boolean;
-  /**
-   * Shrink the drawing surface (issue #170 follow-up: the risk trace view's
-   * "Action" row, the first field of its `PolicyDecisionPanel` below the
-   * graph, was falling below the fold). Toggles `dg-graph-surface--compact`
-   * (global.css), which shortens `.dg-graph-surface`'s viewport-derived
-   * height beyond its default allowance — see that rule's comment for why
-   * the default itself was left alone. Both existing tabs omit this prop and
-   * keep their current height.
-   */
-  compactSurface?: boolean;
 }
 
 /**
  * THE ONE graph renderer: a directed graph of a trace's **Entities** (nodes) and
  * **Interaction legs** (edges), each edge labelled with that leg's trace-wide
- * `seq` — or, on the risk trace view (`classificationByInteraction` supplied),
+ * `seq` — or, with the risk layer on (`classificationByInteraction` supplied),
  * with its interaction's regulatory tags instead, see
  * {@link EntityGraphProps.classificationByInteraction} — optionally with a
  * subset highlighted.
@@ -2828,8 +2790,6 @@ export function EntityGraph({
   riskLevelByInteraction,
   classificationByInteraction,
   hideParallelGroupsNotice = false,
-  hideEdgeLabels = false,
-  compactSurface = false,
 }: EntityGraphProps) {
   // One Visualization instance for the view's lifetime. Created lazily in state
   // (not a ref-with-side-effects) so React owns it; the factory is registered
@@ -3183,22 +3143,16 @@ export function EntityGraph({
           bendpoints: moves ? [[drawn.x, drawn.y] as PointTuple] : route,
           data: {
             ...e,
-            // Three-way precedence (see `EntityGraphProps.classificationByInteraction`
-            // and `.hideEdgeLabels`) — `DirectedEdge` reads only `data?.label` for its
-            // visible tag, so this is the single place that needs to know about either
-            // flag:
-            //   1. `classificationByInteraction` SUPPLIED (checked by presence, not by
-            //      whether THIS edge has an entry) → the tag slot becomes the
-            //      classification string, `''` for an edge with no entry — never the
-            //      seq number in that case, so the risk view's edges never mix two
-            //      vocabularies (a bare number could be misread as a tag count).
-            //   2. Else `hideEdgeLabels` → blanked.
-            //   3. Else → `e.label` (the seq number), unchanged for both existing tabs.
+            // `DirectedEdge` reads only `data?.label` for its visible tag, so this is
+            // the single place that knows about `classificationByInteraction`: SUPPLIED
+            // (checked by presence, not by whether THIS edge has an entry) → the tag
+            // slot becomes the classification string, `''` for an edge with no entry —
+            // never the seq number in that case, so the risk layer's edges never mix
+            // two vocabularies (a bare number could be misread as a tag count). Else →
+            // `e.label` (the seq number).
             label: classificationByInteraction
               ? edgeTagLabel(classificationByInteraction.get(e.interactionId)?.tags ?? [])
-              : hideEdgeLabels
-                ? ''
-                : e.label,
+              : e.label,
             highlight: roleOf(e.id, highlight, false),
             // Per INTERACTION, so both legs of the selected one are marked — see
             // EdgeData. A primitive comparison, so this adds nothing the effect's
@@ -3249,13 +3203,10 @@ export function EntityGraph({
     // ride through it exactly as they ride through a highlight change.
     //
     // `riskLevelByInteraction` is listed directly too, same reasoning as
-    // `selectedInteractionId`: the risk colour is baked into element `data`, and
-    // both existing tabs pass `undefined` forever, so this dependency is a no-op
-    // for them. `hideEdgeLabels` joins them for the identical reason: the blanked
-    // label is baked into element `data` too, and both existing tabs pass `false`
-    // forever. `classificationByInteraction` joins them for the same reason again —
-    // both the tag string and the hover-text record are baked into element `data`,
-    // and both existing tabs pass `undefined` forever.
+    // `selectedInteractionId`: the risk colour is baked into element `data`, so a
+    // toggle of the risk layer (or a re-read of the risk) must rebuild the model.
+    // `classificationByInteraction` joins them for the same reason — both the tag
+    // string and the hover-text record are baked into element `data`.
     //
     // `selectedEntityId` and `nodesSelectable` are primitives baked into the node
     // `data` the same way, so they are listed directly for the same reason.
@@ -3269,7 +3220,6 @@ export function EntityGraph({
     selectedInteractionId,
     riskLevelByInteraction,
     classificationByInteraction,
-    hideEdgeLabels,
     selectedEntityId,
     nodesSelectable,
     hasContextMenu,
@@ -3425,7 +3375,7 @@ export function EntityGraph({
           and an instruction to "select an entity" whose control sat below the fold
           would be unfollowable. See `EntityGraphProps.controls`. */}
       {controls}
-      <div className={`dg-graph-surface${compactSurface ? ' dg-graph-surface--compact' : ''}`}>
+      <div className="dg-graph-surface">
         <VisualizationProvider controller={controller}>
           <VisualizationSurface />
           {/* Zoom controls. PF's own `TopologyControlBar` rather than four
@@ -3655,7 +3605,7 @@ export function ExecutionFlowGraph({
   onSelectInteraction?: (interactionId: string | null) => void;
   /** The label lineage overlay (`lib/labelTrack`), when values are tracked. */
   highlight?: GraphHighlight;
-  /** One edge per interaction (its request leg) instead of one per leg — `requestLegsOnly`. The parallel-groups notice is off then, as on the risk page, for the reason given on `hideParallelGroupsNotice`. */
+  /** One edge per interaction (its request leg) instead of one per leg — `requestLegsOnly`. The parallel-groups notice is off then, for the reason given on `hideParallelGroupsNotice`. */
   edgesPerInteraction?: boolean;
   onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
   /**

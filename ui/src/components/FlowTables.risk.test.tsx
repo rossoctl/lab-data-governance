@@ -2,16 +2,18 @@ import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { onlineManager } from '@tanstack/react-query';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { FlowTables, type FlowSelection, type LegViewKey } from './FlowTables';
 import { PinStore } from '../lib/pins';
 
 /**
  * THE RISK LAYER on the flow view: with `risk` on, this
- * component reads the trace's risk, colours the edges, adds the selected
- * interaction's risk — and a policy event's stepper and decision card — to the
- * detail panel, and reproduces the risk trace page's `?violation=` / selection
- * contract with `?iid=` as the selection. See `FlowTablesProps.risk`.
+ * component reads the trace's risk, puts the risk bar (count and stepper) above
+ * the views, colours the edges, adds the selected interaction's risk — and a
+ * policy event's decision card — to the detail panel, and keeps the
+ * `?violation=` / selection contract with `?iid=` as the selection. See
+ * `FlowTablesProps.risk`.
  *
  * The harness below stands in for `TraceDetailPage`, the owner of the URL: it
  * holds `?iid` / `?eid` / `?violation` in state, writes them the way the page
@@ -184,7 +186,8 @@ function reach(direction: 'fanin' | 'fanout', legs: unknown[] = [], entities: un
 }
 
 function mockFetch(over: {
-  forest?: unknown[] | null;
+  /** `null`: no risk record (404). `'error'`: the risk read fails (500). */
+  forest?: unknown[] | null | 'error';
   labels?: unknown;
   fanin?: unknown;
   sources?: string[];
@@ -197,6 +200,7 @@ function mockFetch(over: {
     if (url.startsWith('/risk/traces/')) {
       if (over.gate?.risk) await over.gate.risk;
       if (over.forest === null) return { ok: false, status: 404, json: async () => ({ error: 'not found', detail: '', timestamp: '' }) };
+      if (over.forest === 'error') return { ok: false, status: 500, json: async () => ({ error: 'boom', detail: '', timestamp: '' }) };
       return { ok: true, status: 200, json: async () => ({ trace_risk: { trace_id: 'T1' }, interactions: over.forest ?? FOREST }) };
     }
     if (url.includes('/labels')) return { ok: true, status: 200, json: async () => over.labels ?? LABELS_I1 };
@@ -236,7 +240,7 @@ async function findGraph() {
   return screen.findByTestId('execution-flow-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
 }
 
-/** Click an edge the way `RiskTraceDetailPage.test.tsx` does (PF's selection needs the `act`). */
+/** Click an edge (PF's selection needs the `act`). */
 function clickEdge(id: string) {
   const handler = document.querySelector(`[data-id="${id}"] [data-test-id="edge-handler"]`);
   if (!handler) throw new Error(`no clickable handler on edge ${id}`);
@@ -246,6 +250,14 @@ function clickEdge(id: string) {
 }
 
 const params = () => JSON.parse(screen.getByTestId('params').textContent ?? '{}');
+const bar = () => screen.getByTestId('risk-bar');
+/** The panel open on policy event `n` of 2: the bar's stepper says so and the decision card is in the panel. */
+async function panelOnEvent(n: number) {
+  await waitFor(() => {
+    expect(within(bar()).getByText(`${n} of 2`)).toBeInTheDocument();
+    expect(within(screen.getByTestId('risk-layer')).getByTestId('policy-decision-panel')).toBeInTheDocument();
+  });
+}
 const edgeHtml = (id: string) => document.querySelector(`[data-id="${id}"]`)?.innerHTML ?? '';
 
 describe('FlowTables — the risk layer', () => {
@@ -259,6 +271,7 @@ describe('FlowTables — the risk layer', () => {
     await screen.findByText('search calls partner');
     expect(riskReads().any).toBe(0);
     expect(edgeHtml('i1:request')).not.toContain('danger-color');
+    expect(screen.queryByTestId('risk-bar')).toBeNull();
     expect(screen.queryByTestId('risk-layer')).toBeNull();
     expect(screen.queryByTestId('interaction-panel')).toBeNull();
   });
@@ -268,7 +281,7 @@ describe('FlowTables — the risk layer', () => {
     renderWithProviders(<Harness initial={{ iid: 'i0' }} />);
     await findGraph();
     await waitFor(() => expect(edgeHtml('i1:request')).toContain('danger-color')); // critical
-    expect(edgeHtml('i1:response')).toContain('danger-color'); // the response leg too — the risk page has no such arrow
+    expect(edgeHtml('i1:response')).toContain('danger-color'); // the response leg too
     expect(edgeHtml('i2:request')).toContain('orange-300'); // high
     expect(edgeHtml('i0:request')).toContain('success-color'); // low
     expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe('PII');
@@ -281,14 +294,13 @@ describe('FlowTables — the risk layer', () => {
     renderWithProviders(<Harness initial={{ violation: '2' }} />);
     await findGraph();
     const layer = await screen.findByTestId('risk-layer');
-    expect(within(layer).getByText('2 of 2')).toBeInTheDocument();
+    expect(within(bar()).getByText('2 of 2')).toBeInTheDocument();
     const card = within(layer).getByTestId('policy-decision-panel');
     expect(within(card).getByText('agent calls partner')).toBeInTheDocument();
     expect(within(card).getByRole('link', { name: 'Rule DG-002' })).toHaveAttribute('href', '/risk/rules/DG-002');
-    // The interaction's risk card, the risk page's own, without its self-link.
+    // The interaction's risk card.
     const panel = within(layer).getByTestId('interaction-panel');
     expect(within(panel).getByText('high')).toBeInTheDocument();
-    expect(within(panel).queryByText(/Open in trace view/)).toBeNull();
     expect(params()).toEqual({ violation: '2' });
     // The default selection is the event's interaction: its edges carry the selected treatment.
     expect(document.querySelector('[data-id="i2:request"] .dg-graph-edge--selected, [data-id="i2:request"].pf-m-selected')).not.toBeNull();
@@ -298,24 +310,26 @@ describe('FlowTables — the risk layer', () => {
     mockFetch();
     renderWithProviders(<Harness initial={{ violation: '2' }} />);
     await findGraph();
-    const layer = await screen.findByTestId('risk-layer');
-    await within(layer).findByText('2 of 2');
-    await userEvent.click(within(layer).getByRole('button', { name: /Previous/ }));
+    await panelOnEvent(2);
+    await userEvent.click(within(bar()).getByRole('button', { name: /Previous/ }));
     await waitFor(() => expect(params()).toEqual({}));
-    await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('1 of 2')).toBeInTheDocument());
+    await panelOnEvent(1);
     expect(within(screen.getByTestId('policy-decision-panel')).getByText('search calls partner')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Previous/ })).toHaveAttribute('aria-disabled', 'true');
+    // Previous on the first event wraps to the last.
+    await userEvent.click(within(bar()).getByRole('button', { name: /Previous/ }));
+    await waitFor(() => expect(params()).toEqual({ violation: '2' }));
+    await panelOnEvent(2);
   });
 
   it('a policy event edge writes ?violation= and drops ?iid=; a plain edge writes ?iid= and pins the open event', async () => {
     mockFetch();
     renderWithProviders(<Harness />);
     await findGraph();
-    await within(await screen.findByTestId('risk-layer')).findByText('1 of 2');
+    await panelOnEvent(1);
 
     clickEdge('i2:request');
     await waitFor(() => expect(params()).toEqual({ violation: '2' }));
-    await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('2 of 2')).toBeInTheDocument());
+    await panelOnEvent(2);
 
     clickEdge('i0:request');
     await waitFor(() => expect(params()).toEqual({ iid: 'i0', violation: '2' }));
@@ -328,15 +342,14 @@ describe('FlowTables — the risk layer', () => {
 
     clickEdge('i1:request');
     await waitFor(() => expect(params()).toEqual({}));
-    await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('1 of 2')).toBeInTheDocument());
+    await panelOnEvent(1);
   });
 
   it('a cold ?iid= naming a policy event moves the stepper to it', async () => {
     mockFetch();
     renderWithProviders(<Harness initial={{ iid: 'i2' }} />);
     await findGraph();
-    const layer = await screen.findByTestId('risk-layer');
-    await within(layer).findByText('2 of 2');
+    await panelOnEvent(2);
     expect(params()).toEqual({ iid: 'i2' });
   });
 
@@ -363,14 +376,14 @@ describe('FlowTables — the risk layer', () => {
     mockFetch();
     renderWithProviders(<Harness />);
     await findGraph();
-    await within(await screen.findByTestId('risk-layer')).findByText('1 of 2');
+    await panelOnEvent(1);
     await userEvent.click(screen.getByRole('button', { name: 'Close details' }));
     expect(screen.queryByTestId('risk-layer')).toBeNull();
     // Nothing reopens it on its own.
     await act(() => new Promise((r) => setTimeout(r, 50)));
     expect(screen.queryByTestId('risk-layer')).toBeNull();
     clickEdge('i2:request');
-    await within(await screen.findByTestId('risk-layer')).findByText('2 of 2');
+    await panelOnEvent(2);
   });
 
   it('the right-click default is the decision-derived one with the layer on, every carried-in value with it off', async () => {
@@ -463,7 +476,7 @@ describe('FlowTables — the risk layer', () => {
     mockFetch();
     renderWithProviders(<Harness />);
     await findGraph();
-    await within(await screen.findByTestId('risk-layer')).findByText('1 of 2');
+    await panelOnEvent(1);
     clickEdge('i0:request');
     await waitFor(() => expect(params()).toEqual({ iid: 'i0' }));
     await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('agent calls search')).toBeInTheDocument());
@@ -476,7 +489,7 @@ describe('FlowTables — the risk layer', () => {
 
     // Reopen on the event by stepping to it through a click, then dismiss by the background.
     clickEdge('i2:request');
-    await within(await screen.findByTestId('risk-layer')).findByText('2 of 2');
+    await panelOnEvent(2);
     act(() => {
       fireEvent.click(document.querySelector('[data-kind="graph"] > rect')!);
     });
@@ -537,18 +550,18 @@ describe('FlowTables — the risk layer', () => {
     mockFetch();
     renderWithProviders(<Harness />);
     await findGraph();
-    await within(await screen.findByTestId('risk-layer')).findByText('1 of 2');
+    await panelOnEvent(1);
     // A plain click whose evidence does not return in time, then Next.
     const laterGate = deferred();
     mockFetch({ gate: { evidence: laterGate.promise } });
     clickEdge('i0:request');
-    await userEvent.click(within(screen.getByTestId('risk-layer')).getByRole('button', { name: /Next/ }));
+    await userEvent.click(within(bar()).getByRole('button', { name: /Next/ }));
     await waitFor(() => expect(params()).toEqual({ violation: '2' }));
     await act(async () => {
       laterGate.resolve();
       await new Promise((r) => setTimeout(r, 50));
     });
-    await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('2 of 2')).toBeInTheDocument());
+    await panelOnEvent(2);
     expect(params()).toEqual({ violation: '2' });
     expect(within(screen.getByTestId('risk-layer')).queryByText('agent calls search')).toBeNull();
   });
@@ -577,10 +590,10 @@ describe('FlowTables — the risk layer', () => {
     mockFetch();
     renderWithProviders(<Harness />);
     await findGraph();
-    await within(await screen.findByTestId('risk-layer')).findByText('1 of 2');
+    await panelOnEvent(1);
     const gate = deferred();
     mockFetch({ gate: { evidence: gate.promise } });
-    const next = () => within(screen.getByTestId('risk-layer')).getByRole('button', { name: /Next/ });
+    const next = () => within(bar()).getByRole('button', { name: /Next/ });
     await userEvent.click(next());
     await waitFor(() => expect(params()).toEqual({ violation: '2' }));
     await userEvent.click(next()); // the stepper still reads 1: the first step's select is in flight
@@ -588,7 +601,100 @@ describe('FlowTables — the risk layer', () => {
       gate.resolve();
       await new Promise((r) => setTimeout(r, 50));
     });
-    await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('2 of 2')).toBeInTheDocument());
+    await panelOnEvent(2);
     expect(params()).toEqual({ violation: '2' });
+  });
+
+  // The bar is the stepper's place: on screen whatever the panel shows.
+  it('the risk bar counts the policy events beside the stepper, stays with the panel closed, and a step reopens the panel', async () => {
+    mockFetch();
+    renderWithProviders(<Harness />);
+    await findGraph();
+    await panelOnEvent(1);
+    expect(within(bar()).getByText('2 policy events')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Close details' }));
+    expect(screen.queryByTestId('risk-layer')).toBeNull();
+    expect(within(bar()).getByText('1 of 2')).toBeInTheDocument();
+    await userEvent.click(within(bar()).getByRole('button', { name: /Next/ }));
+    await panelOnEvent(2);
+    expect(params()).toEqual({ violation: '2' });
+  });
+
+  // One event: the stepper still steps (it wraps), so the bar can reopen a closed panel on it.
+  it('with one policy event, a step reopens the closed panel on it', async () => {
+    mockFetch({ forest: [FOREST[0], FOREST[1]] });
+    renderWithProviders(<Harness />);
+    await findGraph();
+    await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByTestId('policy-decision-panel')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Close details' }));
+    expect(screen.queryByTestId('risk-layer')).toBeNull();
+    expect(within(bar()).getByText('1 of 1')).toBeInTheDocument();
+    await userEvent.click(within(bar()).getByRole('button', { name: /Next/ }));
+    await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByTestId('policy-decision-panel')).toBeInTheDocument());
+    expect(params()).toEqual({});
+  });
+
+  it('a step from a plain interaction moves the panel to the stepped-to event', async () => {
+    mockFetch();
+    renderWithProviders(<Harness />);
+    await findGraph();
+    await panelOnEvent(1);
+    clickEdge('i0:request');
+    await waitFor(() => expect(within(screen.getByTestId('risk-layer')).getByText('agent calls search')).toBeInTheDocument());
+    expect(within(bar()).getByText('1 of 2')).toBeInTheDocument();
+    await userEvent.click(within(bar()).getByRole('button', { name: /Next/ }));
+    await waitFor(() => expect(params()).toEqual({ violation: '2' }));
+    await panelOnEvent(2);
+    expect(within(screen.getByTestId('risk-layer')).queryByText('agent calls search')).toBeNull();
+  });
+
+  it('says "1 policy event" for one, "0 policy events" and why for none, and that there is no risk record without one', async () => {
+    mockFetch({ forest: [FOREST[0], FOREST[1]] });
+    const one = renderWithProviders(<Harness />);
+    await findGraph();
+    await waitFor(() => expect(within(bar()).getByText('1 policy event')).toBeInTheDocument());
+    expect(within(bar()).getByText('1 of 1')).toBeInTheDocument();
+    one.unmount();
+
+    mockFetch({ forest: [FOREST[0]] });
+    const none = renderWithProviders(<Harness />);
+    await findGraph();
+    await waitFor(() => expect(within(bar()).getByText('0 policy events')).toBeInTheDocument());
+    expect(within(bar()).getByText('No rule was triggered by any interaction in this trace.')).toBeInTheDocument();
+    expect(within(bar()).queryByRole('button', { name: /Next/ })).toBeNull();
+    none.unmount();
+
+    mockFetch({ forest: null });
+    renderWithProviders(<Harness />);
+    await findGraph();
+    await waitFor(() => expect(within(bar()).getByText('No risk record for this trace yet.')).toBeInTheDocument());
+    expect(within(bar()).queryByText(/policy event/)).toBeNull();
+  });
+
+  // Nor is a read paused offline (no data, not fetching): the layer switched on with the network gone.
+  it('keeps the spinner on the bar while the risk read is paused offline', async () => {
+    mockFetch();
+    const { rerender } = renderWithProviders(<Harness risk={false} />);
+    await findGraph();
+    onlineManager.setOnline(false);
+    try {
+      rerender(<Harness risk />);
+      await waitFor(() => expect(within(bar()).getByLabelText('Loading risk')).toBeInTheDocument());
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      expect(within(bar()).getByLabelText('Loading risk')).toBeInTheDocument();
+      expect(within(bar()).queryByText(/policy event/)).toBeNull();
+    } finally {
+      onlineManager.setOnline(true);
+    }
+  });
+
+  // A failed read is never shown as a trace with no risk.
+  it('says the risk read failed on the bar, with no count and no "no rule" words', async () => {
+    mockFetch({ forest: 'error' });
+    renderWithProviders(<Harness />);
+    await findGraph();
+    await waitFor(() => expect(within(bar()).getByText('The risk read failed.')).toBeInTheDocument());
+    expect(within(bar()).queryByText(/policy event/)).toBeNull();
+    expect(within(bar()).queryByText(/No rule was triggered/)).toBeNull();
   });
 });

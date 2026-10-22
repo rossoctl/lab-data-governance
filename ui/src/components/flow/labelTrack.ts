@@ -3,7 +3,7 @@ import type { TrackedValue } from '../../lib/labelTrack';
 
 /**
  * How the Data lineage tab's tick boxes reach the page that owns the graphs. The
- * page (`FlowTables` on the trace page, `RiskTraceDetailPage`) provides the set
+ * page (`FlowTables` on the trace page) provides the set
  * of tracked values and the two moves; the tab, five components down, ticks and
  * unticks. `available` is false under the default (no provider: a page with no
  * graph to paint, tests), and the tab then shows no tick boxes at all.

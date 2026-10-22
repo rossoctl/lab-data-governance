@@ -122,12 +122,12 @@ test('deep link /ui/risk/rules resolves client-side without bouncing to /traces'
   await expect(page.getByRole('heading', { name: 'Risk rules' })).toBeVisible();
 });
 
-test('deep link /ui/risk/traces/:id resolves client-side without bouncing to /traces', async ({
+test('deep link /ui/risk/traces/:id resolves client-side to the trace page with the risk layer on', async ({
   page,
 }) => {
   await page.goto('/ui/risk/traces/some-trace-id');
-  await expect(page).toHaveURL(/\/ui\/risk\/traces\/some-trace-id$/);
-  await expect(page.getByRole('heading', { name: 'Risk trace' })).toBeVisible();
+  await expect(page).toHaveURL(/\/ui\/traces\/some-trace-id\/graph\?risk=1$/);
+  await expect(page.getByRole('heading', { name: 'Trace detail' })).toBeVisible();
 });
 
 test('reload on /ui/risk/rules stays put', async ({ page }) => {

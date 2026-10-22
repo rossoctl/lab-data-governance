@@ -45,7 +45,7 @@ export function LabelLineageTable({
     <div data-testid="label-lineage-table">
       {/* Tracking on the graphs (lib/labelTrack): the legs the ticked values sat
           on are lit on every view, the rest dimmed. Offered only where a page
-          provides the tracking (the trace page, the risk trace page). */}
+          provides the tracking (the trace page). */}
       {trackable.length > 0 && (
         <div className="dg-lineage-track-bar">
           <span style={{ color: 'var(--dg-color-muted)' }}>Track on the graph:</span>{' '}

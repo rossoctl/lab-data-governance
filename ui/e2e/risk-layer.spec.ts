@@ -3,9 +3,9 @@ import { test, expect, type Page } from '@playwright/test';
 /**
  * The risk layer on the trace page, driven through the real
  * production bundle with `/api/` and `/risk/` stubbed: `?risk=1` lands with the
- * layer on and the stepper on the right event; the two cross links between the
- * trace page and the risk trace page (kept for a transition period) carry the
- * open event and the selection, translating `?interaction=` ↔ `?iid=`.
+ * layer on and the risk bar's stepper on the right event; an old risk trace page
+ * URL (`/ui/risk/traces/…`) redirects there, carrying the open event and the
+ * selection (`?interaction=` as `?iid=`).
  */
 
 const TID = 'trace-risk-layer';
@@ -97,37 +97,44 @@ test('?risk=1 lands with the layer on, the alerts above the graph and the steppe
   await expect(page.getByRole('heading', { name: 'Alerts' })).toBeVisible();
   await expect(page.getByText('PII left the boundary')).toBeVisible();
   await expect(page.getByTestId('execution-flow-graph')).toBeVisible();
+  const bar = page.getByTestId('risk-bar');
+  await expect(bar.getByText('2 policy events')).toBeVisible();
+  await expect(bar.getByText('2 of 2')).toBeVisible();
   const layer = page.getByTestId('risk-layer');
-  await expect(layer.getByText('2 of 2')).toBeVisible();
   await expect(layer.getByTestId('policy-decision-panel').getByText('agent calls partner')).toBeVisible();
   // Previous moves the stepper and the URL together; the default position is deleted.
-  await layer.getByRole('button', { name: 'Previous' }).click();
+  await bar.getByRole('button', { name: 'Previous' }).click();
   await expect(page).toHaveURL(new RegExp(`/ui/traces/${TID}/graph\\?risk=1$`));
-  await expect(page.getByTestId('risk-layer').getByText('1 of 2')).toBeVisible();
+  await expect(bar.getByText('1 of 2')).toBeVisible();
   await expect(page.getByTestId('risk-layer').getByTestId('policy-decision-panel').getByText('search calls partner')).toBeVisible();
-  // Off: the layer's cards and the alerts go, the URL is the plain view. (PF's
-  // switch input is visually hidden under its toggle, so the label is the target.)
+  // Off: the layer's cards and the alerts go; the open event stays in the panel,
+  // named by ?iid=. (PF's switch input is visually hidden under its toggle, so the
+  // label is the target.)
   await page.locator('label[for="risk-layer"]').click();
   await expect(page.getByRole('checkbox', { name: 'Risk' })).not.toBeChecked();
-  await expect(page).toHaveURL(new RegExp(`/ui/traces/${TID}/graph$`));
+  await expect(page).toHaveURL(new RegExp(`/ui/traces/${TID}/graph\\?iid=i1$`));
+  await expect(page.getByRole('button', { name: 'Close details' })).toBeVisible();
   await expect(page.getByTestId('risk-layer')).toHaveCount(0);
+  await expect(page.getByTestId('risk-bar')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Alerts' })).toHaveCount(0);
 });
 
-test('the two cross links carry the open event and the selection, translating ?interaction= and ?iid=', async ({ page }) => {
+test('an old risk trace page URL opens the trace page with the layer on, the event and the selection kept', async ({ page }) => {
   await stubApis(page);
-  // Risk page → trace page with the layer on.
   await page.goto(`/ui/risk/traces/${TID}?violation=2&interaction=i0`);
-  await expect(page.getByTestId('interaction-panel').getByText('agent calls search')).toBeVisible();
-  await page.getByRole('link', { name: /Open in trace view with the risk layer/ }).click();
   await expect(page).toHaveURL(new RegExp(`/ui/traces/${TID}/graph\\?risk=1&violation=2&iid=i0$`));
   await expect(page.getByRole('checkbox', { name: 'Risk' })).toBeChecked();
+  await expect(page.getByTestId('risk-bar').getByText('2 of 2')).toBeVisible();
   const layer = page.getByTestId('risk-layer');
   await expect(layer.getByTestId('interaction-panel').getByText('agent calls search')).toBeVisible();
   await expect(layer.getByText('low')).toBeVisible();
-  // Trace page → risk page: the same reading, spelled that page's way.
-  await page.getByRole('link', { name: 'Risk page for this trace' }).click();
-  await expect(page).toHaveURL(new RegExp(`/ui/risk/traces/${TID}\\?violation=2&interaction=i0$`));
-  await expect(page.getByTestId('interaction-panel').getByText('agent calls search')).toBeVisible();
-  await expect(page.getByText('2 of 2')).toBeVisible();
+});
+
+test('the redirect replaces the old URL: Back leaves the trace page for the page before', async ({ page }) => {
+  await stubApis(page);
+  await page.goto('/ui/risk/rules');
+  await page.goto(`/ui/risk/traces/${TID}`);
+  await expect(page).toHaveURL(new RegExp(`/ui/traces/${TID}/graph\\?risk=1$`));
+  await page.goBack();
+  await expect(page).toHaveURL(/\/ui\/risk\/rules$/);
 });

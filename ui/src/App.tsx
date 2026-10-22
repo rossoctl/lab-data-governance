@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Routes, Route, Navigate, Link, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import {
   Page,
   Masthead,
@@ -17,10 +17,19 @@ import { InfoCircleIcon } from '@patternfly/react-icons';
 import { RecentTracesPage } from './pages/RecentTracesPage';
 import { TraceDetailPage } from './pages/TraceDetailPage';
 import { RiskDashboardPage } from './pages/risk/RiskDashboardPage';
-import { RiskTraceDetailPage } from './pages/risk/RiskTraceDetailPage';
 import { RiskRulesPage } from './pages/risk/RiskRulesPage';
 import { RiskRuleDetailPage } from './pages/risk/RiskRuleDetailPage';
 import { navSectionFor } from './lib/navSection';
+import { traceRiskPath } from './lib/riskViolation';
+
+// The old risk trace page's URL. A trace's risk is the Risk layer on the trace
+// page, so a saved `/risk/traces/<id>` link opens there, carrying the open policy
+// event and the selection (`traceRiskPath`).
+function RiskTraceRedirect() {
+  const { traceId = '' } = useParams<{ traceId: string }>();
+  const [searchParams] = useSearchParams();
+  return <Navigate to={traceRiskPath(traceId, searchParams)} replace />;
+}
 
 // Lean data-governance shell: a dark-themed PatternFly Page with a simple
 // masthead. No auth / namespace / feature-flag chrome (out of scope per
@@ -101,7 +110,7 @@ export default function App() {
         <Route path="/traces/:traceId" element={<Navigate to="spans" replace />} />
         <Route path="/traces/:traceId/:view" element={<TraceDetailPage />} />
         <Route path="/risk" element={<RiskDashboardPage />} />
-        <Route path="/risk/traces/:traceId" element={<RiskTraceDetailPage />} />
+        <Route path="/risk/traces/:traceId" element={<RiskTraceRedirect />} />
         <Route path="/risk/rules" element={<RiskRulesPage />} />
         <Route path="/risk/rules/:ruleId" element={<RiskRuleDetailPage />} />
         <Route path="*" element={<Navigate to="/traces" replace />} />

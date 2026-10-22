@@ -6,7 +6,7 @@ import { createContext, useContext } from 'react';
  * `hoveredId`). A context rather than a prop: the hop sits five components under
  * `FlowTables`, and none of the four in between has a reason to know about hover.
  * The default is a no-op, so the hop renders the same wherever there is no diagram
- * to light (the risk trace page, tests).
+ * to light (tests).
  */
 export const HopHoverContext = createContext<(interactionId: string | null) => void>(() => {});
 

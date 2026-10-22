@@ -94,8 +94,8 @@ const LEGACY_LEGS_TO_VIEW: Record<string, ViewKey> = {
 
 /**
  * The trace page's live keys with the risk layer on: the trace's own plus the
- * risk detail and alerts (`riskTraceKeys`), the way the risk trace page has
- * them. Module-level, as `useTraceLive` requires; the layer off keeps
+ * risk detail and alerts (`riskTraceKeys`). Module-level, as `useTraceLive`
+ * requires; the layer off keeps
  * `traceLiveKeys`, so a page with the layer off re-reads no risk query.
  */
 function traceAndRiskLiveKeys(traceId: string): QueryKey[] {
@@ -103,9 +103,8 @@ function traceAndRiskLiveKeys(traceId: string): QueryKey[] {
 }
 
 /**
- * `?violation=` is written by DELETING the param at its default (1), the same
- * convention the risk trace page documents, so the canonical URL for the first
- * event stays clean.
+ * `?violation=` is written by DELETING the param at its default (1)
+ * (`lib/riskViolation.ts`), so the canonical URL for the first event stays clean.
  */
 function writeViolation(params: URLSearchParams, next: number) {
   if (next === 1) params.delete('violation');
@@ -177,7 +176,7 @@ export function TraceDetailPage() {
   // deleting the param, the repo's convention for defaults). One state for every
   // view: the toggle sits beside the view tabs and `goToView` carries the param
   // to and from the span tree. With the layer on, `FlowTables` reads the risk
-  // and paints it, the alerts section above its views included (see
+  // and paints it, the risk bar and the alerts above its views included (see
   // `FlowTablesProps.risk`); the span tree, which does not render that
   // component, gets the alerts section from here (the same query, so one read);
   // and the live keys gain the risk prefixes. Off, nothing about this page changes.
@@ -200,16 +199,7 @@ export function TraceDetailPage() {
     },
     [setSearchParams],
   );
-  // The reverse cross link: this trace on the risk trace page, which stays for a
-  // transition period, carrying the open policy event and the selection
-  // (`?iid=` translated to that page's `?interaction=`).
-  const riskPageParams = new URLSearchParams();
   const violationParam = searchParams.get('violation');
-  if (violationParam != null) riskPageParams.set('violation', violationParam);
-  const iidParam = searchParams.get('iid');
-  if (iidParam != null) riskPageParams.set('interaction', iidParam);
-  const riskPageQs = riskPageParams.toString();
-  const riskPageHref = `/risk/traces/${encodeURIComponent(traceId)}${riskPageQs ? `?${riskPageQs}` : ''}`;
 
   // THE PAGE IS LIVE while it is open (ADR-0034): one subscription to the trace's
   // change stream, owned here because liveness is a property of the page, not of
@@ -640,10 +630,9 @@ export function TraceDetailPage() {
       </Title>
 
       {/* The view header: the view tabs, and right after them the Risk
-          toggle (the layer, one state for every view) with the cross link to the
-          risk trace page, which stays for a transition period. After the tabs,
-          not at the far right: the detail panel floats fixed over the right of
-          the viewport, and a control pushed there would sit under it. */}
+          toggle (the layer, one state for every view). After the tabs, not at
+          the far right: the detail panel floats fixed over the right of the
+          viewport, and a control pushed there would sit under it. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', flexWrap: 'wrap' }}>
       <div style={{ minWidth: 0 }}>
       <Tabs
@@ -716,9 +705,6 @@ export function TraceDetailPage() {
           isChecked={risk}
           onChange={(_e, on) => handleRiskChange(on)}
         />
-        <Link to={riskPageHref} data-testid="open-risk-page">
-          Risk page for this trace
-        </Link>
       </div>
       </div>
 
@@ -730,9 +716,9 @@ export function TraceDetailPage() {
         </Alert>
       ) : (
         <div style={{ marginTop: '1rem' }}>
-          {/* The risk layer's alerts on the span tree — the same section the risk
-              trace page and `FlowTables` render; the four interaction views get it
-              from `FlowTables`, inside its detail gutter. */}
+          {/* The risk layer's alerts on the span tree — the same section
+              `FlowTables` renders for the four interaction views, inside its
+              detail gutter. */}
           {risk && view === 'tree' && <TraceAlertsSection alerts={alerts} />}
           {/* The tree stays MOUNTED for the page's lifetime and is merely hidden
               on the flow tab (display:none), so its expand/load/selection state

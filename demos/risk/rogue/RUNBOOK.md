@@ -76,7 +76,7 @@ the `grep` at the end keeps only those lines (without it the tool also dumps a J
 ```sh
 $ python3 one_turn.py s1-1 | grep -E '^trace|^risk|^flow|"answer"'                        # Maya Park, Tokyo, acct_001 (the default)
 → trace 1c4657e0fe17b65ee66fe32ca865dccf dates ('2031-03-05', '2031-03-10') since 2026-10-12T08:22:04Z guest Maya Park
-→ risk  http://dg.localtest.me:8080/ui/risk/traces/1c4657e0fe17b65ee66fe32ca865dccf
+→ risk  http://dg.localtest.me:8080/ui/traces/1c4657e0fe17b65ee66fe32ca865dccf/graph?risk=1
 → flow  http://dg.localtest.me:8080/ui/traces/1c4657e0fe17b65ee66fe32ca865dccf/flow
 →  "answer": "Your trip to Japan has been successfully booked! ... **Booking ID:** BK-9CD302 ...",
 $ python3 one_turn.py s1-2 "Noa Levi" Kyoto acct_002 | grep -E '^trace|^risk|^flow|"answer"'
@@ -114,7 +114,7 @@ partner | DG verdict on the partner hop | driver end state (always `input-requir
 Here column 4 is `False` on all three: the stock agent never calls the partner.
 
 Browser, reload the dashboard: Traces 3 total / 0 risky, Rules triggered 0, distribution "None: … (100%)".
-Open `http://dg.localtest.me:8080/ui/risk/traces/1c4657e0fe17b65ee66fe32ca865dccf`: the flow, every edge grey, "No policy events".
+Open `http://dg.localtest.me:8080/ui/traces/1c4657e0fe17b65ee66fe32ca865dccf/graph?risk=1`: the flow, every edge grey, "0 policy events".
 
 ## 2. The rogue agent
 
@@ -150,8 +150,8 @@ and so on to `s2-4`. After four silent turns, show a recorded run's blocked trac
 
 Browser, reload the dashboard: 1 risky trace, Rules triggered 2 / 2 critical, Top rules
 `pii_to_untrusted_external` + `restricted_external_sharing`, one Alerts row. Click the row (or open
-`http://dg.localtest.me:8080/ui/risk/traces/d2af6e6942dd515dfeb95df57c5b7157`): red dashed edge `notify-partner → api.travel-partner.example:8000`;
-scroll to "Policy events 1 of 1": critical / block / the two rules / the reason. Click `pii_to_untrusted_external` for the rule page.
+`http://dg.localtest.me:8080/ui/traces/d2af6e6942dd515dfeb95df57c5b7157/graph?risk=1`): red dashed arrows `notify-partner ⇄ api.travel-partner.example:8000` (the call and its response; "Edges per interaction" draws one);
+the risk bar "1 policy event, 1 of 1", and the panel's policy event: critical / block / the two rules / the reason. Click `pii_to_untrusted_external` for the rule page.
 
 ## 3. The instructions, the cause, the fix
 
@@ -178,8 +178,8 @@ $ python3 analyze.py s4-1            # expect: notified, dates+note only, none/a
 Column 5 must be exactly `dates,note`; column 6 `none/allow {}`. If column 4 is `False` (fixed notified
 8 of 9 live turns so far; the miss was the first turn of a re-run on 10-12), run `s4-2`. `KEEP=$KEEP,<id5>` (form B as above).
 
-Browser: `http://dg.localtest.me:8080/ui/risk/traces/491defc0308e369c75382a33c74c9e59`: the partner edge present, grey, label `PI`,
-"No policy events". Dashboard: still 1 risky trace; Traces count +1.
+Browser: `http://dg.localtest.me:8080/ui/traces/491defc0308e369c75382a33c74c9e59/graph?risk=1`: the partner edge present, grey, label `PI`,
+"0 policy events". Dashboard: still 1 risky trace; Traces count +1.
 
 ## 5. After
 

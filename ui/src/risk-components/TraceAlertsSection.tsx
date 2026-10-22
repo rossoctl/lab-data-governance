@@ -6,9 +6,8 @@ import type { AlertListResponse } from '../risk-api/types';
 /**
  * The "Alerts" section of a trace: the heading and the four states of the
  * `useTraceAlerts` read — loading, a read that never produced an answer, the
- * chain (`TraceAlertsPanel`), or "No alerts". Rendered by the risk trace page
- * and by the trace page's risk layer, so the two show one thing; a fix here
- * lands in both.
+ * chain (`TraceAlertsPanel`), or "No alerts". Rendered by the trace page's
+ * risk layer, above the flow views and above the span tree.
  *
  * `isLoadingError`, not `isError`: a failed BACKGROUND re-read (both pages are
  * live, ADR-0034) keeps the chain it has rather than swapping it for an error.

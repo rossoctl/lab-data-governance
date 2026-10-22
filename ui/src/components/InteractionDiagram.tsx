@@ -255,11 +255,9 @@ export interface InteractionDiagramProps {
    */
   onSelect: (ix: Interaction) => void;
   /**
-   * Interaction id -> risk level (issue #170's Alert Execution view), from
-   * `lib/riskForestAdapter.ts`'s `riskLevelByInteraction`. Omitted by the Flow
-   * tables' own mount of this component — a colour the risk trace-detail view
-   * needs, not something the ordinary Interactions tab renders — which is what
-   * keeps that tab's arrow colours byte-for-byte unchanged: the risk-colour
+   * Interaction id -> risk level (issue #170), from `lib/riskForestAdapter.ts`'s
+   * `riskLevelByInteraction`. Passed only with the risk layer on, which is what
+   * keeps the arrow colours byte-for-byte unchanged with it off: the risk-colour
    * branch in `MessageRow` is reached only when this is present.
    *
    * An interaction ABSENT from a supplied map (its `risk` was `null` — not yet
