@@ -395,8 +395,8 @@ describe('RiskTraceDetailPage content (#170)', () => {
 
       const panel = await screen.findByTestId('interaction-panel');
       await waitFor(() => expect(within(panel).getByText('agent calls weather')).toBeInTheDocument());
-      expect(rowText(panel, 'Request leg')).toContain('INTERNAL · PCI, PI');
-      expect(rowText(panel, 'Response leg')).toContain('no payload'); // `{payload: null}`
+      expect(rowText(panel, 'Request')).toContain('INTERNAL · PCI, PI');
+      expect(rowText(panel, 'Response')).toContain('no payload'); // `{payload: null}`
       expect(within(panel).getByText('low')).toBeInTheDocument();
       expect(within(panel).getByRole('link', { name: 'Open in trace view' })).toHaveAttribute(
         'href',
@@ -411,7 +411,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
       // A second click REPLACES the param (one `interaction=`, the new one), never appends.
       clickEdge('i3:request');
       await waitFor(() => expect(within(panel).getByText('plain call')).toBeInTheDocument());
-      expect(rowText(panel, 'Request leg')).toContain('pending'); // `{classification_pending: true}`
+      expect(rowText(panel, 'Request')).toContain('pending'); // `{classification_pending: true}`
       expect(screen.getByTestId('location')).toHaveTextContent('interaction=i3');
       expect(screen.getByTestId('location')).not.toHaveTextContent('interaction=i2');
     });
@@ -453,10 +453,10 @@ describe('RiskTraceDetailPage content (#170)', () => {
       renderWithProviders(harness(), { route: '/risk/traces/t1' });
 
       const panel = await screen.findByTestId('interaction-panel');
-      await waitFor(() => expect(rowText(panel, 'Request leg')).toContain('Found here'));
-      expect(rowText(panel, 'Request leg')).toBe('Request legFound here INTERNAL · PICarried in RESTRICTED · PI, PII');
+      await waitFor(() => expect(rowText(panel, 'Request')).toContain('Found here'));
+      expect(rowText(panel, 'Request')).toBe('RequestFound here INTERNAL · PICarried in RESTRICTED · PI, PII');
       // A leg without the block reads as it always did.
-      expect(rowText(panel, 'Response leg')).toBe('Response legno payload');
+      expect(rowText(panel, 'Response')).toBe('Responseno payload');
       expect(within(panel).getByRole('link', { name: 'Open in trace view — see where each label came from' })).toHaveAttribute(
         'href',
         '/traces/t1/flow?iid=i1',
@@ -464,7 +464,7 @@ describe('RiskTraceDetailPage content (#170)', () => {
 
       clickEdge('i3:request');
       await waitFor(() => expect(within(panel).getByText('plain call')).toBeInTheDocument());
-      expect(rowText(panel, 'Request leg')).toBe('Request legFound here pendingCarried in RESTRICTED · PI, PII');
+      expect(rowText(panel, 'Request')).toBe('RequestFound here pendingCarried in RESTRICTED · PI, PII');
       // `count` (edges, not labels) never reaches the screen.
       expect(panel).not.toHaveTextContent('5');
     });
