@@ -365,7 +365,7 @@ export function FlowTables({
   // sequence diagram lights its legs (see `flow/hopHover.ts`).
   const [hoveredInteractionId, setHoveredInteractionId] = useState<string | null>(null);
   // The values tracked on the graph (label lineage, `lib/labelTrack`): ticked in
-  // the detail panel's Label lineage tab or by a right-click on a leg. One set
+  // the detail panel's Data lineage tab or by a right-click on a leg. One set
   // for all four views, so the picture does not change with the presentation.
   const [tracked, setTracked] = useState<ReadonlyMap<string, TrackedValue>>(() => new Map());
   // The track picker (the check menu), open for one interaction at a point.
@@ -410,7 +410,7 @@ export function FlowTables({
    * carried-in value of the leg — or, with the risk layer on and the interaction
    * having fired rules, the values whose labels those rules name
    * (`defaultTrackValues`, the risk page's default). Reads the same labels
-   * resource the Label lineage tab reads.
+   * resource the Data lineage tab reads.
    */
   function trackDefaultOf(interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) {
     selectInteractionById(interactionId);
@@ -1109,9 +1109,10 @@ export function FlowTables({
               traceId={traceId}
               entities={entities}
               interactions={interactions}
-              // `byLeg` is deliberately NOT passed any more. This tab's highlight now
-              // comes from the SERVED reachability reads (ADR-0028 D14/D15), which the
-              // tab queries itself — the per-leg map answered a strictly weaker
+              // The former per-leg data-lineage map is deliberately NOT passed.
+              // This tab's highlight now comes from the SERVED reachability
+              // reads (ADR-0028 D14/D15), which the tab queries itself — the
+              // per-leg map answered a strictly weaker
               // question (one hop, composed client-side) and keeping it here would
               // leave two suppliers of one answer. The trace's `status` still comes
               // from this read, so the coverage banner and the tab quote one value.
@@ -1255,7 +1256,6 @@ export function FlowTables({
           traceId={traceId}
           selection={selection}
           pins={pins}
-          lineageQ={lineageQ}
           onTogglePin={togglePin}
           onClose={() => {
             // With the layer on, a close is a dismissal: the default does not

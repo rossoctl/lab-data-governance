@@ -1,15 +1,13 @@
 import type { ReactNode } from 'react';
 import { Button, Title } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import type { UseQueryResult } from '@tanstack/react-query';
 
 import type { PinStore } from '../../lib/pins';
-import type { TraceDataLineage } from '../../types';
 import { DetailList } from '../DetailList';
 import { RoleIcon } from '../RoleIcon';
 import { LegTabs, type Leg } from './LegTabs';
 import { SpanLink } from './SpanLink';
-import { lineageOfLeg, type Selection } from './selection';
+import type { Selection } from './selection';
 
 /**
  * The flow view's detail panel for the one selected row: caption + pin toggle +
@@ -27,7 +25,6 @@ export function FlowDetailPanel({
   traceId,
   selection,
   pins,
-  lineageQ,
   onTogglePin,
   onClose,
   onNavigateToSpan,
@@ -36,8 +33,6 @@ export function FlowDetailPanel({
   traceId: string;
   selection: Selection;
   pins: PinStore;
-  /** The one trace-scoped lineage read; each leg's block is keyed off it. */
-  lineageQ: Pick<UseQueryResult<TraceDataLineage>, 'data' | 'isError'>;
   onTogglePin: () => void;
   onClose: () => void;
   onNavigateToSpan?: (spanId: string) => void;
@@ -61,14 +56,12 @@ export function FlowDetailPanel({
       legType: 'request',
       hash: selection.requestPayloadHash,
       kind: selection.requestContentKind,
-      lineage: lineageOfLeg(lineageQ, selection, 'request'),
     },
     selection.responsePayloadHash && {
       label: 'Response',
       legType: 'response',
       hash: selection.responsePayloadHash,
       kind: selection.responseContentKind,
-      lineage: lineageOfLeg(lineageQ, selection, 'response'),
     },
   ].filter((l): l is Leg => Boolean(l));
 
@@ -151,8 +144,7 @@ export function FlowDetailPanel({
           because the leg is what a reader navigates by and the payload is only
           one of the three facts under it. A leg with no payload hash contributes
           no tab at all, so a request-only interaction shows a single `Request`
-          tab (see LegTabs' note on why a lineage-only tab would misrepresent
-          such a leg). */}
+          tab (see LegTabs' note). */}
       {legs.length > 0 && (
         <div className="dg-detail-card">
           <LegTabs

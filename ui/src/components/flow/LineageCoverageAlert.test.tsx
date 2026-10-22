@@ -111,7 +111,7 @@ describe('LineageCoverageAlert', () => {
       />,
     );
     // Distinct from the loading case: the read DID succeed and simply has nothing
-    // to report, and the per-payload blocks already say "not yet computed".
+    // to report.
     expect(container).toBeEmptyDOMElement();
   });
 });

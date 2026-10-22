@@ -205,85 +205,6 @@ export interface InteractionLabels {
 }
 
 /**
- * The **Data lineage metadata** triple for one **Interaction leg** (ADR-0028):
- * where the payload's data came from and what happened to it on the way.
- *
- * 1. `data_sources` — the origins, each an **Entity**'s natural key.
- * 2. `source_transformations` — `data_source → transformations`. A *list* on the
- *    wire because JSON has no set; its order is insignificant. A source in
- *    `data_sources` need not appear here (no transformations recorded for it).
- * 3. `entities` — the **set** of entities the data passed through. An array on the
- *    wire only because JSON has no set type: it is **unordered**, and nothing may
- *    read flow order out of element position. The spec defers ordering to a future
- *    trace-derived API; the backend sorts it purely so a re-derivation is
- *    byte-identical. An origin's set is legitimately empty.
- *
- * `seq` is the row's own derivation cursor. An *empty* triple is a real derived
- * value (the payload originates here) — distinct from the absent row, which the
- * wire spells as a `null` `lineage` (see {@link DataLineageLeg}).
- */
-export interface DataLineage {
-  data_sources: string[];
-  source_transformations: Record<string, string[]>;
-  entities: string[];
-  seq: number;
-}
-
-/**
- * One **Interaction leg** of a trace with its nullable lineage, the element of
- * `GET /api/traces/{tid}/data-lineage`.
- *
- * The leg key is `(interaction_id, leg_type)` (ADR-0028 D5) — content-addressed
- * `payload_hash` is a fact about the row, NOT the key: identical bytes at
- * different positions carry completely different lineage. `lineage` is `null` in
- * the eventual-consistency window before P-data-lineage has derived this leg,
- * mirroring the nullable `classification` of `GET /api/payloads/{hash}`
- * (ADR-0024).
- */
-export interface DataLineageLeg {
-  interaction_id: string;
-  leg_type: 'request' | 'response';
-  payload_hash: string | null;
-  lineage: DataLineage | null;
-}
-
-/**
- * `(interaction_id, leg_type)` → that leg's nullable lineage, the shape
- * `useDataLineage` reduces the trace-scoped response to. Keys are
- * `` `${interaction_id}:${leg_type}` `` (see `legLineageKey`). A *present* key
- * with a `null` value is "derived-nothing-yet"; an *absent* key means the leg
- * carries no lineage row at all (e.g. the not-yet-migrated empty response) —
- * both render as "not yet computed", but the distinction is preserved.
- */
-export type DataLineageByLeg = Map<string, DataLineage | null>;
-
-/**
- * What the flow view can currently say about ONE leg's lineage — the prop
- * `DataLineageView` renders, and the reason it is a union rather than
- * `DataLineage | null`.
- *
- * Three facts a governance reader must be able to tell apart, because each
- * demands a different action:
- *
- * - `'derived'` — P-data-lineage produced this triple. It is the answer, *including*
- *   when the triple is empty (the payload originates here, ADR-0028 D3).
- * - `'pending'` — the read succeeded but this leg has no lineage yet (the
- *   eventual-consistency window, or a not-yet-migrated DB). *Wait.*
- * - `'error'` — the read itself failed, so nothing is known. *Retry.*
- *
- * A nullable triple could only express two of those, which is how a failed fetch
- * came to render as "not yet computed" — telling a reader to wait for an answer
- * that was never going to arrive. Making the third state a distinct arm makes
- * that conflation unrepresentable rather than merely discouraged: ADR-0028's rule
- * that "not yet computed" must never look like a derived answer applies with
- * equal force to "we failed to ask".
- */
-export type LineageState =
-  | { kind: 'derived'; lineage: DataLineage }
-  | { kind: 'pending' }
-  | { kind: 'error' };
-
-/**
  * Whether a trace's derived lineage covers the whole trace (ADR-0028 D6, issue
  * #120), as served on the `GET /api/traces/{tid}/data-lineage` envelope.
  *
@@ -298,17 +219,13 @@ export type LineageStatus = 'complete' | 'partial' | null;
 
 /**
  * The whole `GET /api/traces/{tid}/data-lineage` response, reduced to what the
- * flow view reads: the per-leg lookup plus the trace's own coverage.
- *
- * One hook, one fetch, both facts — the status is trace-level and the per-leg map
- * is derived from the same response, so splitting them across two hooks would
- * mean two reads of one resource.
+ * flow view reads: the trace's own coverage. The per-leg rows on the same
+ * response have no reader in the UI and are dropped.
  *
  * `stoppedAtSeq` is the leg `seq` where derivation stopped; non-null exactly when
  * `status` is `'partial'` (the server's CHECK constraint guarantees the pairing).
  */
 export interface TraceDataLineage {
-  byLeg: DataLineageByLeg;
   status: LineageStatus;
   stoppedAtSeq: number | null;
 }
@@ -390,7 +307,7 @@ export interface LineageGraphLeg {
  *
  * A failed read is deliberately not a fourth value here: this type spells what the
  * SERVER said, and a request that never returned said nothing. The view owns that
- * arm (`isError`), the same split `LineageState` makes for one leg.
+ * arm (`isError`): a failed read is not an empty answer.
  */
 export type LineageReachabilityState = 'derived' | 'pending' | 'no-adjacent';
 

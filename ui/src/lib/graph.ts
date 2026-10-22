@@ -151,7 +151,7 @@ export interface GraphNodeSpec {
 export interface GraphEdgeSpec {
   /**
    * `<interaction id>:<leg_type>` — the canonical **Interaction leg** key, the
-   * grain at which a leg is unique (the same grain `flow.legLineageKey` uses).
+   * grain at which a leg is unique.
    * The interaction id alone is NOT unique any more: its two legs are two edges,
    * and a topology model with duplicate edge ids silently drops one.
    */

@@ -9,9 +9,10 @@ import { trackableValues, trackedValueOf } from '../lib/labelTrack';
 import { useLabelTrack } from './flow/labelTrack';
 
 /**
- * The per-leg **Label lineage** view: one block per value label lineage carried
- * into the payload, with where it was born and the hop it came from last (the
- * previous hop, distance 1 — several when the value arrived by several routes),
+ * The per-leg label lineage view (the side panel's **Data lineage** tab): one
+ * block per value label lineage carried into the payload, with where it was born
+ * and the hop it came from last (the previous hop, distance 1 — several when the
+ * value arrived by several routes),
  * each a link to that interaction. "Show chains" opens the full routes for the
  * value (`LabelLineage`). A stacked list, not a table: it has to read in the
  * ~500px detail panel, where five columns fold into slivers. Values the
@@ -67,7 +68,7 @@ export function LabelLineageTable({
       )}
       {lineageStatus === null && (
         <div style={{ color: 'var(--dg-color-muted)', fontSize: '0.8rem', marginBottom: '0.375rem' }}>
-          Label lineage: not derived for this trace
+          Data lineage: not derived for this trace
         </div>
       )}
       {rows.length === 0 ? (
@@ -75,7 +76,7 @@ export function LabelLineageTable({
           No value on this payload was carried in from an earlier step.
         </div>
       ) : (
-        <ul className="dg-lineage-values" aria-label="Label lineage">
+        <ul className="dg-lineage-values" aria-label="Data lineage">
           {rows.map((l, i) => (
             <Row
               key={`${l.entity_type}-${l.start}-${l.end}-${i}`}

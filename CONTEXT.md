@@ -699,7 +699,9 @@ the word every time: "span lineage" or "data lineage", never bare "lineage".
 Served at three grains (ADR-0028 D14): the per-leg triple
 (`GET /api/traces/{tid}/data-lineage`), **Lineage reachability** per **Entity**, and
 a trace-level sources/destinations roll-up
-(`GET /api/traces/{tid}/data-lineage-summary`).
+(`GET /api/traces/{tid}/data-lineage-summary`). The per-leg grain has no UI
+reader: the **Flow view** reads only the trace's **Lineage coverage** off that
+response.
 
 **Lineage reachability** (fanin / fanout):
 Which **Entities** one **Data source**'s content reached from a selected entity
@@ -894,7 +896,8 @@ The UI surface that renders one **Trace**'s derived **Interaction**/**Entity**
 forest — the request/response **Interaction leg**s as an execution-flow list,
 each with its **Duration** and aggregated `error`, plus the per-**Interaction**
 and per-**Entity** span-evidence drill-in and the Req/Resp **Payload** cells
-carrying the inline **Classification** verdict and per-leg **Data lineage**, with
+carrying the inline **Classification** verdict and the per-leg label lineage
+(`docs/label-lineage.md`), with
 the trace's **Lineage coverage** warning above the tables when it is `partial`.
 Backed entirely by **Interaction
 retrieval** and `payloads` retrieval; it is the primary consumer that motivated

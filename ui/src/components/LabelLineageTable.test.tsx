@@ -37,7 +37,7 @@ const links = { sameTrace: (h: LineageHop) => ({ search: `?iid=${h.interaction_i
 describe('LabelLineageTable', () => {
   it('lists carried-in values only, with where each was born and every previous hop once, in seq order', async () => {
     render(<MemoryRouter><LabelLineageTable leg={LEG} lineageStatus="complete" traceId={T} links={links} /></MemoryRouter>);
-    const rows = within(screen.getByRole('list', { name: 'Label lineage' })).getAllByTestId('lineage-value');
+    const rows = within(screen.getByRole('list', { name: 'Data lineage' })).getAllByTestId('lineage-value');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toHaveTextContent('PID');
     expect(within(rows[0]).getByRole('link', { name: /#1 a → b request/ })).toHaveAttribute('href', '/?iid=o');
@@ -54,8 +54,8 @@ describe('LabelLineageTable', () => {
   it('says so when nothing was carried in, and when lineage is not derived', () => {
     render(<MemoryRouter><LabelLineageTable leg={{ ...LEG, carried: null, labels: [LEG.labels[1]] }} lineageStatus={null} traceId={T} /></MemoryRouter>);
     expect(screen.getByText('No value on this payload was carried in from an earlier step.')).toBeInTheDocument();
-    expect(screen.getByText('Label lineage: not derived for this trace')).toBeInTheDocument();
-    expect(screen.queryByRole('list', { name: 'Label lineage' })).toBeNull();
+    expect(screen.getByText('Data lineage: not derived for this trace')).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Data lineage' })).toBeNull();
   });
 
   it('shows the origin from its own fields, without a chains button, when the read carried no chains', () => {
