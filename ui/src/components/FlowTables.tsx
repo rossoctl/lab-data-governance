@@ -895,7 +895,7 @@ export function FlowTables({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSelection?.iid, initialSelection?.eid, interactions, entities, selection]);
 
-  if (isLoading) return <Spinner aria-label="Loading interaction flow" />;
+  if (isLoading) return <Spinner aria-label="Loading interactions and entities" />;
   if (isEmpty) {
     return (
       <EmptyState>

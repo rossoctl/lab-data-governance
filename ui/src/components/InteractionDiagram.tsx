@@ -208,7 +208,7 @@ function MessageRow({
  * **Interaction legs** — entities as vertical lifelines across the top, one
  * horizontal arrow per leg, ordered top-to-bottom by the trace-wide leg `seq`.
  *
- * The fourth presentation of the same two reads the Interaction flow tables hold,
+ * The fourth presentation of the same two reads the Interactions and Entities tables hold,
  * and specifically the FLAT list's own rows: the arrow set comes from
  * `lib/sequenceDiagram`, which consumes `flow.flatLegRows`, so the Nth arrow down
  * this page is the Nth row of the Flat tab by construction. The Flat table answers

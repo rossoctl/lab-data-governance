@@ -46,7 +46,7 @@ test('deep link /ui/traces/:tid/spans resolves to the trace-detail switcher', as
   await expect(page).toHaveURL(/\/ui\/traces\/some-trace-id\/spans/);
   // The two-way switcher renders even before (or without) trace data.
   await expect(page.getByRole('tab', { name: 'Span tree' })).toBeVisible();
-  await expect(page.getByRole('tab', { name: 'Interaction flow' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Interactions and Entities' })).toBeVisible();
   // Span tree is the active tab for the /spans segment.
   await expect(page.getByRole('tab', { name: 'Span tree' })).toHaveAttribute(
     'aria-selected',
@@ -65,16 +65,16 @@ test('bare /ui/traces/:tid canonicalises to the /spans tab', async ({ page }) =>
 
 test('the active tab is a URL segment and survives reload', async ({ page }) => {
   await page.goto('/ui/traces/some-trace-id/spans');
-  await page.getByRole('tab', { name: 'Interaction flow' }).click();
+  await page.getByRole('tab', { name: 'Interactions and Entities' }).click();
   await expect(page).toHaveURL(/\/ui\/traces\/some-trace-id\/flow$/);
-  await expect(page.getByRole('tab', { name: 'Interaction flow' })).toHaveAttribute(
+  await expect(page.getByRole('tab', { name: 'Interactions and Entities' })).toHaveAttribute(
     'aria-selected',
     'true',
   );
   // The whole point: reload lands back on the same tab because the URL says so.
   await page.reload();
   await expect(page).toHaveURL(/\/ui\/traces\/some-trace-id\/flow$/);
-  await expect(page.getByRole('tab', { name: 'Interaction flow' })).toHaveAttribute(
+  await expect(page.getByRole('tab', { name: 'Interactions and Entities' })).toHaveAttribute(
     'aria-selected',
     'true',
   );
@@ -82,7 +82,7 @@ test('the active tab is a URL segment and survives reload', async ({ page }) => 
 
 test('the browser back button walks the tab history', async ({ page }) => {
   await page.goto('/ui/traces/some-trace-id/spans');
-  await page.getByRole('tab', { name: 'Interaction flow' }).click();
+  await page.getByRole('tab', { name: 'Interactions and Entities' }).click();
   await expect(page).toHaveURL(/\/flow$/);
   await page.goBack();
   await expect(page).toHaveURL(/\/spans$/);

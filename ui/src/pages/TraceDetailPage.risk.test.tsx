@@ -184,7 +184,7 @@ describe('TraceDetailPage — the risk layer', () => {
     renderWithProviders(harness(), { route: '/traces/T1/spans?risk=1' });
     expect(await screen.findByText('PII left the boundary')).toBeInTheDocument();
     expect(toggle()).toBeChecked();
-    await userEvent.click(screen.getByRole('tab', { name: 'Interaction flow' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Interactions and Entities' }));
     await waitFor(() => expect(location()).toBe('/traces/T1/flow?risk=1'));
     await userEvent.click(screen.getByRole('tab', { name: 'Span tree' }));
     await waitFor(() => expect(location()).toBe('/traces/T1/spans?risk=1'));
@@ -329,7 +329,7 @@ describe('TraceDetailPage — the risk layer', () => {
       fireEvent.click(document.querySelector('[data-id="i0:request"] [data-test-id="edge-handler"]')!);
     });
     await waitFor(() => expect(location()).toBe('/traces/T1/graph?risk=1&iid=i0'));
-    await userEvent.click(screen.getByRole('tab', { name: 'Interaction flow' })); // a push: Back has somewhere to go
+    await userEvent.click(screen.getByRole('tab', { name: 'Interactions and Entities' })); // a push: Back has somewhere to go
     await waitFor(() => expect(location()).toBe('/traces/T1/flow?risk=1&iid=i0'));
     await userEvent.click(screen.getByRole('button', { name: 'Close details' }));
     await waitFor(() => expect(location()).toBe('/traces/T1/flow?risk=1'));

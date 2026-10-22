@@ -3528,7 +3528,7 @@ export function EntityGraph({
                 (d) =>
                   `${d.label} (missing ${d.missing}, ${d.legCount} leg${d.legCount === 1 ? '' : 's'})`,
               )
-              .join('; ')}. They are still listed in full on the Interaction flow tab.`}
+              .join('; ')}. They are still listed in full on the Interactions and Entities tab.`}
           </Alert>
         )}
         {/* EDGE CASE: entities that no interaction names. They ARE drawn (an
