@@ -42,12 +42,12 @@ import type { Span } from '../types';
 // than peer datasets of the span tree. That reasoning is still true as a statement
 // about the DATA — and it turned out to be the wrong basis for the NAVIGATION: three
 // of the five readings of a trace were two clicks deep and invisible until you found
-// the Interaction flow tab, so the requirement is that they sit beside Span tree and
-// Interaction flow as equals.
+// the Interactions and Entities tab, so the requirement is that they sit beside Span tree and
+// Interactions and Entities as equals.
 //
 // WHAT STAYED NESTED, and why the nesting did not simply disappear: `Tree` and `Flat`
 // are two renderings of ONE table (the same rows, indented vs flattened), so they
-// remain `?legs` sub-tabs under Interaction flow. Promoting those two as well would put
+// remain `?legs` sub-tabs under Interactions and Entities. Promoting those two as well would put
 // a tab called "Tree" beside one called "Span tree" as if they were peers of comparable
 // weight, which they are not.
 //
@@ -112,7 +112,7 @@ function writeViolation(params: URLSearchParams, next: number) {
 const RISK_PARAMS = ['risk', 'violation'] as const;
 
 /**
- * Trace-detail view: a FIVE-way switcher over one trace — Span tree | Interaction flow
+ * Trace-detail view: a FIVE-way switcher over one trace — Span tree | Interactions and Entities
  * | Interaction diagram | Execution Flow | Lineage. The first is the spans; the other
  * four are readings of the same entities/interactions pair of reads, which is why they
  * all render through one `FlowTables` (see the ViewKey note above for what moved up here
@@ -672,7 +672,7 @@ export function TraceDetailPage() {
             </TabTitleText>
           }
         />
-        {/* THE FIVE PEER READINGS OF ONE TRACE. `Interaction flow` is the TABLES (with
+        {/* THE FIVE PEER READINGS OF ONE TRACE. `Interactions and Entities` is the TABLES (with
             its own Tree|Flat sub-tabs, the two renderings of one row set); the three
             after it are the pictures. They were `?legs` sub-tabs of the flow view until
             the requirement moved them up here — see the ViewKey note for what that
@@ -681,7 +681,7 @@ export function TraceDetailPage() {
             THE ORDER IS THE ARGUMENT, inherited from the sub-tab bar these three came
             from (it is stated here now rather than there, so there is one copy of it):
 
-            `Interaction diagram` sits immediately after Interaction flow because it is
+            `Interaction diagram` sits immediately after Interactions and Entities because it is
             the Flat list read down the page — it renders that list's rows, in that
             order, from the same `flatRows` derivation — with the graph's who-called-whom
             axis laid out horizontally. It is the shared middle of its two neighbours
@@ -693,7 +693,7 @@ export function TraceDetailPage() {
             `EntityGraph`), plus a highlight of where ONE chosen data source's data
             reached the selected entity from and went to. Anywhere earlier would separate
             it from the view it is a reading of. */}
-        <Tab eventKey="flow" title={<TabTitleText>Interaction flow</TabTitleText>} />
+        <Tab eventKey="flow" title={<TabTitleText>Interactions and Entities</TabTitleText>} />
         <Tab eventKey="diagram" title={<TabTitleText>Interaction diagram</TabTitleText>} />
         <Tab eventKey="graph" title={<TabTitleText>Execution Flow</TabTitleText>} />
         <Tab eventKey="lineage" title={<TabTitleText>Lineage</TabTitleText>} />

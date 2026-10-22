@@ -4,7 +4,7 @@ import { test, expect, type Page } from '@playwright/test';
  * Rendered-view coverage (ADR-0019) for the Classification verdict in the flow
  * view's Req/Resp payload cells (issue #80). Unlike the shell smoke specs, this
  * drives the real production bundle end-to-end with the `/api/` responses
- * stubbed via `page.route`: recent-traces → trace detail → Interaction flow →
+ * stubbed via `page.route`: recent-traces → trace detail → Interactions and Entities →
  * select the interaction → activate the request leg's Classification tab →
  * assert the inlined Classification (sensitivity badge + regulatory tags +
  * identity bundle + Findings) renders, and that a null verdict reads as "not yet

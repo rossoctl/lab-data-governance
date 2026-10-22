@@ -93,7 +93,7 @@ export default function App() {
       {/* URL = single source of truth for UI state (reload/bookmark/back). The
           trace list lives at /traces (bare / redirects there); a trace's
           detail view is a path segment — /traces/{id}/spans (span tree) or
-          /flow (interaction flow) — and bare /traces/{id} canonicalises to
+          /flow (interactions and entities) — and bare /traces/{id} canonicalises to
           /spans. The risk section mirrors this under /risk. */}
       <Routes>
         <Route path="/" element={<Navigate to="/traces" replace />} />

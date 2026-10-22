@@ -610,7 +610,7 @@ describe('ExecutionFlowGraph', () => {
 
     await waitFor(() => expect(screen.getByText(/No execution flow/i)).toBeInTheDocument());
     expect(screen.getByText(/nothing to graph/i)).toBeInTheDocument();
-    // The same "may still be draining" tone the Interaction flow tab uses.
+    // The same "may still be draining" tone the Interactions and Entities tab uses.
     expect(screen.getByText(/may still be draining/i)).toBeInTheDocument();
     // No surface at all, rather than an empty one.
     expect(screen.queryByTestId('execution-flow-graph')).not.toBeInTheDocument();

@@ -6,7 +6,7 @@ import { renderWithProviders } from '../test/renderWithProviders';
 import { LocationProbe } from '../test/LocationProbe';
 import { TraceDetailPage } from './TraceDetailPage';
 
-// The trace-detail view hosts a FIVE-way switcher: Span tree | Interaction flow |
+// The trace-detail view hosts a FIVE-way switcher: Span tree | Interactions and Entities |
 // Interaction diagram | Execution Flow | Lineage. The active view is a URL path
 // segment (/traces/{id}/spans | /flow | /diagram | /graph | /lineage) — the URL is
 // the source of truth, so reload/bookmark/back restore the tab. The trace id and
@@ -19,14 +19,14 @@ import { TraceDetailPage } from './TraceDetailPage';
 // (entities/interactions) rather than being peer datasets of the span tree. That is
 // still true of the DATA and turned out to be the wrong basis for NAVIGATION: three
 // of the five readings of a trace were two clicks deep and invisible until you found
-// the Interaction flow tab. So they are now top-level views addressed by path
+// the Interactions and Entities tab. So they are now top-level views addressed by path
 // segment, and every case that asserted "selecting this tab writes ?legs=x" now
 // asserts "selecting this tab navigates to /x". The INTENT of each is unchanged —
 // deep-linkable, reload-safe, coexists with ?iid/?eid/?src — only the mechanism the
 // URL uses to carry the choice moved from the query to the path.
 //
 // WHAT STAYED NESTED: `Tree` and `Flat` are two renderings of ONE row set, so they
-// remain `?legs` sub-tabs under Interaction flow, and `?legs` now carries only those
+// remain `?legs` sub-tabs under Interactions and Entities, and `?legs` now carries only those
 // two values. Their tests are untouched.
 //
 // LEGACY `?legs=diagram|graph|lineage` URLs still resolve: the page redirects them to
@@ -319,7 +319,7 @@ describe('TraceDetailPage', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: /Span tree/i })).toBeInTheDocument());
     expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
       'Span tree',
-      'Interaction flow',
+      'Interactions and Entities',
       'Interaction diagram',
       'Execution Flow',
       'Lineage',
@@ -336,12 +336,12 @@ describe('TraceDetailPage', () => {
     );
   });
 
-  it('activates the Interaction flow tab for a /flow deep link', async () => {
+  it('activates the Interactions and Entities tab for a /flow deep link', async () => {
     mockFetch();
     renderWithProviders(harness(), { route: '/traces/T1/flow' });
 
     await waitFor(() =>
-      expect(screen.getByRole('tab', { name: /Interaction flow/i })).toHaveAttribute(
+      expect(screen.getByRole('tab', { name: /Interactions and Entities/i })).toHaveAttribute(
         'aria-selected',
         'true',
       ),
@@ -458,7 +458,7 @@ describe('TraceDetailPage', () => {
     // Spinner shown while the reveal's fetch is gated open.
     await screen.findByLabelText(/highlighting/i);
     // Bounce back to the flow tab while the reveal is still pending.
-    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Interactions and Entities/i }));
     // The spinner is cleared by leaving the tree, not left hanging.
     await waitFor(() =>
       expect(screen.queryByLabelText(/highlighting/i)).not.toBeInTheDocument(),
@@ -471,11 +471,11 @@ describe('TraceDetailPage', () => {
     );
   });
 
-  it('writes /flow to the URL when the Interaction flow tab is clicked', async () => {
+  it('writes /flow to the URL when the Interactions and Entities tab is clicked', async () => {
     mockFetch();
     renderWithProviders(harness(), { route: '/traces/T1/spans' });
 
-    const flowTab = await screen.findByRole('tab', { name: /Interaction flow/i });
+    const flowTab = await screen.findByRole('tab', { name: /Interactions and Entities/i });
     await userEvent.click(flowTab);
     await waitFor(() => expect(flowTab).toHaveAttribute('aria-selected', 'true'));
     // The URL reflects the active tab.
@@ -708,7 +708,7 @@ describe('TraceDetailPage', () => {
     await waitFor(() => expect(inTreeRow('leaf-span')).toBe(true));
 
     // Round-trip: to the flow tab, then back to the span tree tab.
-    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Interactions and Entities/i }));
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
     );
@@ -743,7 +743,7 @@ describe('TraceDetailPage', () => {
     await waitFor(() => expect(inTreeRow('leaf-span')).toBe(true));
 
     // Round-trip: to the flow tab, then back to the span tree tab.
-    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Interactions and Entities/i }));
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
     );
@@ -799,7 +799,7 @@ describe('TraceDetailPage', () => {
     // them; the `?legs` row is down to the two renderings of the interactions row set.
     expect(bars).toContainEqual([
       'Span tree',
-      'Interaction flow',
+      'Interactions and Entities',
       'Interaction diagram',
       'Execution Flow',
       'Lineage',
@@ -878,7 +878,7 @@ describe('TraceDetailPage', () => {
     expect(await findGraph()).toBeInTheDocument();
   });
 
-  it('leaves the graph for the tables when Interaction flow is clicked, dropping no query it needs', async () => {
+  it('leaves the graph for the tables when Interactions and Entities is clicked, dropping no query it needs', async () => {
     // WAS `drops ?legs when switching from the graph back to Tree` — a sub-tab click
     // that had to avoid writing `?legs=tree`. The equivalent move is now a TOP-LEVEL
     // click from /graph to /flow, and the property worth pinning shifted with it: the
@@ -889,7 +889,7 @@ describe('TraceDetailPage', () => {
     renderWithProviders(harness(), { route: '/traces/T1/graph' });
 
     await findGraph();
-    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Interactions and Entities/i }));
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
     );
@@ -1040,7 +1040,7 @@ describe('TraceDetailPage', () => {
     expect(screen.queryByTestId('execution-flow-graph')).not.toBeInTheDocument();
   });
 
-  it('leaves Lineage for the tables when Interaction flow is clicked, on the default presentation', async () => {
+  it('leaves Lineage for the tables when Interactions and Entities is clicked, on the default presentation', async () => {
     // WAS `drops ?legs when switching from Lineage back to Tree`. Same intent for the
     // equivalent move (this view → the tables) now that it is a top-level hop: the flow
     // view must arrive on its own default with no `?legs` written, keeping the URL
@@ -1049,7 +1049,7 @@ describe('TraceDetailPage', () => {
     renderWithProviders(harness(), { route: '/traces/T1/lineage' });
 
     await findLineageGraph();
-    await userEvent.click(screen.getByRole('tab', { name: /Interaction flow/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Interactions and Entities/i }));
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
     );
@@ -1325,7 +1325,7 @@ describe('TraceDetailPage', () => {
     );
   });
 
-  it('round-trips Span tree → Interaction flow → Execution Flow through the URL', async () => {
+  it('round-trips Span tree → Interactions and Entities → Execution Flow through the URL', async () => {
     // The cross-view round-trip, back to being three TOP-LEVEL tab clicks — which is
     // what it was before the graph became a `?legs` value, and what it is again. Each
     // hop is asserted at the path level, so this is the case that would catch a
@@ -1334,7 +1334,7 @@ describe('TraceDetailPage', () => {
     mockFetchWithGraph();
     renderWithProviders(harness(), { route: '/traces/T1/spans' });
 
-    await userEvent.click(await screen.findByRole('tab', { name: /Interaction flow/i }));
+    await userEvent.click(await screen.findByRole('tab', { name: /Interactions and Entities/i }));
     await waitFor(() =>
       expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/flow'),
     );
