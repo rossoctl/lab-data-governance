@@ -111,7 +111,7 @@ export function InteractionPanel({
           ) : (
             legs.map(([name, leg]) => (
               <DescriptionListGroup key={name}>
-                <DescriptionListTerm>{name === 'request' ? 'Request leg' : 'Response leg'}</DescriptionListTerm>
+                <DescriptionListTerm>{name === 'request' ? 'Request' : 'Response'}</DescriptionListTerm>
                 <DescriptionListDescription>
                   <LegValue leg={leg} />
                 </DescriptionListDescription>
