@@ -222,7 +222,8 @@ Per ADR-0025 the request leg always exists; the realistic trigger is a
 
 These two are load-bearing everywhere the status travels (the traversal's
 `LineageStatus`, the `lineage_trace_status` row, the API envelope, the flow
-view's banner, and every test that pins them). This is their single source; other
+view's banner, and every test that pins them; since 2026-10-22 the banner shows
+only inside the Lineage view). This is their single source; other
 sites state what holds locally and cite **D6** rather than re-deriving them.
 
 **1. Absence of the status row means *unknown*, never `complete`.** "Not yet
@@ -274,7 +275,7 @@ paths through the gap); it stops the whole trace at the gap.
 (which now returns a trace-level `TraceLineage`), the status in
 `lineage_trace_status` (migration `0014`), on
 `GET /api/traces/{tid}/data-lineage` beside `legs`, and as a warning at the top
-of the flow view.
+of the flow view (since 2026-10-22, at the top of the Lineage view only).
 
 ### D7 — Matching runs at ingest; metadata is persisted
 

@@ -113,8 +113,9 @@ async function stubFlowApi(page: Page, classification: unknown, labels: unknown 
     if (url.includes(`/api/traces/${TID}/entities`)) {
       return route.fulfill(json({ entities: ENTITIES }));
     }
-    // The flow view reads trace-scoped Data lineage once on first paint (ADR-0028,
-    // issue #120). These tests are about Classification, so the leg has no
+    // Trace-scoped Data lineage (ADR-0028, issue #120) is read by the Lineage view
+    // only, so the flow view these tests open does not request it; the stub stays
+    // for any test that does. These tests are about Classification, so the leg has no
     // derived lineage — spelled the way the server does: the leg row is present
     // with a null `lineage` (the eventual-consistency window) and coverage is
     // unknown, which must NOT be reported as 'complete'.

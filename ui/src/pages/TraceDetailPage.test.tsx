@@ -6,8 +6,9 @@ import { renderWithProviders } from '../test/renderWithProviders';
 import { LocationProbe } from '../test/LocationProbe';
 import { TraceDetailPage } from './TraceDetailPage';
 
-// The trace-detail view hosts a FIVE-way switcher: Span tree | Interactions and Entities |
-// Interaction diagram | Execution Flow | Lineage. The active view is a URL path
+// The trace-detail view hosts five views: Span tree | Interactions and Entities |
+// Interaction diagram | Execution Flow | Lineage, the last hidden (no tab, reached by
+// its URL). The active view is a URL path
 // segment (/traces/{id}/spans | /flow | /diagram | /graph | /lineage) — the URL is
 // the source of truth, so reload/bookmark/back restore the tab. The trace id and
 // view both come from the route (:traceId/:view).
@@ -305,24 +306,22 @@ describe('TraceDetailPage', () => {
   beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
   afterEach(() => vi.unstubAllGlobals());
 
-  it('shows the trace id and a five-way view switcher, Span tree active for /spans', async () => {
+  it('shows the trace id and a four-tab view switcher, Span tree active for /spans', async () => {
     mockFetch();
     renderWithProviders(harness(), { route: '/traces/T1/spans' });
 
-    // ALL FIVE readings are offered from up here, IN ORDER, and this is the assertion
-    // the promotion exists to satisfy: the diagram, the graph and the Lineage highlight
-    // used to be absent from this bar entirely (reachable only via the flow view's
-    // `?legs` sub-tabs), which is what made three of the five readings invisible until
-    // you had already picked a different one. Asserting the exact list — rather than
-    // just "these five exist" — also pins the ORDER: tables first, then the three
-    // pictures, with Lineage last because it is the graph plus one more question.
+    // The readings offered from up here, IN ORDER: the diagram and the graph used to be
+    // absent from this bar entirely (reachable only via the flow view's `?legs`
+    // sub-tabs), which is what made them invisible until you had already picked a
+    // different one. Asserting the exact list — rather than just "these exist" — also
+    // pins the ORDER: tables first, then the pictures. The Lineage view is HIDDEN: no
+    // tab, its URL still works (see the /lineage deep-link case).
     await waitFor(() => expect(screen.getByRole('tab', { name: /Span tree/i })).toBeInTheDocument());
     expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
       'Span tree',
       'Interactions and Entities',
       'Interaction diagram',
       'Execution Flow',
-      'Lineage',
     ]);
     // Exactly one tab bar on the spans tab: `FlowTables` (which owns the Tree|Flat
     // sub-tab bar) does not render for the tree view at all, so there is no second
@@ -795,14 +794,14 @@ describe('TraceDetailPage', () => {
         .getAllByRole('tab')
         .map((t) => t.textContent),
     );
-    // The top-level row carries all FIVE readings, the diagram / graph / Lineage among
-    // them; the `?legs` row is down to the two renderings of the interactions row set.
+    // The top-level row carries the readings, the diagram and the graph among them (the
+    // Lineage view is hidden: no tab); the `?legs` row is down to the two renderings of
+    // the interactions row set.
     expect(bars).toContainEqual([
       'Span tree',
       'Interactions and Entities',
       'Interaction diagram',
       'Execution Flow',
-      'Lineage',
     ]);
     expect(bars).toContainEqual(['Tree', 'Flat']);
     expect(bars).toHaveLength(2);
@@ -984,20 +983,15 @@ describe('TraceDetailPage', () => {
     return screen.findByTestId('lineage-graph', undefined, { timeout: GRAPH_CHUNK_TIMEOUT });
   }
 
-  it('navigates to /lineage when the Lineage tab is clicked, and swaps the table', async () => {
-    // WAS `writes ?legs=lineage`. Same intent — the choice of presentation must be
-    // URL-visible — against the path segment it now lives in.
+  it('has no Lineage tab, and /lineage still swaps the table for the Lineage graph', async () => {
+    // THE VIEW IS HIDDEN, NOT REMOVED: the tab is off the bar, the path segment still
+    // renders the view. WAS `navigates to /lineage when the Lineage tab is clicked`.
     mockFetchWithGraph();
-    renderWithProviders(harness(), { route: '/traces/T1/flow' });
+    renderWithProviders(harness(), { route: '/traces/T1/lineage' });
 
-    const tab = await screen.findByRole('tab', { name: 'Lineage' });
-    await userEvent.click(tab);
-    await waitFor(() =>
-      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/lineage'),
-    );
-    expect(tab).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByTestId('location')).not.toHaveTextContent('legs');
     expect(await findLineageGraph()).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Lineage' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/lineage');
     expect(screen.queryByLabelText('Interactions')).not.toBeInTheDocument();
     // THE ENTITIES TABLE IS GONE FROM THIS VIEW TOO, inverting what this case used to
     // assert. It called the table "load-bearing rather than merely kept: the only way to
@@ -1020,19 +1014,18 @@ describe('TraceDetailPage', () => {
     expect(screen.queryByRole('heading', { name: 'Interactions' })).not.toBeInTheDocument();
   });
 
-  it('restores the Lineage tab from a /lineage deep link on load', async () => {
+  it('restores the Lineage view from a /lineage deep link on load, with no tab highlighted', async () => {
     mockFetchWithGraph();
     renderWithProviders(harness(), { route: '/traces/T1/lineage' });
 
     expect(await findLineageGraph()).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Lineage' })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    // The Execution Flow tab is NOT also active: they are two tabs over one renderer,
-    // not one tab with two names. Now that both are TOP-LEVEL tabs driven by the same
-    // `activeKey`, this is also the guard that the segment→ViewKey mapping is
-    // one-to-one rather than two segments collapsing onto one key.
+    // The view has no tab, so none is active. In particular the Execution Flow tab is
+    // NOT: the two views share one renderer, and this is the guard that the
+    // segment→ViewKey mapping is one-to-one rather than two segments collapsing onto
+    // one key.
+    for (const tab of screen.getAllByRole('tab')) {
+      expect(tab).toHaveAttribute('aria-selected', 'false');
+    }
     expect(screen.getByRole('tab', { name: /Execution Flow/i })).toHaveAttribute(
       'aria-selected',
       'false',
@@ -1266,26 +1259,24 @@ describe('TraceDetailPage', () => {
     // restatement of anything. While these three were `?legs` sub-tabs, moving between
     // them was a query WRITE that preserved the rest of the query by construction — you
     // could not lose `?src` by switching. Now they are separate routes, so preserving it
-    // is something `goToView` has to do ON PURPOSE: without that, Execution Flow →
-    // Lineage would silently discard the chosen source and drop the reader from an
-    // answer back onto a bare prompt.
+    // is something `goToView` has to do ON PURPOSE. With the Lineage tab hidden, the
+    // switch is FROM the Lineage view (reached by its URL) to Execution Flow.
     mockFetchWithGraph();
-    renderWithProviders(harness(), { route: '/traces/T1/graph?src=agent%3A(p%2Ca)&eid=e1' });
+    renderWithProviders(harness(), { route: '/traces/T1/lineage?src=agent%3A(p%2Ca)&eid=e1' });
 
-    await findGraph();
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
-    await waitFor(() =>
-      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/lineage'),
-    );
-    const location = screen.getByTestId('location');
-    expect(location).toHaveTextContent('src=agent');
-    expect(location).toHaveTextContent('eid=e1');
-    // Carried as MEANING: the Lineage view opens already tracing the source that was
-    // chosen on the way in, so the switch continues the reading instead of restarting it.
+    // The Lineage view opens tracing the source in the URL.
     expect(await findLineageGraph()).toBeInTheDocument();
     expect(await screen.findByRole('button', { name: /Tracing data source/i })).toHaveTextContent(
       'agent-a',
     );
+    await userEvent.click(screen.getByRole('tab', { name: /Execution Flow/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/traces/T1/graph'),
+    );
+    const location = screen.getByTestId('location');
+    expect(location).toHaveTextContent('src=agent');
+    expect(location).toHaveTextContent('eid=e1');
+    expect(await findGraph()).toBeInTheDocument();
   });
 
   it('drops the interaction query when leaving a promoted view for the span tree', async () => {

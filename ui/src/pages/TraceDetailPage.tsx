@@ -51,6 +51,10 @@ import type { Span } from '../types';
 // a tab called "Tree" beside one called "Span tree" as if they were peers of comparable
 // weight, which they are not.
 //
+// THE LINEAGE VIEW IS HIDDEN, not removed: it has no tab on the bar, but
+// `/traces/{id}/lineage`, `?src` and the legacy `?legs=lineage` redirect still reach it.
+// Its tab is one line in the tab bar below.
+//
 // `/traces/{id}/graph` is a real segment again (it was one historically, then was
 // removed when the graph moved into `?legs`). Old `?legs=` deep links still resolve —
 // see LEGACY_LEGS_TO_VIEW and the redirect effect.
@@ -112,8 +116,8 @@ function writeViolation(params: URLSearchParams, next: number) {
 const RISK_PARAMS = ['risk', 'violation'] as const;
 
 /**
- * Trace-detail view: a FIVE-way switcher over one trace — Span tree | Interactions and Entities
- * | Interaction diagram | Execution Flow | Lineage. The first is the spans; the other
+ * Trace-detail view: five views of one trace — Span tree | Interactions and Entities
+ * | Interaction diagram | Execution Flow | Lineage (hidden: no tab, reached by its URL). The first is the spans; the other
  * four are readings of the same entities/interactions pair of reads, which is why they
  * all render through one `FlowTables` (see the ViewKey note above for what moved up here
  * and why the tables' own Tree|Flat stayed nested).
@@ -635,7 +639,7 @@ export function TraceDetailPage() {
         <LiveModeLabel mode={live} />
       </Title>
 
-      {/* The view header: the five view tabs, and right after them the Risk
+      {/* The view header: the view tabs, and right after them the Risk
           toggle (the layer, one state for every view) with the cross link to the
           risk trace page, which stays for a transition period. After the tabs,
           not at the far right: the detail panel floats fixed over the right of
@@ -672,7 +676,7 @@ export function TraceDetailPage() {
             </TabTitleText>
           }
         />
-        {/* THE FIVE PEER READINGS OF ONE TRACE. `Interactions and Entities` is the TABLES (with
+        {/* THE PEER READINGS OF ONE TRACE. `Interactions and Entities` is the TABLES (with
             its own Tree|Flat sub-tabs, the two renderings of one row set); the three
             after it are the pictures. They were `?legs` sub-tabs of the flow view until
             the requirement moved them up here — see the ViewKey note for what that
@@ -687,16 +691,20 @@ export function TraceDetailPage() {
             axis laid out horizontally. It is the shared middle of its two neighbours
             rather than an unrelated fifth thing.
 
-            `Lineage` sits LAST, immediately after Execution Flow, because it IS the
+            `Lineage` sat LAST (it is hidden now, see below), after Execution Flow, because it IS the
             Execution Flow picture with one more question asked of it: identical nodes
             and edges (one component, one `deriveGraph` — see ExecutionFlowGraph's
             `EntityGraph`), plus a highlight of where ONE chosen data source's data
             reached the selected entity from and went to. Anywhere earlier would separate
-            it from the view it is a reading of. */}
+            it from the view it is a reading of.
+
+            THE LINEAGE TAB IS HIDDEN: its line is gone from this bar, and the view is
+            reached by its URL only (`/traces/{id}/lineage`). With that URL open no tab
+            is highlighted. To bring it back, add after Execution Flow:
+            <Tab eventKey="lineage" title={<TabTitleText>Lineage</TabTitleText>} /> */}
         <Tab eventKey="flow" title={<TabTitleText>Interactions and Entities</TabTitleText>} />
         <Tab eventKey="diagram" title={<TabTitleText>Interaction diagram</TabTitleText>} />
         <Tab eventKey="graph" title={<TabTitleText>Execution Flow</TabTitleText>} />
-        <Tab eventKey="lineage" title={<TabTitleText>Lineage</TabTitleText>} />
       </Tabs>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexShrink: 0 }} data-testid="risk-layer-controls">

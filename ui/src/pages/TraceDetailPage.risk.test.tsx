@@ -230,9 +230,9 @@ describe('TraceDetailPage — the risk layer', () => {
     await waitFor(() => expect(document.querySelector('[data-id="i1:response"]')).not.toBeNull());
     await userEvent.click(screen.getByRole('button', { name: 'Edges per interaction' }));
     await waitFor(() => expect(location()).toBe('/traces/T1/graph?edges=interaction'));
-    // Carried to the lineage view like the other interaction-view params.
-    await userEvent.click(screen.getByRole('tab', { name: 'Lineage' }));
-    await waitFor(() => expect(location()).toBe('/traces/T1/lineage?edges=interaction'));
+    // Carried to the diagram view like the other interaction-view params.
+    await userEvent.click(screen.getByRole('tab', { name: 'Interaction diagram' }));
+    await waitFor(() => expect(location()).toBe('/traces/T1/diagram?edges=interaction'));
   });
 
   // The second route into the tree (the detail panel's pin) keeps the layer.
