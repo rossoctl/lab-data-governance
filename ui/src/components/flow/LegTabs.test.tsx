@@ -15,7 +15,7 @@ import { LegTabs, type Leg } from './LegTabs';
  * reached the way a reader reaches them. These are the ones that view cannot
  * express: a leg's Payload tab is active on arrival, so "a leg that never
  * activated a payload-backed section issues no payload read" has to be asserted
- * against the component, by picking Label lineage (which reads the labels, not
+ * against the component, by picking Data lineage (which reads the labels, not
  * the payload) as the very first interaction on a freshly-mounted leg.
  */
 
@@ -123,7 +123,7 @@ describe('LegTabs', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('issues no payload read for a leg whose payload-backed tabs are never activated', async () => {
-    // Label lineage arrives on the per-interaction labels read, not the payload
+    // Data lineage arrives on the per-interaction labels read, not the payload
     // read, so a reader who only ever looks at provenance pays for no other
     // leg's body. A `usePayload` that fired on mount —
     // or a gate keyed on "the pane exists" rather than on which section has been
@@ -137,7 +137,7 @@ describe('LegTabs', () => {
       legs: [CARRIED_LEG('request', REQUEST.hash), CARRIED_LEG('response', RESPONSE.hash)],
     });
     renderWithProviders(<LegTabs legs={[REQUEST, RESPONSE]} traceId="T1" interactionId="ix-1" />);
-    await userEvent.click(screen.getByRole('tab', { name: 'Request: Label lineage' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Request: Data lineage' }));
     await screen.findByTestId('label-lineage-table');
     // Exactly one read, for the one leg whose Payload tab was ever active — the
     // lineage tab added none, and the untouched leg cost nothing.
@@ -147,9 +147,9 @@ describe('LegTabs', () => {
 
   it('does not refetch the payload when the reader tabs away to lineage and back', async () => {
     // The body is read once per leg and reused across all three of its panes:
-    // walking Payload → Label lineage → Payload → Classification must not pay for
+    // walking Payload → Data lineage → Payload → Classification must not pay for
     // it again. This is why `usePayload` is not gated on the active section — a
-    // gate that closed on Label lineage would flip `enabled` off and on again, and
+    // gate that closed on Data lineage would flip `enabled` off and on again, and
     // a query re-enabled after its data went stale refetches. Since exactly one
     // section is always active and Payload is the default, such a gate could
     // never be false on a mounted pane anyway; laziness is the active-leg-only
@@ -158,12 +158,12 @@ describe('LegTabs', () => {
     renderWithProviders(<LegTabs legs={[REQUEST]} traceId="T1" interactionId="ix-1" />);
     await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
     expect(payloadCalls()).toHaveLength(1);
-    await userEvent.click(screen.getByRole('tab', { name: 'Request: Label lineage' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Request: Data lineage' }));
     await screen.findByTestId('label-lineage-table');
     await userEvent.click(screen.getByRole('tab', { name: /Request: Payload reqhash0/ }));
     await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
     await userEvent.click(screen.getByRole('tab', { name: 'Request: Classification' }));
-    await screen.findByText('Carried in (label lineage)');
+    await screen.findByText('Carried in (data lineage)');
     expect(payloadCalls()).toHaveLength(1);
   });
 
@@ -182,7 +182,7 @@ describe('LegTabs', () => {
     expect(payloadCalls()[0][0]).toContain('reqhash0deadbeef');
     // Every inner tab of the active leg, and still nothing for the other leg.
     await userEvent.click(screen.getByRole('tab', { name: 'Request: Classification' }));
-    await userEvent.click(screen.getByRole('tab', { name: 'Request: Label lineage' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Request: Data lineage' }));
     await screen.findByTestId('label-lineage-table');
     expect(payloadCalls().some((c) => String(c[0]).includes('resphash0feedface'))).toBe(false);
     // Only selecting the Response leg reads its body.
@@ -233,7 +233,11 @@ describe('LegTabs', () => {
     // leg's identically-labelled tab.
     expect(screen.getAllByRole('tab', { name: /: Payload / })).toHaveLength(1);
     expect(screen.getAllByRole('tab', { name: /: Classification$/ })).toHaveLength(1);
-    expect(screen.getAllByRole('tab', { name: /: Label lineage$/ })).toHaveLength(1);
+    expect(screen.getAllByRole('tab', { name: /: Data lineage$/ })).toHaveLength(1);
+    // The inner row, in order: one lineage tab, called Data lineage.
+    expect(
+      within(screen.getByLabelText('Request sections')).getAllByRole('tab').map((t) => t.textContent),
+    ).toEqual(['Payload', 'Classification', 'Data lineage']);
     await userEvent.click(screen.getByRole('tab', { name: 'Response' }));
     expect(screen.getAllByRole('tab', { name: /: Payload / })).toHaveLength(1);
     expect(screen.getByRole('tab', { name: /Response: Payload resphash/ })).toBeInTheDocument();
@@ -258,18 +262,18 @@ describe('LegTabs', () => {
     expect(labelsCalls()).toHaveLength(0);
 
     await userEvent.click(screen.getByRole('tab', { name: 'Request: Classification' }));
-    await waitFor(() => expect(screen.getByText('Carried in (label lineage)')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Carried in (data lineage)')).toBeInTheDocument());
     expect(labelsCalls()).toHaveLength(1);
     expect(labelsCalls()[0][0]).toContain('/traces/T1/interactions/ix-1/labels');
 
     // The other leg reads the same cached response: its own row, no second read.
     await userEvent.click(screen.getByRole('tab', { name: 'Response' }));
     await userEvent.click(screen.getByRole('tab', { name: 'Response: Classification' }));
-    await waitFor(() => expect(screen.getByText('Carried in (label lineage)')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Carried in (data lineage)')).toBeInTheDocument());
     expect(labelsCalls()).toHaveLength(1);
   });
 
-  it('has a Label lineage tab: born at, the previous hop, the chains on demand, a hop of another trace marked', async () => {
+  it('has a Data lineage tab: born at, the previous hop, the chains on demand, a hop of another trace marked', async () => {
     const hop = (seq: number, role: string, iid: string, trace: string) => ({
       interaction_id: iid, leg_type: 'response', seq, trace_id: trace, caller: 'booking-agent',
       callee: 'create-booking', text: 'BK-2850EB', start: 0, end: 9, role, excerpt: null,
@@ -286,7 +290,7 @@ describe('LegTabs', () => {
     mockPayloadsAndLabels({ lineage_status: 'complete', legs: [leg] });
     renderWithProviders(<LegTabs legs={[REQUEST]} traceId="T1" interactionId="ix-1" />, { route: '/traces/T1/flow?iid=ix-1&eid=e9' });
     expect(labelsCalls()).toHaveLength(0);
-    await userEvent.click(screen.getByRole('tab', { name: 'Request: Label lineage' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Request: Data lineage' }));
     const table = await screen.findByTestId('label-lineage-table');
     expect(labelsCalls()).toHaveLength(1);
     const [row] = within(table).getAllByTestId('lineage-value');
@@ -313,7 +317,7 @@ describe('LegTabs', () => {
     mockPayloadsAndLabels({ lineage_status: 'complete', legs: [{ ...base, labels: [{ ...base.labels[0], carried_in: [origin] }] }] });
     renderWithProviders(<LegTabs legs={[REQUEST]} traceId="T1" interactionId="ix-1" />);
     await userEvent.click(screen.getByRole('tab', { name: 'Request: Classification' }));
-    await screen.findByText('Carried in (label lineage)');
+    await screen.findByText('Carried in (data lineage)');
     expect(screen.queryByText(/^born/)).toBeNull();
   });
 

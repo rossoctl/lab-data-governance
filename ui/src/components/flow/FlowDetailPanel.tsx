@@ -12,7 +12,7 @@ import type { Selection } from './selection';
 /**
  * The flow view's detail panel for the one selected row: caption + pin toggle +
  * close, the selection's fields, a two-level tab set (leg → payload /
- * Classification / Label lineage) over the legs that carried a payload, and the
+ * Classification / Data lineage) over the legs that carried a payload, and the
  * span evidence that produced it.
  *
  * Floats as a fixed overlay on the right of the viewport instead of occupying a

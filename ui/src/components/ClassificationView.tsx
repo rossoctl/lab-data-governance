@@ -39,7 +39,7 @@ export function ClassificationView({
   // (loading, failed, or no read at all) says nothing.
   const notDerived = labels != null && labels.lineageStatus === null && (
     <div style={{ color: 'var(--dg-color-muted)', fontSize: '0.8rem', marginTop: '0.375rem' }}>
-      Label lineage: not derived for this trace
+      Data lineage: not derived for this trace
     </div>
   );
 
@@ -136,7 +136,7 @@ function LabelSources({ leg }: { leg: LegLabels }) {
   const steps = carried.origin_count;
   return (
     <>
-      <SummaryLine caption="Carried in (label lineage)">
+      <SummaryLine caption="Carried in (data lineage)">
         {carried.max_level && <SensitivityBadge level={carried.max_level} />}
         {carried.regulatory_tags.length > 0 && <span>{carried.regulatory_tags.join(', ')}</span>}
         <span style={{ color: 'var(--dg-color-muted)', fontSize: '0.85rem' }}>
@@ -158,7 +158,7 @@ function LabelSources({ leg }: { leg: LegLabels }) {
  * One row per (span, type), in the server's order (by position, highest level
  * first). Region indexes the text the classifier read, not the JSON on the
  * Payload tab, so it stays a muted column. The chains a value travelled are not
- * here: the Label lineage tab shows them (`LabelLineageTable`).
+ * here: the Data lineage tab shows them (`LabelLineageTable`).
  */
 function LabelsTable({ labels }: { labels: LegLabel[] }) {
   return (

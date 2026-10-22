@@ -25,7 +25,7 @@ export interface PickerTarget {
  * right-clicked open and the other folded (the echo repeats the request's
  * values, so both are offered but one is in the way). Ticks take effect on the
  * graph at once; the banner shows what is ticked. Closes on Escape, a click
- * outside, or Done. Reads the same labels resource the Label lineage tab reads.
+ * outside, or Done. Reads the same labels resource the Data lineage tab reads.
  */
 export function TrackPicker({ traceId, target, onClose }: { traceId: string; target: PickerTarget; onClose: () => void }) {
   const labelsQ = useLegLabels(traceId, target.interactionId);

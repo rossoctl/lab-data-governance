@@ -204,7 +204,7 @@ describe('ClassificationView — found here and carried in', () => {
     const found = screen.getByText('Found here (classifier)').parentElement!;
     expect(within(found).getByText('INTERNAL')).toBeInTheDocument();
     expect(found).toHaveTextContent('PI');
-    const carried = screen.getByText('Carried in (label lineage)').parentElement!;
+    const carried = screen.getByText('Carried in (data lineage)').parentElement!;
     expect(within(carried).getByText('RESTRICTED')).toBeInTheDocument();
     expect(carried).toHaveTextContent('PI, PII');
     // Origin legs, never the edge count (5 on the record).
@@ -258,11 +258,11 @@ describe('ClassificationView — found here and carried in', () => {
     expect(screen.queryByText(/not derived/)).toBeNull();
   });
 
-  it('says label lineage is not derived only when the read says so', () => {
+  it('says data lineage is not derived only when the read says so', () => {
     const { unmount } = render(
       <ClassificationView classification={REFERENCE_VERDICT} labels={{ leg: null, lineageStatus: null }} />,
     );
-    expect(screen.getByText('Label lineage: not derived for this trace')).toBeInTheDocument();
+    expect(screen.getByText('Data lineage: not derived for this trace')).toBeInTheDocument();
     expect(screen.getByLabelText('Findings')).toBeInTheDocument();
     unmount();
     // No answered read (loading, failed, or none made): no claim either way.
@@ -296,12 +296,12 @@ describe('ClassificationView — found here and carried in', () => {
     );
     expect(screen.getByText(/not yet classified/i)).toBeInTheDocument();
     expect(screen.queryByText('Found here (classifier)')).toBeNull();
-    expect(screen.getByText('Carried in (label lineage)')).toBeInTheDocument();
+    expect(screen.getByText('Carried in (data lineage)')).toBeInTheDocument();
     expect(screen.getByLabelText('Labels')).toBeInTheDocument();
   });
 });
 
-describe('ClassificationView — the chains live on the Label lineage tab', () => {
+describe('ClassificationView — the chains live on the Data lineage tab', () => {
   it('adds no row under a value for its chains, even when the read carries them', () => {
     const hop = (seq: number, role: 'origin' | 'hop' | 'here', iid: string) => ({
       interaction_id: iid, leg_type: 'response' as const, seq, trace_id: 'e06cd67d', caller: 'booking-agent',

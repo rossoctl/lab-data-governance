@@ -1380,7 +1380,7 @@ body {
   fill-opacity: 0.4;
 }
 
-/* The Label lineage tab's list: one block per carried-in value, the key words
+/* The Data lineage tab's list: one block per carried-in value, the key words
    in a fixed column so the links align (LabelLineageTable.tsx). */
 .dg-lineage-values {
   list-style: none;

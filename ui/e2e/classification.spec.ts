@@ -159,7 +159,7 @@ async function stubFlowApi(page: Page, classification: unknown, labels: unknown 
  * leg's **Classification** tab — the shared drive-through both tests need.
  *
  * The `Request` outer tab now carries three inner section tabs (Payload /
- * Classification / Label lineage), so the verdict has its own tab rather than
+ * Classification / Data lineage), so the verdict has its own tab rather than
  * riding on the payload body's. Clicking Classification is also the end-to-end
  * proof of the fetch coupling in the real bundle: the verdict is an inlined field
  * of `GET /api/payloads/{hash}` (ADR-0024), so activating that tab must be enough
@@ -253,14 +253,14 @@ test('labels carried in show beside what the classifier found here', async ({ pa
   await openRequestClassification(page);
 
   await expect(page.getByText('Found here (classifier)')).toBeVisible();
-  await expect(page.getByText('Carried in (label lineage)')).toBeVisible();
+  await expect(page.getByText('Carried in (data lineage)')).toBeVisible();
   await expect(page.getByText('from 2 earlier steps')).toBeVisible();
   const labels = page.getByLabel('Labels');
   await expect(labels.getByText('PID', { exact: true })).toBeVisible();
   await expect(labels.getByText('booking-agent → create-booking, response #90574')).toBeVisible();
 });
 
-test('the Label lineage tab shows where a carried-in value came from, its chains on demand', async ({ page }) => {
+test('the Data lineage tab shows where a carried-in value came from, its chains on demand', async ({ page }) => {
   const hop = (seq: number, role: string, iid: string, leg: string, text: string, start: number, end: number) => ({
     interaction_id: iid, leg_type: leg, seq, trace_id: TID, caller: 'booking-agent', callee: 'create-booking',
     text, start, end, role,
@@ -297,9 +297,9 @@ test('the Label lineage tab shows where a carried-in value came from, its chains
   );
   await openRequestClassification(page);
   // The Classification tab stays the classifier's plus the carried-in line; the chains are on their own tab.
-  await expect(page.getByText('Carried in (label lineage)')).toBeVisible();
+  await expect(page.getByText('Carried in (data lineage)')).toBeVisible();
   await expect(page.getByTestId('label-lineage')).toHaveCount(0);
-  await page.getByRole('tab', { name: /Request: Label lineage/i }).click();
+  await page.getByRole('tab', { name: /Request: Data lineage/i }).click();
 
   const table = page.getByTestId('label-lineage-table');
   await expect(table).toBeVisible();

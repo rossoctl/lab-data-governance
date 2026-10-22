@@ -105,7 +105,7 @@ as a chain whose first hop is a `hop`, never shown as born there. The origin hop
 of its payload's projected text around the unit.
 
 The UI keeps the Classification tab the classifier's (label lineage there is one more source of labels)
-and adds a **Label lineage** tab per leg (`LabelLineageTable`): one block per carried-in value with
+and adds a tab per leg titled **Data lineage** (`LabelLineageTable`): one block per carried-in value with
 where it was born and the previous hop(s) at distance 1, each a link to that interaction, and "Show
 chains" for the full routes (`LabelLineage`: the first chain open, the rest folded under a count). The
 risk trace page's decision card opens the same view from its "Carried in" row, under the fired rules'
@@ -117,7 +117,7 @@ carries the labels the rules name.
 
 **Tracking values on the graphs (the overlay).** An edge on the graphs is a leg, one payload, and the
 decision is on that payload; label lineage is per value. So a value's chain is not "the path of an
-edge": the reader ticks the values to track (in the Label lineage tab, or by a right-click on a leg,
+edge": the reader ticks the values to track (in the Data lineage tab, or by a right-click on a leg,
 which tracks that leg's carried-in values; on the risk page the default is the carried-in values whose
 labels the fired rules name), and the union of their routes is painted over the graph that is already
 there: the legs those values sat on lit, every other leg dimmed, on the execution-flow graph, the

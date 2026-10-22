@@ -1775,7 +1775,7 @@ describe('FlowTables', () => {
     // view's own Tree/Flat/Execution Flow tabs are the only tabs left on screen.)
     expect(screen.queryByRole('tab', { name: 'Request' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Response' })).toBeNull();
-    expect(screen.queryByRole('tab', { name: /Label lineage/i })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /Data lineage/i })).toBeNull();
     expect(screen.queryByRole('tab', { name: /Classification/i })).toBeNull();
     expect(screen.queryByRole('tab', { name: /Payload/i })).toBeNull();
   });
@@ -1804,8 +1804,8 @@ describe('FlowTables', () => {
       'true',
     );
     expect(screen.queryByRole('tab', { name: 'Response' })).toBeNull();
-    expect(screen.getByRole('tab', { name: /Request: Label lineage/i })).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: /Response: Label lineage/i })).toBeNull();
+    expect(screen.getByRole('tab', { name: /Request: Data lineage/i })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /Response: Data lineage/i })).toBeNull();
   });
 
   // --- Data lineage (issue #119, ADR-0028) ------------------------------------
@@ -1934,7 +1934,7 @@ describe('FlowTables', () => {
   });
 
   // --- the two-level tabs (leg → section) and the shared payload read --------
-  // Classification is INLINED on the payload read (ADR-0024); Label lineage comes
+  // Classification is INLINED on the payload read (ADR-0024); Data lineage comes
   // from the per-interaction labels read. The tabs' fetch behaviour has to follow
   // that split, or a reader either waits on a request nobody made or pays for one
   // they did not need.
@@ -1979,12 +1979,12 @@ describe('FlowTables', () => {
     expect(payloadCalls()).toHaveLength(0);
   });
 
-  it('serves Classification from the leg\'s one payload read, which Label lineage does not add to', async () => {
+  it('serves Classification from the leg\'s one payload read, which Data lineage does not add to', async () => {
     // The verdict is an inlined field of GET /api/payloads/{hash} (ADR-0024), so
     // this tab cannot render without that read even though it shows no body.
     // Payload is a leg's default tab, so the read is already made on arrival:
     // the claim is that it is EXACTLY one read, for this leg's hash, and that
-    // neither Label lineage (its own labels read) nor Classification adds one.
+    // neither Data lineage (its own labels read) nor Classification adds one.
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
@@ -1993,7 +1993,7 @@ describe('FlowTables', () => {
     await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
     expect(payloadCalls()).toHaveLength(1);
     expect(payloadCalls()[0][0]).toContain('reqhash0deadbeef');
-    await userEvent.click(screen.getByRole('tab', { name: /Request: Label lineage/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Data lineage/i }));
     await screen.findByText(/No value on this payload was carried in/);
     expect(payloadCalls()).toHaveLength(1);
     await userEvent.click(screen.getByRole('tab', { name: /Request: Classification/i }));
@@ -2017,7 +2017,7 @@ describe('FlowTables', () => {
     await waitFor(() => expect(payloadCalls().length).toBeGreaterThan(0));
     expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
     await userEvent.click(screen.getByRole('tab', { name: /Request: Classification/i }));
-    await userEvent.click(screen.getByRole('tab', { name: /Request: Label lineage/i }));
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Data lineage/i }));
     await screen.findByText(/No value on this payload was carried in/);
     expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
     expect(payloadCalls().some((c) => String(c[0]).includes('resphash0feedface'))).toBe(false);
@@ -2103,7 +2103,7 @@ describe('FlowTables', () => {
     await selectInteraction();
     const payloadTab = () => screen.getByRole('tab', { name: /Request: Payload reqhash0/i });
     const classTab = () => screen.getByRole('tab', { name: /Request: Classification/i });
-    const lineageTab = () => screen.getByRole('tab', { name: /Request: Label lineage/i });
+    const lineageTab = () => screen.getByRole('tab', { name: /Request: Data lineage/i });
 
     // Payload is the default active section: its body shows, the other two panes
     // do not — exactly one section at a time is the whole point of tabs.
@@ -2125,7 +2125,7 @@ describe('FlowTables', () => {
     expect(payloadTab()).toHaveAttribute('aria-selected', 'false');
     expect(screen.queryByText(/"flights"/)).toBeNull();
 
-    // Label lineage next — it needs no payload read at all, and swaps the pane
+    // Data lineage next — it needs no payload read at all, and swaps the pane
     // out from under Classification.
     await userEvent.click(lineageTab());
     await screen.findByText(/No value on this payload was carried in/);
@@ -2365,8 +2365,8 @@ describe('FlowTables — tracking values on the graph (the label lineage overlay
     await waitFor(() => expect(within(picker).getByRole('checkbox', { name: /BK-83CE5F/ })).toBeChecked());
     await userEvent.click(within(picker).getByRole('button', { name: 'Done' }));
 
-    // The Label lineage tab shows the value ticked; unticking it clears the overlay.
-    await userEvent.click(screen.getByRole('tab', { name: 'Request: Label lineage' }));
+    // The Data lineage tab shows the value ticked; unticking it clears the overlay.
+    await userEvent.click(screen.getByRole('tab', { name: 'Request: Data lineage' }));
     const box = await screen.findByRole('checkbox', { name: 'Track BK-83CE5F (PID) on the graph' });
     expect(box).toBeChecked();
     await userEvent.click(box);

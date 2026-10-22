@@ -36,15 +36,15 @@ type Section = (typeof SECTIONS)[number];
 const SECTION_LABEL: Record<Section, string> = {
   payload: 'Payload',
   classification: 'Classification',
-  labels: 'Label lineage',
+  labels: 'Data lineage',
 };
 
 /**
  * The flow detail panel's per-leg governance surface: **two levels of tabs**.
  * The outer level picks the leg (`Request` / `Response`); the inner level picks
  * which of that leg's three facts to show — **Payload** (the body itself),
- * **Classification** (the verdict), and **Label lineage** (where each
- * carried-in value came from).
+ * **Classification** (the verdict), and **Data lineage** (label lineage: where
+ * each carried-in value came from).
  *
  * Why tabs and not one expanded blob (the pre-#121 shape): the three facts are
  * read for different reasons and are rarely wanted together — a reader chasing a
@@ -61,7 +61,7 @@ const SECTION_LABEL: Record<Section, string> = {
  *     (ADR-0024) — so it rides on the *payload* read and selecting its tab must
  *     trigger that read.
  *   - The **Labels** beside the verdict (found here / carried in) and the
- *     **Label lineage** pane come from one read per *interaction*, made the
+ *     **Data lineage** pane come from one read per *interaction*, made the
  *     first time either pane opens and shared by both legs.
  *
  * `legs` carries only the legs that actually carried a payload — the panel's
@@ -153,10 +153,9 @@ function LegPanel({
   const { label, legType, hash, kind } = leg;
   const [section, setSection] = useState<Section>('payload');
   // The labels read (found here / carried in) is per INTERACTION and lazy: it
-  // fires the first time a leg's Classification or Label lineage pane opens and
-  // stays enabled
-  // after, so tabbing away and back does not flip it off and on. The other leg
-  // reads the same cache entry, enabled or not.
+  // fires the first time a leg's Classification or Data lineage pane opens and
+  // stays enabled after, so tabbing away and back does not flip it off and on.
+  // The other leg reads the same cache entry, enabled or not.
   const [labelsWanted, setLabelsWanted] = useState(false);
   const labelsQ = useLegLabels(traceId ?? '', interactionId, labelsWanted);
   // Only an answered read reaches the view: loading or failed is not "nothing
@@ -301,7 +300,7 @@ function LegPanel({
             />
           ))}
 
-        {/* Label lineage for THIS LEG: per carried-in value, where it
+        {/* Data lineage (label lineage) for THIS LEG: per carried-in value, where it
             was born, the hop it came from last, and on demand the full chains.
             Its own read (the same per-interaction labels read the
             Classification tab shares), so a failed or unanswered read says so
@@ -319,9 +318,9 @@ function LegPanel({
               interactionId={interactionId ?? undefined}
             />
           ) : labelsQ.isError ? (
-            <div style={{ color: 'var(--dg-color-error)', fontSize: '0.85rem' }}>Failed to load label lineage.</div>
+            <div style={{ color: 'var(--dg-color-error)', fontSize: '0.85rem' }}>Failed to load data lineage.</div>
           ) : (
-            <Spinner size="md" aria-label={`Loading ${label} label lineage`} />
+            <Spinner size="md" aria-label={`Loading ${label} data lineage`} />
           ))}
       </div>
     </>

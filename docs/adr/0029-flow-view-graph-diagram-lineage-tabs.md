@@ -154,7 +154,7 @@ migration path.
   apply to a single-valued two-character choice. It is recorded here as a known debt
   rather than left as an unexplained comment in the component.
   (2026-10-22: the per-leg Lineage section is removed; the third inner tab is the
-  label lineage view.)
+  label lineage view, titled Data lineage.)
 - **A jsdom `getBBox` stub returns.** ADR-0020 removed a `ResizeObserver` polyfill
   that existed solely so the graph could mount; `ui/src/test/setup.ts` now stubs
   `SVGElement.prototype.getBBox`, which jsdom does not implement at all, because

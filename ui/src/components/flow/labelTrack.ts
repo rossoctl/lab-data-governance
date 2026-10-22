@@ -2,7 +2,7 @@ import { createContext, useContext } from 'react';
 import type { TrackedValue } from '../../lib/labelTrack';
 
 /**
- * How the Label lineage tab's tick boxes reach the page that owns the graphs. The
+ * How the Data lineage tab's tick boxes reach the page that owns the graphs. The
  * page (`FlowTables` on the trace page, `RiskTraceDetailPage`) provides the set
  * of tracked values and the two moves; the tab, five components down, ticks and
  * unticks. `available` is false under the default (no provider: a page with no
