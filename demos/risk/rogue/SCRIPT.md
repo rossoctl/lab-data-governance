@@ -13,7 +13,7 @@ stated. Nothing here changes lineage or DG; the demo changes one env var on one 
 | the partner | `travel-partner` pod, an echo the tool addresses as `api.travel-partner.example:8000` — an external name to DG (internal = `*.svc`, `*.cluster.local`, bare service names, `host.containers.internal`, `host.docker.internal`) |
 | the switch | `ROSSOCTL_VARIANT` on `deploy/booking-agent`: unset = the stock booking agent (never calls the partner); `rogue`; `fixed` |
 | DG | this repo's `risk` branch with the round-2 fixes and the live tier (the dry run used a local integration of them), stock catalog (DG-001 `pii_to_untrusted_external`, DG-002 `phi_to_untrusted_external`, DG-004 `restricted_external_sharing`), the UI of the same build |
-| UI | `http://dg.localtest.me:8080/ui/risk` (dashboard) · `/ui/risk/traces/<id>` (risk view of one trace) · `/ui/traces` (trace list) · `/ui/traces/<id>/spans` (payloads) |
+| UI | `http://dg.localtest.me:8080/ui/risk` (dashboard) · `/ui/traces/<id>/graph?risk=1` (one trace with the risk layer on) · `/ui/traces` (trace list) · `/ui/traces/<id>/spans` (payloads) |
 | the turn | `one_turn.py <label>` (this directory) — one scripted "plan and book a trip to Tokyo" request sent from the demo-client pod with a fresh trace id, fresh dates; prints `trace <id> dates (…)` first and, after the turn, a JSON summary whose `"state": "input-required"` is the driver's normal end state (every turn ends there; it is not a failure) and whose `"answer"` is the reply. On camera pipe it through `grep -E '^trace|"answer"'`. A turn takes about a minute (45–80 s). |
 | the check | `analyze.py <label>` (this directory) — one row of 9 `|`-separated columns: label, trace id, create_booking statuses, whether notify_partner was called (`True`/`False`), the fields that reached the partner, the DG verdict on the partner interaction (`critical/block {DG-001,DG-004}` or `none/allow {}`), the driver's end state (`input-required`, always), seconds, and a partner-log line count that is always 0 here (the partner echo logs nothing; ignore). |
 
@@ -65,11 +65,11 @@ Screen, after the third reply plus ~1 min: reload `/ui/risk` →
 - Traces: 3 total, 0 risky · Monitored interactions: ~110–135 (the tile counts evaluated
   interactions), 0 risky · Rules triggered: 0 · Risk distribution: one grey bar "None: <n> (100%)" ·
   Top rules: "No rules triggered in this window" · Alerts: "No incidents in this window".
-- Open one trace: `/ui/risk/traces/<trace id of s1-1>` → the execution flow (demo-client →
+- Open one trace: `/ui/traces/<trace id of s1-1>/graph?risk=1` → the execution flow (demo-client →
   travel-advisor → research-agent / booking-agent, the six tools, create-booking → payment-agent, the
   model, and three services: minio, weather-service, the payment provider), every edge grey, most
   of them with tags (PI, PII, PCI, CREDENTIALS — the classifier sees personal data moving, and that is
-  fine inside; the handshake edges carry none), and "No policy events — No rule was triggered by any
+  fine inside; the handshake edges carry none), and "0 policy events — No rule was triggered by any
   interaction in this trace".
 
 Fallback: a turn that ends asking a question instead of booking (rare, the model's choice) is still a
@@ -103,22 +103,21 @@ Screen, ~1–2 min after the reply:
   2 critical · Risk distribution gains a red "Critical: 1" slice · Risk by category: access_violation
   1, data_exfiltration 2, pii_exposure 1 · Top rules lists `pii_to_untrusted_external` (DG-001) and
   `restricted_external_sharing` (DG-004) · Alerts: one row, the trace, critical, block.
-- Click the risky trace (or open `/ui/risk/traces/<trace id of the notifying turn>`): the same flow
+- Click the risky trace (or open `/ui/traces/<trace id of the notifying turn>/graph?risk=1`): the same flow
   as step 1 plus two new nodes, `notify-partner` and `api.travel-partner.example:8000`,
-  both outlined red, the edge between them a **red dashed arrow** labelled `PI, PII`. Under it,
-  "Policy events 1 of 1": Interaction `travel-advisor/notify-partner → api.travel-partner.example:8000`,
+  both outlined red, the arrows between them **red dashed** and labelled `PI, PII` (the call and its response; "Edges
+  per interaction" draws one). The risk bar
+  reads "1 policy event, 1 of 1", and the panel shows the policy event: Interaction `travel-advisor/notify-partner → api.travel-partner.example:8000`,
   Risk level **critical**, Enforcement **block**, Rules `pii_to_untrusted_external,
   restricted_external_sharing`, Reason "PII detected in payload sent to UNTRUSTED_EXTERNAL
   destination. Data exfiltration risk. RESTRICTED document detected … Sharing prohibited." (both
   rules' explanations back to back), Destination `external, UNTRUSTED_EXTERNAL, external,
   UNTRUSTED_EXTERNAL` (the panel lists each rule's destination, so it reads twice), Regulatory tags
   `PI, PII`, Classification `RESTRICTED`, Allowed actions `redact`.
-- Clicking any edge (once PR #296, the fix for #295, merges):
-  an "Interaction" card under the graph with the caller → callee, per-leg level and tags (`RESTRICTED
-  · PI, PII` on the red edge's request leg; `INTERNAL · PCI, PI`-style on the grey ones), Risk
-  (level + enforcement, or "not yet computed"), and "Open in trace view", which lands on
-  `/ui/traces/<id>/flow?iid=<interaction>` with that interaction's legs and payloads open. Until it
-  merges, an edge click only moves the "Policy events" pager (#295).
+- Clicking any edge: the detail panel with an "Interaction" card, the caller → callee, per-leg level
+  and tags (`RESTRICTED · PI, PII` on the red edge's request leg; `INTERNAL · PCI, PI`-style on the
+  grey ones) and Risk (level + enforcement, or "not yet computed"), beside that interaction's legs and
+  payloads.
 - The rule itself: `/ui/risk/rules/DG-001` (name, categories data_exfiltration / pii_exposure, the
   four conditions, sources OWASP Top 10 for LLM Applications 2025 LLM02 and NVIDIA Safety & Security
   Framework 2025 §2.1).
@@ -169,9 +168,9 @@ python3 one_turn.py s4-1 | grep -E '^trace|"answer"'           # the same reques
 python3 analyze.py s4-1                   # expect columns 4–6: True | dates,note | none/allow {}
 ```
 
-Screen, ~30 s after the reply: `/ui/risk/traces/<trace id of s4-1>` → the same flow as step 2,
+Screen, ~30 s after the reply: `/ui/traces/<trace id of s4-1>/graph?risk=1` → the same flow as step 2,
 `notify-partner → api.travel-partner.example:8000` present but grey, labelled `PI` (dates are
-personal information, not identifying), "No policy events". On `/ui/risk` Traces 5 total, still 1
+personal information, not identifying), "0 policy events". On `/ui/risk` Traces 5 total, still 1
 risky; Rules triggered still 2; the new trace is counted as not risky.
 
 Say: "Same flow, same partner, nothing identifying crossed; the rule did not fire." If asked what
@@ -201,7 +200,7 @@ Two windows, side by side or alternated with a screen-recorder that captures the
    with `booking_agent.py` open in a second tab of the same window for step 3.
 2. **Browser** (right): any browser; the DG UI is plain localhost with no login. One tab on `http://dg.localtest.me:8080/ui/risk`; open
    trace pages by clicking the trace in "Alerts" or by pasting the id into
-   `/ui/risk/traces/<id>`. Window width ≥ 1400 px so the graph and the policy event fit.
+   `/ui/traces/<id>/graph?risk=1`. Window width ≥ 1400 px so the graph and the policy event fit.
 
 Order and pauses:
 - 0:00 dashboard empty (or three allows) — say what the travel advisor is.
@@ -213,7 +212,7 @@ Order and pauses:
   pause on the Reason line, click the rule name.
 - Step 3: the two paragraphs side by side, then the flip command. Pause on the sentence "a
   notification with just these two fields is complete and correct".
-- Step 4: run, then the trace page: pause on the grey partner edge and "No policy events"; back to
+- Step 4: run, then the trace page: pause on the grey partner edge and "0 policy events"; back to
   the dashboard: still one critical, the new trace is not risky.
 - Close: "After the camera" command; say the whole thing is one env var on one agent.
 

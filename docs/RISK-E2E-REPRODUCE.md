@@ -106,7 +106,7 @@ APP=travel_advisor bash deploy.sh          # naked deploy — do NOT --with-tele
 - `http://dg.localtest.me:8080/ui/traces/<trace-id>/flow` — the interaction tree,
   with `demo-client → psp-mock:9091` and `demo-client → api.travel-partner.example:9091`.
 - `http://dg.localtest.me:8080/ui/risk` — the trace as the top alert, critical/block.
-- `http://dg.localtest.me:8080/ui/risk/traces/<trace-id>` — the Alert Execution view
+- `http://dg.localtest.me:8080/ui/traces/<trace-id>/graph?risk=1` — the trace with the risk layer on
   (#198): the external probe as the red violation edge + the policy-decision stepper.
 - In SQL: both probe interactions' `interaction_risk_records` carry an identical
   request classification (PCI/PI/PII, RESTRICTED, identity bundle); the external one
