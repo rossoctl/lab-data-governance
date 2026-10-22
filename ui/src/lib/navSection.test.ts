@@ -7,7 +7,7 @@ describe('navSectionFor', () => {
   });
 
   it('treats any /risk/... path as the risk section', () => {
-    expect(navSectionFor('/risk/traces/abc')).toBe('risk');
+    expect(navSectionFor('/risk/rules/r1')).toBe('risk');
     expect(navSectionFor('/risk/rules')).toBe('risk');
   });
 

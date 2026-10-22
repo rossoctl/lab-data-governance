@@ -69,7 +69,7 @@ describe('AlertsCard', () => {
       'Trace: trace-with-a-very-long-identifier',
     );
     const link = screen.getByRole('link', { name: /^open$/i });
-    expect(link).toHaveAttribute('href', '/risk/traces/trace-with-a-very-long-identifier');
+    expect(link).toHaveAttribute('href', '/traces/trace-with-a-very-long-identifier/graph?risk=1');
   });
 
   it('has no Open link while a group is collapsed', () => {
@@ -97,7 +97,7 @@ describe('AlertsCard', () => {
               <AlertsCard items={[record()]} hasNextPage={false} isFetchingNextPage={false} onNextPage={vi.fn()} />
             }
           />
-          <Route path="/risk/traces/:traceId" element={<div>Trace detail page</div>} />
+          <Route path="/traces/:traceId/graph" element={<div>Trace detail page</div>} />
         </Routes>
       </MemoryRouter>,
     );
@@ -115,7 +115,7 @@ describe('AlertsCard', () => {
               <AlertsCard items={[record()]} hasNextPage={false} isFetchingNextPage={false} onNextPage={vi.fn()} />
             }
           />
-          <Route path="/risk/traces/:traceId" element={<div>Trace detail page</div>} />
+          <Route path="/traces/:traceId/graph" element={<div>Trace detail page</div>} />
         </Routes>
       </MemoryRouter>,
     );

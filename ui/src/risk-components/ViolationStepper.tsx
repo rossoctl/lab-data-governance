@@ -12,13 +12,12 @@ interface ViolationStepperProps {
 
 /**
  * "N of M" plus Previous/Next controls for stepping through a trace's policy
- * violations (issue #170's AC #3). Extracted from `RiskTraceDetailPage` so
- * the lockstep between this control, the URL, the policy panel and the
- * diagrams' selection has one control surface to drive in tests, rather than
- * three call sites each re-deriving disabled state.
+ * violations (issue #170's AC #3), on the risk layer's bar. One control
+ * surface for the lockstep between it, the URL, the policy panel and the
+ * diagrams' selection, so tests drive one thing.
  *
- * Disables at the ends rather than wrapping — see `stepViolation`'s doc
- * comment for why a wrapping Next would make "N of N" ambiguous. This
+ * Never disabled: stepping wraps at the ends (see `stepViolation`), so even
+ * "1 of 1" steps — onto the event, reopening a closed panel there. This
  * component holds no state of its own: `position` is always derived from
  * `?violation=`, never local state (per the plan's "Selection derives from
  * `?violation`, never component state").
@@ -30,7 +29,6 @@ export function ViolationStepper({ position, count, onStep }: ViolationStepperPr
         <Button
           variant="secondary"
           icon={<AngleLeftIcon />}
-          isAriaDisabled={position <= 1}
           onClick={() => onStep(-1)}
         >
           Previous
@@ -44,7 +42,6 @@ export function ViolationStepper({ position, count, onStep }: ViolationStepperPr
           variant="secondary"
           icon={<AngleRightIcon />}
           iconPosition="end"
-          isAriaDisabled={position >= count}
           onClick={() => onStep(1)}
         >
           Next

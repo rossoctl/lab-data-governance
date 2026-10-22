@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { useLegLabels } from './hooks';
 import { LIVE_POLL_MS, TRACE_LIVE_KEYS, useEntitiesAndInteractions, useTraceLive } from './live';
 
-/** A page's own live keys, as the risk trace page passes them: module-level, so stable. */
+/** A page's own live keys, as the trace page passes them with the risk layer on: module-level, so stable. */
 const otherPageKeys = (tid: string) => [['risk', 'traces', tid], ['entities', tid]];
 
 /**

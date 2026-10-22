@@ -61,7 +61,7 @@ export function trackableValues(interactionId: string, legs: Iterable<LegLabels>
 /**
  * Whether a labelled value carries a label the fired rules name: a regulatory tag a
  * rule's `data_items` asks for, or the classification level one asks for. The
- * decision-derived default selection on the risk page: the reader
+ * decision-derived default selection with the risk layer on: the reader
  * starts from the values whose labels the rules name and unticks or adds. A rule
  * with no `data_items` criteria names nothing (it would select everything).
  */
@@ -79,8 +79,7 @@ export function namedByRules(label: Pick<LegLabel, 'regulatory_tags' | 'sensitiv
  * The right-click's default on a leg: which of its carried-in values start out
  * tracked. With fired rules, the values whose labels those rules name (the
  * decision-derived default); with none, every carried-in value of
- * the leg. One function for the risk page and the trace page's risk layer, so
- * the two defaults cannot drift.
+ * the leg.
  */
 export function defaultTrackValues(
   interactionId: string,

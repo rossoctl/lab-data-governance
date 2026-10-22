@@ -56,6 +56,7 @@ import { RiskBadge } from '../../../risk-components/RiskBadge';
 import { EnforcementChip } from '../../../risk-components/EnforcementChip';
 import { CursorPagination } from '../../../risk-components/CursorPagination';
 import { groupTraceRisksByWorkflow } from '../../../lib/riskAlertGroups';
+import { traceRiskPath } from '../../../lib/riskViolation';
 import type { TraceRiskRecord } from '../../../risk-api/types';
 
 interface AlertsCardProps {
@@ -108,7 +109,7 @@ export function AlertsCard({ items, hasNextPage, isFetchingNextPage, onNextPage 
                       <Tr
                         data-testid={`alert-row-${group.traceId}`}
                         isClickable
-                        onRowClick={() => navigate(`/risk/traces/${group.traceId}`)}
+                        onRowClick={() => navigate(traceRiskPath(group.traceId))}
                       >
                         <Td dataLabel="Expand">
                           <Button
@@ -169,7 +170,7 @@ export function AlertsCard({ items, hasNextPage, isFetchingNextPage, onNextPage 
                             </div>
                             <div className="pf-v5-u-mt-sm">
                               <Link
-                                to={`/risk/traces/${group.traceId}`}
+                                to={traceRiskPath(group.traceId)}
                                 onClick={(event) => event.stopPropagation()}
                               >
                                 Open

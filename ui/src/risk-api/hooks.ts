@@ -188,8 +188,8 @@ export function useRuleCategories(): UseQueryResult<RuleCategoriesResponse> {
  *
  * A 404 (no risk record for this trace yet) settles as `null`, not an error:
  * on a live page the record can still land, and an error with no data would
- * go back to `pending` (and be retried) on every re-read, so the page would
- * flip between its spinner and "Trace not found" until it did.
+ * go back to `pending` (and be retried) on every re-read, so the risk bar would
+ * flip between its spinner and "The risk read failed." until it did.
  */
 export function useTraceRiskDetail(traceId: string | undefined): UseQueryResult<TraceRiskDetailResponse | null> {
   return useQuery({
@@ -235,7 +235,7 @@ export function useTraceAlerts(traceId: string | undefined): UseQueryResult<Aler
 
 /**
  * The key prefixes of ONE trace's risk reads — {@link useTraceRiskDetail}'s and
- * {@link useTraceAlerts}' — which the risk trace page invalidates when that
+ * {@link useTraceAlerts}' — which the trace page with the risk layer on invalidates when that
  * trace's version token moves (`useTraceLive`, ADR-0034). Scoped so nothing
  * else matches: `riskQueryKey('traces', traceId)` parts from the dashboard's
  * `riskQueryKey('traces', { window })` at its third element, and the alerts

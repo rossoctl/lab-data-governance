@@ -14,10 +14,10 @@
  * ONE HOOK, ONE OWNER. `useTraceLive` is mounted once by the page showing the
  * trace; the views underneath keep reading through their existing query hooks
  * and know nothing about liveness. That is the whole seam: liveness is a
- * property of the page being open, not of any one tab. Two pages own it: the
- * trace page (the default keys, {@link traceLiveKeys}) and the risk trace page,
- * whose reads — the trace's risk detail and alerts — are whole-trace reads too
- * and are passed as its own {@link LiveKeys}. Same stream, same token.
+ * property of the page being open, not of any one tab. The trace page owns it
+ * (the default keys, {@link traceLiveKeys}); with the risk layer on it adds the
+ * trace's risk detail and alerts — whole-trace reads too — through its own
+ * {@link LiveKeys}. Same stream, same token.
  *
  * TWO MODES, decided by the browser's `EventSource`:
  *

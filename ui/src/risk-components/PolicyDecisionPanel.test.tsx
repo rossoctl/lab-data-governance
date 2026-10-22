@@ -370,7 +370,7 @@ describe('PolicyDecisionPanel — values on this payload', () => {
         ruleIndex={RULES}
         entities={ENTITIES}
       />,
-      { route: '/risk/traces/t1?violation=2' },
+      { route: '/traces/t1/graph?risk=1&violation=2' },
     );
     expect(screen.queryByTestId('values-on-payload')).toBeNull();
     expect(labelsCalls()).toHaveLength(0);
@@ -390,9 +390,9 @@ describe('PolicyDecisionPanel — values on this payload', () => {
     await waitFor(() => expect(within(panel).getByRole('heading', { name: 'Request #83053' })).toBeInTheDocument());
     const [row] = within(panel).getAllByTestId('lineage-value');
     expect(row).toHaveTextContent('BK-83CE5F');
-    expect(within(row).getByRole('link', { name: /#80565/ })).toHaveAttribute('href', '/risk/traces/t1?violation=2&interaction=i-cb');
+    expect(within(row).getByRole('link', { name: /#80565/ })).toHaveAttribute('href', '/traces/t1/graph?risk=1&violation=2&iid=i-cb');
     // A hop selects its interaction on this page, the other params kept.
-    expect(within(row).getByRole('link', { name: /#82049/ })).toHaveAttribute('href', '/risk/traces/t1?violation=2&interaction=i-np');
+    expect(within(row).getByRole('link', { name: /#82049/ })).toHaveAttribute('href', '/traces/t1/graph?risk=1&violation=2&iid=i-np');
     await userEvent.click(within(row).getByRole('button', { name: 'Show chain' }));
     const lineage = within(panel).getByTestId('label-lineage');
     expect(lineage).toHaveTextContent('origin #80565 booking-agent → create-booking response');

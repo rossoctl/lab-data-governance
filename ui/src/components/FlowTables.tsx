@@ -1,6 +1,9 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
+  Flex,
+  FlexItem,
+  Label,
   Title,
   Spinner,
   EmptyState,
@@ -111,8 +114,8 @@ const NO_FOREST: readonly ForestInteraction[] = [];
 /**
  * A forest stand-in for an interaction the risk read has no record of yet (or
  * for a trace with no risk record at all): `InteractionPanel` then says "not
- * classified" and "not yet computed", the same words the risk page uses for an
- * interaction whose `risk` is null, rather than the layer saying nothing.
+ * classified" and "not yet computed", the same words it uses for an interaction
+ * whose `risk` is null, rather than the layer saying nothing.
  */
 function forestStandIn(ix: Interaction, traceId: string): ForestInteraction {
   return {
@@ -230,12 +233,15 @@ export interface FlowTablesProps {
    * risk read (`useTraceRiskDetail`, the forest `/risk/traces/{id}` serves) and
    * the rule catalog read, and:
    *
+   * - puts the risk bar above the views: the policy-event count with the stepper
+   *   (`ViolationStepper`), or the words for a trace with none, or with no risk
+   *   record yet — on screen whatever the panel shows, so a closed panel never
+   *   hides where the reader is;
    * - colours every view's edges by risk level (`riskLevelByInteraction`), the
    *   execution flow also showing the classification tags
-   *   (`classificationByInteraction`), as the risk trace page does;
-   * - adds the selected interaction's risk to the detail panel (the same
-   *   `InteractionPanel` the risk page renders) and, when it triggered rules, the
-   *   stepper and the decision card (`ViolationStepper`, `PolicyDecisionPanel`);
+   *   (`classificationByInteraction`);
+   * - adds the selected interaction's risk to the detail panel (`InteractionPanel`)
+   *   and, when it triggered rules, the decision card (`PolicyDecisionPanel`);
    * - makes the right-click's tracking default the decision-derived one (the
    *   carried-in values whose labels the fired rules name — `defaultTrackValues`).
    *
@@ -243,7 +249,7 @@ export interface FlowTablesProps {
    * prop, like every other URL-backed choice here: the parent mirrors it as
    * `?risk=1` (absent = off).
    *
-   * THE `?violation=` / SELECTION CONTRACT, the risk page's reproduced with `?iid=`
+   * THE `?violation=` / SELECTION CONTRACT, with `?iid=`
    * as the selection. The open policy event is a 1-based position in
    * `violationsOf(forest)` (`violation`, the raw `?violation=`; 1 when absent). A
    * selected interaction that IS a policy event wins over the param (a cold `?iid=`
@@ -253,11 +259,13 @@ export interface FlowTablesProps {
    * not arrived yet shows event 1 for now and lands on N when N arrives. A click on
    * a policy event's edge writes `?violation=` and drops `?iid=` (its interaction is
    * the default); a click on any other edge writes `?iid=` and pins the open event
-   * into `?violation=`; Previous/Next write `?violation=` and drop `?iid=`. A live
+   * into `?violation=`; Previous/Next write `?violation=`, drop `?iid=` and move the
+   * selection to the stepped-to event, whatever was selected before. A live
    * re-read can shift positions (an earlier interaction gains its first rule): the
    * event shown is held by id and `?violation=` is rewritten to its new position
    * (`onViolationChange`, replace, before paint). Closing the panel dismisses the
-   * default for that event; stepping to another reopens it.
+   * default for that event; a step reopens it (stepping wraps, so "1 of 1" steps
+   * too). Switching the layer off keeps the open interaction, written as `?iid=`.
    */
   risk?: boolean;
   /** The raw `?violation=` — the open policy event's 1-based position, default 1 when absent. The parent owns the param. */
@@ -267,7 +275,7 @@ export interface FlowTablesProps {
   /**
    * The two graph views' edges: one per LEG (the default: request and response
    * arrows, which label lineage needs — a value born on a response leg is lit
-   * there) or one per INTERACTION (its request leg, as the risk trace page draws).
+   * there) or one per INTERACTION (its request leg: one arrow per call).
    * A controlled prop mirrored as `?edges=interaction` by the
    * parent (absent = per leg). With edges per interaction a lit response leg
    * lights its interaction's one arrow, so the overlay still shows the route.
@@ -408,7 +416,7 @@ export function FlowTables({
    * the picker there so the reader can untick or add. The default is every
    * carried-in value of the leg — or, with the risk layer on and the interaction
    * having fired rules, the values whose labels those rules name
-   * (`defaultTrackValues`, the risk page's default). Reads the same labels
+   * (`defaultTrackValues`). Reads the same labels
    * resource the Data lineage tab reads.
    */
   function trackDefaultOf(interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) {
@@ -457,6 +465,10 @@ export function FlowTables({
   const dismissed = useRef(false);
   const pendingViolation = useRef<number | null>(null);
   const userClickInFlight = useRef(0);
+  // A step asked for the stepped-to event: the default then moves the selection
+  // onto it even from an entity or a plain interaction (the bar's stepper is on
+  // screen whatever is selected). Cleared once the default has acted.
+  const stepped = useRef(false);
 
   // The selected id per table kind. Only the latest-selected row (entity or
   // interaction) is highlighted; `selection` already tracks that single row
@@ -467,7 +479,7 @@ export function FlowTables({
   // The open policy event (see `FlowTablesProps.risk`): the selected interaction's
   // position when it is one, else the param's. `fellBack` marks a `?violation=N`
   // whose event has not arrived (shown as 1 for now) — not the reader's pick, so
-  // it is not held across a re-read. As on the risk page, only a selection that
+  // it is not held across a re-read. Only a selection that
   // IS a policy event exempts the param, and the default selection (the event
   // the param itself seeded, `defaultSelectedId`) is not a pick: a plain `?iid=`
   // or an `?eid=` leaves an out-of-range param a fallback, so it lands on N.
@@ -539,12 +551,6 @@ export function FlowTables({
   const isLoading = interactionsQ.isLoading || entitiesQ.isLoading;
   const isEmpty = interactions.length === 0 && entities.length === 0;
 
-  /**
-   * `silent` (the risk layer's default selection and its steps): select without
-   * writing the URL — the selection is the open policy event's, which `?violation=`
-   * already names, so the panel opens on it the way the risk page's does, with
-   * no `?iid=` to hold it against the param.
-   */
   /**
    * `silent`: no URL write (the URL restore and the default). `fromDefault`: the
    * default's own select, the only one a dismissal made meanwhile may drop:
@@ -775,21 +781,42 @@ export function FlowTables({
   const shownViolation = useRef<{ byId: ReadonlyMap<string, number>; id: string | null } | null>(null);
   // THE LAYER TOGGLED, either way: a dismissal and a pending hold belong to the
   // layer state that just ended (a dismissal made with the layer off must not
-  // keep the default from opening when it is switched on). Off, a selection the
-  // URL does not name — the default, or a policy event picked by its edge, which
-  // `?violation=` named and the toggle just deleted — goes with the layer, so the
-  // page is as it was and the URL still tells the truth.
-  // `initialSelection` is read through a ref so the effect runs on the toggle only.
+  // keep the default from opening when it is switched on). Off, the open
+  // interaction stays open, the panel losing only its risk cards, whatever opened
+  // it (a click, a step, the default): when the URL names no selection, `?iid=`
+  // names it now, the `?violation=` that may have named it having just gone with
+  // the layer. A URL that does name one (a Back onto an entry with its own `?iid=`)
+  // is left to the restore below, which opens that entry's selection.
+  // A toggle also supersedes a click or a default still fetching its evidence, as
+  // a step does: landing later, a click would write the URL as it stood at the
+  // click (switching the layer back) and the default would open the panel the
+  // toggle just left. A URL restore it superseded is re-armed (`restoreTick`), so a
+  // `?iid=`/`?eid=` still loading lands all the same; that also makes the run on
+  // mount harmless. `initialSelection` and `selection` are read through refs so the
+  // effect runs on the toggle only.
   const urlSelectionRef = useRef(initialSelection);
   urlSelectionRef.current = initialSelection;
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  // Bumped by every step, so the default below re-runs even when the step leaves
+  // the URL as it was (a step onto "1 of 1" writes the absent default position).
+  const [stepTick, setStepTick] = useState(0);
+  const [restoreTick, setRestoreTick] = useState(0);
   useEffect(() => {
     dismissed.current = false;
     pendingViolation.current = null;
+    stepped.current = false;
+    clickSeq.current += 1;
+    userClickInFlight.current = 0;
+    appliedInitial.current = null;
+    setRestoreTick((t) => t + 1);
     if (risk) return;
     defaultSelectedId.current = null;
-    if (!urlSelectionRef.current?.iid) {
-      setSelection((prev) => (prev?.kind === 'interaction' ? null : prev));
+    const open = selectionRef.current;
+    if (open?.kind === 'interaction' && !urlSelectionRef.current?.iid && !urlSelectionRef.current?.eid) {
+      onSelectionChange?.({ iid: open.id });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [risk]);
   useLayoutEffect(() => {
     if (!risk) {
@@ -815,25 +842,32 @@ export function FlowTables({
     const index = pendingViolation.current ?? paramViolationIndex ?? 1;
     const target = violations[index - 1];
     if (!target || dismissed.current) return;
-    if (selection?.kind === 'interaction' && selection.id === target.interaction_id) return;
+    if (selection?.kind === 'interaction' && selection.id === target.interaction_id) {
+      stepped.current = false;
+      return;
+    }
     // Only nothing, or a policy event (a default or a stepped-to one), is moved
     // onto the open event: an entity or a plain interaction the reader just picked
-    // (the URL write lands a render later) is left alone — and so is a click still
-    // fetching its evidence: the default never supersedes a reader's pick.
-    if (selection != null && !(selection.kind === 'interaction' && violationIndexByInteractionId.has(selection.id))) return;
+    // (the URL write lands a render later) is left alone unless a step asked for
+    // the event — and so is a click still fetching its evidence: the default never
+    // supersedes a reader's pick.
+    const onEvent = selection?.kind === 'interaction' && violationIndexByInteractionId.has(selection.id);
+    if (selection != null && !onEvent && !stepped.current) return;
     if (userClickInFlight.current !== 0) return;
     const ix = interactions.find((i) => i.id === target.interaction_id);
     if (!ix) return; // the risk read named an interaction the flow read has not (yet)
+    stepped.current = false;
     defaultSelectedId.current = ix.id;
     void selectInteraction(ix, { silent: true, fromDefault: true });
     // `selectInteraction` closes over the current reads; keyed on what decides the target.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [risk, urlHasSelection, violations, paramViolationIndex, violationIndexByInteractionId, interactions, selection]);
+  }, [risk, urlHasSelection, violations, paramViolationIndex, violationIndexByInteractionId, interactions, selection, stepTick]);
 
   function handleStep(delta: -1 | 1) {
     if (violationIndex == null) return;
     dismissed.current = false;
     pendingViolation.current = null;
+    stepped.current = true;
     // An explicit step beats a click still fetching its evidence: the click is
     // superseded (its seq is stale) and no longer blocks the default's move.
     // Only then: a bump on every step would also drop the step's own silent
@@ -842,13 +876,15 @@ export function FlowTables({
       clickSeq.current += 1;
       userClickInFlight.current = 0;
     }
+    setStepTick((t) => t + 1);
     onSelectionChange?.({ violation: stepViolation(violationIndex, delta, violations.length) });
   }
 
   // URL → flow: restore the selection named by ?iid / ?eid once the tables have
   // loaded. Fires once per distinct target id (tracked in appliedInitial) so it
   // seeds the deep-link/reload selection without fighting later user clicks or
-  // re-firing on every render. A stale id matching no loaded row is a no-op.
+  // re-firing on every render (a Risk toggle re-arms it: see `restoreTick`). A stale
+  // id matching no loaded row is a no-op.
   const appliedInitial = useRef<string | null>(null);
   useEffect(() => {
     const target = initialSelection?.iid
@@ -890,7 +926,7 @@ export function FlowTables({
     // (they close over traceId + the query data); we key the effect on the ids,
     // the loaded rows, and the current selection so it runs when any changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialSelection?.iid, initialSelection?.eid, interactions, entities, selection]);
+  }, [initialSelection?.iid, initialSelection?.eid, interactions, entities, selection, restoreTick]);
 
   if (isLoading) return <Spinner aria-label="Loading interactions and entities" />;
   if (isEmpty) {
@@ -933,9 +969,46 @@ export function FlowTables({
           the float instead of being covered. Closed → no class, tables reclaim
           full width. */}
       <div className={selection ? 'dg-detail-gutter' : undefined}>
-        {/* THE RISK LAYER'S ALERTS, above whichever presentation is active — the
-            same section the risk trace page renders. Inside the gutter div, so it
-            shrinks out from under the floating detail panel like the views do. */}
+        {/* THE RISK BAR AND THE ALERTS, above whichever presentation is active.
+            Inside the gutter div, so they shrink out from under the floating detail
+            panel like the views do. The bar says how many policy events the trace
+            has, with the stepper, or why there are none, or that the risk read
+            failed — so a failure is never read as a trace with no risk. */}
+        {risk && (
+          <Flex
+            className="pf-v5-u-mb-sm"
+            alignItems={{ default: 'alignItemsCenter' }}
+            spaceItems={{ default: 'spaceItemsMd' }}
+            data-testid="risk-bar"
+          >
+            {/* `isPending`, not `isLoading`: a read paused offline has no data and
+                is not fetching, and must not fall through to "0 policy events". */}
+            {riskDetail.isPending ? (
+              <Spinner size="md" aria-label="Loading risk" />
+            ) : riskDetail.isLoadingError ? (
+              <FlexItem>The risk read failed.</FlexItem>
+            ) : riskDetail.data === null ? (
+              <FlexItem>No risk record for this trace yet.</FlexItem>
+            ) : (
+              <>
+                <FlexItem>
+                  <Label isCompact>
+                    {violations.length} policy event{violations.length === 1 ? '' : 's'}
+                  </Label>
+                </FlexItem>
+                {violations.length === 0 ? (
+                  <FlexItem>No rule was triggered by any interaction in this trace.</FlexItem>
+                ) : (
+                  violationIndex != null && (
+                    <FlexItem>
+                      <ViolationStepper position={violationIndex} count={violations.length} onStep={handleStep} />
+                    </FlexItem>
+                  )
+                )}
+              </>
+            )}
+          </Flex>
+        )}
         {risk && <TraceAlertsSection alerts={alerts} />}
         {/* THE ENTITIES TABLE, ON THE TABLES VIEW ONLY.
             It used to render on all five presentations, on the reasoning that the
@@ -1160,8 +1233,8 @@ export function FlowTables({
               edgesPerInteraction={edgesPerInteraction}
               // The risk layer: edge colours by risk level and the classification
               // tags in the edges' tag slot, both `undefined` with the layer off so
-              // this view is byte-for-byte as before then. The seams are the risk
-              // page's (`EntityGraphProps.riskLevelByInteraction`).
+              // this view is byte-for-byte as before then
+              // (`EntityGraphProps.riskLevelByInteraction`).
               riskLevelByInteraction={riskColours}
               classificationByInteraction={classifications}
               // The graph's EDGES are the interaction click target this tab used to
@@ -1252,13 +1325,11 @@ export function FlowTables({
           onNavigateToSpan={onNavigateToSpan}
           layer={
             risk && selection.kind === 'interaction' ? (
-              /* THE RISK LAYER IN THE PANEL: the same cards the risk trace page
-                 renders, never copies. The interaction's risk for ANY selected
+              /* THE RISK LAYER IN THE PANEL: the interaction's risk for ANY selected
                  interaction (a stand-in with `risk: null` for one the risk read has
                  no record of, so it reads "not yet computed"); for a policy event,
-                 the stepper and the decision card, whose hop links select by `?iid=`
-                 here. The stepper is in the panel because the card is: the event is
-                 the selection. */
+                 the decision card, whose hop links select by `?iid=`. The stepper is
+                 on the risk bar above the views. */
               <div className="dg-detail-card dg-risk-layer" data-testid="risk-layer">
                 {riskDetail.isLoading ? (
                   <Spinner size="md" aria-label="Loading risk" />
@@ -1270,21 +1341,11 @@ export function FlowTables({
                     const record =
                       forest.find((i) => i.interaction_id === selection.id) ??
                       (selectedIx ? forestStandIn(selectedIx, traceId) : null);
-                    return record ? <InteractionPanel interaction={record} showTraceLink={false} /> : null;
+                    return record ? <InteractionPanel interaction={record} /> : null;
                   })()
                 )}
-                {openEvent && selectedViolationIndex != null && violationIndex != null && (
-                  <>
-                    <div style={{ marginTop: '0.75rem' }}>
-                      <ViolationStepper position={violationIndex} count={violations.length} onStep={handleStep} />
-                    </div>
-                    <PolicyDecisionPanel
-                      violation={openEvent}
-                      ruleIndex={catalog.data}
-                      entities={entities}
-                      selectionParam="iid"
-                    />
-                  </>
+                {openEvent && selectedViolationIndex != null && (
+                  <PolicyDecisionPanel violation={openEvent} ruleIndex={catalog.data} entities={entities} />
                 )}
               </div>
             ) : undefined

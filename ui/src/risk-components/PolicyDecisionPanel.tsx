@@ -65,7 +65,7 @@ function entityKindsOf(violation: ForestInteraction, entities: readonly Entity[]
 }
 
 /**
- * The panel for one **policy event** (issue #170's Alert Execution view): a
+ * The panel for one **policy event** (issue #170): a
  * `ForestInteraction` whose `risk.triggered_rule_ids` is non-empty (see
  * `lib/riskForestAdapter.ts`'s `violationsOf`). Read-only, no mutation —
  * this is a step-through disclosure of a decision the policy engine already
@@ -87,28 +87,18 @@ function entityKindsOf(violation: ForestInteraction, entities: readonly Entity[]
  * `entities` is additional to the plan's original `{violation, ruleIndex}`
  * signature: the "Entity types" row needs the caller/callee `kind`, which —
  * like every other participant label in this view — is not on the risk
- * record at all (`riskForestAdapter.ts`'s "NO ENTITY METADATA" gap) and
- * comes from the same `useEntities`-backed entity list the diagrams already
- * consume. Optional because a degraded (or still-loading) entities read must
- * not block the panel — `entityKindsOf` falls back to `'unknown'` per id,
- * the same convention `toFlowEntities` uses for the diagrams.
+ * record at all (`riskForestAdapter.ts`'s header) and comes from the entity
+ * list the flow views already read. Optional because a degraded (or still-loading) entities read must
+ * not block the panel — `entityKindsOf` falls back to `'unknown'` per id.
  */
 export function PolicyDecisionPanel({
   violation,
   ruleIndex,
   entities,
-  selectionParam = 'interaction',
 }: {
   violation: ForestInteraction;
   ruleIndex: ReadonlyMap<string, RuleListItem> | undefined;
   entities?: readonly Entity[];
-  /**
-   * The URL param a hop link in the values panel writes to select its
-   * interaction on the page this card is on: `interaction` on the risk trace
-   * page, `iid` on the trace page (its risk layer). The card is otherwise the
-   * same on both.
-   */
-  selectionParam?: 'interaction' | 'iid';
 }) {
   const risk = violation.risk;
   // The values panel opens from the Carried in row and reads the labels then,
@@ -225,7 +215,6 @@ export function PolicyDecisionPanel({
             traceId={violation.trace_id}
             interactionId={violation.interaction_id}
             rules={rules}
-            selectionParam={selectionParam}
           />
         )}
       </CardBody>
@@ -257,19 +246,17 @@ function destinationCriteria(rule: RuleListItem): string {
  * same view the trace page's Data lineage tab shows), under the fired rules'
  * criteria. The reader sees which value carries the labels a rule names; nothing
  * here says a value caused the decision — the engine records no such thing.
- * A hop links to its interaction on this page (`?interaction=`); a hop in another
+ * A hop links to its interaction on this page (`?iid=`); a hop in another
  * trace goes to that trace's flow view.
  */
 function ValuesOnPayload({
   traceId,
   interactionId,
   rules,
-  selectionParam,
 }: {
   traceId: string;
   interactionId: string;
   rules: RuleListItem[];
-  selectionParam: 'interaction' | 'iid';
 }) {
   const labelsQ = useLegLabels(traceId, interactionId);
   const [params] = useSearchParams();
@@ -277,7 +264,7 @@ function ValuesOnPayload({
   const links: HopLinks = {
     sameTrace: (hop: LineageHop): To => {
       const next = new URLSearchParams(params);
-      next.set(selectionParam, hop.interaction_id);
+      next.set('iid', hop.interaction_id);
       return { search: next.toString() };
     },
   };

@@ -270,8 +270,7 @@ export interface FlatRow {
  */
 /**
  * The interactions with their request leg only, for the graph views' "edges per
- * interaction" mode: one arrow per call, as the risk trace page
- * draws, instead of one per leg. `deriveGraph` already draws one edge for a
+ * interaction" mode: one arrow per call instead of one per leg. `deriveGraph` already draws one edge for a
  * request-only interaction (the path a call whose response has not arrived
  * takes), so nothing in `lib/graph.ts` changes. The rows and the sequence
  * diagram are per leg by nature and are not affected.
