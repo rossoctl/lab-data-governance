@@ -16,9 +16,8 @@ import type { LineageStatus } from '../../types';
  * Only `partial` warns about a truncation. `complete` needs no banner (the
  * absence of a warning is the "no truncation" statement, and a permanent green
  * box trains the reader to stop reading the strip). `null` — not yet derived —
- * deliberately says nothing either: there is no established truncation to report,
- * and the per-payload blocks already state "lineage not yet computed" for that
- * window. Claiming a truncation nobody has established would make the banner
+ * deliberately says nothing either: there is no established truncation to report.
+ * Claiming a truncation nobody has established would make the banner
  * noise, which is how a real one gets ignored.
  *
  * `isError` and `isLoading` are the two exceptions to that silence, and neither is
@@ -81,7 +80,7 @@ export function LineageCoverageAlert({
         title="Data lineage coverage for this trace is unknown"
         // Same assertive upgrade as the truncation warning below: a reader must
         // learn that the coverage claim is missing before they act on whatever
-        // lineage the per-leg blocks do or do not show.
+        // lineage the view shows.
         role="alert"
         style={{ marginBottom: '0.75rem' }}
       >

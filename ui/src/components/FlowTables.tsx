@@ -1109,9 +1109,10 @@ export function FlowTables({
               traceId={traceId}
               entities={entities}
               interactions={interactions}
-              // `byLeg` is deliberately NOT passed any more. This tab's highlight now
-              // comes from the SERVED reachability reads (ADR-0028 D14/D15), which the
-              // tab queries itself — the per-leg map answered a strictly weaker
+              // The former per-leg data-lineage map is deliberately NOT passed.
+              // This tab's highlight now comes from the SERVED reachability
+              // reads (ADR-0028 D14/D15), which the tab queries itself — the
+              // per-leg map answered a strictly weaker
               // question (one hop, composed client-side) and keeping it here would
               // leave two suppliers of one answer. The trace's `status` still comes
               // from this read, so the coverage banner and the tab quote one value.
@@ -1255,7 +1256,6 @@ export function FlowTables({
           traceId={traceId}
           selection={selection}
           pins={pins}
-          lineageQ={lineageQ}
           onTogglePin={togglePin}
           onClose={() => {
             // With the layer on, a close is a dismissal: the default does not

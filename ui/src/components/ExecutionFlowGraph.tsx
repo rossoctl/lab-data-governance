@@ -3599,9 +3599,8 @@ function graphReadState({
   if (isLoading) return <Spinner aria-label="Loading execution flow graph" />;
 
   // A failed read is NOT an empty graph: "no entities" and "we could not ask"
-  // demand different actions (wait vs retry), the same distinction ADR-0028's
-  // LineageState draws. Reporting a fetch failure as an empty trace would be a
-  // silent under-report.
+  // demand different actions (wait vs retry). Reporting a fetch failure as an
+  // empty trace would be a silent under-report.
   if (isError) {
     return (
       <Alert variant="warning" title="Could not load the execution flow" isInline>
@@ -3758,8 +3757,8 @@ export function ExecutionFlowGraph({
  * pure test can reach it.
  *
  * WHAT REPLACED WHAT. This tab previously rolled its own answer up client-side from
- * the per-leg `byLeg` map (`lib/lineageGraph`, now deleted): direct sources only,
- * one hop, explicitly refusing to walk transitively because "a transitive claim the
+ * the former per-leg data-lineage map (`lib/lineageGraph`, now deleted): direct
+ * sources only, one hop, explicitly refusing to walk transitively because "a transitive claim the
  * backend never derived would be the UI inventing lineage". That reasoning was
  * right, and ADR-0028 D15 records that it is precisely what the server removed —
  * the backend now derives the multi-hop claim, so it is citable. The tab therefore
@@ -3831,10 +3830,11 @@ export function LineageGraph({
   /**
    * The trace's coverage (ADR-0028 D6), from the flow view's `useDataLineage`.
    *
-   * Still taken from the caller even though this tab no longer reads `byLeg`: the
-   * coverage banner above the tabs and this tab's repeat of it must quote ONE value,
-   * and the reachability responses carry their own `status` that could in principle
-   * be read at a different instant. Passing the caller's keeps the two agreeing.
+   * Still taken from the caller even though this tab no longer reads the former
+   * per-leg data-lineage map: the coverage banner above the tabs and this tab's
+   * repeat of it must quote ONE value, and the reachability responses carry their
+   * own `status` that could in principle be read at a different instant. Passing
+   * the caller's keeps the two agreeing.
    */
   status: LineageStatus;
   /** The trace-scoped lineage read failed — nothing is known, not "no sources". */

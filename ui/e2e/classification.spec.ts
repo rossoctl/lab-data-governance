@@ -159,7 +159,7 @@ async function stubFlowApi(page: Page, classification: unknown, labels: unknown 
  * leg's **Classification** tab — the shared drive-through both tests need.
  *
  * The `Request` outer tab now carries three inner section tabs (Payload /
- * Classification / Data lineage), so the verdict has its own tab rather than
+ * Classification / Label lineage), so the verdict has its own tab rather than
  * riding on the payload body's. Clicking Classification is also the end-to-end
  * proof of the fetch coupling in the real bundle: the verdict is an inlined field
  * of `GET /api/payloads/{hash}` (ADR-0024), so activating that tab must be enough

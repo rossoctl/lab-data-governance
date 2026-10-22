@@ -442,6 +442,8 @@ now renders a `LabelGroup` of labels — the same unordered presentation the
 transformation sets beside it use. The null / empty-set / populated three-state
 handling is unchanged and unrelated: "not yet derived", "derived, passed through
 nothing" and "derived, passed through these" remain three distinct readings.
+(2026-10-22: `DataLineageView` and the per-leg tab that rendered it are removed
+from the UI; the per-leg triple is still derived and served.)
 
 Migration 0013 is left as it shipped. It recorded the shape that was correct at the
 time; rewriting applied history to look like it always knew better would hide that

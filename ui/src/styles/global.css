@@ -129,9 +129,8 @@
      same three below, so the two agree by construction.
 
      The 420px floor (was 320px) was set by LegTabs' inner tab row: at 320px the
-     three section labels `Payload | Classification | Data lineage` do not fit on
-     one line, so PF falls back to its horizontal scroll buttons and hides
-     `Data lineage` behind a forward arrow. 420px fits all three.
+     section labels did not fit on one line, so PF fell back to its horizontal
+     scroll buttons and hid the last tab behind a forward arrow. 420px fits them.
 
      The 520px floor (was 420px) gives the panel's THIRD card — the 5-column
      span-evidence table (Role / Span / Parent / Kind / Service) — room to
@@ -378,25 +377,6 @@ body {
 .dg-span-evidence .pf-v5-c-button {
   white-space: normal;
   overflow-wrap: anywhere;
-}
-
-/* Data-lineage keys (DataLineageView): an **Entity** natural key is a long
-   unbreakable token (`tool:agent:(proj,svc):name`,
-   `llm:host.example.com/model`), and the lineage block lives inside the flow
-   view's ~30%-wide floating detail panel. Left alone, those keys push their
-   container past the panel edge and the content is clipped off-screen — PF
-   labels additionally force `nowrap` + ellipsis on the inner
-   `.pf-v5-c-label__text`, which an inline style on the outer element cannot
-   reach. So the break is granted explicitly, on the label's inner text node as
-   well as on the plain table cell. */
-.dg-lineage-key,
-.dg-lineage-key .pf-v5-c-label__text {
-  overflow-wrap: anywhere;
-  word-break: break-all;
-  white-space: normal;
-  /* PF caps the label text at 100% of the label; the wrap above needs the cap
-     lifted or a single long token still overflows before it can break. */
-  max-width: none;
 }
 
 /* Span-evidence role glyphs (see RoleIcon / roleMeta). Visual weight tracks

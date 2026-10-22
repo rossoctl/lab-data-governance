@@ -70,8 +70,8 @@ export interface LifelineSpec {
 export interface MessageSpec {
   /**
    * `<interaction id>:<leg_type>` — the canonical **Interaction leg** key, the
-   * grain at which a leg is unique (the same grain `flow.legLineageKey` and
-   * `graph.GraphEdgeSpec.id` use). The interaction id alone is NOT unique: its two
+   * grain at which a leg is unique (the same grain `graph.GraphEdgeSpec.id`
+   * uses). The interaction id alone is NOT unique: its two
    * legs are two messages, and a React key collision would drop one row.
    */
   key: string;
