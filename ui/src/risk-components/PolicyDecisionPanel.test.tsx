@@ -386,7 +386,7 @@ describe('PolicyDecisionPanel — values on this payload', () => {
     const ruleRows = within(rules).getAllByRole('row').slice(1).map((r) => r.textContent);
     expect(ruleRows).toEqual(['DG-001tag PIIexternal, UNTRUSTED_EXTERNAL', 'DG-004level RESTRICTEDexternal, UNTRUSTED_EXTERNAL']);
 
-    // The leg, its lineage table: born at, the previous hop, the chains on demand.
+    // The leg, its lineage table: origin, the previous hop, the chains on demand.
     await waitFor(() => expect(within(panel).getByRole('heading', { name: 'Request #83053' })).toBeInTheDocument());
     const [row] = within(panel).getAllByTestId('lineage-value');
     expect(row).toHaveTextContent('BK-83CE5F');
@@ -395,7 +395,7 @@ describe('PolicyDecisionPanel — values on this payload', () => {
     expect(within(row).getByRole('link', { name: /#82049/ })).toHaveAttribute('href', '/risk/traces/t1?violation=2&interaction=i-np');
     await userEvent.click(within(row).getByRole('button', { name: 'Show chain' }));
     const lineage = within(panel).getByTestId('label-lineage');
-    expect(lineage).toHaveTextContent('born #80565 booking-agent → create-booking response');
+    expect(lineage).toHaveTextContent('origin #80565 booking-agent → create-booking response');
     expect(within(lineage).getByTestId('origin-excerpt').querySelector('mark')).toHaveTextContent('BK-83CE5F');
     // Never a claim of cause.
     expect(panel).not.toHaveTextContent(/why|caused|because/i);

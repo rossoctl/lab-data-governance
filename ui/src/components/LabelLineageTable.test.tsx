@@ -35,11 +35,12 @@ const LEG: LegLabels = {
 const links = { sameTrace: (h: LineageHop) => ({ search: `?iid=${h.interaction_id}` }) };
 
 describe('LabelLineageTable', () => {
-  it('lists carried-in values only, with where each was born and every previous hop once, in seq order', async () => {
+  it('lists carried-in values only, with its origin and every previous hop once, in seq order', async () => {
     render(<MemoryRouter><LabelLineageTable leg={LEG} lineageStatus="complete" traceId={T} links={links} /></MemoryRouter>);
     const rows = within(screen.getByRole('list', { name: 'Data lineage' })).getAllByTestId('lineage-value');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toHaveTextContent('PID');
+    expect([...rows[0].querySelectorAll('.dg-lineage-value__key')].map((k) => k.textContent)).toEqual(['origin', 'previous', '']);
     expect(within(rows[0]).getByRole('link', { name: /#1 a → b request/ })).toHaveAttribute('href', '/?iid=o');
     const prev = within(rows[0]).getAllByRole('link').slice(1).map((a) => a.textContent);
     expect(prev).toEqual(['#3 a → b request', '#5 a → b request']);
@@ -69,7 +70,7 @@ describe('LabelLineageTable', () => {
   it('marks a previous hop in another trace and links it to that trace', () => {
     const origin = { ...LEG.labels[0].carried_in[0], origin_trace_id: 't0', chains: [[hop(1, 'origin', 'o', 't0'), hop(9, 'here', 'x')]] };
     render(<MemoryRouter><LabelLineageTable leg={{ ...LEG, labels: [{ ...LEG.labels[0], carried_in: [origin] }] }} lineageStatus="complete" traceId={T} links={links} /></MemoryRouter>);
-    expect(screen.getAllByTestId('trace-boundary')).toHaveLength(2); // born at and previous hop are the same leg
+    expect(screen.getAllByTestId('trace-boundary')).toHaveLength(2); // origin and previous hop are the same leg
     expect(screen.getAllByRole('link', { name: /#1 a → b/ })[0]).toHaveAttribute('href', '/traces/t0/flow?iid=o');
   });
 });

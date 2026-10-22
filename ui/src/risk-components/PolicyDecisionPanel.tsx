@@ -253,7 +253,7 @@ function destinationCriteria(rule: RuleListItem): string {
 
 /**
  * The values on the decided interaction's payloads and where each came from
- * (`LabelLineageTable`: born at, the previous hop, the chains on demand — the
+ * (`LabelLineageTable`: origin, the previous hop, the chains on demand — the
  * same view the trace page's Data lineage tab shows), under the fired rules'
  * criteria. The reader sees which value carries the labels a rule names; nothing
  * here says a value caused the decision — the engine records no such thing.

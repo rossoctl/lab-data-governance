@@ -59,14 +59,14 @@ describe('LabelLineage', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('shows the first chain open — born, the carriers, here — and folds the rest under a count', async () => {
+  it('shows the first chain open — origin, the carriers, current — and folds the rest under a count', async () => {
     render(<MemoryRouter><LabelLineage label={PID} traceId={T} links={links} /></MemoryRouter>);
     const chains = () => screen.getAllByRole('list', { name: 'Lineage chain' });
     expect(chains()).toHaveLength(1);
     const rows = within(chains()[0]).getAllByRole('listitem').map((li) => li.textContent);
-    expect(rows[0]).toMatch(/^born #80565 booking-agent → create-booking response/);
+    expect(rows[0]).toMatch(/^origin #80565 booking-agent → create-booking response/);
     expect(rows[1]).toBe('then #82049 booking-agent → notify-partner request “BK-83CE5F”');
-    expect(rows[2]).toBe('here #83053 notify-partner → api.travel-partner.example:8000 request “BK-83CE5F”');
+    expect(rows[2]).toBe('current #83053 notify-partner → api.travel-partner.example:8000 request “BK-83CE5F”');
 
     await userEvent.click(screen.getByRole('button', { name: '1 more chain' }));
     expect(chains()).toHaveLength(2);
@@ -103,13 +103,13 @@ describe('LabelLineage', () => {
     expect(screen.getByRole('link', { name: /#82049/ })).toHaveAttribute('href', '/?iid=ix-82049');
   });
 
-  it('says so when a chain does not reach its origin, never dressing a carrier up as born', () => {
+  it('says so when a chain does not reach its origin, never dressing a carrier up as the origin', () => {
     const label = { ...PID, carried_in: [{ ...PID.carried_in[0], chains: [[DIRECT[1], DIRECT[2]]] }] };
     render(<MemoryRouter><LabelLineage label={label} traceId={T} /></MemoryRouter>);
     const rows = screen.getAllByRole('listitem').map((li) => li.textContent);
     expect(rows[0]).toBe('earlier hops not recorded');
     expect(rows[1]).toMatch(/^then #82049/);
-    expect(screen.queryByText(/^born/)).toBeNull();
+    expect(screen.queryByText(/^origin/)).toBeNull();
   });
 
   it('tells the flow view which interaction the pointer is on, and nothing for a hop in another trace', async () => {

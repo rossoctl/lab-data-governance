@@ -300,8 +300,8 @@ function LegPanel({
             />
           ))}
 
-        {/* Data lineage (label lineage) for THIS LEG: per carried-in value, where it
-            was born, the hop it came from last, and on demand the full chains.
+        {/* Data lineage (label lineage) for THIS LEG: per carried-in value, its
+            origin, the previous hop, and on demand the full chains.
             Its own read (the same per-interaction labels read the
             Classification tab shares), so a failed or unanswered read says so
             here rather than reading as "nothing carried in". The row is pinned

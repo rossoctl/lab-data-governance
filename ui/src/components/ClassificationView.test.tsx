@@ -227,6 +227,8 @@ describe('ClassificationView — found here and carried in', () => {
     expect(rows).toHaveLength(4);
     expect(rows[0]).toMatch(/^BK-2850EBPID.*RESTRICTED.*PII/);
     expect(rows[1]).toMatch(/^BK-2850EBOPID/);
+    expect(within(screen.getByLabelText('Labels')).getAllByRole('columnheader').map((h) => h.textContent))
+      .toEqual(['Text', 'Type', 'Sensitivity · tags', 'Source', 'Origin', 'Region']);
     const [pid, opid] = within(screen.getByLabelText('Labels')).getAllByRole('row').slice(1);
     // The PID was only carried in; the OPID was both found here and carried in.
     expect(within(pid).queryByText('Found here')).toBeNull();
@@ -327,6 +329,6 @@ describe('ClassificationView — the chains live on the Data lineage tab', () =>
     );
     expect(within(screen.getByLabelText('Labels')).getAllByRole('row').slice(1)).toHaveLength(2);
     expect(screen.queryByTestId('label-lineage')).toBeNull();
-    expect(screen.queryByText(/^born/)).toBeNull();
+    expect(screen.queryByText(/^origin/)).toBeNull();
   });
 });
