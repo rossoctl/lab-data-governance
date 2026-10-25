@@ -6,12 +6,14 @@ screenshots are laid over the scenes at the moment the narration names them. Eve
 locally: stills with Z-Image Turbo (mflux), the voice with Kokoro, frames with headless Chrome,
 the video with ffmpeg.
 
-The finished film (55 MB) is not committed. **TODO: link.**
+The finished film is [`sentry_pitch_demo.mp4`](sentry_pitch_demo.mp4) (2:35, 1920×1080, 55 MB), stored
+through Git LFS: a clone without `git lfs` installed gets a small pointer file in its place.
 
 ## What is here
 
 | path | what |
 |---|---|
+| `sentry_pitch_demo.mp4` | the finished film, narrated; `scripts/mux.sh` overwrites it |
 | `scripts/narration.txt` | the narration, one `beat\|text` line per sentence; the beat names the scene |
 | `film/film.html`, `film/timeline.js` | the page that draws the film, and its timeline. Every cue is anchored to a spoken word, so rewording a line moves its cues with it |
 | `film/layout.js` | positions measured on the chosen stills; a new still means new numbers here only |
@@ -21,7 +23,7 @@ The finished film (55 MB) is not committed. **TODO: link.**
 | `scripts/prompts/v3/` | one image prompt per scene, `STYLE\|description` |
 | `scripts/render_stills.sh`, `scripts/tts.py`, `scripts/cues.sh`, `scripts/render/render.mjs`, `scripts/mux.sh` | the pipeline, in order |
 
-Ignored (`.gitignore`): what the pipeline generates (`stills/`, `voice/`, `build/`, `scripts/render/node_modules/`, the `.mp4`) and the earlier cuts and experiments kept beside it, including `pitch_rosso/`, the rossoctl cut.
+Ignored (`.gitignore`): what the pipeline generates (`stills/`, `voice/`, `build/`, `scripts/render/node_modules/`) and the earlier cuts and experiments kept beside it, including `pitch_rosso/`, the rossoctl cut.
 
 ## The screenshots
 
