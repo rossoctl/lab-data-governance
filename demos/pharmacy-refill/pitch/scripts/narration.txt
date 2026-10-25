@@ -1,0 +1,27 @@
+app|Rosa needs a refill.
+app|She taps Refill my prescription in her pharmacy's mobile app, which triggers an agentic flow.
+flow|That one tap sets off twenty-six agent and tool interactions.
+flow|Sentry tracks the data through each one, and checks it against company policy.
+flow|One, it marks as risky. Let's see why.
+intro|Sentry is data governance on top of Cortex, which monitors the traffic between agents and everything they touch.
+intro|It's built on lineage, classification, and risk assessment.
+rule|Let's take one rule from the company policy: personal data must not leave the organization.
+l1|Level one.
+l1|In Rosa's record, the context is all there: her name, and beside it, her medical record number.
+l1|Both are personal data, and the vendor is external, outside the organization. Sending them there breaks the policy, so Sentry blocks it.
+l1|With full context at the point of decision, this is local enforcement. Most data governance tools can do it, and so does Sentry.
+l1|But what happens when the context is gone?
+l2|Level two. The app now sends only the number.
+l2|At release, it's out of context, so given only the local context, it's classified as a generic operational ID.
+l2|Local enforcement would let it through.
+l2|But Sentry's lineage carries the context with the data: four hops back, that number was Rosa's medical record number.
+l2|It's still personal data, so sending it breaks the policy, and it's blocked.
+l3|With full context, Sentry blocks. Four hops downstream and out of context, it still catches the leak.
+l3|But what if the leak comes from a different session altogether?
+l3|A nightly job pulls the number from a shared database, with no name and no context.
+l3|Sentry's cross-session lineage carries the full context across sessions, so this leak is blocked too.
+fix|Sentry doesn't fix the app; it enforces the policy.
+fix|Once the app is fixed so it no longer releases personal data, sending the vendor only what it needs, Sentry lets it through.
+fix|This way, Rosa gets her refill, and the policy holds, keeping the company in line with data protection regulations.
+close|Local enforcement sees one message. Sentry sees its whole history, protecting data locally, within a session, and across session boundaries.
+close|Sentry, with lineage and risk, is live in the next release.

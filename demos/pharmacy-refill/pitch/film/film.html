@@ -1,0 +1,342 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Sentry pitch film</title>
+<style>
+@font-face { font-family: "Fira Sans"; font-weight: 400; src: url(../overlays/fonts/FiraSans-Regular.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 500; src: url(../overlays/fonts/FiraSans-Medium.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 600; src: url(../overlays/fonts/FiraSans-SemiBold.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 700; src: url(../overlays/fonts/FiraSans-Bold.ttf); }
+@font-face { font-family: "Fira Sans"; font-weight: 800; src: url(../overlays/fonts/FiraSans-ExtraBold.ttf); }
+@font-face { font-family: "Fira Mono"; font-weight: 400; src: url(../overlays/fonts/FiraMono-Regular.ttf); }
+@font-face { font-family: "Fira Mono"; font-weight: 500; src: url(../overlays/fonts/FiraMono-Medium.ttf); }
+
+:root {
+  --ink: #0b1d22;
+  --cream: #f6e7c8;
+  --gold: #e9c46a;
+  --blue: #6fb6ff;
+  --red: #ef6351;
+  --green: #5cc98a;
+  --muted: #a9b8b9;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+body { font-family: "Fira Sans", sans-serif; color: var(--cream); }
+
+#stage { position: absolute; inset: 0; overflow: hidden; background: var(--ink); }
+.scene { position: absolute; inset: 0; opacity: 0; }
+.bg { position: absolute; inset: 0; background-size: cover; background-position: center; background-repeat: no-repeat; }
+.dim { position: absolute; inset: 0; background: #06121a; opacity: 0; }
+.el { position: absolute; opacity: 0; }
+
+.chip {
+  font-weight: 700; font-size: 30px; padding: 14px 30px 14px 22px; border-radius: 999px;
+  border: 2px solid var(--gold); background: rgba(11, 29, 34, .85); display: flex; align-items: center; gap: 16px;
+  white-space: nowrap;
+}
+.chip .n { width: 40px; height: 40px; border-radius: 50%; background: var(--red); color: #fff;
+  font-size: 22px; display: grid; place-items: center; }
+.tag { font-family: "Fira Mono"; font-size: 17px; letter-spacing: .14em; text-transform: uppercase; }
+.box {
+  border-radius: 22px; border: 2px solid var(--gold); background: rgba(11, 29, 34, .9);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+}
+.policy {
+  top: 40px; left: 40px; padding: 14px 22px; border-radius: 16px; border: 2px solid var(--blue);
+  background: rgba(11, 29, 34, .85); font-size: 19px; line-height: 1.35;
+}
+.policy b { display: block; color: var(--blue); font-family: "Fira Mono"; font-size: 15px; letter-spacing: .12em; }
+.shot { border-radius: 14px; border: 2px solid var(--gold); box-shadow: 0 24px 60px rgba(0, 0, 0, .55); display: block; }
+.callout {
+  white-space: nowrap; font-weight: 700; font-size: 30px; padding: 12px 22px; border-radius: 12px; color: #1b1405; background: var(--gold);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .45); line-height: 1.15;
+}
+.callout small { display: block; font-weight: 500; font-size: 19px; }
+.callout.red { background: var(--red); color: #fff; }
+.callout.blue { background: #3d8be0; color: #fff; }
+.stamp {
+  font-weight: 800; font-size: 120px; letter-spacing: .06em; padding: 4px 40px; border: 10px solid currentColor;
+  border-radius: 22px; text-shadow: 0 0 1px currentColor; background: rgba(11, 29, 34, .35);
+}
+.stamp.block { color: var(--red); }
+.stamp.allow { color: var(--green); }
+.badge {
+  font-family: "Fira Mono"; font-weight: 500; font-size: 26px; padding: 10px 18px; border-radius: 10px;
+  background: rgba(11, 29, 34, .92); border: 2px solid var(--muted); color: var(--cream); white-space: nowrap;
+}
+.badge.grey { border-color: #8d9a9b; color: #d6dcdc; }
+.badge.red { border-color: var(--red); color: #ffd9d3; background: rgba(80, 18, 12, .92); }
+.badge .k { color: var(--muted); font-size: 18px; letter-spacing: .1em; margin-right: 10px; }
+
+.caption {
+  left: 0; right: 0; text-align: center; bottom: 64px; font-weight: 700; font-size: 44px; color: var(--cream);
+  text-shadow: 0 3px 18px rgba(0, 0, 0, .85), 0 0 2px rgba(0, 0, 0, .9); white-space: nowrap;
+}
+.caption small { display: block; font-weight: 500; font-size: 28px; color: #e7dcc4; margin-top: 6px; }
+.pills { left: 40px; bottom: 36px; display: flex; gap: 10px; }
+.pill { font-family: "Fira Mono"; font-size: 17px; padding: 7px 14px; border-radius: 999px; border: 1.5px solid rgba(246, 231, 200, .35);
+  color: rgba(246, 231, 200, .55); background: rgba(11, 29, 34, .6); }
+.pill.on { color: var(--ink); background: var(--cream); border-color: var(--cream); font-weight: 500; }
+
+/* phone */
+.phone { width: 360px; height: 720px; border-radius: 54px; background: #111; padding: 14px; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+.screen { width: 100%; height: 100%; border-radius: 42px; background: #f7f4ee; color: #1d2a2e; overflow: hidden; position: relative; }
+.screen .bar { height: 130px; background: #1f6f63; color: #fff; padding: 60px 26px 0; font-weight: 700; font-size: 26px; }
+.screen .bar small { display: block; font-weight: 400; font-size: 16px; opacity: .85; }
+.screen .rx { margin: 26px 22px 0; padding: 20px; border-radius: 18px; background: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+.screen .rx b { display: block; font-size: 24px; }
+.screen .rx span { font-size: 17px; color: #5a6b6e; }
+.screen .btn { margin: 28px 22px 0; padding: 22px; border-radius: 16px; background: #1f6f63; color: #fff; font-weight: 700; font-size: 24px; text-align: center; }
+.screen .foot { position: absolute; left: 0; right: 0; bottom: 26px; text-align: center; font-family: "Fira Mono"; font-size: 13px; color: #8a9799; letter-spacing: .08em; }
+
+.card-title { font-weight: 800; font-size: 72px; text-align: center; }
+.card-sub { font-size: 30px; color: var(--muted); text-align: center; margin-top: 10px; }
+.pillars { display: flex; gap: 34px; justify-content: center; margin-top: 64px; }
+.pillar { width: 470px; padding: 34px 36px; }
+.pillar .tag { color: var(--blue); }
+.pillar h3 { font-size: 42px; font-weight: 700; margin-top: 10px; }
+.pillar p { font-size: 25px; color: #d4dcd9; margin-top: 12px; line-height: 1.35; }
+.pillar svg { float: right; }
+
+table.pay { border-collapse: separate; border-spacing: 0; font-size: 30px; margin: 0 auto; }
+table.pay th { font-family: "Fira Mono"; font-weight: 500; font-size: 18px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted); text-align: left; padding: 0 28px 18px; }
+table.pay td { padding: 18px 28px; border-top: 1.5px solid rgba(233, 196, 106, .25); }
+table.pay td.lvl { font-weight: 700; }
+table.pay td.lvl small { display: block; font-weight: 400; font-size: 22px; color: var(--muted); margin-top: 4px; }
+.v { font-weight: 800; font-size: 30px; }
+.v.b { color: var(--red); }
+.v.a { color: var(--green); }
+.v.miss { color: #f2b25c; }
+.v.miss::after { content: " ✗"; }
+table.pay tr.row { opacity: 0; }
+table.pay td.us { background: rgba(111, 182, 255, .08); }
+.ring { border: 5px solid var(--red); border-radius: 50%; box-shadow: 0 0 30px var(--red); }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- ============ 1 · ROSA AND HER APP ============ -->
+  <section class="scene" id="s-app">
+    <div class="bg" style="background-image:url(../stills/v3/01_rosa_app.png)"></div>
+    <div class="dim"></div>
+    <div class="el" id="phone" style="left:170px; top:170px">
+      <div class="phone"><div class="screen">
+        <div class="bar">Your pharmacy<small>Hi Rosa</small></div>
+        <div class="rx"><b>Metformin 500 mg</b><span>30 tablets · refill due today</span></div>
+        <div class="btn">Refill my prescription</div>
+        <div class="rx" style="margin-top:30px"><span>Pick up or delivery</span><b style="font-size:20px; margin-top:4px">Deliver to my home</b></div>
+        <div class="rx" style="margin-top:14px"><span>Last filled</span><b style="font-size:20px; margin-top:4px">Sep 19, 2026</b></div>
+        <div class="foot">agentic flow</div>
+      </div></div>
+    </div>
+    <div class="el ring" id="tap" style="left:198px; top:425px; width:304px; height:84px; border-radius:20px; border-color:#fff; box-shadow:0 0 30px #fff"></div>
+    <div class="el caption" id="app-cap" style="left:600px; right:0">One tap<small>triggers an agentic flow</small></div>
+  </section>
+
+  <!-- ============ 2 · 26 INTERACTIONS, EACH CHECKED ============ -->
+  <section class="scene" id="s-flow">
+    <div class="bg" style="background-image:url(../stills/v3/02_hall_squires.png)"></div>
+    <div class="dim"></div>
+    <div class="el" id="flow-count" style="right:70px; top:60px; text-align:right">
+      <div style="font-weight:800; font-size:170px; color:var(--green); line-height:1"><span id="count-n">1</span></div>
+      <div class="tag" style="color:var(--cream); font-size:22px">agent &amp; tool interactions · one tap</div>
+    </div>
+    <div class="el" id="flow-graph" style="left:110px; top:250px"><img class="shot" src="../overlays/ui/exec_flow_full.png" style="width:1100px"></div>
+    <div class="el" id="flow-risk" style="left:110px; top:250px">
+      <img class="shot" src="../overlays/ui/risk_flow.png" style="width:1100px">
+      <div class="el ring" id="flow-ring" style="left:735px; top:215px; width:260px; height:200px"></div>
+      <div class="callout red" style="position:absolute; left:720px; top:-84px">Risky<small>enroll-adherence → external host</small></div>
+    </div>
+    <div class="el caption" id="flow-cap">Every interaction checked against company policy<small>allowed · or blocked</small></div>
+  </section>
+
+  <!-- ============ 3 · WHAT SENTRY IS ============ -->
+  <section class="scene" id="s-intro">
+    <div class="bg" style="background-image:url(../stills/v3/03_knight_drawbridge.png)"></div>
+    <div class="dim"></div>
+    <div class="el" id="intro-card" style="inset:0; display:flex; flex-direction:column; justify-content:center">
+      <div class="card-title" style="text-shadow:0 4px 24px rgba(0,0,0,.8)">Sentry</div>
+      <div class="card-sub" style="color:#dfe6e4; text-shadow:0 2px 14px rgba(0,0,0,.9)">data governance on top of Cortex</div>
+      <div class="el" id="intro-cortex" style="position:relative; text-align:center; margin-top:16px; font-size:24px; color:var(--blue); text-shadow:0 2px 12px rgba(0,0,0,.9)"><b>Cortex</b> · monitors the traffic between agents and everything they touch</div>
+      <div class="pillars">
+        <div class="pillar box el" id="p1" style="position:relative">
+          <svg width="62" height="62" viewBox="0 0 62 62"><path d="M6 50 C 20 10, 40 52, 56 12" stroke="#e9c46a" stroke-width="5" fill="none" stroke-linecap="round"/><circle cx="56" cy="12" r="6" fill="#e9c46a"/></svg>
+          <div class="tag">where it came from</div><h3>Lineage</h3><p>Carries each value's context, hop by hop, across sessions.</p>
+        </div>
+        <div class="pillar box el" id="p2" style="position:relative">
+          <svg width="62" height="62" viewBox="0 0 62 62"><path d="M8 30 L30 8 H54 V32 L32 54 Z" stroke="#e9c46a" stroke-width="5" fill="none" stroke-linejoin="round"/><circle cx="44" cy="19" r="5" fill="#e9c46a"/></svg>
+          <div class="tag">what it is</div><h3>Classification</h3><p>Labels each value: a name, a record number, an ID.</p>
+        </div>
+        <div class="pillar box el" id="p3" style="position:relative">
+          <svg width="62" height="62" viewBox="0 0 62 62"><path d="M31 6 L54 14 V30 C54 44 44 53 31 57 C18 53 8 44 8 30 V14 Z" stroke="#e9c46a" stroke-width="5" fill="none" stroke-linejoin="round"/></svg>
+          <div class="tag">is it allowed</div><h3>Risk assessment</h3><p>Judges each interaction against company policy.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 4 · ONE RULE ============ -->
+  <section class="scene" id="s-rule">
+    <div class="bg" style="background-image:url(../stills/v3/04_rule_scroll.png)">
+      <div class="el" id="rule-text" style="text-align:center; color:#3b2412">
+        <div style="font-family:'Fira Mono'; font-size:15px; font-weight:500; letter-spacing:.08em">ONE RULE FROM THE<br>COMPANY POLICY</div>
+        <div style="font-weight:800; font-size:42px; line-height:1.18; margin-top:30px; white-space:nowrap">Personal data<br>must not leave<br>the organization.</div>
+      </div>
+    </div>
+    <div class="dim"></div>
+  </section>
+
+  <!-- ============ 5 · LEVEL 1 : all context in place ============ -->
+  <section class="scene" id="s-l1">
+    <div class="bg" style="background-image:url(../stills/v3/05_l1_inspect.png)"></div>
+    <div class="dim"></div>
+    <div class="el chip" id="l1-chip" style="right:40px; top:40px"><span class="n">1</span>All context in place</div>
+    <div class="el" id="l1-record" style="left:1130px; top:150px">
+      <img class="shot" src="../overlays/ui/lookup_reply.png" style="width:720px">
+      <div class="callout" style="position:absolute; left:24px; bottom:-70px">Rosa's record<small>the full context, at the point of decision</small></div>
+    </div>
+    <div class="el badge red" id="l1-tag-mrn" style="left:1130px; top:590px"><span class="k">4471820</span>MRN · personal data</div>
+    <div class="el badge red" id="l1-tag-name" style="left:1130px; top:655px"><span class="k">Rosa Delgado</span>person name · personal data</div>
+    <div class="el" id="l1-dest" style="left:1130px; top:830px">
+      <img class="shot" src="../overlays/ui/dest_l1.png" style="width:560px; border-color:var(--red)">
+      <div class="callout red" style="position:absolute; left:0; top:-70px">External<small>outside the organization</small></div>
+    </div>
+    <div class="el" id="l1-alert" style="left:20px; top:870px">
+      <img class="shot" src="../overlays/ui/alert_l1.png" style="width:1080px; border-color:var(--red)">
+    </div>
+  </section>
+
+  <!-- the castle shut tight: the picture for every block -->
+  <section class="scene" id="s-gate">
+    <div class="bg" style="background-image:url(../stills/v3/06_gate_shut.png)"></div>
+    <div class="dim"></div>
+    <div class="el stamp block" id="l1-stamp" style="left:1240px; top:300px; transform:rotate(-9deg)">BLOCK</div>
+    <div class="el caption" id="gate-cap" style="bottom:110px">Local enforcement<small>most data governance tools do this · so does Sentry</small></div>
+    <div class="el caption" id="gate-q" style="bottom:110px">But what happens when the context is gone?</div>
+  </section>
+
+  <!-- ============ 6 · LEVEL 2a : out of context ============ -->
+  <section class="scene" id="s-l2a">
+    <div class="bg" style="background-image:url(../stills/v3/07_l2_snip.png)"></div>
+    <div class="dim"></div>
+    <div class="el chip" id="l2-chip" style="right:40px; top:40px"><span class="n">2</span>Out of context</div>
+    <div class="el" id="l2-opid" style="left:70px; top:400px">
+      <img class="shot" src="../overlays/ui/opid_l2.png" style="width:860px; border-color:#3d8be0">
+      <div class="callout blue" style="position:absolute; left:-30px; top:-80px">Given only local context<small>classified as a generic operational ID</small></div>
+    </div>
+    <div class="el caption" id="l2-cap" style="left:0; right:960px; bottom:90px">Local enforcement would let it through</div>
+  </section>
+
+  <!-- ============ 7 · LEVEL 2b : lineage, four hops ============ -->
+  <section class="scene" id="s-l2b">
+    <div class="bg" id="l2b-bg" style="background-image:url(../stills/v3/08_l2_lantern.png)">
+      <svg class="el" id="thread" width="1920" height="1080" style="left:0; top:0">
+        <defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+        <path id="thread-path" d="" stroke="#ffd36a" stroke-width="6" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+        <g fill="#ffd36a" filter="url(#glow)" id="hops"></g>
+      </svg>
+      <div class="el callout" id="l2-origin">Rosa's record<small>four hops back · her MRN</small></div>
+    </div>
+    <div class="dim"></div>
+    <div class="el chip" id="l2b-chip" style="right:40px; top:40px"><span class="n">2</span>Out of context</div>
+    <div class="el badge grey" id="l2-tag-grey" style="left:1300px; top:470px"><span class="k">4471820</span>operational ID</div>
+    <div class="el badge red" id="l2-tag-red" style="left:1300px; top:470px"><span class="k">4471820</span>MRN · personal data</div>
+    <div class="el" id="l2-mrn" style="left:900px; top:820px">
+      <img class="shot" src="../overlays/ui/mrn_born_l2.png" style="width:900px; border-color:var(--red)">
+    </div>
+    <div class="el stamp block" id="l2-stamp" style="left:1260px; top:200px; transform:rotate(-9deg)">BLOCK</div>
+  </section>
+
+  <!-- ============ 8 · LEVEL 3a : the question, and the vault by day ============ -->
+  <section class="scene" id="s-l3a">
+    <div class="bg" style="background-image:url(../stills/v3/09_l3_vault_day.png)"></div>
+    <div class="dim"></div>
+    <div class="el" id="l3-recap" style="left:0; right:0; top:300px; display:flex; flex-direction:column; align-items:center; gap:22px">
+      <div class="badge" style="font-size:32px; border-color:var(--red)"><span class="k">①</span>All context in place → <b style="color:var(--red)">blocked</b></div>
+      <div class="badge" style="font-size:32px; border-color:var(--red)"><span class="k">②</span>Four hops, out of context → <b style="color:var(--red)">blocked</b></div>
+      <div class="badge el" id="l3-q" style="position:relative; font-size:32px; border-color:var(--gold)"><span class="k">③</span>A different session altogether → <b style="color:var(--gold)">?</b></div>
+    </div>
+    <div class="el chip" id="l3-chip" style="right:40px; top:40px"><span class="n">3</span>Another session</div>
+    <div class="el badge" id="l3-s1" style="left:70px; top:880px; border-color:var(--gold)"><span class="k">SESSION 1</span>Rosa's refill → shared database</div>
+  </section>
+
+  <!-- ============ 9 · LEVEL 3b : the nightly job ============ -->
+  <section class="scene" id="s-l3b">
+    <div class="bg" style="background-image:url(../stills/v3/10_l3_night_clerk.png)"></div>
+    <div class="dim"></div>
+    <div class="el chip" id="l3b-chip" style="right:40px; top:40px"><span class="n">3</span>Another session</div>
+    <div class="el badge" id="l3-s2" style="left:70px; top:150px; border-color:var(--blue)"><span class="k">SESSION 2</span>nightly job · no name, no context</div>
+    <div class="el" id="l3-link" style="left:40px; top:760px">
+      <img class="shot" src="../overlays/ui/cross_session_l3.png" style="width:1000px">
+      <div class="callout" style="position:absolute; left:20px; top:-76px">Traced back to Rosa's refill<small>cross-session lineage · full context carried across sessions</small></div>
+    </div>
+    <div class="el stamp block" id="l3-stamp" style="left:300px; top:330px; transform:rotate(-9deg)">BLOCK</div>
+  </section>
+
+  <!-- ============ 10 · THE FIX ============ -->
+  <section class="scene" id="s-fix">
+    <div class="bg" style="background-image:url(../stills/v3/11_fix_cross.png)"></div>
+    <div class="dim"></div>
+    <div class="el" id="fix-payload" style="left:1150px; top:180px">
+      <img class="shot" src="../overlays/ui/fix_payload.png" style="width:700px; border-color:#3d8be0">
+      <div class="callout blue" style="position:absolute; left:20px; top:-76px">Once the app is fixed<small>it no longer releases personal data</small></div>
+    </div>
+    <div class="el caption" id="fix-role" style="bottom:110px">Sentry doesn't fix the app<small>it enforces the policy</small></div>
+    <div class="el stamp allow" id="fix-stamp" style="left:110px; top:250px; transform:rotate(-9deg)">ALLOW</div>
+  </section>
+
+  <section class="scene" id="s-refill">
+    <div class="bg" style="background-image:url(../stills/v3/12_rosa_refill.png)"></div>
+    <div class="dim"></div>
+    <div class="el caption" id="refill-cap" style="left:0; right:900px; bottom:120px">Rosa gets her refill<small>the policy holds · in line with data protection regulations</small></div>
+  </section>
+
+  <!-- ============ 11 · PAYOFF ============ -->
+  <section class="scene" id="s-pay" style="background:var(--ink)">
+    <div style="position:absolute; inset:0; display:flex; flex-direction:column; justify-content:center; align-items:center">
+      <div class="card-title" style="font-size:56px">Same policy. Same data. Different depth of context.</div>
+      <div class="box" style="margin-top:46px; padding:34px 20px 22px">
+        <table class="pay">
+          <tr><th></th><th>Local enforcement</th><th style="color:var(--blue)">Sentry</th></tr>
+          <tr class="row" id="r1"><td class="lvl">① All context in place<small>name + medical record number</small></td><td><span class="v b">Block</span></td><td class="us"><span class="v b">Block</span></td></tr>
+          <tr class="row" id="r2"><td class="lvl">② Out of context, four hops away<small>locally a generic operational ID</small></td><td><span class="v miss">Allow</span></td><td class="us"><span class="v b">Block</span></td></tr>
+          <tr class="row" id="r3"><td class="lvl">③ Another session<small>pulled from a shared database</small></td><td><span class="v miss">Allow</span></td><td class="us"><span class="v b">Block</span></td></tr>
+          <tr class="row" id="r4"><td class="lvl">Fixed app<small>no patient key</small></td><td><span class="v a">Allow</span></td><td class="us"><span class="v a">Allow</span></td></tr>
+        </table>
+      </div>
+      <div class="el" id="pay-foot" style="position:relative; margin-top:40px; font-weight:700; font-size:40px">Local enforcement sees one message. <span style="color:var(--gold)">Sentry sees its whole history.</span></div>
+      <div class="el" id="pay-foot2" style="position:relative; margin-top:18px; font-size:30px; color:var(--muted)">Protecting data <b style="color:var(--cream)">locally</b> · <b style="color:var(--cream)">within a session</b> · <b style="color:var(--cream)">across session boundaries</b></div>
+    </div>
+  </section>
+
+  <!-- ============ 12 · CLOSE ============ -->
+  <section class="scene" id="s-close" style="background:var(--ink)">
+    <div class="el" id="close-card" style="left:50%; top:50%; transform:translate(-50%,-50%); width:1120px; padding:56px 60px 46px; text-align:center">
+      <div class="box" style="position:absolute; inset:0"></div>
+      <div style="position:relative">
+        <div style="width:260px; height:260px; margin:0 auto; border-radius:28px; background:url(../stills/v3/13_logo.png) center/cover; box-shadow:0 18px 40px rgba(0,0,0,.4)"></div>
+        <div style="font-weight:800; font-size:76px; margin-top:30px">Sentry</div>
+        <div style="font-size:32px; color:var(--muted); margin-top:4px">data governance on top of Cortex</div>
+        <div class="tag" style="color:var(--blue); margin-top:30px; font-size:20px">lineage · classification · risk assessment</div>
+        <div id="close-live" class="el" style="position:relative; margin-top:34px; font-weight:700; font-size:38px; color:var(--gold); white-space:nowrap">Lineage and risk: live in the next release</div>
+      </div>
+    </div>
+    <div class="el" id="close-ibm" style="left:0; right:0; text-align:center; bottom:50px; font-size:20px; color:var(--muted)">Powered by <b style="color:#6fa8ff; letter-spacing:.08em">IBM</b></div>
+  </section>
+
+  <div class="el policy" id="policy"><b>POLICY RULE</b>personal data must not leave the organization</div>
+  <div class="el pills" id="pills">
+    <span class="pill" data-p="l1">1 ALL CONTEXT</span><span class="pill" data-p="l2">2 OUT OF CONTEXT</span><span class="pill" data-p="l3">3 ANOTHER SESSION</span><span class="pill" data-p="fix">FIX</span>
+  </div>
+  <div id="fade" style="position:absolute; inset:0; background:#000; opacity:0; pointer-events:none"></div>
+</div>
+
+<script src="cues.js"></script>
+<script src="layout.js"></script>
+<script src="timeline.js"></script>
+</body>
+</html>
