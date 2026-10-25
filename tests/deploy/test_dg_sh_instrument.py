@@ -16,7 +16,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.deploy.fake_configmap_kubectl import CONFIGMAP_KUBECTL
+from tests.deploy.fake_configmap_kubectl import (
+    CONFIGMAP_KUBECTL,
+    RUNTIME_CONFIG_WITH_LINEAGE,
+    RUNTIME_CONFIG_WITHOUT_LINEAGE,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -165,7 +169,6 @@ pipeline:
       - name: token-exchange
 """
 
-
 # ---------------------------------------------------------------------------
 _STUB_BUILD_SHIM = r"""
 if [[ -n "${KIT_LOG:-}" ]]; then
@@ -228,14 +231,41 @@ if [[ "$*" == *"exec"* && "$*" == *"/v1/plugins"* ]]; then
   fi
   exit 0
 fi
+# A pod runs the namespace lineage pipeline once admitted after the namespace
+# ConfigMap carried it: from the start, or after a `rollout restart`.
 if [[ "$*" == *"exec"* && "$*" == *"/v1/pipeline"* ]]; then
-  self_id="travel-advisor"
+  ent=""
   for a in "$@"; do
-    case "$a" in *-abc123) self_id="${a%-abc123}" ;; esac
+    case "$a" in
+      *-abc123) ent="${a%-abc123}"
+        if [[ -f "$FIXDIR/restarted-$ent" ]]; then
+          printf '%s\n' "Error from server (NotFound): pods \"$a\" not found" >&2; exit 1
+        fi ;;
+      *-rolled) ent="${a%-rolled}" ;;
+    esac
   done
-  body='{"inbound":[{"name":"jwt-validation"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"__SELF__","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}],"outbound":[{"name":"token-exchange"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"self_id":"__SELF__","namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}]}'
-  printf '%s' "${body//__SELF__/${self_id}}"
+  if ! grep -q lineage-telemetry "$FIXDIR/cm-authbridge-runtime-config.json" && [[ ! -f "$FIXDIR/restarted-$ent" ]]; then
+    printf '%s' '{"inbound":[{"name":"jwt-validation"}],"outbound":[{"name":"token-exchange"}]}'
+    exit 0
+  fi
+  body='{"inbound":[{"name":"jwt-validation"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}],"outbound":[{"name":"token-exchange"},{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry","config":{"otel_endpoint":"otel-collector.rossoctl-system.svc.cluster.local:4317","capture_io":false,"namespace_file":"/var/run/secrets/kubernetes.io/serviceaccount/namespace"}}]}'
+  printf '%s' "${body}"
   exit 0
+fi
+
+if [[ "$*" == *"rollout restart deployment/"* ]]; then
+  for a in "$@"; do
+    case "$a" in deployment/*) : > "$FIXDIR/restarted-${a#deployment/}" ;; esac
+  done
+  exit 0
+fi
+if [[ "$*" == *"get agentruntimes"* ]]; then
+  cat "$FIXDIR/agentruntimes.json"
+  exit 0
+fi
+if [[ "$1" == "replace" && "${REPLACE_FAILS:-0}" == "1" ]]; then
+  printf '%s\n' 'Error from server (Conflict): the object has been modified; please apply your changes to the latest version and try again' >&2
+  exit 1
 fi
 
 # ---- component/tee preflight probes -----------------------------------------
@@ -258,12 +288,6 @@ if [[ "$*" == *"get"* && "$*" == *"data-governance-receiver"* ]]; then
   printf '%s\n' "1"; exit 0
 fi
 
-# ---- egressEnforcement probe (authbridge-runtime-config CM in the ns) --------
-if [[ "$*" == *"get"* && "$*" == *"authbridge-runtime-config"* ]]; then
-  printf '%s' "${EGRESS_ENFORCEMENT:-enforce}"
-  exit 0
-fi
-
 # ---- Pod fetch (injected-sidecar fallback) -----------------------------------
 # When the Deployment TEMPLATE shows no sidecar, dg.sh falls back to the live Pod
 # (`kubectl get pods ... -o json`) to catch a webhook-injected sidecar. This
@@ -283,7 +307,10 @@ if [[ "$*" == *"get"* && ( "$*" == *" pods"* || "$*" == *"pods "* || "$*" == *" 
     esac
   done
   f="$FIXDIR/pods-${ent}.json"
-  if [[ -n "$ent" && -f "$f" ]]; then cat "$f"; else printf '%s' '{"items":[]}'; fi
+  if [[ -n "$ent" && -f "$f" ]]; then
+    # A rollout restart replaces the pod, which comes back under a new name.
+    if [[ -f "$FIXDIR/restarted-$ent" ]]; then sed "s/${ent}-abc123/${ent}-rolled/g" "$f"; else cat "$f"; fi
+  else printf '%s' '{"items":[]}'; fi
   exit 0
 fi
 # ---- crash-loop watch: pod phase / restart probes ---------------------------
@@ -442,7 +469,39 @@ def sandbox(tmp_path: Path):
         def set_flag(self, **kw: str) -> None:
             self.envflags.update({k: str(v) for k, v in kw.items()})
 
-        def set_namespace(self, entities: dict[str, dict]) -> None:
+        def set_namespace(
+            self,
+            entities: dict[str, dict],
+            *,
+            runtime_lineage: bool = False,
+            extra_runtimes: tuple[dict, ...] = (),
+        ) -> None:
+            runtimes = [
+                {
+                    "spec": {
+                        "targetRef": {"kind": "Deployment", "name": name},
+                        "pluginPreset": spec.get("preset", ""),
+                    }
+                }
+                for name, spec in entities.items()
+                if spec.get("trusted_type")
+            ] + [{"spec": {"targetRef": target}} for target in extra_runtimes]
+            (fixdir / "agentruntimes.json").write_text(json.dumps({"items": runtimes}))
+            runtime = {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": "authbridge-runtime-config",
+                    "namespace": "travel-advisor",
+                    "resourceVersion": "42",
+                },
+                "data": {
+                    "config.yaml": RUNTIME_CONFIG_WITH_LINEAGE
+                    if runtime_lineage
+                    else RUNTIME_CONFIG_WITHOUT_LINEAGE
+                },
+            }
+            (fixdir / "cm-authbridge-runtime-config.json").write_text(json.dumps(runtime))
             items = []
             for name, spec in entities.items():
                 sidecar = spec.get("sidecar")
@@ -533,6 +592,10 @@ def sandbox(tmp_path: Path):
             env["KIT_LOG"] = str(kitlog)
             env["FIXDIR"] = str(fixdir)
             env.setdefault("KIND_CLUSTER", "rossoctl")
+            # A pipeline that never converges fails in seconds, not 180 s, and the
+            # canonical endpoint is dg.sh's own, whatever the caller's shell exports.
+            env["DG_PIPELINE_VERIFY_ATTEMPTS"] = "3"
+            env.pop("OTEL_ENDPOINT", None)
             # Point dg.sh at the FAKE stub kit (not the real vendored scripts,
             # which would kubectl-patch / build images) via the DG_LINEAGE_ATTACH_DIR
             # test seam — the same override pattern as DG_BUILD_AND_LOAD / DG_K8S_DIR.
@@ -664,29 +727,168 @@ def test_instrument_refuses_when_tee_not_wired(sandbox) -> None:
     assert sandbox.kit_log() == "", "kit must not run when the tee is absent"
 
 
-def test_trusted_proxy_rolls_app_before_hot_reloading_pipeline(sandbox) -> None:
+_TRUSTED_AGENT = {
+    "sidecar": "proxy",
+    "lineage": False,
+    "enforcing": True,
+    "trusted_type": "agent",
+}
+
+
+def test_trusted_proxy_writes_namespace_lineage_before_rolling(sandbox) -> None:
     sandbox.set_namespace(
-        {
-            "travel-advisor": {
-                "sidecar": "proxy",
-                "lineage": False,
-                "enforcing": True,
-                "trusted_type": "agent",
-            },
-            "demo-client": {"sidecar": None},
-        }
+        {"travel-advisor": _TRUSTED_AGENT, "demo-client": {"sidecar": None}}
     )
 
     result = sandbox.run("namespace", "travel-advisor", "instrument")
 
     assert result.returncode == 0, result.stderr
     calls = sandbox.kubectl_calls()
+    # The shim first: the namespace write may roll every workload in <ns>.
     patch_i = next(i for i, call in enumerate(calls) if "patch deployment/travel-advisor" in call)
-    apply_i = next(i for i, call in enumerate(calls) if call.startswith("apply -f -"))
-    assert patch_i < apply_i
+    replace_i = next(i for i, call in enumerate(calls) if call.startswith("replace -f -"))
+    restart_i = next(i for i, call in enumerate(calls) if "rollout restart deployment/travel-advisor" in call)
+    assert patch_i < replace_i < restart_i
+    # A rollout Rossoctl starts for the new ConfigMap is waited out before the probe.
+    after = calls[replace_i:]
+    status_i = next(i for i, call in enumerate(after) if "rollout status deployment/travel-advisor" in call)
+    probe_i = next(i for i, call in enumerate(after) if "/v1/pipeline" in call)
+    assert status_i < probe_i
+    # Admission rebuilds the per-workload ConfigMap; dg.sh never writes it.
+    assert not any(call.startswith("apply -f -") for call in calls)
+    written = json.loads((sandbox.fixdir / "cm-authbridge-runtime-config-wired.json").read_text())
+    assert written["metadata"]["resourceVersion"] == "42"
+    assert written["data"]["config.yaml"] == RUNTIME_CONFIG_WITH_LINEAGE
     assert not any("demo-client" in call and "patch deployment" in call for call in calls)
-    assert not any("rollout restart" in call for call in calls[apply_i + 1 :])
     assert sandbox.kit_log().count("build-otel-shim.sh argv:") == 2
+
+
+def test_rerun_neither_rewrites_nor_rolls_a_live_workload(sandbox) -> None:
+    sandbox.set_namespace({"travel-advisor": _TRUSTED_AGENT}, runtime_lineage=True)
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode == 0, result.stderr
+    calls = sandbox.kubectl_calls()
+    assert not any(call.startswith(("replace", "apply")) for call in calls)
+    assert not any("rollout restart" in call for call in calls)
+    assert "already runs the namespace lineage pipeline" in result.stderr
+
+
+def test_a_failed_namespace_write_rolls_nothing_onto_lineage(sandbox) -> None:
+    sandbox.set_namespace({"travel-advisor": _TRUSTED_AGENT})
+    sandbox.set_flag(REPLACE_FAILS="1")
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode != 0
+    assert "changed since it was read" in result.stderr
+    assert not any("rollout restart" in call for call in sandbox.kubectl_calls())
+
+
+def test_instrument_refuses_a_namespace_configmap_outside_the_envelope(sandbox) -> None:
+    sandbox.set_namespace({"travel-advisor": _TRUSTED_AGENT})
+    runtime = sandbox.fixdir / "cm-authbridge-runtime-config.json"
+    document = json.loads(runtime.read_text())
+    document["data"]["config.yaml"] = "pipeline: {}\n"
+    runtime.write_text(json.dumps(document))
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode != 0
+    assert "outside the safe reconciliation envelope. Mutating nothing." in result.stderr
+    assert not any("patch deployment/" in call for call in sandbox.kubectl_calls())
+    assert sandbox.kit_log() == ""
+
+
+@pytest.mark.parametrize(
+    ("entity", "extra", "expected"),
+    [
+        ({**_TRUSTED_AGENT, "preset": "full"}, (), "sets pluginPreset 'full'"),
+        (_TRUSTED_AGENT, ({"kind": "Deployment", "name": "ledger"},), "Deployment/ledger"),
+        (
+            _TRUSTED_AGENT,
+            ({"kind": "StatefulSet", "name": "travel-advisor"},),
+            "StatefulSet/travel-advisor",
+        ),
+    ],
+)
+def test_instrument_refuses_agentruntimes_the_namespace_pipeline_cannot_serve(
+    sandbox, entity, extra, expected
+) -> None:
+    sandbox.set_namespace({"travel-advisor": entity}, extra_runtimes=extra)
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode != 0
+    assert expected in result.stderr
+    assert "Mutating nothing" in result.stderr
+    assert not any("patch deployment/" in call for call in sandbox.kubectl_calls())
+    assert sandbox.kit_log() == ""
+
+
+def test_entity_instrument_waits_for_a_namespace_wide_first_run(sandbox) -> None:
+    tool = {**_TRUSTED_AGENT, "trusted_type": "tool"}
+    sandbox.set_namespace({"travel-advisor": _TRUSTED_AGENT, "charge-card": tool})
+
+    refused = sandbox.run("namespace", "travel-advisor", "instrument", "charge-card")
+
+    assert refused.returncode != 0
+    assert "Run 'dg.sh namespace travel-advisor instrument' first" in refused.stderr
+    assert "Mutating nothing" in refused.stderr
+    calls = "\n".join(sandbox.kubectl_calls())
+    assert "patch deployment/" not in calls
+    assert "replace -f -" not in calls
+    assert sandbox.kit_log() == ""
+
+    sandbox.set_namespace(
+        {"travel-advisor": _TRUSTED_AGENT, "charge-card": tool}, runtime_lineage=True
+    )
+    result = sandbox.run("namespace", "travel-advisor", "instrument", "charge-card")
+
+    assert result.returncode == 0, result.stderr
+    patches = [call for call in sandbox.kubectl_calls() if "patch deployment/" in call]
+    assert len(patches) == 1 and "patch deployment/charge-card" in patches[0]
+    assert not any(call.startswith("replace") for call in sandbox.kubectl_calls())
+
+
+def test_instrument_refuses_without_the_namespace_runtime_configmap(sandbox) -> None:
+    sandbox.set_namespace({"travel-advisor": _TRUSTED_AGENT})
+    sandbox.set_flag(CM_FORCE_NOTFOUND="authbridge-runtime-config")
+
+    result = sandbox.run("namespace", "travel-advisor", "instrument")
+
+    assert result.returncode != 0
+    assert "authbridge-runtime-config" in result.stderr
+    assert "Mutating nothing" in result.stderr
+    assert not any("patch deployment/" in call for call in sandbox.kubectl_calls())
+    assert sandbox.kit_log() == ""
+
+
+def test_status_reports_a_namespace_configmap_without_lineage(sandbox) -> None:
+    # The next admission renders the namespace ConfigMap, whatever the pod runs now.
+    running = {
+        "sidecar": "proxy",
+        "lineage": True,
+        "trusted_type": "agent",
+        "image": "travel-advisor-otel:latest",
+        "activated": True,
+    }
+    sandbox.set_namespace({"travel-advisor": running})
+
+    lost = sandbox.run("namespace", "travel-advisor", "status")
+
+    assert lost.returncode == 0, lost.stderr
+    assert (
+        "live=no (namespace authbridge-runtime-config differs from the canonical lineage pipeline"
+        in lost.stdout
+    )
+
+    sandbox.set_namespace({"travel-advisor": running}, runtime_lineage=True)
+    kept = sandbox.run("namespace", "travel-advisor", "status")
+
+    assert kept.returncode == 0, kept.stderr
+    assert "live=yes (live)" in kept.stdout
 
 
 def test_namespace_instrument_rolls_tools_before_agents(sandbox) -> None:
@@ -808,6 +1010,7 @@ def test_trusted_proxy_missing_producer_plugin_fails_before_mutation(sandbox) ->
     calls = "\n".join(sandbox.kubectl_calls())
     assert "patch deployment/" not in calls
     assert "apply -f -" not in calls
+    assert "replace -f -" not in calls
 
 
 def test_trusted_proxy_existing_otel_image_is_re_attested(sandbox) -> None:

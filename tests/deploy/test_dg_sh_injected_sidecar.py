@@ -243,7 +243,7 @@ if [[ "${GET_FAILS:-0}" == "1" && "$1" == "get" ]]; then
   exit 1
 fi
 
-# ---- component / tee / egress preflight probes (instrument path) ------------
+# ---- component / tee preflight probes (instrument path) ---------------------
 if [[ "$*" == *"get"* && "$*" == *"namespace"* && "$*" == *"data-governance"* ]]; then
   printf '%s\n' "data-governance"; exit 0
 fi
@@ -252,9 +252,6 @@ if [[ "$*" == *"get"* && "$*" == *"otel-collector-config"* ]]; then
 fi
 if [[ "$*" == *"get"* && "$*" == *"data-governance-receiver"* ]]; then
   printf '%s\n' "1"; exit 0
-fi
-if [[ "$*" == *"get"* && "$*" == *"authbridge-runtime-config"* ]]; then
-  printf '%s' "${EGRESS_ENFORCEMENT:-enforce}"; exit 0
 fi
 
 """ + CONFIGMAP_KUBECTL + r"""

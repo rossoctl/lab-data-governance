@@ -1,5 +1,41 @@
 """Shared fake kubectl ConfigMap read/apply handlers for deploy tests."""
 
+# The namespace ConfigMap admission renders every sidecar's config from: as the
+# platform ships it, and as `instrument` leaves it.
+RUNTIME_CONFIG_WITHOUT_LINEAGE = """pipeline:
+  inbound:
+    plugins:
+    - name: jwt-validation
+  outbound:
+    plugins:
+    - name: token-exchange
+"""
+
+RUNTIME_CONFIG_WITH_LINEAGE = """pipeline:
+  inbound:
+    plugins:
+    - name: jwt-validation
+    - name: a2a-parser
+    - name: mcp-parser
+    - name: inference-parser
+    - name: lineage-telemetry
+      config:
+        otel_endpoint: otel-collector.rossoctl-system.svc.cluster.local:4317
+        capture_io: false
+        namespace_file: /var/run/secrets/kubernetes.io/serviceaccount/namespace
+  outbound:
+    plugins:
+    - name: token-exchange
+    - name: a2a-parser
+    - name: mcp-parser
+    - name: inference-parser
+    - name: lineage-telemetry
+      config:
+        otel_endpoint: otel-collector.rossoctl-system.svc.cluster.local:4317
+        capture_io: false
+        namespace_file: /var/run/secrets/kubernetes.io/serviceaccount/namespace
+"""
+
 CONFIGMAP_KUBECTL = r"""
 # ---- ConfigMap reads for status and existing-proxy reconciliation ------------
 if [[ "$*" == *"get"* && ( "$*" == *"configmap"* || "$*" == *" cm "* || "$*" == *" cm"* ) ]]; then
@@ -17,7 +53,7 @@ if [[ "$*" == *"get"* && ( "$*" == *"configmap"* || "$*" == *" cm "* || "$*" == 
     exit 1
   fi
   f="$FIXDIR/cm-${cmname}.json"
-  # An apply records the wired body. POD_CLOBBER=1 models the operator replacing
+  # An apply/replace records the wired body. POD_CLOBBER=1 models the operator replacing
   # the ConfigMap later, so reads return the original body instead.
   wired_marker="$FIXDIR/appended-${cmname}"
   if [[ -f "$wired_marker" && "${POD_CLOBBER:-0}" != "1" ]]; then
@@ -50,10 +86,10 @@ PY
   exit 1
 fi
 
-# ---- Capture the ConfigMap applied by dg.sh ---------------------------------
+# ---- Capture the ConfigMap applied or replaced by dg.sh ----------------------
 # Store the exact full document, then serve it from subsequent reads unless
 # POD_CLOBBER models a later operator replacement.
-if [[ "$1" == "apply" && ( "$*" == *"-f -"* || "$*" == *"-f-"* ) ]]; then
+if [[ ( "$1" == "apply" || "$1" == "replace" ) && ( "$*" == *"-f -"* || "$*" == *"-f-"* ) ]]; then
   # Stash the applied manifest to a temp FILE and pass its PATH to python as argv
   # — NOT via a pipe, which would collide with the heredoc that feeds python its
   # program on stdin (a heredoc `python3 - <<PY` already occupies stdin).

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Reconcile lineage into a Rossoctl-owned AuthBridge proxy ConfigMap.
+"""Reconcile lineage into a namespace's AuthBridge runtime ConfigMap.
 
-The platform owns the ConfigMap and all authentication plugins. This tool
-canonicalizes the three proxy listener values and the managed parser/lineage
-entries in both ``pipeline.*.plugins`` sequences, while preserving every
-unmanaged plugin and every unrelated ConfigMap field byte-for-byte where
-practical.
+Rossoctl admission rebuilds every proxy's ``authbridge-config-<name>`` from the
+namespace ``authbridge-runtime-config`` on each pod admission, so lineage lives
+in the namespace ConfigMap. The platform owns it and all authentication
+plugins. This tool canonicalizes the managed parser/lineage entries in both
+``pipeline.*.plugins`` sequences, while preserving every unmanaged plugin and
+every unrelated ConfigMap field byte-for-byte where practical. The lineage
+entry names no ``self_id``: each sidecar reads its own admitted client id.
 It intentionally uses only the Python standard library so ``dg.sh`` remains a
 standalone cluster-management script.
 """
@@ -96,7 +98,10 @@ def _plugin_name(block: list[str]) -> str | None:
     return None
 
 
-def _managed_blocks(indent: int, self_id: str, otel_endpoint: str) -> list[str]:
+def _managed_blocks(indent: int, otel_endpoint: str) -> list[str]:
+    # Plain scalars, as PyYAML dumps them: another writer's safe_load and
+    # safe_dump(sort_keys=False) round trip then leaves the canonical bytes
+    # unchanged.
     pad = " " * indent
     child = " " * (indent + 2)
     config = " " * (indent + 4)
@@ -104,32 +109,10 @@ def _managed_blocks(indent: int, self_id: str, otel_endpoint: str) -> list[str]:
         *(f"{pad}- name: {name}\n" for name in PARSER_PLUGINS),
         f"{pad}- name: {LINEAGE_PLUGIN}\n",
         f"{child}config:\n",
-        f'{config}otel_endpoint: "{otel_endpoint}"\n',
+        f"{config}otel_endpoint: {otel_endpoint}\n",
         f"{config}capture_io: false\n",
-        f'{config}self_id: "{self_id}"\n',
-        f'{config}namespace_file: "{NAMESPACE_FILE}"\n',
+        f"{config}namespace_file: {NAMESPACE_FILE}\n",
     ]
-
-
-def _reconcile_listener(lines: list[str], listener_values: dict[str, str]) -> list[str]:
-    listener_index = next((i for i, line in enumerate(lines) if _key(line, "listener")), None)
-    if listener_index is None:
-        raise ConfigError("missing listener: section")
-    listener_indent = _indent(lines[listener_index])
-    listener_end = _section_end(lines, listener_index + 1, len(lines), listener_indent)
-    found: set[str] = set()
-    for cursor in range(listener_index + 1, listener_end):
-        line = lines[cursor]
-        for key, value in listener_values.items():
-            if re.match(rf"^\s*{re.escape(key)}\s*:", line):
-                if key in found:
-                    raise ConfigError(f"duplicate listener.{key}")
-                found.add(key)
-                lines[cursor] = f"{' ' * _indent(line)}{key}: {value}\n"
-    missing = set(listener_values) - found
-    if missing:
-        raise ConfigError(f"existing proxy config is missing listener.{sorted(missing)[0]}")
-    return lines
 
 
 def _plugin_blocks(lines: list[str], direction: str) -> _PluginBlocks:
@@ -187,34 +170,35 @@ def _plugin_names(lines: list[str], direction: str) -> list[str]:
     return names
 
 
-def _reconcile_direction(
-    lines: list[str], direction: str, self_id: str, otel_endpoint: str
-) -> list[str]:
+def _reconcile_direction(lines: list[str], direction: str, otel_endpoint: str) -> list[str]:
     section = _plugin_blocks(lines, direction)
     preserved: list[str] = []
     for block_start, block_end in section.ranges:
         block = lines[block_start:block_end]
-        if _plugin_name(block) not in MANAGED_PLUGINS:
+        name = _plugin_name(block)
+        # The same refusal as pipeline-contract, so nothing is written that the
+        # verification after the rollout cannot read (a flow-style item, say).
+        if name is None:
+            raise ConfigError(f"unnamed plugin in pipeline.{direction}")
+        if name not in MANAGED_PLUGINS:
             preserved.extend(block)
 
     replacement = lines[: section.first_item] + preserved
-    replacement.extend(_managed_blocks(section.item_indent, self_id, otel_endpoint))
+    replacement.extend(_managed_blocks(section.item_indent, otel_endpoint))
     replacement.extend(lines[section.section_end :])
     return replacement
 
 
-def reconcile_config(
-    config: str,
-    self_id: str,
-    otel_endpoint: str,
-    listener_values: dict[str, str],
-) -> str:
-    if not re.search(r"(?m)^mode:\s*proxy-sidecar\s*$", config):
-        raise ConfigError("existing sidecar config is not mode: proxy-sidecar")
+def reconcile_config(config: str, otel_endpoint: str) -> str:
+    # Every sidecar in the namespace renders this text: refuse a value that is
+    # not a plain YAML scalar rather than risk a document admission cannot parse.
+    if not re.fullmatch(r"[A-Za-z0-9._:/-]+", otel_endpoint):
+        raise ConfigError(f"otel endpoint {otel_endpoint!r} is not a plain host:port or URL")
     lines = config.splitlines(keepends=True)
-    lines = _reconcile_listener(lines, listener_values)
-    lines = _reconcile_direction(lines, "inbound", self_id, otel_endpoint)
-    lines = _reconcile_direction(lines, "outbound", self_id, otel_endpoint)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    lines = _reconcile_direction(lines, "inbound", otel_endpoint)
+    lines = _reconcile_direction(lines, "outbound", otel_endpoint)
     return "".join(lines)
 
 
@@ -224,14 +208,7 @@ def render(args: argparse.Namespace) -> int:
     config = data.get("config.yaml")
     if not isinstance(config, str):
         raise ConfigError("ConfigMap has no data.config.yaml string")
-    listener_values = {
-        "forward_proxy_addr": args.forward_proxy_addr,
-        "reverse_proxy_addr": args.reverse_proxy_addr,
-        "reverse_proxy_backend": args.reverse_proxy_backend,
-    }
-    data["config.yaml"] = reconcile_config(
-        config, args.self_id, args.otel_endpoint, listener_values
-    )
+    data["config.yaml"] = reconcile_config(config, args.otel_endpoint)
     document["data"] = data
     json.dump(document, sys.stdout)
     return 0
@@ -260,7 +237,6 @@ def pipeline_valid(args: argparse.Namespace) -> int:
         lineage = plugins[positions[-1]]
         config = lineage.get("config") or {}
         expected_config = {
-            "self_id": args.self_id,
             "otel_endpoint": args.otel_endpoint,
             "capture_io": False,
             "namespace_file": NAMESPACE_FILE,
@@ -288,16 +264,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
     render_parser = subparsers.add_parser("render")
-    render_parser.add_argument("--self-id", required=True)
     render_parser.add_argument("--otel-endpoint", required=True)
-    render_parser.add_argument("--forward-proxy-addr", required=True)
-    render_parser.add_argument("--reverse-proxy-addr", required=True)
-    render_parser.add_argument("--reverse-proxy-backend", required=True)
     render_parser.set_defaults(func=render)
     catalog_parser = subparsers.add_parser("catalog-valid")
     catalog_parser.set_defaults(func=catalog_valid)
     pipeline_parser = subparsers.add_parser("pipeline-valid")
-    pipeline_parser.add_argument("--self-id", required=True)
     pipeline_parser.add_argument("--otel-endpoint", required=True)
     pipeline_parser.add_argument("--expected", required=True)
     pipeline_parser.set_defaults(func=pipeline_valid)

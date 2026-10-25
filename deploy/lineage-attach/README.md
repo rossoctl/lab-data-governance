@@ -18,8 +18,9 @@ Data Governance does not inject a proxy or Envoy sidecar into a bare workload.
   required to keep one user turn in one trace.
 - `attest-otel-shim.py` verifies that a built or running image contains both
   hooks.
-- `reconcile-existing-proxy.py` preserves the admission-owned authentication
-  pipeline while converging its parser and `lineage-telemetry` configuration.
+- `reconcile-existing-proxy.py` converges the parser and `lineage-telemetry`
+  entries in the namespace `authbridge-runtime-config`, which admission renders
+  every sidecar's config from, preserving the authentication pipeline.
 
 ## Contract
 

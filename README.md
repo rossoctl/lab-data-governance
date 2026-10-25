@@ -76,15 +76,16 @@ To make DG observe a namespace, instrument its agents and tools for lineage:
 ```sh
 ./deploy/dg.sh namespaces list                 # namespaces DG can instrument
 ./deploy/dg.sh namespace <ns> instrument       # instrument trusted agents/tools in <ns>
-./deploy/dg.sh namespace <ns> instrument <e>   # instrument one trusted entity
+./deploy/dg.sh namespace <ns> instrument <e>   # one trusted entity, once <ns> is instrumented
 ./deploy/dg.sh namespace <ns> status           # instrumentation state of <ns>
 ```
 
 Instrumentation is one-way and mode-preserving. Rossoctl-managed agents/tools
 are selected by `rossoctl.io/type`, retain their enforcing sidecars and auth,
-and are converged by rolling the application shim before hot-reloading the
-proxy pipeline. Namespace-wide activation completes all preflight checks, then
-rolls tools before agents, alphabetically within each group. `status` reports
+and are converged by rolling the application shim, then writing the proxy
+pipeline into the namespace `authbridge-runtime-config`. Namespace-wide
+activation completes all preflight checks, then rolls tools before agents,
+alphabetically within each group. `status` reports
 subsequent drift. The reasoning is recorded in
 [ADR-0031](docs/adr/0031-non-reversible-namespace-lineage-activation.md) and
 [ADR-0033](docs/adr/0033-dg-sh-vendors-lineage-attach-proxy-default-one-trace.md), and the
