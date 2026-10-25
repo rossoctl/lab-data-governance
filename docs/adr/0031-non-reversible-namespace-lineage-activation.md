@@ -12,7 +12,14 @@ sidecar. It preserves authentication and sidecar ownership, adds the two-shim
 application image, and reconciles the existing proxy pipeline.
 
 The command has no reset operation. Reversal is performed by redeploying the
-workload through Rossoctl. An explicitly named workload without the trusted
+workload through Rossoctl.
+
+> **Amended (#326).** The lineage pipeline now lives in the namespace
+> `authbridge-runtime-config`, which a redeploy does not touch: a redeployed
+> workload gets its application image back and keeps the pipeline. Removing the
+> pipeline means editing that ConfigMap, for every agent/tool in the namespace.
+
+An explicitly named workload without the trusted
 Rossoctl identity is rejected before mutation. Namespace-wide instrumentation
 selects only trusted workloads, then rejects any selected workload without the
 expected proxy sidecar before mutation.
