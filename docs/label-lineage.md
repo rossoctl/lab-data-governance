@@ -43,14 +43,15 @@ egress request can carry a lower seq than the store read that fed it). At each p
 An absent payload is routed and carries nothing (no truncation). An unclassified payload still
 carries what reached it; the trace is `partial` until every payload-bearing leg is classified.
 
-## The tables (migration 0024)
+## The tables (migration 0024, plus 0025's queue)
 
 | table | one row per | notes |
 |---|---|---|
 | `payload_label_edges` | edge | `edge_id` = uuid5 of (trace, to leg, origin, from leg, held run, span); `match_kind` declares `whole, normalized, structural, fragment, semantic` (exact writes `whole`); span, `from_trace_id`, `origin_trace_id` nullable |
 | `leg_inherited_labels` | payload-bearing leg of a derived trace | inherited tags by kind, highest level, origin and edge counts, `classified`, the `payload_hash` and `matcher` it was derived with |
-| `label_lineage_trace_status` | derived trace | `complete` / `partial`, unclassified legs, unanchored findings |
+| `label_lineage_trace_status` | derived trace | `complete` / `partial`, unclassified legs, unanchored findings; `edge_count` counts every edge, the cross-conversation ones included (a leg row's `edge_count` does not) |
 | `risk_recompute_requests` | interaction | its inherited summary changed after it may have been decided |
+| `label_lineage_dirty_traces` (0025) | trace to derive again | a trace it read as a prior changed; written by the change gate, cleared by the next derivation |
 
 The processor (`python -m data_governance.processors.label_lineage`, `deploy/k8s/93-label-lineage.yaml`)
 drains `interaction_legs` readiness-gated on `dg_interaction_leg_ready` (a leg is delivered once its
@@ -73,15 +74,53 @@ Set on `85-leg-ready.yaml` only; leg-ready alone decides what inherited labels d
   label-lineage pod holds the risk stream, by design — and leg-ready drains
   `risk_recompute_requests` through the risk observer. The engine reads only edges at the payload
   each leg carries now. With `off` the requests are left alone (one row per interaction).
-- `all` — rejected at leg-ready's startup: it would forward origins from other conversations.
+- `all` — reserved and rejected at leg-ready's startup: labels that crossed from another conversation are
+  lineage information, never decision input (below).
+
+## Across conversations: `LABEL_CROSS_TRACE_WINDOW_HOURS`
+
+Set on `93-label-lineage.yaml`; `0` (the default) is off. With a window of W hours, before a trace is
+derived the processor loads its **priors**: for each entity of the trace that keeps state — an agent
+(it accumulates, ADR-0028 D2) or a declared source such as a store — every payload-bearing leg of
+another trace that entity was handed or said, from W hours before the trace's first leg up to its
+last, with the occurrences it holds there (its own findings and what reached it, read back from the
+edge table). A prior joins the inputs of the legs that entity emits in this trace, when it was on the
+wire before them; each unit once, at the entity's latest holding of it. "Keeps state" is kind-based today
+(ADR-0028 D2 and D12): every `agent` and every `tool` — a pass-through tool, the external partner included —
+bridges conversations; an LLM or a user never does. An agent is one shared Deployment: two users' conversations through
+it inside the window are linked when the same bytes appear in both — the path then runs into another
+user's conversation. That is a policy decision for whoever opens the window (narrow the window, or
+keep it closed where agents serve several tenants); the processor records what the bytes show.
+Re-classifying a payload in place (ADR-0024's runbook) changes what priors read without queueing the
+traces that read it — the same blind spot as the stale arm's; the manifest's recovery (truncate the
+label tables, reset the cursor) covers both.
+
+What crosses is recorded in the same edge table: the crossing edge names the carrier's trace
+(`from_trace_id`), and every edge after it names the unit's trace (`origin_trace_id`). The crossing
+is recorded where the value enters this conversation; after that it travels as the conversation
+carries it. **It is lineage information for following a value's path — the Label lineage tab walks
+it across the boundary — and never inheritance:** a foreign unit never claims a finding of this
+conversation (the finding stays this conversation's own origin, the foreign occurrence sits beside
+it), never suppresses a shorter own value, and never comes back through another conversation. So
+`leg_inherited_labels`, the recompute requests and the OPA input are the same with the window open
+or closed; a test proves it on the replayed rows.
+
+When a derivation changes what priors read of a trace (its edges, or a leg's payload or
+classification), the traces that may have read it (they share a stateful entity and overlap the
+window, the mirror of the priors' bounds) are queued in `label_lineage_dirty_traces` (migration
+0025, the only table this adds: `trace_id`, `requested_at`, `reason`) and re-derived by a third arm
+of the drain; every derivation deletes its trace's row in its own transaction. A derivation that
+changes nothing queues nothing, so two conversations that read each other settle. Opening the window
+does not re-derive the traces already derived: priors are read when a trace is derived, so the
+crossing edges appear on traces derived from then on (reset the cursor to rebuild the rest).
 
 ## Reading it
 
 `GET /api/traces/{tid}/interactions/{iid}/labels` (`retrieval.get_leg_labels`) serves, per
 payload-bearing leg, the classifier's findings on the payload (**found here**) beside the edges into
 the leg at its current payload hash (**carried in**), each with its origin leg, `seq`, caller ->
-callee, `unit_text` / `unit_value`, `match_kind` and `origin_trace_id` (null for this trace; the
-trace page does not link an origin in another one). `retrieval.labels.merge` pairs them per
+callee, `unit_text` / `unit_value`, `match_kind` and `origin_trace_id` (null for this trace; an origin in another
+trace is reached through its chain, not linked from the row). `retrieval.labels.merge` pairs them per
 (span, entity type): a finding claims the same-type edges whose span overlaps its own (the extent rule
 can widen a number past what the classifier marked), an unclaimed edge group is a carried-in row,
 and two labels never fold into one. `lineage_status` is null when the trace is not derived (or 0024
@@ -91,7 +130,7 @@ The risk layer says "used in this decision" only from the record's
 `classification_summary.<leg>.inherited`, which leg-ready writes only for edges it forwarded. Which
 rule a label fired is not stored, and no page claims it.
 
-**The lineage of each value.** Every carried-in origin on a label carries `chains`: the routes
+**The lineage of each value (task 5).** Every carried-in origin on a label carries `chains`: the routes
 the value took from the payload where the classifier found it to this leg, one hop per payload, in
 `seq` order, each hop with `role` (`origin` / `hop` / `here`), its interaction, leg, `seq`, caller ->
 callee, the span at that payload (the unit on the origin) and its `trace_id`. The walk follows the
@@ -99,7 +138,7 @@ edges' `from_*` back from the leg, each next hop read at the payload the edge wa
 (`from_payload_hash`), so a chain is a chain of payloads; only the leg read is pinned to its current
 payload. A value that reached the leg two ways (the edges form a DAG) has two chains, every complete
 route, shortest first. The walk crosses into other traces through `from_trace_id` / `origin_trace_id`
-(no finder writes them yet; the read already follows them). A cycle stops at the repeated edge, the
+(the exact finder writes them since slice 2, across the window). A cycle stops at the repeated edge, the
 depth is capped (`MAX_CHAIN_DEPTH`, logged when hit), and a walk that ends before the origin is kept
 as a chain whose first hop is a `hop`, never shown as the origin. The origin hop carries an `excerpt`
 of its payload's projected text around the unit.
@@ -133,8 +172,11 @@ only, and a value's response-leg hop lights its interaction's one arrow.
   spelled-out email is not the unit (structural transformations come next).
 - No fragments: a value split across fields or cut to its last four reaches nothing; `recombined`
   is always false.
-- No labels across conversations: no priors, no window, no cross-trace edges; `from_trace_id` and
-  `origin_trace_id` stay null (the labels read already walks them when a finder writes them).
+- Across conversations, only through entities that keep state, only inside the window, and only as
+  lineage information: no decision reads a label that crossed (the labels read walks the crossing;
+  the trace page marks a hop in another trace and links its flow view). The store bridges two
+  conversations (it is a declared source) but not two turns of one (data lineage's D2 keeps a tool
+  memoryless).
 - No semantic judge. Data lineage keeps its own `SEMANTIC_MATCHER`; label lineage's finders are not offered there.
 - No floor on a unit's length: a short finding (a two-digit age, a misread word) is found wherever
   those bytes stand whole and bounded, so its labels travel as far as the bytes do.

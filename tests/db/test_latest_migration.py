@@ -11,9 +11,10 @@ from __future__ import annotations
 import psycopg
 
 
-def test_head_is_0024(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on the current head revision (0024 —
-    the label-lineage tables, issue #272, parent 0023; before that 0023, the
+def test_head_is_0025(migrated_dsn: str) -> None:
+    """Applying the chain to head lands on the current head revision (0025 —
+    the label-lineage dirty-traces table, issue #273, parent 0024; before that
+    0024, the label-lineage tables, issue #272, parent 0023; before that 0023, the
     trace-risk seq cursor column + NOTIFY trigger, issue #175, parent 0022;
     before that 0022, `main`'s content_kind-on-the-leg revision (#288), parent
     0020 — ``entities.namespace``, chained after 0019).
@@ -41,4 +42,4 @@ def test_head_is_0024(migrated_dsn: str) -> None:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0024_label_lineage"
+    assert version == "0025_label_lineage_dirty_traces"

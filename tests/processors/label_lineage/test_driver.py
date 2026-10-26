@@ -170,3 +170,15 @@ def test_a_derivation_wakes_leg_ready(configured_db: str) -> None:
         driver.drain(0, OFF)
         got = list(listener.notifies(timeout=2, stop_after=1))
     assert [n.channel for n in got] == [driver.NOTIFY_CHANNEL]
+
+
+def test_a_bad_window_stops_the_processor_before_any_db_work() -> None:
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "LABEL_CROSS_TRACE_WINDOW_HOURS": "day", "DATABASE_URL": "postgres://unused:1/x"}
+    result = subprocess.run([sys.executable, "-m", "data_governance.processors.label_lineage"],
+                            env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 2 and "LABEL_CROSS_TRACE_WINDOW_HOURS" in result.stderr
+    assert "Traceback" not in result.stderr

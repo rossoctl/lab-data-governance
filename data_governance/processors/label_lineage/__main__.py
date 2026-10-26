@@ -1,7 +1,9 @@
 """P-label-lineage entry point — ``python -m data_governance.processors.label_lineage``.
 
-Reads ``DATABASE_URL``, validates ``LABEL_MATCHER`` before any DB work (an unknown
-finder exits 2 rather than deriving under a name the operator did not mean), runs the schema-version check
+Reads ``DATABASE_URL``, validates ``LABEL_MATCHER`` and
+``LABEL_CROSS_TRACE_WINDOW_HOURS`` before any DB work (an unknown finder or a window
+that is not a number of hours exits 2 rather than deriving under a configuration
+the operator did not mean), runs the schema-version check
 (ADR-0002: exit 3 on a mismatch, 4 if it cannot compare), then drives the
 readiness-gated drain (:func:`driver.run`) until SIGINT/SIGTERM. Shaped like the
 data-lineage entry point: no metrics surface, no model load.
@@ -38,10 +40,10 @@ def main() -> int:
 
     try:
         config = driver.configured()
-    except find.UnknownFinder as exc:
+    except (find.UnknownFinder, ValueError) as exc:
         sys.stderr.write(f"{exc}\n")
         return 2
-    log.info("label lineage with LABEL_MATCHER=%s", config.matcher)
+    log.info("label lineage with LABEL_MATCHER=%s %s=%s", config.matcher, driver.WINDOW_ENV, config.window_hours)
 
     db.configure(dsn)
     try:

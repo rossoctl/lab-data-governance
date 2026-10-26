@@ -206,7 +206,7 @@ Expected today, with booking-agent deployed under `E2E_VARIANT=rogue` (step 4; t
 | travel_advisor, `risk` with the alerts processor (#104) | `17 passed, 1 skipped` or `16 passed, 1 skipped, 1 xfailed` | the skip is the lab module; L13 runs (on a branch without the alerts processor it skips: one more skip, one fewer pass); L14 passes when the model makes the partner call and xfails when it skips it; L16 runs: one process drains, no duplicate version, no restart. KNOWN rows: the stale-callee record (#279) on the risk scenarios (L7, L10–L12, L15 on the 2026-10-13 runs); the content-kind gap and booking-agent's stale tool-call parent may read KNOWN on some turns |
 | travel_advisor, a branch without #290 | `16 passed, 2 skipped` or `15 passed, 2 skipped, 1 xfailed` | as above with L16 skipped (no sole-consumer lock) |
 | lineage_lab | `9 passed, 1 skipped, 1 xfailed` | the skip is the travel module; R8 xfails on the classifier finding (last four digits read as PCI). KNOWN rows: the stale-callee record (#279), and R8's `partner.verdict` (the classifier finding behind its xfail) |
-| either app, a branch with label lineage | travel one more test, L18 (passes on a rogue turn with the call in the turn's trace, else skips); lab two more, R6b and R14 (lab `11 passed, 1 skipped, 1 xfailed`) | the stock rows' verdicts do not change with `RISK_INHERITED_LABELS=off` |
+| either app, a branch with label lineage | travel one more test, L18 (passes on a rogue turn with the call in the turn's trace, else skips); lab two more, R6b and R14 (lab `11 passed, 1 skipped, 1 xfailed`); with the cross-conversation window open one more, R13 (`12 passed`) | the stock rows' verdicts do not change with `RISK_INHERITED_LABELS=off`, nor with the window open |
 
 Anything else is a finding. A preflight failure names the pin, the expected value and the
 observed one, and sends no traffic.
@@ -325,6 +325,7 @@ travel_advisor, so the lab starts at R2).
 | R10 | two agents in parallel, one tool | fan-in derives as the plan says |
 | R11 | the same tool call on a pod-lifetime session and on a per-turn one | both derive under the turn (cortex #1333 carries the turn across the startup session; before it the pod-lifetime call sat in its own trace, and a kit without the bridge turns the row red) |
 | R14 | write `{id, guest_name}`, read it whole, read the id alone, send the id alone | the id is PII beside the name and no PII alone; flag off allow; with `RISK_INHERITED_LABELS=on` critical/block with DG-001 through lineage alone |
+| R13 | turn 1 writes `{id, guest_name}` under a fresh key; turn 2, a new trace, reads the id alone and sends it | across conversations (#273): with `LABEL_CROSS_TRACE_WINDOW_HOURS` > 0 a crossing edge from turn 1 into turn 2's store read (`from_trace_id`), the id's PII unit on the egress with `origin_trace_id`; the decision does not see it (no DG-001, no inherited PII); skips with the window at 0 |
 
 ### Label rows
 

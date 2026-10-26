@@ -133,7 +133,8 @@ spec:
             # labels whose origin is in the same trace are forwarded, a leg is
             # ready only once label lineage has derived it at its current
             # payload, and recompute requests are drained. "all" is rejected at
-            # startup (cross-conversation lineage is not built yet). Label
+            # startup: labels that crossed from another conversation are lineage
+            # information, never decision input (#273). Label
             # lineage (93-label-lineage.yaml) writes the requests whatever this
             # says; only this consumer decides whether to act on them. With "on"
             # a stopped label-lineage pod holds this stream (by design).

@@ -180,7 +180,10 @@ def _verdict(leg) -> str:
 
 def _labels(ch, dg, capabilities, run_record, name, T, eg):
     """Read and record what label lineage derived for the trace; return the edges
-    into the egress request leg, or ``None`` when label lineage is not deployed.
+    into the egress request leg whose unit was born in THIS conversation, or
+    ``None`` when label lineage is not deployed. Edges from another conversation
+    (the window open) are lineage information: recorded, counted, never what a
+    row's own lineage is asserted on (R13 reads them itself).
     Asserts the flag's half that every row shares: on, the egress record names
     the labels that reached it; off, it names none (the engine never read them)."""
     if not capabilities.labels:
@@ -188,7 +191,12 @@ def _labels(ch, dg, capabilities, run_record, name, T, eg):
         return None
     lab = L.read(dg, T)
     L.write(run_record, name, lab)
-    edges = L.into(lab, eg["id"])
+    all_edges = L.into(lab, eg["id"])
+    edges = [e for e in all_edges if e["origin_trace"] is None]
+    foreign = [e for e in all_edges if e["origin_trace"] is not None]
+    if foreign:
+        ch.record("labels.egress_foreign", "units into the egress from other conversations (type, value, origin trace)",
+                  sorted({(e["entity_type"], e["value"], e["origin_trace"][:8]) for e in foreign}))
     row = L.leg_row(lab, eg["id"])
     ch.check("labels.egress_row", "label lineage derived the egress request leg", "a row", row, ok=row is not None)
     ch.record("labels.egress", "units into the egress request leg (type, value, kind, origin/leg, via)",
@@ -556,6 +564,95 @@ def test_R14_the_identifier_alone(env, kube, dg, capabilities, catalog, fleet, a
                  ok=_verdict(eg[0]) == "critical/block" and "DG-001" in eg[0]["rules"])
     else:
         ch.check("partner.verdict_off", "flag off: the stock decision", "none/allow", _verdict(eg[0]))
+    ch.finish()
+
+
+# --- R13: across conversations ---------------------------------------------------------------------
+
+
+def test_R13_a_record_written_in_one_conversation_read_and_sent_in_another(env, kube, dg, capabilities, catalog, fleet, attach, run_record, state):
+    """R13 — across conversations (#273). Turn 1 (trace T1) writes
+    {id: BK-7F3A21, guest_name: Alice Moreno} under a fresh key and reads it
+    back whole; the classifier reads the id beside the guest's name as PID (PII)
+    on the store's answer — R14's measured shape (on the write REQUEST it reads
+    OPID: the classifier is context-dependent, measured 2026-10-18). Turn 2
+    (trace T2, a new conversation) reads that key with fields=[id] (the store
+    answers {id} alone: AAD, no PII) and sends it to the external partner.
+    Labels, window on: lab-store was handed the record and answered it in T1, so
+    those payloads are priors of the legs lab-store emits in T2: crossing edges
+    (from_trace_id = T1) into lab-store's read response, and the id's PID unit
+    travels on to the partner request with origin_trace_id = T1. (R14 ran the
+    same id within the window, so other crossing edges, from R14's trace, sit
+    beside it; the record lists them all. The store's MCP lifecycle answers carry
+    the protocol date, read as DATE/AAD by the classifier: it crosses from every
+    earlier conversation — recorded, the T1/T5 family.)
+    Decision: unchanged. What crossed is lineage information for following the
+    value's path, never decision input: the partner request's inherited row counts
+    same-conversation origins only (the AAD reading of T2's own store answer), the
+    record carries no PII, DG-001 does not fire. The verdict is T2's own, as in
+    R14 with the flag on minus DG-001 (recorded).
+    Page: /ui/traces/<T2>, the Label lineage tab with the id tracked shows a
+    chain that starts in T1 (recorded as ui.trace)."""
+    import time
+    import uuid
+
+    if not capabilities.cross_session:
+        pytest.skip("label lineage reads no priors on this deployment (LABEL_CROSS_TRACE_WINDOW_HOURS=0 or no 0025)")
+    key = f"r13-{uuid.uuid4().hex[:8]}"
+    record = {"id": REF, "guest_name": "Alice Moreno"}
+    plan1 = {"mark": "R13a", "steps": [
+        {"op": "mcp", "tool": "lab_store", "args": {"op": "write", "key": key, "payload": record}, "mark": "w"},
+        read(key, "whole")]}
+    T1, values1, legs1, ch1 = _run(env, kube, dg, capabilities, fleet, attach, run_record, state, "R13a", plan1)
+    ch1.check("app.written", "the store wrote the record under the fresh key", True, values1["w"].get("written"))
+    ch1.check("app.read_whole", "the store returned the record whole", record, values1["whole"])
+    # T1 must be derived (its payloads classified, its edges stored) before it can be a prior of T2.
+    deadline = time.monotonic() + 90
+    status = None
+    while time.monotonic() < deadline:
+        row = dg.q("SELECT status FROM label_lineage_trace_status WHERE trace_id = %s", (T1,))
+        status = row[0][0] if row else None
+        if status == "complete":
+            break
+        time.sleep(2)
+    ch1.check("labels.t1_derived", "label lineage derived turn 1 completely before turn 2", "complete", status)
+    ch1.finish()
+    plan2 = {"mark": "R13b", "steps": [read(key, "alone", fields=["id"]), send("$alone", "sent")]}
+    T2, values2, legs2, ch = _run(env, kube, dg, capabilities, fleet, attach, run_record, state, "R13b", plan2)
+    ch.check("app.read", "the store returned the id alone", {"id": REF}, values2["alone"])
+    eg = _egress(legs2, EXTERNAL)
+    ch.check("partner.calls", "partner calls", 1, len(eg))
+    run_record.scenario("R13b").write("egress_record.json", eg[0])
+    ch.check("partner.no_pii", "the partner request alone is not PII to the classifier", "no PII",
+             _tags(eg[0]["request"]), ok="PII" not in _tags(eg[0]["request"]))
+    edges = _labels(ch, dg, capabilities, run_record, "R13b", T2, eg[0])
+    if edges is not None:
+        lab = L.read(dg, T2)
+        crossed = L.crossing(lab["edges"])
+        ch.record("cross.edges", "crossing edges into T2 (from trace, to callee/leg, type, value)",
+                  sorted({(e["from_trace"], f"{e['to_callee']}/{e['to_leg']}", e["entity_type"], e["value"]) for e in crossed}))
+        entered = [e for e in crossed if e["from_trace"] == T1 and e["to_callee"] == STORE and e["to_leg"] == "response"
+                   and e["value"] == REF]
+        ch.check("cross.entered_at_the_store", "the id crosses from T1 into lab-store's read response (from_trace_id = T1)",
+                 "present", "present" if entered else "absent", ok=bool(entered),
+                 comment=f"from {sorted({e['from'] + '/' + e['from_leg'] for e in entered})}")
+        pid = [e for e in L.into(lab, eg[0]["id"]) if e["value"] == REF and e["origin_trace"] == T1 and "PII" in e["tags"]]
+        ch.check("cross.origin_on_the_egress", "the id's PID unit reaches the partner request with origin_trace_id = T1",
+                 "present", "present" if pid else "absent", ok=bool(pid),
+                 comment=f"{sorted({(e['entity_type'], tuple(e['tags']), e['from'] + '/' + e['from_leg']) for e in pid})}")
+        ch.check("cross.egress_edge_is_intra", "the egress edge's carrier is T2's own read (the crossing was at the store)",
+                 True, all(e["from_trace"] is None for e in pid) if pid else None, ok=bool(pid) and all(e["from_trace"] is None for e in pid))
+        row = L.leg_row(lab, eg[0]["id"])
+        ch.check("cross.not_inherited", "the egress row counts same-conversation origins only: no PII inherited",
+                 "no PII", sorted(row["whole"]) if row else None, ok=bool(row) and "PII" not in row["whole"])
+        ch.record("cross.t2_edges", "T2's edges: own origin / foreign origin / crossing",
+                  (sum(1 for e in lab["edges"] if e["origin_trace"] is None),
+                   sum(1 for e in lab["edges"] if e["origin_trace"] is not None), len(crossed)))
+    ch.check("partner.no_dg001", "DG-001 does not fire: no PII reaches the decision from another conversation",
+             "no DG-001", f"{_verdict(eg[0])} {eg[0]['rules']}", ok="DG-001" not in eg[0]["rules"])
+    ch.record("partner.verdict", "the decision (T2's own, flag as deployed)", f"{_verdict(eg[0])} {eg[0]['rules']}")
+    ch.record("ui.trace", "the page to look at: the Label lineage tab of T2's partner request, the id tracked",
+              f"{env.dg_api}/ui/traces/{T2}  (T1 = {T1})")
     ch.finish()
 
 

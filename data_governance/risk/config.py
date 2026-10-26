@@ -287,12 +287,15 @@ INHERITED_LABELS_MODES = ("off", "on", "all")
 
 def parse_inherited_labels(raw: str | None) -> str:
     """The ``RISK_INHERITED_LABELS`` mode, or ``ValueError`` for ``all`` or a typo.
-    Never falls back to ``off`` on a value it does not know."""
+    Never falls back to ``off`` on a value it does not know. ``all`` is reserved
+    and rejected: labels that crossed from another conversation are lineage
+    information for following a value's path (the label-lineage tab), not
+    decision input (#273)."""
     mode = (raw or "off").strip().lower()
     if mode == "all":
         raise ValueError(
-            "RISK_INHERITED_LABELS=all forwards labels from other conversations; it "
-            "arrives with cross-conversation label lineage (#273) — use off or on"
+            "RISK_INHERITED_LABELS=all is not accepted: cross-conversation labels are "
+            "lineage information, not decision input (#273) — use off or on"
         )
     if mode not in INHERITED_LABELS_MODES:
         raise ValueError(f"RISK_INHERITED_LABELS must be off or on; got {raw!r}")

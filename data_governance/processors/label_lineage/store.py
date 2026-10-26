@@ -48,6 +48,22 @@ def _summary(leg: LegSummary) -> tuple:
             leg.origin_count, leg.recombined, leg.edge_count)
 
 
+def exposed(tx: db.Transaction, trace_id: str) -> frozenset[tuple]:
+    """What another trace's priors read of this one, as stored: its edges (by id)
+    and each derived leg with the payload and classification it was derived
+    with. A change in this set is what makes the traces that read it stale."""
+    edges = tx.fetch_all("SELECT edge_id FROM payload_label_edges WHERE trace_id = %s", (trace_id,))
+    legs = tx.fetch_all("SELECT interaction_id, leg_type::text, payload_hash, classified "
+                        "FROM leg_inherited_labels WHERE trace_id = %s", (trace_id,))
+    return frozenset(("edge", r[0]) for r in edges) | frozenset(("leg", *r) for r in legs)
+
+
+def exposed_by(derivation: Derivation) -> frozenset[tuple]:
+    """:func:`exposed` as *derivation* will store it."""
+    return frozenset(("edge", edge_id(e)) for e in derivation.edges) | frozenset(
+        ("leg", *key, leg.payload_hash, leg.classified) for key, leg in derivation.legs.items())
+
+
 def read_summaries(tx: db.Transaction, trace_id: str) -> dict[tuple[str, str], tuple]:
     rows = tx.fetch_all(
         f"SELECT interaction_id, leg_type::text, {_SUMMARY_COLUMNS} FROM leg_inherited_labels "

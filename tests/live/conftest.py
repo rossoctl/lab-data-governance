@@ -557,6 +557,8 @@ class Caps:
     alert_floor: str = "low"  # the alerts Deployment's RISK_ALERT_MIN_RISK_LEVEL (its default when unset)
     labels: bool = False  # label lineage runs: migration 0024's four tables, and its cursor row or a ready Deployment
     inherited_labels: bool = False  # leg-ready's Deployment says RISK_INHERITED_LABELS=on
+    cross_session: bool = False  # label lineage reads priors across conversations: 0025's table + a window > 0
+    cross_window_hours: float = 0.0  # the label-lineage Deployment's LABEL_CROSS_TRACE_WINDOW_HOURS
 
 
 LABEL_TABLES = ("payload_label_edges", "leg_inherited_labels", "label_lineage_trace_status",
@@ -611,16 +613,30 @@ def capabilities(env: Env, kube: Kube, dg: Dg, api: httpx.Client, run_record) ->
     (label_cursor,) = dg.one(
         "SELECT count(*) FROM processor_state WHERE processor_name = 'label_lineage'")
     label_deploy_ready = False
+    window_raw = None
     if kube.exists("deploy", "data-governance-label-lineage", ns=env.dg_ns):
         spec = kube.json(["get", "deploy", "data-governance-label-lineage"], ns=env.dg_ns)
         label_deploy_ready = (spec.get("status") or {}).get("readyReplicas", 0) >= 1
+        window_raw = next((e.get("value") for c in spec["spec"]["template"]["spec"]["containers"]
+                           for e in c.get("env", []) if e.get("name") == "LABEL_CROSS_TRACE_WINDOW_HOURS"), None)
     labels = label_tables == len(LABEL_TABLES) and (label_cursor == 1 or label_deploy_ready)
+    # Across conversations (slice 2, #273): migration 0025's queue table exists and
+    # the processor's window is open. Read off the Deployment like the flag.
+    (dirty_table,) = dg.one(
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' "
+        "AND table_name = 'label_lineage_dirty_traces'")
+    try:
+        cross_window_hours = float((window_raw or "0").strip() or 0)
+    except ValueError:
+        cross_window_hours = 0.0
+    cross_session = labels and dirty_table == 1 and cross_window_hours > 0
     leg_ready = kube.json(["get", "deploy", "data-governance-leg-ready"], ns=env.dg_ns)
     inherited_mode = next((e.get("value") for c in leg_ready["spec"]["template"]["spec"]["containers"]
                            for e in c.get("env", []) if e.get("name") == "RISK_INHERITED_LABELS"), None)
     inherited_labels = labels and (inherited_mode or "").strip().lower() == "on"
     caps = Caps(alerts=alerts, health=health, ledger=ledger, consumer_lock=consumer_lock,
-                alert_floor=alert_floor, labels=labels, inherited_labels=inherited_labels)
+                alert_floor=alert_floor, labels=labels, inherited_labels=inherited_labels,
+                cross_session=cross_session, cross_window_hours=cross_window_hours)
     run_record.write("capabilities.json", {"alerts": alerts, "health": health, "ledger": ledger,
                                            "consumer_lock": consumer_lock, "ledger_on": sorted(ledger_on),
                                            "alerts_deploy": has_alerts_deploy, "alert_floor": alert_floor,
@@ -629,7 +645,10 @@ def capabilities(env: Env, kube: Kube, dg: Dg, api: httpx.Client, run_record) ->
                                            "label_lineage_cursor_row": bool(label_cursor),
                                            "label_lineage_deploy_ready": label_deploy_ready,
                                            "inherited_labels": inherited_labels,
-                                           "leg_ready.RISK_INHERITED_LABELS": inherited_mode})
+                                           "leg_ready.RISK_INHERITED_LABELS": inherited_mode,
+                                           "cross_session": cross_session,
+                                           "label_lineage_dirty_traces": bool(dirty_table),
+                                           "label_lineage.LABEL_CROSS_TRACE_WINDOW_HOURS": window_raw})
     return caps
 
 

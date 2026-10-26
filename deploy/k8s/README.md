@@ -155,8 +155,9 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   is delivered once its payload is absent or classified), re-derives each
   delivered trace and writes migration 0024's tables in the transaction that
   advances its `label_lineage` cursor, then notifies the same channel.
-  `LABEL_MATCHER=exact` (the only finder; an unknown name exits 2). It reads no
-  risk configuration (`docs/label-lineage.md`).
+  `LABEL_MATCHER=exact` (the only finder; an unknown name exits 2);
+  `LABEL_CROSS_TRACE_WINDOW_HOURS=0` (the cross-conversation window; `0` off; not a
+  finite number >= 0 exits 2). It reads no risk configuration (`docs/label-lineage.md`).
 - **Leg-ready consumer Deployment (the risk engine).** **Single replica**
   running `python -m data_governance.processors.leg_ready` on the shared
   image, `maxSurge:0`. Delivers each ready interaction leg and, per leg,

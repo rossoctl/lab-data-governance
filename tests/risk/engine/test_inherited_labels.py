@@ -5,7 +5,8 @@
   lineage — built here from the same evidence.
 - ``on``: the labels that reached a leg's payload join that flow as ONE
   document-level data item; only whole values whose origin is in the trace.
-- ``all``: rejected at startup until cross-conversation lineage exists.
+- ``all``: rejected at startup. Cross-conversation labels are lineage information
+  for following a value's path, never decision input (slice 2, #273).
 """
 
 from __future__ import annotations
@@ -147,8 +148,10 @@ def test_an_origin_named_by_its_own_trace_id_is_this_trace() -> None:
 # --- all ---------------------------------------------------------------------------------------------
 
 
-def test_all_is_rejected_with_a_message_naming_what_it_waits_for() -> None:
-    with pytest.raises(ValueError, match="cross-conversation"):
+def test_all_is_rejected_as_lineage_information_not_decision_input() -> None:
+    """Cross-conversation labels are for following a value's path; a decision never
+    sees them. The value stays reserved, and rejected."""
+    with pytest.raises(ValueError, match="lineage information, not decision input"):
         config.parse_inherited_labels("all")
     with pytest.raises(ValueError, match="must be off or on"):
         config.parse_inherited_labels("yes")

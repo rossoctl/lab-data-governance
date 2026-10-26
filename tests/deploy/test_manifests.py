@@ -968,6 +968,13 @@ def test_label_lineage_states_the_exact_finder(label_lineage_deployment: dict) -
     assert matcher == "exact" and find.get_finder(matcher) is find.exact
 
 
+def test_label_lineage_ships_with_the_cross_conversation_window_off(label_lineage_deployment: dict) -> None:
+    from data_governance.processors.label_lineage import driver
+
+    raw = _env(label_lineage_deployment)["LABEL_CROSS_TRACE_WINDOW_HOURS"]
+    assert driver.parse_window(raw) == 0.0
+
+
 def test_the_inherited_labels_flag_ships_off_on_leg_ready_only(
     docs: list[dict], label_lineage_deployment: dict
 ) -> None:

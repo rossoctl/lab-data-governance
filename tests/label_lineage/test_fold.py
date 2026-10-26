@@ -173,8 +173,7 @@ def test_a_leg_without_a_wire_time_sorts_last() -> None:
     assert fold.derive(dataclasses.replace(t, legs=legs), find.exact).status.status == "complete"
 
 
-def test_priors_from_other_conversations_are_refused_in_one() -> None:
+def test_priors_are_read_since_slice_two() -> None:
+    """The slice-1 refusal is gone; what priors do is pinned in ``test_priors.py``."""
     t, d = derive("R8")
-    with pytest.raises(ValueError, match="other conversations"):
-        prior = next(occs for occs in d.occurrences.values() if occs)
-        fold.derive(dataclasses.replace(t, priors=prior), find.exact)
+    assert fold.derive(dataclasses.replace(t, priors=()), find.exact) == d

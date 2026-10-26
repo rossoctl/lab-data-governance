@@ -293,3 +293,21 @@ rows:
       lab-partner request: "flag off: the stock decision, none/allow (measured)"
     expected_label_propagation: "the id's PID unit found on lab-store's response #1 reaches the lab-partner request whole, PII among its tags (and the AAD unit of response #2); the name does not reach. Flag on: critical/block. The block comes from DG-001 on the inherited PII (the id tagged PID beside the name at store answer 1): lineage alone decides. The CREDENTIALS, DG-004 and E2E-CRED-EXT come from the classifier's own AAD reading of the id alone at store answer 2, which lineage carries as found"
     status: "built — test_lab_live R14 (no app change needed: the lab's write and read(fields) suffice)"
+  - id: R13
+    title: "across conversations — a record written in one conversation is read alone and sent out in another; the id's path leads back into the first"
+    app: lineage_lab
+    transformation: forward
+    hop_shape: "turn 1 (T1): demo-client > lab-a > lab-store [dark: write r13-<key> {id, guest_name}] > lab-a > lab-store [dark: read whole]; turn 2 (T2, a new trace): demo-client > lab-a > lab-store [dark: read fields=[id]] > lab-a => lab-partner (external)"
+    framework: plan
+    datastore_origin: "postgres lab.records row r13-<key> written by turn 1: {id: BK-7F3A21, guest_name: Alice Moreno}"
+    egress: external
+    expected_graph: "T1: root; 2× lab-a→lab-store (mcp); 3 interactions. T2: root; lab-a→lab-store (mcp); lab-a→lab-partner (http); 3 interactions"
+    classification_per_leg:
+      "T1 lab-store write request": "OPID (PI) — measured 2026-10-18 on B: in the write arguments the id beside the name is NOT read as PII"
+      "T1 lab-store read response (whole)": "PN + PID (the id read as PII beside the guest's name) — R14's measured shape"
+      "T2 lab-store response (the id alone)": "AAD (PI, CREDENTIALS) — measured on R14; no PII"
+      "T2 lab-partner request": "OPID (PI) — measured on R14; no PII"
+    decision_per_leg:
+      "T2 lab-partner request": "T2's own decision, whatever the flag: no PII reaches it from another conversation, DG-001 does not fire (recorded; expected R14-on minus DG-001, i.e. the CREDENTIALS rules from T2's own AAD reading)"
+    expected_label_propagation: "window on (LABEL_CROSS_TRACE_WINDOW_HOURS > 0): lab-store was handed the record in T1, so T1's write request and read response are priors of the legs lab-store emits in T2 — crossing edges (from_trace_id = T1) into lab-store's read response in T2 (beside any from R14's trace, which used the same id within the window), the id's PID unit (PII) with origin_trace_id = T1; it travels on to the partner request as T2 carries it (that edge's carrier is T2's own read). The partner request's leg_inherited_labels row counts same-conversation origins only: no PII inherited, no recompute. The Label lineage tab of T2 with the id tracked shows a chain that starts in T1. Window 0: no crossing edge, T2 derives as in slice 1 (recorded by hand, not a tier row)"
+    status: "built — test_lab_live R13 (skips unless the deployment's window is open and 0025 is applied)"
