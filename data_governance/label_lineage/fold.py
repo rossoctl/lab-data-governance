@@ -16,9 +16,9 @@ state (an agent, a declared source) was handed or said in an EARLIER trace. It
 joins the inputs of every leg that entity emits in this trace, provided it was on
 the wire before that leg. A unit that crosses keeps its origin, so every edge after
 the crossing names ``origin_trace_id``; the crossing edge itself names
-``from_trace_id``. What crossed is lineage information for following a value's
-path, never inheritance: a foreign unit never claims a finding of this
-conversation, and the leg summaries count same-conversation origins only.
+``from_trace_id``. A foreign unit never claims a finding of this conversation;
+the leg summaries count it like a unit of this one (risk forwards it only with
+``RISK_INHERITED_LABELS_CROSS_CONVERSATIONS=on``).
 
 What the fold never does: look inside a finder, guess a parent, read a seq
 threshold, order by ``seq`` alone, or stop at an absent payload.
@@ -111,8 +111,7 @@ def derive(trace_input: TraceInput, finder: Finder) -> Derivation:
         held[key], leg_edges = attribute(candidates, own)
         edges.extend(leg_edges)
         summaries[key] = summarize(key, leg.payload_hash, leg.seq, classified=findings is not None,
-                                   edges=leg_edges, unanchored=sum(not u.anchored for u in own),
-                                   trace_id=trace_input.trace_id)
+                                   edges=leg_edges, unanchored=sum(not u.anchored for u in own))
     return Derivation(trace_id=trace_input.trace_id, edges=tuple(edges), legs=summaries,
                       occurrences=held, status=status_of(summaries, len(edges)))
 

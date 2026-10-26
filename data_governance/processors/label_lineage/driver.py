@@ -42,8 +42,8 @@ on, leave them when off (one row per interaction bounds the table).
   (its own findings and what reached it there, rebuilt from the stored edges). They
   join the fold as :class:`~data_governance.label_lineage.fold.Prior` inputs. What
   crosses is written as ordinary edges with ``from_trace_id`` / ``origin_trace_id``
-  set — lineage information for following a value's path; the leg summaries, and
-  so the recompute requests, never depend on it.
+  set. The leg summaries count them, so a label that crossed changes the summary
+  of every leg it reaches and queues that interaction's recompute.
 - **The dirty arm (S7).** A trace derived with priors was derived from another
   trace's edges. When a derivation changes a trace's edge set, every other trace
   that shares a stateful entity with it inside the window (the mirror of the

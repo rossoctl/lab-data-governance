@@ -1,6 +1,7 @@
 """``driver.load_priors`` and the window: which payloads of other traces reach a
-trace's fold, through which entities, holding what — and that the window, like the
-mode, never changes what a conversation inherited (``leg_inherited_labels``)."""
+trace's fold, through which entities, holding what — and that what crosses counts in
+the summaries of the legs it reaches (``leg_inherited_labels``), never changing the
+conversation's own edges."""
 
 from __future__ import annotations
 
@@ -100,12 +101,15 @@ def test_the_rebuilt_occurrence_is_the_stored_edge(configured_db: str) -> None:
     assert {(r[0], r[1], r[2], r[3], r[4], r[5], float(r[6])) for r in rows} == reached
 
 
-def test_with_the_window_on_the_cross_edges_are_written_and_nothing_inherited_changes(configured_db: str) -> None:
+_LEGS_SQL = ("SELECT interaction_id, leg_type::text, inherited_tags_whole, max_inherited_level, origin_count, "
+             "edge_count FROM leg_inherited_labels WHERE trace_id = %s")
+
+
+def test_with_the_window_on_the_cross_edges_are_written_and_the_legs_they_reach_count_them(configured_db: str) -> None:
     _two_traces(configured_db)
     driver.drain(0, OFF)
-    legs_off = _q(configured_db, "SELECT * FROM leg_inherited_labels WHERE trace_id = %s ORDER BY 1, 2", (T2,))
+    legs_off = {(r[0], r[1]): r for r in _q(configured_db, _LEGS_SQL, (T2,))}
     own_off = _q(configured_db, "SELECT edge_id FROM payload_label_edges WHERE trace_id = %s ORDER BY 1", (T2,))
-    requests_off = _q(configured_db, "SELECT interaction_id FROM risk_recompute_requests ORDER BY 1")
     assert _q(configured_db, "SELECT count(*) FROM payload_label_edges WHERE from_trace_id IS NOT NULL") == [(0,)]
     with psycopg.connect(configured_db) as conn:
         for table in ("payload_label_edges", "leg_inherited_labels", "label_lineage_trace_status",
@@ -122,11 +126,18 @@ def test_with_the_window_on_the_cross_edges_are_written_and_nothing_inherited_ch
     foreign = _q(configured_db, "SELECT count(*) FROM payload_label_edges WHERE trace_id = %s AND origin_trace_id = %s",
                  (T2, t1))
     assert foreign[0][0] > len(crossing)  # the foreign origin travels on inside T2
-    assert _q(configured_db, "SELECT * FROM leg_inherited_labels WHERE trace_id = %s ORDER BY 1, 2", (T2,)) == legs_off
+    reached = {(r[0], r[1]) for r in _q(configured_db, "SELECT to_interaction_id, to_leg_type::text FROM payload_label_edges "
+                                                       "WHERE trace_id = %s AND origin_trace_id IS NOT NULL", (T2,))}
+    legs_on = {(r[0], r[1]): r for r in _q(configured_db, _LEGS_SQL, (T2,))}
+    assert reached and legs_on.keys() == legs_off.keys()
+    for key in reached:  # a label carried in from T1 is inherited like one of T2's own
+        assert legs_on[key][4] > legs_off[key][4] and legs_on[key][5] > legs_off[key][5]
+    assert all(legs_on[key] == legs_off[key] for key in legs_off.keys() - reached)
     own_on = _q(configured_db, "SELECT edge_id FROM payload_label_edges WHERE trace_id = %s AND origin_trace_id IS NULL "
                                "ORDER BY 1", (T2,))
     assert own_on == own_off
-    assert _q(configured_db, "SELECT interaction_id FROM risk_recompute_requests ORDER BY 1") == requests_off
+    requests_on = {r[0] for r in _q(configured_db, "SELECT interaction_id FROM risk_recompute_requests")}
+    assert {ix for ix, _ in reached} <= requests_on
     status = _q(configured_db, "SELECT edge_count FROM label_lineage_trace_status WHERE trace_id = %s", (T2,))
     assert status[0][0] == len(own_on) + foreign[0][0]
 

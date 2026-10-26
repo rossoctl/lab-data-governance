@@ -157,7 +157,7 @@ _INHERITED_SQL = (
 
 
 def _fetch_inherited(
-    tx: db.Transaction, interaction_id: str, legs: list[utils.LegEvidence], mode: str
+    tx: db.Transaction, interaction_id: str, legs: list[utils.LegEvidence], mode: str, cross: bool = False
 ) -> labels.Inherited:
     """The label-lineage edges into the interaction's legs at their current
     payloads — one indexed read, made only with the flag on."""
@@ -171,7 +171,7 @@ def _fetch_inherited(
             match_kind=r[5], matched_text=r[6], matched_start=r[7], matched_end=r[8],
             recombined=bool(r[9]), origin_trace_id=r[10],
         ))
-    return labels.Inherited(mode=mode, by_leg=by_leg)
+    return labels.Inherited(mode=mode, by_leg=by_leg, cross=cross)
 
 
 def _gather_classifications(
@@ -197,6 +197,7 @@ def gather_evidence(interaction_id: str) -> Evidence:
     that doesn't identify a real interaction.
     """
     mode = config.inherited_labels_mode()
+    cross = config.inherited_cross_conversations()
     with db.transaction() as tx:
         row = tx.fetch_one(_INTERACTION_SQL, (interaction_id,))
         if row is None:
@@ -215,6 +216,6 @@ def gather_evidence(interaction_id: str) -> Evidence:
             classifications=_gather_classifications(tx, legs),
             anchor=_fetch_anchor(tx, interaction_id),
             inherited=(
-                _fetch_inherited(tx, interaction_id, legs, mode) if mode != "off" else None
+                _fetch_inherited(tx, interaction_id, legs, mode, cross) if mode != "off" else None
             ),
         )

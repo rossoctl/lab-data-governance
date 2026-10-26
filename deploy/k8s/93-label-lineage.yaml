@@ -143,10 +143,10 @@ spec:
             # earlier trace is carried into this one when an entity that keeps
             # state (an agent, a declared source) was handed or said it within
             # this many hours before. "0" (the default) switches it off: no prior
-            # is read, no trace is queued for re-derivation. What crosses is
-            # lineage information for following a value's path, never decision
-            # input (the leg summaries and RISK_INHERITED_LABELS=on count
-            # same-conversation origins only). Not a number, or negative: exit 2.
+            # is read, no trace is queued for re-derivation. What crosses counts in
+            # the leg summaries (so it queues recomputes); risk forwards it only
+            # with leg-ready's RISK_INHERITED_LABELS_CROSS_CONVERSATIONS=on. Not
+            # a number, or negative: exit 2.
             - name: LABEL_CROSS_TRACE_WINDOW_HOURS
               value: "0"
           # No ports, no Service, no probes, no metrics surface — the

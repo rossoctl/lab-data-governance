@@ -74,8 +74,9 @@ Set on `85-leg-ready.yaml` only; leg-ready alone decides what inherited labels d
   label-lineage pod holds the risk stream, by design — and leg-ready drains
   `risk_recompute_requests` through the risk observer. The engine reads only edges at the payload
   each leg carries now. With `off` the requests are left alone (one row per interaction).
-- `all` — reserved and rejected at leg-ready's startup: labels that crossed from another conversation are
-  lineage information, never decision input (below).
+- `all` — rejected at leg-ready's startup: labels from other conversations have their own switch,
+  `RISK_INHERITED_LABELS_CROSS_CONVERSATIONS` (`off` default, `on` needs `RISK_INHERITED_LABELS=on`): with
+  `on`, a label carried in by lineage from an earlier conversation counts like one found here (below).
 
 ## Across conversations: `LABEL_CROSS_TRACE_WINDOW_HOURS`
 
@@ -98,12 +99,13 @@ label tables, reset the cursor) covers both.
 What crosses is recorded in the same edge table: the crossing edge names the carrier's trace
 (`from_trace_id`), and every edge after it names the unit's trace (`origin_trace_id`). The crossing
 is recorded where the value enters this conversation; after that it travels as the conversation
-carries it. **It is lineage information for following a value's path — the Label lineage tab walks
-it across the boundary — and never inheritance:** a foreign unit never claims a finding of this
-conversation (the finding stays this conversation's own origin, the foreign occurrence sits beside
-it), never suppresses a shorter own value, and never comes back through another conversation. So
-`leg_inherited_labels`, the recompute requests and the OPA input are the same with the window open
-or closed; a test proves it on the replayed rows.
+carries it; the Label lineage tab walks it across the boundary. A foreign unit never claims a
+finding of this conversation (the finding stays this conversation's own origin, the foreign
+occurrence sits beside it), never suppresses a shorter own value, and never comes back through
+another conversation. It is inherited: `leg_inherited_labels` counts it on every leg it reaches, so
+its arrival (or a late re-derivation of the earlier conversation) queues that interaction's risk
+recompute. The OPA input carries it only with `RISK_INHERITED_LABELS_CROSS_CONVERSATIONS=on`;
+without it the input is the same with the window open or closed.
 
 When a derivation changes what priors read of a trace (its edges, or a leg's payload or
 classification), the traces that may have read it (they share a stateful entity and overlap the
@@ -172,8 +174,8 @@ only, and a value's response-leg hop lights its interaction's one arrow.
   spelled-out email is not the unit (structural transformations come next).
 - No fragments: a value split across fields or cut to its last four reaches nothing; `recombined`
   is always false.
-- Across conversations, only through entities that keep state, only inside the window, and only as
-  lineage information: no decision reads a label that crossed (the labels read walks the crossing;
+- Across conversations, only through entities that keep state and only inside the window; a decision
+  reads a label that crossed only with `RISK_INHERITED_LABELS_CROSS_CONVERSATIONS=on` (the labels read walks the crossing;
   the trace page marks a hop in another trace and links its flow view). The store bridges two
   conversations (it is a declared source) but not two turns of one (data lineage's D2 keeps a tool
   memoryless).

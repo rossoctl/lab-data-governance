@@ -35,21 +35,23 @@ class InheritedEdge:
 @dataclasses.dataclass(frozen=True)
 class Inherited:
     """The edges into each leg of one interaction (keyed by leg type) and the mode
-    they were read under."""
+    they were read under; *cross*: labels from other conversations too
+    (``RISK_INHERITED_LABELS_CROSS_CONVERSATIONS``)."""
 
     mode: str
     by_leg: Mapping[str, Sequence[InheritedEdge]]
+    cross: bool = False
 
     def forwarded(self, leg_type: str) -> list[InheritedEdge]:
-        return [e for e in self.by_leg.get(leg_type, ()) if forwarded(e, self.mode)]
+        return [e for e in self.by_leg.get(leg_type, ()) if forwarded(e, self.mode, self.cross)]
 
 
-def forwarded(edge: InheritedEdge, mode: str) -> bool:
-    """Whether *edge* reaches the decision under *mode*: in one conversation, a
-    whole value whose origin is in the same trace."""
-    if mode != "on":
+def forwarded(edge: InheritedEdge, mode: str, cross: bool = False) -> bool:
+    """Whether *edge* reaches the decision under *mode*: a whole value whose
+    origin is in the same trace, or (*cross*) in any conversation."""
+    if mode != "on" or edge.match_kind != "whole":
         return False
-    return edge.match_kind == "whole" and edge.origin_trace_id in (None, edge.trace_id)
+    return cross or edge.origin_trace_id in (None, edge.trace_id)
 
 
 def summary(edges: Sequence[InheritedEdge]) -> dict[str, Any]:

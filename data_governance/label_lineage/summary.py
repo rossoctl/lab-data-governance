@@ -102,13 +102,9 @@ def highest(levels: Sequence[str]) -> str | None:
 
 
 def summarize(key: LegKey, payload_hash: str, seq: int, *, classified: bool,
-              edges: Sequence[Edge], unanchored: int = 0, trace_id: str | None = None) -> LegSummary:
-    """The summary of one leg from the edges into it. With *trace_id*, only the
-    edges whose unit was born in that conversation count: what crossed from
-    another one is lineage information for following a value's path, not
-    something this leg inherited."""
-    if trace_id is not None:
-        edges = [e for e in edges if e.unit.origin.trace_id == trace_id]
+              edges: Sequence[Edge], unanchored: int = 0) -> LegSummary:
+    """The summary of one leg from the edges into it, whichever conversation each
+    unit was born in: a label carried in from an earlier one is inherited too."""
     whole = [e for e in edges if e.match_kind != "fragment"]
     return LegSummary(
         key=key,

@@ -164,26 +164,36 @@ def test_a_foreign_unit_never_claims_a_finding_of_this_conversation() -> None:
     assert {o.unit.origin.trace_id for o in d.occurrences[T2_READ]} == {"T1", "T2"}
 
 
-def test_summaries_and_own_edges_never_depend_on_priors() -> None:
-    """What this conversation inherited is the same with or without priors: the
-    same-conversation edges and every ``LegSummary`` are identical; the cross
-    edges are extra, and only the trace status counts them."""
+def test_own_edges_never_depend_on_priors_and_the_summaries_count_what_crossed() -> None:
+    """What this conversation found itself is the same with or without priors: the
+    same-conversation edges are identical. The edges from T1 are extra, and the legs
+    they reach count them in their ``LegSummary`` like their own: a label carried in
+    from an earlier conversation is inherited. A leg they do not reach keeps its
+    summary."""
     for classified in (True, False):
         alone = fold.derive(t2(read_classified=classified), find.exact)
         with_priors = fold.derive(dataclasses.replace(t2(read_classified=classified), priors=store_priors()), find.exact)
         own = lambda d: sorted(e.key for e in d.edges if e.unit.origin.trace_id == "T2")
         assert own(with_priors) == own(alone)
-        assert with_priors.legs == alone.legs
+        reached = {e.to_key for e in with_priors.edges if e.unit.origin.trace_id == "T1"}
+        assert reached == {T2_READ, T2_EGRESS}
+        for key, leg in with_priors.legs.items():
+            if key in reached:
+                assert leg.origin_count == alone.legs[key].origin_count + 1 and "PII" in leg.inherited_tags_whole
+            else:
+                assert leg == alone.legs[key]
         assert with_priors.status.edge_count == len(with_priors.edges) > alone.status.edge_count
 
 
-def test_a_leg_whose_only_edges_cross_has_an_empty_summary() -> None:
+def test_a_leg_whose_only_edges_cross_inherits_them() -> None:
+    """T2's read found nothing (the record alone), yet the read and the egress both
+    carry what T1 wrote: they inherit its labels."""
     d = fold.derive(dataclasses.replace(t2(read_classified=False), priors=store_priors()), find.exact)
     assert into(d, T2_READ) and all(e.unit.origin.trace_id == "T1" for e in d.edges)
     for key in (T2_READ, T2_EGRESS):
         leg = d.legs[key]
-        assert leg.inherited_tags_whole == () and leg.edge_count == 0 and leg.origin_count == 0
-        assert leg.max_inherited_level is None
+        assert leg.inherited_tags_whole == ("PII",) and leg.edge_count == 1 and leg.origin_count == 1
+        assert leg.max_inherited_level == "RESTRICTED"
     assert d.status.edge_count == len(d.edges) == 2
 
 
@@ -246,7 +256,7 @@ def test_nesting_is_judged_within_one_conversation_class() -> None:
     alone = fold.derive(short, find.exact)
     with_prior = fold.derive(dataclasses.replace(short, priors=prior), find.exact)
     assert alone.legs[T2_EGRESS].inherited_tags_whole == ("PII",)
-    assert with_prior.legs == alone.legs
+    assert sorted(e.key for e in with_prior.edges if e.unit.origin.trace_id == "T2") == sorted(e.key for e in alone.edges)
     assert {(e.unit.origin.trace_id, e.to.matched_text) for e in into(with_prior, T2_EGRESS)} == {
         ("T2", "Alice"), ("T1", "Alice Moreno")}
 

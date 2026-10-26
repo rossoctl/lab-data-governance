@@ -651,3 +651,42 @@ def test_an_inherited_pii_fires_dg001_on_the_egress_exactly_as_a_detected_one(op
     inherited = _evaluate(opa_base_url, clean)
     assert inherited.enforcement_type == detected.enforcement_type == "block"
     assert inherited.triggered_rules == detected.triggered_rules == ["DG-001"]
+
+
+@pytest.mark.opa
+@pytest.mark.parametrize("leg_type", ["request", "response"])
+def test_a_record_carried_in_from_an_earlier_conversation_is_judged_where_it_leaves(opa_client, opa_base_url,
+                                                                                     leg_type):
+    """A medical record number read alone in a later conversation, linked by label
+    lineage to the earlier one that wrote it. With the cross-conversation switch it
+    joins the flow it reached, and the shipped catalog judges it like a detected
+    one: on the request to the external peer, critical and recommends block (DG-001
+    for PII, DG-002 for PHI). On the peer's response the data comes IN
+    (``data_import``, the caller is the destination): no rule fires, switch or not.
+    Without the switch neither flow sees it."""
+    from data_governance.risk.engine import labels
+    from data_governance.risk.rules import catalog
+
+    put_response = _put_policy(opa_client, compile_policy(catalog.load_rules_source()))
+    assert put_response.status_code == 200, put_response.text
+
+    edge = labels.InheritedEdge(
+        trace_id="later", entity_type="MRN", regulatory_tags=("PII", "PHI"), sensitivity_level="CONFIDENTIAL",
+        match_kind="whole", matched_text="MRN-12345678", matched_start=12, matched_end=24,
+        origin_trace_id="earlier",
+    )
+    clean = _evaluate(opa_base_url, _leg_opa_input(request_tags=[], response_tags=[]))
+    decisions = {}
+    for cross in (False, True):
+        opa_input = _leg_opa_input(request_tags=[], response_tags=[])
+        inherited = labels.Inherited(mode="on", by_leg={leg_type: [edge]}, cross=cross)
+        item = labels.data_item(inherited.forwarded(leg_type))
+        if item is not None:
+            opa_input["flows"][leg_type]["data_items"].append(item)
+        decisions[cross] = _evaluate(opa_base_url, opa_input)
+    assert decisions[False] == clean and clean.enforcement_type != "block"
+    if leg_type == "request":
+        assert decisions[True].risk_level == "critical" and decisions[True].enforcement_type == "block"
+        assert sorted(decisions[True].triggered_rules) == ["DG-001", "DG-002"]
+    else:
+        assert decisions[True] == clean

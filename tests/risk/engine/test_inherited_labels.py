@@ -5,8 +5,10 @@
   lineage — built here from the same evidence.
 - ``on``: the labels that reached a leg's payload join that flow as ONE
   document-level data item; only whole values whose origin is in the trace.
-- ``all``: rejected at startup. Cross-conversation labels are lineage information
-  for following a value's path, never decision input (slice 2, #273).
+- ``all``: rejected at startup. Labels from other conversations have their own
+  switch, ``RISK_INHERITED_LABELS_CROSS_CONVERSATIONS`` (slice 2, #273): with it on
+  (and ``on`` here), whole values from any conversation are forwarded — a label
+  carried in counts like one found here.
 """
 
 from __future__ import annotations
@@ -145,22 +147,70 @@ def test_an_origin_named_by_its_own_trace_id_is_this_trace() -> None:
     assert labels.forwarded(_edge(origin_trace_id="T"), "on")
 
 
-# --- all ---------------------------------------------------------------------------------------------
+# --- all, and the cross-conversation switch ---------------------------------------------------------
+
+EARLIER_MRN = _edge(entity_type="MRN", regulatory_tags=("PII", "PHI"), sensitivity_level="CONFIDENTIAL",
+                    matched_text="MRN-12345678", matched_start=20, matched_end=32, origin_trace_id="an-earlier-trace")
 
 
-def test_all_is_rejected_as_lineage_information_not_decision_input() -> None:
-    """Cross-conversation labels are for following a value's path; a decision never
-    sees them. The value stays reserved, and rejected."""
-    with pytest.raises(ValueError, match="lineage information, not decision input"):
+def test_all_is_rejected_and_names_the_cross_conversation_switch() -> None:
+    with pytest.raises(ValueError, match="RISK_INHERITED_LABELS_CROSS_CONVERSATIONS=on"):
         config.parse_inherited_labels("all")
     with pytest.raises(ValueError, match="must be off or on"):
         config.parse_inherited_labels("yes")
     assert config.parse_inherited_labels(None) == "off" and config.parse_inherited_labels(" ON ") == "on"
 
 
-@pytest.mark.parametrize("raw", ["all", "yes"])
-def test_a_bad_value_stops_leg_ready_with_the_message_before_any_db_work(raw: str) -> None:
-    env = {**os.environ, "RISK_INHERITED_LABELS": raw, "DATABASE_URL": "postgres://unused:1/x"}
+def test_the_cross_conversation_switch_needs_the_same_conversation_one() -> None:
+    """What labels from other conversations would mean without this conversation's
+    own is not decided: refused, not guessed."""
+    assert config.parse_cross_conversations(None, "on") is False
+    assert config.parse_cross_conversations(" ON ", "on") is True
+    assert config.parse_cross_conversations("off", "off") is False
+    with pytest.raises(ValueError, match="needs RISK_INHERITED_LABELS=on"):
+        config.parse_cross_conversations("on", "off")
+    with pytest.raises(ValueError, match="must be off or on"):
+        config.parse_cross_conversations("yes", "on")
+
+
+@pytest.mark.parametrize(("edge", "on", "cross"), [
+    (_edge(), True, True),
+    (_edge(origin_trace_id="T"), True, True),
+    (_edge(origin_trace_id="an-earlier-trace"), False, True),
+    (_edge(match_kind="fragment"), False, False),
+    (_edge(match_kind="fragment", origin_trace_id="an-earlier-trace"), False, False),
+    (_edge(match_kind="semantic", matched_text=None, matched_start=None, matched_end=None,
+           origin_trace_id="an-earlier-trace"), False, False),
+])
+def test_what_each_mode_forwards(edge: labels.InheritedEdge, on: bool, cross: bool) -> None:
+    """The cross-conversation switch widens ``on`` by the origin only: a whole
+    value, whichever conversation it was found in. Never a fragment or a semantic
+    match, and nothing at all with the mode off."""
+    assert labels.forwarded(edge, "off") is False and labels.forwarded(edge, "off", True) is False
+    assert labels.forwarded(edge, "on") is on
+    assert labels.forwarded(edge, "on", True) is cross
+
+
+def test_the_cross_switch_hands_the_flow_a_label_carried_in_from_an_earlier_conversation() -> None:
+    """A record read alone in a later conversation (nothing found there) that label
+    lineage links to the conversation that wrote it: under ``on`` alone the
+    artefacts are the base's; with the cross-conversation switch its labels join
+    the request flow and move the fingerprint, exactly as an inherited label of
+    this trace does."""
+    on = _evidence(labels.Inherited(mode="on", by_leg={"request": [EARLIER_MRN]}))
+    assert _artefacts(on) == _base(on)
+    every = _evidence(labels.Inherited(mode="on", by_leg={"request": [EARLIER_MRN]}, cross=True))
+    opa_input, fp, _ = _artefacts(every)
+    (own, item) = json.loads(opa_input)["flows"]["request"]["data_items"]
+    assert own["regulatory_tags"] == [] and item["regulatory_tags"] == ["PHI", "PII"]
+    assert item["classification_level"] == "CONFIDENTIAL" and item["list_of_entities"] == ["MRN"]
+    assert fp != _base(every)[1]
+
+
+@pytest.mark.parametrize(("raw", "cross"), [("all", "off"), ("yes", "off"), ("off", "on"), ("on", "yes")])
+def test_a_bad_value_stops_leg_ready_with_the_message_before_any_db_work(raw: str, cross: str) -> None:
+    env = {**os.environ, "RISK_INHERITED_LABELS": raw, "RISK_INHERITED_LABELS_CROSS_CONVERSATIONS": cross,
+           "DATABASE_URL": "postgres://unused:1/x"}
     result = subprocess.run([sys.executable, "-m", "data_governance.processors.leg_ready"],
                             env=env, capture_output=True, text=True, check=False)
     assert result.returncode == 2 and "RISK_INHERITED_LABELS" in result.stderr
@@ -170,7 +220,7 @@ def test_a_bad_value_stops_leg_ready_with_the_message_before_any_db_work(raw: st
 def test_a_bad_value_does_not_break_what_merely_imports_the_config() -> None:
     """The API, the alerts processor and the rest import risk.config; only leg-ready
     and the engine path consult the mode."""
-    env = {**os.environ, "RISK_INHERITED_LABELS": "all"}
+    env = {**os.environ, "RISK_INHERITED_LABELS": "all", "RISK_INHERITED_LABELS_CROSS_CONVERSATIONS": "yes"}
     result = subprocess.run(
         [sys.executable, "-c", "import data_governance.risk.config, data_governance.risk.engine.utils"],
         env=env, capture_output=True, text=True, check=False)
@@ -217,6 +267,13 @@ def test_on_gather_evidence_reads_the_edges_into_each_leg(derived_r4: str, monke
     assert "PII" in item["regulatory_tags"] and item["classification_level"] == "RESTRICTED"
     off = dataclasses.replace(evidence, inherited=None)
     assert _artefacts(off) == _base(off)
+
+
+def test_the_cross_switch_reaches_the_evidence(derived_r4: str, monkeypatch) -> None:
+    monkeypatch.setattr(config, "inherited_labels_mode", lambda: "on")
+    assert gather_evidence(_egress_interaction()).inherited.cross is False
+    monkeypatch.setattr(config, "inherited_cross_conversations", lambda: True)
+    assert gather_evidence(_egress_interaction()).inherited.cross is True
 
 
 def test_on_an_edge_derived_from_an_old_payload_is_not_forwarded(derived_r4: str, monkeypatch) -> None:

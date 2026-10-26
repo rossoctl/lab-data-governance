@@ -199,6 +199,36 @@ def test_a_source_trace_that_changes_without_its_edges_changing_still_queues_its
     assert crossing() == by_arrival
 
 
+def test_a_source_trace_derived_late_queues_the_risk_recompute_of_what_it_reaches(configured_db: str) -> None:
+    """Late arrival. T2 read the record alone (the read and the egress found
+    nothing) and was derived while T1's write was still unclassified: nothing
+    reached T2, no risk recompute is asked for. Then T1's classification lands.
+    The dirty arm re-derives T2, the record crosses in at the read and travels on
+    to the egress, the legs count it, and both interactions are queued for risk —
+    the verdict computed before T1 was known is computed again."""
+    from tests.label_lineage import test_priors as hb
+
+    t1 = hb.t1()
+    t2 = hb.t2(read_classified=False)
+    write_hash = next(h for h, f in t1.findings.items() if f)
+    seed_trace(configured_db, t2, seq_start=1)
+    seed_trace(configured_db, t1, seq_start=100, skip_classification=frozenset({write_hash}))
+    requested = lambda: {r[0] for r in _q(configured_db, "SELECT interaction_id FROM risk_recompute_requests")}
+    cursor = driver.drain(0, ON)
+    assert requested() == set() and _dirty(configured_db) == []
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("INSERT INTO payload_classifications (content_hash, sensitivity_level, regulatory_tags, "
+                     "contains_identity_bundle, is_personalized, primary_domain, findings, model_version) "
+                     "VALUES (%s, 'RESTRICTED', %s, false, false, 'test', %s, 1)",
+                     (write_hash, ["PII"], psycopg.types.json.Jsonb(list(t1.findings[write_hash]))))
+        conn.commit()
+    driver.drain(cursor, ON)
+    assert requested() == {"t2-store", "t2-partner"} and _dirty(configured_db) == []
+    egress = _q(configured_db, "SELECT inherited_tags_whole, origin_count FROM leg_inherited_labels "
+                               "WHERE interaction_id = 't2-partner' AND leg_type = 'request'")
+    assert egress == [(["PII"], 1)]
+
+
 def test_a_queued_trace_that_lost_its_legs_leaves_the_queue(configured_db: str) -> None:
     """A trace re-keyed away by the interactions processor (no legs left) must not
     sit on the queue forever, re-read every round."""

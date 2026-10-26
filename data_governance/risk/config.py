@@ -71,6 +71,7 @@ __all__ = [
     "INTERNAL_URL_WHITELIST_PATTERNS",
     "RULES_SOURCE",
     "inherited_labels_mode",
+    "inherited_cross_conversations",
 ]
 
 
@@ -276,8 +277,8 @@ INTERNAL_URL_WHITELIST_PATTERNS = _list_env("RISK_INTERNAL_URL_WHITELIST_PATTERN
 # OPA input, fingerprint and record are byte-identical to the engine without
 # label lineage. `on`: labels whose origin is in the same trace are forwarded,
 # leg readiness waits for the leg's label row, and the recompute requests label
-# lineage writes are drained. `all` would also forward origins found in other
-# conversations; it is rejected until cross-conversation label lineage exists.
+# lineage writes are drained. Labels whose origin is in another conversation
+# have their own switch, below; `all` is rejected and names it.
 #
 # Read lazily (only leg-ready and the engine path consult it), so a typo stops
 # those, with this message, and nothing else that imports this module.
@@ -287,15 +288,14 @@ INHERITED_LABELS_MODES = ("off", "on", "all")
 
 def parse_inherited_labels(raw: str | None) -> str:
     """The ``RISK_INHERITED_LABELS`` mode, or ``ValueError`` for ``all`` or a typo.
-    Never falls back to ``off`` on a value it does not know. ``all`` is reserved
-    and rejected: labels that crossed from another conversation are lineage
-    information for following a value's path (the label-lineage tab), not
-    decision input (#273)."""
+    Never falls back to ``off`` on a value it does not know. ``all`` is rejected:
+    labels from other conversations have their own switch
+    (:func:`parse_cross_conversations`)."""
     mode = (raw or "off").strip().lower()
     if mode == "all":
         raise ValueError(
-            "RISK_INHERITED_LABELS=all is not accepted: cross-conversation labels are "
-            "lineage information, not decision input (#273) — use off or on"
+            "RISK_INHERITED_LABELS=all is not accepted: labels from other conversations have "
+            f"their own switch, {CROSS_CONVERSATIONS_ENV}=on — use off or on"
         )
     if mode not in INHERITED_LABELS_MODES:
         raise ValueError(f"RISK_INHERITED_LABELS must be off or on; got {raw!r}")
@@ -306,3 +306,30 @@ def parse_inherited_labels(raw: str | None) -> str:
 def inherited_labels_mode() -> str:
     """The configured mode, parsed once per process on first use."""
     return parse_inherited_labels(os.environ.get("RISK_INHERITED_LABELS"))
+
+
+# --- risk.inherited_labels.cross_conversations ---------------------------------
+# Whether labels whose origin is in ANOTHER conversation reach the decision too:
+# label lineage carries them in when its LABEL_CROSS_TRACE_WINDOW_HOURS is open
+# (#273), and with this `on` a label carried in counts like one found here. One
+# switch per kind of carried label; this one needs RISK_INHERITED_LABELS=on (what
+# it would mean alone is not decided, so that is refused, not guessed).
+
+CROSS_CONVERSATIONS_ENV = "RISK_INHERITED_LABELS_CROSS_CONVERSATIONS"
+
+
+def parse_cross_conversations(raw: str | None, mode: str) -> bool:
+    """``RISK_INHERITED_LABELS_CROSS_CONVERSATIONS`` under the inherited-labels
+    *mode*, or ``ValueError`` for a typo or for ``on`` without ``mode == "on"``."""
+    value = (raw or "off").strip().lower()
+    if value not in ("off", "on"):
+        raise ValueError(f"{CROSS_CONVERSATIONS_ENV} must be off or on; got {raw!r}")
+    if value == "on" and mode != "on":
+        raise ValueError(f"{CROSS_CONVERSATIONS_ENV}=on needs RISK_INHERITED_LABELS=on; got {mode!r}")
+    return value == "on"
+
+
+@functools.cache
+def inherited_cross_conversations() -> bool:
+    """The configured cross-conversation switch, parsed once per process on first use."""
+    return parse_cross_conversations(os.environ.get(CROSS_CONVERSATIONS_ENV), inherited_labels_mode())

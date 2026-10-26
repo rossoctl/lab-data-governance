@@ -980,8 +980,10 @@ def test_the_inherited_labels_flag_ships_off_on_leg_ready_only(
 ) -> None:
     """Leg-ready alone decides what inherited labels do; label lineage reads no
     risk configuration and always records changed summaries."""
-    from data_governance.risk.config import parse_inherited_labels
+    from data_governance.risk.config import parse_cross_conversations, parse_inherited_labels
 
     (leg_ready,) = _by_kind(docs, "Deployment", "data-governance-leg-ready")
-    assert parse_inherited_labels(_env(leg_ready)["RISK_INHERITED_LABELS"]) == "off"
+    mode = parse_inherited_labels(_env(leg_ready)["RISK_INHERITED_LABELS"])
+    assert mode == "off"
+    assert parse_cross_conversations(_env(leg_ready)["RISK_INHERITED_LABELS_CROSS_CONVERSATIONS"], mode) is False
     assert not [name for name in _env(label_lineage_deployment) if name.startswith("RISK_")]
