@@ -1,0 +1,32 @@
+[
+ {
+  "ev": "seg",
+  "at": 0.68,
+  "seg": "traces"
+ },
+ {
+  "ev": "conv-start",
+  "at": 2.19,
+  "text": "A"
+ },
+ {
+  "ev": "trace",
+  "at": 4.21,
+  "text": "65452c56cca6d7940ab85c50bd705c34"
+ },
+ {
+  "ev": "seg",
+  "at": 8.24,
+  "seg": "graph-live"
+ },
+ {
+  "ev": "conv-exit",
+  "at": 56.55,
+  "text": "0"
+ },
+ {
+  "ev": "seg",
+  "at": 120.96,
+  "seg": "graph-final"
+ }
+]

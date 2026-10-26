@@ -1,0 +1,569 @@
+1
+00:00:00,193 --> 00:00:01,633
+Rosa needs a refill.
+
+2
+00:00:02,906 --> 00:00:07,513
+She taps Refill My Prescription in her
+pharmacy's mobile app, which triggers an
+
+3
+00:00:07,513 --> 00:00:08,272
+agentic flow.
+
+4
+00:00:10,266 --> 00:00:16,742
+Under the hood. The agentic flow is a real
+app, running on rossoctl, an agent platform on
+
+5
+00:00:16,742 --> 00:00:17,542
+Kubernetes.
+
+6
+00:00:17,842 --> 00:00:21,345
+Five agents and eight tools, each in its own
+pod.
+
+7
+00:00:21,645 --> 00:00:26,329
+The pharmacy assistant takes Rosa's request.
+It looks her up, and asks for a clinical
+
+8
+00:00:26,329 --> 00:00:29,360
+review, which saves the fill to the pharmacy's
+records.
+
+9
+00:00:29,660 --> 00:00:34,581
+Then fulfillment books the courier, and
+reports the refill to an outside company: the
+
+10
+00:00:34,581 --> 00:00:36,376
+wholesaler's demand forecaster.
+
+11
+00:00:39,462 --> 00:00:43,462
+That one tap sets off 26 agent and tool
+interactions.
+
+12
+00:00:44,781 --> 00:00:48,996
+Sentry tracks the data through each one and
+checks it against company policy.
+
+13
+00:00:50,150 --> 00:00:53,008
+One it marks as risky, let's see why.
+
+14
+00:00:54,837 --> 00:01:00,624
+This is Sentry's console, Data Governance,
+recording Rosa's tap as it happens. Sped up.
+
+15
+00:01:02,704 --> 00:01:09,590
+Each node is an agent, a tool, the model, or a
+vendor. Each arrow is one exchange: a request
+
+16
+00:01:09,590 --> 00:01:10,637
+and its reply.
+
+17
+00:01:10,937 --> 00:01:16,582
+The count changes a little from run to run. In
+this one, Sentry counted 28 interactions for
+
+18
+00:01:16,582 --> 00:01:18,939
+the tap, 8 of them calls to the model.
+
+19
+00:01:19,239 --> 00:01:22,742
+Open any exchange, and Sentry shows who called
+whom,
+
+20
+00:01:23,042 --> 00:01:28,980
+and exactly what was sent: here, her name and
+birth date, going to the patient lookup.
+
+21
+00:01:29,280 --> 00:01:34,357
+With the risk layer on, one exchange turns
+red: the report to the forecaster.
+
+22
+00:01:37,374 --> 00:01:42,473
+Sentry is data governance on top of Cortex,
+which monitors the traffic between agents and
+
+23
+00:01:42,473 --> 00:01:43,733
+everything they touch.
+
+24
+00:01:44,491 --> 00:01:48,070
+It's built on lineage, classification, and
+risk assessment.
+
+25
+00:01:49,995 --> 00:01:55,942
+How does Sentry see all this? Cortex runs a
+sidecar, a small proxy, beside every agent and
+
+26
+00:01:55,942 --> 00:01:58,651
+tool. There is no Sentry code in the app.
+
+27
+00:01:58,951 --> 00:02:04,480
+For every exchange, the sidecar sends Sentry
+two records: the request and the response,
+
+28
+00:02:04,480 --> 00:02:05,751
+with their payloads.
+
+29
+00:02:06,051 --> 00:02:09,199
+From these, Sentry rebuilds who called whom.
+
+30
+00:02:09,499 --> 00:02:15,349
+Classification reads every payload and names
+each value in it: a person's name, a medical
+
+31
+00:02:15,349 --> 00:02:16,795
+record number, a date.
+
+32
+00:02:17,095 --> 00:02:22,099
+Lineage follows each value from exchange to
+exchange, and its label travels with it.
+
+33
+00:02:22,400 --> 00:02:27,326
+Risk assessment checks every exchange against
+the company policy, and records a verdict.
+
+34
+00:02:30,609 --> 00:02:33,117
+Let's take one rule from the company policy.
+
+35
+00:02:33,970 --> 00:02:36,897
+Personal data must not leave the organization.
+
+36
+00:02:39,308 --> 00:02:43,163
+In Sentry, the company policy is written down
+as three rules.
+
+37
+00:02:43,463 --> 00:02:50,091
+Rule DG-001: personal data, sent to an
+untrusted external destination. Its suggested
+
+38
+00:02:50,091 --> 00:02:51,748
+enforcement is block.
+
+39
+00:02:52,048 --> 00:02:57,698
+Rule DG-002 says the same for health data, and
+DG-004 for restricted data.
+
+40
+00:02:57,998 --> 00:03:03,848
+Untrusted means outside the organization. The
+cluster's own services count as inside. Here
+
+41
+00:03:03,848 --> 00:03:06,643
+the contracted courier runs as one of them.
+
+42
+00:03:06,943 --> 00:03:09,805
+So does any address on a list the company
+sets.
+
+43
+00:03:10,105 --> 00:03:14,606
+The forecaster's address is on neither:
+external, and untrusted.
+
+44
+00:03:14,906 --> 00:03:22,136
+Sentry evaluates the rules with OPA, the Open
+Policy Agent. Here is rule DG-001, in Rego, as
+
+45
+00:03:22,136 --> 00:03:24,337
+OPA runs it in this cluster.
+
+46
+00:03:24,637 --> 00:03:30,764
+Any flow that carries an item tagged PII, to a
+destination that is external and untrusted,
+
+47
+00:03:30,764 --> 00:03:31,785
+fires the rule.
+
+48
+00:03:35,150 --> 00:03:36,157
+Level one.
+
+49
+00:03:37,160 --> 00:03:40,096
+In Rosa's record, the context is all there.
+
+50
+00:03:40,637 --> 00:03:43,785
+Her name and beside it her medical record
+number.
+
+51
+00:03:44,911 --> 00:03:49,918
+Both are personal data and the vendor is
+external outside the organization.
+
+52
+00:03:50,726 --> 00:03:54,802
+Sending them there breaks the policy, so
+Sentry recommends blocking it.
+
+53
+00:03:55,638 --> 00:03:59,854
+With full context at the point of decision,
+this is local enforcement.
+
+54
+00:04:00,527 --> 00:04:03,956
+Most data governance tools can do it, and so
+does Sentry.
+
+55
+00:04:05,769 --> 00:04:11,061
+Level one, in Sentry: the report to the
+forecaster, from Rosa's refill.
+
+56
+00:04:11,361 --> 00:04:15,570
+Its payload holds her name, her birth date,
+and her medical record number.
+
+57
+00:04:15,870 --> 00:04:21,798
+Classification reads it. A trained model finds
+each value and names its type, and a catalog
+
+58
+00:04:21,798 --> 00:04:24,729
+gives each type its tags and its sensitivity.
+
+59
+00:04:25,029 --> 00:04:30,452
+Her name is found right here: personal data,
+restricted. A check that sees only this
+
+60
+00:04:30,452 --> 00:04:31,679
+message has enough.
+
+61
+00:04:31,979 --> 00:04:37,957
+So the input Sentry sends to OPA reads:
+personal data, restricted, going to an
+
+62
+00:04:37,957 --> 00:04:40,409
+external, untrusted destination.
+
+63
+00:04:40,709 --> 00:04:48,207
+Rules DG-001 and DG-004 fire on what is found
+here. DG-002, for health data, fires on the
+
+64
+00:04:48,207 --> 00:04:50,566
+number: level two shows why.
+
+65
+00:04:50,866 --> 00:04:56,549
+OPA combines the rules, most restrictive
+first: risk level critical, suggested
+
+66
+00:04:56,549 --> 00:04:57,861
+enforcement block.
+
+67
+00:04:58,161 --> 00:05:03,236
+Sentry raises an alert and recommends the
+block. In this setup it does not hold the
+
+68
+00:05:03,236 --> 00:05:05,437
+call: the report still goes through.
+
+69
+00:05:05,736 --> 00:05:11,259
+The courier gets her name and address too. It
+runs inside the organization, so that call is
+
+70
+00:05:11,259 --> 00:05:11,745
+allowed.
+
+71
+00:05:14,769 --> 00:05:17,056
+But what happens when the context is gone?
+
+72
+00:05:18,635 --> 00:05:21,926
+Level two. The app now sends only the number.
+
+73
+00:05:22,759 --> 00:05:28,569
+At release, it's out of context, so given only
+the local context, it's classified as a
+
+74
+00:05:28,569 --> 00:05:30,123
+generic operational ID.
+
+75
+00:05:31,582 --> 00:05:33,663
+Local enforcement would let it through.
+
+76
+00:05:34,215 --> 00:05:37,357
+But Sentry's lineage carries the context with
+the data.
+
+77
+00:05:37,955 --> 00:05:41,676
+Four hops back, that number was Rosa's medical
+record number.
+
+78
+00:05:42,808 --> 00:05:48,315
+It's still personal data, so sending it breaks
+the policy, and Sentry recommends blocking it.
+
+79
+00:05:50,051 --> 00:05:52,911
+With full context, Sentry recommends a block.
+
+80
+00:05:53,382 --> 00:05:57,671
+Four hops downstream and out of context, it
+still catches the leak.
+
+81
+00:05:59,724 --> 00:06:04,304
+Level two, in Sentry. The report now sends
+only the number.
+
+82
+00:06:04,604 --> 00:06:10,864
+Read alone, the classifier calls it an
+operational ID: internal. No rule fires on
+
+83
+00:06:10,864 --> 00:06:11,250
+that.
+
+84
+00:06:11,550 --> 00:06:16,220
+Now track that number on the graph. Every
+exchange that carried it lights up, the
+
+85
+00:06:16,220 --> 00:06:17,200
+model's included.
+
+86
+00:06:17,500 --> 00:06:22,978
+Hop one. The patient lookup answers the
+assistant: her name and her medical record
+
+87
+00:06:22,978 --> 00:06:25,716
+number, together. Here the label is born.
+
+88
+00:06:26,016 --> 00:06:29,663
+Hop two. The assistant passes the number to
+fulfillment.
+
+89
+00:06:29,963 --> 00:06:33,463
+Hop three. Fulfillment passes it to the report
+tool.
+
+90
+00:06:33,763 --> 00:06:37,052
+Hop four. The report sends it to the
+forecaster.
+
+91
+00:06:37,563 --> 00:06:43,277
+At every hop, Sentry matches the exact value,
+so the label, medical record number, travels
+
+92
+00:06:43,277 --> 00:06:43,785
+with it.
+
+93
+00:06:44,085 --> 00:06:50,520
+OPA now gets the carried label. The same three
+rules fire: critical, recommend block.
+
+94
+00:06:53,141 --> 00:06:56,217
+But what if the leak comes from a different
+session altogether?
+
+95
+00:06:57,310 --> 00:07:02,453
+A nightly job pulls the number from a shared
+database, with no name and no context.
+
+96
+00:07:03,746 --> 00:07:08,955
+Sentry's cross-session lineage carries the
+full context across sessions, so this leak is
+
+97
+00:07:08,955 --> 00:07:09,606
+caught too.
+
+98
+00:07:11,752 --> 00:07:17,517
+Level three, in Sentry. The nightly job runs
+as a session of its own, with its own trace.
+
+99
+00:07:17,517 --> 00:07:20,886
+In this demo it runs a few minutes after the
+refill.
+
+100
+00:07:21,186 --> 00:07:26,457
+The shared database is the pharmacy's records
+service. During Rosa's refill, it saved the
+
+101
+00:07:26,457 --> 00:07:27,760
+fill under her number.
+
+102
+00:07:28,060 --> 00:07:33,504
+At night, the batch reads the day's fills from
+the records. Read alone, the number in that
+
+103
+00:07:33,504 --> 00:07:35,560
+answer is an operational ID again.
+
+104
+00:07:35,860 --> 00:07:40,528
+Lineage reaches back across sessions: the
+records got that number in Rosa's refill,
+
+105
+00:07:40,528 --> 00:07:45,083
+where it came from the patient lookup, next to
+her name. The label comes with it.
+
+106
+00:07:45,383 --> 00:07:51,211
+Reading the records stays inside, so that call
+is allowed. The risk is the next call: the
+
+107
+00:07:51,211 --> 00:07:56,776
+batch's export to the forecaster. Critical,
+recommend block, on the same three rules,
+
+108
+00:07:56,776 --> 00:07:58,675
+linked back to Rosa's refill.
+
+109
+00:08:01,931 --> 00:08:05,149
+Sentry doesn't fix the app, it applies the
+policy.
+
+110
+00:08:06,229 --> 00:08:11,745
+Once the app is fixed so it no longer releases
+personal data, sending the vendor only what it
+
+111
+00:08:11,745 --> 00:08:13,524
+needs, Sentry lets it through.
+
+112
+00:08:15,305 --> 00:08:21,308
+The fixed app, in Sentry. The report now sends
+the drug and the dates. No patient key.
+
+113
+00:08:21,608 --> 00:08:27,044
+Nothing in it is personal data, so no rule
+fires: allowed, no alert.
+
+114
+00:08:27,345 --> 00:08:30,565
+The nightly batch is fixed the same way.
+Allowed too.
+
+115
+00:08:30,865 --> 00:08:35,444
+The fix is in the app. Sentry found the leak,
+and it confirms the fix.
+
+116
+00:08:38,274 --> 00:08:43,584
+This way, Rosa gets her refill, and the policy
+holds, keeping the company in line with data
+
+117
+00:08:43,584 --> 00:08:44,926
+protection regulations.
+
+118
+00:08:47,906 --> 00:08:50,125
+Local enforcement sees one message.
+
+119
+00:08:51,029 --> 00:08:56,832
+Sentry sees its whole history, protecting data
+locally, within a session and across session
+
+120
+00:08:56,832 --> 00:08:57,533
+boundaries.
+
+121
+00:08:59,379 --> 00:09:06,209
+Every verdict in this film is Sentry's own,
+from one run on rossoctl: 5 sessions, 102
+
+122
+00:09:06,209 --> 00:09:08,459
+exchanges judged, 3 flagged.
+
+123
+00:09:11,097 --> 00:09:15,028
+Sentry, with lineage and risk, is live in the
+next release.

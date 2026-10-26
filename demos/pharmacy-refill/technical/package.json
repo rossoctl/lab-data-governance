@@ -1,0 +1,6 @@
+{
+  "name": "sentry-technical-film",
+  "private": true,
+  "description": "The film's browser work: the live recording, the stills, the panels and the section stages (Playwright, headless Chromium)",
+  "dependencies": { "playwright": "1.61.0" }
+}

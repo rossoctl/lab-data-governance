@@ -1,0 +1,58 @@
+{
+ "N": 28,
+ "M": 8,
+ "J": 102,
+ "F": 3,
+ "T": 20,
+ "S": 5,
+ "runs": {
+  "A": {
+   "trace": "65452c56cca6d7940ab85c50bd705c34",
+   "caller": "report-dispense",
+   "level": "critical",
+   "enforcement": "block",
+   "rules": [
+    "DG-001",
+    "DG-002",
+    "DG-004"
+   ]
+  },
+  "B": {
+   "trace": "a4bc18dae1948dba2a07e78bd44615f3",
+   "caller": "report-dispense",
+   "level": "critical",
+   "enforcement": "block",
+   "rules": [
+    "DG-001",
+    "DG-002",
+    "DG-004"
+   ]
+  },
+  "N1": {
+   "trace": "37b00d9395f4a5b8e59d47b65d7e01de",
+   "caller": "export-dispense-batch",
+   "level": "critical",
+   "enforcement": "block",
+   "rules": [
+    "DG-001",
+    "DG-002",
+    "DG-004"
+   ]
+  },
+  "C": {
+   "trace": "ae1570e5e3964465b49cf3b5c56d344f",
+   "caller": "report-dispense",
+   "level": "none",
+   "enforcement": "allow",
+   "rules": []
+  },
+  "N2": {
+   "trace": "3a8891bd76e8b048457f77578d932671",
+   "caller": "export-dispense-batch",
+   "level": "none",
+   "enforcement": "allow",
+   "rules": []
+  }
+ },
+ "ff": "\u25b6\u25b6 \u00d77"
+}

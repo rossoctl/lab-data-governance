@@ -1,0 +1,207 @@
+{
+ "interaction_id": "3eb4ef9d-2cc6-5ed4-8567-cc61b2897588",
+ "input": {
+  "flows": {
+   "request": {
+    "data_items": [
+     {
+      "entities": [
+       {
+        "entity_type": "ADDRESS",
+        "start": 13,
+        "end": 54,
+        "text": "1180 Valencia St, San Francisco, CA 94110",
+        "domain": "person",
+        "category": "person.places",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "data_type": "DATA",
+        "classification_level": "INTERNAL"
+       },
+       {
+        "entity_type": "PN",
+        "start": 71,
+        "end": 83,
+        "text": "Rosa Delgado",
+        "domain": "person",
+        "category": "person.govID",
+        "regulatory_tags": [
+         "PII"
+        ],
+        "data_type": "PID",
+        "classification_level": "RESTRICTED"
+       },
+       {
+        "entity_type": "RX",
+        "start": 100,
+        "end": 110,
+        "text": "RX-7202598",
+        "domain": "medical",
+        "category": "medical.identifiers",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "data_type": "OPID",
+        "classification_level": "INTERNAL"
+       }
+      ],
+      "list_of_entities": [
+       "ADDRESS",
+       "PN",
+       "RX"
+      ],
+      "classification_level": "RESTRICTED",
+      "regulatory_tags": [
+       "PI",
+       "PII"
+      ],
+      "primary_domain": "medical",
+      "list_of_domains": [
+       "medical"
+      ],
+      "identity_bundles": [
+       "identity_bundle"
+      ]
+     },
+     {
+      "entities": [
+       {
+        "entity_type": "ADDRESS",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "classification_level": "INTERNAL",
+        "text": "1180 Valencia St, San Francisco, CA 94110",
+        "start": 13,
+        "end": 54
+       },
+       {
+        "entity_type": "PN",
+        "regulatory_tags": [
+         "PII"
+        ],
+        "classification_level": "RESTRICTED",
+        "text": "Rosa Delgado",
+        "start": 71,
+        "end": 83
+       },
+       {
+        "entity_type": "OPID",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "classification_level": "INTERNAL",
+        "text": "RX-7202598",
+        "start": 100,
+        "end": 110
+       },
+       {
+        "entity_type": "RX",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "classification_level": "INTERNAL",
+        "text": "RX-7202598",
+        "start": 100,
+        "end": 110
+       }
+      ],
+      "list_of_entities": [
+       "ADDRESS",
+       "PN",
+       "OPID",
+       "RX"
+      ],
+      "classification_level": "RESTRICTED",
+      "regulatory_tags": [
+       "PI",
+       "PII"
+      ]
+     }
+    ],
+    "requested_actions": [
+     "send"
+    ],
+    "data_sources": [
+     {
+      "data_source_name": "schedule-delivery",
+      "data_source_categories": [
+       "internal"
+      ]
+     }
+    ],
+    "data_destinations": [
+     {
+      "data_destination_name": "courier:8000",
+      "data_destination_categories": [
+       "internal"
+      ],
+      "data_destination_url": "http://courier:8000/mcp",
+      "data_destination_trust_level": "UNKNOWN"
+     }
+    ],
+    "event_type": "internal_sharing",
+    "processing_agents": [
+     {
+      "agent_name": "02cea682-a618-50d6-8ecd-ac28fff21ba3"
+     },
+     {
+      "agent_name": "86ccf191-1a2e-53a4-b1ba-12b5fbc8ae93"
+     }
+    ]
+   },
+   "response": {
+    "data_items": [
+     {
+      "entities": [],
+      "list_of_entities": [],
+      "classification_level": "PUBLIC",
+      "regulatory_tags": []
+     }
+    ],
+    "requested_actions": [
+     "receive"
+    ],
+    "data_sources": [
+     {
+      "data_source_name": "courier:8000",
+      "data_source_categories": [
+       "internal"
+      ],
+      "data_source_url": "http://courier:8000/mcp"
+     }
+    ],
+    "data_destinations": [
+     {
+      "data_destination_name": "schedule-delivery",
+      "data_destination_categories": [
+       "internal"
+      ],
+      "data_destination_trust_level": "UNKNOWN"
+     }
+    ],
+    "event_type": "internal_sharing",
+    "processing_agents": [
+     {
+      "agent_name": "02cea682-a618-50d6-8ecd-ac28fff21ba3"
+     },
+     {
+      "agent_name": "86ccf191-1a2e-53a4-b1ba-12b5fbc8ae93"
+     }
+    ]
+   }
+  }
+ },
+ "result": {
+  "allowed_actions": [],
+  "confidence": 1.0,
+  "enforcement_type": "allow",
+  "explanation": "No rules fired, falling back to default rule",
+  "risk_level": "none",
+  "rule_combining_mode": "most_restrictive",
+  "triggered_rules": [
+   "0000"
+  ]
+ }
+}

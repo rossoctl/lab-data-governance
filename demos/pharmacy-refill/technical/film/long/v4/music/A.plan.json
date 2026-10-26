@@ -1,0 +1,158 @@
+{
+ "chunks": [
+  {
+   "text": "[P0]",
+   "duration_ms": 8200,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "a grandmother at her kitchen table, gentle and warm, sparse piano"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  },
+  {
+   "text": "[I1]",
+   "duration_ms": 26959,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "under the hood: a lighter, steady, curious underscore with a soft pulse, transparent, never busy"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  },
+  {
+   "text": "[P1]",
+   "duration_ms": 12667,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "a busy castle hall, light pulse, sense of scale"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  },
+  {
+   "text": "[I2]",
+   "duration_ms": 40210,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "under the hood: a lighter, steady, curious underscore with a soft pulse, transparent, never busy"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  },
+  {
+   "text": "[P2]",
+   "duration_ms": 11600,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "a knight on a bridge at night, steady, noble"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  },
+  {
+   "text": "[I3]",
+   "duration_ms": 40381,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "under the hood: a lighter, steady, curious underscore with a soft pulse, transparent, never busy"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  },
+  {
+   "text": "[P3]",
+   "duration_ms": 6867,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "a rule nailed to a gate, serious, one sustained low string"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  }
+ ]
+}

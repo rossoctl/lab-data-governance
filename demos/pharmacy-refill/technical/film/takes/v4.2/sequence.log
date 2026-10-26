@@ -1,0 +1,47 @@
+>> 2026-10-25T20:02:41Z reset fills
+TRUNCATE TABLE
+>> 2026-10-25T20:02:41Z key full report-dispense
+report-dispense: DEMAND_KEY=full lineage 2x capture 2x swapped=1
+0.7 seg 
+2.2 conv-start A
+>> A 2026-10-25T20:02:44Z demo.py refill rosa
+4.2 trace 65452c56cca6d7940ab85c50bd705c34
+8.2 seg 
+context_id: 7e8a6ff6a0f843cea11f329f7b137ccc
+> Hi, this is Rosa Delgado, date of birth 1958-03-22. I'd like a refill of my Metformin 500 mg tablets, delivered to my home please.
+< Your refill of Metformin 500 mg tablets has been approved and is on its way. It will arrive at your address, 1180 Valencia St, San Francisco, CA 94110, by tomorrow evening at 6 pm.
+trace 65452c56cca6d7940ab85c50bd705c34  t0 2026-10-25T20:02:44Z  done 2026-10-25T20:03:39Z
+56.6 conv-exit 0
+121.0 seg 
+>> 2026-10-25T20:04:48Z reset fills
+TRUNCATE TABLE
+>> 2026-10-25T20:04:48Z key mrn report-dispense
+report-dispense: DEMAND_KEY=mrn lineage 2x capture 2x swapped=1
+>> 2026-10-25T20:19:10Z at 20:19:09
+>> B 2026-10-25T20:19:10Z demo.py refill rosa
+context_id: d806e6038d654fa79be72e12711801ca
+> Hi, this is Rosa Delgado, date of birth 1958-03-22. I'd like a refill of my Metformin 500 mg tablets, delivered to my home please.
+< Your refill of Metformin 500 mg tablets has been approved and is on its way with the tracking number CR207941459. It will arrive at your address, 1180 Valencia St, San Francisco, CA 94110, by tomorrow evening at 6 pm.
+trace a4bc18dae1948dba2a07e78bd44615f3  t0 2026-10-25T20:19:10Z  done 2026-10-25T20:20:01Z
+>> N1 2026-10-25T20:23:21Z demo.py nightly
+context_id: ac4dd1cada464b62bee84c395ce3d461
+> Run the nightly jobs.
+< Nightly jobs done: 1 reminders sent, 1 dispenses exported.
+trace 37b00d9395f4a5b8e59d47b65d7e01de  t0 2026-10-25T20:23:21Z  done 2026-10-25T20:23:44Z
+>> 2026-10-25T20:23:44Z reset fills
+TRUNCATE TABLE
+>> 2026-10-25T20:23:44Z key none report-dispense export-dispense-batch
+report-dispense: DEMAND_KEY=none lineage 2x capture 2x swapped=1
+export-dispense-batch: DEMAND_KEY=none lineage 2x capture 2x swapped=1
+>> 2026-10-25T20:39:19Z at 20:39:14
+>> C 2026-10-25T20:39:19Z demo.py refill rosa
+context_id: f691f55e76f84dfc9b5fa02cfe996cdf
+> Hi, this is Rosa Delgado, date of birth 1958-03-22. I'd like a refill of my Metformin 500 mg tablets, delivered to my home please.
+< Your refill of Metformin 500 mg tablets has been approved and is on its way. It will arrive at your address, 1180 Valencia St, San Francisco, CA 94110, by tomorrow evening at 6 pm.
+trace ae1570e5e3964465b49cf3b5c56d344f  t0 2026-10-25T20:39:19Z  done 2026-10-25T20:40:03Z
+>> N2 2026-10-25T20:43:23Z demo.py nightly
+context_id: 91fc143b7bbe4ed8ad1572c5277fc945
+> Run the nightly jobs.
+< Nightly jobs done: 1 reminders sent, 1 dispenses exported.
+trace 3a8891bd76e8b048457f77578d932671  t0 2026-10-25T20:43:23Z  done 2026-10-25T20:43:46Z
+>> 2026-10-25T20:43:46Z take done

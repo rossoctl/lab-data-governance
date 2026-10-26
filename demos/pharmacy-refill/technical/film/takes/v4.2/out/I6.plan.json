@@ -1,0 +1,75 @@
+{
+ "cues": {
+  "zoomEnd": 1.2,
+  "steps": [
+   1.2,
+   6.08,
+   13.026,
+   18.976,
+   27.492,
+   31.439,
+   35.239,
+   39.039,
+   45.561
+  ],
+  "pull": 52.796,
+  "pullEnd": 53.796,
+  "end": 54.396
+ },
+ "lines": [
+  [
+   "tts11/7f43ab789f8df191-t1.12.wav",
+   1.5,
+   4.58,
+   "Level two, in Sentry. The report now sends only the number."
+  ],
+  [
+   "tts11/73833467cd18dafa-t1.12.wav",
+   6.38,
+   6.646,
+   "Red alone, the classifier calls it an operational I D: internal. No rule fires on that."
+  ],
+  [
+   "tts11/2f13d9625a00b2ce-t1.12.wav",
+   13.326,
+   5.65,
+   "Now track that number on the graph. Every exchange that carried it lights up, the model's included."
+  ],
+  [
+   "tts11/ff9c58e547f151d0-t1.12.wav",
+   19.276,
+   8.216,
+   "Hop one. The patient lookup answers the assistant: her name and her medical record number, together. Here the label is born."
+  ],
+  [
+   "tts11/5dde7a92a465c2e4-t1.12.wav",
+   27.792,
+   3.647,
+   "Hop two. The assistant passes the number to fulfillment."
+  ],
+  [
+   "tts11/8582856240757732-t1.12.wav",
+   31.739,
+   3.5,
+   "Hop three. Fulfillment passes it to the report tool."
+  ],
+  [
+   "tts11/84be0be1bb951047-t1.12.wav",
+   35.539,
+   3.289,
+   "Hop four. The report sends it to the forecaster."
+  ],
+  [
+   "tts11/c9a6d6f24fd2e317-t1.12.wav",
+   39.339,
+   6.222,
+   "At every hop, Sentry matches the exact value, so the label, medical record number, travels with it."
+  ],
+  [
+   "tts11/46b47949d2d23f9b-t1.12.wav",
+   45.861,
+   6.435,
+   "O P A now gets the carried label. The same three rules fire: critical, recommend block."
+  ]
+ ]
+}

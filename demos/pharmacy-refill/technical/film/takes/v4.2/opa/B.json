@@ -1,0 +1,226 @@
+{
+ "interaction_id": "e8eb6655-4e48-55e4-9765-f2d75f3e7322",
+ "input": {
+  "flows": {
+   "request": {
+    "data_items": [
+     {
+      "entities": [
+       {
+        "entity_type": "DRUG",
+        "start": 10,
+        "end": 19,
+        "text": "Metformin",
+        "domain": "medical",
+        "category": "medical.terms",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "data_type": "DATA",
+        "classification_level": "INTERNAL"
+       },
+       {
+        "entity_type": "DRUG_DOSE",
+        "start": 20,
+        "end": 34,
+        "text": "500 mg tablets",
+        "domain": "medical",
+        "category": "medical.data",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "data_type": "DATA",
+        "classification_level": "INTERNAL"
+       },
+       {
+        "entity_type": "OPID",
+        "start": 53,
+        "end": 60,
+        "text": "4471820",
+        "domain": "person",
+        "category": "person.operationalID",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "data_type": "OPID",
+        "classification_level": "INTERNAL"
+       },
+       {
+        "entity_type": "DATE",
+        "start": 77,
+        "end": 87,
+        "text": "2026-10-25",
+        "domain": "person",
+        "category": "person.dates",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "data_type": "DATA",
+        "classification_level": "INTERNAL"
+       },
+       {
+        "entity_type": "DATE",
+        "start": 105,
+        "end": 115,
+        "text": "2026-11-24",
+        "domain": "person",
+        "category": "person.dates",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "data_type": "DATA",
+        "classification_level": "INTERNAL"
+       }
+      ],
+      "list_of_entities": [
+       "DRUG",
+       "DRUG_DOSE",
+       "OPID",
+       "DATE",
+       "DATE"
+      ],
+      "classification_level": "INTERNAL",
+      "regulatory_tags": [
+       "PI"
+      ],
+      "primary_domain": "medical",
+      "list_of_domains": [
+       "medical"
+      ]
+     },
+     {
+      "entities": [
+       {
+        "entity_type": "DRUG",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "classification_level": "INTERNAL",
+        "text": "Metformin",
+        "start": 10,
+        "end": 19
+       },
+       {
+        "entity_type": "DRUG_DOSE",
+        "regulatory_tags": [
+         "PI"
+        ],
+        "classification_level": "INTERNAL",
+        "text": "500 mg tablets",
+        "start": 20,
+        "end": 34
+       },
+       {
+        "entity_type": "MRN",
+        "regulatory_tags": [
+         "PII",
+         "PHI"
+        ],
+        "classification_level": "RESTRICTED",
+        "text": "4471820",
+        "start": 53,
+        "end": 60
+       }
+      ],
+      "list_of_entities": [
+       "DRUG",
+       "DRUG_DOSE",
+       "MRN"
+      ],
+      "classification_level": "RESTRICTED",
+      "regulatory_tags": [
+       "PHI",
+       "PI",
+       "PII"
+      ]
+     }
+    ],
+    "requested_actions": [
+     "send"
+    ],
+    "data_sources": [
+     {
+      "data_source_name": "report-dispense",
+      "data_source_categories": [
+       "internal"
+      ]
+     }
+    ],
+    "data_destinations": [
+     {
+      "data_destination_name": "demand-forecast.example:8000",
+      "data_destination_categories": [
+       "external"
+      ],
+      "data_destination_url": "http://demand-forecast.example:8000/mcp",
+      "data_destination_trust_level": "UNTRUSTED_EXTERNAL"
+     }
+    ],
+    "event_type": "external_sharing",
+    "processing_agents": [
+     {
+      "agent_name": "f39ff15d-1180-59fb-a5e9-5287cf094158"
+     },
+     {
+      "agent_name": "b8f48d70-a661-51b7-827b-7ab6a3e28054"
+     }
+    ]
+   },
+   "response": {
+    "data_items": [
+     {
+      "entities": [],
+      "list_of_entities": [],
+      "classification_level": "PUBLIC",
+      "regulatory_tags": []
+     }
+    ],
+    "requested_actions": [
+     "receive"
+    ],
+    "data_sources": [
+     {
+      "data_source_name": "demand-forecast.example:8000",
+      "data_source_categories": [
+       "external"
+      ],
+      "data_source_url": "http://demand-forecast.example:8000/mcp"
+     }
+    ],
+    "data_destinations": [
+     {
+      "data_destination_name": "report-dispense",
+      "data_destination_categories": [
+       "internal"
+      ],
+      "data_destination_trust_level": "UNKNOWN"
+     }
+    ],
+    "event_type": "data_import",
+    "processing_agents": [
+     {
+      "agent_name": "f39ff15d-1180-59fb-a5e9-5287cf094158"
+     },
+     {
+      "agent_name": "b8f48d70-a661-51b7-827b-7ab6a3e28054"
+     }
+    ]
+   }
+  }
+ },
+ "result": {
+  "allowed_actions": [
+   "redact"
+  ],
+  "confidence": 0.95,
+  "enforcement_type": "block",
+  "explanation": "PII detected in payload sent to UNTRUSTED_EXTERNAL destination. Data exfiltration risk.",
+  "risk_level": "critical",
+  "rule_combining_mode": "most_restrictive",
+  "triggered_rules": [
+   "DG-001",
+   "DG-002",
+   "DG-004"
+  ]
+ }
+}

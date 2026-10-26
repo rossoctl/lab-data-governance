@@ -1,0 +1,4 @@
+# platform-values.yaml — passed to the platform installer (--rossoctl-values): the operator service account the CLI
+# logs in with (setup/sentry-film.sh cli), which the app's proxy deploy imports through.
+apiOAuthSecret:
+  enabled: true

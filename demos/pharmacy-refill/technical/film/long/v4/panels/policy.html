@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- v4 I4 — the policy as Sentry runs it. ?v=inside: which destinations count as inside (the leg-ready setting
+     RISK_INTERNAL_URL_WHITELIST_PATTERNS as set on the take's cluster, and the one-label service-name convention of
+     lab-dg risk/engine/utils.py _category), with the courier and the forecaster judged by it. ?v=rego: rule DG-001 in
+     Rego, copied verbatim from the module OPA serves in the take's cluster (GET /v1/policies, 10-25 night), and its
+     decision entry. Static; panels.js screenshots each view and writes the boxes of every [id]. -->
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=block" rel="stylesheet">
+<style>
+:root{--bg:#0f1214;--panel:#171b1f;--line:#2a3036;--ink:#e9e6dc;--muted:#9aa1a8;--red:#ef5b47;--green:#5fd38a;--gold:#e5c268;--blue:#7aa2e8;--teal:#4fb3a9}
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:var(--bg);color:var(--ink);font-family:'Source Sans 3',sans-serif}
+h1{position:absolute;left:70px;top:44px;margin:0;font:800 42px Archivo,sans-serif}
+h1 small{display:block;font:600 22px 'Source Sans 3',sans-serif;color:var(--muted);margin-top:6px}
+.cap{font:700 15px 'JetBrains Mono',monospace;letter-spacing:.22em;color:var(--muted);margin:0 0 14px 4px}
+.card{background:var(--panel);border:2px solid var(--line);border-radius:14px;padding:22px 26px}
+.mono{font-variant-ligatures:none;font:500 25px/1.6 'JetBrains Mono',monospace}
+.chips{display:flex;flex-wrap:wrap;gap:12px;margin-top:18px}.chips span{font:600 23px 'JetBrains Mono',monospace;background:#20262b;border:1px solid #3a434b;border-radius:8px;padding:5px 11px;color:#d7d3c7}
+.dest{display:grid;grid-template-columns:1fr 250px;align-items:center;gap:20px;background:var(--panel);border:2px solid var(--line);border-radius:14px;padding:30px 30px;margin-bottom:40px}
+.dest b{display:block;font:700 27px 'JetBrains Mono',monospace}.dest i{display:block;font-style:normal;font:600 22px 'Source Sans 3';color:var(--muted);margin-top:8px}
+.res{border-radius:10px;padding:16px 16px;font:800 30px Archivo,sans-serif;text-align:center}.res small{display:block;font:600 16px 'JetBrains Mono',monospace;margin-top:4px}
+.res.in{background:#173323;color:var(--green)}.res.out{background:#3a1814;color:#ff8d7d}
+pre{font-variant-ligatures:none;margin:0;font:500 25px/1.62 'JetBrains Mono',monospace;color:#d9d5c9;white-space:pre}
+pre .kw{color:var(--blue)}pre .s{color:#9fd39b}pre .c{color:#6e777f}pre .r{color:var(--gold)}
+.ln{display:inline-block;border-radius:6px;padding:0 6px;margin:0 -6px}
+</style></head><body>
+<div id="root"></div>
+<script>
+const V = new URLSearchParams(location.search).get('v') || 'inside', root = document.getElementById('root');
+const kw = s => s.replace(/("[^"]*")/g, '<span class="s">$1</span>')
+  .replace(/\b(package|contains|if|some|in|every)\b/g, '<span class="kw">$1</span>');
+if (V === 'inside') root.innerHTML = `<h1>Inside or outside?<small>how Sentry decides where a call goes, before any rule is read</small></h1>
+  <div style="position:absolute;left:70px;top:250px;width:840px">
+    <div class="cap">A DEPLOYMENT SETTING</div>
+    <div class="card" id="setting"><div class="mono">RISK_INTERNAL_URL_WHITELIST_PATTERNS</div>
+      <div class="chips"><span>*.svc</span><span>*.svc.cluster.local</span><span>*.localtest.me</span><span>localhost</span><span>*.localhost</span>
+        <span>127.0.0.0/8</span><span>::1</span><span>10.96.0.0/16</span><span>10.244.0.0/16</span><span>host.containers.internal</span><span>host.docker.internal</span></div></div>
+    <div class="card" id="svc-rule" style="margin-top:40px"><div style="font:800 30px Archivo,sans-serif">and one convention</div>
+      <div style="font:600 24px/1.4 'Source Sans 3';color:var(--muted);margin-top:10px">a one-word host name, such as <span class="mono" style="color:var(--ink);font-size:19px">courier</span> or
+      <span class="mono" style="color:var(--ink);font-size:19px">records</span>, is one of the cluster’s own services: inside</div></div>
+  </div>
+  <div style="position:absolute;left:970px;top:250px;width:880px">
+    <div class="cap">WHERE ROSA’S REFILL SENDS DATA</div>
+    <div class="dest" id="d-courier"><div><b>courier:8000</b><i>the contracted courier · deployed as a service of this cluster</i></div>
+      <div class="res in">inside<small>internal</small></div></div>
+    <div class="dest" id="d-fcst"><div><b>demand-forecast.example:8000</b><i>the wholesaler’s demand forecaster · matches no pattern</i></div>
+      <div class="res out">outside<small>UNTRUSTED_EXTERNAL</small></div></div>
+  </div>`;
+else root.innerHTML = `<h1>Rule DG-001, in Rego<small>as OPA runs it in this cluster · policy data_governance.rego</small></h1>
+  <div class="card" id="rego" style="position:absolute;left:70px;top:190px;width:1724px;padding:30px 36px">
+<pre>${kw('package data_governance')}
+
+<span class="ln" id="l-head">${kw('triggered_rules contains "DG-001" if {')}</span>
+<span class="ln" id="l-flow">    ${kw('some flow in input.flows')}
+    flow.event_type == ${kw('"external_sharing"')}</span>
+<span class="ln" id="l-pii">    ${kw('some _DG_001_item_0 in flow.data_items')}
+    ${kw('every t in ["PII"] { t in _DG_001_item_0.regulatory_tags }')}</span>
+<span class="ln" id="l-dest">    ${kw('some _DG_001_dest_0 in flow.data_destinations')}
+    ${kw('every c in ["external"] { c in _DG_001_dest_0.data_destination_categories }')}
+    _DG_001_dest_0.data_destination_trust_level == ${kw('"UNTRUSTED_EXTERNAL"')}</span>
+}
+
+<span class="c"># its decision, from the same module</span>
+<span class="ln" id="l-dec"><span class="r">"DG-001"</span>: {<span class="s">"risk_level"</span>: <span class="s">"critical"</span>, <span class="s">"enforcement_type"</span>: <span class="s">"block"</span>, <span class="s">"allowed_actions"</span>: [<span class="s">"redact"</span>], …}</span></pre></div>`;
+</script></body></html>

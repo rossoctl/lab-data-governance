@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- v3 map — the one fixed state map of the pharmacy app (P1's drawing + the records service), with one path lit and
+     one payload card. ?v=intro|A|B|C|N picks the path and the card; the card's text comes from ?card=<json> (the take's
+     real payloads, written by v3/map_shots.js). Static: map_shots.js screenshots it at 1920x1080, device scale 2. -->
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#1d1d1b;--paper:#eeede8;--muted:#6b6b66;--agent:#f3e8dc;--agent-line:#9b6a3c;--con:#1e8a7a;--con-bg:#e3f3f0;--out:#c0392b;--out-bg:#fff2f0;--pg:#8f8d86;--rec:#2f5fa8;--rec-bg:#e6eefb;--ok:#1f8a4c;--gold:#b8860b}
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:var(--paper)}
+svg{position:absolute;left:0;top:0;width:1920px;height:1080px}
+.z{font:700 17px 'JetBrains Mono',monospace;letter-spacing:.14em}
+.nd rect{fill:#fff;stroke:#2b2b2b;stroke-width:1.6}.nd.agent rect{fill:var(--agent);stroke:var(--agent-line);stroke-width:2}
+.nd.caller rect{fill:#f7f6f2;stroke:#8f8d86;stroke-dasharray:5 4}.nd.llm rect{fill:#2f2f35;stroke:#2f2f35}.nd.llm text{fill:#fff}
+.nd.pg rect{fill:#e2e1db;stroke:var(--pg);stroke-dasharray:5 4}
+.nd.rec rect{fill:var(--rec-bg);stroke:var(--rec);stroke-width:2.2}.nd.rec text{fill:var(--rec)}
+.nd.con rect{fill:var(--con-bg);stroke:var(--con);stroke-width:2}.nd.con text{fill:var(--con)}
+.nd.out rect{fill:var(--out-bg);stroke:var(--out);stroke-width:2.2;stroke-dasharray:7 4}.nd.out text{fill:var(--out)}
+.nd text{font:700 19px 'Source Sans 3',sans-serif;text-anchor:middle;fill:var(--ink)}.nd text.s{font:400 14px 'Source Sans 3',sans-serif;fill:var(--muted)}
+.ed{stroke:#55534d;stroke-width:1.7;fill:none}.ed.con{stroke:var(--con);stroke-width:2.4}.ed.out{stroke:var(--out);stroke-width:2.8;stroke-dasharray:9 5}
+.ed.pg{stroke:var(--pg);stroke-dasharray:3 5}.ed.rec{stroke:var(--rec);stroke-width:2.2}
+.dim{opacity:.22}
+.lit{stroke-width:5 !important;stroke-dasharray:none !important}
+.hot{stroke-width:7 !important;stroke-dasharray:none !important}
+.nd.on rect{stroke-width:3.4}
+#card{position:absolute;left:1440px;top:150px;width:440px;font-family:'Source Sans 3',sans-serif;color:var(--ink)}
+#card .tag{display:inline-block;padding:8px 16px;border-radius:9px;font:800 28px/1.1 Archivo,sans-serif;color:#fff;background:var(--out)}
+#card .tag.ok{background:var(--ok)}#card .tag.gold{background:#8a6a1c}
+#card .sub{font:600 21px/1.35 'Source Sans 3',sans-serif;color:var(--muted);margin:12px 2px 18px}
+#card .box{background:#fff;border:2px solid #d4d2ca;border-radius:12px;padding:16px 18px;font:600 19px/1.65 'JetBrains Mono',monospace}
+#card .box .k{color:var(--muted)}#card .box .p{color:var(--out);font-weight:700}#card .box .q{color:var(--ink)}
+#card .foot{font:600 19px/1.4 'Source Sans 3',sans-serif;margin-top:16px;color:var(--ink)}
+#title{position:absolute;left:44px;top:22px;font:800 30px Archivo,sans-serif;color:var(--ink)}
+#title small{font:600 20px 'Source Sans 3',sans-serif;color:var(--muted);margin-left:14px}
+</style></head><body>
+<svg id="svg" viewBox="0 0 1920 1080"></svg>
+<div id="title"></div>
+<div id="card"></div>
+<script>
+const Q = new URLSearchParams(location.search), V = Q.get('v') || 'intro';
+const CARD = JSON.parse(Q.get('card') || '{}');
+const NODES={ // id: [x, y, w, label, sub, cls]   (P1's map; records added between the tools and Postgres)
+  patient:[150,250,170,'Rosa','a refill request','caller'], sched:[150,600,170,'scheduler','every night','caller'], insurer:[150,880,170,'insurer','a callback','caller'],
+  assistant:[470,250,250,'pharmacy-assistant','agent','agent'], clinical:[470,370,250,'clinical-review-agent','agent','agent'], fulfil:[470,490,250,'fulfillment-agent','agent','agent'],
+  ops:[470,640,250,'pharmacy-ops','agent','agent'], benefits:[470,880,250,'benefits-agent','agent','agent'],
+  lookup:[830,190,240,'lookup-patient','tool','tool'], review:[830,320,240,'review-refill','tool','tool'], delivery:[830,440,240,'schedule-delivery','tool','tool'], report:[830,540,240,'report-dispense','tool','tool'],
+  reminders:[830,640,240,'send-refill-reminders','tool','tool'], export:[830,740,240,'export-dispense-batch','tool','tool'], recpa:[830,850,240,'record-pa-decision','tool','tool'], copay:[830,950,240,'enroll-copay-card','tool','tool'],
+  llm:[470,140,250,'the model','qwen2.5:7b','llm'], records:[1135,500,190,'records','the fills · HTTP','rec'], pg:[1135,770,190,'Postgres','patients · prescriptions','pg'],
+  pbm:[1440,320,250,'insurer’s PBM','pbm','con'], courier:[1440,440,250,'courier','courier','con'], sms:[1440,680,250,'SMS gateway','sms-gateway','con'],
+  fcst:[1750,560,260,'demand forecaster','demand-forecast.example','out'], copayhub:[1750,940,260,'copay hub','copay-assist.example','out']};
+const EDGES=[['patient','assistant'],['sched','ops'],['insurer','benefits'],['assistant','clinical'],['assistant','fulfil'],['assistant','lookup'],['clinical','review'],['fulfil','delivery'],['fulfil','report'],
+  ['ops','reminders'],['ops','export'],['benefits','recpa'],['benefits','copay'],['assistant','llm'],
+  ['review','pbm','con'],['delivery','courier','con'],['reminders','sms','con'],['recpa','sms','con'],['report','fcst','out'],['export','fcst','out'],['copay','copayhub','out'],
+  ['review','records','rec'],['delivery','records','rec'],['reminders','records','rec'],['export','records','rec'],['recpa','records','rec'],['copay','records','rec'],
+  ['lookup','pg','pg'],['review','pg','pg'],['recpa','pg','pg'],['copay','pg','pg'],['records','pg','pg']];
+// the lit path per view, and the one edge that carries the card's payload
+const REFILL=['patient','assistant','lookup','clinical','review','records','fulfil','delivery','courier','report','fcst','pg'];
+const PATHS={intro:[REFILL,'report>fcst'], A:[REFILL,'report>fcst'], B:[REFILL,'report>fcst'], C:[REFILL,'report>fcst'],
+             N:[['sched','ops','export','records','fcst','reminders','sms'],'export>fcst']};
+const [ON, HOT] = PATHS[V] || PATHS.intro;
+const H=58, K=0.735, OX=8, OY=(1080-1080*K)/2+30;
+const tone = V === 'C' ? 'ok' : V === 'intro' ? 'gold' : '';
+function draw(){let h=`<g transform="translate(${OX} ${OY}) scale(${K})">`;
+  h+=`<rect x="40" y="70" width="1240" height="960" rx="18" fill="#e6e5df"/><rect x="1300" y="70" width="290" height="960" rx="18" fill="#dcefeb"/><rect x="1610" y="70" width="290" height="960" rx="18" fill="#f7e3df"/>`;
+  h+=`<text class="z" x="64" y="104" fill="#6b6b66">INSIDE THE PHARMACY</text><text class="z" x="1322" y="104" fill="#1e8a7a">CONTRACTED</text><text class="z" x="1632" y="104" fill="#c0392b">OUTSIDE</text>`;
+  const c=id=>{const n=NODES[id];return {x:n[0],y:n[1],w:n[2]}};
+  for(const [a,b,k] of EDGES){const A=c(a),B=c(b);let x1=A.x+A.w/2,y1=A.y,x2=B.x-B.w/2,y2=B.y;
+    if(b==='llm'){x1=A.x;y1=A.y-H/2;x2=B.x;y2=B.y+H/2}
+    else if(A.x===B.x){x1=A.x-A.w/2+28;y1=A.y+H/2;x2=B.x-B.w/2+28;y2=B.y-H/2}
+    const on=ON.includes(a)&&ON.includes(b), hot=HOT===`${a}>${b}`;
+    const cls=`ed ${k||''} ${hot?'hot':on&&k!=='pg'?'lit':''} ${on?'':'dim'}`;
+    const mx=(x1+x2)/2;h+=`<path class="${cls}" d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"${hot&&tone==='ok'?' style="stroke:#1f8a4c"':''}/>`}
+  for(const [id,[x,y,w,l,sub,cls]] of Object.entries(NODES)) h+=`<g class="nd ${cls} ${ON.includes(id)?'on':'dim'}"><rect x="${x-w/2}" y="${y-H/2}" width="${w}" height="${H}" rx="10"/><text x="${x}" y="${y-2}">${l}</text><text class="s" x="${x}" y="${y+18}">${sub}</text></g>`;
+  document.getElementById('svg').innerHTML=h+'</g>';
+  document.getElementById('title').innerHTML=CARD.title||'';
+  const rows=(CARD.rows||[]).map(([k,v,p])=>`<div><span class="k">${k}</span> <span class="${p?'p':'q'}">${v}</span></div>`).join('');
+  document.getElementById('card').innerHTML=(CARD.tag?`<div class="tag ${tone}">${CARD.tag}</div>`:'')+(CARD.sub?`<div class="sub">${CARD.sub}</div>`:'')+
+    (rows?`<div class="box">${rows}</div>`:'')+(CARD.foot?`<div class="foot">${CARD.foot}</div>`:'');
+}
+draw();
+// the box of a node or of the hot edge's two ends, in screen px (for the stage's rings)
+window.boxOf=id=>{const [x,y,w]=NODES[id];return [OX+(x-w/2)*K,OY+(y-H/2)*K,w*K,H*K]};
+</script></body></html>

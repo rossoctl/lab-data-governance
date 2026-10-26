@@ -1,0 +1,16 @@
+# kind-config.yaml.in — the platform's own kind config (kagenti scripts/kind/kind-config-registry.yaml at the pin) with the
+# gateway's host ports from film.env. setup/sentry-film.sh cluster writes state/<cluster>/kind-config.yaml from it.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  image: kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f
+  extraPortMappings:
+  - containerPort: 30080
+    hostPort: @HTTP_PORT@
+  - containerPort: 30443
+    hostPort: @HTTPS_PORT@
+containerdConfigPatches:
+- |
+  [plugins."io.containerd.cri.v1.images".registry]
+    config_path = "/etc/containerd/certs.d"

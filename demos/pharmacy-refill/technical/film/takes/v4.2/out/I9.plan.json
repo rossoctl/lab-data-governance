@@ -1,0 +1,19 @@
+{
+ "cues": {
+  "zoomEnd": 1.2,
+  "steps": [
+   1.2
+  ],
+  "pull": 11.08,
+  "pullEnd": 12.08,
+  "end": 12.08
+ },
+ "lines": [
+  [
+   "tts11/cb91050043c70a5b-t1.12.wav",
+   1.5,
+   9.08,
+   "Every verdict in this film is Sentry's own, from one run on Rosso C T L: 5 sessions, 102 exchanges judged, 3 flagged."
+  ]
+ ]
+}

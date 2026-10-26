@@ -1,0 +1,68 @@
+{
+ "cues": {
+  "zoomEnd": 1.2,
+  "steps": [
+   1.2,
+   5.355,
+   13.94,
+   19.89,
+   28.835,
+   31.997,
+   36.798,
+   46.529
+  ],
+  "pull": 54.477,
+  "pullEnd": 55.477,
+  "end": 56.077
+ },
+ "lines": [
+  [
+   "tts11/de9079222af86aa0-t1.12.wav",
+   1.5,
+   3.855,
+   "In Sentry, the company policy is written down as three rules."
+  ],
+  [
+   "tts11/a4bf29b907ca14f5-t1.12.wav",
+   5.655,
+   8.285,
+   "Rule D G one: personal data, sent to an untrusted external destination. Its suggested enforcement is block."
+  ],
+  [
+   "tts11/4ad423a53640c14f-t1.12.wav",
+   14.24,
+   5.65,
+   "Rule D G two says the same for health data, and D G four for restricted data."
+  ],
+  [
+   "tts11/bb0dd1661332e8fc-t1.12.wav",
+   20.19,
+   8.645,
+   "Untrusted means outside the organization. The cluster's own services count as inside. Here the contracted courier runs as one of them."
+  ],
+  [
+   "tts11/1bc5dea487225faf-t1.12.wav",
+   29.135,
+   2.862,
+   "So does any address on a list the company sets."
+  ],
+  [
+   "tts11/25069a8b50ca755c-t1.12.wav",
+   32.297,
+   4.501,
+   "The forecaster's address is on neither: external, and untrusted."
+  ],
+  [
+   "tts11/d17aa3cbe814bb6b-t1.12.wav",
+   37.098,
+   9.431,
+   "Sentry evaluates the rules with O P A, the Open Policy Agent. Here is rule D G one, in Rego, as O P A runs it in this cluster."
+  ],
+  [
+   "tts11/d7c03d3c92a36db9-t1.12.wav",
+   46.829,
+   7.148,
+   "Any flow that carries an item tagged P I I, to a destination that is external and untrusted, fires the rule."
+  ]
+ ]
+}

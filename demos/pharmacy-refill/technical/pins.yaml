@@ -1,0 +1,54 @@
+# pins.yaml — the exact code, film and settings the technical film (v4.2) is built on. setup/sentry-film.sh reads this
+# file; it checks out these commits, refuses a checkout with local changes, and says so when a cluster runs another
+# version. Moving a pin means a new take, and every verdict and count the narration says checked against it
+# (RUNBOOK.md § 6).
+platform:                       # the agent platform (rossoctl): kind cluster, operator, gateway, Keycloak, SPIRE, registry, OTel
+  repo: https://github.com/kagenti/kagenti     # renamed rossoctl/rossoctl on GitHub; the old name redirects (clones keep working)
+  sha: 627d47936a68f0a533c16c02de69dbe705d705f7
+  flags: --with-spire --with-backend --with-ui --with-otel --with-builds   # scripts/kind/setup-rossoctl.sh; + setup/platform-values.yaml
+  ui_auth: "false"              # rossoctl-backend ENABLE_AUTH: the platform's web UI without a Keycloak login, so its Agent and Tool
+                                # catalogs can be shot (the installer turns it on with SPIRE; the film's catalogs were shot without it)
+rossoctl_cli:                   # the platform's CLI; the app's deploy.sh imports agents and tools through it
+  url: https://github.com/rossoctl/rossoctl-cli/releases
+  release: v0.1.5-beta.1
+  asset: rossoctl-v0.1.5-beta.1-Darwin-arm64.tar.gz      # also Darwin-x86_64, Linux-arm64, Linux-x86_64
+lab-data-governance:            # Sentry: receiver, classifier, data lineage, risk (OPA), the web console
+  repo: https://github.com/rossoctl/lab-data-governance
+  sha: 335fc64e42dd4d0c1d4f0588e3e63c83f16954ec
+  branch: lineage/exact-match-cross-conversation-dev
+  note: >-
+    208858f (data lineage across conversations, migration 0025) + 335fc64 (the RISK_INHERITED_LABELS_CROSS_CONVERSATIONS
+    switch) on risk 71b945d. Not merged into risk; its tree = 087b8d1, the local build the v4.2 take ran. Built with
+    setup/files/uv.lock (the repo ignores its lockfile).
+agent-examples-snp:             # the pharmacy app (apps/pharmacy_refills) and its proxy-mode deploy.sh
+  repo: https://github.com/s-and-p-team/agent-examples-snp
+  sha: 93363877cff764e14bb12877d3abdcec054ef150
+  note: main after PR 50 (the fills table behind a records service the sidecars see); tree = 9801614
+pitch:                          # the 2:35 pitch film the technical film is built around (Git LFS; public)
+  repo: https://github.com/rossoctl/lab-data-governance
+  sha: e157e9e1a78457d73243cf83c74ac0e8f16b75fa
+  branch: demo/pharmacy-refill-pitch
+  path: demos/pharmacy-refill/pitch/sentry_pitch_demo.mp4
+  url: https://media.githubusercontent.com/media/rossoctl/lab-data-governance/e157e9e1a78457d73243cf83c74ac0e8f16b75fa/demos/pharmacy-refill/pitch/sentry_pitch_demo.mp4
+  sha256: afe40c3b57e7fb5a6ac92bf1ed4cb5229eb9c4a1124aca3e185a7d2eb2246b0b
+media:                          # the binary parts git does not carry: the voice cache, the music, the v4.2 take's recording,
+                                # stills, cards, rendered sections, the pitch film and the finished film (setup/sentry-film.sh media)
+  file: sentry-technical-film-v4.2-full.zip
+  url: https://ibm.box.com/s/ckv7aj1a6hre6h679itib0zahmh2mxmy   # the Box folder "Sentry technical film" (sign in); the zip is in it
+  sha256: 51223cf70c227126f887143073eca8728f254d10ddb03ad79ba7ddf14a31e21a
+sidecar: the platform's proxy sidecar as its operator pins it (authbridge v0.7.0-alpha.10 at the platform pin)
+model:
+  agents: qwen2.5:7b through ollama on the host (host.containers.internal:11434)
+  voice: ElevenLabs Eleven v4, voice George, tempo 1.12 (film/long/common.py); lines cached in film/long/tts11/
+  music: ElevenLabs Music (film/long/v4/score.py); the film's score cached in film/long/v4/music/
+  review: Gemini (film/long/review.py, GEMINI_API_KEY); local Whisper (faster-whisper) for the word check
+
+settings:                       # Sentry's settings for the take (setup/sentry-film.sh sentry sets them; doctor checks them)
+  env:
+    data-governance-leg-ready:
+      RISK_INHERITED_LABELS: "on"                       # data lineage feeds the risk verdict (ships off)
+      RISK_INHERITED_LABELS_CROSS_CONVERSATIONS: "on"   # …including labels carried in from another conversation (ships off)
+    data-governance-label-lineage:
+      LABEL_CROSS_TRACE_WINDOW_HOURS: "0.25"            # how far back another conversation is linked: 15 min (ships 0 = off)
+  ui_memory: 1Gi                                        # the console's Data lineage reads need it (ships 512Mi)
+  opa_rules: DG-001 DG-002 DG-004                       # the policy OPA serves (ships with Sentry, deploy/k8s/95-opa.yaml)

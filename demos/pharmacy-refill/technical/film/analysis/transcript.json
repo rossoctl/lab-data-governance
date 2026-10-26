@@ -1,0 +1,232 @@
+[
+ {
+  "start": 0.0,
+  "end": 1.7,
+  "text": "Rosa needs a refill."
+ },
+ {
+  "start": 2.9,
+  "end": 5.0,
+  "text": "She taps one button in her pharmacy's mobile app,"
+ },
+ {
+  "start": 5.42,
+  "end": 7.66,
+  "text": "an agentic flow running on Rosso CTL."
+ },
+ {
+  "start": 8.9,
+  "end": 12.18,
+  "text": "That one tap sets off 26 agent and tool interactions."
+ },
+ {
+  "start": 13.58,
+  "end": 15.24,
+  "text": "Sentry tracks the data through each one"
+ },
+ {
+  "start": 15.24,
+  "end": 17.2,
+  "text": "and checks it against company policy."
+ },
+ {
+  "start": 18.3,
+  "end": 20.38,
+  "text": "One it marks as risky, let's see why."
+ },
+ {
+  "start": 21.76,
+  "end": 24.28,
+  "text": "Sentry is data governance in Rosso CTL,"
+ },
+ {
+  "start": 24.78,
+  "end": 27.66,
+  "text": "built on lineage, classification, and risk assessment."
+ },
+ {
+  "start": 28.8,
+  "end": 31.14,
+  "text": "Let's take one rule from the company policy."
+ },
+ {
+  "start": 32.1,
+  "end": 35.44,
+  "text": "Personal data must not leave the organization for an external target."
+ },
+ {
+  "start": 37.48,
+  "end": 37.86,
+  "text": "Level 1."
+ },
+ {
+  "start": 39.04,
+  "end": 41.2,
+  "text": "In Rosa's record, the context is all there."
+ },
+ {
+  "start": 41.74,
+  "end": 44.18,
+  "text": "Her name and beside it her medical record number."
+ },
+ {
+  "start": 45.3,
+  "end": 46.48,
+  "text": "Both are personal data."
+ },
+ {
+  "start": 47.1,
+  "end": 49.46,
+  "text": "Sending them to an external vendor breaks the policy,"
+ },
+ {
+  "start": 49.72,
+  "end": 50.86,
+  "text": "so Sentry blocks it."
+ },
+ {
+  "start": 52.12,
+  "end": 54.04,
+  "text": "With full context at the point of decision,"
+ },
+ {
+  "start": 54.38,
+  "end": 55.68,
+  "text": "this is local enforcement."
+ },
+ {
+  "start": 55.68,
+  "end": 59.46,
+  "text": "Most data governance tools can do it, and so does Sentry."
+ },
+ {
+  "start": 60.54,
+  "end": 62.36,
+  "text": "But what happens when the context is gone?"
+ },
+ {
+  "start": 63.84,
+  "end": 64.38,
+  "text": "Level 2."
+ },
+ {
+  "start": 64.7,
+  "end": 66.16,
+  "text": "The app now sends only the number."
+ },
+ {
+  "start": 67.18,
+  "end": 68.92,
+  "text": "At release, it's out of context,"
+ },
+ {
+  "start": 69.34,
+  "end": 71.12,
+  "text": "so given only the local context,"
+ },
+ {
+  "start": 71.58,
+  "end": 74.08,
+  "text": "it's classified as a generic operational ID."
+ },
+ {
+  "start": 75.4,
+  "end": 76.98,
+  "text": "Local enforcement would let it through."
+ },
+ {
+  "start": 77.92,
+  "end": 80.64,
+  "text": "But Sentry's lineage carries the context with the data."
+ },
+ {
+  "start": 81.16,
+  "end": 84.56,
+  "text": "Four hops back, that number was Rosa's medical record number."
+ },
+ {
+  "start": 85.4,
+  "end": 88.52,
+  "text": "It's still personal data, so sending it breaks the policy,"
+ },
+ {
+  "start": 88.78,
+  "end": 89.28,
+  "text": "and it's blocked."
+ },
+ {
+  "start": 91.1,
+  "end": 92.84,
+  "text": "With full context Sentry blocks,"
+ },
+ {
+  "start": 93.46,
+  "end": 95.44,
+  "text": "four hops downstream and out of context,"
+ },
+ {
+  "start": 95.68,
+  "end": 96.8,
+  "text": "it still catches the leak."
+ },
+ {
+  "start": 97.88,
+  "end": 100.36,
+  "text": "But what if the leak comes from a different session altogether?"
+ },
+ {
+  "start": 101.46,
+  "end": 104.06,
+  "text": "A nightly job pulls the number from a shared database,"
+ },
+ {
+  "start": 104.5,
+  "end": 106.18,
+  "text": "with no name and no context."
+ },
+ {
+  "start": 107.3,
+  "end": 110.76,
+  "text": "Sentry's cross-session lineage carries the full context across sessions,"
+ },
+ {
+  "start": 111.1,
+  "end": 112.62,
+  "text": "so this leak is blocked too."
+ },
+ {
+  "start": 113.92,
+  "end": 115.6,
+  "text": "The real fix is in the app."
+ },
+ {
+  "start": 116.08,
+  "end": 118.74,
+  "text": "Send the vendor only what it needs, with no patient key."
+ },
+ {
+  "start": 120.04,
+  "end": 122.14,
+  "text": "Rosa gets her refill, and the policy holds."
+ },
+ {
+  "start": 125.18,
+  "end": 127.14,
+  "text": "Local enforcement sees one message."
+ },
+ {
+  "start": 127.84,
+  "end": 129.04,
+  "text": "Sentry sees its whole history."
+ },
+ {
+  "start": 130.26,
+  "end": 131.6,
+  "text": "Sentry, with lineage and risk,"
+ },
+ {
+  "start": 131.98,
+  "end": 134.2,
+  "text": "is live in the next Rosso CTL release."
+ }
+]

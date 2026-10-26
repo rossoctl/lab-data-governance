@@ -12,6 +12,12 @@ from it for a non-technical audience. The technical demo belongs beside them, as
 exact commands and their real outputs) and `SCRIPT.md` (the presenter's script), the way the
 risk demo (`demos/risk/rogue/`, on the `risk` branch) does it.
 
+[`technical/`](technical/README.md) holds the technical film (9:17: the pitch with nine "under the hood" sections from a
+live run) and everything to reproduce and change it: setup from nothing, a take of five sessions, the film built and
+reviewed from it. Its binary parts are in a pinned zip (`technical/pins.yaml` → media). It runs a later version of the
+app than the scenario above: the outside vendor is the wholesaler's demand forecaster (`report-dispense` →
+`demand-forecast.example`), the fills sit behind a records service, and one tap is 28–29 interactions.
+
 ## The app
 
 As DG's flow graph shows it (`pitch/overlays/ui/exec_flow_full.png`, from a run on 2026-10-19):

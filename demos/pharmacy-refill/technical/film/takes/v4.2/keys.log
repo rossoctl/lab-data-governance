@@ -1,0 +1,17 @@
+>> 2026-10-25T19:59:30Z reset fills
+TRUNCATE TABLE
+>> 2026-10-25T19:59:30Z key full report-dispense
+report-dispense: DEMAND_KEY=full lineage 2x capture 2x swapped=0
+>> 2026-10-25T20:02:41Z reset fills
+TRUNCATE TABLE
+>> 2026-10-25T20:02:41Z key full report-dispense
+report-dispense: DEMAND_KEY=full lineage 2x capture 2x swapped=1
+>> 2026-10-25T20:04:48Z reset fills
+TRUNCATE TABLE
+>> 2026-10-25T20:04:48Z key mrn report-dispense
+report-dispense: DEMAND_KEY=mrn lineage 2x capture 2x swapped=1
+>> 2026-10-25T20:23:44Z reset fills
+TRUNCATE TABLE
+>> 2026-10-25T20:23:44Z key none report-dispense export-dispense-batch
+report-dispense: DEMAND_KEY=none lineage 2x capture 2x swapped=1
+export-dispense-batch: DEMAND_KEY=none lineage 2x capture 2x swapped=1

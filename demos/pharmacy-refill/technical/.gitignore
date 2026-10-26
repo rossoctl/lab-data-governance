@@ -1,0 +1,24 @@
+# the binary parts come from the media zip (pins.yaml → media; setup/sentry-film.sh media), the rest is machine-specific
+.claude/
+film.env
+state/
+node_modules/
+*.png
+*.jpg
+*.mp4
+*.mov
+*.webm
+*.wav
+*.mp3
+*.ttf
+film/takes/*/review/
+film/takes/*/stages/
+film/takes/*/film*
+film/takes/*/out/george-all.*
+film/takes/*/out/join.filter
+film/takes/*/out/stage-*.log
+film/takes/*/out/last-film
+film/takes/*/out/*.part.mp4
+film/takes/*/verdicts.txt
+# Sentry's own lockfile is ignored repo-wide; this one is the package's pin (the images of the film were built with it)
+!setup/files/uv.lock

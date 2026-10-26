@@ -1,0 +1,5 @@
+>> N1 2026-10-25T20:23:21Z demo.py nightly
+context_id: ac4dd1cada464b62bee84c395ce3d461
+> Run the nightly jobs.
+< Nightly jobs done: 1 reminders sent, 1 dispenses exported.
+trace 37b00d9395f4a5b8e59d47b65d7e01de  t0 2026-10-25T20:23:21Z  done 2026-10-25T20:23:44Z

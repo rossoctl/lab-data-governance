@@ -1,0 +1,38 @@
+{
+ "traces": {
+  "A": "65452c56cca6d7940ab85c50bd705c34",
+  "B": "a4bc18dae1948dba2a07e78bd44615f3",
+  "N1": "37b00d9395f4a5b8e59d47b65d7e01de",
+  "C": "ae1570e5e3964465b49cf3b5c56d344f",
+  "N2": "3a8891bd76e8b048457f77578d932671"
+ },
+ "A": {
+  "look": "a9fa49e9-e27f-5c8f-885d-7ccea36f7855",
+  "rep": "f1bc24ad-8c89-56b1-86ef-a09f3dc13a2b",
+  "courier": "3eb4ef9d-2cc6-5ed4-8567-cc61b2897588",
+  "exchange": "dfd584f3594abc54"
+ },
+ "B": {
+  "rep": "e8eb6655-4e48-55e4-9765-f2d75f3e7322",
+  "rec": "d407b31f-b9ba-553f-b424-bdb04ca99d4a",
+  "bAt": "20:19"
+ },
+ "N1": {
+  "rep": "0f3205e6-122a-5a15-a9b5-b7726d2ece0e",
+  "ans": "7cd43f65-1fd3-5630-ac33-abd7646a47a8",
+  "nAt": "20:23"
+ },
+ "C": {
+  "rep": "a93e1e7b-db58-5f0d-9097-cc7e64ccdd48"
+ },
+ "N2": {
+  "rep": "bb4bf99f-db8d-5e76-9d51-e889505139cf"
+ },
+ "cards": {
+  "origin": "#33650 pharmacy-assistant → lookup-patient response",
+  "previous": "#34345 fulfillment-agent → report-dispense request",
+  "cross": "#33650 pharmacy-assistant → lookup-patient response",
+  "cross_trace": "in trace a4bc18da…",
+  "alert_time": "10/25/2026,\n10:03:18 PM"
+ }
+}

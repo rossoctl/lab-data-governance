@@ -1,0 +1,5 @@
+>> B 2026-10-25T20:19:10Z demo.py refill rosa
+context_id: d806e6038d654fa79be72e12711801ca
+> Hi, this is Rosa Delgado, date of birth 1958-03-22. I'd like a refill of my Metformin 500 mg tablets, delivered to my home please.
+< Your refill of Metformin 500 mg tablets has been approved and is on its way with the tracking number CR207941459. It will arrive at your address, 1180 Valencia St, San Francisco, CA 94110, by tomorrow evening at 6 pm.
+trace a4bc18dae1948dba2a07e78bd44615f3  t0 2026-10-25T20:19:10Z  done 2026-10-25T20:20:01Z

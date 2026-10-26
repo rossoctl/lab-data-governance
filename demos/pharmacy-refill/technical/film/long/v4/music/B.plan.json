@@ -1,0 +1,70 @@
+{
+ "chunks": [
+  {
+   "text": "[I4]",
+   "duration_ms": 59398,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "under the hood: a lighter, steady, curious underscore with a soft pulse, transparent, never busy"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  },
+  {
+   "text": "[P4]",
+   "duration_ms": 25500,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "level one, a clear firm statement, low strings"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  },
+  {
+   "text": "[I5]",
+   "duration_ms": 69026,
+   "positive_styles": [
+    "instrumental underscore for a narrated technical product film",
+    "calm, modern, warm piano and soft strings, light pulse",
+    "restrained, leaves room for a voice",
+    "no lead melody over speech",
+    "under the hood: a lighter, steady, curious underscore with a soft pulse, transparent, never busy"
+   ],
+   "negative_styles": [
+    "vocals",
+    "singing",
+    "choir",
+    "lyrics",
+    "heavy drums",
+    "EDM",
+    "aggressive",
+    "distorted",
+    "loud brass"
+   ]
+  }
+ ]
+}
