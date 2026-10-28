@@ -182,14 +182,14 @@ handles `openinference.span.kind`.
 | `http.method` | request, when the listener supplies it | `POST` | all listeners do |
 | `url.path` | request, when present | `/mcp` | query-free: anything from `?` on is stripped before emission (per OTel semconv; the query can carry secrets and is never captured) |
 | `url.scheme` | request, when present | `http` | the listener's observed scheme; `tcp` marks a proxy-sidecar CONNECT tunnel (§5 Limits). Optional: the consumer composes `scheme://peer.host + url.path` only when all three exist |
-| `http.request.body.size` | request | `17` | bytes of the request body the listener buffered; `0` when the request carried none. Emitted whatever `capture_io` says (§5 Body sizes) |
-| `http.response.body.size` | response | `1024` | bytes of the response body as the listener counted it on the wire, buffered or streamed; `0` when the response carried none. Emitted whatever `capture_io` says (§5 Body sizes) |
+| `http.request.body.size` | request | `16` | bytes of the request body as the producer read it from the listener's buffer; `0` when the listener counted none. Emitted whatever `capture_io` says (§5 Body sizes) |
+| `http.response.body.size` | response | `1024` | bytes of the response body as the listener counted it on the wire, buffered or streamed; `0` when it counted none. Emitted whatever `capture_io` says (§5 Body sizes) |
 | `a2a.method`, `a2a.session_id` | request, a2a | `message/send` | parsed facts |
 | `mcp.method`, `mcp.tool` | request, mcp | `tools/call`, `get_weather` | `mcp.tool` only for `tools/call` |
 | `inference.model` | request, inference | `qwen2.5:7b` | from the parsed request body |
 | `lineage.principal.sub`, `lineage.principal.client` | request, inbound, only when a gate plugin validated a JWT | `alice` | raw identity facts, never inferred from a network address |
 | `input.value` | request, with `capture_io` | `{"city":"Tokyo"}` | see §5 |
-| `output.value` | response, with `capture_io` | `{...}` | see §5; absent when the protocol's parser yielded nothing, and for `http` when the body was streamed, cut by the listener, or not text |
+| `output.value` | response, with `capture_io` | `{...}` | see §5; absent when the protocol's parser yielded nothing, and for `http` when the body was streamed, cut or refused by the listener, changed in length by a rewriter, denied, or not text |
 | `http.status_code` | response, when a status was produced | `200` | |
 | `lineage.outcome` | response | `ok` \| `denied` \| `error` \| `abandoned` | how the exchange ended as the proxy saw it; `ok` and `denied` are the pipeline's verdicts, with or without a status; `abandoned` is a nil outcome, or an error that never produced a status |
 | `lineage.denied_by` | response, denials | `jwt-validation` | the plugin that denied |
@@ -219,20 +219,31 @@ construction.
   of a result, for inference the messages and the completion or tool calls.
 - For `http` — an exchange no parser claimed, which is what a tool's REST backend looks like — there
   is no reduction, and the payload is the **raw body**: `input.value` the request body,
-  `output.value` the response body (v1.8). Each is emitted only when it is text — valid UTF-8, a
-  property of the bytes, not of a `Content-Type` claim: an OTLP string attribute must be UTF-8, and
-  one that is not fails the export of the whole batch it rides in — and the response only when the
-  listener's buffer holds the whole body (a streamed response leaves the trailing chunk, a body past
-  the listener's buffer limit leaves a prefix; neither is the body). Nothing is decoded: a
-  compressed or binary body is reported by its size alone. The query string stays out, as for
-  `url.path` (§4).
+  `output.value` the response body (v1.8). Each is emitted only when it is text — valid UTF-8 with
+  no NUL byte, a property of the bytes, not of a `Content-Type` claim: an OTLP string attribute must
+  be UTF-8, and one that is not fails the export of the whole batch it rides in, as a NUL does at a
+  JSON or text column downstream — and the response only when the listener's buffer holds the whole
+  body, judged by the listener's byte count against its buffer (a streamed response leaves at most
+  the trailing chunk; the count is taken before any response rewriter, so a rewrite that changes the
+  length also reads as not whole), and not when the exchange was denied (the client then never
+  received an upstream body). The producer decodes nothing: a compressed or binary body is reported
+  by its size alone. In proxy-sidecar mode the proxy's own HTTP client removes a gzip encoding it
+  negotiated, so there the body and its size are the decoded ones. The raw body is whatever the
+  application sent in plain HTTP, credentials included; with the forward proxy's TLS bridge on, that
+  includes the HTTPS exchanges it decrypts. Behind a request rewriter the raw request body is the
+  one forwarded, while a parser's value describes the client's original; a response rewrite that
+  keeps the length is emitted as rewritten. The query string stays out, as for `url.path` (§4).
 - **Body sizes.** `http.request.body.size` and `http.response.body.size` are on every exchange,
   whatever the protocol and whatever `capture_io` says — a size is metadata, not content. They are
-  what lets the consumer tell *no body* from *body not captured*: `0` is a leg with nothing to show
-  (a GET, a 204, a tunnel); a size beside no value is a body the producer saw and did not emit
-  (`capture_io` off, not text, not whole, or a parser that reduced it to nothing). The size is the
-  body as sent: a value cut at `max_payload_bytes` is still a value, and the size still says how
-  long the body was.
+  what lets the consumer tell *no body* from *body not captured*. A size is what the listener
+  counted. `0` is a leg on which it counted nothing: no body was sent (a GET, a 204, a tunnel) or,
+  in envoy-sidecar mode, the body never reached the producer (the listener asks Envoy for no request
+  body on a GET, HEAD, OPTIONS or DELETE, or when neither `Content-Length` nor `Transfer-Encoding`
+  is present; Envoy refuses a response over its own buffer limit before the producer sees it). A
+  size beside no value is a body the producer saw and did not emit (`capture_io` off, not text, not
+  whole, denied, or a parser that reduced it to nothing). A value cut at `max_payload_bytes` is
+  still a value, and the size still says how long the body was. In proxy-sidecar mode a response
+  over the listener's own limit is refused, and its size is then a floor.
 - Two heuristics live in that reduction, affecting payloads only, never interactions: the a2a
   parser falls back to the status-message text when a result carries no artifact; and the lineage
   plugin suppresses an A2A protocol event from `output.value` when the reduced value is a JSON
@@ -354,8 +365,7 @@ mechanisms named as removed are not to be reintroduced.
   parsers' reduction only, so a tool's REST backend — a GET to a weather service, a POST of a card
   to a PSP — always landed with NULL payloads, invisible to classification and data lineage. Two
   new facts on every exchange, `http.request.body.size` and `http.response.body.size`, tell *no
-  body* from *body not captured*. The producer now declares that it reads the bodies (it did so
-  through the parsers' declarations before). Consumer: the `http` rows of the kind table gain
+  body* from *body not captured*. Consumer: the `http` rows of the kind table gain
   `http_request_body` / `http_response_body`, and an unknown protocol raises instead of reading as
   `http`. Additive on the wire; configuration unchanged.
 - **v1.7.0** — `lineage.self.namespace` on both spans, from a new **required** `namespace` config
