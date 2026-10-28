@@ -48,7 +48,7 @@ from tests.live import labels as L
 from tests.live.checks import Checks
 from tests.live.driver import (
     EXTERNAL_HOST, IPV6_HOST, LONG_HOST, PSP_NOBODY_URL, REFLECT_HOST, REFLECT_URL, SINK_HOST,
-    SINK_URL, card_pii, credential, fqdn_dot_host, guest_turn, benign, mint_span_id,
+    SINK_URL, card_pii, card_plain, credential, fqdn_dot_host, guest_turn, benign, mint_span_id,
     mint_trace_id, pi_only, probe, probes_concurrent, turn, turn_cut, turns_concurrent,
 )
 
@@ -135,6 +135,16 @@ def _request_summary(record):
     s = record["summary"] or {}
     assert "request" in s, f"record has no request leg summary: {s}"
     return s["request"]
+
+
+def _classified_leg(ch: Checks, id: str, prop: str, leg: dict | None) -> None:
+    """A leg summary with the classifier's verdict fields: not
+    ``{"payload": null}`` (no body captured) and not pending."""
+    leg = leg or {}
+    ok = "sensitivity_level" in leg and "finding_count" in leg and not leg.get("classification_pending")
+    ch.check(id, prop, "verdict fields (sensitivity_level, finding_count), not pending",
+             {k: leg.get(k) for k in ("sensitivity_level", "finding_count", "payload", "classification_pending") if k in leg},
+             ok=ok)
 
 
 def _verdict(rec: dict) -> str:
@@ -282,17 +292,24 @@ def test_L3_abandoned_exchange(env, kube, dg, capabilities, catalog, sink, run_r
 
 
 def test_L4_no_payload_interaction(env, kube, dg, capabilities, catalog, run_record, state):
-    """L4 — an exchange with no body either way (#161 scenario 8, the
+    """L4 — a plain-HTTP exchange with no request body (#161 scenario 8, the
     lineage half; its record is read in L7).
 
-    Drive: GET a path the PSP does not serve (no body; the 404's plain-JSON
-    reply is not parser-captured). Not /healthz: the sidecar bypasses health
-    paths and emits nothing for them. Expect: both legs with payload_hash
-    NULL; the forest holds.
+    Drive: GET a path the PSP does not serve. Not /healthz: the sidecar
+    bypasses health paths and emits nothing for them. The PSP answers 404
+    with Flask's HTML page; no parser claims the exchange (protocol http).
+    Expect (contract v1.8): the request leg has no payload, kind
+    http_request_body, and the request span says
+    ``http.request.body.size = 0``; the response leg carries the 404 page,
+    kind http_response_body: the response span's ``output.value`` is the
+    body the probe received, byte for byte, and
+    ``http.response.body.size`` is its length. The forest holds. Red on a
+    sidecar before cortex #1506: the response leg is empty and neither span
+    carries a size.
     """
     T = state.get("T") or pytest.skip("L1 did not run")
     rec = run_record.scenario("L4")
-    with Checks("L4", rec) as ch:
+    with Checks("L4", rec, raise_at_exit=True) as ch:
         p = mint_span_id()
         r = probe(kube, trace_id=T, parent_id=p, label="nobody_get", url=PSP_NOBODY_URL)
         rec.write("probe.json", r.__dict__)
@@ -302,12 +319,29 @@ def test_L4_no_payload_interaction(env, kube, dg, capabilities, catalog, run_rec
                  ok=r.outcome in ("ok", "http_error"))
         _settle(ch, env, dg, capabilities, T, rec)
         iid = shape.interaction_of_probe(dg, T, p)
+        state["nobody"] = {"interaction": iid, "parent": p, "body": r.raw.get("body")}
         legs = shape.legs_of(dg, iid)
         rec.write("legs.json", legs)
-        ch.check("legs.request.payload", "request leg payload hash", None, legs["request"]["payload_hash"])
-        ch.check("legs.response.payload", "response leg payload hash", None, legs["response"]["payload_hash"])
+        spans = shape.caller_spans(dg, T, iid)
+        rec.write("spans.json", spans)
+        rq, rs = spans.get("request") or {}, spans.get("response") or {}
+        body = r.raw.get("body")
+        ch.check("span.protocol", "no parser claims the exchange", "http", rq.get("lineage.protocol"))
+        ch.check("legs.request.payload", "request leg payload hash (a GET has no body)", None,
+                 legs["request"]["payload_hash"])
+        ch.check("legs.request.kind", "request leg content kind", "http_request_body", legs["request"]["content_kind"])
+        ch.check("span.request.size", "request span http.request.body.size", 0, rq.get("http.request.body.size"))
+        ch.check("legs.response.payload", "response leg carries the 404 page", "present",
+                 "present" if legs["response"]["payload_hash"] else "none", ok=legs["response"]["payload_hash"] is not None)
+        ch.check("legs.response.kind", "response leg content kind", "http_response_body", legs["response"]["content_kind"])
+        got = rs.get("output.value") or ""
+        first_diff = next((i for i, (x, y) in enumerate(zip(body or "", got)) if x != y), min(len(body or ""), len(got)))
+        ch.check("span.response.value", "response span output.value is the body the probe received",
+                 f"{len(body or '')} chars, equal", f"{len(got)} chars, " + ("equal" if got == body else f"first difference at {first_diff}"),
+                 ok=bool(body) and got == body)
+        ch.check("span.response.size", "response span http.response.body.size = the body's length",
+                 len((body or "").encode("utf-8")), rs.get("http.response.body.size"))
         _forest(ch, dg, rec, T, state, expect_entries=state["entries"])
-        state["nobody"] = {"interaction": iid, "parent": p}
 
 
 # --- L5 ------------------------------------------------------------------------
@@ -418,7 +452,9 @@ def test_L7_known_payloads_to_the_psp(env, kube, dg, capabilities, catalog, flee
     everything group A left in T.
 
     Drive: a benign body, then the same card payload once as an external
-    name and once as the internal short name. Expect: the benign probe is
+    name and once as the internal short name, all three wrapped as MCP
+    calls; then the card's arguments as a plain JSON body to the external
+    name (``card_ext_plain``). Expect: the benign probe is
     classified with zero findings at level PUBLIC and decided none/allow (a
     real turn's legs all carry findings, so the zero case is driven, not
     hoped for); both card request legs classified identically ({PI, PII,
@@ -426,9 +462,17 @@ def test_L7_known_payloads_to_the_psp(env, kube, dg, capabilities, catalog, flee
     [DG-001, DG-004, E2E-INVERT], allowed_actions [redact], confidence
     0.95, explanation = DG-001's alone (it wins both axes; the advisory
     `warn` rule does not weaken `block`); internal → none/allow with no
-    real rule; response summaries {"payload": null} (the PSP's plain-JSON
-    reply is not parser-captured); L4's no-body exchange decides none/allow
-    with {"payload": null} both sides; trace rollup critical/block with
+    real rule; their response summaries {"payload": null} (the mcp parser
+    claims a wrapped probe, and the PSP's plain reply has no JSON-RPC
+    result for it to reduce). The plain card (contract v1.8): protocol
+    http, request kind http_request_body, classified like the wrapped card
+    and decided like it, critical/block [DG-001, DG-004, E2E-INVERT]; the
+    PSP's reply is a classified response leg that adds no rule (data that
+    only came back was not sent, L11). Red on a sidecar before cortex
+    #1506: the card passes unseen, {"payload": null} and none/allow. L4's
+    exchange: request {"payload": null}, response a classified leg (the
+    404 page), legs [request, response], none/allow; its findings and
+    level are recorded. Trace rollup critical/block with
     both card record ids contributing. Then the risk axis (R1) and the risk
     shape of T: one current record per live interaction, a trace record
     with both aggregation modes, contributing ids = current record set,
@@ -444,11 +488,16 @@ def test_L7_known_payloads_to_the_psp(env, kube, dg, capabilities, catalog, flee
         r_ext = probe(kube, trace_id=T, parent_id=p_ext, label="card_ext", payload=card_pii(),
                       host=EXTERNAL_HOST)
         r_int = probe(kube, trace_id=T, parent_id=p_int, label="card_int", payload=card_pii())
-        rec.write("probes.json", [r_benign.__dict__, r_ext.__dict__, r_int.__dict__])
-        ch.check("probes.outcomes", "the three probes were answered", ["ok|http_error", "ok", "ok"],
-                 [r_benign.outcome, r_ext.outcome, r_int.outcome],
-                 ok=r_benign.outcome in ("ok", "http_error") and r_ext.outcome == "ok" and r_int.outcome == "ok")
-        state["entries"] += 3
+        p_plain = mint_span_id()
+        state["probes"].add(p_plain)
+        r_plain = probe(kube, trace_id=T, parent_id=p_plain, label="card_ext_plain", payload=card_plain(),
+                        host=EXTERNAL_HOST)
+        rec.write("probes.json", [r_benign.__dict__, r_ext.__dict__, r_int.__dict__, r_plain.__dict__])
+        ch.check("probes.outcomes", "the four probes were answered", ["ok|http_error", "ok", "ok", "ok"],
+                 [r_benign.outcome, r_ext.outcome, r_int.outcome, r_plain.outcome],
+                 ok=r_benign.outcome in ("ok", "http_error") and r_ext.outcome == "ok" and r_int.outcome == "ok"
+                 and r_plain.outcome == "ok")
+        state["entries"] += 4
 
         _settle(ch, env, dg, capabilities, T, rec)
         ext = shape.interaction_of_probe(dg, T, p_ext)
@@ -469,7 +518,8 @@ def test_L7_known_payloads_to_the_psp(env, kube, dg, capabilities, catalog, flee
             ch.check(f"{name}.level", f"card {name}: request leg sensitivity level", "RESTRICTED", req["sensitivity_level"])
             ch.check(f"{name}.bundle", f"card {name}: identity bundle", True, req["contains_identity_bundle"])
             ch.check(f"{name}.legs", f"card {name}: legs evidenced", ["request", "response"], records[iid]["legs"])
-            ch.check(f"{name}.response_summary", f"card {name}: response summary (plain JSON is not parser-captured)",
+            ch.check(f"{name}.response_summary",
+                     f"card {name}: response summary (the mcp parser claims the probe; the PSP's reply has no JSON-RPC result)",
                      {"payload": None}, (records[iid]["summary"] or {}).get("response"))
         ch.check("ext.verdict", "card external: verdict", "critical/block", _verdict(records[ext]))
         ch.check("ext.rules", "card external: triggered rules", ["DG-001", "DG-004", "E2E-INVERT"], records[ext]["rules"])
@@ -481,11 +531,36 @@ def test_L7_known_payloads_to_the_psp(env, kube, dg, capabilities, catalog, flee
         ch.check("int.verdict", "card internal: verdict", "none/allow", _verdict(records[inn]))
         ch.check("int.rules", "card internal: real rules", [], sorted(shape._real(records[inn]["rules"])))
 
+        plain = shape.interaction_of_probe(dg, T, p_plain)
+        rec.write("plain_record.json", records[plain])
+        anchor = shape.caller_spans(dg, T, plain).get("request") or {}
+        legs = shape.legs_of(dg, plain)
+        req = (records[plain]["summary"] or {}).get("request") or {}
+        ch.check("plain.protocol", "plain card: no parser claims it", "http", anchor.get("lineage.protocol"))
+        ch.check("plain.request_kind", "plain card: request leg content kind", "http_request_body",
+                 (legs.get("request") or {}).get("content_kind"))
+        ch.check("plain.tags", "plain card: request leg regulatory tags", ["PCI", "PI", "PII"],
+                 sorted(req.get("regulatory_tags") or []), comment="the card passed unseen" if "payload" in req else None)
+        ch.check("plain.level", "plain card: request leg sensitivity level", "RESTRICTED", req.get("sensitivity_level"))
+        ch.check("plain.bundle", "plain card: identity bundle", True, req.get("contains_identity_bundle"))
+        ch.check("plain.legs", "plain card: legs evidenced", ["request", "response"], records[plain]["legs"])
+        ch.check("plain.verdict", "plain card: verdict", "critical/block", _verdict(records[plain]))
+        ch.check("plain.rules", "plain card: triggered rules (the reply adds none)", ["DG-001", "DG-004", "E2E-INVERT"],
+                 records[plain]["rules"])
+        _classified_leg(ch, "plain.response", "plain card: the PSP's reply is a classified response leg",
+                        (records[plain]["summary"] or {}).get("response"))
+
         nobody = records[state["nobody"]["interaction"]]
         rec.write("nobody_record.json", nobody)
-        ch.check("nobody.summary", "L4's no-body exchange: classification summary",
-                 {"request": {"payload": None}, "response": {"payload": None}}, nobody["summary"])
-        ch.check("nobody.verdict", "L4's no-body exchange: verdict", "none/allow", _verdict(nobody))
+        summary = nobody["summary"] or {}
+        ch.check("nobody.request", "L4's exchange: request summary (a GET has no body)", {"payload": None},
+                 summary.get("request"))
+        _classified_leg(ch, "nobody.response", "L4's exchange: the 404 page is a classified response leg",
+                        summary.get("response"))
+        ch.check("nobody.legs", "L4's exchange: legs evidenced", ["request", "response"], nobody["legs"])
+        ch.check("nobody.verdict", "L4's exchange: verdict", "none/allow", _verdict(nobody))
+        ch.record("nobody.response_findings", "L4's 404 page: findings and level (predicted 0 / PUBLIC)",
+                  {k: (summary.get("response") or {}).get(k) for k in ("finding_count", "sensitivity_level")})
 
         trace = shape.current_trace(dg, T)
         rec.write("trace.json", trace)

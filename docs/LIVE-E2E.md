@@ -50,7 +50,7 @@ Three clones, side by side:
 |---|---|---|
 | this repo | `rossoctl/lab-data-governance` | the branch under test |
 | the app | `s-and-p-team/agent-examples-snp` | `main` at `642167f` or later: it carries the pinned dependency set (#23), the ledger (#25), `apps/lineage_lab` (#27) and the partner-notification variant (#29) |
-| cortex | `rossoctl/cortex` | `main` at `ec6a922` or later: its attach kit keeps the app's own OpenTelemetry core (rossoctl/cortex#1311). On an older kit step 3's bake fails with dependency conflicts |
+| cortex | `rossoctl/cortex` | `main` at `a617df61` or later: the sidecar speaks contract v1.8 (rossoctl/cortex#1506: plain-HTTP bodies and body sizes), the version the pins name. Its attach kit also keeps the app's own OpenTelemetry core (rossoctl/cortex#1311, `ec6a922`); on an older kit step 3's bake fails with dependency conflicts |
 
 ```sh
 git clone https://github.com/s-and-p-team/agent-examples-snp.git     # main
@@ -77,7 +77,7 @@ Checks, all read-only. Every one must pass before step 1:
 | the model | `ollama list \| grep 'qwen2.5:7b'` | one line (else `ollama pull qwen2.5:7b`) |
 | pods can reach the model | `podman exec rossoctl-control-plane curl -s -m 5 http://host.containers.internal:11434/api/tags \| head -c 40` | starts with `{"models":` |
 | the node's process limit | `podman inspect rossoctl-control-plane --format '{{.HostConfig.PidsLimit}}'` | ≥ 8192 (else `podman update --pids-limit 8192 rossoctl-control-plane`) |
-| the clones are at or past the pinned commits | `git -C $E2E_AGENT_EXAMPLES_SNP merge-base --is-ancestor 642167f HEAD && git -C $E2E_CORTEX_DIR merge-base --is-ancestor ec6a922 HEAD && echo ok` | `ok` (else step 3's bake fails two steps later) |
+| the clones are at or past the pinned commits | `git -C $E2E_AGENT_EXAMPLES_SNP merge-base --is-ancestor 642167f HEAD && git -C $E2E_CORTEX_DIR merge-base --is-ancestor a617df61 HEAD && echo ok` | `ok` (else step 7's preflight refuses the contract after every build, and on a clone before `ec6a922` step 3's bake fails) |
 
 Why the process limit: podman gives the kind node container 2048 processes by default, and the
 platform plus both fleets run close to that. Over it, forks fail and pods across the whole
@@ -140,7 +140,7 @@ Pass, for each: `No broken requirements found.` and a last line `>> done: <app> 
 builds the app image from the clone, runs `pip check`, loads it into kind, and bakes the
 propagation shim onto it with the cortex clone's attach kit (the `-otel` image).
 Fail with `REFUSING` or a `uv pip check` error during the bake: the cortex clone's kit predates
-rossoctl/cortex#1311 (step 0's table: `main` at `ec6a922` or later).
+rossoctl/cortex#1311 (`ec6a922`; step 0's table asks for `a617df61` or later, which contains it).
 
 ### 4. Deploy and attach
 
@@ -148,6 +148,9 @@ rossoctl/cortex#1311 (step 0's table: `main` at `ec6a922` or later).
 E2E_VARIANT=rogue tests/live/ops/deploy-app.sh travel_advisor    # namespace travel-advisor
 tests/live/ops/deploy-app.sh lineage_lab                         # namespace lineage-lab
 ```
+
+Run it with `MAX_PAYLOAD_BYTES` unset: the kit would write it into the sidecar's `max_payload_bytes`,
+and L2 compares plain-HTTP bodies against the plugin's default cap of 4096 bytes.
 
 Pass, for each: a last line `>> done: <app> in <namespace> (app <sha7>, cortex <sha7>). Next:
 fill_pins.py <app>`, and above it every listed pod `Running` (13 of travel_advisor's pods and 7
@@ -199,7 +202,7 @@ still run.
 
 Expected today, with booking-agent deployed under `E2E_VARIANT=rogue` (step 4; the test reads
 `ROSSOCTL_VARIANT` off the Deployment, setting the variable on the pytest command does nothing) and
-`E2E_DESTRUCTIVE=1` on the pytest command, on a kit at or after cortex main e63a4f98 (the merge of #1333):
+`E2E_DESTRUCTIVE=1` on the pytest command, on a sidecar and kit at or after cortex main a617df61 (the merge of #1506, after #1333):
 
 | app | pytest summary | notes |
 |---|---|---|
@@ -257,7 +260,14 @@ about this checkout's processors.
 ## What a run does
 
 Tunables: `E2E_SETTLE_TIMEOUT` (600 s), `E2E_QUIET_SECONDS` (12 s, must exceed the 10 s
-trace-trigger poll backstop), `E2E_APP_NS`, `E2E_DG_NS`, `E2E_DG_API`, `E2E_KIND_NODE`
+trace-trigger poll backstop), `E2E_TURN_TIMEOUT` (580 s, the client's wait for one turn; a
+CPU-only model needs more: time one turn with `-k L1_baseline` and set three times its duration;
+the sidecar cuts a turn first at 300 s with a 504: the platform's `envoy-config` sets a 300 s
+route `timeout` and ext_proc stream `timeout`, and Envoy's `stream_idle_timeout` defaults to 5 min.
+On such a cluster, after step 4 has copied `envoy-config` into the app namespace, raise all three in
+that copy (`stream_idle_timeout` goes beside `codec_type` in both listeners) and run step 4 again:
+it keeps an existing copy and rolls every attached and plain-image workload),
+`E2E_APP_NS`, `E2E_DG_NS`, `E2E_DG_API`, `E2E_KIND_NODE`
 (`rossoctl-control-plane`), `E2E_RUN_DIR`; for the ops scripts, `E2E_KIND_CLUSTER` (`rossoctl`)
 and `E2E_PLATFORM_NS` (`team1`).
 
@@ -284,10 +294,10 @@ L15 join the ledger too when it is on); L13 needs the alerts processor. Both are
 | L1 | one scripted turn (fresh booking dates) under a minted trace id, nothing else | forest (1 root, 0 orphans, 0 unpaired, parent sources {wire 1, tracestate N}), **the audit** on the four lineage axes with the fleet's declared gaps reported as KNOWN, quiet re-check; the risk tables are not read | 1 |
 | L2 | the app's ledger lines for the run window against L1's trace, before any probe | exchange ⟷ span one to one, payload digests equal where the reductions coincide, timing inside the app's window, the S3 read's store record paired with its http span, dark hops listed, strays self-reported, tree pods all wrote the trace | — |
 | L3 | card to the never-answering sink, 45 s client timeout | `lineage.outcome=abandoned`, no status, response leg `error=true` with no payload | 4, 6 (lineage half) |
-| L4 | GET with no body | both legs without payload | 8 (lineage half) |
+| L4 | GET to a path the PSP does not serve (no request body) | protocol `http`; request leg without payload, kind `http_request_body`, `http.request.body.size` 0; response leg the PSP's HTML 404 page, kind `http_response_body`, `output.value` byte for byte the body the probe received, `http.response.body.size` its length (contract v1.8) | 8 (lineage half) |
 | L5 | four probes at once into L1's trace | four interactions; the forest holds (in-trace concurrency) | 2, 3 |
 | L6 | two turns at once on fresh traces with different guests | both forests, lineage audits and ledger joins hold; no cross-trace payload leakage; no shared record (cross-trace isolation; red on app commits before agent-examples-snp #17) | 5 |
-| L7 | a benign body, then the card payload to the PSP as external name and internal name, in L1's trace | the benign leg zero findings, PUBLIC, none/allow; identical card classification; external critical/block [DG-001, DG-004, E2E-INVERT]; internal none/allow; L4's exchange none/allow; rollup critical/block; then R1 and the risk shape of T | 8, 9, 10, 12, 13 |
+| L7 | a benign body, then the card payload to the PSP as external name and internal name (wrapped as MCP calls), then the card as a plain JSON body to the external name, in L1's trace | the benign leg zero findings, PUBLIC, none/allow; identical card classification; external critical/block [DG-001, DG-004, E2E-INVERT]; internal none/allow; the plain card protocol `http`, classified and decided like the wrapped external card, the PSP's reply a classified leg adding no rule; L4's exchange none/allow, request `{"payload": null}`, response classified; rollup critical/block; then R1 and the risk shape of T | 8, 9, 10, 12, 13 |
 | L8 | eight probes at once into a fresh trace | three distinct (risk, enforcement) pairs in one trace; the PI-only internal probe's explanation joins two rules (the two combining axes won by different rules); rollup and union of rules; the PSP under three more names decides by category (FQDN with a trailing dot and ClusterIP internal, IPv6 literal external), peer.host as sent | 11, 13, 14 |
 | L9 | (L3's exchange) | version 1 `[request]` → version 2 `[request, response]`; ≥ 2 decision fingerprints; verdict from the request leg | 4, 6 (risk half) |
 | L10 | the internal card probe again, byte-identical | no re-version anywhere; the new interaction's current record equals the old's and no version of it repeats the previous (its version count is leg timing, recorded) | FR-DAS-014 |
@@ -296,7 +306,7 @@ L15 join the ledger too when it is on); L13 needs the alerts processor. Both are
 | L16 | leg-ready scaled to two, eight probes at once (opt-in; skips with a reason unless the deployed leg-ready holds the sole-consumer lock) | one process drains; no duplicate or shrinking record version; no restart | #290 |
 | L17 | a 258-byte Host the producer truncates (opt-in) | peer.host arrives truncated; classified external, critical/block; no restart | — |
 | L13 | benign probe, then PI, then card external, then card again, fresh trace (needs the alerts processor) | no alert → medium head → critical head superseding it, title and description exact (FR-DAS-042) → duplicate_count 1 | #104 |
-| L14 | (#258, `ROSSOCTL_VARIANT` on booking-agent) one scripted turn | rogue: the partner request carries the guest's name, classifies PII and decides critical/block [DG-001]; fixed: `dates` and `note` only, no PII, none/allow; xfails on a turn where the model does not make the call (its choice; coverage) | — |
+| L14 | (#258, `ROSSOCTL_VARIANT` on booking-agent) one scripted turn | rogue: the partner request carries the guest's name, classifies PII and decides critical/block [DG-001]; fixed: `dates` and `note` only, no PII, none/allow; xfails on a turn where the model does not make the call (its choice; coverage). Assumes notify-partner runs without `PARTNER_FIELDS`: on a fleet that limits the fields sent, the rogue row reads red | — |
 | L18 | (L14's rogue turn; needs label lineage) | the booking id born beside the guest's name in create_booking's response reaches notify-partner's request and the partner request whole; with leg-ready's `RISK_INHERITED_LABELS=on` the partner record carries the inherited PII; off, no inherited entry; skips without label lineage, without the partner call, or when the exchange left the turn's trace | — |
 | L15 | a full turn whose client closes after 20 s without reading a byte | entry response span not `ok` (abandoned), response leg `error=true`, no response payload, the turn still derives under its root; the ledger joins | — |
 
@@ -397,3 +407,12 @@ tests. Restore afterwards (step 4 re-attaches; the catalog fixture restores the 
 - L3 against `psp-mock` instead of the sink must fail: run `-k L1_baseline or L3_abandoned`
   with the test module's `SINK_URL`/`SINK_HOST` set to `PSP_URL`/`EXTERNAL_HOST`; L3's
   `probe.outcome` row expects `client_timeout` and reads `ok`.
+- The contract v1.8 rows on a sidecar from before it must fail: build the sidecar from cortex
+  `712a6e97` (main just before #1506) with step 1 (`E2E_CORTEX_DIR` on that checkout), re-run
+  step 4 with it, then edit `pins.travel_advisor.local.yaml` in place (preflight reads only
+  it): `cortex.sidecar_image_id` (and `proxy_init_image_id`, if it differs) names that build. Run
+  `-k "L1_ or L2_ or L4_ or L7_"` with `E2E_CORTEX_DIR` back on the green checkout, so the
+  contract gate passes (a mutation run: record it as one). Red: L1's S15 (no size facts) and F3 (when the turn made a plain-HTTP
+  hop), L2's `ledger.digest_mismatch` (the plain-HTTP bodies `uncaptured`), L4's response payload, value and
+  both sizes, and L7's plain card (unseen: `{"payload": null}`, none/allow) and
+  L4's classified response. Restore with step 4 on the green checkout and step 5.

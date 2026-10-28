@@ -99,7 +99,7 @@ OPA_DECISION_PATH = "/v1/data/data_governance/policy_decision"
 def pytest_collection_modifyitems(items):
     """Every test under tests/live is live, whether or not it says so."""
     for item in items:
-        if str(item.fspath).startswith(str(HERE)):
+        if str(item.fspath).startswith(str(HERE) + os.sep):   # not tests/live_offline
             item.add_marker(pytest.mark.live)
 
 
@@ -117,6 +117,7 @@ class Env:
     kind_node: str = "rossoctl-control-plane"
     settle_timeout: float = 600.0
     quiet_seconds: float = 12.0
+    turn_timeout: float = 580.0  # E2E_TURN_TIMEOUT, read by driver.turn(); recorded here with the run
     run_dir: Path = REPO / "tests" / "live" / "runs"
     destructive: bool = False
 
@@ -138,6 +139,7 @@ class Env:
             kind_node=g("E2E_KIND_NODE", "rossoctl-control-plane"),
             settle_timeout=float(g("E2E_SETTLE_TIMEOUT", "600")),
             quiet_seconds=float(g("E2E_QUIET_SECONDS", "12")),
+            turn_timeout=float(g("E2E_TURN_TIMEOUT", "580")),
             run_dir=Path(g("E2E_RUN_DIR", str(REPO / "tests" / "live" / "runs"))),
             destructive=g("E2E_DESTRUCTIVE", "0") == "1",
         )

@@ -16,7 +16,11 @@ derivation produced, hop by hop:
 - **payload digest**: the sidecar's ``input.value`` is the parser's reduction
   of the request (contract §5); the ledger's ``reduced_sha`` is the SHA-256
   of the canonical JSON of the same reduction. Equal means the captured bytes
-  are the bytes the app sent, not a truncation or a re-serialisation.
+  are the bytes the app sent, not a truncation or a re-serialisation. On a
+  plain-HTTP hop of a declared http edge (contract v1.8) the captured value is
+  the raw body and the ledger's ``sha`` is the raw body's digest, so there the
+  two must be equal whenever the body is non-empty, under the cap and not
+  streamed.
 - **timing envelope**: outbound, the span's start falls inside the app's send
   window; inbound, the sidecar saw the request no later than the app began
   handling it (a busy tool server may queue a request for seconds before the
@@ -46,6 +50,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 PREFIX = "LEDGER "
+# The lineage plugin's default max_payload_bytes (contract §6). The tier
+# attaches at the default: deploy-app.sh sets no MAX_PAYLOAD_BYTES, so do not
+# export one when deploying. A plain-HTTP body longer than the cap is captured
+# cut and suffixed, so its digest cannot match the ledger's.
+MAX_PAYLOAD_BYTES = 4096
 # The lineage plugin emits nothing for these paths by default (contract):
 # an exchange the ledger saw there has no span by design.
 BYPASS_PREFIXES = ("/.well-known/", "/healthz", "/readyz", "/health")
@@ -232,6 +241,7 @@ def compare(dg, trace_id: str, records: list[dict], fleet, *, skew_seconds: floa
                       "jsonrpc_method": (r.get("req") or {}).get("jsonrpc_method"),
                       "req_digest": verdict(want, best["input_shas"]),
                       "resp_digest": verdict(resp_want, best["output_shas"]),
+                      "req_bytes": _bytes(r.get("req")), "resp_bytes": _bytes((end or {}).get("resp")),
                       "timing_ok": window_ok, "streamed": (end or {}).get("streamed")})
     # A store act over HTTP is one store record on the ledger's side and one
     # request span on the sidecar's (the kit instruments urllib3): pair them by
@@ -282,14 +292,40 @@ def compare(dg, trace_id: str, records: list[dict], fleet, *, skew_seconds: floa
     def aligned(p):
         return (p["jsonrpc_method"] == "tools/call" and p["proto_sidecar"] == "mcp") or \
                (p["proto_sidecar"] == "a2a" and p["dir"] == "in")
+    # A plain-HTTP leg (contract v1.8) on an edge the fleet declares as http is
+    # aligned: the captured value is the raw body and the ledger hashed the same
+    # raw body. The premise is the declared REST backend's: uncompressed text
+    # (the contract emits no value for a binary, compressed, streamed or denied
+    # body). A body of 1..MAX_PAYLOAD_BYTES must be captured and equal
+    # (``uncaptured`` is a miss); an empty one has nothing to compare; a longer
+    # one is captured cut, and a streamed response is not whole: both are
+    # recorded, not asserted.
+    http_truncated = []
+    for p in pairs:
+        p["http_legs"] = {}
+        if p["proto_sidecar"] != "http" or (p["pod"], short_host(p["host"])) not in http_edges:
+            continue
+        for leg in ("req", "resp"):
+            n = p[f"{leg}_bytes"]
+            if leg == "resp" and p["streamed"]:
+                http_truncated.append((p["pod"], p["dir"], p["host"], leg, "streamed"))
+            elif n and n > MAX_PAYLOAD_BYTES:
+                http_truncated.append((p["pod"], p["dir"], p["host"], leg, n))
+            elif n:
+                p["http_legs"][leg] = p[f"{leg}_digest"]
+    http_pairs = [p for p in pairs if p["http_legs"]]
     digest_bad = [p for p in pairs if aligned(p) and (p["req_digest"] == "different" or
                                                       (p["jsonrpc_method"] == "tools/call" and p["resp_digest"] == "different"))]
-    digest_unaligned = [p for p in pairs if not aligned(p) and (p["req_digest"] == "different" or p["resp_digest"] == "different")]
+    digest_bad += [p for p in http_pairs if any(v != "equal" for v in p["http_legs"].values())]
+    digest_unaligned = [p for p in pairs if not aligned(p) and p["proto_sidecar"] != "http"
+                        and (p["req_digest"] == "different" or p["resp_digest"] == "different")]
     return {
         "trace_id": T, "pairs": pairs, "ledger_only": ledger_only, "table_only": table_only,
         "unledgered_spans": unledgered_spans,
         "ledger_only_undeclared": [x for x in ledger_only if not x["declared_dark"]],
         "digest_mismatch": digest_bad, "digest_unaligned": digest_unaligned,
+        "http_pairs": [(p["pod"], p["dir"], p["host"], p["http_legs"]) for p in http_pairs],
+        "http_truncated": http_truncated,
         "timing_violations": [p for p in pairs + store_pairs if not p["timing_ok"]],
         "tools": [{"pod": r["pod"], "name": r["name"], "error": r.get("error")} for r in tools],
         "store_pairs": store_pairs, "store_unpaired": store_unpaired,
@@ -302,6 +338,11 @@ def compare(dg, trace_id: str, records: list[dict], fleet, *, skew_seconds: floa
         "counts": {"records": len(records), "out": len(out_starts), "in": len(in_ends), "spans": len(spans),
                    "pairs": len(pairs)},
     }
+
+
+def _bytes(part: Any) -> int | None:
+    n = part.get("bytes") if isinstance(part, dict) else None
+    return n if isinstance(n, int) and not isinstance(n, bool) else None
 
 
 def _same_path(ledger_path: str | None, span_path: str | None) -> bool:
@@ -339,8 +380,11 @@ def assert_consistent(c: dict, checks=None) -> None:
     expect(checks, "ledger.table_only", "sidecar exchanges the app's ledger does not know", [], c["table_only"])
     expect(checks, "ledger.store_unpaired", "store acts on a declared http edge with no sidecar span (the client no longer instrumented?)",
            [], c["store_unpaired"])
-    expect(checks, "ledger.digest_mismatch", "captured payload differs from what the app sent/received (aligned pairs)", [],
-           [(p["pod"], p["dir"], p["host"], p["jsonrpc_method"], p["req_digest"], p["resp_digest"]) for p in c["digest_mismatch"]])
+    expect(checks, "ledger.digest_mismatch",
+           "captured payload differs from what the app sent/received (aligned pairs; plain http: missing too)", [],
+           [(p["pod"], p["dir"], p["host"], p["jsonrpc_method"], p["req_digest"], p["resp_digest"])
+            if not p.get("http_legs") else (p["pod"], p["dir"], p["host"], "http", p["http_legs"])
+            for p in c["digest_mismatch"]])
     expect(checks, "ledger.timing_violations", "spans outside the app's send window (exchanges and store acts)", [],
            [(p["pod"], p["dir"], p["host"], p["span_id"]) for p in c["timing_violations"]])
     missing = [p for p in c["tree_not_in_ledger"] if p not in c["pods_without_ledger"]]
@@ -348,6 +392,10 @@ def assert_consistent(c: dict, checks=None) -> None:
     record(checks, "ledger.pairs", "ledger exchange ⟷ request span pairs", len(c["pairs"]),
            comment=f"out {c['counts']['out']} in {c['counts']['in']} of {c['counts']['spans']} spans")
     record(checks, "ledger.digest_unaligned", "pairs whose reductions are not aligned (recorded)", len(c["digest_unaligned"]))
+    record(checks, "ledger.http_pairs", "plain-HTTP pairs whose bodies were compared exactly (legs → digest verdict)",
+           len(c.get("http_pairs", [])), comment="; ".join(f"{pod} {d} {h} {legs}" for pod, d, h, legs in c.get("http_pairs", [])))
+    record(checks, "ledger.http_truncated", "plain-HTTP bodies over the payload cap or streamed (not compared)",
+           len(c.get("http_truncated", [])))
     record(checks, "ledger.unledgered_spans", "spans of pods that wrote no ledger line", len(c["unledgered_spans"]),
            comment=", ".join(sorted({s["pod"] for s in c["unledgered_spans"]})))
     record(checks, "ledger.ledger_only_declared", "ledger-only exchanges covered by a declaration or a bypass path",
