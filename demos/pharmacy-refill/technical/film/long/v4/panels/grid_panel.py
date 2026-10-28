@@ -43,7 +43,7 @@ h1{{position:absolute;left:110px;top:60px;margin:0;font:800 46px Archivo,sans-se
 .red{{color:var(--red)}}.green{{color:var(--green)}}
 #counts{{position:absolute;left:110px;top:930px;font:700 30px 'Source Sans 3';color:var(--ink)}}#counts span{{color:var(--gold)}}
 </style></head><body>
-<h1>Sentry’s own verdicts<small>one run on rossoctl · the call to the demand forecaster in each session</small></h1>
+<h1>Sentry’s own verdicts<small>one run on Kubernetes · the call to the demand forecaster in each session</small></h1>
 <div id="grid">{"".join(row(*r) for r in ROWS)}</div>
 <div id="counts"><span>{C["S"]}</span> sessions · <span>{C["J"]}</span> exchanges judged · <span>{C["F"]}</span> flagged</div>
 </body></html>

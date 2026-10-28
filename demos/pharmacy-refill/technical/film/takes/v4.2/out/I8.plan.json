@@ -3,36 +3,36 @@
   "zoomEnd": 1.2,
   "steps": [
    1.2,
-   7.503,
-   13.24,
-   16.76
+   7.694,
+   13.33,
+   16.751
   ],
-  "pull": 22.139,
-  "pullEnd": 23.139,
-  "end": 23.739
+  "pull": 21.929,
+  "pullEnd": 22.729,
+  "end": 23.029
  },
  "lines": [
   [
-   "tts11/7d0686d984e223b5-t1.12.wav",
+   "tts11/561f5b0eedc8ea1d-t1.12.wav",
    1.5,
-   6.003,
-   "The fixed app, in Sentry. The report now sends the drug and the dates. No patient key."
+   6.294,
+   "Inside Sentry, the fixed app. The report now sends the drug and the dates. No patient key."
   ],
   [
    "tts11/b2cfc4bb98ae6e4c-t1.12.wav",
-   7.803,
+   7.994,
    5.436,
    "Nothing in it is personal data, so no rule fires: allowed, no alert."
   ],
   [
    "tts11/b474597998ad0ffd-t1.12.wav",
-   13.54,
+   13.63,
    3.22,
    "The nightly batch is fixed the same way. Allowed too."
   ],
   [
    "tts11/5bccfc11dcfff075-t1.12.wav",
-   17.06,
+   17.051,
    4.579,
    "The fix is in the app. Sentry found the leak, and it confirms the fix."
   ]

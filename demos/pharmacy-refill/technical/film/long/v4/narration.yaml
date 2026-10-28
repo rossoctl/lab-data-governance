@@ -1,4 +1,4 @@
-# v4/narration.yaml — the technical film: the 2:35 pitch (film/pitch-2m35/master/) as it is, its picture,
+# v4/narration.yaml — the technical film (v4.3): the 2:35 pitch (film/pitch-2m35/master/) as it is, its picture,
 # with nine technical sections (I1–I9) spliced into its pauses, each right after the pitch line it explains (story
 # first, then the proof). These are the sections' lines, voiced by George (Eleven v4, common.VOICE); the pitch keeps
 # its own lines, re-voiced by the same narrator (film4.SAY). {N} {M} {S} {J} {F} are the take's counts (<take>/counts.json).
@@ -6,14 +6,14 @@
 # "Red alone" is the voice's spelling of "read alone" said in the past ("red"; spelled "read", the voice says "reed");
 # the subtitles write it "Read alone" (film4.srt). No line says who writes the rules (in time the rules are to be read
 # from the policy itself).
-I1:   # after "…which triggers an agentic flow." — what runs behind the tap
+I1:   # after "One it marks as risky. Let's see why." (the same cut as I2, before it) — what runs behind the tap
   L1: "Under the hood. The agentic flow is a real app, running on Rosso C T L, an agent platform on Kubernetes."
   L2: "Five agents and eight tools, each in its own pod."
   L3: "The pharmacy assistant takes Rosa's request. It looks her up, and asks for a clinical review, which saves the fill to the pharmacy's records."
   L4: "Then fulfillment books the courier, and reports the refill to an outside company: the wholesaler's demand forecaster."
 I2:   # after "One it marks as risky. Let's see why." — Rosa's tap in Sentry
   L1: "This is Sentry's console, Data Governance, recording Rosa's tap as it happens. Sped up."
-  L2: "Each node is an agent, a tool, the model, or a vendor. Each arrow is one exchange: a request and its reply."
+  L2: "Each node is an agent, a tool, or the model. Some tools belong to outside vendors, like the forecaster. Each arrow is one exchange: a request and its reply."
   L3: "The count changes a little from run to run. In this one, Sentry counted {N} interactions for the tap, {M} of them calls to the model."
   L4: "Open any exchange, and Sentry shows who called whom,"
   L4b: "and exactly what was sent: here, her name and birth date, going to the patient lookup."
@@ -26,44 +26,44 @@ I3:   # after "…built on lineage, classification, and risk assessment." — ho
   L5: "Lineage follows each value from exchange to exchange, and its label travels with it."
   L6: "Risk assessment checks every exchange against the company policy, and records a verdict."
 I4:   # after "Personal data must not leave the organization." — the policy, for real
-  L1: "In Sentry, the company policy is written down as three rules."
-  L2: "Rule D G one: personal data, sent to an untrusted external destination. Its suggested enforcement is block."
-  L3: "Rule D G two says the same for health data, and D G four for restricted data."
+  L1: "In this demo, Sentry holds the company policy as three rules."
+  L2: "The first rule: personal data, sent to an untrusted external destination. Its suggested enforcement is block."
+  L3: "The second says the same for health data, and the third for restricted data."
   L4: "Untrusted means outside the organization. The cluster's own services count as inside. Here the contracted courier runs as one of them."
   L4b: "So does any address on a list the company sets."
   L4c: "The forecaster's address is on neither: external, and untrusted."
-  L5: "Sentry evaluates the rules with O P A, the Open Policy Agent. Here is rule D G one, in Rego, as O P A runs it in this cluster."
-  L6: "Any flow that carries an item tagged P I I, to a destination that is external and untrusted, fires the rule."
+  L5: "Sentry evaluates the rules with O P A, the Open Policy Agent. Here are the first rule's conditions, as Sentry shows them."
+  L6: "Any flow that carries personal data to a destination that is external and untrusted fires the rule."
 I5:   # after "Most data governance tools can do it, and so does Sentry." — level 1, under the hood
-  L1: "Level one, in Sentry: the report to the forecaster, from Rosa's refill."
+  L1: "Here is what actually happens inside Sentry, at level one: the report to the forecaster, from Rosa's refill."
   L2: "Its payload holds her name, her birth date, and her medical record number."
-  L3: "Classification reads it. A trained model finds each value and names its type, and a catalog gives each type its tags and its sensitivity."
+  L3: "Classification reads it: it finds each value, names its type, and gives it its tags and its sensitivity."
   L4: "Her name is found right here: personal data, restricted. A check that sees only this message has enough."
   L5: "So the input Sentry sends to O P A reads: personal data, restricted, going to an external, untrusted destination."
-  L6: "Rules D G one and D G four fire on what is found here. D G two, for health data, fires on the number: level two shows why."
+  L6: "The first and third rules fire on what is found here. The second, for health data, fires on the number: lineage knows it is her medical record number."
   L6b: "O P A combines the rules, most restrictive first: risk level critical, suggested enforcement block."
-  L7: "Sentry raises an alert and recommends the block. In this setup it does not hold the call: the report still goes through."
+  L7: "Sentry raises an alert and recommends the block."
   L8: "The courier gets her name and address too. It runs inside the organization, so that call is allowed."
 I6:   # after "…four hops downstream and out of context, it still catches the leak." — four hops, on the graph
-  L1: "Level two, in Sentry. The report now sends only the number."
+  L1: "Here is what actually happens inside Sentry, at level two. The report now sends only the number."
   L2: "Red alone, the classifier calls it an operational I D: internal. No rule fires on that."
   L3: "Now track that number on the graph. Every exchange that carried it lights up, the model's included."
-  L4: "Hop one. The patient lookup answers the assistant: her name and her medical record number, together. Here the label is born."
+  L4: "Hop one. The patient lookup answers the assistant: her name and her medical record number, together. Here the label is created."
   L5: "Hop two. The assistant passes the number to fulfillment."
   L6: "Hop three. Fulfillment passes it to the report tool."
   L7: "Hop four. The report sends it to the forecaster."
   L8: "At every hop, Sentry matches the exact value, so the label, medical record number, travels with it."
   L9: "O P A now gets the carried label. The same three rules fire: critical, recommend block."
 I7:   # after "…so this leak is blocked too." — another session, for real
-  L1: "Level three, in Sentry. The nightly job runs as a session of its own, with its own trace. In this demo it runs a few minutes after the refill."
+  L1: "Here is what actually happens inside Sentry, at level three. The nightly job runs as a session of its own, with its own trace."
   L2: "The shared database is the pharmacy's records service. During Rosa's refill, it saved the fill under her number."
   L3: "At night, the batch reads the day's fills from the records. Red alone, the number in that answer is an operational I D again."
   L4: "Lineage reaches back across sessions: the records got that number in Rosa's refill, where it came from the patient lookup, next to her name. The label comes with it."
   L5: "Reading the records stays inside, so that call is allowed. The risk is the next call: the batch's export to the forecaster. Critical, recommend block, on the same three rules, linked back to Rosa's refill."
 I8:   # after "…sending the vendor only what it needs, Sentry lets it through." — the fix, checked
-  L1: "The fixed app, in Sentry. The report now sends the drug and the dates. No patient key."
+  L1: "Inside Sentry, the fixed app. The report now sends the drug and the dates. No patient key."
   L2: "Nothing in it is personal data, so no rule fires: allowed, no alert."
   L3: "The nightly batch is fixed the same way. Allowed too."
   L4: "The fix is in the app. Sentry found the leak, and it confirms the fix."
 I9:   # after "…within a session and across session boundaries." — this run, in Sentry's own verdicts
-  L1: "Every verdict in this film is Sentry's own, from one run on Rosso C T L: {S} sessions, {J} exchanges judged, {F} flagged."
+  L1: "Every verdict in this film is Sentry's own, from one run on Kubernetes: {S} sessions, {J} exchanges judged, {F} flagged."

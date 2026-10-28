@@ -3,43 +3,43 @@
   "zoomEnd": 1.2,
   "steps": [
    1.2,
-   10.634,
-   17.508,
-   25.308,
-   34.831
+   9.111,
+   15.886,
+   23.586,
+   33.009
   ],
-  "pull": 48.923,
-  "pullEnd": 49.923,
-  "end": 50.523
+  "pull": 46.901,
+  "pullEnd": 47.701,
+  "end": 48.001
  },
  "lines": [
   [
-   "tts11/84b721bb3e635882-t1.12.wav",
+   "tts11/ad2eaf34c491571c-t1.12.wav",
    1.5,
-   9.134,
-   "Level three, in Sentry. The nightly job runs as a session of its own, with its own trace. In this demo it runs a few minutes after the refill."
+   7.711,
+   "Here is what actually happens inside Sentry, at level three. The nightly job runs as a session of its own, with its own trace."
   ],
   [
    "tts11/a4a665144a690850-t1.12.wav",
-   10.934,
+   9.411,
    6.574,
    "The shared database is the pharmacy's records service. During Rosa's refill, it saved the fill under her number."
   ],
   [
    "tts11/1180cf84b7735060-t1.12.wav",
-   17.808,
+   16.186,
    7.5,
    "At night, the batch reads the day's fills from the records. Red alone, the number in that answer is an operational I D again."
   ],
   [
    "tts11/561ba080c183b8b2-t1.12.wav",
-   25.608,
+   23.886,
    9.223,
    "Lineage reaches back across sessions: the records got that number in Rosa's refill, where it came from the patient lookup, next to her name. The label comes with it."
   ],
   [
    "tts11/9c014d1190f3220c-t1.12.wav",
-   35.131,
+   33.309,
    13.292,
    "Reading the records stays inside, so that call is allowed. The risk is the next call: the batch's export to the forecaster. Critical, recommend block, on the same three rules, linked back to Rosa's refill."
   ]

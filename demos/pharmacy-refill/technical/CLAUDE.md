@@ -1,7 +1,7 @@
 # The technical film — for a Claude agent working here
 
 This folder reproduces one film: **Sentry** (a data-governance system for AI agents) on the pharmacy-refill app, the
-2:35 pitch with nine technical sections (v4.2, 9:17, `final/`). Read `README.md`, then `RUNBOOK.md`;
+2:35 pitch with nine technical sections (v4.3, 8:54, `final/`, from take v4.2; v4.2, 9:17, is in the earlier zip in the same Box folder). Read `README.md`, then `RUNBOOK.md`;
 "The shape of a job" below says how to run one end to end. `pins.yaml` holds every commit and setting.
 
 What a person usually wants, and where it is:
@@ -10,7 +10,7 @@ What a person usually wants, and where it is:
 |---|---|
 | set it up / does my machine have what it needs | `setup/sentry-film.sh check`, then `plan`, then `up` (RUNBOOK § 0–3) |
 | record a new take | `take/sequence.sh <name>` (§ 4), then `take/film.sh check <name>` (§ 5) |
-| rebuild the film | `take/film.sh all <name>` (§ 6); from the shipped take, no cluster: `take/film.sh stage v4.2 && take/film.sh join v4.2` |
+| rebuild the film | `take/film.sh all <name>` (§ 6); from the shipped take, no cluster: `take/film.sh stage v4.2 && take/film.sh join v4.2 film-v4.3` |
 | change a line | `film/long/v4/narration.yaml` → `take/film.sh words <take> <section>` (§ 8) |
 | change the voice | `film/long/common.py` `VOICE`; its pace: the `VOICE_TEMPO` line at the top of `film/long/v4/film4.py` (the shell's value is ignored) → `take/film.sh words <take>` |
 | change the cuts, pictures, music, cards, review | RUNBOOK § 8, one row each |
@@ -52,7 +52,7 @@ What a person usually wants, and where it is:
 4. **The film** (§ 6, ~30 min): `take/film.sh all <name>` (or the steps one by one). A section's line whose count
    changed is spoken again (needs `ELEVENLABS_API_KEY`).
 5. **Look** (§ 7): read `review/<film>/REPORT.md`, check each finding against its frame, pull frames under each
-   section's rings (`ffmpeg -ss <t> -i <film> -frames:v 1 x.png`), and list what differs from v4.2 (counts, changed
+   section's rings (`ffmpeg -ss <t> -i <film> -frames:v 1 x.png`), and list what differs from v4.3 (counts, changed
    lines, length, frames).
 6. **Changes the person asks for** (§ 8): words → `narration.yaml` / `film4.SAY` → `take/film.sh words <take> <I…>`;
    voice → `common.VOICE`; cuts, pictures, music, cards → their row. A new screen needs a new take. Rebuild only
@@ -66,5 +66,5 @@ you changed. Say plainly which steps you did not run.
 - setup: `setup/sentry-film.sh doctor` prints `ready`
 - a take: `take/film.sh check <take>` prints "all five verdicts match the film"
 - a film: `film/takes/<take>/review/<film>/REPORT.md` read (word error rate, loudness, claims, Gemini's findings checked against the
-  frames), you looked at the frames under each section's rings, and you listed what differs from v4.2. Report only
+  frames), you looked at the frames under each section's rings, and you listed what differs from v4.3. Report only
   steps you ran.

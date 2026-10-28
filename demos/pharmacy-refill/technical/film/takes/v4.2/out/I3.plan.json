@@ -3,15 +3,15 @@
   "zoomEnd": 1.2,
   "steps": [
    1.2,
-   10.156,
-   17.256,
-   20.704,
-   28.3,
-   33.605
+   10.056,
+   17.056,
+   20.404,
+   27.9,
+   33.105
   ],
-  "pull": 39.331,
-  "pullEnd": 40.331,
-  "end": 40.931
+  "pull": 38.631,
+  "pullEnd": 39.431,
+  "end": 39.731
  },
  "lines": [
   [
@@ -22,31 +22,31 @@
   ],
   [
    "tts11/9c70b76dec8b9c27-t1.12.wav",
-   10.456,
+   10.356,
    6.8,
    "For every exchange, the sidecar sends Sentry two records: the request and the response, with their payloads."
   ],
   [
    "tts11/71d36f7204a99e8a-t1.12.wav",
-   17.556,
+   17.356,
    3.148,
    "From these, Sentry rebuilds who called whom."
   ],
   [
    "tts11/7f2f603297ef1266-t1.12.wav",
-   21.004,
+   20.704,
    7.296,
    "Classification reads every payload and names each value in it: a person's name, a medical record number, a date."
   ],
   [
    "tts11/1f0d9c0c70b9f233-t1.12.wav",
-   28.6,
+   28.2,
    5.004,
    "Lineage follows each value from exchange to exchange, and its label travels with it."
   ],
   [
    "tts11/9b9da19fb6146b55-t1.12.wav",
-   33.905,
+   33.405,
    4.926,
    "Risk assessment checks every exchange against the company policy, and records a verdict."
   ]

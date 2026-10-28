@@ -4,7 +4,7 @@
   "card": {
    "title": "Rosa\u2019s refill <small>what runs behind one tap</small>",
    "tag": "Behind one tap",
-   "sub": "the pharmacy app on rossoctl: five agents and eight tools, each beside its own sidecar"
+   "sub": "the pharmacy app: five agents and eight tools, each in its own pod"
   }
  }
 }

@@ -35,8 +35,9 @@ def synth(text: str) -> tuple[pathlib.Path, float]:
     f = TTS / f"{key}.wav"
     if not f.exists():
         if not os.environ.get("ELEVENLABS_API_KEY"):
-            raise SystemExit(f"this line is not in the voice cache (film/long/tts11/) and ELEVENLABS_API_KEY is not set: «{text}»\n"
-                             "export the key to have it spoken (it costs credits), or keep the line's words as they were")
+            raise SystemExit(f"this line is not in the voice cache (film/long/tts11/{f.name}) and ELEVENLABS_API_KEY is not set: «{text}»\n"
+                             "export the key to have it spoken (it costs credits), or keep the line's words as they were; "
+                             f"voiced elsewhere with the same VOICE ({VOICE['model']}, {VOICE['id']}), its wav goes in as tts11/{f.name}")
         req = urllib.request.Request(f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE['id']}?output_format=pcm_24000",
                                      json.dumps({"text": text, "model_id": VOICE["model"]}).encode(),
                                      {"xi-api-key": os.environ["ELEVENLABS_API_KEY"], "Content-Type": "application/json"})

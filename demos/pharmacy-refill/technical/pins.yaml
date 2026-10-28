@@ -33,9 +33,9 @@ pitch:                          # the 2:35 pitch film the technical film is buil
   sha256: afe40c3b57e7fb5a6ac92bf1ed4cb5229eb9c4a1124aca3e185a7d2eb2246b0b
 media:                          # the binary parts git does not carry: the voice cache, the music, the v4.2 take's recording,
                                 # stills, cards, rendered sections, the pitch film and the finished film (setup/sentry-film.sh media)
-  file: sentry-technical-film-v4.2-full.zip
+  file: sentry-technical-film-v4.3-full.zip
   url: https://ibm.box.com/s/ckv7aj1a6hre6h679itib0zahmh2mxmy   # the Box folder "Sentry technical film" (sign in); the zip is in it
-  sha256: 51223cf70c227126f887143073eca8728f254d10ddb03ad79ba7ddf14a31e21a
+  sha256: 9d4f4a8918853df78fbb20dcf03928384078b3ceea1aad1898d7c06a66d153f2
 sidecar: the platform's proxy sidecar as its operator pins it (authbridge v0.7.0-alpha.10 at the platform pin)
 model:
   agents: qwen2.5:7b through ollama on the host (host.containers.internal:11434)

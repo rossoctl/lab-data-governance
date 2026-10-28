@@ -3,71 +3,71 @@
   "zoomEnd": 1.2,
   "steps": [
    1.2,
-   6.792,
-   11.301,
-   20.46,
-   27.41,
-   36.14,
-   46.297,
-   53.592,
-   61.167
+   8.409,
+   12.818,
+   19.883,
+   26.732,
+   35.363,
+   44.927,
+   52.121,
+   55.242
   ],
-  "pull": 67.976,
-  "pullEnd": 68.976,
-  "end": 69.576
+  "pull": 61.851,
+  "pullEnd": 62.651,
+  "end": 62.951
  },
  "lines": [
   [
-   "tts11/a9c3d7d4882e8587-t1.12.wav",
+   "tts11/fa50059059cbaaa5-t1.12.wav",
    1.5,
-   5.292,
-   "Level one, in Sentry: the report to the forecaster, from Rosa's refill."
+   7.009,
+   "Here is what actually happens inside Sentry, at level one: the report to the forecaster, from Rosa's refill."
   ],
   [
    "tts11/92d1ccfbedd39554-t1.12.wav",
-   7.092,
+   8.709,
    4.209,
    "Its payload holds her name, her birth date, and her medical record number."
   ],
   [
-   "tts11/d2b23512ddb76195-t1.12.wav",
-   11.601,
-   8.859,
-   "Classification reads it. A trained model finds each value and names its type, and a catalog gives each type its tags and its sensitivity."
+   "tts11/181df3417a6149ca-t1.12.wav",
+   13.118,
+   6.864,
+   "Classification reads it: it finds each value, names its type, and gives it its tags and its sensitivity."
   ],
   [
    "tts11/e2e9838e46c237bd-t1.12.wav",
-   20.76,
+   20.183,
    6.65,
    "Her name is found right here: personal data, restricted. A check that sees only this message has enough."
   ],
   [
    "tts11/6db3c1b0f6b02a98-t1.12.wav",
-   27.71,
+   27.032,
    8.43,
    "So the input Sentry sends to O P A reads: personal data, restricted, going to an external, untrusted destination."
   ],
   [
-   "tts11/6afea16c5b0b0407-t1.12.wav",
-   36.44,
-   9.857,
-   "Rules D G one and D G four fire on what is found here. D G two, for health data, fires on the number: level two shows why."
+   "tts11/435160787e69bbfc-t1.12.wav",
+   35.663,
+   9.364,
+   "The first and third rules fire on what is found here. The second, for health data, fires on the number: lineage knows it is her medical record number."
   ],
   [
    "tts11/b0570308c4a0362e-t1.12.wav",
-   46.597,
+   45.227,
    6.995,
    "O P A combines the rules, most restrictive first: risk level critical, suggested enforcement block."
   ],
   [
-   "tts11/2b4f33e4e004868b-t1.12.wav",
-   53.892,
-   7.276,
-   "Sentry raises an alert and recommends the block. In this setup it does not hold the call: the report still goes through."
+   "tts11/50040fa723be2e6a-t1.12.wav",
+   52.421,
+   2.921,
+   "Sentry raises an alert and recommends the block."
   ],
   [
    "tts11/45b5cce7ad84fd7c-t1.12.wav",
-   61.467,
+   55.542,
    6.009,
    "The courier gets her name and address too. It runs inside the organization, so that call is allowed."
   ]

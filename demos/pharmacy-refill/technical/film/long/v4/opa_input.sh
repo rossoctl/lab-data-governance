@@ -8,7 +8,7 @@ set -a; . "${FILM_ENV:-$PKG/film.env}"; set +a
 export KUBECONFIG; ns=data-governance; k() { kubectl --context "kind-$CLUSTER" "$@"; }
 LABDG=${SRC:-$HOME/sentry-film/src}/lab-data-governance
 take=${FILM_TAKE:-$PKG/film/takes/v4.2}; case "$take" in /*) ;; *) take=$PKG/$take ;; esac; export FILM_TAKE_DIR=$take
-[ -x "$LABDG/.venv/bin/python" ] || { echo ">> Sentry's Python env, once (uv sync in $LABDG)"; (cd "$LABDG" && uv sync --frozen --no-dev >/dev/null); }
+[ -x "$LABDG/.venv/bin/python" ] || { echo ">> Sentry's Python env, once (uv sync in $LABDG)"; (cd "$LABDG" && uv sync --frozen --no-dev --python 3.11 >/dev/null); }
 p1=$((20000 + RANDOM % 20000)); p2=$((p1 + 1))
 kubectl --context "kind-$CLUSTER" -n $ns port-forward pod/data-governance-postgres-0 $p1:5432 >/dev/null 2>&1 & pf1=$!   # kubectl itself, so the trap stops it
 kubectl --context "kind-$CLUSTER" -n $ns port-forward svc/opa $p2:8181 >/dev/null 2>&1 & pf2=$!

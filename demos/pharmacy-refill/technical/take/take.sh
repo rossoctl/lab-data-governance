@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# take.sh — one step of the take on the cluster in ../film.env (the pharmacy app, Sentry). Runs under macOS's bash 3.2.
+# take.sh — one step of the take on the cluster in ../film.env (the pharmacy app, Sentry). Runs under macOS's bash 3.2 and Linux's bash 5 (GNU date/sha256sum).
 #   take.sh key <full|mrn|none> <deploy>…   set DEMAND_KEY on the report tools; the pod rolls, then its saved lineage
 #                                          config is patched back (a roll drops it on the proxy path)
 #   take.sh relineage <deploy>…            only the patch-back, then wait until the sidecar runs with lineage on
@@ -19,6 +19,7 @@ export KUBECONFIG; CTX=kind-$CLUSTER; NS=pharmacy
 R=$PKG/state/$CLUSTER/restore; TAKE=${TAKE:-$HERE/runs-$(date +%F)}; mkdir -p "$R" "$TAKE"
 k() { kubectl --context "$CTX" "$@"; }
 dgsql() { k -n data-governance exec -i data-governance-postgres-0 -- sh -c 'psql -U "$POSTGRES_USER" -d data_governance -At -F "|" -v ON_ERROR_STOP=1'; }
+cfgsum() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum; fi; }   # GNU (Linux) / Perl (macOS)
 envof() { k -n $NS get deploy "$1" -o jsonpath="{.spec.template.spec.containers[0].env[?(@.name==\"$2\")].value}"; }
 
 relineage() {
@@ -26,9 +27,9 @@ relineage() {
   since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   for d in "$@"; do
     [ -s "$R/authbridge-config-$d.json" ] || { echo "no restore copy for $d in $R (setup/sentry-film.sh instrument saves them)" >&2; exit 1; }
-    before=$(k -n $NS get cm "authbridge-config-$d" -o jsonpath='{.data.config\.yaml}' | shasum)
+    before=$(k -n $NS get cm "authbridge-config-$d" -o jsonpath='{.data.config\.yaml}' | cfgsum)
     k -n $NS patch cm "authbridge-config-$d" --type merge --patch-file "$R/authbridge-config-$d.json" >/dev/null
-    after=$(k -n $NS get cm "authbridge-config-$d" -o jsonpath='{.data.config\.yaml}' | shasum)
+    after=$(k -n $NS get cm "authbridge-config-$d" -o jsonpath='{.data.config\.yaml}' | cfgsum)
     [ "$before" = "$after" ] && samelist="$samelist $d "
   done
   for d in "$@"; do

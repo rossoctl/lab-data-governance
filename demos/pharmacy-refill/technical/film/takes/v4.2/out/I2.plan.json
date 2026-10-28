@@ -4,14 +4,14 @@
   "steps": [
    1.2,
    9.067,
-   17.3,
-   25.602,
-   29.405,
-   35.643
+   20.059,
+   28.261,
+   31.964,
+   38.103
   ],
-  "pull": 41.52,
-  "pullEnd": 42.52,
-  "end": 43.12
+  "pull": 43.779,
+  "pullEnd": 44.579,
+  "end": 44.879
  },
  "lines": [
   [
@@ -21,32 +21,32 @@
    "This is Sentry's console, Data Governance, recording Rosa's tap as it happens. Sped up."
   ],
   [
-   "tts11/2527392eebb8e2f1-t1.12.wav",
+   "tts11/839bb91e20a8f115-t1.12.wav",
    9.367,
-   7.933,
-   "Each node is an agent, a tool, the model, or a vendor. Each arrow is one exchange: a request and its reply."
+   10.793,
+   "Each node is an agent, a tool, or the model. Some tools belong to outside vendors, like the forecaster. Each arrow is one exchange: a request and its reply."
   ],
   [
    "tts11/459cdf7012a89cfc-t1.12.wav",
-   17.6,
+   20.359,
    8.002,
    "The count changes a little from run to run. In this one, Sentry counted 28 interactions for the tap, 8 of them calls to the model."
   ],
   [
    "tts11/d2a890aed2aae383-t1.12.wav",
-   25.902,
+   28.561,
    3.503,
    "Open any exchange, and Sentry shows who called whom,"
   ],
   [
    "tts11/1a293e5d634d0213-t1.12.wav",
-   29.705,
+   32.264,
    5.938,
    "and exactly what was sent: here, her name and birth date, going to the patient lookup."
   ],
   [
    "tts11/ad423f0d142cd52c-t1.12.wav",
-   35.943,
+   38.403,
    5.077,
    "With the risk layer on, one exchange turns red: the report to the forecaster."
   ]

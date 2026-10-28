@@ -51,6 +51,13 @@ run_logged() {   # run_logged <log> <regex|-> <command…>: shows the matching p
 }
 changed() { printf '%s\t%s\t%s\n' "$(date '+%F %T')" "$1" "undo: $2" >> "$STATE/changes.log"; }
 pin()  { python3 -c 'import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))[sys.argv[2]][sys.argv[3]])' "$PKG/pins.yaml" "$1" "${2:-sha}"; }
+OS=$(uname -s)
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }   # GNU (Linux) / Perl (macOS)
+port_taken() {   # port_taken <port>: something on this host listens on it. Linux: ss (lsof without root misses other users' sockets)
+  if [ "$OS" = Darwin ]; then lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  else ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; fi
+}
+hint() { [ "$OS" = Darwin ] && echo "$1" || echo "$2"; }   # hint <macOS command> <Linux (dnf) command>
 FAILS=0
 
 # ---------------------------------------------------------------------------------------------------------- check
@@ -59,21 +66,25 @@ need() {   # need <command> <what it is for> <how to install>
 }
 step_check() {
   say "this machine ($(uname -sm)), settings from $ENVF"
-  [ "$(uname -s)" = Darwin ] || note "only macOS (Apple Silicon) is proven; Linux with podman should work, Docker Desktop does not (the app's deploy.sh is podman-only)"
-  need brew "installs the rest" "https://brew.sh"
-  need podman "the container engine and the kind node's host" "brew install podman && podman machine init --cpus 8 --memory 16384 --disk-size 200 && podman machine start"
-  need kind "the Kubernetes cluster" "brew install kind"
-  need kubectl "talks to the cluster" "brew install kubectl"
-  need helm "the platform installer uses it" "brew install helm"
-  need git "the three checkouts" "brew install git"
-  need git-lfs "Sentry's classifier weights (~500 MB) and the pitch film" "brew install git-lfs && git lfs install"
-  need uv "Sentry's Python env: it compiles OPA's policy, and the film's OPA panels" "brew install uv"
-  need curl "health checks" "brew install curl"
-  need ffmpeg "the film: cuts, music, subtitles, loudness" "brew install ffmpeg"
-  need ollama "the agents' language model, on this Mac" "brew install ollama && brew services start ollama"
-  need node "the browser recordings (Playwright)" "brew install node"
+  [ "$OS" = Darwin ] || note "only macOS (Apple Silicon) is proven; Linux (RHEL 9, rootless podman) was run once (RUNBOOK § 0, “On Linux”); Docker Desktop does not work (the app's deploy.sh is podman-only)"
+  [ "$OS" = Darwin ] && need brew "installs the rest" "https://brew.sh"
+  need podman "the container engine and the kind node's host" "$(hint "brew install podman && podman machine init --cpus 8 --memory 16384 --disk-size 200 && podman machine start" "sudo dnf install -y podman")"
+  need kind "the Kubernetes cluster" "$(hint "brew install kind" "curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 && sudo install kind /usr/local/bin/")"
+  need kubectl "talks to the cluster" "$(hint "brew install kubectl" "curl -fsSLO https://dl.k8s.io/release/\$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl && sudo install kubectl /usr/local/bin/")"
+  need helm "the platform installer uses it" "$(hint "brew install helm" "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash")"
+  need git "the three checkouts" "$(hint "brew install git" "sudo dnf install -y git")"
+  need git-lfs "Sentry's classifier weights (~500 MB) and the pitch film" "$(hint "brew install git-lfs" "sudo dnf install -y git-lfs") && git lfs install"
+  need uv "Sentry's Python env: it compiles OPA's policy, and the film's OPA panels" "$(hint "brew install uv" "curl -LsSf https://astral.sh/uv/install.sh | sh")"
+  need curl "health checks" "$(hint "brew install curl" "sudo dnf install -y curl")"
+  [ "$OS" = Darwin ] || need ss "port checks (iproute)" "sudo dnf install -y iproute"
+  need ffmpeg "the film: cuts, music, subtitles, loudness" "$(hint "brew install ffmpeg" "not in RHEL's repos; a static build (has libx264 + ebur128): curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C /tmp && sudo install -m755 /tmp/ffmpeg-*-amd64-static/ff{mpeg,probe} /usr/local/bin/  (EPEL + RPM Fusion also work once their GPG keys are imported)")"
+  need ollama "the agents' language model, on this machine" "$(hint "brew install ollama && brew services start ollama" "sudo dnf install -y zstd && curl -fsSL https://ollama.com/install.sh | sh  (the installer needs zstd; it makes a systemd unit 'ollama'; then the OLLAMA_HOST line below)")"
+  need node "the browser recordings (Playwright)" "$(hint "brew install node" "sudo dnf module reset -y nodejs && sudo dnf module install -y nodejs:20")"
+  if command -v node >/dev/null 2>&1 && [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 18 ]; then
+    bad "node $(node --version) is too old: Playwright 1.61 needs ≥ 18 (npm only warns EBADENGINE)" "$(hint "brew upgrade node" "sudo dnf module reset -y nodejs && sudo dnf module install -y nodejs:20  (RHEL 9's default stream is 16)")"; fi
+  local asset; asset=$(pin rossoctl_cli asset 2>/dev/null | sed "s/Darwin-arm64/$(uname -s)-$(uname -m | sed 's/aarch64/arm64/')/") || true   # no yaml yet: the python3 line below says so
   need rossoctl "the agent platform's CLI (the app's deploy imports through it)" \
-    "gh release download $(pin rossoctl_cli release) -R rossoctl/rossoctl-cli -p '*$(uname -s)-$(uname -m | sed 's/aarch64/arm64/').tar.gz' && mkdir -p ~/.config/rossoctl && tar xzf rossoctl-*.tar.gz -C ~/.config/rossoctl"
+    "curl -fsSLO $(pin rossoctl_cli url)/download/$(pin rossoctl_cli release)/$asset && mkdir -p ~/.config/rossoctl && tar xzf $asset -C ~/.config/rossoctl  (a public release: no GitHub login needed)"
   local py=${PYTHON:-python3.11}
   if command -v "$py" >/dev/null 2>&1; then
     local miss; miss=$("$py" - <<'PY'
@@ -82,15 +93,16 @@ print(" ".join(m for m in ("yaml", "numpy", "PIL", "faster_whisper") if not u.fi
 PY
 )
     [ -z "$miss" ] && ok "$py with yaml, numpy, Pillow, faster-whisper (the film build)" \
-      || bad "$py lacks: $miss" "$py -m pip install pyyaml numpy Pillow faster-whisper"
-  else bad "$py missing (the film build)" "brew install python@3.11, or set PYTHON= in film.env"; fi
-  python3 -c 'import yaml' 2>/dev/null && ok "python3 with yaml (these scripts)" || bad "python3 lacks yaml (these scripts read pins.yaml)" "python3 -m pip install pyyaml"
-  if [ -d "$PKG/node_modules/playwright" ]; then ok "Playwright in the package (node_modules/)"
-  else bad "Playwright not installed in the package" "(cd $PKG && npm install && npx playwright install chromium)"; fi
+      || bad "$py lacks: $miss" "$py -m pip install $([ "$OS" = Darwin ] || echo "--user ")pyyaml numpy Pillow faster-whisper"
+  else bad "$py missing (the film build)" "$(hint "brew install python@3.11" "sudo dnf install -y python3.11 python3.11-pip"), or set PYTHON= in film.env"; fi
+  python3 -c 'import yaml' 2>/dev/null && ok "python3 with yaml (these scripts)" || bad "python3 lacks yaml (these scripts read pins.yaml)" "$(hint "python3 -m pip install pyyaml" "sudo dnf install -y python3-pyyaml")"
+  if [ -d "$PKG/node_modules/playwright" ] && (cd "$PKG" && node -e 'require("playwright").chromium.launch().then(b => b.close()).catch(e => { console.error(e.message.split("\n")[0]); process.exit(1) })') >/dev/null 2>&1; then
+    ok "Playwright in the package, headless Chromium launches"
+  else bad "Playwright or its Chromium not ready (node_modules/playwright, a headless launch)" "(cd $PKG && npm install && npx playwright install $(hint "chromium" "chromium && sudo dnf install -y nss atk at-spi2-atk cups-libs libxkbcommon alsa-lib mesa-libgbm pango cairo libXcomposite libXdamage libXrandr libXfixes  (--with-deps is apt-only)")))"; fi
   if command -v ffmpeg >/dev/null 2>&1; then
     local fl en; fl=$(ffmpeg -hide_banner -filters 2>/dev/null || true); en=$(ffmpeg -hide_banner -encoders 2>/dev/null || true)
-    case "$fl" in *ebur128*) case "$en" in *libx264*) ok "ffmpeg has libx264 and ebur128" ;; *) bad "ffmpeg lacks libx264" "brew reinstall ffmpeg" ;; esac ;;
-      *) bad "ffmpeg lacks the ebur128 filter" "brew reinstall ffmpeg" ;; esac
+    case "$fl" in *ebur128*) case "$en" in *libx264*) ok "ffmpeg has libx264 and ebur128" ;; *) bad "ffmpeg lacks libx264" "$(hint "brew reinstall ffmpeg" "RHEL's ffmpeg-free has no libx264: the RPM Fusion ffmpeg, or a static build")" ;; esac ;;
+      *) bad "ffmpeg lacks the ebur128 filter" "$(hint "brew reinstall ffmpeg" "the RPM Fusion ffmpeg, or a static build")" ;; esac
   fi
   if command -v podman >/dev/null 2>&1; then
     if podman info >/dev/null 2>&1; then
@@ -106,29 +118,44 @@ PY
       [ "$mem" -ge "$want" ] && ok "podman machine: ${mem} MiB, $cpus CPUs${others:+; other clusters use ~${used} MB ($others)}" \
         || bad "podman machine has ${mem} MiB; this cluster needs ~9.5 GiB${others:+ beside the ~${used} MB the other clusters use ($others)}" \
                "podman machine stop && podman machine set --memory $(( (want + 1023) / 1024 * 1024 )) && podman machine start  (stops every cluster on it for a minute)"
-      free=$(podman machine ssh df -BG --output=avail /var 2>/dev/null | tail -1 | tr -dc 0-9 || true)
+      if [ "$OS" = Darwin ]; then free=$(podman machine ssh df -BG --output=avail /var 2>/dev/null | tail -1 | tr -dc 0-9 || true)
+      else free=$(df -BG --output=avail "$(podman info --format '{{.Store.GraphRoot}}')" 2>/dev/null | tail -1 | tr -dc 0-9 || true); fi   # Linux: no machine, podman's own store
       if [ -n "$free" ]; then
         [ "$free" -ge 40 ] && ok "podman disk: ${free} GB free (the Sentry build needs ~35)" \
           || bad "podman disk: only ${free} GB free; building Sentry's classifier needs ~35 GB" \
-                 "$(cluster_exists && echo "unused images in this cluster's node: podman exec $NODE crictl rmi --prune; or " )grow the machine's disk: podman machine stop && podman machine set --disk-size 200 && podman machine start (stops every cluster on it). Never 'podman system prune' / 'rmi -f': other clusters' nodes live in that store"
+                 "$(cluster_exists && echo "unused images in this cluster's node: podman exec $NODE crictl rmi --prune; or " )$(hint "grow the machine's disk: podman machine stop && podman machine set --disk-size 200 && podman machine start (stops every cluster on it)" "free space on the filesystem of $(podman info --format '{{.Store.GraphRoot}}')"). Never 'podman system prune' / 'rmi -f': other clusters' nodes live in that store"
       fi
-    else bad "podman is installed but its machine is not running" "podman machine start"; fi
+    else bad "podman is installed but does not answer (podman info)" "$(hint "podman machine start" "podman info  (shows the error; rootless podman needs subuid/subgid for $USER)")"; fi
   fi
   if command -v ollama >/dev/null 2>&1; then
     if curl -fsS -m 5 http://localhost:11434/api/tags 2>/dev/null | grep -q "\"$LLM_MODEL\""; then ok "ollama serves $LLM_MODEL"
     elif curl -fsS -m 5 http://localhost:11434/api/tags >/dev/null 2>&1; then bad "ollama runs but has no $LLM_MODEL" "ollama pull $LLM_MODEL"
-    else bad "ollama is not serving on :11434" "brew services start ollama  (or: ollama serve)"; fi
+    else bad "ollama is not serving on :11434" "$(hint "brew services start ollama  (or: ollama serve)" "sudo systemctl enable --now ollama")"; fi
+    # Linux: the kind node reaches the host at host.containers.internal = the host's own address, not 127.0.0.1
+    if [ "$OS" != Darwin ] && port_taken 11434 && ! ss -Hltn 'sport = :11434' 2>/dev/null | grep -qE '(\*|0\.0\.0\.0|\[::\]):11434'; then
+      bad "ollama listens on 127.0.0.1 only; the agents in the kind node cannot reach it" \
+          "sudo mkdir -p /etc/systemd/system/ollama.service.d && printf '[Service]\nEnvironment=OLLAMA_HOST=0.0.0.0\n' | sudo tee /etc/systemd/system/ollama.service.d/host.conf && sudo systemctl daemon-reload && sudo systemctl restart ollama"
+    fi
+  fi
+  if [ "$OS" != Darwin ]; then   # the kind node shares the host kernel's inotify limits (kind "known issues"); RHEL's 128 runs out
+    local ii iw; ii=$(sysctl -n fs.inotify.max_user_instances 2>/dev/null || echo 0); iw=$(sysctl -n fs.inotify.max_user_watches 2>/dev/null || echo 0)
+    [ "$ii" -ge 512 ] && [ "$iw" -ge 524288 ] && ok "inotify limits $ii instances / $iw watches" \
+      || bad "inotify limits $ii / $iw are too low for the kind node (the platform's controller crash-loops: 'too many open files')" \
+             "printf 'fs.inotify.max_user_instances = 512\nfs.inotify.max_user_watches = 524288\n' | sudo tee /etc/sysctl.d/99-kind-inotify.conf && sudo sysctl --system"
   fi
   if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
     local p; for p in "$HTTP_PORT" "$HTTPS_PORT"; do
-      if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
-        bad "port $p is taken (the new cluster's gateway needs it)" "pick free ports: HTTP_PORT= / HTTPS_PORT= in film.env (lsof -nP -iTCP:$p -sTCP:LISTEN shows who has it)"
+      if port_taken "$p"; then
+        bad "port $p is taken (the new cluster's gateway needs it)" "pick free ports: HTTP_PORT= / HTTPS_PORT= in film.env ($(hint "lsof -nP -iTCP:$p -sTCP:LISTEN" "ss -ltnp 'sport = :$p'") shows who has it)"
       else ok "port $p free for the new cluster"; fi
     done
   fi
-  local r; for r in platform lab-data-governance agent-examples-snp; do
-    git ls-remote "$(pin $r repo)" HEAD >/dev/null 2>&1 && ok "read access: $(pin $r repo)" \
-      || bad "no read access to $(pin $r repo)" "ask its owners for read access, then: brew install gh && gh auth login && gh auth setup-git"
+  local r d; for r in platform lab-data-governance agent-examples-snp; do
+    case $r in platform) d=$PLATFORM_DIR ;; lab-data-governance) d=$SENTRY_DIR ;; *) d=$APP_DIR ;; esac
+    if git ls-remote "$(pin $r repo)" HEAD >/dev/null 2>&1; then ok "read access: $(pin $r repo)"
+    elif [ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" = "$(pin $r)" ] && [ -z "$(git -C "$d" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+      ok "no read access to $(pin $r repo), but $d is a clean checkout at its pin (sources keeps it; no fetch needed)"
+    else bad "no read access to $(pin $r repo)" "ask its owners for read access, then: $(hint "brew install gh" "sudo dnf install -y gh") && gh auth login && gh auth setup-git; or put a clean checkout at the pin in $d"; fi
   done
   [ -n "${ELEVENLABS_API_KEY:-}" ] && ok "ELEVENLABS_API_KEY set (new or changed lines, music)" \
     || note "ELEVENLABS_API_KEY not set: the film rebuilds from the voice cache; a changed line or new music needs it"
@@ -145,7 +172,7 @@ step_media() {
   [ -n "$z" ] || die "media needs the zip" "download $(pin media file) from $(pin media url) (sign in to Box), then: setup/sentry-film.sh media <path to it>"
   [ -s "$z" ] || die "no file $z"
   say "checking $z against pins.yaml (sha256)"
-  [ "$(shasum -a 256 "$z" | cut -d' ' -f1)" = "$want" ] || die "$z is not the pinned media zip (its sha256 differs)" "download it again from $(pin media url)"
+  [ "$(sha256 "$z" | cut -d' ' -f1)" = "$want" ] || die "$z is not the pinned media zip (its sha256 differs)" "download it again from $(pin media url)"
   local t; t=$(mktemp -d); trap "rm -rf '$t'" EXIT INT TERM       # the path itself: the function's local is gone at exit
   unzip -q "$z" -d "$t" || die "the zip does not unpack"
   rsync -a --ignore-existing --exclude '.claude/' "$t/sentry-technical-film/" "$PKG/"
@@ -179,10 +206,10 @@ step_sources() {
   find "$SENTRY_DIR/classification/model" -name model.safetensors -size +100M | grep -q . \
     && ok "classifier weights present ($w)" || die "the classifier weights are an LFS pointer" "git -C $SENTRY_DIR lfs pull (needs git-lfs and network)"
   local pf=$PKG/film/pitch-2m35/master/sentry_pitch_demo.mp4 want; want=$(pin pitch sha256)
-  if [ "$(shasum -a 256 "$pf" 2>/dev/null | cut -d' ' -f1)" != "$want" ]; then
+  if [ "$(sha256 "$pf" 2>/dev/null | cut -d' ' -f1)" != "$want" ]; then
     say "the pitch film (2:35, 55 MB, Git LFS on the lab-data-governance branch $(pin pitch branch))"
     mkdir -p "$(dirname "$pf")"; curl -fsSL -o "$pf.part" "$(pin pitch url)" || die "download failed: $(pin pitch url)" "check the network; or git lfs pull it from that branch"
-    [ "$(shasum -a 256 "$pf.part" | cut -d' ' -f1)" = "$want" ] || die "the downloaded pitch is not the pinned film (sha256 differs)" "pins.yaml → pitch; the branch may have moved its LFS object"
+    [ "$(sha256 "$pf.part" | cut -d' ' -f1)" = "$want" ] || die "the downloaded pitch is not the pinned film (sha256 differs)" "pins.yaml → pitch; the branch may have moved its LFS object"
     mv "$pf.part" "$pf"
   fi
   ok "the pitch film: $pf"
@@ -205,7 +232,8 @@ platform_gaps() {   # prints one line per missing platform piece (empty = comple
   k get ns rossoctl-system >/dev/null 2>&1 || { echo "the platform (namespace rossoctl-system)"; return; }
   local d; for d in rossoctl-system/rossoctl-controller-manager rossoctl-system/rossoctl-backend rossoctl-system/rossoctl-ui \
                     rossoctl-system/otel-collector rossoctl-system/http-istio cr-system/registry istio-system/istiod; do
-    [ "$(k -n "${d%%/*}" get deploy "${d#*/}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" -ge 1 ] 2>/dev/null || echo "deployment $d not ready"
+    [ "$(k -n "${d%%/*}" get deploy "${d#*/}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" -ge 1 ] 2>/dev/null \
+      || echo "deployment $d not ready$(k -n "${d%%/*}" logs deploy/"${d#*/}" --previous --tail=200 2>/dev/null | grep -m1 -oE '"error":"[^"]{1,120}' | sed 's/^"error":"/ — last error: /')"
   done
   [ "$(k -n keycloak get sts keycloak -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" = 1 ] || echo "keycloak not ready"
   k -n rossoctl-system get secret rossoctl-api-oauth-secret >/dev/null 2>&1 || echo "the CLI's service account (secret rossoctl-api-oauth-secret)"
@@ -229,7 +257,7 @@ step_cluster() {
   else
     say "no kind cluster $CLUSTER: creating it with the agent platform, gateway on host ports $HTTP_PORT/$HTTPS_PORT (~25 min)"
     local p; for p in "$HTTP_PORT" "$HTTPS_PORT"; do
-      lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 && die "host port $p is taken" "choose free ports in film.env (HTTP_PORT, HTTPS_PORT)"
+      port_taken "$p" && die "host port $p is taken" "choose free ports in film.env (HTTP_PORT, HTTPS_PORT)"
     done
     changed "created kind cluster $CLUSTER" "kind delete cluster --name $CLUSTER"
   fi
@@ -244,7 +272,26 @@ step_cluster() {
   [ -z "$gaps" ] || die "after the installer, still missing: $(echo "$gaps" | tr '\n' ';')" "read $STATE/platform-install.log"
   ok "the agent platform is complete"; platform_settings
 }
+host_dns() {   # Linux: pods resolve host.containers.internal (the agents' ollama) through CoreDNS. On macOS the podman
+               # machine's DNS answers it; rootless podman on Linux writes it only into the node's /etc/hosts, which
+               # CoreDNS does not read, so the agents' LLM calls fail (the sidecar answers 502).
+  [ "$OS" = Darwin ] && return 0
+  local ip cf; ip=$(podman exec "$NODE" sh -c "awk '/host.containers.internal/ {print \$1; exit}' /etc/hosts" 2>/dev/null)
+  [ -n "$ip" ] || { note "the node has no host.containers.internal in /etc/hosts; the agents cannot reach ollama"; return 0; }
+  cf=$(k -n kube-system get cm coredns -o jsonpath='{.data.Corefile}')
+  if grep -q "$ip host.containers.internal" <<<"$cf"; then ok "CoreDNS resolves host.containers.internal → $ip (ollama on this host)"; return; fi
+  k -n kube-system get cm coredns -o yaml > "$STATE/coredns-before.yaml"
+  python3 -c 'import json,sys
+cf=sys.stdin.read(); ip=sys.argv[1]
+blk="    hosts {\n       %s host.containers.internal host.docker.internal\n       fallthrough\n    }\n" % ip
+print(json.dumps({"data":{"Corefile":cf.replace("    forward .", blk + "    forward .", 1)}}))' "$ip" <<<"$cf" > "$STATE/coredns-patch.json"
+  k -n kube-system patch cm coredns --type merge --patch-file "$STATE/coredns-patch.json" >/dev/null
+  k -n kube-system rollout restart deploy/coredns >/dev/null; k -n kube-system rollout status deploy/coredns --timeout=120s >/dev/null
+  changed "CoreDNS: host.containers.internal → $ip (pods reach ollama on this host)" "kubectl -n kube-system apply -f $STATE/coredns-before.yaml"
+  ok "CoreDNS resolves host.containers.internal → $ip (the node's own mapping; pods reach ollama on this host)"
+}
 platform_settings() {   # pins.yaml → platform.ui_auth: the platform UI's login (its catalogs are shot for the film)
+  host_dns
   local want have; want=$(pin platform ui_auth)
   have=$(k -n rossoctl-system get deploy rossoctl-backend -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ENABLE_AUTH")].value}')
   if [ "$have" = "$want" ]; then ok "platform UI login ENABLE_AUTH=$want"; return; fi
@@ -268,11 +315,11 @@ step_cli() {
      || die "no token from Keycloak at keycloak.localtest.me:$HTTP_PORT" "is the cluster's gateway on $HTTP_PORT? (curl -I http://keycloak.localtest.me:$HTTP_PORT)"
   local api="http://rossoctl-api.localtest.me:$HTTP_PORT/api/v1/"
   local have; have=$(rossoctl config get-contexts --json 2>/dev/null | python3 -c 'import json,sys
-d=json.load(sys.stdin); print(next((c.get("server","") for c in d.get("contexts",[]) if c.get("name")==sys.argv[1]), ""))' "$CLI_CONTEXT" || true)
+d=json.load(sys.stdin); print(next((c.get("server","") for c in (d.get("contexts") or []) if c.get("name")==sys.argv[1]), ""))' "$CLI_CONTEXT" || true)
   if [ -z "$have" ]; then rossoctl config create-context --name "$CLI_CONTEXT" --server "$api" >/dev/null; changed "CLI context $CLI_CONTEXT created" "rossoctl config delete-context $CLI_CONTEXT"
   elif [ "$have" != "$api" ]; then die "the CLI context '$CLI_CONTEXT' points at $have, not this cluster ($api)" "set CLI_CONTEXT= in film.env to an unused name"; fi
   rossoctl login --context "$CLI_CONTEXT" --token "$token" >/dev/null
-  ok "CLI logged in on context $CLI_CONTEXT → $api (current context left as it was; the token is short-lived, app runs this again)"
+  ok "CLI logged in on context $CLI_CONTEXT → $api (the current context is not switched — a CLI with no context before makes this one current; the token is short-lived, app runs this again)"
 }
 
 # --------------------------------------------------------------------------------------------------------- sentry
@@ -293,10 +340,16 @@ build_sentry() {
   local sha tag; sha=$(pin lab-data-governance); tag=film-${sha:0:7}
   say "building Sentry's two images from ${sha:0:9} (~25 min the first time; the classifier image is large)"
   local ver; ver="${sha:0:7} ($(git -C "$SENTRY_DIR" show -s --format=%cd --date=short HEAD))"
+  # UV_HTTP_TIMEOUT: the classifier's torch pulls the CUDA wheels (nvidia-cudnn-cu13 ~700 MB); uv's 30 s default times
+  # out on one of them on a cold cache. The full build output goes to state/<cluster>/sentry-build-*.log.
+  say "  receiver/ui image (log: $STATE/sentry-build-receiver.log)"
   podman build -f "$SENTRY_DIR/Containerfile" --build-arg "APP_VERSION=$ver" --label "org.opencontainers.image.revision=$sha" \
-    -t "localhost/data-governance/receiver:$tag" "$SENTRY_DIR" 2>&1 | tail -3
-  podman build -f "$SENTRY_DIR/Containerfile.classification" --label "org.opencontainers.image.revision=$sha" \
-    -t "localhost/data-governance/classification:$tag" "$SENTRY_DIR" 2>&1 | tail -3
+    -t "localhost/data-governance/receiver:$tag" "$SENTRY_DIR" > "$STATE/sentry-build-receiver.log" 2>&1 \
+    || { tail -15 "$STATE/sentry-build-receiver.log"; die "the receiver image did not build" "read $STATE/sentry-build-receiver.log; run sentry again"; }
+  say "  classifier image, torch + ~4 GB of wheels (log: $STATE/sentry-build-classification.log; progress: tail -f it)"
+  podman build -f "$SENTRY_DIR/Containerfile.classification" --env UV_HTTP_TIMEOUT=600 --label "org.opencontainers.image.revision=$sha" \
+    -t "localhost/data-governance/classification:$tag" "$SENTRY_DIR" > "$STATE/sentry-build-classification.log" 2>&1 \
+    || { tail -15 "$STATE/sentry-build-classification.log"; die "the classifier image did not build" "read $STATE/sentry-build-classification.log (a network timeout: run sentry again)"; }
   local n src dst
   for n in receiver ui classification; do   # the manifests name data-governance/<n>:latest; containerd reads that as docker.io/…
     src=localhost/data-governance/$([ $n = classification ] && echo classification || echo receiver):$tag; dst=docker.io/data-governance/$n:latest
@@ -305,6 +358,13 @@ build_sentry() {
     podman save "$dst" | podman exec -i "$NODE" ctr -n k8s.io images import - >/dev/null
   done
   changed "Sentry images ${sha:0:7} loaded into $NODE as docker.io/data-governance/{receiver,ui,classification}:latest" "load the earlier images again (their tags were overwritten)"
+  # the 6.6 GB import saturates the node's disk: etcd times out and the API server restarts (exit 137) for a minute or
+  # two afterwards; kubectl apply then fails "failed to download openapi". Wait until it answers steadily.
+  say "waiting for the API server to settle after the image import"
+  local i n=0; for i in $(seq 1 60); do
+    if k get --raw /readyz >/dev/null 2>&1 && k get --raw /openapi/v2 >/dev/null 2>&1; then n=$((n + 1)); [ $n -ge 6 ] && break; else n=0; fi; sleep 5
+  done
+  [ $n -ge 6 ] || die "the API server did not settle within 5 min after the image import" "kubectl --context $CTX -n kube-system get pods; run sentry again"
 }
 step_sentry() {
   at_pin lab-data-governance "$SENTRY_DIR"
@@ -329,8 +389,9 @@ step_sentry() {
     build_sentry
     say "installing / rolling Sentry (dg.sh component install --no-build: manifests, collector tee, roll)"
     _dg_install() { cd "$SENTRY_DIR" && kubectl config use-context "$CTX" >/dev/null && KIND_CLUSTER="$CLUSTER" bash deploy/dg.sh component install --no-build; }
-    run_logged "$STATE/sentry-install.log" '^>>' _dg_install || die "dg.sh component install failed" "read $STATE/sentry-install.log (its last lines: $(tail -2 "$STATE/sentry-install.log" | tr '\n' ' '))"
-    revs=$(sentry_revs); echo "$revs" | awk '{print $2}' | grep -vqx "$sha" && die "after the roll some Sentry pods still run another image: $(echo "$revs" | tr '\n' ' ')" \
+    run_logged "$STATE/sentry-install.log" '^>>|^error|^Error' _dg_install || die "dg.sh component install failed" "read $STATE/sentry-install.log (its last lines: $(tail -2 "$STATE/sentry-install.log" | tr '\n' ' '))"
+    revs=$(sentry_revs); [ -n "$revs" ] || die "no Sentry pods after the install" "read $STATE/sentry-install.log"
+    echo "$revs" | awk '{print $2}' | grep -vqx "$sha" && die "after the roll some Sentry pods still run another image: $(echo "$revs" | tr '\n' ' ')" \
       "kubectl --context $CTX -n $DGNS get pods; a pod pinned to another tag needs: kubectl -n $DGNS set image deploy/<name> '*=data-governance/<receiver|ui|classification>:latest'"
     ok "every Sentry pod runs ${sha:0:9}"
   fi
@@ -358,7 +419,7 @@ opa_policy() {   # OPA's policy: compiled from Sentry's rule catalog by its own 
   local want rules; want=$(pin settings opa_rules); rules=$(opa_rules)
   if [ "$rules" = "$want" ]; then ok "OPA serves the policy: $rules"; return; fi
   say "OPA's policy (${rules:-none served}): compiling Sentry's rule catalog into the opa-policy ConfigMap"
-  [ -x "$SENTRY_DIR/.venv/bin/python" ] || { say "Sentry's Python env, once (uv sync)"; (cd "$SENTRY_DIR" && uv sync --frozen --no-dev >/dev/null); }
+  [ -x "$SENTRY_DIR/.venv/bin/python" ] || { say "Sentry's Python env, once (uv sync)"; (cd "$SENTRY_DIR" && uv sync --frozen --no-dev --python 3.11 >/dev/null); }
   k -n $DGNS get cm opa-policy -o yaml > "$STATE/opa-policy-before.yaml" 2>/dev/null || true
   (cd "$SENTRY_DIR" && kubectl config use-context "$CTX" >/dev/null && bash deploy/create-opa-configmap.sh) | tail -2
   changed "opa-policy ConfigMap from Sentry's catalog (deploy/create-opa-configmap.sh)" "kubectl -n $DGNS apply -f $STATE/opa-policy-before.yaml (empty: delete the ConfigMap)"
@@ -420,7 +481,7 @@ step_instrument() {
     ok "lineage + capture on all $want agents and tools; restore copies saved"; return; fi
   say "Sentry's lineage wiring on every agent and tool (dg.sh namespace $NS instrument, ~20 min)"
   _instrument() { cd "$SENTRY_DIR" && kubectl config use-context "$CTX" >/dev/null && KIND_CLUSTER="$CLUSTER" bash deploy/dg.sh namespace $NS instrument; }
-  run_logged "$STATE/instrument.log" '^>>' _instrument || die "dg.sh namespace $NS instrument failed" "read $STATE/instrument.log (its last lines: $(tail -2 "$STATE/instrument.log" | tr '\n' ' '))"
+  run_logged "$STATE/instrument.log" '^>>|^error|^Error' _instrument || die "dg.sh namespace $NS instrument failed" "read $STATE/instrument.log (its last lines: $(tail -2 "$STATE/instrument.log" | tr '\n' ' '))"
   changed "lineage wiring + payload capture on $NS (dg.sh namespace $NS instrument; take.sh capture)" "no uninstrument verb: redeploy the app (CONFIRM=$NS setup/sentry-film.sh app); capture alone: kubectl apply -f $STATE/authbridge-configs-capture-off.yaml"
   "$PKG/take/take.sh" capture | tail -1
   [ "$(lineage_count)" = "$want" ] && ok "lineage + capture on all $want; restore copies in $STATE/restore/ (take.sh relineage uses them)" \
@@ -458,7 +519,7 @@ for d,kv in yaml.safe_load(open(sys.argv[1]))["settings"]["env"].items():
     || bad "lineage + capture on $n of 13" "take/take.sh relineage <deploy> after a roll, or setup/sentry-film.sh instrument"
   [ -s "$STATE/restore/authbridge-config-report-dispense.json" ] && ok "restore copies for take.sh relineage" || bad "no restore copies in $STATE/restore (they are per checkout)" "copy them from the checkout that ran instrument on this cluster (its state/$CLUSTER/restore/), or run setup/sentry-film.sh instrument (~20 min)"
   k -n $NS exec deploy/records -c records -- python3 -c "import urllib.request;urllib.request.urlopen('http://host.containers.internal:11434/api/tags',timeout=5)" >/dev/null 2>&1 \
-    && ok "the cluster reaches ollama on this Mac (probed from the records pod: no sidecar, so no trace)" || bad "the cluster cannot reach ollama at host.containers.internal:11434" "brew services start ollama; OLLAMA_HOST=0.0.0.0 if it listens on 127.0.0.1 only"
+    && ok "the cluster reaches ollama on this host (probed from the records pod: no sidecar, so no trace)" || bad "the cluster cannot reach ollama at host.containers.internal:11434" "$(hint "brew services restart ollama" "sudo systemctl restart ollama"); OLLAMA_HOST=0.0.0.0 if it listens on 127.0.0.1 only (setup/sentry-film.sh check prints the Linux drop-in); Linux: a pod must resolve host.containers.internal (setup/sentry-film.sh cluster adds it to CoreDNS)"
   local last
   if ! last=$("$PKG/take/take.sh" since 2>/dev/null); then bad "could not read when the last pharmacy conversation was" "kubectl --context $CTX -n $DGNS get pod data-governance-postgres-0"
   elif [ -z "$last" ]; then ok "no pharmacy conversation yet"

@@ -1,9 +1,9 @@
 # RUNBOOK — reproduce the technical film, from nothing
 
-The film (`final/sentry-technical-film-v4.2.mp4`, 9:17) is the 2:35 pitch of the pharmacy-refill demo, as made, with
-nine "under the hood" sections spliced into its pauses: Sentry's real pages from a live run, the policy in Rego, the
-exact input Sentry sends OPA, the number tracked hop by hop, the verdicts. Every screen in a section comes from a take
-on a real cluster. This runbook takes a Mac from nothing to that film, rebuilt from a take of its own.
+The film (`final/sentry-technical-film-v4.3.mp4`, 8:54) is the 2:35 pitch of the pharmacy-refill demo, as made, with
+nine "under the hood" sections spliced into its pauses: Sentry's real pages from a live run, the policy's rules on
+Sentry's own pages, the exact input Sentry sends OPA, the number tracked hop by hop, the verdicts. Every screen in a section comes from a take
+on a real cluster. This runbook takes a Mac (or a RHEL 9 Linux host, § 0) from nothing to that film, rebuilt from a take of its own.
 
 Every command runs from this folder (the package root). Each script says what it found before it changes anything,
 stops with the exact command to run when it needs something, and deletes nothing unless you name it in `CONFIRM=` (the one
@@ -40,7 +40,7 @@ setup/sentry-film.sh check          # read-only: every tool, version, memory, di
 
 | item | why | install |
 |---|---|---|
-| macOS on Apple Silicon | the only proven host | — |
+| macOS on Apple Silicon, or Linux x86_64 with rootless podman | macOS is proven; Linux was run once (below) | Linux: see “On Linux” below |
 | podman + a running machine, ≥ 9.5 GiB free for this cluster (more if other kind clusters run on it), ≥ 40 GB free disk in it | the cluster's node runs in it; Sentry's classifier image needs ~35 GB to build | `brew install podman && podman machine init --cpus 8 --memory 16384 --disk-size 200 && podman machine start` (a machine you have: `podman machine stop && podman machine set --memory … --disk-size … && podman machine start`; it stops every cluster on it for a minute, and a disk only grows) |
 | kind, kubectl, helm, git, git-lfs, curl | the cluster and the platform installer | `brew install kind kubectl helm git git-lfs && git lfs install` |
 | uv | Sentry's Python env for the OPA panels (§ 6) | `brew install uv` |
@@ -53,13 +53,40 @@ setup/sentry-film.sh check          # read-only: every tool, version, memory, di
 | `ELEVENLABS_API_KEY` (optional) | a line not yet in the voice cache, new music | export it in your shell; never in a file |
 | `GEMINI_API_KEY` (optional) | the review's claim check and its watch pass | export it in your shell; never in a file |
 
+### On Linux (RHEL 9, x86_64, rootless podman) — run once
+
+No podman machine (podman runs on the host; memory and disk are the host's), no brew. `check` prints these commands
+itself on Linux; in one place:
+
+| item | RHEL 9 |
+|---|---|
+| git-lfs, python 3.11, ports, unzip | `sudo dnf install -y git-lfs python3.11 python3.11-pip iproute unzip zstd && git lfs install && python3.11 -m pip install --user pyyaml numpy Pillow faster-whisper` |
+| node ≥ 18 (RHEL's default stream is 16; Playwright 1.61 refuses it) | `sudo dnf module reset -y nodejs && sudo dnf module install -y nodejs:20` |
+| Playwright + Chromium (`--with-deps` is apt-only) | `npm install && npx playwright install chromium && sudo dnf install -y nss atk at-spi2-atk cups-libs libxkbcommon alsa-lib mesa-libgbm pango cairo libXcomposite libXdamage libXrandr libXfixes` |
+| ffmpeg (not in RHEL's repos; EPEL + RPM Fusion fail until their GPG keys are imported) | static build: `curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \| tar xJ -C /tmp && sudo install -m755 /tmp/ffmpeg-*-amd64-static/ff{mpeg,probe} /usr/local/bin/` (`install -m755`: a umask of 027 leaves a `cp` unreadable) |
+| ollama (the installer needs `zstd`) | `curl -fsSL https://ollama.com/install.sh \| sh && ollama pull qwen2.5:7b` (4.7 GB, a progress bar only), then make it listen beyond 127.0.0.1 — the kind node reaches the host at its own address: `sudo mkdir -p /etc/systemd/system/ollama.service.d && printf '[Service]\nEnvironment=OLLAMA_HOST=0.0.0.0:11434\n' \| sudo tee /etc/systemd/system/ollama.service.d/host.conf && sudo systemctl daemon-reload && sudo systemctl restart ollama` (`ss -ltn` shows `*:11434`) |
+| rossoctl CLI (a public release: no `gh` login) | `curl -fsSLO https://github.com/rossoctl/rossoctl-cli/releases/download/v0.1.5-beta.1/rossoctl-v0.1.5-beta.1-Linux-x86_64.tar.gz && mkdir -p ~/.config/rossoctl && tar xzf rossoctl-*-Linux-x86_64.tar.gz -C ~/.config/rossoctl` |
+| inotify limits for the kind node (RHEL's 128 instances run out: the platform's controller crash-loops "too many open files" and no sidecar is injected) | `printf 'fs.inotify.max_user_instances = 512\nfs.inotify.max_user_watches = 524288\n' \| sudo tee /etc/sysctl.d/99-kind-inotify.conf && sudo sysctl --system` — before `up` |
+| pods reach ollama | rootless podman writes `host.containers.internal` only into the node's `/etc/hosts`; `cluster` adds it to CoreDNS (one `hosts` block, undo in `changes.log`) — nothing to do by hand |
+| the private app repo without a GitHub login | a clean checkout at the pin in `$SRC/agent-examples-snp`: `check` and `sources` accept it and never fetch |
+| ollama on CPU (no GPU) keeps the model loaded | a cold load is ~95 s and ollama unloads after 5 idle minutes, so each refill after the take's 15-min waits would pay it again: `printf '[Service]\nEnvironment=OLLAMA_KEEP_ALIVE=-1\n' \| sudo tee /etc/systemd/system/ollama.service.d/keepalive.conf && sudo systemctl daemon-reload && sudo systemctl restart ollama` |
+
+Measured on the first Linux host (8 vCPU, 31 GB, no GPU): § 3 `up` ~70 min of steps (Sentry's classifier image 33 min
+cold: torch's CUDA wheels, 6.6 GB; `sentry` waits for the API server to settle after loading it), one refill 140–190 s
+(Mac ~55 s), the take 48 min, the film 37 min, 9:31 long (see § 7).
+
+What that one run shows: setup, a take, the film and its review (without the Gemini pass) all complete on Linux; the
+five verdicts match v4.2's and so do the counts, but for one (104 exchanges judged, v4.2 102: one line voiced anew);
+the live graph runs slower on CPU (I2 57 s vs 43 s). What it does not show yet: `up` took four passes there while
+these Linux fixes were made, so the fixes have not yet run in one pass on a fresh host.
+
 What runs without the keys:
 
 | | no key | needs `ELEVENLABS_API_KEY` | needs `GEMINI_API_KEY` |
 |---|---|---|---|
 | setup, take, check, stills, panels, cards | yes | | |
-| a section whose words are as in v4.2 | yes (the voice cache `film/long/tts11/` holds all 86 lines) | | |
-| a line whose words change (an edit, or a count that differs in a new take) | | yes: it stops and names the line | |
+| a section whose words are as in v4.2 or v4.3 | yes (the voice cache `film/long/tts11/` holds every line of both) | | |
+| a line whose words change (an edit, or a count that differs in a new take) | | yes: it stops and names the line (no key on this machine: voice that line where the key is, from this package's own `narration.yaml`, and copy only its wav into `film/long/tts11/` under the name the stop prints) | |
 | the music | yes (the four pieces in `film/long/v4/music/` stretch to the new lengths) | new pieces only | |
 | the review | words heard, frozen frames, loudness | | the claims check and the watch pass (~$0.45 a film) |
 
@@ -194,9 +221,9 @@ take/film.sh all my-take             # check → live → ids → counts → fac
 take lacks that needs no cluster (the live frames from `rec/A.webm`, the repainted pitch and its door frames from
 `cards/`). A take's rendered sections stay in `out/`, so after a change only the changed sections are rendered again. The ones that read Sentry need the take's cluster up; the
 rest work on the take folder alone, so a take can be rebuilt on any machine with the package. The shipped take
-`film/takes/v4.2/` is the one film v4.2 was made from: `take/film.sh stage v4.2 && take/film.sh join v4.2` rebuilds
-v4.2 itself with no cluster at all: on the Mac it was made on, byte for byte (an encoder on a machine with another core
-count may differ in the last pixels). The stages load their fonts from Google Fonts, so a render needs the network.
+`film/takes/v4.2/` is the one films v4.2 and v4.3 were made from: `take/film.sh stage v4.2 && take/film.sh join v4.2 film-v4.3`
+rebuilds v4.3 with no cluster at all. (v4.2 came back byte for byte this way on the Mac it was made on, 10-26, with the
+kit as in lab-dg #336; an encoder on a machine with another core count may differ in the last pixels.) The stages load their fonts from Google Fonts, so a render needs the network.
 
 ## 7. Review, look, list the differences
 
@@ -208,6 +235,8 @@ count may differ in the last pixels). The stages load their fonts from Google Fo
    from the graph (`shots/level2/boxes.json`), so check them one by one.
 3. **List every difference from v4.2**: counts (`counts.json` vs `film/takes/v4.2/counts.json`), lines whose words
    changed (`film.plan.json` "script"), length, the frames that look different, the review's numbers.
+   A slower model (ollama on CPU) makes run A longer, and I2's live graph plays all of it at ×7: the film grows by
+   (A's length − ~52 s) / 7 (a Linux CPU take: I2 57 s vs 43 s, film 9:31 vs 9:17). `LIVE_SPEED=` sets the factor.
 
 ## 8. Change it
 
@@ -218,11 +247,12 @@ count may differ in the last pixels). The stages load their fonts from Google Fo
 | the voice | `common.VOICE` in `film/long/common.py` (ElevenLabs voice id + model); its pace: the `VOICE_TEMPO` line at the top of `film4.py` (1.12; the shell's value is ignored; the cache keeps one file per tempo) | all 86 lines are spoken again (key, credits), then all nine stages, join and review: `take/film.sh words <take>` (~30 min) |
 | where a section cuts into the pitch, and its door | `film4.CUT` (a frame of the pitch) and `film4.DOOR` (the rectangle the camera enters) | `take/film.sh cards <take>` (door frames), then `words` |
 | a section's pictures | `film4.section()`: each step's `img` (a still), `cam` (the camera's rectangle), `ring`, `label`, `sub`, `tone` | `words <take> <I…>` |
+| the app's map (its card, its rings) | `film/long/v4/map-views.json` | `take/film.sh map <take>` (no cluster), then `words <take> I1` |
 | a still itself | `film/long/v4/shots.js` (Sentry's pages), `film/long/v3/p1/shots.js` (rossoctl), `v3/p3/shots.js` (the policy) | `take/film.sh stills <take>` (needs the take's cluster), then `words` |
 | the music | `film/long/v4/score.py` (STORY, HOOD, GLOBAL, PIECES); delete a piece in `v4/music/` to compose it again (key, credits) | `$PYTHON film/long/v4/score.py compose`, then `join` |
 | the repainted crops | `film/long/v4/fixes/cards.py` (CARDS: which frames, which lines; the new text comes from `ids.json`) | `take/film.sh cards <take>`, then `join` |
 | the review | `film/long/review.py`; its truth file `take/take-facts.template.yaml`; its brief `film/long/v4/review-prompt-onevoice.md` | `take/film.sh facts <take> && take/film.sh review <take>` |
-| a changes reel for a reviewer | `film/long/v4/reel/reel.py` (REEL: before/after pairs with times) | `$PYTHON film/long/v4/reel/reel.py before.mp4 after.mp4 reel.mp4` |
+| a changes reel for a reviewer | `film/long/v4/reel/pairs.py` (which lines changed, in words or picture, and their notes; v4.2 → v4.3 shipped), `reel.py` (cuts and cards) | `$PYTHON film/long/v4/reel/pairs.py before.plan.json after.plan.json > pairs.json && $PYTHON film/long/v4/reel/reel.py before.mp4 after.mp4 reel.mp4 pairs.json` (v4.2's film is in the v4.2 zip) |
 | the story (order, a new section) | `film4.CUT`/`DOOR`/`section()` + `narration.yaml` + `score.PIECES`; the pitch itself is not changed | a new take only if a new screen is needed |
 
 A fact said in words often sits in more than one place: "three rules" is in `narration.yaml` (I4 L1, I6 L9, I7 L5), in
@@ -248,7 +278,7 @@ pair there when you add one.
 | `sentry` or `doctor`: OPA's policy rules are not DG-001 DG-002 DG-004; pod `opa` in ContainerCreating | the `opa-policy` ConfigMap is missing or holds another catalog | `setup/sentry-film.sh sentry` compiles and loads it; it needs `uv` |
 | `sentry`: migrate fails "Can't locate revision" | the database is newer than this Sentry | `plan` explains; `CONFIRM=data-governance … sentry` |
 | `app`: `deploy.sh` preflight refuses | the CLI talks to another cluster, or the token expired | `setup/sentry-film.sh cli`, then `app`; `state/<cluster>/app-deploy.log` names the check |
-| `doctor`: agents cannot reach ollama | ollama listens on 127.0.0.1 only, or is not running | `brew services restart ollama`; set `OLLAMA_HOST=0.0.0.0` for it if needed |
+| `doctor`: agents cannot reach ollama | ollama listens on 127.0.0.1 only, or is not running | macOS: `brew services restart ollama`, `OLLAMA_HOST=0.0.0.0` if needed; Linux: the systemd drop-in in § 0 “On Linux” (needed always) |
 | `doctor`: lineage on fewer than 13 | a pod rolled since `instrument` | `take/take.sh relineage <deployment>`, or `instrument` again |
 | `doctor`: last pharmacy conversation < 960 s | a refill would land in another session's window | wait the printed seconds |
 | `sequence.sh`: `rec_live` "no new trace" | the collector is not forwarding to Sentry, or the app failed | `doctor`; `kubectl -n pharmacy logs deploy/pharmacy-assistant` |

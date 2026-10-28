@@ -7,7 +7,8 @@
 #   film.sh ids    <take>   every id the stills and cards need (take/ids.py → ids.json)                               [cluster]
 #   film.sh counts <take>   the counts and verdicts the narration reads (counts4.py → counts.json)                    [cluster]
 #   film.sh facts  <take>   take-facts.yaml, the review's truth file, from take/take-facts.template.yaml
-#   film.sh stills <take>   Sentry's pages for every level, rossoctl's catalogs, the policy, the app's map            [cluster]
+#   film.sh stills <take>   Sentry's pages for every level, rossoctl's catalogs, the policy, then the map            [cluster]
+#   film.sh map    <take>   the app's map (I1), drawn from v4/map-views.json; no cluster
 #   film.sh opa    <take>   the exact input Sentry sends OPA, and OPA's answer, for A, A's courier, B, N1            [cluster]
 #   film.sh panels <take>   the OPA panels, the closing grid, the pipeline / inside / Rego panels
 #   film.sh cards  <take>   the pitch's Sentry cards repainted with this take's names; the pitch with them; door frames [cluster]
@@ -82,7 +83,7 @@ do_live() {
 
 do_ids()    { python3 "$HERE/ids.py" "$TAKE" > /dev/null && say "ids.json: $(id cards origin) · $(id cards cross_trace)"; }
 do_counts() { "$PY" "$LONG/v4/counts4.py" > /dev/null && say "counts.json: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join("%s=%s" % (k, d[k]) for k in "NMTJF"))' "$TAKE/counts.json")"; }
-do_facts()  { python3 "$HERE/facts.py" "$TAKE"; }
+do_facts()  { "$PY" "$HERE/facts.py" "$TAKE"; }
 
 do_stills() {
   cd "$LONG"
@@ -95,7 +96,12 @@ do_stills() {
   node v4/shots.js "$TAKE/shots/fixed" mode=fixed t="$C" rep="$(id C rep)" n2="$N2" n2rep="$(id N2 rep)" | tail -1 | cut -c1-120
   node v3/p1/shots.js "$TAKE/shots/rossoctl" | tail -1 | cut -c1-120
   node v3/p3/shots.js "$TAKE/shots/policy" | tail -1 | cut -c1-120
-  node v3/map_shots.js v4/map-views.json "$TAKE/map"
+  do_map
+}
+
+do_map() {
+  cd "$LONG"
+  node v3/map_shots.js v4/map-views.json "$TAKE/map" | tail -1 | cut -c1-120
   python3 - "$TAKE/map/boxes.json" <<'PY'   # the two rings I1 draws on the map: the refill inside the pharmacy, the report leaving it
 import json, sys
 p = sys.argv[1]; b = json.load(open(p)); n = b["flow"]["nodes"]
@@ -125,7 +131,7 @@ do_cards() {
 
 ensure_media() {   # what a take ships without because it is rebuilt here, with no cluster: the live frames, the repainted pitch, the door frames
   [ -n "$(ls "$TAKE/live" 2>/dev/null)" ] || { say "live frames missing: cutting them from rec/A.webm"; do_live; }
-  if [ ! -s "$TAKE/pitch-fixed.mp4" ] || [ "$(ls "$TAKE/src" 2>/dev/null | wc -l | tr -d ' ')" -lt 9 ]; then
+  if [ ! -s "$TAKE/pitch-fixed.mp4" ] || [ "$(ls "$TAKE/src" 2>/dev/null | wc -l | tr -d ' ')" -lt 8 ]; then
     [ -s "$TAKE/cards/cards.json" ] || { echo "no repainted cards in $TAKE/cards (take/film.sh cards, with the take's cluster up)" >&2; exit 1; }
     [ -s "$PKG/film/pitch-2m35/master/sentry_pitch_demo.mp4" ] || { echo "no pitch film (setup/sentry-film.sh sources downloads it)" >&2; exit 1; }
     say "the pitch with this take's cards, and its door frames (fixes/build4.py, ~3 min)"; "$PY" "$LONG/v4/fixes/build4.py" | tail -1
@@ -158,7 +164,7 @@ do_review() {
 }
 
 case "$step" in
-  check|live|ids|counts|facts|stills|opa|panels|cards) "do_$step" ;;
+  check|live|ids|counts|facts|stills|map|opa|panels|cards) "do_$step" ;;
   stage) do_stage "$@" ;;
   join) do_join "$@" ;;
   review) do_review "$@" ;;

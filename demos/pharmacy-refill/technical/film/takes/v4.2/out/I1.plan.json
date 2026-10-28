@@ -3,13 +3,13 @@
   "zoomEnd": 1.2,
   "steps": [
    1.2,
-   8.776,
-   12.579,
-   20.594
+   8.676,
+   12.379,
+   20.294
   ],
-  "pull": 28.11,
-  "pullEnd": 29.11,
-  "end": 29.71
+  "pull": 27.61,
+  "pullEnd": 28.41,
+  "end": 28.71
  },
  "lines": [
   [
@@ -20,19 +20,19 @@
   ],
   [
    "tts11/00968866ff0c1716-t1.12.wav",
-   9.076,
+   8.976,
    3.503,
    "Five agents and eight tools, each in its own pod."
   ],
   [
    "tts11/7c3746ca5a8bacd0-t1.12.wav",
-   12.879,
+   12.679,
    7.715,
    "The pharmacy assistant takes Rosa's request. It looks her up, and asks for a clinical review, which saves the fill to the pharmacy's records."
   ],
   [
    "tts11/4750fd64fe63a2b4-t1.12.wav",
-   20.894,
+   20.594,
    6.716,
    "Then fulfillment books the courier, and reports the refill to an outside company: the wholesaler's demand forecaster."
   ]

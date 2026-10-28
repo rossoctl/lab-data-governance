@@ -1,0 +1,221 @@
+[
+ [
+  "card",
+  "v4.2 → v4.3",
+  "the review notes of the technical film\nthe order · the words · the pictures · the pace",
+  4
+ ],
+ [
+  "card",
+  "The order",
+  "“That one tap…” now plays before “Under the hood”:\nthe pitch's opening runs whole, then the app, then Sentry's console",
+  4
+ ],
+ [
+  "before",
+  29.96,
+  42.96,
+  "BEFORE · v4.2 · 0:29",
+  "the app's section cuts in before “That one tap”"
+ ],
+ [
+  "after",
+  4.99,
+  17.99,
+  "AFTER · v4.3 · 0:04",
+  "“That one tap” follows “…an agentic flow”"
+ ],
+ [
+  "card",
+  "The pictures",
+  "captions without the sidecar · the rule as Sentry's own page shows it\nSentry's verdict instead of the HTTP status · no rule ids in our captions",
+  4
+ ],
+ [
+  "before",
+  17.44,
+  21.74,
+  "BEFORE · v4.2 · 0:17",
+  "caption “each in its own pod, beside its sidecar”"
+ ],
+ [
+  "after",
+  31.82,
+  36.13,
+  "AFTER · v4.3 · 0:32",
+  "caption “each in its own pod”"
+ ],
+ [
+  "before",
+  21.25,
+  29.76,
+  "BEFORE · v4.2 · 0:21",
+  "map card “the pharmacy app on rossoctl … beside its own sidecar”"
+ ],
+ [
+  "after",
+  35.53,
+  44.04,
+  "AFTER · v4.3 · 0:35",
+  "map card “the pharmacy app … each in its own pod”"
+ ],
+ [
+  "before",
+  163.06,
+  172.06,
+  "BEFORE · v4.2 · 2:43",
+  "“Rule D G one…” · caption “DG-001”, ring on the conditions"
+ ],
+ [
+  "after",
+  161.22,
+  169.6,
+  "AFTER · v4.3 · 2:41",
+  "“The first rule…” · its risk level and enforcement"
+ ],
+ [
+  "before",
+  194.51,
+  203.51,
+  "BEFORE · v4.2 · 3:14",
+  "“Here is rule D G one, in Rego…” · our Rego panel"
+ ],
+ [
+  "after",
+  190.31,
+  198.76,
+  "AFTER · v4.3 · 3:10",
+  "“…the first rule's conditions, as Sentry shows them”"
+ ],
+ [
+  "before",
+  204.24,
+  212.19,
+  "BEFORE · v4.2 · 3:24",
+  "“…an item tagged P I I…” · the Rego lines"
+ ],
+ [
+  "after",
+  198.16,
+  204.96,
+  "AFTER · v4.3 · 3:18",
+  "“…personal data…” · the conditions' rows"
+ ],
+ [
+  "before",
+  297.76,
+  305.84,
+  "BEFORE · v4.2 · 4:58",
+  "“…In this setup it does not hold the call…” · POST → 200"
+ ],
+ [
+  "after",
+  287.96,
+  291.68,
+  "AFTER · v4.3 · 4:48",
+  "“Sentry raises an alert and recommends the block.”"
+ ],
+ [
+  "before",
+  464.98,
+  473.98,
+  "BEFORE · v4.2 · 7:45",
+  "caption “DG-001 · DG-002 · DG-004”"
+ ],
+ [
+  "after",
+  447.25,
+  456.25,
+  "AFTER · v4.3 · 7:27",
+  "caption “the same three rules”"
+ ],
+ [
+  "card",
+  "The words",
+  "“the first / second / third rule” · “what actually happens inside Sentry”\nKubernetes, not rossoctl, but where its UI is on screen · two sentences fewer",
+  4
+ ],
+ [
+  "after",
+  60.92,
+  69.92,
+  "AFTER · v4.3 · 1:01",
+  "was “Each node is an agent, a tool, the model, or a vendor.”"
+ ],
+ [
+  "after",
+  156.95,
+  161.83,
+  "AFTER · v4.3 · 2:37",
+  "was “In Sentry, the company policy is written down as three rules.”"
+ ],
+ [
+  "after",
+  169.0,
+  174.31,
+  "AFTER · v4.3 · 2:49",
+  "was “Rule D G two says the same for health data, and D G four…”"
+ ],
+ [
+  "after",
+  237.04,
+  244.84,
+  "AFTER · v4.3 · 3:57",
+  "was “Level one, in Sentry…” · caption “Level 1 · version A”"
+ ],
+ [
+  "after",
+  248.65,
+  256.32,
+  "AFTER · v4.3 · 4:09",
+  "was “…A trained model finds each value…, and a catalog gives each type…”"
+ ],
+ [
+  "after",
+  271.2,
+  280.2,
+  "AFTER · v4.3 · 4:31",
+  "was “Rules D G one and D G four fire… D G two… level two shows why.”"
+ ],
+ [
+  "after",
+  343.26,
+  350.13,
+  "AFTER · v4.3 · 5:43",
+  "was “Level two, in Sentry.” · caption “Level 2 · version B”"
+ ],
+ [
+  "after",
+  362.23,
+  371.23,
+  "AFTER · v4.3 · 6:02",
+  "was “…Here the label is born.”"
+ ],
+ [
+  "after",
+  415.45,
+  423.96,
+  "AFTER · v4.3 · 6:55",
+  "was “Level three, in Sentry… In this demo it runs a few minutes after the refill.”"
+ ],
+ [
+  "after",
+  476.05,
+  483.14,
+  "AFTER · v4.3 · 7:56",
+  "was “The fixed app, in Sentry.”"
+ ],
+ [
+  "after",
+  517.47,
+  526.47,
+  "AFTER · v4.3 · 8:37",
+  "was “…from one run on Rosso C T L…”"
+ ],
+ [
+  "card",
+  "The pace",
+  "9:17 → 8:54 · gaps between lines 0.3 → 0.2 s · quicker exits\nthe pitch's pauses at most 1.2 s · the voice's speed unchanged",
+  4
+ ]
+]

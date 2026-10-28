@@ -20,7 +20,7 @@ import urllib.request
 V4 = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(V4)); sys.path.insert(0, str(V4.parent))
 from env import TAKE  # noqa: E402
-CUT = {"I1": 246, "I2": 626, "I3": 974, "I4": 1180, "I5": 1945, "I6": 3078, "I7": 3556, "I8": 3904, "I9": 4468}   # = film4.CUT
+CUT = {"I1": 626, "I2": 626, "I3": 974, "I4": 1180, "I5": 1945, "I6": 3078, "I7": 3556, "I8": 3904, "I9": 4468}   # = film4.CUT
 END = 4645                                                                                                       # the pitch's frames
 FPS = 30
 STORY = {0: "a grandmother at her kitchen table, gentle and warm, sparse piano", 1: "a busy castle hall, light pulse, sense of scale",

@@ -3,10 +3,14 @@ two films, 2 s around the moment it shows, each under a BEFORE / AFTER badge say
 own Fira Sans (fonts/, from lab-dg demo/pharmacy-refill-pitch, OFL). REEL below is the list of changes: the one shipped
 is v4 → v4.2 (two review notes); for a new reel, write your own pairs (times from the two films' plan.json line lists).
 
-    $PYTHON film/long/v4/reel/reel.py <before.mp4> <after.mp4> <out.mp4>
+    $PYTHON film/long/v4/reel/reel.py <before.mp4> <after.mp4> <out.mp4> [pairs.json]
+
+pairs.json (optional) replaces REEL: a list of rows [film, start, end, badge, note(, crop, ring)] with film "before",
+"after" or "card" (a card row: ["card", title, sub, seconds]); pairs.py writes one from two films' plans.
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import subprocess
 import sys
@@ -14,7 +18,7 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = pathlib.Path(__file__).resolve().parent
-if len(sys.argv) != 4:
+if len(sys.argv) not in (4, 5):
     sys.exit(__doc__)
 BEFORE, AFTER, OUT = (pathlib.Path(a).resolve() for a in sys.argv[1:4])
 TMP = HERE / "build"; TMP.mkdir(exist_ok=True)
@@ -39,6 +43,10 @@ REEL = [
     (BEFORE, 454.67, 458.85, "BEFORE · v4 · 7:37", "“Read alone” said as “reed”"),
     (AFTER, 449.54, 453.80, "AFTER · v4.2 · 7:32", "“Read alone” said as “red”"),
 ]
+
+if len(sys.argv) == 5:
+    REEL = [tuple({"before": BEFORE, "after": AFTER}.get(r[0], r[0]) if j == 0 else tuple(x) if isinstance(x, list) else x
+                  for j, x in enumerate(r)) for r in json.loads(pathlib.Path(sys.argv[4]).read_text())]
 
 
 def card(title: str, sub: str, path: pathlib.Path) -> None:

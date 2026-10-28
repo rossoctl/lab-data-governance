@@ -1,0 +1,75 @@
+<!doctype html>
+<!-- v4 I3 — how Sentry sees: the sidecar beside each pod (Cortex) → two records per exchange → Sentry's stages →
+     the verdict. Static, 1920x1080; panels.js screenshots it at device scale 2 and writes the boxes of every [id]. The
+     example exchange is version A's report from the v4 take (trace 65452c56, exchange = its request span dfd584f3594abc54;
+     the payload abridged by dropping keys). -->
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=block" rel="stylesheet">
+<style>
+:root{--bg:#0f1214;--panel:#171b1f;--line:#2a3036;--ink:#e9e6dc;--muted:#9aa1a8;--red:#ef5b47;--green:#5fd38a;--gold:#e5c268;--blue:#6f93d6;--teal:#4fb3a9}
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:var(--bg);color:var(--ink);font-family:'Source Sans 3',sans-serif}
+h1{position:absolute;left:70px;top:44px;margin:0;font:800 42px Archivo,sans-serif}
+h1 small{display:block;font:600 22px 'Source Sans 3',sans-serif;color:var(--muted);margin-top:6px}
+.col{position:absolute;top:215px}
+.cap{font:700 15px 'JetBrains Mono',monospace;letter-spacing:.22em;color:var(--muted);margin:0 0 14px 4px}
+.pod{display:flex;align-items:stretch;gap:0;background:var(--panel);border:2px solid var(--line);border-radius:14px;margin-bottom:34px;width:520px;overflow:hidden}
+.pod .app{min-height:74px}
+.pod .app{flex:1;padding:16px 20px}.pod .app b{display:block;font:800 25px Archivo,sans-serif}.pod .app i{font-style:normal;font:600 17px 'Source Sans 3';color:var(--muted)}
+.pod .car{width:150px;background:#1f2a2e;border-left:2px dashed var(--teal);display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--teal);font:700 17px 'Source Sans 3'}
+.pod .car small{font:600 13px 'JetBrains Mono',monospace;color:#7fc9c0;margin-top:3px;letter-spacing:.06em}
+.ns{font:600 18px 'Source Sans 3';color:var(--muted);margin:2px 4px 0}
+.out{margin-top:46px;width:520px;border:2px dashed var(--red);border-radius:14px;padding:14px 20px;color:var(--red);font:700 22px 'Source Sans 3'}
+.out small{display:block;font:600 16px 'JetBrains Mono',monospace;color:#f08a7c;margin-top:4px}
+.rec{background:#12171b;border:2px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:34px;width:520px;font:500 16.5px/1.55 'JetBrains Mono',monospace;color:#c9c6bb}
+.rec .h{font:800 21px Archivo,sans-serif;color:var(--ink);margin-bottom:6px}.rec .h span{color:var(--teal);font:700 15px 'JetBrains Mono';margin-left:10px}
+.rec .k{color:var(--muted)}.rec .v{color:var(--ink)}.rec .p{color:#f3b8ae}
+.stage{background:var(--panel);border:2px solid var(--line);border-radius:14px;padding:19px 22px;margin-bottom:22px;width:510px}
+.stage b{display:block;font:800 25px Archivo,sans-serif}.stage span{display:block;font:600 18px/1.35 'Source Sans 3';color:var(--muted);margin-top:4px}
+.stage em{font-style:normal;color:var(--gold)}
+.verdict{width:510px;border:2px solid var(--red);background:#2a1513;border-radius:14px;padding:19px 22px}
+.verdict b{display:block;font:800 25px Archivo,sans-serif;color:#fff}.verdict span{display:block;font:600 18px 'Source Sans 3';color:#f3b8ae;margin-top:4px}
+.arrow{position:absolute;font:800 46px Archivo;color:#4a535b}
+</style></head><body>
+<h1>How Sentry sees<small>no Sentry code in the app: everything comes from the traffic</small></h1>
+
+<div class="col" style="left:70px">
+  <div class="cap">THE APP · NAMESPACE PHARMACY</div>
+  <div id="pods">
+    <div class="pod"><div class="app"><b>pharmacy-assistant</b><i>agent</i></div><div class="car">sidecar<small>CORTEX</small></div></div>
+    <div class="pod"><div class="app"><b>fulfillment-agent</b><i>agent</i></div><div class="car">sidecar<small>CORTEX</small></div></div>
+    <div class="pod" id="pod-report"><div class="app"><b>report-dispense</b><i>tool</i></div><div class="car">sidecar<small>CORTEX</small></div></div>
+    <div class="ns">… and every other agent and tool, each with its own sidecar</div>
+  </div>
+  <div class="out" id="fcst">demand-forecast.example<small>the wholesaler’s demand forecaster · outside</small></div>
+</div>
+<div class="arrow" style="left:612px;top:520px">→</div>
+
+<div class="col" style="left:680px">
+  <div class="cap">TWO RECORDS PER EXCHANGE</div>
+  <div id="records">
+    <div class="rec" id="rec-req"><div class="h">request <span>at sight</span></div>
+      <span class="k">from </span><span class="v">report-dispense</span><br>
+      <span class="k">to   </span><span class="v">demand-forecast.example:8000</span><br>
+      <span class="k">exchange </span><span class="v">dfd584f3594abc54</span><br>
+      <span class="k">payload </span><span class="v">{"drug": "Metformin 500 mg tablets",</span><br>
+      <span class="v">  "external_id": </span><span class="p">"4471820"</span><span class="v">,</span><br>
+      <span class="v">  "patient_name": </span><span class="p">"Rosa Delgado"</span><span class="v">,</span><br>
+      <span class="v">  "date_of_birth": </span><span class="p">"1958-03-22"</span><span class="v">, …}</span></div>
+    <div class="rec" id="rec-res"><div class="h">response <span>at stream end</span></div>
+      <span class="k">exchange </span><span class="v">dfd584f3594abc54</span><span class="k">  (the same)</span><br>
+      <span class="k">status </span><span class="v">200</span><br>
+      <span class="k">payload </span><span class="v">{"received": true}</span></div>
+  </div>
+  <div class="ns" style="margin-top:-4px">facts only: who, to whom, what. The meaning is Sentry’s job.</div>
+</div>
+<div class="arrow" style="left:1232px;top:520px">→</div>
+
+<div class="col" style="left:1300px">
+  <div class="cap">SENTRY · DATA GOVERNANCE</div>
+  <div class="stage" id="s-int"><b>Interactions</b><span>rebuilds <em>who called whom</em>, every request with its reply</span></div>
+  <div class="stage" id="s-cls"><b>Classification</b><span>names <em>each value</em> in every payload: a name, a medical record number, a date</span></div>
+  <div class="stage" id="s-lin"><b>Lineage</b><span>follows each value <em>from exchange to exchange</em>; its label travels with it</span></div>
+  <div class="stage" id="s-risk"><b>Risk assessment</b><span>checks each exchange against <em>the company policy</em>, in OPA</span></div>
+  <div class="verdict" id="verdict"><b>Verdict · alert</b><span>risk level, the rules that fired, the suggested enforcement</span></div>
+</div>
+</body></html>

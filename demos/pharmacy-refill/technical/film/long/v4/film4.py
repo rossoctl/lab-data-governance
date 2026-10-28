@@ -1,4 +1,4 @@
-"""film4.py — the technical film (v4.2): the 2:35 pitch as it is (its picture, film/pitch-2m35/master/sentry_pitch_demo.mp4,
+"""film4.py — the technical film (v4.3): the 2:35 pitch as it is (its picture, film/pitch-2m35/master/sentry_pitch_demo.mp4,
 from lab-dg demo/pharmacy-refill-pitch; pins.yaml) with nine
 technical sections spliced into its pauses (v4/narration.yaml). Each section is a steps.js stage: the
 camera pushes from the pitch's frame at the cut through a door in it, through Sentry's real pages and our panels (rings
@@ -43,9 +43,11 @@ class _Keep(dict):
 
 
 TEXT = {k: {kk: vv.format_map(_Keep(COUNTS)) for kk, vv in v.items()} for k, v in yaml.safe_load((V4 / "narration.yaml").read_text()).items()}
-# the cut in the pitch (a frame inside a pause, before any dissolve; measured 10-25 night) and the door in that frame
-CUT = {"I1": 246, "I2": 626, "I3": 974, "I4": 1180, "I5": 1945, "I6": 3078, "I7": 3556, "I8": 3904, "I9": 4468}
-DOOR = {"I1": [180, 175, 345, 710], "I2": [108, 252, 1104, 456], "I3": [216, 537, 1488, 240], "I4": [750, 240, 420, 780],
+# the cut in the pitch (a frame inside a pause, before any dissolve; measured 10-25 night) and the door in that frame.
+# I1 and I2 share a cut (v4.3): the pitch's opening plays whole ("…That one tap… let's see why"), then the app (I1, through
+# the "26 · one tap" counter) and Sentry's console (I2, through the graph); join plays sections at one cut in CUT's order
+CUT = {"I1": 626, "I2": 626, "I3": 974, "I4": 1180, "I5": 1945, "I6": 3078, "I7": 3556, "I8": 3904, "I9": 4468}
+DOOR = {"I1": [1240, 0, 660, 371], "I2": [108, 252, 1104, 456], "I3": [216, 537, 1488, 240], "I4": [750, 240, 420, 780],
         "I5": [780, 300, 420, 700], "I6": [600, 294, 735, 150], "I7": [48, 684, 990, 204], "I8": [1161, 108, 690, 255],
         "I9": [480, 252, 960, 534]}
 FULL = [0, 0, 1920, 1080]
@@ -69,14 +71,15 @@ def near(b: list) -> list:
     return [b[0] - 420, b[1] - 260, b[2] + 840, b[3] + 520]
 
 
-def cues(keys: list[str], steps: list[dict], d: dict[str, float], first: float = 1.5, gap: float = 0.3, tail: float = 0.6):
+def cues(keys: list[str], steps: list[dict], d: dict[str, float], first: float = 1.5, gap: float = 0.2, tail: float = 0.3):
     """One voice line per step; a step lasts its line plus a gap, at least its `hold` (default 2.2 s, long enough to
-    read a ring)."""
+    read a ring). The exit (v4.3, a little quicker): the pull-out starts 0.3 s after the last line, takes 0.8 s, and
+    the pitch's frame holds `tail` before the pitch resumes."""
     c, at, t = {"zoomEnd": 1.2, "steps": []}, {}, first
     for k, s in zip(keys, steps):
         c["steps"].append(round(t - 0.3, 3)); at[k] = t
         t += max(d[k] + gap, s.get("hold", 2.2))
-    c["pull"] = round(t - gap + 0.5, 3); c["pullEnd"] = round(c["pull"] + 1.0, 3); c["end"] = round(c["pullEnd"] + tail, 3)
+    c["pull"] = round(t - gap + 0.3, 3); c["pullEnd"] = round(c["pull"] + 0.8, 3); c["end"] = round(c["pullEnd"] + tail, 3)
     return c, at
 
 
@@ -95,7 +98,7 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
         steps = [("L1", {"img": S("shots/rossoctl", "agents"), "label": "rossoctl · Agent Catalog", "sub": "the pharmacy app, deployed from the UI",
                          "ring": grow(boxes("shots/rossoctl")["agents"]["table"], 6), "tone": "gold", "side": "below"}),
                  ("L2", {"img": S("shots/rossoctl", "tools"), "ring": grow(boxes("shots/rossoctl")["tools"]["table"], 6),
-                         "label": "5 agents · 8 tools", "sub": "each in its own pod, beside its sidecar", "side": "below"}),
+                         "label": "5 agents · 8 tools", "sub": "each in its own pod", "side": "below"}),
                  ("L3", {"img": S("map", "flow"), "notag": True,
                          "ring": m["flow"]["path1"], "label": "The refill, inside the pharmacy", "sub": "look-up · clinical review · the records", "side": "right"}),
                  ("L4", {"img": S("map", "flow"), "notag": True, "ring": m["flow"]["path2"], "tone": "red", "side": "below",
@@ -125,24 +128,26 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
         r3 = json.loads((TAKE / "shots" / "policy" / "boxes.json").read_text())
         rb = lambda k: [round(r3[k]["x"]), round(r3[k]["y"]), round(r3[k]["width"]), round(r3[k]["height"])]
         p3 = f"{up}/shots/policy"
-        b = pn["rego"]; ins = pn["inside"]
+        ins = pn["inside"]; cond, enf = rb("conditions"), rb("enforcement")
+        info = [enf[0], cond[1] + 10, 460, enf[1] + enf[3] - cond[1] - 10]   # the rule's information: name, id, categories, risk, enforcement (under its heading)
+        rows3 = [cond[0], cond[1] + 2 * cond[3] / 5, cond[2], 3 * cond[3] / 5]   # a header and four rows: data item, destination ×2
+        ccam = [cond[0] - 120, cond[1] - 140, cond[2] + 240, cond[3] + 400]
         steps = [("L1", {"img": f"{p3}/rules.png", "cam": [0, 120, 1920, 600], "ring": grow(rb("rules"), 4), "label": "The policy · three rules", "side": "below"}),
-                 ("L2", {"img": f"{p3}/dg001.png", "cam": [0, 120, 1920, 760], "ring": grow(rb("conditions"), 6), "label": "DG-001",
+                 ("L2", {"img": f"{p3}/dg001.png", "cam": [0, 100, 1000, 420], "ring": grow(info, 6), "label": "The first rule",
                          "sub": "personal data → an untrusted external destination · suggested enforcement: block", "side": "below"}),
-                 ("L3", {"img": f"{p3}/rules.png", "cam": [0, 120, 1920, 600], "ring": grow(rb("rules"), 4), "label": "DG-002 · health data · DG-004 · restricted", "side": "below"}),
+                 ("L3", {"img": f"{p3}/rules.png", "cam": [0, 120, 1920, 600], "ring": grow(rb("rules"), 4), "label": "The second · health data · the third · restricted", "side": "below"}),
                  ("L4", {"img": S("panels/out", "inside"), "notag": True, "ring": grow(ins["d-courier"], 6), "tone": "green",
                          "label": "Inside: a service of this cluster", "side": "below"}),
                  ("L4b", {"img": S("panels/out", "inside"), "notag": True, "ring": grow(ins["setting"], 6),
                           "label": "The company’s list", "sub": "a deployment setting", "side": "below"}),
                  ("L4c", {"img": S("panels/out", "inside"), "notag": True, "ring": grow(ins["d-fcst"], 6), "tone": "red",
                           "label": "Outside: external, untrusted", "side": "below"}),
-                 ("L5", {"img": S("panels/out", "rego"), "notag": True, "ring": grow(b["rego"], 4), "label": "Rule DG-001 in Rego", "sub": "the module OPA serves in this cluster", "side": "below"}),
-                 ("L6", {"img": S("panels/out", "rego"), "notag": True, "cam": [40, 160, 1840, 720],
-                         "ring": grow([b["l-pii"][0], b["l-pii"][1], max(b["l-pii"][2], b["l-dest"][2]), b["l-dest"][1] + b["l-dest"][3] - b["l-pii"][1]], 4),
-                         "label": "PII · external · untrusted", "sub": "all three in one flow: the rule fires", "side": "below"})]
+                 ("L5", {"img": f"{p3}/dg001.png", "cam": ccam, "ring": grow(cond, 6), "label": "Its conditions", "sub": "as Sentry shows them", "side": "below"}),
+                 ("L6", {"img": f"{p3}/dg001.png", "cam": ccam, "ring": grow(rows3, 4),
+                         "label": "Personal data · external · untrusted", "sub": "all three in one flow: the rule fires", "side": "below"})]
     elif name == "I5":
         o = pn["opaA"]
-        steps = [("L1", {"img": S("shots/level1", "red"), "cam": near(l1["red"]), "ring": l1["red"], "tone": "red", "label": "Level 1 · version A", "sub": "report-dispense → demand-forecast.example"}),
+        steps = [("L1", {"img": S("shots/level1", "red"), "cam": near(l1["red"]), "ring": l1["red"], "tone": "red", "label": "Level 1 · the full record", "sub": "report-dispense → demand-forecast.example"}),
                  ("L2", {"img": S("shots/level1", "payload"), "cam": panel(l1["payload"]), "ring": l1["payload"], "label": "What was sent", "sub": "her name, birth date and number"}),
                  ("L3", {"img": S("shots/level1", "cls"), "cam": [1000, l1["found"][1] - 200, 920, 518], "ring": grow(l1["found"], 6), "label": "Classification",
                          "sub": "found here: the classifier · carried in: data lineage", "hold": 4.5}),
@@ -152,21 +157,21 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
                          "ring": grow([o["i-found"][0], o["i-event"][1], o["input"][2] - 60, o["i-found"][1] + o["i-found"][3] - o["i-event"][1]], 4),
                          "label": "The input to OPA", "sub": "found here: PII · restricted", "side": "right"}),
                  ("L6", {"img": S("panels/out", "opaA"), "notag": True, "ring": grow(o["i-carried"], 4), "label": "Carried in: the number is an MRN",
-                         "sub": "health data · DG-002 (level 2 shows why)", "side": "below"}),
+                         "sub": "health data · the second rule", "side": "below"}),
                  ("L6b", {"img": S("panels/out", "opaA"), "notag": True, "ring": grow(o["answer"], 4), "tone": "red", "label": "OPA’s answer",
                           "sub": "critical · block · most restrictive", "side": "left"}),
-                 ("L7", {"img": S("shots/level1", "http"), "cam": panel(l1["http"]), "ring": grow(l1["http"], 6), "label": "A recommendation",
-                         "sub": "the alert is raised; the call went through: POST → 200"}),
+                 ("L7", {"img": S("shots/level1", "verdict"), "cam": panel(l1["verdict"]), "ring": grow(l1["verdict"], 6), "tone": "red",
+                         "label": "An alert · recommend block", "sub": "Sentry’s policy event for this exchange"}),
                  ("L8", {"img": S("shots/level1", "courier-allow"), "cam": panel(l1["courier-allow"]), "ring": grow(l1["courier-allow"], 6), "tone": "green",
                          "label": "The courier: allowed", "sub": "same name and address · inside the organization"})]
     elif name == "I6":
         l2 = boxes("shots/level2"); o = pn["opaB"]
         hop = lambda k, t, s: {"img": S("shots/level2", "tracked"), "cam": grow(l2[k], 230), "ring": grow(l2[k], 6), "label": t, "sub": s, "hold": 3.8}
-        steps = [("L1", {"img": S("shots/level2", "payload"), "cam": panel(l2["payload"]), "ring": l2["payload"], "label": "Level 2 · version B", "sub": "only the number"}),
+        steps = [("L1", {"img": S("shots/level2", "payload"), "cam": panel(l2["payload"]), "ring": l2["payload"], "label": "Level 2 · only the number", "sub": "the report’s payload"}),
                  ("L2", {"img": S("shots/level2", "readings"), "cam": panel(l2["readings"]), "ring": l2["alone"], "label": "Read alone: an operational ID", "sub": "OPID · internal · found here"}),
                  ("L3", {"img": S("shots/level2", "tracked"), "cam": grow(l2["nodes"], 60), "ring": grow(l2["nodes"], 20), "label": "Track 4471820",
                          "sub": "every exchange that carried it, lit"}),
-                 ("L4", {**hop("hop1", "Hop 1 · the label is born", "lookup-patient’s answer: her name + her MRN"), "tone": "gold"}),
+                 ("L4", {**hop("hop1", "Hop 1 · the label is created", "lookup-patient’s answer: her name + her MRN"), "tone": "gold"}),
                  ("L5", hop("hop2", "Hop 2", "pharmacy-assistant → fulfillment-agent")),
                  ("L6", hop("hop3", "Hop 3", "fulfillment-agent → report-dispense")),
                  ("L7", {**hop("hop4", "Hop 4", "report-dispense → demand-forecast.example"), "tone": "red"}),
@@ -183,7 +188,7 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
                  ("L4", {"img": S("shots/night", "cross"), "cam": panel(nb["cross"]), "ring": grow(nb["cross"], 6), "tone": "red", "label": "Carried in across sessions",
                          "sub": "her MRN · origin: the patient lookup, in the trace of Rosa’s refill"}),
                  ("L5", {"img": S("shots/night", "verdict"), "cam": panel(nb["verdict"]), "ring": grow(nb["verdict"], 6), "tone": "red",
-                         "label": "Critical · recommend block", "sub": "DG-001 · DG-002 · DG-004"})]
+                         "label": "Critical · recommend block", "sub": "the same three rules"})]
     elif name == "I8":
         fb = boxes("shots/fixed")
         steps = [("L1", {"img": S("shots/fixed", "c-payload"), "cam": panel(fb["cPayload"]), "ring": fb["cPayload"], "tone": "green", "label": "The fixed app", "sub": "the drug and the dates · no patient key"}),
@@ -216,7 +221,7 @@ def stage(name: str) -> dict:
     E = {k: synth(TEXT[name][k]) for k in keys}
     # a short hold on the pitch's frame after the pull-out (most cuts sit just before the pitch's own dissolve); none
     # after I9, whose frame dissolves straight into the end card
-    c, at = cues(keys, [s for _, s in steps], {k: v[1] for k, v in E.items()}, tail=0.0 if name == "I9" else 0.6)
+    c, at = cues(keys, [s for _, s in steps], {k: v[1] for k, v in E.items()}, tail=0.0 if name == "I9" else 0.3)
     full = {**spec, "back": spec["front"], "backDoor": spec["door"], "steps": [s for _, s in steps]}
     (here / "stage.html").write_text("<!doctype html>\n<!-- generated by v4/film4.py; edit the build, not this file -->\n"
                                      f"<html><head><meta charset=\"utf-8\"></head><body>\n<script>const SPEC = {json.dumps(full, indent=1)};</script>"
@@ -242,11 +247,12 @@ SAY = {"Level 1.": "Level one.", "Level 2. The app now sends only the number.": 
        "so this leak is blocked too.": "so this leak is caught too.",
        "Sentry doesn't fix the app, it enforces the policy.": "Sentry doesn't fix the app, it applies the policy."}
 MAX_K = 1.3
+PAUSE = 0.6     # v4.3: at most this much pause on either side of a re-voiced sentence (the end card's hold excepted)
 
 
-def beats(a: int, b: int) -> list[dict]:
+def beats(a: int, b: int, last: bool = False) -> list[dict]:
     """The pitch's frames [a, b) as beats: one per sentence (lines ending in a comma join the next), each from the middle
-    of the pause before it to the middle of the pause after it."""
+    of the pause before it to the middle of the pause after it. `last`: [a, b) ends the film (its last pause is kept)."""
     pitch = [s for s in json.loads((LONG.parent / "pitch-2m35" / "transcript.json").read_text()) if a / FPS <= s["start"] < b / FPS]
     sent = []
     for s in pitch:
@@ -259,7 +265,9 @@ def beats(a: int, b: int) -> list[dict]:
     for j, s in enumerate(sent):
         x0, x1 = edges[j], edges[j + 1]
         wav, d = synth(s["text"])
-        lead, air = max(s["start"] - x0, 0.2), max(x1 - s["end"], 0.35)
+        lead, air = min(max(s["start"] - x0, 0.2), PAUSE), max(x1 - s["end"], 0.35)
+        if not (last and j == len(sent) - 1):
+            air = min(air, PAUSE)
         want = lead + d + air
         k = min(max(want / (x1 - x0), 1 / MAX_K), MAX_K)
         out.append({"a": x0, "b": x1, "k": k, "len": want, "wav": str(wav), "lead": lead * k, "text": s["text"], "src": s["src"]})
@@ -283,7 +291,7 @@ def join(music: bool, out: pathlib.Path, onevoice: bool = False) -> None:
     for i in range(len(bounds) - 1):
         a, b = bounds[i], bounds[i + 1]
         if onevoice:
-            for j, bt in enumerate(beats(a, b)):
+            for j, bt in enumerate(beats(a, b, last=b == end)):
                 f = f"[0:v]trim=start={bt['a']:.4f}:end={bt['b']:.4f},setpts=(PTS-STARTPTS)*{bt['k']:.4f},fps={FPS}"
                 extra = bt["len"] - (bt["b"] - bt["a"]) * bt["k"]
                 if extra > 0:

@@ -31,7 +31,7 @@ img.layer{width:1920px;height:1080px}
 <div id="back" class="layer" style="background-image:url(${SPEC.back || SPEC.front})"></div>
 ${IMGS.map((im, i) => SPEC.steps.some(s => s.img === im && s.seq) ? `<img id="i${i}" class="layer" src="${im}" alt="">`
   : `<div id="i${i}" class="layer" style="background-image:url(${im})"></div>`).join('')}
-<div id="ring"></div><div id="lab"></div><div id="tag">${SPEC.tag || 'UNDER THE HOOD · <i>live on rossoctl</i>'}</div><div id="ff"></div>`);
+<div id="ring"></div><div id="lab"></div><div id="tag">${SPEC.tag || 'UNDER THE HOOD · <i>live on Kubernetes</i>'}</div><div id="ff"></div>`);
 document.head.insertAdjacentHTML('beforeend', '<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@800&family=Source+Sans+3:wght@600&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">');
 
 const cl = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v)), ease = u => u < .5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;

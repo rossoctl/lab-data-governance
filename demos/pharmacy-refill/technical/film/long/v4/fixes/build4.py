@@ -17,7 +17,7 @@ V4 = HERE.parent
 PITCH = V4.parents[1] / "pitch-2m35" / "master" / "sentry_pitch_demo.mp4"   # the master (lab-dg demo/pharmacy-refill-pitch)
 sys.path.insert(0, str(V4.parent))
 from env import TAKE  # noqa: E402
-CUT = {"I1": 246, "I2": 626, "I3": 974, "I4": 1180, "I5": 1945, "I6": 3078, "I7": 3556, "I8": 3904, "I9": 4468}   # = film4.CUT
+CUT = {"I1": 626, "I2": 626, "I3": 974, "I4": 1180, "I5": 1945, "I6": 3078, "I7": 3556, "I8": 3904, "I9": 4468}   # = film4.CUT
 OUT = TAKE / "pitch-fixed.mp4"
 cards = json.loads((TAKE / "cards" / "cards.json").read_text())
 ins, chain, last = ["-i", str(PITCH)], [], "0:v"

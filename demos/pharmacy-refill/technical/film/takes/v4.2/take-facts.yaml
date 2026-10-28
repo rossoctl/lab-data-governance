@@ -1,12 +1,17 @@
-# take-facts.yaml — the facts of the v4.2 take (2026-10-25 20:02–20:45 UTC). review.py reads it (REVIEW_FACTS). The
-# spine of the film is the public pitch (2:35), kept as it is; its own lines are its narrator's, and where they speak loosely the sections say exactly
-# what the system did (below). Five of its Sentry crops were repainted with this take's names (fixes/cards.py: the External
-# box, the alert row, the level-2 lineage card, the level-3 cross-session card, and the small red "Risky" tag, which now
-# names report-dispense); the graph crop under that tag (~0:13–0:20 of the pitch: enroll-adherence, "26") and the dates
-# in its payload crops still come from an earlier run.
-# In the one-voice version the pitch's lines are re-voiced by the sections' narrator and "blocks" is said as a recommendation.
-build: DG lab-dg 087b8d1 (local demo build; its tree = 335fc64, the pin, on lineage/exact-match-cross-conversation-dev) with RISK_INHERITED_LABELS=on and RISK_INHERITED_LABELS_CROSS_CONVERSATIONS=on (a label carried in from an earlier session counts in the verdict), label window 0.25 h; app snp feat/pharmacy-records-service 9801614 (local; the fills behind a records HTTP service; vendors acknowledge); platform rossoctl v0.8.0-alpha.2, sidecar authbridge v0.7.0-alpha.10 (Cortex)
-sessions: five, in the pitch's order, each its own trace — A (level 1, the report sends the full record), B (level 2, the report sends only the number, 16 min after A), N1 (level 3, the nightly batch, its own session 3.5 min after B, export still sends the number), C (the fixed app, report sends no patient key, 16 min after N1), N2 (the nightly batch of the fixed app, export sends no key, 4 min after C)
+# take-facts.yaml — the facts of this take (v4.2, 2026-10-25 20:02 UTC). review.py reads it (REVIEW_FACTS): every
+# spoken line is checked against it. Written by take/facts.py from take/take-facts.template.yaml and the take's own
+# counts.json, ids.json and traces.txt; edit the template, not this file. The spine of the film is the public 2:35
+# pitch, kept as it is; its own lines are its narrator's, and where they speak loosely the sections say exactly what the
+# system did (below). Five of its Sentry crops are repainted with this take's names (fixes/cards.py: the External box,
+# the alert row, the level-2 lineage card, the level-3 cross-session card, and the small red "Risky" tag over the castle
+# hall, which now names report-dispense); the graph crop under that tag (~0:13–0:20 of the pitch: enroll-adherence →
+# api.adherence-insights.example, "26"), and the dates in its payload crops, still come from an earlier run.
+# The pitch's lines are re-voiced by the sections' narrator and "blocks" is said as a recommendation.
+build: Sentry lab-data-governance 335fc64 (lineage/exact-match-cross-conversation-dev) with RISK_INHERITED_LABELS=on and RISK_INHERITED_LABELS_CROSS_CONVERSATIONS=on (a label carried in from an earlier session counts in the verdict), label window 0.25 h; app agent-examples-snp 9336387 (the fills behind a records HTTP service; vendors acknowledge); platform rossoctl v0.8.0-alpha.2, sidecar authbridge v0.7.0-alpha.10 (Cortex)
+app: >-
+  the pharmacy-refill app runs on rossoctl, an agent platform on Kubernetes: five agents and eight tools, each in its own pod beside its own sidecar, plus a records service that owns the fills table; in Rosa's refill the pharmacy assistant looks her up (lookup-patient: her full name and birth date go in; her record with her MRN 4471820, birth date, phone and address comes back), asks the clinical-review agent for a clinical review (review-refill; the fill is written to the records), and the fulfillment agent schedules the delivery (courier) and reports the dispense to the wholesaler's demand forecaster (report-dispense → demand-forecast.example)
+payloads: level 1 (version A) report to the forecaster = drug, fill_date, refill_due, external_id 4471820, patient_name Rosa Delgado, date_of_birth; level 2 (B) = drug, fill_date, refill_due, external_id 4471820; the fixed app (C) = drug, fill_date, refill_due
+sessions: five, in the pitch's order, each its own trace — A (level 1, the report sends the full record), B (level 2, the report sends only the number, 16.5 min after A), N1 (level 3, the nightly batch, its own session 4 min after B, export still sends the number), C (the fixed app, report sends no patient key, 16 min after N1), N2 (the nightly batch of the fixed app, export sends no key, 4 min after C)
 verdicts:
   A: >-
     report-dispense → demand-forecast.example critical, enforcement suggestion block, DG-001 DG-002 DG-004 (trace 65452c56); found in the payload by the classifier alone: the name (PN, RESTRICTED, PII) → DG-001 and DG-004; the number read alone is OPID; carried in by lineage it is the MRN (PHI, PII, RESTRICTED) → DG-002; the courier exchange (name and address) is allowed (internal destination)
@@ -14,13 +19,14 @@ verdicts:
     report critical, block, DG-001 DG-002 DG-004 (trace a4bc18da); payload drug, fill_date, refill_due, external_id 4471820; read alone OPID (INTERNAL, PI: no rule fires on it alone); carried in from the patient lookup's answer in the same session it is the MRN
   N1: the nightly export to the forecaster critical, block, DG-001 DG-002 DG-004 (trace 37b00d93); the records' answer reads the number alone as OPID; the MRN label is carried in across sessions from session B (origin the patient lookup's answer, previous the records write record_fill, both "in trace a4bc18da"); no label from A
   C: report allowed, risk none, no alert (trace ae1570e5)
-  N2: the nightly export allowed, risk none (trace 3a8891bd); it carries only drug and date labels from C
+  N2: the nightly export allowed, risk none (trace 3a8891bd)
 counts: one tap (session A) = 28 interactions, 8 of them calls to the model (qwen2.5:7b), 20 among agents and tools; across the five sessions Sentry judged 102 exchanges and flagged 3 (A, B, N1); the pitch's "26" comes from an earlier run
 hops: >-
   in session B the number travels lookup-patient's answer → pharmacy-assistant → fulfillment-agent → report-dispense → demand-forecast.example: four exchanges carry it (the answer and three requests); the tracked view also lights the model's exchanges, which carried it too
-policy: three rules, DG-001 (PII to an untrusted external destination), DG-002 (PHI, same), DG-004 (RESTRICTED, same), each critical with enforcement suggestion block; served by OPA from the Rego module data_governance.rego (the film shows DG-001 verbatim); combining most_restrictive
-inside: a destination is internal when its host is a one-label cluster service name (courier, records) or matches RISK_INTERNAL_URL_WHITELIST_PATTERNS (*.svc, *.svc.cluster.local, *.localtest.me, localhost, …); demand-forecast.example matches neither → external, UNTRUSTED_EXTERNAL
+policy: three rules, DG-001 (PII to an untrusted external destination), DG-002 (PHI, same), DG-004 (RESTRICTED, same), each critical with enforcement suggestion block; served by OPA from the Rego module data_governance.rego; combining most_restrictive. Sentry's Rules page lists them in this order, so "the first rule" = DG-001, "the second" = DG-002, "the third" = DG-004; the film shows DG-001's own page in Sentry (rule information, and its Conditions table: event type external_sharing, data item regulatory tags PII, data destination categories external, trust level UNTRUSTED_EXTERNAL)
+inside: a destination is internal when its host is a one-label cluster service name (courier, records) or matches RISK_INTERNAL_URL_WHITELIST_PATTERNS (*.svc, *.svc.cluster.local, *.localtest.me, localhost, …), a deployment setting; demand-forecast.example matches neither → external, UNTRUSTED_EXTERNAL
 block_means: Sentry's verdict and an alert, a recommendation; in this setup the call is not held (the report's POST returned 200)
 from_traffic: entities, labels, lineage edges and verdicts come from the traffic; the app has no Sentry code (the platform attaches the sidecars; an instrument step switches lineage on)
 classification: a token-classification model (fine-tuned from ibm-granite granite-embedding-125m) names each value; a catalog maps each type to regulatory tags and a sensitivity level
 opa_input: the panels show the exact input Sentry built for OPA (lab-dg risk engine, gather_evidence + build_opa_input), abridged only by dropping fields, and OPA's answer from the cluster's OPA
+never_say: who writes the rules (in time they are read from the policy itself); that Sentry blocks, stops or prevents a call (it recommends)
