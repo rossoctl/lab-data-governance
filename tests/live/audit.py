@@ -20,6 +20,9 @@ Five axes, and a check belongs to exactly one:
 - **risk** — the risk layer read the lineage it was given (a record's
   evidenced legs are the interaction's payload legs: one flow per leg).
 
+Contract v1.8 adds two: S15 (soundness: the body sizes on every span) and
+F3 (fidelity: the turn's plain-HTTP hops carry their bodies).
+
 Every check records expected and observed; the audit never stops at the
 first failure, so one run shows every defect at once. A check that fails
 exactly inside a gap the fleet declares (``known_gap``) is **KNOWN**: not a
@@ -59,6 +62,11 @@ KINDS: dict[tuple[str, str], tuple[str, str, str | None, str | None]] = {
     ("outbound", "inference"): ("agent", "llm", "llm_chat_prompt", "llm_completion"),
     ("outbound", "http"): ("agent", "service", "http_request_body", "http_response_body"),
 }
+# Contract v1.8 §5: the two body-size facts, on every exchange, and the
+# producer's mark on a value cut at max_payload_bytes.
+SIZE_FACT = {"request": ("http.request.body.size", "input.value"),
+             "response": ("http.response.body.size", "output.value")}
+TRUNCATED = "…[truncated]"
 MCP_LIFECYCLE = ("mcp_lifecycle_request", "mcp_lifecycle_result")
 MCP_DISCOVERY = ("tool_discovery_request", "tool_discovery_result")
 FAILED_OUTCOMES = {"denied", "error", "abandoned"}
@@ -430,6 +438,8 @@ def soundness(au: Audit, snap: Snapshot, fleet: Fleet, *, skew_seconds: float = 
              if fleet.declared_kind(n) and fleet.declared_kind(n) not in k}
     au.add("S12", "soundness", "one entity per workload, of its declared kind",
            not multi and not wrong, "one kind each", {"two kinds": multi, "wrong kind": wrong})
+    # S15 body sizes (contract v1.8): every span carries its leg's size
+    body_sizes(au, S)
     # S14 the attach preserves every declared wire-invisible act: a non-HTTP
     # egress port the fleet declares must be excluded from interception on
     # that workload's pod, or the sidecar swallows the act (SMTP, for one).
@@ -440,6 +450,90 @@ def soundness(au: Audit, snap: Snapshot, fleet: Fleet, *, skew_seconds: float = 
                not swallowed, "all declared ports excluded", swallowed or "all excluded",
                {"declared": {w: sorted(fleet.dark_ports(w)) for w in fleet.workloads if fleet.dark_ports(w)},
                 "excluded_on_pod": {w: sorted(v) for w, v in attach.items()}})
+
+
+def _size(span: Span, role: str) -> int | None:
+    v = span.a(SIZE_FACT[role][0])
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def body_sizes(au: Audit, snap: Snapshot) -> None:
+    """S15 — contract v1.8 §5 on every span: a request span carries
+    ``http.request.body.size`` and a response span
+    ``http.response.body.size``, integers ≥ 0; a captured value means a body
+    (size > 0); for ``http``, where the value is the raw body, one that is not
+    truncated is exactly as many UTF-8 bytes as its size, and a denied
+    response carries none. A size > 0 with no value stays legal (not text,
+    not whole, denied, capture off, a parser that reduced it to nothing)."""
+    bad: dict[str, list[str]] = {}
+    checked = 0
+    for sid, sp in snap.spans.items():
+        role = sp.a("lineage.role")
+        if role not in SIZE_FACT:
+            continue
+        key, vkey = SIZE_FACT[role]
+        size, value, problems = _size(sp, role), sp.a(vkey), []
+        raw = sp.a(key)
+        if size is None or size < 0:
+            problems.append(f"{key} {'absent' if raw is None else repr(raw)}")
+        if value and size is not None and size <= 0:
+            problems.append(f"{vkey} present with {key} {size}")
+        if sp.a("lineage.protocol") == "http":
+            if role == "response" and value and sp.a("lineage.outcome") == "denied":
+                problems.append("a denied http response carries output.value")
+            if value and size is not None and not value.endswith(TRUNCATED):
+                checked += 1
+                n = len(value.encode("utf-8"))
+                if n != size:
+                    problems.append(f"{vkey} is {n} bytes, {key} {size}")
+        if problems:
+            bad[f"{sp.a('lineage.self.id')}/{sp.a('lineage.direction')}/{role}/{sid}"] = problems
+    au.add("S15", "soundness", "body sizes on every span; a value means a body; an http value is its size in bytes",
+           not bad, {"violations": 0}, {"violations": len(bad), "spans": len(snap.spans), "http_values_sized": checked},
+           dict(list(bad.items())[:20]))
+
+
+def plain_http_bodies(au: Audit, snap: Snapshot, fleet: Fleet) -> None:
+    """F3 — the turn's plain-HTTP hops carry their bodies (contract v1.8):
+    on every interaction of a declared http edge of the turn that happened,
+    the request leg has a payload exactly when the request size is > 0, and
+    the response leg has one whenever the response size is > 0 (a denied
+    response aside; a response payload with size 0 is S15's to catch). The app's REST bodies are JSON text, whole and under
+    the cap, so a size without its payload is a body the sidecar dropped. A
+    hop with no size fact cannot show it moved no body, and reads as a
+    violation. Which hops happen is the model's choice: their count is
+    recorded."""
+    edges = {(c, e) for c, e, p in fleet.turn_edges if p == "http"}
+    hops, bad = [], {}
+    for i in snap.turn.values():
+        a = snap.anchor(i)
+        if a is None or a.a("lineage.protocol") != "http":
+            continue
+        edge = (name_of(i.caller["kind"], i.caller["key"]), name_of(i.callee["kind"], i.callee["key"]))
+        if edge not in edges:
+            continue
+        name = f"{edge[0]}→{edge[1]}"
+        hops.append(name)
+        problems = []
+        rq = _size(a, "request")
+        got_rq = bool(i.legs.get("request", {}).get("payload_hash"))
+        if rq is None:
+            problems.append("request: no size fact")
+        elif got_rq != (rq > 0):
+            problems.append(f"request: size {rq}, payload {'present' if got_rq else 'absent'}")
+        r = snap.response_of(a)
+        if r is not None and r.a("lineage.outcome") != "denied":
+            rs = _size(r, "response")
+            got_rs = bool(i.legs.get("response", {}).get("payload_hash"))
+            if rs is None:
+                problems.append("response: no size fact")
+            elif rs > 0 and not got_rs:
+                problems.append(f"response: size {rs}, payload absent")
+        if problems:
+            bad[f"{name} {i.id}"] = problems
+    au.add("F3", "fidelity", "the turn's plain-HTTP hops carry their bodies (request payload iff size > 0; response payload when size > 0)",
+           not bad, {"violations": 0}, {"hops": len(hops), "violations": len(bad), "edges": dict(Counter(hops))},
+           bad)
 
 
 def completeness(au: Audit, dg, snap: Snapshot, fleet: Fleet, *, known: set[str]) -> dict:
@@ -564,6 +658,7 @@ def completeness(au: Audit, dg, snap: Snapshot, fleet: Fleet, *, known: set[str]
 
 def fidelity(au: Audit, snap: Snapshot, fleet: Fleet, *, markers: list[str], reply: str | None) -> None:
     S = snap
+    plain_http_bodies(au, S, fleet)
     entries = [i for i in S.turn.values() if not i.parent_id
                and (S.anchor(i) is not None) and S.anchor(i).a("lineage.self.id") == fleet.entry]
     if not markers and reply is None:

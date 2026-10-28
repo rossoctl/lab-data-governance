@@ -77,7 +77,7 @@ spec:
 # external host, the response's (PII) comes back from it. One flow per leg
 # (#271/#274) must therefore decide "nothing was sent" — a tier scenario
 # asserts that on the record. Speaks JSON-RPC so both bodies are captured
-# (a plain HTTP body never is). Same image, same fixture, same teardown.
+# by the mcp parser. Same image, same fixture, same teardown.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

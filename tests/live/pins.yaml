@@ -18,7 +18,8 @@ agent_examples_snp:
   shim_image_id: FILL_ME
 
 cortex:
-  # `git -C $E2E_CORTEX_DIR rev-parse HEAD` — the branch the sidecar was built from.
+  # `git -C $E2E_CORTEX_DIR rev-parse HEAD` — the branch the sidecar was built from:
+  # main at a617df61 (#1506, contract v1.8: plain-HTTP bodies and body sizes) or later.
   commit: FILL_ME
   # image ids of the sidecar and proxy-init images loaded into the kind node
   # (kit RECIPE step 1): `podman inspect --format 'sha256:{{.Id}}' <ref>`.
@@ -46,4 +47,4 @@ llm:
 
 contract:
   # docs/sidecar-wire-contract.md version; the cortex copy must be byte-identical.
-  version: "1.7.0"
+  version: "1.8.0"

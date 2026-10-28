@@ -66,8 +66,8 @@ export E2E_CORTEX_DIR=/path/to/cortex
 
 `E2E_DESTRUCTIVE=1` enables L12 (scales OPA to zero and back), L16 (scales leg-ready to two and back; it also needs leg-ready's sole-consumer lock, lab-dg #290, and skips with that reason when the deployed DG holds none) and L17 (a host the producer truncates; on a DG that cannot parse it, leg-ready stops until a fixed image is deployed). `E2E_ACCEPT_ALEMBIC_HEAD=<revision>`
 accepts one named later migration head on the cluster (recorded in the run; strict when unset).
-The other tunables (`E2E_SETTLE_TIMEOUT`, `E2E_QUIET_SECONDS`, namespaces, API URL, run directory)
-are listed in `docs/LIVE-E2E.md`.
+The other tunables (`E2E_SETTLE_TIMEOUT`, `E2E_QUIET_SECONDS`, `E2E_TURN_TIMEOUT`, namespaces,
+API URL, run directory) are listed in `docs/LIVE-E2E.md`.
 
 ## What we send
 
@@ -76,8 +76,12 @@ message to `travel-advisor` under a minted trace id: a whole app run (advisor �
 booking agents → tools → payment-agent → charge-card → psp-mock, LLM calls on every agent). L1
 sends one; L6 sends two at once with different guests, cities and accounts. A **probe** is one
 HTTP exchange under a minted trace id and parent span id, so its interaction can be found
-afterwards by that parent. Every POST body is wrapped as a JSON-RPC `tools/call`, because the
-sidecar captures payloads only through its protocol parsers.
+afterwards by that parent. Every POST body but one is wrapped as a JSON-RPC `tools/call`: the
+mcp parser claims it and captures exactly the arguments, so the classifier sees the same bytes
+whatever the destination. Its response leg stays empty, because the PSP's plain reply has no
+JSON-RPC result for the parser to reduce. The one plain body, `card_plain()`, is the card's
+arguments as a REST client posts them: no parser claims it, and since contract v1.8 the sidecar
+captures both raw bodies.
 
 The probe grid. Rows are the payloads `driver.py` builds, with the classification the
 classifier gives them. Columns are where they go: the mock PSP by its cluster short name
@@ -92,7 +96,8 @@ visit the cell.
 | `card_pii()` — PAN, CVV, name, email | PI · PII · PCI, RESTRICTED, identity bundle | none / allow, no real rule (fallback `0000`) — L5, L7, L8, L10 | critical / block, DG-001 · DG-004 · E2E-INVERT, allowed `[redact]`, 0.95, DG-001's explanation alone — L5, L7, L8 (L12, L13) | critical / block from the request leg alone; v1 `[request]` → v2 `[request, response]`, outcome `abandoned` — L3, L9 |
 | `pi_only()` — age, city, budget, month | PI, INTERNAL, no bundle | medium / escalate, E2E-INT-DATA · E2E-PI-INT, allowed `[log]`, 0.3, two rules' explanations joined — L5, L8 (L13) | not driven | — |
 | `credential()` — a password, no username | PI · CREDENTIALS, RESTRICTED | high / require_approval, E2E-CRED-INT, allowed `[audit]`, 0.7 — L5, L8 | critical / block, DG-004 · E2E-CRED-EXT, no DG-001 (no PII), 0.95 — L8 | — |
-| no body — GET a path the PSP does not serve | nothing to classify, both legs NULL | none / allow, summary `{"payload": null}` both sides — L4 (read in L7), L5 | — | — |
+| `card_plain()` — the card's arguments, no JSON-RPC (protocol `http`) | PI · PII · PCI, RESTRICTED, identity bundle; the PSP's reply a classified response leg | not driven | critical / block, DG-001 · DG-004 · E2E-INVERT; the reply adds no rule — L7 | — |
+| no request body — GET a path the PSP does not serve | the request leg NULL; the response leg the PSP's HTML 404 page (contract v1.8) | none / allow, request `{"payload": null}`, response classified — L4 (read in L7), L5 | — | — |
 
 Scenarios in parentheses need a capability the deployed branch may lack. Rules are read from
 `interaction_risk_records.triggered_rule_ids`; allowed actions, confidence and explanation
@@ -127,9 +132,13 @@ with expected and observed, never stopping at the first failure. Soundness S1–
 anchors, producer purity, referential integrity, kinds and content kinds, legs mirror spans,
 identities from facts, causal order and containment, the forest law, declared topology only, one
 entity per workload, no foreign span, every declared dark port excluded from interception on its
-pod); completeness C1–C7 (the deterministic part of the turn is asserted, the LLM-chosen part is
-reported as coverage; the window census classes every other trace as known, declared gap, or
-escape); fidelity F1–F2 (the entry payloads are the driver's text and the reply); invariance I1–I4
+pod) and S15 (contract v1.8 body sizes: every span carries its leg's size, a value means a body,
+an `http` value that is not truncated is exactly its size in UTF-8 bytes, a denied `http`
+response carries none); completeness C1–C7 (the deterministic part of the turn is asserted, the
+LLM-chosen part is reported as coverage; the window census classes every other trace as known,
+declared gap, or escape); fidelity F1–F3 (the entry payloads are the driver's text and the reply;
+the turn's plain-HTTP hops that happened carry their bodies: a request payload exactly when
+its size is > 0, a response payload whenever its size is > 0, a denied response aside); invariance I1–I4
 (uuid5 ids, isolation, a quiet re-read, no critical record on a stray); risk R1 (a record's
 evidenced legs are the interaction's legs). A check that a gap the fleet declares lists
  (`known_gap` in `apps/travel_advisor.yaml`: booking-agent's stale tool-call parent, the held
@@ -165,13 +174,13 @@ LLM's plan varies between turns, the shape does not.
 |---|---|---|---|
 | **A. lineage and the plugin** — nothing read from the risk tables | | | |
 | L1 | one turn (fresh booking dates), fresh trace T, nothing else | forest (1 root), **the audit** on the four lineage axes (declared gaps KNOWN), quiet re-check | |
-| L2 | (T) the workloads' ledger lines for the run window | every exchange the app made has its sidecar span and vice versa, captured payloads equal the digests where the reductions coincide, spans inside the app's send windows, the S3 read's store record paired with its http span, dark hops listed, strays self-reported, every pod in the tree wrote the trace | app pods with `ROSSOCTL_LEDGER=stdout` |
+| L2 | (T) the workloads' ledger lines for the run window | every exchange the app made has its sidecar span and vice versa, captured payloads equal the digests where the reductions coincide (and, on a plain-HTTP hop of a declared http edge, the raw body's digest whenever the body is 1..`MAX_PAYLOAD_BYTES` (4096) bytes and not streamed: an uncaptured one is a miss), spans inside the app's send windows, the S3 read's store record paired with its http span, dark hops listed, strays self-reported, every pod in the tree wrote the trace | app pods with `ROSSOCTL_LEDGER=stdout` |
 | L3 | card → sink, 45 s client timeout, in T | `lineage.outcome=abandoned`, no status, response leg `error=true` with no payload, request leg with payload | sink |
-| L4 | no-body GET, in T | both legs NULL | |
+| L4 | GET to a path the PSP does not serve, in T | protocol `http`; request leg NULL, kind `http_request_body`, size 0; response leg the 404 page, kind `http_response_body`, `output.value` byte for byte the body the probe got, size its length | |
 | L5 | four probes at once in T | four interactions, forest holds (in-trace concurrency) | |
 | L6 | two turns at once on two fresh traces, different guests | both forests, lineage audits and ledger joins hold; no cross-trace payload mention (I2); no shared record id (cross-trace isolation; red on app commits before agent-examples-snp #17, the shared A2A context) | |
 | **B. classification and risk** — known bytes under the test catalog | | | |
-| L7 | benign, card → external and card → internal, in T | the benign leg PUBLIC and none/allow; identical card classification, opposite verdicts; L4's exchange none/allow with `{"payload": null}` both sides; rollup critical/block; then R1 and the risk shape of T (an entity-set mismatch is the open defect #279: a KNOWN row) | |
+| L7 | benign, card → external and card → internal (wrapped), the plain card → external, in T | the benign leg PUBLIC and none/allow; identical card classification, opposite verdicts; the plain card classified and decided like the wrapped external one, its reply a classified leg adding no rule; L4's exchange none/allow, request `{"payload": null}`, response classified; rollup critical/block; then R1 and the risk shape of T (an entity-set mismatch is the open defect #279: a KNOWN row) | |
 | L8 | eight probes at once, fresh trace | the five predicted verdicts, three distinct (risk, enforcement) pairs, rollup = union of rules; the card under three more names for the PSP — its FQDN with a trailing dot and its ClusterIP decide internal, the IPv6 literal `[2001:db8::1]` external; every peer.host as sent | |
 | L9 | (L3's exchange) | v1 `[request]` then v2 `[request, response]`, ≥ 2 decision fingerprints, verdict from the request leg | sink |
 | L10 | the internal card probe again, byte-identical | no re-version anywhere; the new interaction's current record equals the old's and no version of it repeats the previous (its version count is leg timing, recorded) | |
@@ -181,7 +190,7 @@ LLM's plan varies between turns, the shape does not.
 | L17 | card → the PSP under a 258-byte Host (the producer truncates it to `…[truncated]`) | peer.host arrives truncated; the trace settles; critical/block; no leg-ready restart | `E2E_DESTRUCTIVE=1` |
 | L13 | benign probe, PI probe, card → external, the same again, fresh trace | no alert → one open alert medium → superseded by critical, title and description exact → `duplicate_count` 1 | alerts processor |
 | **C. the app's behaviour** | | | |
-| L14 | (#258, `ROSSOCTL_VARIANT` on booking-agent) one scripted turn | rogue: the partner request carries the guest's name, classifies PII, critical/block [DG-001]; fixed: `dates` and `note` only, no PII, none/allow; xfails on a turn where the model does not make the call | variant |
+| L14 | (#258, `ROSSOCTL_VARIANT` on booking-agent) one scripted turn | rogue: the partner request carries the guest's name, classifies PII, critical/block [DG-001]; fixed: `dates` and `note` only, no PII, none/allow; xfails on a turn where the model does not make the call. Assumes notify-partner runs without `PARTNER_FIELDS`: a fleet that limits the fields sent reads red on the rogue row | variant |
 | L15 | a full turn whose client closes after 20 s without reading | the entry response span is not `ok` (abandoned), response leg `error=true`, no response payload, the rest of the turn derives under the root; the ledger joins | runs last |
 
 Later scenarios address the trace L1 minted, so the file runs in order; a scenario that needs

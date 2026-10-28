@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -38,10 +39,12 @@ from typing import Any
 # ``Host`` the whitelist does not list — same bytes, same connection,
 # different name (the demo's risk-probe.sh asymmetry).
 PSP_URL = "http://psp-mock:9091/charge"
-# A path the PSP does not serve: GET it with no body and it answers 404 with a
-# tiny plain-JSON body no parser captures. NOT /healthz: the lineage plugin's
-# default bypass_paths (/.well-known/*, /healthz, /readyz, /health) produce no
-# spans at all, so a health probe is invisible by design (observed live).
+# A path the PSP does not serve: GET it with no body and it answers 404 with
+# Flask's default HTML page. No parser claims the exchange (protocol http), so
+# since contract v1.8 that page is the response's captured payload, and the
+# request leg stays empty. NOT /healthz: the lineage plugin's default
+# bypass_paths (/.well-known/*, /healthz, /readyz, /health) produce no spans at
+# all, so a health probe is invisible by design (observed live).
 PSP_NOBODY_URL = "http://psp-mock:9091/e2e-no-such-path"
 EXTERNAL_HOST = "api.travel-partner.example:9091"
 # The test-owned sink (tests/live/k8s/e2e-sink.yaml): accepts the TCP
@@ -140,12 +143,15 @@ def mint_span_id() -> str:
 
 # --- payloads -----------------------------------------------------------------
 #
-# Every POST body is wrapped as a JSON-RPC ``tools/call``: the sidecar
-# captures payloads through its protocol parsers only (a plain HTTP body is
-# metadata-only by design) and the mcp-parser is content-gated on any
-# JSON-RPC body, surfacing exactly ``params.arguments`` as the captured
-# input. The arguments are ALSO copied to the top level so the mock PSP
-# answers 200 to the charge endpoint. Predicted classifications come from
+# Every POST body but ``card_plain()``'s is wrapped as a JSON-RPC
+# ``tools/call``: the mcp-parser is content-gated on any JSON-RPC body, so it
+# claims the exchange (protocol mcp) and surfaces exactly ``params.arguments``
+# as the captured input. The PSP's plain reply has no JSON-RPC result, so the
+# mcp-parser yields nothing for it and the response leg stays empty. The
+# arguments are ALSO copied to the top level so the mock PSP answers 200 to
+# the charge endpoint. ``card_plain()`` sends the arguments alone: no parser
+# claims it (protocol http), and since contract v1.8 both raw bodies are the
+# captured payloads. Predicted classifications come from
 # the classifier's tag table
 # (data_governance/processors/classification/_config_data/
 # EntityTypesForTokenClassification_with_tags.csv) and its ladder
@@ -173,6 +179,15 @@ def card_pii() -> dict[str, Any]:
         "cardholder": "Dana Cohen", "email": "dana.cohen@example.com",
         "note": "risk-probe: deliberate PII in transit",
     })
+
+
+def card_plain() -> dict[str, Any]:
+    """``card_pii()``'s arguments as a plain JSON body, no JSON-RPC: the
+    card as a REST client posts it. The same fields and values as the wrapped
+    card, not the same bytes (the mcp reduction re-serialises the arguments
+    sorted and compact), so the classifier is expected to give the same tags,
+    level and bundle."""
+    return card_pii()["params"]["arguments"]
 
 
 def pi_only() -> dict[str, Any]:
@@ -227,6 +242,10 @@ try:
     out["body"] = r.read(2000).decode("utf-8", "replace")
 except urllib.error.HTTPError as e:
     out = {"outcome": "http_error", "status": e.code}
+    try:
+        out["body"] = e.read(2000).decode("utf-8", "replace")
+    except Exception:
+        pass
 except (socket.timeout, TimeoutError):
     out = {"outcome": "client_timeout"}
 except urllib.error.URLError as e:
@@ -345,10 +364,13 @@ def turn(
     parent_id: str,
     text: str = USER_TURN,
     url: str = "http://travel-advisor:8080/",
-    timeout: float = 580.0,
+    timeout: float | None = None,
 ) -> TurnResult:
     """The app's scripted turn as one non-streaming ``message/send`` (the
-    demo's ask.sh, with the ids and the text supplied)."""
+    demo's ask.sh, with the ids and the text supplied). The client timeout is
+    ``E2E_TURN_TIMEOUT`` seconds (default 580): a CPU-only model needs more."""
+    if timeout is None:
+        timeout = float(os.environ.get("E2E_TURN_TIMEOUT", "580"))
     spec = {"trace_id": trace_id, "parent_id": parent_id, "text": text,
             "url": url, "timeout": timeout}
     out = json.loads(kube.exec_py(_TURN_PROGRAM, spec, timeout=timeout + 60))

@@ -425,10 +425,22 @@ def interaction_of_probe(dg, trace_id: str, parent_id: str) -> str:
 
 def legs_of(dg, interaction_id: str) -> dict[str, dict]:
     rows = dg.q("""
-        SELECT leg_type::text, payload_hash, error, occurred_at
+        SELECT leg_type::text, payload_hash, error, occurred_at, content_kind
         FROM interaction_legs WHERE interaction_id = %s""", (interaction_id,))
-    return {r[0]: {"payload_hash": r[1], "error": r[2], "occurred_at": r[3].isoformat()}
+    return {r[0]: {"payload_hash": r[1], "error": r[2], "occurred_at": r[3].isoformat(), "content_kind": r[4]}
             for r in rows}
+
+
+def caller_spans(dg, trace_id: str, interaction_id: str) -> dict[str, dict]:
+    """The caller side's two spans of an interaction (its outbound request
+    and response), role -> attributes: what the probe's own sidecar
+    recorded about the exchange."""
+    rows = dg.q("""
+        SELECT s.attributes FROM interaction_spans isp JOIN spans s
+          ON s.trace_id = isp.trace_id AND s.span_id = isp.span_id
+        WHERE isp.trace_id = %s AND isp.interaction_id = %s
+          AND s.attributes->>'lineage.direction' = 'outbound'""", (trace_id, interaction_id))
+    return {r[0].get("lineage.role"): r[0] for r in rows}
 
 
 def response_span_of(dg, trace_id: str, interaction_id: str) -> dict | None:
