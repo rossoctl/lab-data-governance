@@ -17,11 +17,14 @@ data_governance/
     interactions/     # derives interactions from the spans stream
     classification/   # classifies payloads (content-addressed)
     data_lineage/     # derives data-lineage edges
+  risk/               # risk engine, OPA rule catalog, /risk/* API — see
+                       # data_governance/risk/README.md
 tests/
   db/
     test_db.py        # Layer 1 tests against real Postgres
     test_migrations.py # Baseline migration + migrate CLI tests
 docs/                 # PROJECT.md, ADRs, this file
+demos/                # scripted demos on a running cluster: runbook + tools per demo
 alembic.ini
 pyproject.toml
 ```

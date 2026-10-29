@@ -256,21 +256,6 @@ export function responseOccurredAt(ix: Pick<Interaction, 'legs'>): string | null
   return legOfType(ix, 'response')?.occurred_at ?? null;
 }
 
-/**
- * The canonical **Interaction leg** key, `(interaction_id, leg_type)` — the
- * grain at which a **Data lineage** fact is unique (ADR-0028 D5). Single-sourced
- * here so the hook that builds the lookup map and the view that reads it can't
- * drift on the separator. Deliberately NOT keyed on `payload_hash`: payloads are
- * content-addressed and deduped, so identical bytes at two positions would
- * collide two completely different lineages into one entry.
- */
-export function legLineageKey(
-  interactionId: string,
-  legType: 'request' | 'response',
-): string {
-  return `${interactionId}:${legType}`;
-}
-
 /** One flat-view row: a single leg, plus the interaction it belongs to. */
 export interface FlatRow {
   ix: Interaction;
@@ -283,6 +268,17 @@ export interface FlatRow {
  * parent interaction so a click still opens that interaction's detail panel
  * (legs have no selection of their own).
  */
+/**
+ * The interactions with their request leg only, for the graph views' "edges per
+ * interaction" mode: one arrow per call instead of one per leg. `deriveGraph` already draws one edge for a
+ * request-only interaction (the path a call whose response has not arrived
+ * takes), so nothing in `lib/graph.ts` changes. The rows and the sequence
+ * diagram are per leg by nature and are not affected.
+ */
+export function requestLegsOnly(interactions: readonly Interaction[]): Interaction[] {
+  return interactions.map((ix) => ({ ...ix, legs: ix.legs.filter((l) => l.leg_type === 'request') }));
+}
+
 export function flatLegRows(interactions: readonly Interaction[]): FlatRow[] {
   return interactions
     .flatMap((ix) => (ix.legs ?? []).map((leg) => ({ ix, leg })))

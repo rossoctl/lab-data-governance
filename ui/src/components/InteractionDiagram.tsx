@@ -8,6 +8,7 @@ import {
 
 import { deriveSequenceDiagram, type MessageSpec } from '../lib/sequenceDiagram';
 import { kindColorVar } from '../lib/entityKind';
+import { riskLevelColorVar } from '../lib/riskLevel';
 import type { Entity, Interaction } from '../types';
 
 /**
@@ -56,21 +57,51 @@ function MessageRow({
   msg,
   row,
   isSelected,
+  isHovered,
+  track,
   width,
   onSelect,
+  onContextMenu,
+  riskLevel,
 }: {
   msg: MessageSpec;
   row: number;
   isSelected: boolean;
+  /** The pointer rests on a lineage hop of this message's interaction (see
+   *  `InteractionDiagramProps.hoveredId`): the row takes the hover fill. */
+  isHovered: boolean;
+  /** The label lineage overlay's verdict on this leg: lit (a tracked value sat
+   *  on it), dimmed (values are tracked and it is not one of their legs), or
+   *  none (nothing tracked). See `InteractionDiagramProps.litEdgeIds`. */
+  track: 'lit' | 'dimmed' | 'none';
   width: number;
   onSelect: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  /**
+   * This message's INTERACTION's risk level (issue #170), or `undefined` when
+   * no risk map was supplied, or when one was but this interaction has no entry
+   * in it — see {@link InteractionDiagramProps.riskLevelByInteraction} for why
+   * those two cases are collapsed into one "no treatment" outcome rather than
+   * one of them painting a colour.
+   */
+  riskLevel: string | undefined;
 }) {
   const y = rowY(row);
   const x1 = colX(msg.fromIndex);
   const x2 = colX(msg.toIndex);
   // The `--dg-*` tokens, never a raw hex — the same pairing the graph's edges use,
   // so a failed leg is the same red in both tabs.
-  const colour = msg.isError ? 'var(--dg-color-error)' : 'var(--dg-tree-guide)';
+  //
+  // ERROR KEEPS PRECEDENCE (issue #170), same reasoning as the graph's edges: a
+  // leg's `error` is a FACT about what happened, while a risk level is a GRADE
+  // the policy engine assigned, and a fact must not be masked by a grade. Risk
+  // colouring only applies when `riskLevel` is defined — see this component's
+  // top-level doc comment for what an undefined value means.
+  const colour = msg.isError
+    ? 'var(--dg-color-error)'
+    : riskLevel !== undefined
+      ? riskLevelColorVar(riskLevel)
+      : 'var(--dg-tree-guide)';
 
   // The arrowhead, as a filled triangle pointing along the direction of travel.
   // Drawn by hand rather than with an SVG `marker`: a marker's `fill` cannot
@@ -81,7 +112,11 @@ function MessageRow({
 
   return (
     <g
-      className={`dg-seq-row${isSelected ? ' dg-seq-row--selected' : ''}`}
+      className={`dg-seq-row${isSelected ? ' dg-seq-row--selected' : ''}${isHovered ? ' dg-seq-row--hovered' : ''}${
+        track === 'none' ? '' : ` dg-seq-row--${track}`
+      }`}
+      data-track={track === 'none' ? undefined : track}
+      onContextMenu={onContextMenu}
       // Keyboard-reachable and announced as a button, matching the a11y discipline
       // the graph's controls and LegTabs follow: an SVG `<g>` is inert by default,
       // so the role/tabIndex/onKeyDown trio is what makes the row operable without
@@ -173,7 +208,7 @@ function MessageRow({
  * **Interaction legs** — entities as vertical lifelines across the top, one
  * horizontal arrow per leg, ordered top-to-bottom by the trace-wide leg `seq`.
  *
- * The fourth presentation of the same two reads the Interaction flow tables hold,
+ * The fourth presentation of the same two reads the Interactions and Entities tables hold,
  * and specifically the FLAT list's own rows: the arrow set comes from
  * `lib/sequenceDiagram`, which consumes `flow.flatLegRows`, so the Nth arrow down
  * this page is the Nth row of the Flat tab by construction. The Flat table answers
@@ -202,12 +237,13 @@ function MessageRow({
  * is lazily mounted and holds no props but the trace id), which is why the split
  * falls here.
  */
-export function InteractionDiagram({
-  entities,
-  interactions,
-  selectedId,
-  onSelect,
-}: {
+/**
+ * Props `InteractionDiagram` was given before issue #170, restated as a named
+ * type so {@link InteractionDiagramProps.riskLevelByInteraction}'s doc comment
+ * has somewhere to point back to `entities`/`interactions`/`selectedId`/
+ * `onSelect` without repeating each of their own comments.
+ */
+export interface InteractionDiagramProps {
   entities: readonly Entity[];
   interactions: readonly Interaction[];
   /** The selected INTERACTION's id — legs have no selection of their own. */
@@ -218,7 +254,52 @@ export function InteractionDiagram({
    * interaction's detail panel.
    */
   onSelect: (ix: Interaction) => void;
-}) {
+  /**
+   * Interaction id -> risk level (issue #170), from `lib/riskForestAdapter.ts`'s
+   * `riskLevelByInteraction`. Passed only with the risk layer on, which is what
+   * keeps the arrow colours byte-for-byte unchanged with it off: the risk-colour
+   * branch in `MessageRow` is reached only when this is present.
+   *
+   * An interaction ABSENT from a supplied map (its `risk` was `null` — not yet
+   * computed) gets no arrow treatment at all, same as an absent map entirely;
+   * only an explicit entry paints a colour, so "not yet computed" is never
+   * drawn as a colour of its own (see `riskLevelByInteraction`'s docstring).
+   *
+   * Lifeline HEAD boxes keep `kindColorVar` regardless — this seam only
+   * touches the message arrows, mirroring the mockup's kind-coloured
+   * participants over risk-coloured messages.
+   */
+  riskLevelByInteraction?: ReadonlyMap<string, string>;
+  /**
+   * The interaction a lineage hop in the detail panel is pointing at
+   * (`LabelLineage`, through `HopHoverContext`): its messages take the same hover
+   * fill a pointer on the row itself gives. Independent of the selection; `null`
+   * or absent lights nothing.
+   */
+  hoveredId?: string | null;
+  /**
+   * The label lineage overlay (`lib/labelTrack`): the `<interaction>:<leg_type>`
+   * ids of the legs the tracked values sat on. Absent or `null` = nothing
+   * tracked, nothing dimmed; a list (even empty) = a question was asked, so the
+   * listed messages are lit and every other one dimmed. Same contract as the
+   * graph's `GraphHighlight.edgeIds` with `isQuestion`.
+   */
+  litEdgeIds?: readonly string[] | null;
+  /** A right-click on a message, with its interaction and leg: the shortcut to tracking the values on that leg. */
+  onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
+}
+
+export function InteractionDiagram({
+  entities,
+  interactions,
+  selectedId,
+  onSelect,
+  riskLevelByInteraction,
+  hoveredId = null,
+  litEdgeIds = null,
+  onContextMenuInteraction,
+}: InteractionDiagramProps) {
+  const lit = useMemo(() => (litEdgeIds == null ? null : new Set(litEdgeIds)), [litEdgeIds]);
   const spec = useMemo(
     () => deriveSequenceDiagram(entities, interactions),
     [entities, interactions],
@@ -335,11 +416,22 @@ export function InteractionDiagram({
               // legs — because the selection is the INTERACTION, and lighting only
               // the clicked leg would imply legs are separately selectable.
               isSelected={selectedId === msg.interactionId}
+              isHovered={hoveredId === msg.interactionId}
+              track={lit == null ? 'none' : lit.has(`${msg.interactionId}:${msg.legType}`) ? 'lit' : 'dimmed'}
+              onContextMenu={
+                onContextMenuInteraction
+                  ? (e) => {
+                      e.preventDefault();
+                      onContextMenuInteraction(msg.interactionId, msg.legType, { x: e.clientX, y: e.clientY });
+                    }
+                  : undefined
+              }
               width={width}
               onSelect={() => {
                 const ix = ixById.get(msg.interactionId);
                 if (ix) onSelect(ix);
               }}
+              riskLevel={riskLevelByInteraction?.get(msg.interactionId)}
             />
           ))}
         </svg>

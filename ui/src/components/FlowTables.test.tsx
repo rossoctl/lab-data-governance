@@ -130,8 +130,13 @@ function mkReach(direction: 'fanin' | 'fanout') {
   };
 }
 
-function mockFetch(over: { sources?: string[]; fanin?: unknown; fanout?: unknown } = {}) {
+function mockFetch(over: { sources?: string[]; fanin?: unknown; fanout?: unknown; labels?: unknown } = {}) {
   (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+    // The per-interaction labels read, before the `/interactions/`
+    // evidence branch below, which would answer it with `{spans}`.
+    if (url.includes('/labels')) {
+      return { ok: true, status: 200, json: async () => over.labels ?? { legs: [], lineage_status: 'complete' } };
+    }
     // THE TWO LINEAGE-TAB READS FIRST, and the order is load-bearing rather than
     // stylistic: the reachability URL is `/entities/<eid>/data-lineage-graph`, which
     // also matches the `/entities/` evidence branch below. Matched after it, a
@@ -968,8 +973,8 @@ describe('FlowTables', () => {
     // agent-a (e1) calls search (e2). The served FAN-IN for e2 reaches e1 over the
     // request leg, so selecting `search` must mark e2 selected and light e1 upstream.
     //
-    // Driven through the reachability endpoint rather than the per-leg `byLeg` map,
-    // because that is what the tab now reads (ADR-0028 D14/D15): the server derives the
+    // Driven through the reachability endpoint rather than the former per-leg
+    // data-lineage map, because that is what the tab now reads (ADR-0028 D14/D15): the server derives the
     // reachability claim, so the UI renders a served answer instead of composing one.
     mockFetch({
       fanin: {
@@ -1766,7 +1771,7 @@ describe('FlowTables', () => {
     await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument());
     // Neither leg tab, and none of the three section tabs — a payload-less leg
-    // has no payload, no verdict, and no derivable lineage to offer. (The flow
+    // has no payload, no verdict, and no carried-in values to offer. (The flow
     // view's own Tree/Flat/Execution Flow tabs are the only tabs left on screen.)
     expect(screen.queryByRole('tab', { name: 'Request' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Response' })).toBeNull();
@@ -1804,8 +1809,8 @@ describe('FlowTables', () => {
   });
 
   // --- Data lineage (issue #119, ADR-0028) ------------------------------------
-  // Lineage is read once per trace and keyed per LEG (interaction_id, leg_type),
-  // so a payload's block is found by its leg identity, never by content hash.
+  // Read once per trace. Only its trace-level coverage reaches the screen (the
+  // banner below); the per-leg rows in the fixture are what the server sends.
 
   const LINEAGE_LEGS = [
     {
@@ -1822,9 +1827,10 @@ describe('FlowTables', () => {
   ];
 
   /**
-   * Mock with payload hashes on both legs plus a data-lineage response. The
-   * trace-level coverage (issue #120) defaults to `complete` so the existing
-   * per-leg cases stay unaffected by the banner; the banner cases pass their own.
+   * Mock with payload hashes on both legs plus a data-lineage response and an
+   * empty labels read. The trace-level coverage (issue #120) defaults to
+   * `complete` so the tab cases stay unaffected by the banner; the banner cases
+   * pass their own.
    */
   function mockFetchWithLineage(
     legs: unknown[],
@@ -1839,8 +1845,7 @@ describe('FlowTables', () => {
       // for the reason `mockFetch` states at length: `/entities/<eid>/data-lineage-graph`
       // also matches that branch, and answering it with `{spans: […]}` breaks the
       // entity SELECTION rather than the lineage. These default to the non-claiming
-      // answers — this helper's cases are about the PER-LEG lineage, so the tab's
-      // reachability must not accidentally assert anything.
+      // answers, so the tab's reachability must not accidentally assert anything.
       if (url.includes('/data-lineage-graph')) {
         const wantFanin = url.includes('direction=fanin');
         return {
@@ -1862,6 +1867,9 @@ describe('FlowTables', () => {
         };
       if (url.endsWith('/data-lineage'))
         return { ok: true, status: 200, json: async () => ({ legs, ...coverage }) };
+      // The labels read, before the `/interactions/` evidence branch below.
+      if (url.includes('/labels'))
+        return { ok: true, status: 200, json: async () => ({ legs: [], lineage_status: 'complete' }) };
       if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: withPayload }) };
       if (url.endsWith('/entities')) return { ok: true, status: 200, json: async () => ({ entities: ENTITIES }) };
       if (url.includes('/payloads/'))
@@ -1877,96 +1885,17 @@ describe('FlowTables', () => {
     });
   }
 
-  it('shows the payload lineage (data sources, entities traversed) on its tab', async () => {
-    mockFetchWithLineage(LINEAGE_LEGS);
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
-    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
-
-    // The Data lineage block renders in its own tab pane, beside the
-    // Classification tab it mirrors.
-    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
-    const sources = screen.getByLabelText('Data sources');
-    expect(within(sources).getByText('agent-a')).toBeInTheDocument();
-    expect(within(sources).getByText('user')).toBeInTheDocument();
-    // THE PER-SOURCE TRANSFORMATIONS ASSERTION IS GONE, not weakened: `DataLineageView`'s
-    // "Applied" column was removed by request, so there is no longer a place in this
-    // view for `source_transformations` to appear. The field is still derived and still
-    // returned by the API — this view simply no longer presents it, which is that
-    // component's own contract and is pinned in DataLineageView.test.tsx. The SOURCES
-    // themselves are still listed, which is what this case is about.
-    // And the entities traversed — membership only; the set is unordered.
-    const entities = screen.getByLabelText('Entities traversed');
-    expect(within(entities).getByText('user')).toBeInTheDocument();
-    expect(within(entities).getByText('agent-a')).toBeInTheDocument();
-    expect(within(entities).getByText('search')).toBeInTheDocument();
-  });
-
-  it('keys lineage per leg: the response leg does not inherit the request leg’s lineage', async () => {
-    // Only the request leg has lineage in the fixture, so the response leg's
-    // lineage tab must report "not yet computed" — the leg key is
-    // (interaction_id, leg_type), never the payload/content hash (ADR-0028 D5).
-    mockFetchWithLineage(LINEAGE_LEGS);
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
-    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    // Reaching it means switching legs first — the outer tab — then picking the
-    // inner section.
-    await userEvent.click(await screen.findByRole('tab', { name: 'Response' }));
-    await userEvent.click(await screen.findByRole('tab', { name: /Response: Data lineage/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument(),
-    );
-    expect(screen.queryByLabelText('Data sources')).toBeNull();
-  });
-
-  it('shows "not yet computed" when the leg is present but its lineage is null', async () => {
-    mockFetchWithLineage([{ ...LINEAGE_LEGS[0], lineage: null }]);
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
-    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
-    await waitFor(() =>
-      expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument(),
-    );
-  });
-
-  it('handles the empty-legs lineage response (unmigrated DB) without breaking the payload view', async () => {
-    mockFetchWithLineage([]);
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
-    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    // Payload is the default tab, so the body lands first; then the lineage tab
-    // states the absence. Switching back proves the shared read still satisfies
-    // the body without a refetch.
-    await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
-    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
-    expect(screen.getByText(/lineage not yet computed/i)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('tab', { name: /Request: Payload reqhash0/i }));
-    expect(screen.getByText(/"flights"/)).toBeInTheDocument();
-  });
-
   /**
    * Same fixture, but the data-lineage read itself fails. Everything else in the
-   * trace still resolves, so the flow view renders and only the lineage block is
-   * affected — which is exactly the case that used to masquerade as "not yet
-   * computed".
+   * trace still resolves, so the flow view renders and only the coverage banner
+   * is affected.
    */
   function mockFetchWithLineageError() {
     const withPayload = [withLegHashes('reqhash0deadbeef', 'resphash0feedface')];
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
       // The reachability reads fail too, which is the honest shape of this fixture:
       // it exists to prove a broken lineage read is reported as UNKNOWN rather than as
-      // an absence, and a version where only the per-leg read broke while the tab's
+      // an absence, and a version where only the trace read broke while the tab's
       // own reads succeeded would be testing a different (and easier) situation.
       if (url.includes('/data-lineage-graph') || url.includes('/data-lineage-summary'))
         return { ok: false, status: 500, json: async () => ({ detail: 'boom' }) };
@@ -1987,47 +1916,31 @@ describe('FlowTables', () => {
     });
   }
 
-  it('reports a failed lineage read as an error, not as "not yet computed"', async () => {
-    // A failed request and the eventual-consistency window are different facts
-    // and prompt different actions (retry vs wait). Collapsing them — as the
-    // `DataLineage | null` prop did — leaves a reader waiting on a dead request.
-    mockFetchWithLineageError();
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
-    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    // The payload body itself loaded fine (the default tab) — only lineage
-    // failed, which its own tab reports.
-    await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
-    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
-    expect(screen.getByText(/failed to load lineage/i)).toBeInTheDocument();
-    expect(screen.queryByText(/lineage not yet computed/i)).toBeNull();
-    expect(screen.queryByLabelText('Data sources')).toBeNull();
-  });
-
   it('says coverage is unknown — not fine — when the lineage read fails', async () => {
-    // The absence of a banner is this view's "no truncation" statement (see the
+    // The absence of a banner is the Lineage view's "no truncation" statement (see the
     // `complete` case below). A failed read established NOTHING, so staying
     // silent would assert full coverage the view never obtained. It must still
     // not claim a truncation it cannot establish either — hence "unknown",
     // worded distinctly from the `partial` prefix warning.
     mockFetchWithLineageError();
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
     );
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/could not be loaded|unknown/i);
+    const alert = await screen.findByText(/Data lineage coverage for this trace is unknown/i);
+    // The alert itself, not the summary read's own "could not be loaded" alert beside it.
+    expect(alert.closest('[role="alert"]')).not.toBeNull();
+    const box = alert.closest('.pf-v5-c-alert');
+    expect(box?.textContent).toMatch(/could not be loaded/i);
     // No fabricated truncation: the prefix claim belongs to `partial` alone.
-    expect(alert.textContent).not.toMatch(/not the complete set of data sources/i);
-    expect(alert.textContent).not.toMatch(/derived only up to/i);
+    expect(box?.textContent).not.toMatch(/not the complete set of data sources/i);
+    expect(box?.textContent).not.toMatch(/derived only up to/i);
   });
 
   // --- the two-level tabs (leg → section) and the shared payload read --------
   // Classification is INLINED on the payload read (ADR-0024); Data lineage comes
-  // from the trace-scoped read (ADR-0028 D5). The tabs' fetch behaviour has to
-  // follow that split, or a reader either waits on a request nobody made or pays
-  // for one they did not need.
+  // from the per-interaction labels read. The tabs' fetch behaviour has to follow
+  // that split, or a reader either waits on a request nobody made or pays for one
+  // they did not need.
 
   /** Payload-read calls the mock has seen, for the gating assertions below. */
   const payloadCalls = () =>
@@ -2069,58 +1982,26 @@ describe('FlowTables', () => {
     expect(payloadCalls()).toHaveLength(0);
   });
 
-  it('triggers the payload read when Classification alone is the active tab', async () => {
+  it('serves Classification from the leg\'s one payload read, which Data lineage does not add to', async () => {
     // The verdict is an inlined field of GET /api/payloads/{hash} (ADR-0024), so
     // this tab cannot render without that read even though it shows no body.
-    //
-    // Payload is a leg's default tab, so to attribute a read to Classification
-    // *alone* the reader has to be parked somewhere that fetches nothing first:
-    // Data lineage. From there the next click is Classification, and the request
-    // that appears is unambiguously the one it rides on.
-    mockFetchWithLineage(LINEAGE_LEGS);
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    await selectInteraction();
-    // Reselect the row so the leg pane remounts with a fresh (unfetched) state,
-    // then go straight to Data lineage — proving the read below is not a
-    // leftover of the default Payload tab.
-    await userEvent.click(screen.getByRole('tab', { name: /Request: Data lineage/i }));
-    (fetch as ReturnType<typeof vi.fn>).mockClear();
-    expect(payloadCalls()).toHaveLength(0);
-    await userEvent.click(screen.getByRole('tab', { name: /Request: Classification/i }));
-    await waitFor(() => expect(screen.getByText(/not yet classified/i)).toBeInTheDocument());
-    // And the fetched verdict (null in this fixture) is what renders — the
-    // eventual-consistency note, reached only once the read landed. The read
-    // itself is either the newly-issued request or the one this leg already had
-    // in cache; either way every payload URL seen is this leg's.
-    expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
-  });
-
-  it('adds no payload read when Data lineage is the active tab', async () => {
-    // Lineage is keyed on the leg, not the content hash, and is already in hand
-    // from the one trace-scoped read — fetching the payload to show it would be
-    // pure waste (and would drag a multi-KB body over the wire for provenance).
-    //
-    // Stated here as "the lineage tab adds nothing": the reader lands on the
-    // leg's default Payload tab (one read), then sits on Data lineage while the
-    // whole provenance triple renders, and the read count does not move. The
-    // *stronger* form — a leg whose payload-backed tabs are never activated and
-    // whose hash is therefore never requested at all — is asserted in
-    // LegTabs.test.tsx, on the leg that is not the default one.
+    // Payload is a leg's default tab, so the read is already made on arrival:
+    // the claim is that it is EXACTLY one read, for this leg's hash, and that
+    // neither Data lineage (its own labels read) nor Classification adds one.
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
     await selectInteraction();
     await waitFor(() => expect(screen.getByText(/"flights"/)).toBeInTheDocument());
-    const before = payloadCalls().length;
+    expect(payloadCalls()).toHaveLength(1);
+    expect(payloadCalls()[0][0]).toContain('reqhash0deadbeef');
     await userEvent.click(screen.getByRole('tab', { name: /Request: Data lineage/i }));
-    // It renders straight away from the prop...
-    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
-    // ...and cost no request to do it, on this leg or the other.
-    expect(payloadCalls()).toHaveLength(before);
-    expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
+    await screen.findByText(/No value on this payload was carried in/);
+    expect(payloadCalls()).toHaveLength(1);
+    await userEvent.click(screen.getByRole('tab', { name: /Request: Classification/i }));
+    await waitFor(() => expect(screen.getByText(/not yet classified/i)).toBeInTheDocument());
+    expect(payloadCalls()).toHaveLength(1);
   });
 
   it('does not fetch the inactive leg’s payload while the other leg’s tab is active', async () => {
@@ -2140,7 +2021,7 @@ describe('FlowTables', () => {
     expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
     await userEvent.click(screen.getByRole('tab', { name: /Request: Classification/i }));
     await userEvent.click(screen.getByRole('tab', { name: /Request: Data lineage/i }));
-    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
+    await screen.findByText(/No value on this payload was carried in/);
     expect(payloadCalls().every((c) => String(c[0]).includes('reqhash0deadbeef'))).toBe(true);
     expect(payloadCalls().some((c) => String(c[0]).includes('resphash0feedface'))).toBe(false);
     // Only once the Response leg is actually selected is its payload read.
@@ -2234,7 +2115,7 @@ describe('FlowTables', () => {
     expect(classTab()).toHaveAttribute('aria-selected', 'false');
     expect(lineageTab()).toHaveAttribute('aria-selected', 'false');
     expect(screen.queryByText(/not yet classified/i)).toBeNull();
-    expect(screen.queryByLabelText('Data sources')).toBeNull();
+    expect(screen.queryByText(/No value on this payload was carried in/)).toBeNull();
 
     // Switch to Classification — no SECOND payload request: one hoisted
     // usePayload per leg, and TanStack keys the cache on the hash. The verdict
@@ -2250,7 +2131,7 @@ describe('FlowTables', () => {
     // Data lineage next — it needs no payload read at all, and swaps the pane
     // out from under Classification.
     await userEvent.click(lineageTab());
-    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
+    await screen.findByText(/No value on this payload was carried in/);
     expect(lineageTab()).toHaveAttribute('aria-selected', 'true');
     expect(screen.queryByText(/not yet classified/i)).toBeNull();
     expect(screen.queryByText(/"flights"/)).toBeNull();
@@ -2262,40 +2143,19 @@ describe('FlowTables', () => {
     expect(payloadCalls()).toHaveLength(callsAfterPayload);
   });
 
-  it('reads the trace-scoped lineage resource exactly once for many tab activations', async () => {
-    mockFetchWithLineage(LINEAGE_LEGS);
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
-    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
-    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('tab', { name: 'Response' }));
-    await userEvent.click(await screen.findByRole('tab', { name: /Response: Data lineage/i }));
-    await userEvent.click(screen.getByRole('tab', { name: 'Request' }));
-    await userEvent.click(await screen.findByRole('tab', { name: /Request: Data lineage/i }));
-    await waitFor(() => expect(screen.getByLabelText('Data sources')).toBeInTheDocument());
-    // One trace-level fetch serves every leg — NOT one per tab activation.
-    const lineageCalls = (fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (c) => String(c[0]).endsWith('/data-lineage'),
-    );
-    expect(lineageCalls).toHaveLength(1);
-  });
-
   // --- trace-level coverage (issue #120, ADR-0028 D6) ------------------------
-  // A partial trace must be UNMISTAKABLE: the flow view shows its tables before
-  // anything is selected, so a warning that only appeared inside an expanded
-  // payload would let a reader take the visible rows for the whole picture.
+  // The banner is about the old derivation's results, so it is shown in the one view
+  // that shows them, the Lineage view, and there before anything is selected. The
+  // tables view carries no copy of it.
 
-  it('reads lineage up front, not only once a row is selected', async () => {
+  it('reads lineage on the Lineage view up front, not only once something is selected', async () => {
     // #119 gated this read on there being a selection, because lineage only
-    // rendered inside an expanded payload. #120 moved the trace-level status to
-    // the top of the view, where it has to be on screen from the first render —
-    // so the laziness is deliberately gone. One fetch per trace either way.
+    // rendered inside an expanded payload. #120 made the trace-level status visible
+    // from the first render, so the laziness is deliberately gone. One fetch per
+    // trace either way.
     mockFetchWithLineage(LINEAGE_LEGS);
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
     );
     await waitFor(() =>
       expect(
@@ -2306,36 +2166,86 @@ describe('FlowTables', () => {
     );
   });
 
-  it('warns that lineage is incomplete, and from where, on a partial trace', async () => {
-    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/incomplete/i);
-    // The stop position is named, so the reader knows where the picture ends
-    // rather than only that it does.
-    expect(alert.textContent).toMatch(/2/);
-  });
-
-  it('says the sources shown are not the full set on a partial trace', async () => {
+  it('warns in the Lineage view that lineage is incomplete, and from where, before any selection', async () => {
     // The acceptance criterion is about MEANING, not just a coloured box: the
-    // warning has to state that what is listed is a prefix. "Fewer rows" read as
-    // "fewer sources" is the exact failure this flag exists to prevent.
+    // warning has to state that what is marked is a prefix, and name where it ends.
+    // Nothing is selected and no source is chosen: the banner does not wait for them.
     mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
+    );
+    const title = await screen.findByText(/Data lineage for this trace is incomplete/i);
+    const box = title.closest('.pf-v5-c-alert');
+    expect(box?.textContent).toMatch(/up to leg seq 2/i);
+    expect(box?.textContent).toMatch(/not the complete set of data sources/i);
+  });
+
+  it('says coverage is not yet known in the Lineage view while the lineage read is in flight', async () => {
+    // Silence is the clean-coverage statement, so an in-flight read must not be silent.
+    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+    const impl = (fetch as ReturnType<typeof vi.fn>).getMockImplementation()!;
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) =>
+      url.endsWith('/data-lineage') ? new Promise(() => {}) : impl(url),
+    );
+    renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
+    );
+    expect(await screen.findByText(/Checking data lineage coverage for this trace/i)).toBeInTheDocument();
+  });
+
+  it.each(['flat', 'diagram', 'graph'] as const)(
+    'shows no coverage banner and makes no lineage read on the %s view',
+    async (legView) => {
+      mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+      renderWithProviders(
+        <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView={legView} />,
+      );
+      await waitFor(() =>
+        expect(
+          (fetch as ReturnType<typeof vi.fn>).mock.calls.some((c) => String(c[0]).endsWith('/entities')),
+        ).toBe(true),
+      );
+      await new Promise((r) => setTimeout(r, 200));
+      expect(screen.queryByText(/Data lineage for this trace is incomplete/i)).toBeNull();
+      expect(
+        (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+          String(c[0]).endsWith('/data-lineage'),
+        ),
+      ).toHaveLength(0);
+    },
+  );
+
+  it('shows no coverage banner and makes no lineage read on the tables view', async () => {
+    // The banner left the every-view slot: it qualifies the old derivation's results,
+    // which only the Lineage view shows — and the read behind it is made there only.
+    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
+    const partial = renderWithProviders(
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    expect(screen.queryByText(/Data lineage for this trace is incomplete/i)).toBeNull();
+    partial.unmount();
+
+    mockFetchWithLineageError();
     renderWithProviders(
       <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
     );
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/not the complete set of data sources/i);
+    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    expect(screen.queryByText(/coverage for this trace is unknown/i)).toBeNull();
+    expect(screen.queryByText(/Checking data lineage coverage/i)).toBeNull();
+    expect(
+      (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+        String(c[0]).endsWith('/data-lineage'),
+      ),
+    ).toHaveLength(0);
   });
 
-  it('shows no coverage warning on a complete trace', async () => {
+  it('shows no coverage warning in the Lineage view on a complete trace', async () => {
     mockFetchWithLineage(LINEAGE_LEGS, { status: 'complete', stopped_at_seq: null });
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
     );
-    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
     await waitFor(() =>
       expect(
         (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
@@ -2346,15 +2256,14 @@ describe('FlowTables', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('shows no coverage warning while the status is unknown', async () => {
+  it('shows no coverage warning in the Lineage view while the status is unknown', async () => {
     // `status: null` is "not derived yet". Warning about a truncation nobody has
-    // established would train the reader to ignore the banner — and the per-leg
-    // blocks already say "lineage not yet computed" for this state.
+    // established would train the reader to ignore the banner.
     mockFetchWithLineage(LINEAGE_LEGS, { status: null, stopped_at_seq: null });
     renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} legView="lineage" />,
     );
-    await waitFor(() => expect(screen.getByText(/2 \(1 anchor\)/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('lineage-graph')).toBeInTheDocument());
     await waitFor(() =>
       expect(
         (fetch as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
@@ -2363,22 +2272,6 @@ describe('FlowTables', () => {
       ).toHaveLength(1),
     );
     expect(screen.queryByRole('alert')).toBeNull();
-  });
-
-  it('keeps the partial warning visible while a row is selected', async () => {
-    // The detail panel floats over the tables; the warning must not be what it
-    // covers, or the truncation becomes invisible exactly when a reader is
-    // drilling into a payload's sources.
-    mockFetchWithLineage(LINEAGE_LEGS, { status: 'partial', stopped_at_seq: 2 });
-    renderWithProviders(
-      <FlowTables traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
-    );
-    await screen.findByRole('alert');
-    await userEvent.click(screen.getByText(/2 \(1 anchor\)/));
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'Interaction' })).toBeInTheDocument(),
-    );
-    expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 
   it('scopes the active-row highlight selector to out-specify PF clickable rows', () => {
@@ -2396,5 +2289,136 @@ describe('FlowTables', () => {
     );
     // And it must NOT be the too-weak bare selector on its own.
     expect(css).not.toMatch(/(^|\})\s*tr\[data-dg-selected='active'\]\s*\{/);
+  });
+});
+
+
+describe('FlowTables — tracking values on the graph (the label lineage overlay)', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+  /** A live booking trace's shape, cut down: the PID on i1's request came from i0's response. */
+  const hop = (seq: number, role: string, iid: string, leg: string) => ({
+    interaction_id: iid, leg_type: leg, seq, trace_id: 'T1', caller: 'a', callee: 'b',
+    text: 'BK-83CE5F', start: 16, end: 25, role, excerpt: null,
+  });
+  const LABELS = {
+    lineage_status: 'complete',
+    legs: [{
+      leg_type: 'request', payload_hash: 'h1', seq: 1,
+      found: { sensitivity_level: 'INTERNAL', regulatory_tags: ['PI'] },
+      carried: { max_level: 'RESTRICTED', regulatory_tags: ['PII'], origin_count: 1 },
+      labels: [{
+        text: 'BK-83CE5F', start: 16, end: 25, entity_type: 'PID', sensitivity_level: 'RESTRICTED',
+        regulatory_tags: ['PII'], found_here: false,
+        carried_in: [{
+          origin_interaction_id: 'i0', origin_leg_type: 'response', origin_seq: 0, caller: 'a', callee: 'b',
+          unit_text: 'BK-83CE5F', unit_value: 'BK-83CE5F', match_kind: 'whole', origin_trace_id: null,
+          chains: [[hop(0, 'origin', 'i0', 'response'), hop(1, 'here', 'i1', 'request')]],
+        }],
+      }],
+    }],
+  };
+  const TWO = [
+    { ...INTERACTIONS[0], id: 'i0', summary: 'earlier', legs: [
+      { leg_type: 'request', occurred_at: '2026-05-01T11:59:00Z', payload_hash: null, error: false, seq: -1 },
+      { leg_type: 'response', occurred_at: '2026-05-01T11:59:01Z', payload_hash: null, error: false, seq: 0 },
+    ] },
+    withLegHashes('h1', null),
+  ];
+
+  function mockFetchTwo() {
+    mockFetch({ labels: LABELS });
+    const base = (fetch as ReturnType<typeof vi.fn>).getMockImplementation()!;
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return { ok: true, status: 200, json: async () => ({ interactions: TWO }) };
+      return base(url);
+    });
+  }
+
+  it('a right-click on a diagram row selects it and tracks that leg\'s carried-in values: the banner, lit and dimmed rows, then Clear', async () => {
+    mockFetchTwo();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} initialLegView="diagram" />,
+    );
+    const rows = await screen.findAllByTestId('dg-seq-message');
+    expect(rows).toHaveLength(4);
+    expect(screen.queryByTestId('track-banner')).toBeNull();
+
+    // A right-click on i1's RESPONSE tracks nothing: the labels read has no response leg.
+    fireEvent.contextMenu(rows[3]);
+    await screen.findByText('agent calls search');
+    expect(screen.queryByTestId('track-banner')).toBeNull();
+    fireEvent.contextMenu(rows[2]); // i1's request
+    const banner = await screen.findByTestId('track-banner');
+    expect(banner).toHaveTextContent('Tracking 1 value on the graph');
+    expect(banner).toHaveTextContent('BK-83CE5F PID');
+    // The picker opened at the pointer, the value ticked; Done closes it, "Choose values…" reopens it.
+    const picker = screen.getByRole('dialog', { name: 'Track values on the graph' });
+    await waitFor(() => expect(within(picker).getByRole('checkbox', { name: /BK-83CE5F/ })).toBeChecked());
+    await userEvent.click(within(picker).getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await userEvent.click(within(banner).getByRole('button', { name: 'Choose values…' }));
+    expect(screen.getByRole('dialog', { name: 'Track values on the graph' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    // The detail panel opened on the right-clicked interaction.
+    expect(await screen.findByText('agent calls search')).toBeInTheDocument();
+    // i0's response and i1's request are lit; the other two legs dimmed.
+    const tracks = () => screen.getAllByTestId('dg-seq-message').map((el) => [el.getAttribute('data-seq'), el.getAttribute('data-track')]);
+    await waitFor(() => expect(tracks()).toEqual([['-1', 'dimmed'], ['0', 'lit'], ['1', 'lit'], ['2', 'dimmed']]));
+
+    await userEvent.click(within(banner).getByRole('button', { name: 'Clear' }));
+    expect(screen.queryByTestId('track-banner')).toBeNull();
+    expect(document.querySelector('[data-track]')).toBeNull();
+  });
+
+  it('the same tracked set lights the Flat and Tree rows, a row right-click opens the picker, and the tab\'s tick box unticks it', async () => {
+    mockFetchTwo();
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} initialLegView="diagram" />,
+    );
+    const rows = await screen.findAllByTestId('dg-seq-message');
+    fireEvent.contextMenu(rows[2]);
+    await screen.findByTestId('track-banner');
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    // Flat: one row per leg.
+    await userEvent.click(screen.getByRole('tab', { name: 'Flat' }));
+    const flat = await screen.findByLabelText('Interactions (flat)');
+    await waitFor(() =>
+      expect([...flat.querySelectorAll('tbody tr')].map((tr) => tr.getAttribute('data-dg-track'))).toEqual(['dimmed', 'lit', 'lit', 'dimmed']),
+    );
+    // Tree: one row per interaction, lit when any of its legs is.
+    await userEvent.click(screen.getByRole('tab', { name: 'Tree' }));
+    const tree = await screen.findByLabelText('Interactions');
+    await waitFor(() =>
+      expect([...tree.querySelectorAll('tbody tr')].map((tr) => tr.getAttribute('data-dg-track'))).toEqual(['lit', 'lit']),
+    );
+    // A right-click on a table row opens the picker for that interaction too.
+    fireEvent.contextMenu(tree.querySelectorAll('tbody tr')[1]);
+    const picker = await screen.findByRole('dialog', { name: 'Track values on the graph' });
+    await waitFor(() => expect(within(picker).getByRole('checkbox', { name: /BK-83CE5F/ })).toBeChecked());
+    await userEvent.click(within(picker).getByRole('button', { name: 'Done' }));
+
+    // The Data lineage tab shows the value ticked; unticking it clears the overlay.
+    await userEvent.click(screen.getByRole('tab', { name: 'Request: Data lineage' }));
+    const box = await screen.findByRole('checkbox', { name: 'Track BK-83CE5F (PID) on the graph' });
+    expect(box).toBeChecked();
+    await userEvent.click(box);
+    await waitFor(() => expect(screen.queryByTestId('track-banner')).toBeNull());
+    expect(document.querySelector('[data-dg-track]')).toBeNull();
+  });
+
+  it('starts a new trace with nothing tracked', async () => {
+    mockFetchTwo();
+    const { rerender } = renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} initialLegView="diagram" />,
+    );
+    fireEvent.contextMenu((await screen.findAllByTestId('dg-seq-message'))[2]);
+    await screen.findByTestId('track-banner');
+    rerender(<FlowTablesWithLegTabs traceId="T2" pins={new PinStore()} onPinsChange={() => {}} initialLegView="diagram" />);
+    await waitFor(() => expect(screen.queryByTestId('track-banner')).toBeNull());
   });
 });

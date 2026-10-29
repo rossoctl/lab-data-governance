@@ -5,7 +5,7 @@ import { formatTime24Utc } from '../../lib/recentTraces';
 import type { Entity, Interaction } from '../../types';
 import { EntityCell } from './EntityCell';
 import { PinDot } from './PinDot';
-import { rowProps } from './rowChrome';
+import { rowProps, trackProps } from './rowChrome';
 import { StatusText } from './StatusText';
 
 /**
@@ -21,6 +21,8 @@ export function InteractionsTable({
   selectedId,
   pinColor,
   onSelect,
+  litEdgeIds = null,
+  onContextMenuInteraction,
 }: {
   interactions: readonly Interaction[];
   entById: Map<string, Entity>;
@@ -29,6 +31,10 @@ export function InteractionsTable({
   selectedId: string | null;
   pinColor: Map<string, string>;
   onSelect: (ix: Interaction) => void;
+  /** The label lineage overlay's lit legs (`<interaction>:<leg_type>`); `null` = nothing tracked. See `InteractionDiagramProps.litEdgeIds`. */
+  litEdgeIds?: readonly string[] | null;
+  /** A right-click on a row, with its interaction and leg: opens the track picker (see `InteractionDiagramProps.onContextMenuInteraction`). */
+  onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
 }) {
   return (
     <Table aria-label="Interactions" variant="compact">
@@ -48,7 +54,21 @@ export function InteractionsTable({
           const caller = ix.caller_entity_id ? entById.get(ix.caller_entity_id) : undefined;
           const callee = ix.callee_entity_id ? entById.get(ix.callee_entity_id) : undefined;
           return (
-            <Tr key={ix.id} isClickable onRowClick={() => onSelect(ix)} {...rowProps(selectedId === ix.id)}>
+            <Tr
+              key={ix.id}
+              isClickable
+              onRowClick={() => onSelect(ix)}
+              {...rowProps(selectedId === ix.id)}
+              {...trackProps(litEdgeIds, ix.legs.map((l) => `${ix.id}:${l.leg_type}`))}
+              onContextMenu={
+                onContextMenuInteraction
+                  ? (e) => {
+                      e.preventDefault();
+                      onContextMenuInteraction(ix.id, 'request', { x: e.clientX, y: e.clientY });
+                    }
+                  : undefined
+              }
+            >
               <Td dataLabel="Started" className="dg-mono">
                 {requestOccurredAt(ix) ? formatTime24Utc(requestOccurredAt(ix)!) : ''}
               </Td>

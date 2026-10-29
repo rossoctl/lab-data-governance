@@ -20,6 +20,20 @@ marks, not a diff:
 - ``lin``: the highest ``lineage_metadata.seq`` in the trace, plus the trace's
   lineage ``status``/``stopped_at_seq``. The lineage processor writes after the
   interactions processor and the status can flip with no new metadata row.
+- ``lab``: the trace's label-lineage status, edge count and ``derived_at``
+  (migration 0024). Label lineage writes after classification, and every
+  derivation stamps ``derived_at``. Only present once the trace has a status row,
+  so a token from before label lineage reads as it always did.
+- ``irr`` / ``trr``: the numbers of ``interaction_risk_records`` and
+  ``trace_risk_records`` rows in the trace. Both tables are insert-only and
+  versioned (migration 0016): a recompute is a new row, never an update, so
+  the count moves on every risk write. The risk processors write after
+  derivation, so a trace's decision is often its last write.
+- ``al``: a digest of the trace's ``alerts`` rows, whole. An alert is the one
+  risk write that is updated in place — a duplicate bumps ``duplicate_count``,
+  a supersession sets ``superseded_by``, an operator changes ``status`` — and
+  no count or high-water mark sees an update. A trace has few alerts (one per
+  trace risk version at most), so hashing them is as cheap as counting.
 
 The token is a string the REST layer hands to the client verbatim and the
 client compares for *equality only* — it must never be parsed, ordered or
@@ -49,12 +63,21 @@ def get_trace_version(trace_id: str) -> str:
     """Return the trace's current version token (see the module docstring)."""
     with db.transaction() as tx:
         present = _existing_tables(
-            tx, ("interactions", "lineage_metadata", "lineage_trace_status")
+            tx,
+            (
+                "interactions",
+                "lineage_metadata",
+                "lineage_trace_status",
+                "label_lineage_trace_status",
+                "trace_risk_records",
+            ),
         )
         legs = ix = es = 0
         lin = 0
         status = ""
         stopped = 0
+        irr = trr = 0
+        alerts = "0"
         if "interactions" in present:
             row = tx.fetch_one(
                 "SELECT "
@@ -85,4 +108,30 @@ def get_trace_version(trace_id: str) -> str:
             if row is not None:
                 status = str(row[0])
                 stopped = int(row[1] or 0)
-    return f"legs={legs};ix={ix};es={es};lin={lin};st={status}@{stopped}"
+        # The three risk tables arrive together (migration 0016).
+        if "trace_risk_records" in present:
+            row = tx.fetch_one(
+                "SELECT "
+                "  (SELECT COUNT(*) FROM interaction_risk_records "
+                "   WHERE trace_id = %(tid)s), "
+                "  (SELECT COUNT(*) FROM trace_risk_records WHERE trace_id = %(tid)s), "
+                "  (SELECT md5(string_agg(a::text, ',' ORDER BY a.alert_id)) "
+                "   FROM alerts a WHERE a.trace_id = %(tid)s)",
+                {"tid": trace_id},
+            )
+            assert row is not None
+            irr, trr = int(row[0]), int(row[1])
+            alerts = row[2] or "0"
+        lab = ""
+        if "label_lineage_trace_status" in present:
+            row = tx.fetch_one(
+                "SELECT status, edge_count, derived_at FROM label_lineage_trace_status "
+                "WHERE trace_id = %s",
+                (trace_id,),
+            )
+            if row is not None:
+                lab = f";lab={row[0]}:{int(row[1])}@{row[2].isoformat()}"
+    return (
+        f"legs={legs};ix={ix};es={es};lin={lin};st={status}@{stopped};"
+        f"irr={irr};trr={trr};al={alerts}{lab}"
+    )

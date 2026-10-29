@@ -118,11 +118,11 @@ export interface GraphNodeSpec {
    * request paths is what keeps every request edge pointing strictly rightwards
    * wherever the graph allows it.
    *
-   * CYCLES TERMINATE. A→B→A is not a cycle here (the return trip is a response
-   * leg, which is excluded), but a genuine request cycle — A requests B, B
-   * requests A — is possible and so is a self-request. The relaxation below is
-   * bounded by node count rather than run to a fixed point, so a cycle can never
-   * spin: see `assignColumns`.
+   * CYCLES ARE BROKEN BY TIME. A→B→A is not a cycle here (the return trip is a
+   * response leg, which is excluded), but a genuine request cycle — A requests B, B
+   * requests A — is possible and so is a self-request. The request that closed the
+   * loop, in `seq` order, is drawn backwards and the rest is laid out as above, so
+   * a cycle's columns depend on its own edges only: see `assignColumns`.
    */
   column: number;
   /**
@@ -151,7 +151,7 @@ export interface GraphNodeSpec {
 export interface GraphEdgeSpec {
   /**
    * `<interaction id>:<leg_type>` — the canonical **Interaction leg** key, the
-   * grain at which a leg is unique (the same grain `flow.legLineageKey` uses).
+   * grain at which a leg is unique.
    * The interaction id alone is NOT unique any more: its two legs are two edges,
    * and a topology model with duplicate edge ids silently drops one.
    */
@@ -170,6 +170,20 @@ export interface GraphEdgeSpec {
    * is a single number and stays legible on a short arrow — which is the reason
    * the interaction's prose `summary` moved to `title` instead of being the
    * label.
+   *
+   * That rejection was of PROSE specifically, not of every alternative to the
+   * seq number, and it's narrower than it reads: what a short arrow cannot
+   * carry is an unbounded *sentence*, not a bounded set of short uppercase
+   * tokens. The risk layer (issue #170 follow-up) replaces this field's
+   * rendered text with an interaction's regulatory tags — but does so at the
+   * RENDERER (`ExecutionFlowGraph.tsx`'s `EntityGraph`), not here: this field
+   * is still always the `seq` coming out of `deriveGraph`, unconditionally.
+   * The renderer swaps in the tag string via a side-channel
+   * `classificationByInteraction` map, the same shape `EntityGraphProps.riskLevelByInteraction`
+   * already uses for risk colour — deliberately, since this derivation has no
+   * access to classification data at all (it isn't part of `flow.Interaction`;
+   * see `riskForestAdapter.ts`'s header). Don't add a `tags` field here to "do it properly" — a consumer
+   * on the other two tabs would just find it permanently `undefined`.
    */
   label: string;
   /** The leg's `seq` itself, for ordering and for tests that assert on a number. */
@@ -285,53 +299,43 @@ function pairKey(a: string, b: string): string {
  * inline in `deriveGraph`). Returns a column per node id, dense from 0 wherever
  * the call graph allows.
  *
- * THE ALGORITHM is a longest-path relaxation with a hard ceiling on the column,
- * not a recursive walk:
+ * THE ALGORITHM, in two steps:
  *
- *   - every node starts at column 0;
- *   - repeatedly, for each request edge `u → v` with `u !== v`, if
- *     `col[v] <= col[u]` and `col[u] + 1 <= maxColumn` then
- *     `col[v] = col[u] + 1`;
- *   - stop when a pass changes nothing, or after `n` passes, whichever is first;
- *   - `maxColumn` is `n - 1`, the most columns `n` nodes can occupy.
+ *   1. SET ASIDE THE REQUESTS THAT CLOSE A LOOP. Walking the request edges in `seq`
+ *      order, an edge `u → v` whose target already reaches its source over the edges
+ *      kept so far would close a cycle; it is set aside and will be drawn backwards.
+ *      Every other edge is kept, so what is kept is acyclic.
+ *   2. LONGEST PATH over the kept edges: every node starts at column 0 and each kept
+ *      edge `u → v` pushes `v` to at least `col[u] + 1`, until nothing changes.
  *
- * WHY A CEILING AND NOT JUST A FIXED POINT. A request cycle is real data: two
- * agents can request each other (A asks B for a plan, B asks A for context), and a
- * self-request is already a first-class case here (`isSelfCall`). On a cycle a
- * plain "run until nothing changes" relaxation never settles — each trip round
- * pushes every node on it one further right, forever — and a recursive
- * longest-path walk recurses forever.
+ * WHY THE LOOP IS BROKEN FIRST. A request cycle is real data: two agents can request
+ * each other (A asks B for a plan, B asks A for context). A cycle cannot be drawn
+ * strictly left-to-right — that is a property of cycles — so one of its edges has to
+ * run backwards, and a plain "push right until nothing changes" never settles on one.
+ * Choosing that edge up front makes the answer a property of the request edges alone.
+ * The previous version bounded the relaxation by an `n - 1` ceiling over ALL nodes
+ * instead, so a cycle's two nodes leapfrogged each other up to it and which one ended
+ * on the left depended on the parity of `n`: one entity with no edge at all mirrored
+ * the graph (issue #147).
  *
- * The ceiling is what makes termination AND a sane picture both properties of the
- * CODE rather than of the data. `n - 1` is not an arbitrary safety limit: the
- * longest simple path in a graph of `n` nodes has exactly `n - 1` edges, so an
- * acyclic call graph is fully relaxed strictly below the ceiling and it is never
- * the thing that stops it. On a cyclic one it binds, and it binds at the tightest
- * value that cannot distort an acyclic answer — so a 2-cycle yields two adjacent
- * columns rather than the runaway spread a pass-count-only cap would give (`n`
- * passes over `m` edges can advance a cycle node `n * m` times, which is why
- * capping the passes alone is not enough).
+ * WHICH EDGE RUNS BACKWARDS: the one that, in `seq` order, closed the loop with
+ * earlier requests. For A⇄B that is B's request back to A, so A, the caller of the
+ * first request, reads first. It is a rule about time, so it cannot depend on how
+ * many other entities, or other parts of the graph, the trace has.
  *
- * The result is a deterministic, finite assignment in which the cycle's edges have
- * been pushed apart as far as `n - 1` columns allow, leaving ONE backwards edge in
- * the cycle — the best any layered layout can do, since a cycle cannot be drawn
- * strictly left-to-right. That is a property of cycles, not of this code.
- *
- * The pass cap stays as well, as the belt to the ceiling's braces: with the
- * ceiling in place a pass can still make a change without making progress, so
- * "stop after `n` passes" is what guarantees the loop exits rather than relying on
- * the ceiling to starve it.
+ * No request edge runs within a column: a kept one points strictly right, and one
+ * set aside strictly left (its target already reaches its source). An edge within a
+ * column comes only from a response leg whose request leg is absent (see
+ * `deriveGraph`'s note on response-only legs).
  *
  * SELF-REQUESTS ARE SKIPPED (`u !== v`). A self-call would otherwise demand a
- * node be strictly to the right of itself, which is unsatisfiable, and under the
- * cap it would simply march that one node `n` columns right for no reason. The
- * self-edge is drawn as a loop on the node instead (see `isSelfCall`), so it
- * needs no horizontal room.
+ * node be strictly to the right of itself, which is unsatisfiable. The self-edge is
+ * drawn as a loop on the node instead (see `isSelfCall`), so it needs no horizontal
+ * room.
  *
- * DETERMINISM. `requestEdges` arrives in `seq` order and is iterated in that
- * order, and `max` is order-independent anyway, so the assignment is a pure
- * function of the input with no Map/Set iteration-order dependence beyond
- * insertion.
+ * DETERMINISM. `requestEdges` arrives in `seq` order and is iterated in that order,
+ * and `max` is order-independent anyway, so the assignment is a pure function of the
+ * input.
  *
  * NODES NO REQUEST LEG TOUCHES stay at column 0 — an isolated entity, or one only
  * a dropped interaction names, or one that only ever appears on a response. The
@@ -344,24 +348,44 @@ function assignColumns(
   const column = new Map<string, number>();
   for (const id of nodeIds) column.set(id, 0);
 
-  // The most columns `n` nodes can occupy — the length of the longest simple path.
-  // An acyclic graph never reaches it; a cycle is stopped BY it. See the note above.
-  const maxColumn = Math.max(0, nodeIds.length - 1);
+  // Step 1: the kept edges, as an adjacency list for the reachability check.
+  const keptFrom = new Map<string, string[]>();
+  const reaches = (from: string, to: string): boolean => {
+    const seen = new Set([from]);
+    const stack = [from];
+    while (stack.length > 0) {
+      const u = stack.pop()!;
+      if (u === to) return true;
+      for (const v of keptFrom.get(u) ?? []) {
+        if (!seen.has(v)) {
+          seen.add(v);
+          stack.push(v);
+        }
+      }
+    }
+    return false;
+  };
+  const kept: Array<{ source: string; target: string }> = [];
+  for (const e of requestEdges) {
+    // A self-request cannot be to the right of itself; drawn as a loop instead.
+    if (e.source === e.target) continue;
+    // An edge naming an id outside `nodeIds` cannot happen (deriveGraph drops
+    // dangling endpoints before this runs), but reading defensively keeps the
+    // helper honest on its own signature rather than on a caller's invariant.
+    if (!column.has(e.source) || !column.has(e.target)) continue;
+    // Closes a loop with the earlier requests: this is the edge drawn backwards.
+    if (reaches(e.target, e.source)) continue;
+    kept.push(e);
+    keptFrom.set(e.source, [...(keptFrom.get(e.source) ?? []), e.target]);
+  }
 
-  // `n` passes, not "until stable": with the ceiling in place a pass can change
-  // something without making progress, so the loop needs its own exit.
+  // Step 2: longest path. The kept edges are acyclic, so the longest path has at most
+  // `n - 1` edges and `n` passes always reach the fixed point.
   for (let pass = 0; pass < nodeIds.length; pass += 1) {
     let changed = false;
-    for (const e of requestEdges) {
-      // A self-request cannot be to the right of itself; drawn as a loop instead.
-      if (e.source === e.target) continue;
-      const from = column.get(e.source);
-      const to = column.get(e.target);
-      // An edge naming an id outside `nodeIds` cannot happen (deriveGraph drops
-      // dangling endpoints before this runs), but reading defensively keeps the
-      // helper honest on its own signature rather than on a caller's invariant.
-      if (from == null || to == null) continue;
-      if (to <= from && from + 1 <= maxColumn) {
+    for (const e of kept) {
+      const from = column.get(e.source)!;
+      if (column.get(e.target)! <= from) {
         column.set(e.target, from + 1);
         changed = true;
       }
@@ -498,8 +522,8 @@ export function deriveGraph(
   const encounterIndexById = new Map(encounterOrder.map((id, i) => [id, i]));
 
   // THE LAYERING. Column = call depth along REQUEST legs only (see
-  // GraphNodeSpec.column and assignColumns for why responses are excluded and why
-  // the relaxation is capped rather than run to a fixed point).
+  // GraphNodeSpec.column and assignColumns for why responses are excluded and how a
+  // request cycle is broken).
   const columnById = assignColumns(
     entities.map((e) => e.id),
     edges.filter((e) => e.legType === 'request'),
@@ -548,33 +572,6 @@ export function deriveGraph(
   );
   const trailingColumn = deepestReached + 1;
   for (const e of unreached) columnById.set(e.id, trailingColumn);
-
-  // NORMALISE so the leftmost occupied column is 0. Done HERE, after the trailing column
-  // is assigned, and not inside `assignColumns` — the unreached entities are placed after
-  // that helper returns, so normalising earlier would fix a minimum that is not yet final.
-  //
-  // Without this, a cycle drifts rightward with the count of nodes that have nothing to do
-  // with it. `assignColumns`' ceiling is `n - 1` over ALL nodes and a cycle relaxes until
-  // it hits that ceiling, so adding entities which participate in no request edge *moves
-  // the cycle*: `A⇄B` alone occupies columns 0 and 1, while `A⇄B` plus eight isolated
-  // entities occupies 8 and 9 — leaving columns 0-7 empty and the renderer drawing a
-  // growing blank left gutter.
-  //
-  // That also silently vacated `GraphNodeSpec.column`'s documented contract, which says
-  // `0` means "an entity nothing ever calls — the trace's entry point". On a wholly cyclic
-  // call graph no node held column 0 at all, so the field meant nothing.
-  //
-  // Shifting is safe because only the RELATIVE column is load-bearing: the renderer
-  // consumes `column` as a left-to-right ordinal (multiplying it by a px step), and every
-  // edge's routing depends on the DIFFERENCE between two columns, which a uniform shift
-  // preserves exactly. The pre-existing tests pass either way — they assert
-  // `column <= n - 1` and that a 2-cycle occupies two distinct columns, both true before
-  // and after — which is why this went unnoticed; `min === 0` is what actually pins it.
-  let minColumn = Infinity;
-  for (const c of columnById.values()) if (c < minColumn) minColumn = c;
-  if (minColumn > 0 && minColumn !== Infinity) {
-    for (const [id, c] of columnById) columnById.set(id, c - minColumn);
-  }
 
   // THE ROWS. Within each column, nodes stack in `encounterIndex` order — the
   // trace's chronology — so reading down a column reads forwards in time. THIS IS

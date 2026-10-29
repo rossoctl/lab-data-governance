@@ -1,7 +1,7 @@
 """Behavioural tests for ``dg.sh component`` — install / uninstall / status (#182).
 
 This ticket lands the full **reversible** lifecycle of the data-governance
-component (Postgres, receiver, UI, the three processors, the UI HTTPRoute +
+component (Postgres, receiver, UI, the processors, the UI HTTPRoute +
 ReferenceGrant, and the collector tee), reusing the existing ``deploy/`` scripts
 (design: ``docs/cli.md`` § ``dg.sh component``; ADR-0031 records
 that *component* is fully reversible, separate from the one-way namespace
@@ -10,7 +10,7 @@ activation).
 - **install** (idempotent): build+kind-load via ``deploy/build-and-load.sh``
   (``--no-build`` to skip) → ``kubectl apply -f deploy/k8s/`` →
   ``deploy/patch-rossoctl-collector.sh`` (the tee) → ``rollout restart`` +
-  ``rollout status`` of receiver/ui/interactions/classification/data-lineage.
+  ``rollout status`` of every Deployment running a ``data-governance/*`` image.
 - **uninstall**: ``patch-rossoctl-collector.sh --revert`` → delete the
   ``rossoctl-system`` HTTPRoute + the ``data-governance`` ReferenceGrant →
   ``kubectl delete namespace data-governance`` (takes the PVC). ``--keep-data``
@@ -32,10 +32,49 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DG_SH = REPO_ROOT / "deploy" / "dg.sh"
+
+
+def _built_deployments() -> set[str]:
+    """Deployments in deploy/k8s/ whose containers run a build-and-load.sh image.
+
+    Derived from the manifests rather than listed, so a new Deployment that dg.sh
+    does not know fails these tests (#305)."""
+    names: set[str] = set()
+    k8s = REPO_ROOT / "deploy" / "k8s"
+    # The extensions `kubectl apply -f deploy/k8s/` reads.
+    for path in sorted(p for p in k8s.iterdir() if p.suffix in {".yaml", ".yml", ".json"}):
+        for doc in yaml.safe_load_all(path.read_text()):
+            if not doc or doc.get("kind") != "Deployment":
+                continue
+            pod = doc["spec"]["template"]["spec"]
+            images = [
+                c["image"]
+                for c in pod.get("containers", []) + pod.get("initContainers", [])
+            ]
+            if any(i.startswith("data-governance/") for i in images):
+                names.add(doc["metadata"]["name"])
+    return names
+
+
+def _deployments_in(calls: list[str], verb: str) -> set[str]:
+    """Deployment names from the kubectl calls carrying ``verb``
+    (``deployment/<name>`` or ``deployment <name>``)."""
+    out: set[str] = set()
+    for call in calls:
+        if verb not in call:
+            continue
+        toks = call.split()
+        for prev, tok in zip([""] + toks, toks):
+            if tok.startswith("deployment/"):
+                out.add(tok.removeprefix("deployment/"))
+            elif prev == "deployment":
+                out.add(tok)
+    return out
 
 
 def _make_bin(dir_: Path, name: str, body: str) -> Path:
@@ -244,21 +283,11 @@ def test_component_install_drives_full_pipeline(sandbox) -> None:
 def test_component_install_rollout_targets_every_built_image(sandbox) -> None:
     r = sandbox.run("component", "install")
     assert r.returncode == 0, r.stderr
-    restart_calls = [c for c in sandbox.kubectl_calls() if "rollout restart" in c]
-    status_calls = [c for c in sandbox.kubectl_calls() if "rollout status" in c]
-    for dep in (
-        "data-governance-receiver",
-        "data-governance-ui",
-        "data-governance-interactions",
-        "data-governance-classification",
-        "data-governance-data-lineage",
-    ):
-        assert any(f"deployment/{dep}" in call for call in restart_calls), (
-            f"rollout restart must cycle {dep}; got {restart_calls!r}"
-        )
-        assert any(f"deployment/{dep}" in call for call in status_calls), (
-            f"rollout status must wait for {dep}; got {status_calls!r}"
-        )
+    calls = sandbox.kubectl_calls()
+    status_calls = [c for c in calls if "rollout status" in c]
+    built = _built_deployments()
+    assert _deployments_in(calls, "rollout restart") == built
+    assert _deployments_in(calls, "rollout status") == built
     assert any(
         "deployment/data-governance-classification --timeout=180s" in call
         for call in status_calls
@@ -389,6 +418,7 @@ def test_component_uninstall_keep_data_deletes_workloads(sandbox) -> None:
     assert not (
         "delete" in calls and "pvc" in calls.lower()
     ), "--keep-data must not delete the Postgres PVC"
+    assert _deployments_in(sandbox.kubectl_calls(), "delete deployment") == _built_deployments()
 
 
 def test_component_uninstall_leaves_shared_collector_clean(sandbox) -> None:
@@ -417,6 +447,10 @@ def test_component_status_reports_ready_and_tee_wired(sandbox) -> None:
     assert "tee" in out or "collector" in out or "pipeline" in out, (
         f"status must report the collector-tee state; out={out!r}"
     )
+    built = _built_deployments()
+    assert _deployments_in(sandbox.kubectl_calls(), "get deployment") == built
+    for dep in built:
+        assert f"deployment/{dep}: ready" in out, f"status must report {dep}; out={out!r}"
 
 
 def test_component_status_reports_not_installed(sandbox) -> None:

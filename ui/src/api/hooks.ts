@@ -14,15 +14,15 @@ import {
   type InfiniteData,
 } from '@tanstack/react-query';
 import { fetchJson, type QueryParams } from './client';
-import { legLineageKey } from '../lib/flow';
 import type {
   Span,
   TraceListingEntry,
   SpanEvidence,
   Payload,
+  InteractionLabels,
+  LegLabels,
   Entity,
   Interaction,
-  DataLineageLeg,
   LineageStatus,
   TraceDataLineage,
   LineageDirection,
@@ -168,28 +168,20 @@ export function useEntitySpans(
 }
 
 /**
- * Persisted **Data lineage** for a whole trace: the per-leg lookup plus the
- * trace's coverage status. `GET /api/traces/{tid}/data-lineage` (ADR-0028, issues
- * #118 / #120).
+ * Persisted **Data lineage** coverage for a whole trace: its status and where
+ * derivation stopped. `GET /api/traces/{tid}/data-lineage` (ADR-0028, issues
+ * #118 / #120). One fetch per trace, keyed on `traceId` alone; its one reader is
+ * the Lineage view's coverage warning. The response's per-leg `legs` rows are not
+ * read.
  *
- * **One fetch per trace, not per payload.** The resource is trace-scoped while
- * the flow view's payload blocks are per-leg, so the hook unwraps `{legs:[…]}`
- * into a `(interaction_id, leg_type)` → lineage Map (ADR-0028 D5 — never keyed on
- * `payload_hash`). Every expanded payload then reads the one cached query,
- * keyed on `traceId` alone. The trace-level `status` / `stopped_at_seq` ride on
- * the same response and therefore the same query — the coverage warning and the
- * per-leg blocks are two views of one read, not two reads.
+ * `enabled` gates the read for callers that have nothing to show yet: the flow
+ * view enables it on the Lineage view only. It does not gate on having a selection
+ * the way {@link usePayload} gates on a hash: the coverage warning is part of the
+ * view's first paint, and a truncation a reader has to click to discover is not a
+ * warning.
  *
- * `enabled` gates the read for callers that have nothing to show yet. Note the
- * flow view no longer gates on having a selection the way {@link usePayload}
- * gates on a hash: since #120 the coverage warning is part of the view's first
- * paint, and a truncation a reader has to click to discover is not a warning.
- *
- * Every absence is a normal shape, not an error: an empty `legs` array (trace has
- * no interactions, or the lineage migration hasn't run) yields an empty map, a
- * leg whose lineage hasn't been derived yet is a present key with a `null` value
- * (the eventual-consistency window), and a missing/absent `status` normalises to
- * `null` — *unknown*, never `'complete'`.
+ * A missing/absent `status` normalises to `null` — *unknown*, never
+ * `'complete'`.
  */
 export function useDataLineage(
   traceId: string,
@@ -200,16 +192,9 @@ export function useDataLineage(
     queryKey: ['data-lineage', traceId],
     queryFn: () =>
       fetchJson<{
-        legs: DataLineageLeg[];
         status?: LineageStatus;
         stopped_at_seq?: number | null;
       }>(`/traces/${traceId}/data-lineage`).then((r) => ({
-        byLeg: new Map(
-          (r.legs ?? []).map((leg) => [
-            legLineageKey(leg.interaction_id, leg.leg_type),
-            leg.lineage,
-          ]),
-        ),
         // `?? null` rather than a default of `'complete'`: an older server, or a
         // DB without migration 0012, omits the field, and treating that silence
         // as full coverage is precisely the claim D6's flag exists to withhold.
@@ -252,10 +237,9 @@ export function useDataLineage(
  * 200 with an empty result (the collection-read convention). The genuine failure
  * modes are a bad `direction` and a MISSING `source`, both 400s; the first is
  * unreachable because the argument is typed, and the second is unreachable because
- * of the `enabled` gate above. Note the response is passed through UNREDUCED: unlike
- * `useDataLineage`, whose per-leg map is the shape every consumer wants, `state` /
- * `pending_frontier` / `truncated` must all reach the view intact, and a reduction is
- * exactly where a tri-state gets flattened into an empty list.
+ * of the `enabled` gate above. Note the response is passed through UNREDUCED:
+ * `state` / `pending_frontier` / `truncated` must all reach the view intact, and a
+ * reduction is exactly where a tri-state gets flattened into an empty list.
  */
 export function useLineageGraph(
   traceId: string,
@@ -361,6 +345,45 @@ export function useLineageSummary(traceId: string): UseQueryResult<LineageSummar
         status: r.status ?? null,
         stoppedAtSeq: r.stopped_at_seq ?? null,
       })),
+  });
+}
+
+/**
+ * One interaction's **Labels** — per leg, what the classifier found on the
+ * payload beside what label lineage carried into it.
+ * `GET /api/traces/{tid}/interactions/{iid}/labels`.
+ *
+ * One read per INTERACTION, not per leg: both leg tabs read the one cached
+ * entry. Keyed `['leg-labels', traceId, iid]` so the live page's
+ * `['leg-labels', traceId]` prefix invalidation re-reads it when label lineage
+ * lands after classification. A body without a `legs` array is a failed read,
+ * so the view stays the classifier's alone rather than claiming lineage was not
+ * derived; a `lineage_status` other than the two strings is `null` (not
+ * derived), never `'complete'`.
+ */
+export function useLegLabels(
+  traceId: string,
+  interactionId: string | null,
+  enabled = true,
+): UseQueryResult<InteractionLabels> {
+  return useQuery({
+    enabled: enabled && interactionId !== null,
+    queryKey: ['leg-labels', traceId, interactionId],
+    queryFn: () =>
+      fetchJson<{ legs?: unknown; lineage_status?: unknown }>(
+        `/traces/${traceId}/interactions/${interactionId}/labels`,
+      ).then((r): InteractionLabels => {
+        if (!Array.isArray(r.legs)) throw new Error('labels: no legs in the response');
+        return {
+          byLeg: new Map(
+            (r.legs as LegLabels[])
+              .filter((leg) => typeof leg?.leg_type === 'string' && Array.isArray(leg.labels))
+              .map((leg) => [leg.leg_type, leg]),
+          ),
+          lineageStatus:
+            r.lineage_status === 'complete' || r.lineage_status === 'partial' ? r.lineage_status : null,
+        };
+      }),
   });
 }
 

@@ -22,6 +22,11 @@ derivation stays behind the interface (ADR-0005):
   ``status=None`` (*unknown*, never ``complete`` — ADR-0028 D6) before the trace
   has been derived, and empty before the lineage migration has run — never an
   error.
+- :mod:`.labels` — the per-leg **Labels** read (``get_leg_labels``): for one
+  interaction's payload-bearing legs, what the classifier found on the payload
+  (*found here*) beside what label lineage carried into it (*carried in*, with each
+  origin's leg, ``seq`` and caller/callee), paired per span and type. A fact about
+  the payloads, never about a decision; found-here only before migration 0024.
 - :mod:`.trace_version` — the **Trace version** (``get_trace_version``): one
   opaque token per trace that changes whenever its derived picture does, so a
   live reader can ask "anything new?" with one cheap read (ADR-0034).
@@ -34,6 +39,20 @@ derivation stays behind the interface (ADR-0005):
   that source's provenance ends — but they still run no matcher (D7) and never cross a
   trace boundary (D14). Both ``direction`` and ``source`` are required; multi-source
   fanin/fanout is deferred by the spec.
+- :mod:`.risk` — the DAS risk pipeline's read path over ``interaction_risk_records``
+  / ``trace_risk_records`` (issue #109): ``list_interaction_risk`` / ``get_interaction_risk``
+  / ``get_interaction_risk_history`` and their trace-grain counterparts
+  ``list_trace_risk`` / ``get_trace_risk`` / ``get_trace_risk_history``, plus the
+  trace forest read ``get_trace_risk_detail`` (the trace risk record joined against
+  the :mod:`.interactions` derived forest). Both risk tables are write-once
+  and versioned, so every read reduces to latest-version-per-key, filtered strictly
+  after that reduction (AC-DAS-016). Pagination is DB-level keyset, not the bounded
+  in-memory ``http.paginate`` — see the module docstring for why an offset cursor is
+  wrong here.
+- :mod:`.alerts` — the read path over ``alerts`` (issue #110's read half):
+  ``list_alerts`` (filtered, keyset-paged, superseded alerts left out by default) and
+  ``get_alert``. Not versioned like the risk tables: a level rise links rows through
+  ``superseded_by`` rather than inserting a version.
 
 Only the public surface is re-exported here. Consumers of the private
 row-mapping helpers (``spans._COLUMNS`` / ``spans._row_to_span`` — the
@@ -43,6 +62,13 @@ that reach-in rather than laundering it through the package root.
 
 from __future__ import annotations
 
+from data_governance.retrieval.alerts import (
+    SORT_TIMESTAMP_DESC,
+    AlertPage,
+    AlertView,
+    get_alert,
+    list_alerts,
+)
 from data_governance.retrieval.interactions import (
     DestinationView,
     EntitySpanEvidenceView,
@@ -62,6 +88,15 @@ from data_governance.retrieval.interactions import (
     get_interaction_spans,
     get_interactions,
     get_interactions_feed,
+)
+from data_governance.retrieval.labels import (
+    CarriedLabelsView,
+    FoundLabelsView,
+    GetLegLabelsResult,
+    LabelOriginView,
+    LabelView,
+    LegLabelsView,
+    get_leg_labels,
 )
 from data_governance.retrieval.lineage import (
     DataLineageLegView,
@@ -85,6 +120,24 @@ from data_governance.retrieval.payloads import (
     ClassificationView,
     PayloadView,
     get_payload,
+)
+from data_governance.retrieval.risk import (
+    SORT_COMPUTED_AT_DESC,
+    SORT_RISK_LEVEL_DESC,
+    ForestInteractionView,
+    ForestLegView,
+    InteractionRiskPage,
+    InteractionRiskView,
+    TraceRiskDetail,
+    TraceRiskPage,
+    TraceRiskView,
+    get_interaction_risk,
+    get_interaction_risk_history,
+    get_trace_risk,
+    get_trace_risk_detail,
+    get_trace_risk_history,
+    list_interaction_risk,
+    list_trace_risk,
 )
 from data_governance.retrieval.spans import (
     GetSpansResult,
@@ -125,6 +178,14 @@ __all__ = [
     "ClassificationView",
     "PayloadView",
     "get_payload",
+    # labels: found here / carried in (label lineage)
+    "CarriedLabelsView",
+    "FoundLabelsView",
+    "GetLegLabelsResult",
+    "LabelOriginView",
+    "LabelView",
+    "LegLabelsView",
+    "get_leg_labels",
     # data lineage
     "DataLineageLegView",
     "DataLineageView",
@@ -141,4 +202,27 @@ __all__ = [
     "UnknownDirection",
     "get_lineage_graph",
     "get_lineage_summary",
+    # DAS risk pipeline reads (issue #109)
+    "SORT_COMPUTED_AT_DESC",
+    "SORT_RISK_LEVEL_DESC",
+    "ForestInteractionView",
+    "ForestLegView",
+    "InteractionRiskPage",
+    "InteractionRiskView",
+    "TraceRiskDetail",
+    "TraceRiskPage",
+    "TraceRiskView",
+    "get_interaction_risk",
+    "get_interaction_risk_history",
+    "get_trace_risk",
+    "get_trace_risk_detail",
+    "get_trace_risk_history",
+    "list_interaction_risk",
+    "list_trace_risk",
+    # DAS alert reads (issue #110)
+    "SORT_TIMESTAMP_DESC",
+    "AlertPage",
+    "AlertView",
+    "get_alert",
+    "list_alerts",
 ]

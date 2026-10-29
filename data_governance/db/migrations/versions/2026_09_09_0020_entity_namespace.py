@@ -42,7 +42,7 @@ downgrade drops the column; the namespaced keys survive it, so a rollback to
 0015 leaves a schema 0015's code can read (it never selects the column).
 
 Revision ID: 0020_entity_namespace
-Revises: 0015_lineage_entities_rename
+Revises: 0019_interaction_risk_seq
 Create Date: 2026-09-09
 """
 
@@ -54,7 +54,7 @@ from alembic import op
 
 
 revision: str = "0020_entity_namespace"
-down_revision: Union[str, Sequence[str], None] = "0015_lineage_entities_rename"
+down_revision: Union[str, Sequence[str], None] = "0019_interaction_risk_seq"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

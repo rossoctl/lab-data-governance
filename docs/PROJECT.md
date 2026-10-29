@@ -10,6 +10,12 @@ The primary objectives of data governance are:
 - **Detect data-related vulnerabilities and risks** — Identify and alert on potential vulnerabilities and policy violations (before they impact operations).
 - **Enable compliance and remediation** - Provide clear explanations, remediation guidance and enforcement suggestions on policy violations.
 
+This document covers the v1/v2 ingestion, storage, and retrieval pipeline
+below. The risk engine (evidence gathering, OPA policy decisions, the
+`/risk/*` API) that implements the "detect risks" and "enable remediation"
+objectives above is documented separately in
+[`data_governance/risk/README.md`](../data_governance/risk/README.md).
+
 ## Guiding principles
 
 - Minimal changes to the Rossoctl platform itself.

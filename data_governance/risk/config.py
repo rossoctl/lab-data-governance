@@ -1,0 +1,305 @@
+"""DAS configuration — PRD-SENTRY-001 v8 §10 parameters as env-backed constants.
+
+Plain module-level constants read via ``os.environ.get`` at import time (one
+exception: ``RISK_INHERITED_LABELS``, parsed on first use by
+:func:`inherited_labels_mode`), matching the rest of the repo (no pydantic/pydantic-settings anywhere in this
+codebase). Each PRD dotted name (e.g. ``alert.min_risk_level``) maps to a
+``RISK_``-prefixed upper-snake env var (``RISK_ALERT_MIN_RISK_LEVEL``).
+
+Only the backbone-relevant §10 parameters are defined here: alerting,
+storage retention, the two risk NOTIFY-trigger channels (interaction risk
+written, trace risk written) and their poll-fallback intervals, the fan-out
+batch size, and the metrics refresh interval. The
+remaining ``api.*.default_limit`` parameters belong to whichever issue
+implements the endpoint that consumes them; issue #113 (rule catalog) owns
+``API_RISK_RULES_DEFAULT_LIMIT``/``API_RISK_RULES_MAX_LIMIT``, issue #109
+(interaction/trace risk reads) owns the
+``API_RISK_INTERACTIONS_*``/``API_RISK_TRACES_*`` pairs below, issue #110
+(alert reads) owns ``API_RISK_ALERTS_*``, and issue #111
+(dashboard metrics API) owns the ``API_METRICS_TOP_RULES_*``/
+``API_METRICS_TOP_TRACES_*`` pairs.
+
+The leg-trigger and classification-trigger config (channel names, poll
+fallbacks, reserved processor names for #99/#100) has been removed: those two
+triggers are being replaced by a single new trigger, not yet designed, so
+there is nothing to configure yet.
+"""
+
+from __future__ import annotations
+
+import functools
+import os
+import sys
+
+__all__ = [
+    "ALERT_MIN_RISK_LEVEL",
+    "ALERT_DEDUP_STRATEGY",
+    "ALERT_DEDUP_TIME_WINDOW_MINUTES",
+    "ALERT_MAX_DAILY_ALERTS",
+    "ALERT_VOLUME_WARNING_PCT",
+    "STORAGE_RETENTION_DAYS",
+    "INTERACTION_RISK_WRITTEN_CHANNEL_NAME",
+    "TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS",
+    "TRACE_RISK_WRITTEN_CHANNEL_NAME",
+    "ALERTS_POLL_FALLBACK_INTERVAL_SECONDS",
+    "FANOUT_BATCH_SIZE",
+    "METRICS_REFRESH_INTERVAL_SECONDS",
+    "PROCESSOR_NAME_TRACE_TRIGGER",
+    "PROCESSOR_NAME_ALERTS",
+    "TRACE_AGGREGATION_RISK_LEVEL_MODE",
+    "TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE",
+    "OPA_BASE_URL",
+    "OPA_DECISION_PATH",
+    "OPA_TIMEOUT_SECONDS",
+    "OPA_MAX_RETRIES",
+    "API_RISK_RULES_DEFAULT_LIMIT",
+    "API_RISK_RULES_MAX_LIMIT",
+    "API_RISK_INTERACTIONS_DEFAULT_LIMIT",
+    "API_RISK_INTERACTIONS_MAX_LIMIT",
+    "API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT",
+    "API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT",
+    "API_RISK_TRACES_DEFAULT_LIMIT",
+    "API_RISK_TRACES_MAX_LIMIT",
+    "API_RISK_TRACES_HISTORY_DEFAULT_LIMIT",
+    "API_RISK_TRACES_HISTORY_MAX_LIMIT",
+    "API_RISK_ALERTS_DEFAULT_LIMIT",
+    "API_RISK_ALERTS_MAX_LIMIT",
+    "API_METRICS_TOP_RULES_DEFAULT_LIMIT",
+    "API_METRICS_TOP_RULES_MAX_LIMIT",
+    "API_METRICS_TOP_TRACES_DEFAULT_LIMIT",
+    "API_METRICS_TOP_TRACES_MAX_LIMIT",
+    "INTERNAL_URL_WHITELIST_PATTERNS",
+    "RULES_SOURCE",
+    "inherited_labels_mode",
+]
+
+
+def _str_env(name: str, default: str) -> str:
+    raw = os.environ.get(name)
+    return raw if raw else default
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        sys.stderr.write(f"{name} is not a valid integer: {raw!r}\n")
+        return default
+
+
+def _list_env(name: str, default: list[str]) -> list[str]:
+    """Comma-separated list override.
+
+    Unset -> *default*. Explicitly set to an empty string -> ``[]`` — an
+    operator writing ``RISK_ALERT_DEDUP_STRATEGY=`` means "no dedup
+    strategies," not "use the default list."
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default)
+    if raw == "":
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+# --- alert.* -------------------------------------------------------------
+
+ALERT_MIN_RISK_LEVEL = _str_env("RISK_ALERT_MIN_RISK_LEVEL", "low")
+ALERT_DEDUP_STRATEGY = _list_env(
+    "RISK_ALERT_DEDUP_STRATEGY", ["time_window", "risk_threshold"]
+)
+ALERT_DEDUP_TIME_WINDOW_MINUTES = _int_env("RISK_ALERT_DEDUP_TIME_WINDOW_MINUTES", 5)
+ALERT_MAX_DAILY_ALERTS = _int_env("RISK_ALERT_MAX_DAILY_ALERTS", 1000)
+ALERT_VOLUME_WARNING_PCT = _int_env("RISK_ALERT_VOLUME_WARNING_PCT", 90)
+
+# --- storage.* -------------------------------------------------------------
+
+STORAGE_RETENTION_DAYS = _int_env("RISK_STORAGE_RETENTION_DAYS", 365)
+
+# --- risk.trace_trigger.* ----------------------------------------------------
+
+# Channel the dg_interaction_risk_written trigger (migration 0016) notifies
+# on; the trace-trigger processor (#102/#164) listens here.
+INTERACTION_RISK_WRITTEN_CHANNEL_NAME = _str_env(
+    "RISK_TRACE_TRIGGER_CHANNEL_NAME", "dg_interaction_risk_written"
+)
+TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS = _int_env(
+    "RISK_TRACE_TRIGGER_POLL_FALLBACK_INTERVAL_SECONDS", 10
+)
+
+# --- risk.alerts.* (issues #175/#104) ----------------------------------------
+# Channel migration 0023's statement-level dg_trace_risk_notify trigger fires
+# on; a consumer of new trace risk versions (the alert generator) listens here.
+# The trigger names the channel itself, so an override must change both.
+
+TRACE_RISK_WRITTEN_CHANNEL_NAME = _str_env(
+    "RISK_ALERTS_TRIGGER_CHANNEL_NAME", "dg_trace_risk_written"
+)
+ALERTS_POLL_FALLBACK_INTERVAL_SECONDS = _int_env(
+    "RISK_ALERTS_POLL_FALLBACK_INTERVAL_SECONDS", 10
+)
+
+# --- risk.fanout.* -----------------------------------------------------------
+
+FANOUT_BATCH_SIZE = _int_env("RISK_FANOUT_BATCH_SIZE", 100)
+
+# --- metrics.* -------------------------------------------------------------
+
+METRICS_REFRESH_INTERVAL_SECONDS = _int_env("RISK_METRICS_REFRESH_INTERVAL_SECONDS", 300)
+
+# --- reserved processor_state.processor_name values (issue #98) -------------
+# Carved out now so #102 cannot collide on a processor_name.
+
+PROCESSOR_NAME_TRACE_TRIGGER = "risk_trace_trigger"
+PROCESSOR_NAME_ALERTS = "risk_alerts"
+
+# --- risk.trace_aggregation.* (issue #102) -----------------------------------
+# How interaction-level risk/enforcement values are rolled up into a trace
+# risk record (FR-DAS-021). Named "trace_aggregation" (not just "aggregation")
+# because this is specifically the trace-level rollup — other aggregations
+# (e.g. entity-level, in a future ARC issue) would get their own
+# ``*_AGGREGATION_*`` pair rather than sharing these. "severity_max" (highest
+# risk_level / strictest enforcement_type across the trace's current
+# interaction risk records) is the only mode implemented today; additional
+# modes (e.g. weighted compounding) are a documented future extension, not
+# built here.
+
+TRACE_AGGREGATION_RISK_LEVEL_MODE = _str_env(
+    "RISK_TRACE_AGGREGATION_RISK_LEVEL_MODE", "severity_max"
+)
+TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE = _str_env(
+    "RISK_TRACE_AGGREGATION_ENFORCEMENT_TYPE_MODE", "severity_max"
+)
+
+# --- opa.* (issue #101) -------------------------------------------------------
+# OPA_BASE_URL's default is the `opa` Service deploy/k8s/95-opa.yaml creates in
+# the data-governance namespace (issue #162).
+
+OPA_BASE_URL = _str_env("RISK_OPA_BASE_URL", "http://opa:8181")
+OPA_DECISION_PATH = _str_env(
+    "RISK_OPA_DECISION_PATH", "/v1/data/data_governance/policy_decision"
+)
+OPA_TIMEOUT_SECONDS = _int_env("RISK_OPA_TIMEOUT_SECONDS", 5)
+OPA_MAX_RETRIES = _int_env("RISK_OPA_MAX_RETRIES", 2)
+
+# --- risk.rules_source -----------------------------------------------------
+# Absolute path of the rule catalog the catalog reader serves
+# (``rules/catalog.py``). Empty (the default) means the copy baked into the
+# package. On the cluster
+# the API pod sets it to the ``rules_source.json`` key of the ``opa-policy``
+# ConfigMap, mounted read-only — the same document OPA's policy was compiled
+# from — so ``GET /risk/rules`` lists the catalog OPA enforces, not the one
+# the image was built with.
+
+RULES_SOURCE = _str_env("RISK_RULES_SOURCE", "")
+
+# --- api.risk_rules.* (issue #113) ------------------------------------------
+
+API_RISK_RULES_DEFAULT_LIMIT = _int_env("RISK_API_RISK_RULES_DEFAULT_LIMIT", 50)
+API_RISK_RULES_MAX_LIMIT = _int_env("RISK_API_RISK_RULES_MAX_LIMIT", 200)
+
+# --- api.risk_interactions.* / api.risk_traces.* (issue #109) ---------------
+# Pagination defaults/maximums for /risk/interactions* and /risk/traces*.
+# Traces get a lower max than interactions (200 vs 500, matching rules'
+# convention) since a trace-grain page fans out into a heavier per-row read.
+
+API_RISK_INTERACTIONS_DEFAULT_LIMIT = _int_env(
+    "RISK_API_RISK_INTERACTIONS_DEFAULT_LIMIT", 50
+)
+API_RISK_INTERACTIONS_MAX_LIMIT = _int_env(
+    "RISK_API_RISK_INTERACTIONS_MAX_LIMIT", 500
+)
+API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT = _int_env(
+    "RISK_API_RISK_INTERACTIONS_HISTORY_DEFAULT_LIMIT", 50
+)
+API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT = _int_env(
+    "RISK_API_RISK_INTERACTIONS_HISTORY_MAX_LIMIT", 500
+)
+API_RISK_TRACES_DEFAULT_LIMIT = _int_env("RISK_API_RISK_TRACES_DEFAULT_LIMIT", 50)
+API_RISK_TRACES_MAX_LIMIT = _int_env("RISK_API_RISK_TRACES_MAX_LIMIT", 200)
+API_RISK_TRACES_HISTORY_DEFAULT_LIMIT = _int_env(
+    "RISK_API_RISK_TRACES_HISTORY_DEFAULT_LIMIT", 50
+)
+API_RISK_TRACES_HISTORY_MAX_LIMIT = _int_env(
+    "RISK_API_RISK_TRACES_HISTORY_MAX_LIMIT", 200
+)
+
+# --- api.risk_alerts.* (issue #110) -----------------------------------------
+# Pagination default/maximum for /risk/alerts and its by-* wrappers. The max
+# is the issue's 200.
+
+API_RISK_ALERTS_DEFAULT_LIMIT = _int_env("RISK_API_RISK_ALERTS_DEFAULT_LIMIT", 50)
+API_RISK_ALERTS_MAX_LIMIT = _int_env("RISK_API_RISK_ALERTS_MAX_LIMIT", 200)
+
+# --- api.metrics.* (issue #111) ---------------------------------------------
+# Default/max limits for the top-N leaderboards under /risk/metrics/top-rules
+# and /risk/metrics/top-traces. These are bounded rankings, not paginated
+# lists (implementation-notes-v3 §8.2's documented exception for metrics
+# top-N endpoints), so there is no cursor/page-size pair here — just a
+# default and a hard cap per leaderboard. Top-traces gets the same 50 cap as
+# top-rules (not API_RISK_TRACES_MAX_LIMIT's 200): that constant bounds a
+# cursor-paginated list a client walks page by page, while this is a bounded
+# ranking with no cursor at all, so a lower ceiling costs nothing.
+
+API_METRICS_TOP_RULES_DEFAULT_LIMIT = _int_env(
+    "RISK_API_METRICS_TOP_RULES_DEFAULT_LIMIT", 10
+)
+API_METRICS_TOP_RULES_MAX_LIMIT = _int_env(
+    "RISK_API_METRICS_TOP_RULES_MAX_LIMIT", 50
+)
+API_METRICS_TOP_TRACES_DEFAULT_LIMIT = _int_env(
+    "RISK_API_METRICS_TOP_TRACES_DEFAULT_LIMIT", 10
+)
+API_METRICS_TOP_TRACES_MAX_LIMIT = _int_env(
+    "RISK_API_METRICS_TOP_TRACES_MAX_LIMIT", 50
+)
+
+# --- risk.internal_url_whitelist.* (issue #163) -------------------------------
+# Wildcard hostname patterns (e.g. "*.corp.internal") identifying destinations
+# that are "internal" for data_destination_categories purposes
+# (engine/utils.py:build_opa_input); an address or CIDR entry ("::1",
+# "10.96.0.0/16") matches IP-literal destinations instead. Default empty:
+# with no patterns configured, every destination classifies as "external" —
+# the safer default when internal-ness can't be determined. This is
+# deliberately simple (no path/scheme awareness) for MVP; see
+# build_opa_input's docstring for the caveat.
+
+INTERNAL_URL_WHITELIST_PATTERNS = _list_env("RISK_INTERNAL_URL_WHITELIST_PATTERNS", [])
+
+# --- risk.inherited_labels ----------------------------------------------------
+# Whether the engine reads label lineage (migration 0024, the `label_lineage`
+# processor) and hands each flow the labels that REACHED its payload as one more
+# data item. `off` (the default): the engine never reads the label tables and the
+# OPA input, fingerprint and record are byte-identical to the engine without
+# label lineage. `on`: labels whose origin is in the same trace are forwarded,
+# leg readiness waits for the leg's label row, and the recompute requests label
+# lineage writes are drained. `all` would also forward origins found in other
+# conversations; it is rejected until cross-conversation label lineage exists.
+#
+# Read lazily (only leg-ready and the engine path consult it), so a typo stops
+# those, with this message, and nothing else that imports this module.
+
+INHERITED_LABELS_MODES = ("off", "on", "all")
+
+
+def parse_inherited_labels(raw: str | None) -> str:
+    """The ``RISK_INHERITED_LABELS`` mode, or ``ValueError`` for ``all`` or a typo.
+    Never falls back to ``off`` on a value it does not know."""
+    mode = (raw or "off").strip().lower()
+    if mode == "all":
+        raise ValueError(
+            "RISK_INHERITED_LABELS=all forwards labels from other conversations; it "
+            "arrives with cross-conversation label lineage (#273) — use off or on"
+        )
+    if mode not in INHERITED_LABELS_MODES:
+        raise ValueError(f"RISK_INHERITED_LABELS must be off or on; got {raw!r}")
+    return mode
+
+
+@functools.cache
+def inherited_labels_mode() -> str:
+    """The configured mode, parsed once per process on first use."""
+    return parse_inherited_labels(os.environ.get("RISK_INHERITED_LABELS"))

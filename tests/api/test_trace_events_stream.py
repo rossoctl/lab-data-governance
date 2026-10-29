@@ -7,7 +7,8 @@ on:
 
 - the first event is a ``change`` carrying the trace's current version token;
 - a derived write to THIS trace produces a new ``change`` promptly — through
-  the ``LISTEN`` wake, i.e. well inside the poll backstop;
+  the ``LISTEN`` wake, i.e. well inside the poll backstop — and so does a
+  risk record, which lands after derivation has gone quiet;
 - a write to ANOTHER trace produces no event (the token is trace-scoped even
   though the notification is not);
 - a hub with no ``LISTEN`` DSN still delivers, on the backstop alone;
@@ -191,7 +192,7 @@ def test_unknown_trace_still_streams_an_all_zero_token(listening_server) -> None
     try:
         first = reader.next_event(timeout=5.0)
         assert first is not None
-        assert first["id"] == "legs=0;ix=0;es=0;lin=0;st=@0"
+        assert first["id"] == "legs=0;ix=0;es=0;lin=0;st=@0;irr=0;trr=0;al=0"
     finally:
         reader.close()
 
@@ -214,6 +215,31 @@ def test_write_to_this_trace_emits_a_change_via_listen(listening_server, seeded)
         assert nxt["id"] == retrieval.get_trace_version(_TID)
         assert elapsed < BACKSTOP_SECONDS - 1.0
         assert elapsed >= COALESCE_SECONDS * 0.5
+    finally:
+        reader.close()
+
+
+def test_risk_record_for_this_trace_emits_a_change_via_listen(
+    listening_server, seeded
+) -> None:
+    """A trace risk record is often the trace's last write, with no leg after
+    it to wake the hub: its own notify must."""
+    reader = _SseReader(_events_url(listening_server, _TID))
+    try:
+        first = reader.next_event(timeout=5.0)
+        assert first is not None
+        with psycopg.connect(seeded) as conn:
+            conn.execute(
+                "INSERT INTO trace_risk_records (trace_id, version, computed_at, "
+                "trace_risk_level, interaction_count, policy_event_count) "
+                "VALUES (%s, 1, now(), 'high', 1, 1)",
+                (_TID,),
+            )
+            conn.commit()
+        nxt = reader.next_event(timeout=BACKSTOP_SECONDS - 1.0)
+        assert nxt is not None, "no change event inside the backstop window"
+        assert nxt["id"] != first["id"]
+        assert nxt["id"] == retrieval.get_trace_version(_TID)
     finally:
         reader.close()
 

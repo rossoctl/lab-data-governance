@@ -1,6 +1,9 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
+  Flex,
+  FlexItem,
+  Label,
   Title,
   Spinner,
   EmptyState,
@@ -9,11 +12,21 @@ import {
   Tabs,
   Tab,
   TabTitleText,
+  ToggleGroup,
+  ToggleGroupItem,
 } from '@patternfly/react-core';
 
 import { useDataLineage } from '../api/hooks';
 import { useEntitiesAndInteractions } from '../api/live';
 import { fetchJson } from '../api/client';
+import { useRuleCatalogIndex, useTraceAlerts, useTraceRiskDetail } from '../risk-api/hooks';
+import { classificationByInteraction, riskLevelByInteraction, violationsOf } from '../lib/riskForestAdapter';
+import { parseViolationIndex, stepViolation } from '../lib/riskViolation';
+import { InteractionPanel } from '../risk-components/InteractionPanel';
+import { PolicyDecisionPanel } from '../risk-components/PolicyDecisionPanel';
+import { ViolationStepper } from '../risk-components/ViolationStepper';
+import { TraceAlertsSection } from '../risk-components/TraceAlertsSection';
+import type { ForestInteraction, RuleListItem } from '../risk-api/types';
 import {
   computeInteractionDepths,
   flatConnectorRoles,
@@ -29,8 +42,18 @@ import { InteractionDiagram } from './InteractionDiagram';
 import { EntitiesTable } from './flow/EntitiesTable';
 import { FlatLegsTable } from './flow/FlatLegsTable';
 import { FlowDetailPanel } from './flow/FlowDetailPanel';
+import { HopHoverContext } from './flow/hopHover';
+import { LabelTrackContext, type LabelTrack } from './flow/labelTrack';
+import { TrackBanner } from './flow/TrackBanner';
+import { TrackPicker, type PickerTarget } from './flow/TrackPicker';
+import {
+  defaultTrackValues,
+  deriveLabelTrackHighlight,
+  toGraphHighlight,
+  type TrackedValue,
+} from '../lib/labelTrack';
+import type { LegLabels } from '../types';
 import { InteractionsTable } from './flow/InteractionsTable';
-import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import type { Selection } from './flow/selection';
 import type { Entity, Interaction, SpanEvidence } from '../types';
 
@@ -75,6 +98,43 @@ const LineageGraph = lazy(() =>
 export interface FlowSelection {
   iid?: string;
   eid?: string;
+  /**
+   * With the risk layer on: the open policy event's 1-based position, written as
+   * `?violation=` in the same URL write as the selection (deleted at 1, the
+   * default — `lib/riskViolation.ts`). Absent, the param is left as it is. One
+   * write, because two consecutive `setSearchParams` calls would each read the
+   * same stale params. See `FlowTablesProps.risk` for the contract.
+   */
+  violation?: number;
+}
+
+/** The forest with the layer off: one array, so the memos below keep their identity. */
+const NO_FOREST: readonly ForestInteraction[] = [];
+
+/**
+ * A forest stand-in for an interaction the risk read has no record of yet (or
+ * for a trace with no risk record at all): `InteractionPanel` then says "not
+ * classified" and "not yet computed", the same words it uses for an interaction
+ * whose `risk` is null, rather than the layer saying nothing.
+ */
+function forestStandIn(ix: Interaction, traceId: string): ForestInteraction {
+  return {
+    interaction_id: ix.id,
+    trace_id: traceId,
+    parent_interaction_id: ix.parent_interaction_id,
+    caller_entity_id: ix.caller_entity_id,
+    callee_entity_id: ix.callee_entity_id,
+    summary: ix.summary,
+    legs: ix.legs.map((l) => ({
+      leg_type: l.leg_type,
+      occurred_at: l.occurred_at,
+      payload_hash: l.payload_hash,
+      error: l.error,
+    })),
+    risk: null,
+    span_count: ix.span_count,
+    anchor_count: ix.anchor_count,
+  };
 }
 
 /** Re-exported for the callers that already reach for it through this module (the
@@ -167,6 +227,62 @@ export interface FlowTablesProps {
   lineageSource?: string | null;
   /** Fired when the traced source changes so the parent can mirror `?src`. */
   onLineageSourceChange?: (source: string) => void;
+  /**
+   * THE RISK LAYER: risk is a layer on the trace page, on every
+   * view at once, not a page of its own. On, this component makes the trace's
+   * risk read (`useTraceRiskDetail`, the forest `/risk/traces/{id}` serves) and
+   * the rule catalog read, and:
+   *
+   * - puts the risk bar above the views: the policy-event count with the stepper
+   *   (`ViolationStepper`), or the words for a trace with none, or with no risk
+   *   record yet — on screen whatever the panel shows, so a closed panel never
+   *   hides where the reader is;
+   * - colours every view's edges by risk level (`riskLevelByInteraction`), the
+   *   execution flow also showing the classification tags
+   *   (`classificationByInteraction`);
+   * - adds the selected interaction's risk to the detail panel (`InteractionPanel`)
+   *   and, when it triggered rules, the decision card (`PolicyDecisionPanel`);
+   * - makes the right-click's tracking default the decision-derived one (the
+   *   carried-in values whose labels the fired rules name — `defaultTrackValues`).
+   *
+   * Off (the default), no risk read is made and nothing here changes. A controlled
+   * prop, like every other URL-backed choice here: the parent mirrors it as
+   * `?risk=1` (absent = off).
+   *
+   * THE `?violation=` / SELECTION CONTRACT, with `?iid=`
+   * as the selection. The open policy event is a 1-based position in
+   * `violationsOf(forest)` (`violation`, the raw `?violation=`; 1 when absent). A
+   * selected interaction that IS a policy event wins over the param (a cold `?iid=`
+   * naming an event moves the stepper to it). With no `?iid=`/`?eid=`, the open
+   * event's interaction is the DEFAULT selection: it opens in the detail panel
+   * without being written to the URL, so a `?violation=N` naming an event that has
+   * not arrived yet shows event 1 for now and lands on N when N arrives. A click on
+   * a policy event's edge writes `?violation=` and drops `?iid=` (its interaction is
+   * the default); a click on any other edge writes `?iid=` and pins the open event
+   * into `?violation=`; Previous/Next write `?violation=`, drop `?iid=` and move the
+   * selection to the stepped-to event, whatever was selected before. A live
+   * re-read can shift positions (an earlier interaction gains its first rule): the
+   * event shown is held by id and `?violation=` is rewritten to its new position
+   * (`onViolationChange`, replace, before paint). Closing the panel dismisses the
+   * default for that event; a step reopens it (stepping wraps, so "1 of 1" steps
+   * too). Switching the layer off keeps the open interaction, written as `?iid=`.
+   */
+  risk?: boolean;
+  /** The raw `?violation=` — the open policy event's 1-based position, default 1 when absent. The parent owns the param. */
+  violation?: string | null;
+  /** Fired when the open policy event's position must be rewritten in place (a live re-read moved it); the parent writes `?violation=` with `replace`. */
+  onViolationChange?: (next: number) => void;
+  /**
+   * The two graph views' edges: one per LEG (the default: request and response
+   * arrows, which label lineage needs — a value born on a response leg is lit
+   * there) or one per INTERACTION (its request leg: one arrow per call).
+   * A controlled prop mirrored as `?edges=interaction` by the
+   * parent (absent = per leg). With edges per interaction a lit response leg
+   * lights its interaction's one arrow, so the overlay still shows the route.
+   */
+  edgesPerInteraction?: boolean;
+  /** Fired when the edge mode is switched, so the parent can mirror `?edges`. */
+  onEdgesPerInteractionChange?: (perInteraction: boolean) => void;
 }
 
 /**
@@ -197,8 +313,8 @@ export interface FlowTablesProps {
  * either" is no longer true: it owns the trace's `data-lineage-summary` (which is both
  * the source colouring and the choosable source list) plus the two directional
  * `data-lineage-graph` reads, gated on having BOTH an entity selection and a chosen
- * source. Only its trace-level `status` still comes from this component's
- * `useDataLineage`, so the coverage banner and the tab quote one value.
+ * source. Only its trace-level coverage (for its banner) still comes from this
+ * component's `useDataLineage`.
  *
  * This module owns only the composition and the selection/URL state; the tables,
  * the floating detail panel and the coverage banner live in ./flow, the sequence
@@ -220,32 +336,161 @@ export function FlowTables({
   onShowInfraChange,
   lineageSource = null,
   onLineageSourceChange,
+  risk = false,
+  violation = null,
+  onViolationChange,
+  edgesPerInteraction = false,
+  onEdgesPerInteractionChange,
 }: FlowTablesProps) {
   // One reading of the two, so a live re-read never shows (or hands the Lineage
   // tab) a half-updated trace — see `useEntitiesAndInteractions`.
   const { entities, interactions, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
-  // Persisted **Data lineage** for the whole trace (ADR-0028), read ONCE per
-  // trace and keyed per leg — not per payload expansion. TanStack caches on
-  // `traceId`, so the panel switching between rows/legs never re-fetches.
+  // THE RISK LAYER'S READS, made only while the layer is on (a disabled query
+  // makes no request, and `risk` gates the data too, so a layer switched off
+  // does not keep painting from the cache). The forest is this component's whole
+  // view of risk: edge colours, the policy events, the selected interaction's
+  // record. The alerts are read here too, for the section above the views (the
+  // span tree, which does not render this component, has the page's own).
+  const riskDetail = useTraceRiskDetail(risk ? traceId : undefined);
+  const alerts = useTraceAlerts(risk ? traceId : undefined);
+  const catalog = useRuleCatalogIndex(risk);
+  const forest = useMemo(
+    () => (risk ? (riskDetail.data?.interactions ?? NO_FOREST) : NO_FOREST),
+    [risk, riskDetail.data],
+  );
+  const riskColours = useMemo(() => (risk ? riskLevelByInteraction(forest) : undefined), [risk, forest]);
+  const classifications = useMemo(() => (risk ? classificationByInteraction(forest) : undefined), [risk, forest]);
+  const violations = useMemo(() => violationsOf(forest), [forest]);
+  // Interaction id -> 1-based position, the numbering `?violation=` uses.
+  const violationIndexByInteractionId = useMemo(() => {
+    const map = new Map<string, number>();
+    violations.forEach((v, i) => map.set(v.interaction_id, i + 1));
+    return map;
+  }, [violations]);
+  // The interaction a lineage hop in the detail panel is pointing at; the
+  // sequence diagram lights its legs (see `flow/hopHover.ts`).
+  const [hoveredInteractionId, setHoveredInteractionId] = useState<string | null>(null);
+  // The values tracked on the graph (label lineage, `lib/labelTrack`): ticked in
+  // the detail panel's Data lineage tab or by a right-click on a leg. One set
+  // for all four views, so the picture does not change with the presentation.
+  const [tracked, setTracked] = useState<ReadonlyMap<string, TrackedValue>>(() => new Map());
+  // The track picker (the check menu), open for one interaction at a point.
+  const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const labelTrack = useMemo<LabelTrack>(
+    () => ({
+      available: true,
+      tracked,
+      set: (key, value) =>
+        setTracked((prev) => {
+          const next = new Map(prev);
+          if (value == null) next.delete(key);
+          else next.set(key, value);
+          return next;
+        }),
+      replace: (values) => setTracked(new Map(values.map((v) => [v.key, v]))),
+    }),
+    [tracked],
+  );
+  const trackHighlight = useMemo(
+    () => (tracked.size === 0 ? null : deriveLabelTrackHighlight([...tracked.values()], interactions, traceId)),
+    [tracked, interactions, traceId],
+  );
+  // The graphs' version of the overlay: with edges per interaction, a lit
+  // response leg lights the interaction's one arrow (its request leg's id).
+  const graphHighlight = useMemo(() => {
+    if (!trackHighlight) return undefined;
+    const h = toGraphHighlight(trackHighlight);
+    if (!edgesPerInteraction) return h;
+    return { ...h, edgeIds: [...new Set(h.edgeIds.map((id) => id.replace(/:response$/, ':request')))] };
+  }, [trackHighlight, edgesPerInteraction]);
+  // Tracking is per trace: a new trace starts with nothing tracked.
+  useEffect(() => {
+    setTracked(new Map());
+    setPicker(null);
+  }, [traceId]);
+  const closePicker = useCallback(() => setPicker(null), []);
+  /**
+   * The right-click on a leg: select its interaction (the detail panel opens),
+   * track the default values of THAT leg (added to what is tracked), and open
+   * the picker there so the reader can untick or add. The default is every
+   * carried-in value of the leg — or, with the risk layer on and the interaction
+   * having fired rules, the values whose labels those rules name
+   * (`defaultTrackValues`). Reads the same labels
+   * resource the Data lineage tab reads.
+   */
+  function trackDefaultOf(interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) {
+    selectInteractionById(interactionId);
+    setPicker({ interactionId, legType, at });
+    const rules: RuleListItem[] = risk
+      ? (forest.find((i) => i.interaction_id === interactionId)?.risk?.triggered_rule_ids ?? [])
+          .map((id) => catalog.data?.get(id))
+          .filter((r): r is RuleListItem => r != null)
+      : [];
+    void fetchJson<{ legs?: LegLabels[] }>(`/traces/${traceId}/interactions/${interactionId}/labels`)
+      .then((r) => {
+        const values = defaultTrackValues(interactionId, r.legs ?? [], legType, rules);
+        if (values.length === 0) return;
+        setTracked((prev) => {
+          const next = new Map(prev);
+          for (const v of values) next.set(v.key, v);
+          return next;
+        });
+      })
+      .catch(() => {});
+  }
+  // The trace's **Data lineage** coverage (ADR-0028 D6), read once per trace for the
+  // Lineage view's banner, and only on that view: no other view shows it.
   //
-  // NOT gated on a selection (as #119 had it): since #120 this read also carries
-  // the trace's complete/partial coverage, and that warning belongs on the first
-  // paint. A truncation a reader must select a row to discover cannot stop them
-  // reading the visible rows as the whole picture — which is the entire point of
-  // the flag (ADR-0028 D6).
-  const lineageQ = useDataLineage(traceId);
+  // NOT gated on a selection (as #119 had it): the banner belongs on the view's first
+  // paint. A truncation a reader must select something to discover cannot stop them
+  // reading the marked sources as the whole picture — which is the entire point of
+  // the flag.
+  const lineageQ = useDataLineage(traceId, legView === 'lineage');
   // Monotonic click token: each row click bumps it, and a click's async
   // evidence fetch only commits its setState if it is still the latest click.
   // Guards the out-of-order race where a slow fetch resolves after a later
   // click and would otherwise overwrite the selection/highlight.
   const clickSeq = useRef(0);
+  // THE RISK LAYER'S DEFAULT SELECTION, what it needs to know about itself (see
+  // `FlowTablesProps.risk` and the effects below): the interaction it selected
+  // silently (`defaultSelectedId`, null once the reader picks anything), whether
+  // the reader dismissed the panel (`dismissed`: closed it or clicked the graph's
+  // background while the layer is on; reset by any toggle of the layer, cleared
+  // by a step or a pick, never by the silent path), a position the
+  // hold has just asked the parent to write (`pendingViolation`), and the seq of
+  // a reader's click still fetching its evidence (`userClickInFlight`), which the
+  // default must not race.
+  const defaultSelectedId = useRef<string | null>(null);
+  const dismissed = useRef(false);
+  const pendingViolation = useRef<number | null>(null);
+  const userClickInFlight = useRef(0);
+  // A step asked for the stepped-to event: the default then moves the selection
+  // onto it even from an entity or a plain interaction (the bar's stepper is on
+  // screen whatever is selected). Cleared once the default has acted.
+  const stepped = useRef(false);
 
   // The selected id per table kind. Only the latest-selected row (entity or
   // interaction) is highlighted; `selection` already tracks that single row
   // across both kinds, so the other table's id is null.
   const selectedEntityId = selection?.kind === 'entity' ? selection.id : null;
   const selectedInteractionId = selection?.kind === 'interaction' ? selection.id : null;
+
+  // The open policy event (see `FlowTablesProps.risk`): the selected interaction's
+  // position when it is one, else the param's. `fellBack` marks a `?violation=N`
+  // whose event has not arrived (shown as 1 for now) — not the reader's pick, so
+  // it is not held across a re-read. Only a selection that
+  // IS a policy event exempts the param, and the default selection (the event
+  // the param itself seeded, `defaultSelectedId`) is not a pick: a plain `?iid=`
+  // or an `?eid=` leaves an out-of-range param a fallback, so it lands on N.
+  const selectedViolationIndex =
+    selectedInteractionId != null ? violationIndexByInteractionId.get(selectedInteractionId) : undefined;
+  const paramViolationIndex = parseViolationIndex(violation, violations.length);
+  const violationIndex = selectedViolationIndex ?? paramViolationIndex;
+  const openEvent = violationIndex != null ? violations[violationIndex - 1] : null;
+  const urlHasSelection = Boolean(initialSelection?.iid || initialSelection?.eid);
+  const pickedEvent = selectedViolationIndex !== undefined && selectedInteractionId !== defaultSelectedId.current;
+  const fellBack = !pickedEvent && violation != null && String(paramViolationIndex) !== violation;
 
   const entById = useMemo(() => {
     const m = new Map<string, Entity>();
@@ -306,14 +551,22 @@ export function FlowTables({
   const isLoading = interactionsQ.isLoading || entitiesQ.isLoading;
   const isEmpty = interactions.length === 0 && entities.length === 0;
 
-  async function selectInteraction(ix: Interaction) {
+  /**
+   * `silent`: no URL write (the URL restore and the default). `fromDefault`: the
+   * default's own select, the only one a dismissal made meanwhile may drop:
+   * a `?iid=` restore is a selection the URL names and always lands.
+   */
+  async function selectInteraction(ix: Interaction, { silent = false, fromDefault = false } = {}) {
     const seq = ++clickSeq.current;
+    if (!silent) userClickInFlight.current = seq;
     const evidence = await fetchJson<{ spans: SpanEvidence[] }>(
       `/traces/${traceId}/interactions/${ix.id}/spans`,
     )
       .then((r) => r.spans)
       .catch(() => []);
+    if (userClickInFlight.current === seq) userClickInFlight.current = 0;
     if (seq !== clickSeq.current) return; // a newer click superseded this one
+    if (fromDefault && dismissed.current) return; // dismissed while the default was still fetching
     // Timing/payload now live on the request/response legs (ADR-0025). The
     // request leg brackets the call start, the response leg its end; duration
     // is the API's computed value (null = response in flight).
@@ -378,17 +631,34 @@ export function FlowTables({
       requestContentKind: reqLeg?.content_kind ?? null,
       responseContentKind: respLeg?.content_kind ?? null,
     });
-    onSelectionChange?.({ iid: ix.id });
+    if (silent) return;
+    // A pick: the default no longer owns the selection, and nothing the hold
+    // left behind may pull a later step or click back to the held event.
+    dismissed.current = false;
+    defaultSelectedId.current = null;
+    pendingViolation.current = null;
+    // The risk layer's contract (see `FlowTablesProps.risk`): a policy event's
+    // interaction is named by `?violation=` and `?iid=` is dropped; any other
+    // interaction is `?iid=`, with the open event pinned so it stays where it was.
+    const eventIndex = risk ? violationIndexByInteractionId.get(ix.id) : undefined;
+    if (eventIndex != null) onSelectionChange?.({ violation: eventIndex });
+    else if (risk && violationIndex != null) onSelectionChange?.({ iid: ix.id, violation: violationIndex });
+    else onSelectionChange?.({ iid: ix.id });
   }
 
   async function selectEntity(e: Entity) {
     const seq = ++clickSeq.current;
+    userClickInFlight.current = seq;
     const evidence = await fetchJson<{ spans: SpanEvidence[] }>(
       `/traces/${traceId}/entities/${e.id}/spans`,
     )
       .then((r) => r.spans)
       .catch(() => []);
+    if (userClickInFlight.current === seq) userClickInFlight.current = 0;
     if (seq !== clickSeq.current) return; // a newer click superseded this one
+    dismissed.current = false;
+    defaultSelectedId.current = null;
+    pendingViolation.current = null;
     setSelection({
       kind: 'entity',
       id: e.id,
@@ -449,6 +719,10 @@ export function FlowTables({
    */
   function selectInteractionById(interactionId: string | null) {
     if (interactionId === null) {
+      // A dismissal like the panel's close: with the layer on, the default must
+      // not reopen the panel on the open event straight away. Layer state,
+      // so it is set only while the layer is on.
+      if (risk) dismissed.current = true;
       setSelection(null);
       onSelectionChange?.(null);
       return;
@@ -498,10 +772,119 @@ export function FlowTables({
     }
   }
 
+  // THE RISK LAYER'S DEFAULT SELECTION AND ITS HOLD (see `FlowTablesProps.risk`
+  // and the refs beside `clickSeq`). `pendingViolation` is a position the hold
+  // below has just asked the parent to write: the default effect reads it instead
+  // of the still-stale param in the same commit, so the held event is never left
+  // for the one at its old position (and no evidence fetch is wasted on it); it is
+  // cleared the moment the param catches up, whatever the URL's selection.
+  const shownViolation = useRef<{ byId: ReadonlyMap<string, number>; id: string | null } | null>(null);
+  // THE LAYER TOGGLED, either way: a dismissal and a pending hold belong to the
+  // layer state that just ended (a dismissal made with the layer off must not
+  // keep the default from opening when it is switched on). Off, the open
+  // interaction stays open, the panel losing only its risk cards, whatever opened
+  // it (a click, a step, the default): when the URL names no selection, `?iid=`
+  // names it now, the `?violation=` that may have named it having just gone with
+  // the layer. A URL that does name one (a Back onto an entry with its own `?iid=`)
+  // is left to the restore below, which opens that entry's selection.
+  // A toggle also supersedes a click or a default still fetching its evidence, as
+  // a step does: landing later, a click would write the URL as it stood at the
+  // click (switching the layer back) and the default would open the panel the
+  // toggle just left. A URL restore it superseded is re-armed (`restoreTick`), so a
+  // `?iid=`/`?eid=` still loading lands all the same; that also makes the run on
+  // mount harmless. `initialSelection` and `selection` are read through refs so the
+  // effect runs on the toggle only.
+  const urlSelectionRef = useRef(initialSelection);
+  urlSelectionRef.current = initialSelection;
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  // Bumped by every step, so the default below re-runs even when the step leaves
+  // the URL as it was (a step onto "1 of 1" writes the absent default position).
+  const [stepTick, setStepTick] = useState(0);
+  const [restoreTick, setRestoreTick] = useState(0);
+  useEffect(() => {
+    dismissed.current = false;
+    pendingViolation.current = null;
+    stepped.current = false;
+    clickSeq.current += 1;
+    userClickInFlight.current = 0;
+    appliedInitial.current = null;
+    setRestoreTick((t) => t + 1);
+    if (risk) return;
+    defaultSelectedId.current = null;
+    const open = selectionRef.current;
+    if (open?.kind === 'interaction' && !urlSelectionRef.current?.iid && !urlSelectionRef.current?.eid) {
+      onSelectionChange?.({ iid: open.id });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [risk]);
+  useLayoutEffect(() => {
+    if (!risk) {
+      shownViolation.current = null;
+      return;
+    }
+    const shown = shownViolation.current;
+    shownViolation.current = {
+      byId: violationIndexByInteractionId,
+      id: fellBack ? null : (openEvent?.interaction_id ?? null),
+    };
+    // Only a CHANGED list (a re-read) can move an event; a step or a click leaves
+    // the list as it was and never fires this.
+    if (shown == null || shown.byId === violationIndexByInteractionId || shown.id == null) return;
+    const index = violationIndexByInteractionId.get(shown.id);
+    if (index == null || index === paramViolationIndex) return;
+    pendingViolation.current = index;
+    onViolationChange?.(index);
+  }, [risk, violationIndexByInteractionId, openEvent, paramViolationIndex, fellBack, onViolationChange]);
+  useEffect(() => {
+    if (pendingViolation.current != null && pendingViolation.current === paramViolationIndex) pendingViolation.current = null;
+    if (!risk || urlHasSelection || violations.length === 0) return;
+    const index = pendingViolation.current ?? paramViolationIndex ?? 1;
+    const target = violations[index - 1];
+    if (!target || dismissed.current) return;
+    if (selection?.kind === 'interaction' && selection.id === target.interaction_id) {
+      stepped.current = false;
+      return;
+    }
+    // Only nothing, or a policy event (a default or a stepped-to one), is moved
+    // onto the open event: an entity or a plain interaction the reader just picked
+    // (the URL write lands a render later) is left alone unless a step asked for
+    // the event — and so is a click still fetching its evidence: the default never
+    // supersedes a reader's pick.
+    const onEvent = selection?.kind === 'interaction' && violationIndexByInteractionId.has(selection.id);
+    if (selection != null && !onEvent && !stepped.current) return;
+    if (userClickInFlight.current !== 0) return;
+    const ix = interactions.find((i) => i.id === target.interaction_id);
+    if (!ix) return; // the risk read named an interaction the flow read has not (yet)
+    stepped.current = false;
+    defaultSelectedId.current = ix.id;
+    void selectInteraction(ix, { silent: true, fromDefault: true });
+    // `selectInteraction` closes over the current reads; keyed on what decides the target.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [risk, urlHasSelection, violations, paramViolationIndex, violationIndexByInteractionId, interactions, selection, stepTick]);
+
+  function handleStep(delta: -1 | 1) {
+    if (violationIndex == null) return;
+    dismissed.current = false;
+    pendingViolation.current = null;
+    stepped.current = true;
+    // An explicit step beats a click still fetching its evidence: the click is
+    // superseded (its seq is stale) and no longer blocks the default's move.
+    // Only then: a bump on every step would also drop the step's own silent
+    // select when Next is pressed twice inside one fetch.
+    if (userClickInFlight.current !== 0) {
+      clickSeq.current += 1;
+      userClickInFlight.current = 0;
+    }
+    setStepTick((t) => t + 1);
+    onSelectionChange?.({ violation: stepViolation(violationIndex, delta, violations.length) });
+  }
+
   // URL → flow: restore the selection named by ?iid / ?eid once the tables have
   // loaded. Fires once per distinct target id (tracked in appliedInitial) so it
   // seeds the deep-link/reload selection without fighting later user clicks or
-  // re-firing on every render. A stale id matching no loaded row is a no-op.
+  // re-firing on every render (a Risk toggle re-arms it: see `restoreTick`). A stale
+  // id matching no loaded row is a no-op.
   const appliedInitial = useRef<string | null>(null);
   useEffect(() => {
     const target = initialSelection?.iid
@@ -529,7 +912,10 @@ export function FlowTables({
       const ix = interactions.find((i) => i.id === initialSelection.iid);
       if (!ix) return; // not loaded yet (or gone) — retry when data arrives
       appliedInitial.current = target;
-      void selectInteraction(ix);
+      // Silent: the URL already names this selection, and a restore must not
+      // rewrite it (with the risk layer on, a `?iid=` naming a policy event
+      // would otherwise be turned into `?violation=` on load).
+      void selectInteraction(ix, { silent: true });
     } else if (initialSelection?.eid) {
       const e = entities.find((x) => x.id === initialSelection.eid);
       if (!e) return;
@@ -540,9 +926,9 @@ export function FlowTables({
     // (they close over traceId + the query data); we key the effect on the ids,
     // the loaded rows, and the current selection so it runs when any changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialSelection?.iid, initialSelection?.eid, interactions, entities, selection]);
+  }, [initialSelection?.iid, initialSelection?.eid, interactions, entities, selection, restoreTick]);
 
-  if (isLoading) return <Spinner aria-label="Loading interaction flow" />;
+  if (isLoading) return <Spinner aria-label="Loading interactions and entities" />;
   if (isEmpty) {
     return (
       <EmptyState>
@@ -555,30 +941,75 @@ export function FlowTables({
   }
 
   return (
+    <LabelTrackContext.Provider value={labelTrack}>
     <div>
-      {/* The trace-level lineage-coverage warning (issue #120), OUTSIDE the
-          tables' gutter div: the detail panel floats over that gutter, and the
-          truncation must stay readable precisely when someone is drilling into a
-          payload's data sources. */}
-      <LineageCoverageAlert
-        status={lineageQ.data?.status ?? null}
-        stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
-        // `isLoadingError`, not `isError`: a failed BACKGROUND re-read (the page is
-        // live, ADR-0034) keeps the last answer, and the banner keeps quoting it.
-        // Only a read that never produced an answer is "unknown".
-        isError={lineageQ.isLoadingError}
-        // The `isLoading` gate above covers the interactions/entities reads only,
-        // so these tables are already on screen while the lineage read is in
-        // flight. The banner needs to know that, or its silence claims complete
-        // coverage before the answer exists.
-        isLoading={lineageQ.isLoading}
+      <TrackBanner
+        tracked={[...tracked.values()]}
+        foreignHops={trackHighlight?.foreignHops ?? 0}
+        onRemove={(key) => labelTrack.set(key, null)}
+        onClear={() => setTracked(new Map())}
+        onChoose={
+          selectedInteractionId != null
+            ? (at) => setPicker({ interactionId: selectedInteractionId, legType: 'request', at })
+            : undefined
+        }
       />
+      {picker && (
+            <TrackPicker
+              // Keyed by target: a right-click on another leg is a new picker (its own folded/open state), not a re-render of the old one.
+              key={`${picker.interactionId}/${picker.legType}`}
+              traceId={traceId}
+              target={picker}
+              onClose={closePicker}
+            />
+          )}
       {/* Tables container. While the detail panel is open it floats fixed on the
           right, so `dg-detail-gutter` reserves a right gutter derived from the
           panel's own width vars (global.css) — the tables shrink out from under
           the float instead of being covered. Closed → no class, tables reclaim
           full width. */}
       <div className={selection ? 'dg-detail-gutter' : undefined}>
+        {/* THE RISK BAR AND THE ALERTS, above whichever presentation is active.
+            Inside the gutter div, so they shrink out from under the floating detail
+            panel like the views do. The bar says how many policy events the trace
+            has, with the stepper, or why there are none, or that the risk read
+            failed — so a failure is never read as a trace with no risk. */}
+        {risk && (
+          <Flex
+            className="pf-v5-u-mb-sm"
+            alignItems={{ default: 'alignItemsCenter' }}
+            spaceItems={{ default: 'spaceItemsMd' }}
+            data-testid="risk-bar"
+          >
+            {/* `isPending`, not `isLoading`: a read paused offline has no data and
+                is not fetching, and must not fall through to "0 policy events". */}
+            {riskDetail.isPending ? (
+              <Spinner size="md" aria-label="Loading risk" />
+            ) : riskDetail.isLoadingError ? (
+              <FlexItem>The risk read failed.</FlexItem>
+            ) : riskDetail.data === null ? (
+              <FlexItem>No risk record for this trace yet.</FlexItem>
+            ) : (
+              <>
+                <FlexItem>
+                  <Label isCompact>
+                    {violations.length} policy event{violations.length === 1 ? '' : 's'}
+                  </Label>
+                </FlexItem>
+                {violations.length === 0 ? (
+                  <FlexItem>No rule was triggered by any interaction in this trace.</FlexItem>
+                ) : (
+                  violationIndex != null && (
+                    <FlexItem>
+                      <ViolationStepper position={violationIndex} count={violations.length} onStep={handleStep} />
+                    </FlexItem>
+                  )
+                )}
+              </>
+            )}
+          </Flex>
+        )}
+        {risk && <TraceAlertsSection alerts={alerts} />}
         {/* THE ENTITIES TABLE, ON THE TABLES VIEW ONLY.
             It used to render on all five presentations, on the reasoning that the
             trace's entities are a fact of the flow VIEW rather than a part of the
@@ -666,6 +1097,25 @@ export function FlowTables({
             because it governs all three of Tree / Flat / Interaction diagram,
             which render the same row set. It names the count, so the reader
             knows what the default is keeping from them. */}
+        {/* THE EDGE MODE, on the two graph views only: per leg or per interaction
+            (`edgesPerInteraction`). A control of the picture, so it sits right
+            above it, like the infrastructure affordance above the rows. */}
+        {(legView === 'graph' || legView === 'lineage') && (
+          <ToggleGroup aria-label="Graph edges" isCompact className="pf-v5-u-mb-sm">
+            <ToggleGroupItem
+              text="Edges per leg"
+              buttonId="edges-leg"
+              isSelected={!edgesPerInteraction}
+              onChange={() => onEdgesPerInteractionChange?.(false)}
+            />
+            <ToggleGroupItem
+              text="Edges per interaction"
+              buttonId="edges-interaction"
+              isSelected={edgesPerInteraction}
+              onChange={() => onEdgesPerInteractionChange?.(true)}
+            />
+          </ToggleGroup>
+        )}
         {infraTotal > 0 && legView !== 'graph' && legView !== 'lineage' && (
           <Button
             variant="link"
@@ -712,14 +1162,20 @@ export function FlowTables({
               traceId={traceId}
               entities={entities}
               interactions={interactions}
-              // `byLeg` is deliberately NOT passed any more. This tab's highlight now
-              // comes from the SERVED reachability reads (ADR-0028 D14/D15), which the
-              // tab queries itself — the per-leg map answered a strictly weaker
+              // The former per-leg data-lineage map is deliberately NOT passed.
+              // This tab's highlight now comes from the SERVED reachability
+              // reads (ADR-0028 D14/D15), which the tab queries itself — the
+              // per-leg map answered a strictly weaker
               // question (one hop, composed client-side) and keeping it here would
-              // leave two suppliers of one answer. The trace's `status` still comes
-              // from this read, so the coverage banner and the tab quote one value.
+              // leave two suppliers of one answer. The trace's coverage still comes
+              // from this read, for the view's coverage banner.
               status={lineageQ.data?.status ?? null}
+              stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
+              // `isLoadingError`, not `isError`: a failed BACKGROUND re-read (the page is
+              // live, ADR-0034) keeps the last answer, and the banner keeps quoting it.
+              // Only a read that never produced an answer is "unknown".
               isLineageError={lineageQ.isLoadingError}
+              isLineageLoading={lineageQ.isLoading}
               selectedEntityId={selectedEntityId}
               // THE OTHER HALF OF THE QUESTION. The reachability read is
               // `fanin(entity, source)` / `fanout(entity, source)` with `source`
@@ -732,6 +1188,8 @@ export function FlowTables({
               // no array here.
               lineageSource={lineageSource}
               onLineageSourceChange={onLineageSourceChange}
+              riskLevelByInteraction={riskColours}
+              edgesPerInteraction={edgesPerInteraction}
               // NODE clicks select an entity, through the very same `selectEntity`
               // the Entities table row uses — so `?eid`, the detail panel and the
               // highlight all follow one path and there is no second notion of
@@ -770,6 +1228,15 @@ export function FlowTables({
           <Suspense fallback={<Spinner aria-label="Loading execution flow graph" />}>
             <ExecutionFlowGraph
               traceId={traceId}
+              highlight={graphHighlight}
+              onContextMenuInteraction={trackDefaultOf}
+              edgesPerInteraction={edgesPerInteraction}
+              // The risk layer: edge colours by risk level and the classification
+              // tags in the edges' tag slot, both `undefined` with the layer off so
+              // this view is byte-for-byte as before then
+              // (`EntityGraphProps.riskLevelByInteraction`).
+              riskLevelByInteraction={riskColours}
+              classificationByInteraction={classifications}
               // The graph's EDGES are the interaction click target this tab used to
               // lack — one edge is one leg, and clicking it opens the same detail
               // panel a Flat-table row click opens, through the same
@@ -810,6 +1277,10 @@ export function FlowTables({
             entities={entities}
             interactions={displayedInteractions}
             selectedId={selectedInteractionId}
+            hoveredId={hoveredInteractionId}
+            litEdgeIds={trackHighlight?.edgeIds ?? null}
+            onContextMenuInteraction={trackDefaultOf}
+            riskLevelByInteraction={riskColours}
             onSelect={selectInteraction}
           />
         ) : legView === 'flat' ? (
@@ -819,6 +1290,8 @@ export function FlowTables({
             entById={entById}
             selectedId={selectedInteractionId}
             pinColor={pinColor}
+            litEdgeIds={trackHighlight?.edgeIds ?? null}
+            onContextMenuInteraction={trackDefaultOf}
             onSelect={selectInteraction}
           />
         ) : (
@@ -828,24 +1301,59 @@ export function FlowTables({
             depthById={depthById}
             selectedId={selectedInteractionId}
             pinColor={pinColor}
+            litEdgeIds={trackHighlight?.edgeIds ?? null}
+            onContextMenuInteraction={trackDefaultOf}
             onSelect={selectInteraction}
           />
         )}
       </div>
 
       {selection && (
+        <HopHoverContext.Provider value={setHoveredInteractionId}>
         <FlowDetailPanel
+          traceId={traceId}
           selection={selection}
           pins={pins}
-          lineageQ={lineageQ}
           onTogglePin={togglePin}
           onClose={() => {
+            // With the layer on, a close is a dismissal: the default does not
+            // reopen the panel on the open event until a step or a pick.
+            if (risk) dismissed.current = true;
             setSelection(null);
             onSelectionChange?.(null);
           }}
           onNavigateToSpan={onNavigateToSpan}
+          layer={
+            risk && selection.kind === 'interaction' ? (
+              /* THE RISK LAYER IN THE PANEL: the interaction's risk for ANY selected
+                 interaction (a stand-in with `risk: null` for one the risk read has
+                 no record of, so it reads "not yet computed"); for a policy event,
+                 the decision card, whose hop links select by `?iid=`. The stepper is
+                 on the risk bar above the views. */
+              <div className="dg-detail-card dg-risk-layer" data-testid="risk-layer">
+                {riskDetail.isLoading ? (
+                  <Spinner size="md" aria-label="Loading risk" />
+                ) : riskDetail.isLoadingError ? (
+                  <p style={{ color: 'var(--dg-color-muted)' }}>The risk read failed.</p>
+                ) : (
+                  (() => {
+                    const selectedIx = interactions.find((i) => i.id === selection.id);
+                    const record =
+                      forest.find((i) => i.interaction_id === selection.id) ??
+                      (selectedIx ? forestStandIn(selectedIx, traceId) : null);
+                    return record ? <InteractionPanel interaction={record} /> : null;
+                  })()
+                )}
+                {openEvent && selectedViolationIndex != null && (
+                  <PolicyDecisionPanel violation={openEvent} ruleIndex={catalog.data} entities={entities} />
+                )}
+              </div>
+            ) : undefined
+          }
         />
+        </HopHoverContext.Provider>
       )}
     </div>
+    </LabelTrackContext.Provider>
   );
 }

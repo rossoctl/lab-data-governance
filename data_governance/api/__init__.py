@@ -75,6 +75,14 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from data_governance import db, retrieval
+from data_governance.risk.api import http as risk_http
+from data_governance.risk.api import (
+    alert_routes,
+    metrics_routes,
+    risk_routes,
+    rules_routes,
+)
+from data_governance.risk.rules import catalog
 from data_governance.api.live import ChangeHub, trace_events_handler
 
 __all__ = ["SpansApiServer", "build_app"]
@@ -479,6 +487,38 @@ async def _interaction_spans_handler(request: Request) -> Response:
     return _json_ok({"spans": [dataclasses.asdict(s) for s in result.spans]})
 
 
+async def _interaction_labels_handler(request: Request) -> Response:
+    """``GET /api/traces/{tid}/interactions/{iid}/labels``.
+
+    Thin adapter over :func:`retrieval.get_leg_labels` — per payload-bearing leg,
+    the labels the classifier found on the payload beside those label lineage
+    carried into it, with each carried label's origin and, on the origin, the
+    ``chains`` the value travelled from there to this leg (every route, hops in
+    seq order, each hop with its trace id; see the retrieval module). Same
+    empty-on-unknown convention as :func:`_interaction_spans_handler`;
+    ``lineage_status`` is ``null`` when the trace's label lineage is not derived
+    (never defaulted).
+    """
+    trace_id = request.path_params.get("tid")
+    interaction_id = request.path_params.get("iid")
+    if not trace_id or not interaction_id:
+        return JSONResponse(
+            {"error": "trace_id and interaction_id required"}, status_code=400
+        )
+    try:
+        result = await asyncio.to_thread(
+            retrieval.get_leg_labels, trace_id, interaction_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"error": str(exc)}, status_code=500)
+    return _json_ok(
+        {
+            "legs": [dataclasses.asdict(leg) for leg in result.legs],
+            "lineage_status": result.lineage_status,
+        }
+    )
+
+
 async def _entity_spans_handler(request: Request) -> Response:
     """``GET /api/traces/{tid}/entities/{eid}/spans``.
 
@@ -761,6 +801,14 @@ def build_app(
             endpoint=_interaction_spans_handler,
             methods=["GET"],
         ),
+        # Found-here vs carried-in labels for one interaction's legs (label
+        # lineage, migration 0024). Per interaction, not per leg: both leg tabs
+        # read one response.
+        Route(
+            "/api/traces/{tid:str}/interactions/{iid:str}/labels",
+            endpoint=_interaction_labels_handler,
+            methods=["GET"],
+        ),
         Route(
             "/api/traces/{tid:str}/entities/{eid:str}/spans",
             endpoint=_entity_spans_handler,
@@ -807,11 +855,41 @@ def build_app(
             methods=["GET"],
         ),
         Route("/", endpoint=_root_redirect_handler, methods=["GET"]),
+        # DAS rule catalog (issue #113). rules_routes.routes() already orders
+        # /risk/rules/categories before the /risk/rules/{rule_id} catch-all,
+        # mirroring the /ui/assets-before-catch-all convention above.
+        *rules_routes.routes(),
+        # DAS interaction/trace risk reads (issue #109). risk_routes.routes()
+        # orders each pair's /history route before its {id} route.
+        *risk_routes.routes(),
+        # DAS alert reads (issue #110). alert_routes.routes() lists the by-*
+        # wrappers before /risk/alerts/{alert_id}.
+        *alert_routes.routes(),
+        # DAS dashboard metrics (issue #111). All six paths are literal (no
+        # {param}), so there is no route order to keep here.
+        *metrics_routes.routes(),
     ]
-    app = Starlette(routes=routes, lifespan=_lifespan)
+    # The rule catalog is read from the opa-policy ConfigMap on a cluster
+    # (deploy/k8s/40-ui.yaml); until deploy/create-opa-configmap.sh has
+    # created it, every route that consults the catalog (/risk/rules*, the
+    # metrics leaderboards) answers 503 with the FR-DAS-081 triple rather
+    # than a bare 500 — or the packaged catalog, which OPA would not enforce.
+    app = Starlette(
+        routes=routes,
+        lifespan=_lifespan,
+        exception_handlers={catalog.CatalogUnavailable: _catalog_unavailable_handler},
+    )
     app.state.hide_connect_only_traces = hide_connect_only_traces
     app.state.change_hub = ChangeHub(listen_dsn)
     return app
+
+
+async def _catalog_unavailable_handler(
+    _request: Request, exc: Exception
+) -> Response:
+    return risk_http.error_response(
+        risk_http.ApiError("catalog unavailable", str(exc), status_code=503)
+    )
 
 
 # ---------------------------------------------------------------------------

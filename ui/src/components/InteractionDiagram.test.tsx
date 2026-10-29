@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from '../test/renderWithProviders';
 import { InteractionDiagram } from './InteractionDiagram';
+import { riskLevelColorVar } from '../lib/riskLevel';
 import type { Entity, Interaction, InteractionLeg } from '../types';
 
 /**
@@ -83,7 +84,11 @@ const titles = () => [...document.querySelectorAll('title')].map((t) => t.textCo
 function renderDiagram(
   entities: Entity[],
   interactions: Interaction[],
-  over: { selectedId?: string | null; onSelect?: (ix: Interaction) => void } = {},
+  over: {
+    selectedId?: string | null;
+    onSelect?: (ix: Interaction) => void;
+    riskLevelByInteraction?: ReadonlyMap<string, string>;
+  } = {},
 ) {
   return renderWithProviders(
     <InteractionDiagram
@@ -91,6 +96,7 @@ function renderDiagram(
       interactions={interactions}
       selectedId={over.selectedId ?? null}
       onSelect={over.onSelect ?? (() => {})}
+      riskLevelByInteraction={over.riskLevelByInteraction}
     />,
   );
 }
@@ -343,5 +349,119 @@ describe('InteractionDiagram', () => {
 
     expect(screen.queryByText(/not shown as messages/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/without a lifeline/i)).not.toBeInTheDocument();
+  });
+
+  // --- Risk colouring (issue #170). The cases above never pass
+  // `riskLevelByInteraction` (the risk layer off), so every case above this point
+  // already pins that the arrow colours are unaffected by this seam existing at all.
+
+  describe('risk colouring (issue #170)', () => {
+    it("colours BOTH legs of an interaction by ITS OWN risk level, calling riskLevelColorVar rather than a hardcoded value", () => {
+      // "Same colour scheme as RiskBadge" (AC #2) is only a real assertion if
+      // the test calls the same function production code does.
+      renderDiagram(ENTITIES, [mkIx({ id: 'i1' })], {
+        riskLevelByInteraction: new Map([['i1', 'critical']]),
+      });
+
+      const [req, resp] = messageEls();
+      expect(req.innerHTML).toContain(riskLevelColorVar('critical'));
+      expect(req.innerHTML).not.toMatch(/#[0-9a-f]{6}/i);
+      expect(resp.innerHTML).toContain(riskLevelColorVar('critical'));
+    });
+
+    it('gives a low-risk interaction a visibly different colour than a critical one', () => {
+      renderDiagram(ENTITIES, [mkIx({ id: 'i1' })], {
+        riskLevelByInteraction: new Map([['i1', 'low']]),
+      });
+
+      const [req] = messageEls();
+      expect(req.innerHTML).toContain(riskLevelColorVar('low'));
+      expect(req.innerHTML).not.toContain(riskLevelColorVar('critical'));
+    });
+
+    it("treats an interaction ABSENT from a SUPPLIED map as no treatment at all, never as a safe verdict", () => {
+      // `riskForestAdapter.riskLevelByInteraction` omits `risk: null` entries
+      // (not yet computed), and this component's contract collapses that into
+      // the SAME outcome as no map at all — the ordinary tree-guide colour —
+      // rather than a distinct 'unknown' grey or, worse, a green 'safe' one.
+      renderDiagram(ENTITIES, [mkIx({ id: 'i1' })], { riskLevelByInteraction: new Map() });
+
+      const [req] = messageEls();
+      expect(req.innerHTML).toContain('var(--dg-tree-guide)');
+      expect(req.innerHTML).not.toContain(riskLevelColorVar('unknown'));
+      expect(req.innerHTML).not.toContain(riskLevelColorVar('low'));
+    });
+
+    it('keeps ERROR precedence over risk colouring — a fact outranks a grade', () => {
+      renderDiagram(
+        ENTITIES,
+        [
+          mkIx({
+            id: 'i1',
+            legs: [mkLeg('request', 1, true), mkLeg('response', 2, false)],
+            any_error: true,
+          }),
+        ],
+        { riskLevelByInteraction: new Map([['i1', 'critical']]) },
+      );
+
+      const [req, resp] = messageEls();
+      expect(req.innerHTML).toContain('var(--dg-color-error)');
+      expect(req.innerHTML).not.toContain(riskLevelColorVar('critical'));
+      // The sibling leg did not fail, so it takes the risk colour, not the
+      // error one — the same per-LEG (not per-interaction) precedence rule the
+      // pre-existing error test above pins.
+      expect(resp.innerHTML).toContain(riskLevelColorVar('critical'));
+    });
+
+    it('keeps lifeline head boxes kind-coloured regardless of risk — the seam only touches arrows', () => {
+      renderDiagram(ENTITIES, [mkIx({ id: 'i1' })], {
+        riskLevelByInteraction: new Map([['i1', 'critical']]),
+      });
+
+      const head = document.querySelector('[data-testid="dg-seq-lifeline"] .dg-seq-head')!;
+      // Unaffected: still the entity-kind variable, not a risk one.
+      expect(head.getAttribute('stroke')).not.toBe(riskLevelColorVar('critical'));
+    });
+
+    it('reproduces exactly the pre-#170 colouring when no risk map is passed — a pure regression guard', () => {
+      renderDiagram(ENTITIES, [mkIx({ id: 'i1' })]);
+
+      const [req] = messageEls();
+      expect(req.innerHTML).toContain('var(--dg-tree-guide)');
+      expect(req.innerHTML).not.toContain(riskLevelColorVar('critical'));
+    });
+  });
+});
+
+describe('InteractionDiagram — the label lineage overlay', () => {
+  it('lights the listed legs and dims every other, and marks nothing when nothing is tracked', () => {
+    const { rerender } = renderWithProviders(
+      <InteractionDiagram entities={ENTITIES} interactions={[mkIx({ id: 'i1' }), mkIx({ id: 'i2', callee_entity_id: 'e3' }, 3)]} selectedId={null} onSelect={() => {}} />,
+    );
+    expect(document.querySelector('[data-track]')).toBeNull();
+    rerender(
+      <InteractionDiagram
+        entities={ENTITIES}
+        interactions={[mkIx({ id: 'i1' }), mkIx({ id: 'i2', callee_entity_id: 'e3' }, 3)]}
+        selectedId={null}
+        onSelect={() => {}}
+        litEdgeIds={['i1:response', 'i2:request']}
+      />,
+    );
+    const rows = messageEls().map((el) => [el.getAttribute('data-seq'), el.getAttribute('data-track')]);
+    expect(rows).toEqual([['1', 'dimmed'], ['2', 'lit'], ['3', 'lit'], ['4', 'dimmed']]);
+    expect(document.querySelectorAll('.dg-seq-row--lit')).toHaveLength(2);
+    expect(document.querySelectorAll('.dg-seq-row--dimmed')).toHaveLength(2);
+  });
+
+  it('reports a right-click on a message with its interaction and leg, and suppresses the browser menu', () => {
+    const onContextMenuInteraction = vi.fn();
+    renderWithProviders(
+      <InteractionDiagram entities={ENTITIES} interactions={[mkIx({ id: 'i1' })]} selectedId={null} onSelect={() => {}} onContextMenuInteraction={onContextMenuInteraction} />,
+    );
+    const prevented = !fireEvent.contextMenu(messageEls()[1]);
+    expect(onContextMenuInteraction).toHaveBeenCalledWith('i1', 'response', { x: 0, y: 0 });
+    expect(prevented).toBe(true);
   });
 });

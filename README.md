@@ -109,7 +109,9 @@ kubectl -n travel-advisor exec deploy/demo-client -- python3 /app/app/demo.py
 
 The UI landing page ("Recent traces") lists the run; click one to walk the
 resource tree. The full demo runbook (deploying the app, the demo-client pod,
-and the expected trace shape) lives with the `agent-examples` project.
+and the expected trace shape) lives with the `agent-examples` project. Scripted
+demos on a running cluster, with their commands and tools, live under `demos/`
+(`demos/README.md`).
 
 ## Configuration
 
@@ -132,5 +134,8 @@ and the expected trace shape) lives with the `agent-examples` project.
 - [`docs/PROJECT.md`](docs/PROJECT.md) — full architecture.
 - [`docs/sidecar-wire-contract.md`](docs/sidecar-wire-contract.md) — the
   producer↔DG wire format.
+- [`data_governance/risk/README.md`](data_governance/risk/README.md) — the
+  risk sub-component: evidence gathering, OPA policy decisions, the
+  `/risk/*` API, and how to run/test it.
 - [`CONTEXT.md`](CONTEXT.md) and [`docs/adr/`](docs/adr/) — the domain glossary
   and architecture decision records.

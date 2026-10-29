@@ -118,83 +118,91 @@ export interface Payload {
 }
 
 /**
- * The **Data lineage metadata** triple for one **Interaction leg** (ADR-0028):
- * where the payload's data came from and what happened to it on the way.
- *
- * 1. `data_sources` — the origins, each an **Entity**'s natural key.
- * 2. `source_transformations` — `data_source → transformations`. A *list* on the
- *    wire because JSON has no set; its order is insignificant. A source in
- *    `data_sources` need not appear here (no transformations recorded for it).
- * 3. `entities` — the **set** of entities the data passed through. An array on the
- *    wire only because JSON has no set type: it is **unordered**, and nothing may
- *    read flow order out of element position. The spec defers ordering to a future
- *    trace-derived API; the backend sorts it purely so a re-derivation is
- *    byte-identical. An origin's set is legitimately empty.
- *
- * `seq` is the row's own derivation cursor. An *empty* triple is a real derived
- * value (the payload originates here) — distinct from the absent row, which the
- * wire spells as a `null` `lineage` (see {@link DataLineageLeg}).
+ * Where one carried-in label was found by the classifier: the origin leg, its
+ * `seq` and caller/callee (`null` when that leg is gone), what the classifier
+ * marked there (`unit_text`) and the value it denotes (`unit_value` — the two
+ * differ when a number was widened to its whole extent).
  */
-export interface DataLineage {
-  data_sources: string[];
-  source_transformations: Record<string, string[]>;
-  entities: string[];
-  seq: number;
+export interface LabelOrigin {
+  origin_interaction_id: string;
+  origin_leg_type: 'request' | 'response';
+  origin_seq: number | null;
+  caller: string | null;
+  callee: string | null;
+  unit_text: string;
+  unit_value: string;
+  /** `whole` from the exact finder; later finders write other kinds. */
+  match_kind: string;
+  /** The origin's trace when it is another one; `null` for this trace. */
+  origin_trace_id: string | null;
+  /**
+   * Every route the value took from this origin to the leg read, shortest
+   * first, each a list of hops in seq order (origin → carriers → here). Absent
+   * from a server that predates the walk; the UI then shows the origin alone.
+   */
+  chains?: LineageHop[][];
 }
 
 /**
- * One **Interaction leg** of a trace with its nullable lineage, the element of
- * `GET /api/traces/{tid}/data-lineage`.
- *
- * The leg key is `(interaction_id, leg_type)` (ADR-0028 D5) — content-addressed
- * `payload_hash` is a fact about the row, NOT the key: identical bytes at
- * different positions carry completely different lineage. `lineage` is `null` in
- * the eventual-consistency window before P-data-lineage has derived this leg,
- * mirroring the nullable `classification` of `GET /api/payloads/{hash}`
- * (ADR-0024).
+ * One payload a carried-in value sat on, on its way from where the classifier
+ * found it to the leg read. `role`: `origin` (born here; `text`/`start`/`end` are
+ * the unit the classifier marked), `hop` (a carrier; the span the finder matched
+ * at that payload, `null` when the edge has none) or `here` (the leg read).
+ * `trace_id` is always set; a hop in another trace names that trace. `excerpt`
+ * is set on the origin hop when its payload is still stored: a window of the
+ * payload's projected text with the unit re-based into it.
  */
-export interface DataLineageLeg {
+export interface LineageHop {
   interaction_id: string;
   leg_type: 'request' | 'response';
-  payload_hash: string | null;
-  lineage: DataLineage | null;
+  seq: number | null;
+  trace_id: string;
+  caller: string | null;
+  callee: string | null;
+  text: string | null;
+  start: number | null;
+  end: number | null;
+  role: 'origin' | 'hop' | 'here';
+  excerpt: { text: string; start: number; end: number } | null;
 }
 
 /**
- * `(interaction_id, leg_type)` → that leg's nullable lineage, the shape
- * `useDataLineage` reduces the trace-scoped response to. Keys are
- * `` `${interaction_id}:${leg_type}` `` (see `legLineageKey`). A *present* key
- * with a `null` value is "derived-nothing-yet"; an *absent* key means the leg
- * carries no lineage row at all (e.g. the not-yet-migrated empty response) —
- * both render as "not yet computed", but the distinction is preserved.
+ * One label on one span of a leg's payload: `found_here` when the classifier
+ * found it on this payload, `carried_in` the origins label lineage reached it
+ * from (a label can be both). `start`/`end` index the projected text the
+ * classifier read, not the JSON on the Payload tab; `null` for a carried-in
+ * match with no span.
  */
-export type DataLineageByLeg = Map<string, DataLineage | null>;
+export interface LegLabel {
+  text: string;
+  start: number | null;
+  end: number | null;
+  entity_type: string;
+  sensitivity_level: string | null;
+  regulatory_tags: string[];
+  found_here: boolean;
+  carried_in: LabelOrigin[];
+}
 
-/**
- * What the flow view can currently say about ONE leg's lineage — the prop
- * `DataLineageView` renders, and the reason it is a union rather than
- * `DataLineage | null`.
- *
- * Three facts a governance reader must be able to tell apart, because each
- * demands a different action:
- *
- * - `'derived'` — P-data-lineage produced this triple. It is the answer, *including*
- *   when the triple is empty (the payload originates here, ADR-0028 D3).
- * - `'pending'` — the read succeeded but this leg has no lineage yet (the
- *   eventual-consistency window, or a not-yet-migrated DB). *Wait.*
- * - `'error'` — the read itself failed, so nothing is known. *Retry.*
- *
- * A nullable triple could only express two of those, which is how a failed fetch
- * came to render as "not yet computed" — telling a reader to wait for an answer
- * that was never going to arrive. Making the third state a distinct arm makes
- * that conflation unrepresentable rather than merely discouraged: ADR-0028's rule
- * that "not yet computed" must never look like a derived answer applies with
- * equal force to "we failed to ask".
- */
-export type LineageState =
-  | { kind: 'derived'; lineage: DataLineage }
-  | { kind: 'pending' }
-  | { kind: 'error' };
+/** One payload-bearing leg of `GET /api/traces/{tid}/interactions/{iid}/labels`. */
+export interface LegLabels {
+  leg_type: 'request' | 'response';
+  payload_hash: string;
+  seq: number;
+  /** The classifier's document-level verdict; `null` while unclassified. */
+  found: { sensitivity_level: string; regulatory_tags: string[] } | null;
+  /** What label lineage carried in; `origin_count` counts origin legs, not
+   *  edges. `null` when nothing was carried in. */
+  carried: { max_level: string | null; regulatory_tags: string[]; origin_count: number } | null;
+  labels: LegLabel[];
+}
+
+/** One interaction's labels, unwrapped by `useLegLabels`: the legs by type and
+ *  the trace's label-lineage status (`null` = not derived, never `complete`). */
+export interface InteractionLabels {
+  byLeg: Map<string, LegLabels>;
+  lineageStatus: LineageStatus;
+}
 
 /**
  * Whether a trace's derived lineage covers the whole trace (ADR-0028 D6, issue
@@ -211,17 +219,13 @@ export type LineageStatus = 'complete' | 'partial' | null;
 
 /**
  * The whole `GET /api/traces/{tid}/data-lineage` response, reduced to what the
- * flow view reads: the per-leg lookup plus the trace's own coverage.
- *
- * One hook, one fetch, both facts — the status is trace-level and the per-leg map
- * is derived from the same response, so splitting them across two hooks would
- * mean two reads of one resource.
+ * flow view reads: the trace's own coverage. The per-leg rows on the same
+ * response have no reader in the UI and are dropped.
  *
  * `stoppedAtSeq` is the leg `seq` where derivation stopped; non-null exactly when
  * `status` is `'partial'` (the server's CHECK constraint guarantees the pairing).
  */
 export interface TraceDataLineage {
-  byLeg: DataLineageByLeg;
   status: LineageStatus;
   stoppedAtSeq: number | null;
 }
@@ -303,7 +307,7 @@ export interface LineageGraphLeg {
  *
  * A failed read is deliberately not a fourth value here: this type spells what the
  * SERVER said, and a request that never returned said nothing. The view owns that
- * arm (`isError`), the same split `LineageState` makes for one leg.
+ * arm (`isError`): a failed read is not an empty answer.
  */
 export type LineageReachabilityState = 'derived' | 'pending' | 'no-adjacent';
 

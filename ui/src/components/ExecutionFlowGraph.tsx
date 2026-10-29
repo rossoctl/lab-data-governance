@@ -5,6 +5,7 @@ import {
   EmptyStateBody,
   EmptyStateHeader,
   Spinner,
+  Tooltip,
 } from '@patternfly/react-core';
 // DEEP imports, not the `@patternfly/react-topology` barrel — it keeps the
 // barrel's pipelines / side-bar / context-menu subtrees out of the production
@@ -163,6 +164,7 @@ import '@patternfly/react-topology/dist/esm/css/topology-controlbar.css';
 import { useEntities, useInteractions, useLineageReachability, useLineageSummary } from '../api/hooks';
 import { useEntitiesAndInteractions } from '../api/live';
 import { deriveGraph, type GraphEdgeSpec, type GraphNodeSpec, type GraphSpec } from '../lib/graph';
+import { requestLegsOnly } from '../lib/flow';
 import { ENTER_MS, ENTER_MS_REDUCED, Motion, fadeIn, type Arrival, type Movable } from '../lib/motion';
 import {
   deriveReachabilityHighlight,
@@ -171,7 +173,16 @@ import {
   type DirectionHighlight,
 } from '../lib/lineageReachability';
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
-import { kindColorVar, nodeNeutralColorVar } from '../lib/entityKind';
+import {
+  KIND_SHAPE,
+  kindColorVar,
+  nodeNeutralColorVar,
+  shapeForKind,
+  type EntityKindShape,
+} from '../lib/entityKind';
+import { riskLevelColorVar, moreSevereRiskLevel } from '../lib/riskLevel';
+import { edgeTagLabel } from '../lib/classificationSummary';
+import type { InteractionClassification } from '../lib/classificationSummary';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import { LineageSourceNotices, LineageSourcePicker } from './flow/LineageSourcePicker';
 import { LineageEntityPicker } from './flow/LineageEntityPicker';
@@ -182,6 +193,103 @@ import type { Entity, Interaction, LineageStatus } from '../types';
  * because a node whose size is unknown cannot be positioned at all.
  */
 const NODE_DIAMETER = 40;
+
+/**
+ * `lib/entityKind`'s shape NAME → PF's `NodeShape` (issue #218).
+ *
+ * A NAME→NAME TABLE AT THE BOUNDARY, exactly like `PF_COLOR_TO_GLOBAL_VAR` in that
+ * module: the kind→shape decision lives there (one place), and this file is the only
+ * thing that knows how to say it in PatternFly's vocabulary. The reason for the split
+ * is bundling, and it is not cosmetic — `entityKind.ts` is imported eagerly by
+ * `EntityPill` and `InteractionDiagram`, while `NodeShape` is a runtime enum from
+ * `@patternfly/react-topology`, whose ~130kB of JS and CSS is confined to THIS module
+ * so it rides the lazy chunk (see the import-order note above). Importing the enum
+ * there would pull the topology chunk onto every reader of the trace list.
+ *
+ * TYPED AS A TOTAL `Record<EntityKindShape, NodeShape>`, so adding a shape name in
+ * `entityKind.ts` without teaching this table how to draw it is a compile error rather
+ * than a node that silently falls back to an ellipse.
+ *
+ * Only `hexagon`/`rect`/`rhombus`/`circle` are reachable from the four kinds #218
+ * names; `ellipse` is the fallback every other kind keeps (see `KIND_SHAPE_FALLBACK`),
+ * and is what every node was before this change.
+ */
+const SHAPE_TO_NODE_SHAPE: Record<EntityKindShape, NodeShape> = {
+  hexagon: NodeShape.hexagon,
+  rect: NodeShape.rect,
+  rhombus: NodeShape.rhombus,
+  circle: NodeShape.circle,
+  ellipse: NodeShape.ellipse,
+};
+
+/**
+ * The shape legend's rows: the four kinds #218 names, each with the WORD for its
+ * outline and a human label for the kind.
+ *
+ * DERIVED FROM `KIND_SHAPE`, NOT RESTATED. The legend's whole job is to be true about
+ * what the graph draws, so it reads the same map the nodes do — a hand-written list
+ * here would be a second place a kind is assigned a shape, and the one that goes stale
+ * silently (a legend that is merely WRONG is worse than no legend, because a reader
+ * trusts it over their own eyes).
+ *
+ * `Object.entries(KIND_SHAPE)` and not a literal array for the same reason: adding a
+ * fifth kind to the map puts it in the legend automatically instead of leaving an
+ * unexplained outline on the graph — which is the exact failure a key exists to
+ * prevent.
+ *
+ * THE SHAPE IS NAMED IN WORDS as well as drawn. At 0.75rem a hexagon and a circle are
+ * a genuine squint, and the swatch is `aria-hidden`, so the word is what makes the row
+ * usable to a screen reader and to anyone reading at a glance — the same belt-and-
+ * braces the Lineage legend applies with its "(double ring)".
+ */
+const SHAPE_LEGEND_ROWS: ReadonlyArray<{ kind: string; label: string; shapeWord: string }> = (
+  [
+    // Kind → the words. Ordered agent, tool, llm, user: the order the issue lists them
+    // in, which is also roughly call order (a user calls an agent, which calls tools
+    // and models) rather than alphabetical.
+    { kind: 'agent', label: 'Agent', shapeWord: 'hexagon' },
+    { kind: 'tool', label: 'Tool', shapeWord: 'rectangle' },
+    { kind: 'llm', label: 'LLM', shapeWord: 'diamond' },
+    { kind: 'user', label: 'User', shapeWord: 'circle' },
+  ] as const
+).filter((row) => row.kind in KIND_SHAPE);
+
+/**
+ * The standing key to the node outlines, rendered on EVERY graph view.
+ *
+ * WHY IT IS NOT PASSED THROUGH `EntityGraphProps.legend`, which is the slot that
+ * already exists for a key: that slot is a caller's, and the Lineage tab fills it with
+ * its five reachability rows. Routing shapes through it would mean either deleting
+ * those (the shapes are not a substitute — they answer a different question) or asking
+ * all three call sites to remember to compose them, which is precisely the
+ * per-call-site opt-out that made the shapes inconsistent in the first place. So
+ * `EntityGraph` renders this ITSELF, unconditionally, and the `legend` slot keeps its
+ * existing meaning: view-specific treatments. Both keys are on screen because both
+ * sets of treatments are.
+ *
+ * Rendered as a `group` with a name, like the Lineage legend, so it is announced as
+ * the key it is rather than as four stray words.
+ */
+function EntityShapeLegend() {
+  return (
+    <div className="dg-shape-legend" role="group" aria-label="Entity shape legend">
+      {SHAPE_LEGEND_ROWS.map((row) => (
+        <span className="dg-shape-legend-item" key={row.kind}>
+          {/* The swatch DRAWS the outline rather than standing for it (the rule stated
+              in global.css's `.dg-lineage-swatch` block), so the key is the treatment
+              itself. `aria-hidden` because the row's own text already says both the
+              kind and the shape — an unnamed graphic between the labels would just be
+              noise to a screen reader. */}
+          <span
+            className={`dg-shape-swatch dg-shape-swatch--${shapeForKind(row.kind)}`}
+            aria-hidden="true"
+          />
+          {`${row.label} (${row.shapeWord})`}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 /**
  * How a node/edge participates in a highlight, when one is active.
@@ -286,6 +394,35 @@ type NodeData = GraphNodeSpec & {
   highlight: HighlightRole;
   lineage: NodeLineageFacts;
   kindColoured: boolean;
+  /**
+   * This node's ENTITY risk level, resolved when the caller supplied a
+   * `riskLevelByInteraction` map (issue #170) — see
+   * {@link EntityGraphProps.riskLevelByInteraction}. `undefined` when no map
+   * was supplied at all, which is what keeps the node colour unchanged with
+   * the risk layer off; present (possibly `'unknown'`) whenever a map is passed, even
+   * for a node with no incident edges in it.
+   *
+   * STOPGAP, not a first-class fact: the risk API has no per-entity risk
+   * level, only per-INTERACTION (`ForestInteraction.risk`). This is the worse
+   * of the node's incident edges' levels (`moreSevereRiskLevel`,
+   * `lib/riskLevel.ts`), computed by `EntityGraph` itself rather than by the
+   * caller, because the roll-up needs the same edge set the graph already
+   * derives. If the risk model ever gains a genuine per-entity level, that
+   * should replace this roll-up rather than sit beside it.
+   */
+  riskLevel?: string;
+  /**
+   * A click on this node selects its entity (`onSelectEntity` is wired), so the node
+   * is a BUTTON to assistive technology and the keyboard. Where it is not, the node is
+   * a named graphic: a tab stop that does nothing on Enter would be a false affordance.
+   */
+  isSelectable: boolean;
+  /**
+   * This node's entity is the app's selected one (`?eid`). From the app's selection,
+   * not PF's click state, for the reason {@link EntityGraphProps.selectedInteractionId}
+   * gives: a selection restored from the URL has no click behind it.
+   */
+  isSelected: boolean;
   /** Set while a node that arrived on a live push is fading in (ADR-0034). */
   arrival?: Arrival;
 };
@@ -313,6 +450,33 @@ type EdgeData = GraphEdgeSpec & {
   highlight: HighlightRole;
   isSelected: boolean;
   lineage: EdgeLineageFacts;
+  /** A right-click on the arrow (see `EntityGraphProps.onContextMenuInteraction`). */
+  onContextMenu?: (e: React.MouseEvent) => void;
+  /**
+   * This edge's leg's INTERACTION risk level, looked up from the caller's
+   * `riskLevelByInteraction` map (issue #170) by `e.interactionId` — see
+   * {@link EntityGraphProps.riskLevelByInteraction}. `undefined` whenever no
+   * map was supplied, or the map has no entry for this interaction (not yet
+   * computed — eventual consistency, not a "safe" verdict; see
+   * `riskForestAdapter.riskLevelByInteraction`'s docstring). Both of an
+   * interaction's two legs share the same level, since the verdict is per
+   * interaction, not per leg.
+   */
+  riskLevel?: string;
+  /**
+   * This edge's leg's INTERACTION regulatory tags + sensitivity level(s),
+   * looked up from the caller's `classificationByInteraction` map (issue #170
+   * follow-up) by `e.interactionId` — see
+   * {@link EntityGraphProps.classificationByInteraction}. `undefined`
+   * whenever no map was supplied, or the map has no entry for this
+   * interaction — see `riskForestAdapter.classificationByInteraction`'s
+   * docstring for the omitted-vs-present rule (an entry with `tags: []` but a
+   * non-empty `levels` IS present; this field is `undefined` only when the
+   * map itself was never supplied or the lookup misses entirely). Both of an
+   * interaction's two legs share the same record, for the same reason
+   * `riskLevel` above does.
+   */
+  classification?: InteractionClassification;
   /** Set while an edge that arrived on a live push is fading in, as on a node. */
   arrival?: Arrival;
 };
@@ -336,6 +500,21 @@ export interface GraphHighlight {
   nodeIds: readonly string[];
   /** Edge ids (`<interaction>:<leg_type>`) in the answer — the traversed route. */
   edgeIds: readonly string[];
+  /**
+   * An answer is still IN FLIGHT, so nothing may be dimmed yet (issue #153).
+   *
+   * Dimming says "not part of the answer", and an answer that has not arrived has no
+   * standing to say that: with the sets still empty it would draw exactly the
+   * `no-adjacent` picture for "not known yet". What has landed is still lit.
+   */
+  isAnswerPending?: boolean;
+  /**
+   * A question was asked with NO node selected, so the rest may dim. The label
+   * lineage overlay (`lib/labelTrack`) asks "where were these values" — a question
+   * about edges, with no subject node — and without this the `selectedNodeId`
+   * guard in `roleOf` would read it as "nothing asked" and dim nothing.
+   */
+  isQuestion?: boolean;
   /**
    * The **Lineage reachability** overlay (ADR-0028 D14/D15), when the caller has
    * one. Omitted by the Execution Flow tab, which draws the plain graph.
@@ -430,13 +609,16 @@ function roleOf(id: string, h: GraphHighlight | undefined, isNode: boolean): Hig
   // Note this deliberately keys on `selectedNodeId`, not on whether the sets are
   // empty: a selected entity whose answer is legitimately empty (`no-adjacent`)
   // SHOULD dim the rest, because a question was asked and the answer is "nothing".
-  if (h.selectedNodeId === null) return 'none';
+  if (h.selectedNodeId === null && !h.isQuestion) return 'none';
   if (isNode && h.selectedNodeId === id) return 'selected';
   const inAnswer = isNode ? h.nodeIds.includes(id) : h.edgeIds.includes(id);
   // `'source'` for a node in the answer, `'carrier'` for an edge that delivered it
   // — two names because the two are different claims and the stylesheet treats
   // them differently (a lit arrow reads as a route, a lit node as an origin).
-  return inAnswer ? (isNode ? 'source' : 'carrier') : 'dimmed';
+  if (inAnswer) return isNode ? 'source' : 'carrier';
+  // A question asked but NOT YET ANSWERED is the other half of the guard above: the
+  // empty-answer dimming is only true once the answer is in (see `isAnswerPending`).
+  return h.isAnswerPending ? 'none' : 'dimmed';
 }
 
 /**
@@ -904,6 +1086,125 @@ function curveTangentPoint(
 }
 
 /**
+ * How far, in px, the edge's tag is nudged OFF the drawn stroke, along the curve's
+ * normal at the point the tag sits on.
+ *
+ * WHY NOT ZERO. The tag is a small FILLED rect (`DefaultConnectorTag` draws a
+ * `.pf-topology__edge__tag__background` behind its text), so centring it exactly on
+ * the arc hides the line under it — and it hides it at the APEX, which on a bowed
+ * request/response pair is the one place a reader uses to tell the two arcs apart.
+ * That was the original reason the tag was left on the chord, and it is a real
+ * concern; the mistake was the SIZE of the resulting gap, not the instinct.
+ *
+ * WHY NOT MORE. Issue #219 is that the label must be "actually on or touching the
+ * edge it refers to". At 9px the tag's own background — roughly 8px above and below
+ * its baseline at this font size — reaches back to the stroke, so the label reads as
+ * attached to the line while the line stays visible beside it. Sized as HALF a tag
+ * height rather than as a fraction of the bow, deliberately: it is a typographic
+ * clearance, so it must not grow with the routing (a 96px skipping detour does not
+ * need a 48px label gap — that is the bug this fixes).
+ */
+const TAG_CURVE_OFFSET = 9;
+
+/**
+ * Where along an edge's curve the tag sits, as a Bézier parameter.
+ *
+ * The APEX (t=0.5) is the natural choice and the one the reader expects: it is the
+ * visual middle of the arc, it is where the two legs of a pair are furthest apart,
+ * and it is the point the chord midpoint was a (bad) approximation OF.
+ */
+const TAG_CURVE_T = 0.5;
+
+/**
+ * The unit NORMAL to a quadratic at `t` — the direction to nudge the tag off the
+ * stroke.
+ *
+ * The derivative of a quadratic at `t` is `2((1-t)(c-from) + t(to-c))`; rotating it
+ * by 90° gives `(-dy, dx)`. The factor of 2 is dropped because the vector is
+ * normalised anyway.
+ *
+ * DEGENERATE CASE, and it is reachable rather than theoretical: a zero-length
+ * derivative (a self-call, whose two anchors coincide) has no direction to rotate,
+ * so `Math.hypot` would be 0 and the normalisation would produce `NaN` — which SVG
+ * renders as a dropped element, i.e. a silently missing label. Returning a zero
+ * vector instead leaves the tag exactly on the (degenerate) mark, which is the right
+ * answer for a shape that has no visible arc to sit beside.
+ */
+function unitNormalAt(from: XY, control: XY, to: XY, t: number): XY {
+  const dx = (1 - t) * (control.x - from.x) + t * (to.x - control.x);
+  const dy = (1 - t) * (control.y - from.y) + t * (to.y - control.y);
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return { x: 0, y: 0 };
+  return { x: -dy / len, y: dx / len };
+}
+
+/**
+ * WHERE THE EDGE'S TAG BELONGS: a point on (just off) the DRAWN curve — issue #219.
+ *
+ * THE BUG THIS FIXES. `DefaultConnectorTag` computes its own translate as the
+ * MIDPOINT of the two points it is handed (`start + (end - start) * 0.5`) and takes
+ * no position override, so handing it the edge's `startPoint`/`endPoint` — which is
+ * what a fork of `DefaultEdge` does, and what this component did — pins every label
+ * to the CHORD midpoint. The line, meanwhile, is an arc through the bendpoint. The
+ * gap between the two is the bendpoint's entire offset, and `edgeBendpoints` sizes
+ * that offset for CLEARANCE, not for legibility:
+ *
+ *   - adjacent call:      `ADJACENT_BOW_Y`          = 18px
+ *   - column-skipping:    `spans * ROW_STEP_Y / 2`  = 96px at spans 2, more beyond
+ *   - same column:        `COLUMN_STEP_X / 2`       = 110px
+ *
+ * So on the routed cases the label was not "slightly off the stroke" — it floated a
+ * whole grid step away in empty canvas, or worse, over the nodes the detour exists to
+ * avoid. That is the reported defect, and it is why the earlier reasoning ("the chord
+ * midpoint leaves the label just inside its own arc, off the stroke") did not hold:
+ * it was true for a shallow bow and false for every routed edge.
+ *
+ * THE FIX IS A POSITION, NOT A NEW RENDERER. `DefaultConnectorTag` is kept — it owns
+ * the tag's background rect, its text centring, its status modifier and the class the
+ * stylesheet keys on, and reimplementing that to move a point would be a fork for no
+ * reason. Since its translate is the midpoint of its two arguments, ANY pair with the
+ * desired midpoint places it: this returns the point, and the caller hands the tag
+ * `[p, p]`. A degenerate pair is fine — the component reads only the midpoint, and
+ * nothing else in that renderer uses the two points.
+ *
+ * THE PROPERTY THE OLD POSITION BOUGHT IS KEPT. The whole reason an adjacent pair is
+ * bowed at all is that A→B and B→A share both anchors, so their labels collided on
+ * one line. Anchoring each label to its OWN arc keeps them apart by MORE than before,
+ * not less: the two arcs are `2 * ADJACENT_BOW_Y` apart at the apex, and the two tags
+ * now sit on their respective arcs instead of both on the shared chord.
+ *
+ * STRAIGHT EDGES FALL THROUGH to the chord midpoint, which for them IS the line — a
+ * self-call has no bendpoint, `curvePath` emits a straight `L`, and there is no arc to
+ * hug. The normal is zero there (see {@link unitNormalAt}), so the tag lands on the
+ * mark rather than at `NaN`.
+ */
+function tagAnchor(from: XY, bendpoints: readonly XY[], to: XY): XY {
+  if (bendpoints.length === 0) {
+    // No curve: the chord midpoint is the line's own midpoint. No normal to offset
+    // along either, so the tag sits exactly on it.
+    return { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  }
+  const segments = arcSegments(from, bendpoints, to);
+  // THE MIDDLE ARC of the chain, so a multi-bendpoint route (which `edgeBendpoints`
+  // does not produce today, but `arcSegments` deliberately supports — see its note)
+  // gets its label near the route's own middle rather than always on the first arc.
+  const [segFrom, via, segTo] = segments[Math.floor(segments.length / 2)]!;
+  const control = controlThrough(segFrom, via, segTo);
+  const on = quadraticAt(segFrom, control, segTo, TAG_CURVE_T);
+  const normal = unitNormalAt(segFrom, control, segTo, TAG_CURVE_T);
+  // WHICH WAY along the normal: away from the chord, i.e. the same side the curve
+  // bows to. Placing it on the INNER side would put the label between the arc and the
+  // chord, which on a bowed pair is the gap the sibling leg's own label is heading
+  // for — so the two would converge exactly where the bow exists to separate them.
+  const chordMid = { x: (segFrom.x + segTo.x) / 2, y: (segFrom.y + segTo.y) / 2 };
+  const outward = Math.sign((on.x - chordMid.x) * normal.x + (on.y - chordMid.y) * normal.y) || 1;
+  return {
+    x: on.x + normal.x * TAG_CURVE_OFFSET * outward,
+    y: on.y + normal.y * TAG_CURVE_OFFSET * outward,
+  };
+}
+
+/**
  * The graph element's own id in the topology model.
  *
  * A named constant rather than a literal in two places, because the selection
@@ -1016,20 +1317,142 @@ function edgeLineageSuffix(data: EdgeData | undefined): string {
   return '';
 }
 
+/**
+ * This leg's regulatory tags + sensitivity level(s), in words, for the edge's
+ * hover text (issue #170 follow-up: regulatory tags as edge labels). Unlike
+ * the VISIBLE tag (`edgeTagLabel`, capped at
+ * {@link import('../lib/classificationSummary').EDGE_TAG_MAX_TAGS} tags),
+ * hover text has no width constraint, so this always spells out the FULL
+ * list — the two are read together as "the number shown is a summary, the
+ * hover is the complete answer", which is what makes the visible cap
+ * lossless rather than a loss of information.
+ *
+ * Returns `''` — not "none" — when `data.classification` is `undefined`
+ * (no map supplied, or no entry for this interaction), same
+ * never-render-unknown-as-a-verdict reasoning as `edgeTagLabel`'s docstring:
+ * an unclassified leg's hover text should say nothing about classification
+ * at all, not assert an absence the data doesn't support. A genuine
+ * `{tags: [], levels: ['PUBLIC']}` entry, by contrast, DOES render — as
+ * `(PUBLIC)` with no tags before it — because that IS a real verdict.
+ *
+ * Labels CARRIED IN (label lineage, `classification.carried`) follow as
+ * `· carried in: TAGS (LEVEL)`, only when present; the visible tag never
+ * shows them, so hover is where a reader finds them on the graph.
+ *
+ * Placed BEFORE `edgeLineageSuffix` in both the `<title>` and `aria-label`
+ * call sites, keeping that route parenthetical last in both strings.
+ */
+function edgeClassificationSuffix(data: EdgeData | undefined): string {
+  const c = data?.classification;
+  if (!c) return '';
+  const tags = c.tags.length > 0 ? c.tags.join(', ') : '';
+  const levels = c.levels.length > 0 ? `(${c.levels.join(', ')})` : '';
+  const found = [tags, levels].filter((s) => s !== '').join(' ');
+  const carried = c.carried
+    ? `carried in: ${[c.carried.tags.join(', '), c.carried.level ? `(${c.carried.level})` : '']
+        .filter((s) => s !== '')
+        .join(' ')}`
+    : '';
+  const clause = [found, carried].filter((s) => s !== '').join(' · ');
+  return clause === '' ? '' : ` — ${clause}`;
+}
+
+/**
+ * The edge's FULL hover text — seq number, leg, endpoints, and the
+ * classification clause. Feeds the native SVG `<title>`, which is the
+ * non-visual fallback and therefore the one place the edge's complete
+ * identity has to stay available: a reader who cannot see the graph gets
+ * this string and nothing else, so trimming it would be a real loss.
+ *
+ * NO LONGER FEEDS THE VISIBLE TOOLTIP. The two were deliberately identical
+ * (one helper, with a test asserting byte-equality) up until the tooltip was
+ * cut down to the classification alone — see `edgeTooltipText` below for what
+ * the visible affordance shows now and why the two diverged. `<title>` keeps
+ * the long form; the tooltip does not.
+ *
+ * Deliberately does NOT include `edgeLineageSuffix` — unlike `aria-label`,
+ * which does. The visible/audible split was a considered choice, not an
+ * oversight: keeping this identical to what the inert `<title>` already said
+ * avoided also changing the Lineage tab's hover wording as a side effect of
+ * an unrelated bug fix.
+ */
+function edgeHoverText(data: EdgeData | undefined): string {
+  return `#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}${edgeClassificationSuffix(data)}`;
+}
+
+/**
+ * The VISIBLE tooltip's text: regulatory tags and sensitivity level only.
+ *
+ * WHY THIS IS NOT `edgeHoverText`. The tooltip is a visual affordance on a
+ * dense diagram, and the seq number, leg and endpoint names it used to repeat
+ * are all *already on screen* — the seq number as the edge's own label on the
+ * Execution Flow and Lineage tabs, and the endpoints as the two nodes the
+ * arrow visibly connects. The one thing the graph cannot show, because
+ * `edgeTagLabel` caps the drawn tag to two tokens, is the full tag list and
+ * the level. So the tooltip now carries exactly that and nothing else.
+ *
+ * Reuses `edgeClassificationSuffix` with its leading `' — '` separator
+ * stripped rather than re-deriving the string: the tags/level formatting, the
+ * dedup order, and the "never say 'none'" rule are decisions that belong in
+ * one place, and a second hand-written version of them is exactly the kind of
+ * divergence that drifts silently.
+ *
+ * Returns `''` for an unclassified edge — there is no shorter honest thing to
+ * say, and `DirectedEdge` renders NO tooltip at all in that case rather than
+ * an empty box. The `<title>` still carries the full identity for that edge.
+ */
+function edgeTooltipText(data: EdgeData | undefined): string {
+  return edgeClassificationSuffix(data).replace(/^ — /, '');
+}
+
 function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof DefaultNode>) {
   const data = element.getData() as NodeData | undefined;
-  // PER TAB (see `NodeData.kindColoured`): Execution Flow paints entity kind, because
-  // nothing else on that tab wants hue; Lineage paints every node neutral so the
-  // trace's data sources can be the one coloured thing. Defaults to NEUTRAL when
-  // `data` is missing — the conservative direction, since a stray kind hue on the
-  // Lineage tab would compete with the source colouring.
-  const colour = data?.kindColoured ? kindColorVar(data.kind) : nodeNeutralColorVar();
+  // RISK TAKES PRECEDENCE (issue #170), same reasoning as the edge colour below:
+  // a node's `riskLevel` is present only when a caller passed
+  // `riskLevelByInteraction` at all (see `EntityGraphProps.riskLevelByInteraction`),
+  // which is only the risk layer — with it off the map is `undefined` and this
+  // falls straight through to the unchanged branch beneath.
+  //
+  // PER TAB OTHERWISE (see `NodeData.kindColoured`): Execution Flow paints entity
+  // kind, because nothing else on that tab wants hue; Lineage paints every node
+  // neutral so the trace's data sources can be the one coloured thing. Defaults to
+  // NEUTRAL when `data` is missing — the conservative direction, since a stray kind
+  // hue on the Lineage tab would compete with the source colouring.
+  const colour =
+    data?.riskLevel !== undefined
+      ? riskLevelColorVar(data.riskLevel)
+      : data?.kindColoured
+        ? kindColorVar(data.kind)
+        : nodeNeutralColorVar();
   // On this wrapper, not on `DefaultNode`'s own group: the highlight dims that group
   // by `opacity`, and the fade multiplies with the dim instead of overriding it.
   const fadeRef = useFadeIn(data?.arrival);
+  // KEYBOARD AND SCREEN-READER ACCESS, on the same terms the edges get it (see
+  // `DirectedEdge`): an SVG `<g>` is inert and a `<title>` inside a role-less `<g>` is
+  // no accessible name, so the role, the name and — where a node click selects an
+  // entity — the tab stop and the Enter/Space handler go on this wrapper. Activation
+  // reuses PF's own `onSelect` from `withSelection`, the identical path a click takes,
+  // including its toggle-to-deselect. The tab order is document order, which puts the
+  // nodes after every edge, in entity order.
+  const a11y: React.SVGProps<SVGGElement> = data?.isSelectable
+    ? {
+        role: 'button',
+        tabIndex: 0,
+        className: 'dg-graph-node-focus',
+        'aria-label': nodeTitle(data),
+        'aria-pressed': data.isSelected,
+        onKeyDown: (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          // Space would otherwise scroll the surface's container.
+          e.preventDefault();
+          rest.onSelect?.(e as unknown as React.MouseEvent);
+        },
+      }
+    : { role: 'img', 'aria-label': nodeTitle(data) };
   return (
     <g
       ref={fadeRef}
+      {...a11y}
       // The exact variables PF's own topology-components.css reads for a node's
       // outline and its label text (`.pf-topology__node__background` →
       // `--pf-topology__node__background--Stroke`, `.pf-topology__node__label__text`
@@ -1248,6 +1671,12 @@ const CurvedEdge = observer(function CurvedEdge({
       : pointFromPair(getConnectorStartPoint(tangentToEnd, endPoint, endTerminalSize));
   const backgroundPath = curvePath(bandStart, bendpoints, bandEnd);
 
+  // WHERE THE TAG GOES — on the LINK's curve (the `startPoint`/`endPoint` pair), not
+  // the hit band's: the band is trimmed back at its ends for the arrowheads, so its
+  // arc is a fractionally different shape, and the label must sit on the line the
+  // reader can actually see.
+  const tagPoint = tagAnchor(startPoint, bendpoints, endPoint);
+
   // PF's own class composition, reproduced. `styles.topologyEdge` etc. are spelled as
   // literals rather than imported from `css/topology-components`: that module is CJS
   // with a `require('./topology-components.css')` side effect, the stylesheet is
@@ -1303,22 +1732,33 @@ const CurvedEdge = observer(function CurvedEdge({
           />
           {showTag && (
             <g transform={`scale(${hover ? tagScale : 1})`}>
-              {/* THE TAG STILL SITS ON THE CHORD MIDPOINT, not on the curve, because
-                  `DefaultConnectorTag` computes its own translate from the two points it
-                  is given (`start + (end - start) * 0.5`) and takes no position
-                  override. Handing it the curve's apex instead — which IS available, it
-                  is the bendpoint — was considered and rejected: the apex is where the
-                  two legs of a pair are FURTHEST apart, but the tag is a small filled
-                  rect and putting it exactly on the drawn line hides that line under it
-                  at the one place the reader uses to tell the two arcs apart. The chord
-                  midpoint leaves the label just inside its own arc, off the stroke, and
-                  the parity-signed bow keeps the request's and response's labels on
-                  opposite sides — which is the collision this graph actually had to
-                  fix. */}
+              {/* THE TAG SITS ON THE DRAWN CURVE (issue #219), not on the chord.
+                  `DefaultConnectorTag` computes its own translate as the MIDPOINT of the
+                  two points it is given (`start + (end - start) * 0.5`) and takes no
+                  position override — so the way to place it is to hand it a pair whose
+                  midpoint is where the label belongs. {@link tagAnchor} computes that
+                  point from the SAME curve geometry the visible path is built from, and
+                  the degenerate `[p, p]` pair is passed deliberately: the midpoint of a
+                  point with itself is that point, and nothing else in that renderer
+                  reads the two arguments.
+
+                  THIS REPLACES the chord midpoint, whose reasoning is recorded in
+                  `tagAnchor`'s doc along with why it did not hold: it was defensible for
+                  a shallow bow and wrong by up to a whole grid step on every ROUTED
+                  edge, which is what the issue reported. The concern that motivated it —
+                  a filled tag exactly on the stroke hides the line at the apex, where a
+                  reader tells a bowed pair's two arcs apart — is kept, and is now paid
+                  for with a 9px nudge along the curve's normal (`TAG_CURVE_OFFSET`)
+                  rather than with an 18–110px gap.
+
+                  `tagPositionScale` is applied to the RESULT rather than to the inputs,
+                  so the anchor is computed in graph space and then scaled exactly as
+                  PF's own hover rescale expects — scaling the endpoints first and
+                  deriving a curve from scaled points would bend a different curve. */}
               <DefaultConnectorTag
                 className={tagClass}
-                startPoint={element.getStartPoint().scale(tagPositionScale)}
-                endPoint={element.getEndPoint().scale(tagPositionScale)}
+                startPoint={pointOf(tagPoint).scale(tagPositionScale)}
+                endPoint={pointOf(tagPoint).scale(tagPositionScale)}
                 tag={tag}
                 status={tagStatus}
               />
@@ -1428,6 +1868,201 @@ function pointFromPair([x, y]: [number, number]): Point {
  * but does not LOOK clickable, which is a worse defect than it sounds: a reader who
  * never guesses the arrow is a target gets none of this feature.
  */
+/**
+ * AT MOST ONE edge tooltip open across the whole graph.
+ *
+ * Each `DirectedEdge` owns its own tooltip state, so nothing in React's tree
+ * would otherwise stop two from being open at once — and issue #213's headline
+ * symptom was exactly that: tooltips accumulating, several visible together.
+ * Closing the previous one when a new edge opens is a graph-wide invariant, so
+ * it lives in one module-level slot rather than being negotiated between
+ * siblings through a context every edge would re-render on.
+ *
+ * This does NOT depend on the pointer having left the previous edge. That
+ * matters: the pointer leaving is precisely the signal Chrome withholds for an
+ * SVG `<g>` (see `useEdgeTooltip`), and "a different edge just opened" is a
+ * fact we observe directly instead of inferring from an event that may never
+ * arrive.
+ */
+let closeOpenEdgeTooltip: (() => void) | null = null;
+
+/**
+ * Whether an edge's hover tooltip is showing, and the handler that opens it.
+ *
+ * WHY THIS EXISTS INSTEAD OF LETTING PF DRIVE THE TOOLTIP (issue #213).
+ * `Tooltip`, left uncontrolled, hands `triggerRef` to `Popper`, which
+ * attaches both listeners with `element.addEventListener(…)` on the edge
+ * `<g>`. The enter side works everywhere. The LEAVE side does not: Chrome
+ * fires no `mouseleave`, `mouseout` or `pointerleave` on an SVG container
+ * `<g>` whose only rendered content is a thin stroked path. Verified in real
+ * headed Chrome against a live trace — moving the pointer from an edge to
+ * (1200, 800), far off the graph, yields exactly
+ * `["pointerenter", "mouseover", "mouseenter"]` and nothing more, on a `<g>`
+ * that is still connected and still holds the listener. Safari fires the
+ * leave, which is why #213 reproduced in one browser only and why the ten
+ * reproductions on #198 (all first-hover-of-a-fresh-page) passed.
+ *
+ * Without a leave, `Popper` never hides: every hovered edge strands a
+ * tooltip at `opacity: 1` where it opened. They accumulate, and once a
+ * stranded one covers the next edge that edge stops getting `mouseenter`
+ * too — so after two or three hovers a new edge produces NO tooltip, which
+ * is what #213 was filed as.
+ *
+ * THE FIX: keep `mouseenter` (reliable in every browser) for opening, and
+ * DROP the close-on-leave rule altogether rather than trying to reconstruct
+ * the event Chrome withholds. A tooltip closes when a DIFFERENT edge opens
+ * one — a fact observed directly, from an event that does fire — or when a
+ * wheel/scroll moves the arrow out from under it. Nothing else.
+ *
+ * An earlier attempt did reconstruct the leave, via a document-level
+ * `mousemove` that closed the tooltip once `elementFromPoint` was no longer
+ * inside the edge's `<g>`. It fixed the accumulation but made the tooltip
+ * unreadable: the hit target is a ~2px stroke, so the slightest jitter off it
+ * dismissed the tooltip. Requiring another edge to be reached instead is both
+ * simpler and what a reader actually needs — the tooltip stays up long enough
+ * to read.
+ *
+ * Positioning is anchored to the POINTER, not to the edge element; see
+ * `anchorRef` below for why the `<g>`'s own bounding box is the wrong rect.
+ */
+function useEdgeTooltip() {
+  const [isVisible, setIsVisible] = useState(false);
+
+  // THE POSITIONING ANCHOR: a 1x1 rect at the pointer, not the edge `<g>`.
+  //
+  // Handing `Tooltip` the `<g>` as its `triggerRef` puts the tooltip at the
+  // centre of that element's bounding box — and an edge's box is the box of a
+  // long diagonal curve, ~180x25px for a short arrow and larger for a routed
+  // one. Measured in Chrome on the live trace, that placed the tooltip 89-106px
+  // away from the pointer, reading as "belonging to nothing in particular".
+  //
+  // Popper accepts a `triggerRef` that RETURNS an element (it calls the
+  // function when the ref itself has no `.current`), which is the documented
+  // seam for a virtual reference. A detached 1x1 div positioned at the last
+  // pointer coordinates gives Popper a real `getBoundingClientRect` to place
+  // against, so the tooltip lands on the cursor and its `position="top"` /
+  // flip behaviour keep working unchanged.
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const getAnchor = useCallback(() => {
+    if (anchorRef.current == null) {
+      const el = document.createElement('div');
+      el.setAttribute('aria-hidden', 'true');
+      // Never painted and never hit-tested — it exists only so Popper has a
+      // rect to measure. `position: fixed` makes its rect viewport-relative,
+      // which is the coordinate space `MouseEvent.clientX/Y` is already in.
+      el.style.cssText =
+        'position:fixed;width:1px;height:1px;pointer-events:none;opacity:0;left:0;top:0';
+      document.body.appendChild(el);
+      anchorRef.current = el;
+    }
+    return anchorRef.current;
+  }, []);
+
+  const moveAnchorTo = useCallback(
+    (clientX: number, clientY: number) => {
+      const el = getAnchor();
+      el.style.left = `${clientX}px`;
+      el.style.top = `${clientY}px`;
+    },
+    [getAnchor],
+  );
+
+  // The anchor is ours to clean up — it lives outside React's tree.
+  useEffect(
+    () => () => {
+      anchorRef.current?.remove();
+      anchorRef.current = null;
+    },
+    [],
+  );
+
+  // This edge's own closer, identity-stable for the life of the component so
+  // the registry can tell "still mine" from "a newer edge took it".
+  const closeSelf = useCallback(() => setIsVisible(false), []);
+
+  /**
+   * Opens this edge's tooltip at the pointer, closing whichever edge held the
+   * single open slot.
+   *
+   * A DIFFERENT EDGE OPENING is the ONLY thing that closes a tooltip (plus a
+   * wheel/scroll, below, which physically moves the arrow out from under it).
+   * There is deliberately no "pointer left this edge" rule: the hit target is
+   * a ~2px stroke, so any such rule — and the document-level `mousemove` that
+   * implemented it — dismissed the tooltip on the slightest jitter, which is
+   * the "disappears very quickly" half of the reported bug. Requiring the
+   * user to reach another edge instead means the tooltip stays put long
+   * enough to actually read, which is the whole point of it.
+   *
+   * Note this also removes the reliance on `mouseleave` that issue #213 was
+   * about, and does so more simply: there is now no close-on-leave path at all
+   * to be browser-dependent.
+   */
+  const claimSlot = useCallback(() => {
+    if (closeOpenEdgeTooltip != null && closeOpenEdgeTooltip !== closeSelf) {
+      closeOpenEdgeTooltip();
+    }
+    closeOpenEdgeTooltip = closeSelf;
+    setIsVisible(true);
+  }, [closeSelf]);
+
+  const show = useCallback(
+    (clientX: number, clientY: number) => {
+      moveAnchorTo(clientX, clientY);
+      claimSlot();
+    },
+    [claimSlot, moveAnchorTo],
+  );
+
+  /**
+   * The KEYBOARD route: open anchored to the edge element itself.
+   *
+   * A focused edge has no pointer coordinates to anchor to, and the
+   * bounding-box centre that reads badly for a mouse user (it is nowhere near
+   * their cursor) is exactly right here — it is the only meaningful position
+   * for "this element", and it is where a keyboard user's attention already
+   * is. `Tooltip`'s own `trigger="mouseenter focus"` handling is unavailable
+   * to us because the component is controlled, so focus/blur are wired
+   * explicitly at the call site.
+   */
+  const showAtElement = useCallback(
+    (el: Element) => {
+      const r = el.getBoundingClientRect();
+      moveAnchorTo(r.left + r.width / 2, r.top);
+      claimSlot();
+    },
+    [claimSlot, moveAnchorTo],
+  );
+
+  // A scroll, a pan or a zoom moves the edge out from under a tooltip anchored
+  // to a fixed viewport point, so the tooltip would be left describing an
+  // arrow no longer beneath it. This is a genuine "the thing I point at has
+  // moved" dismissal, unlike the pointer-jitter one removed above.
+  useEffect(() => {
+    if (!isVisible) return;
+    const close = () => setIsVisible(false);
+    window.addEventListener('wheel', close, { passive: true });
+    window.addEventListener('scroll', close, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener('wheel', close);
+      window.removeEventListener('scroll', close, { capture: true });
+    };
+  }, [isVisible]);
+
+  // Release the slot on unmount — a re-derived graph or a filter change can
+  // unmount a hovered edge, and a closer left behind would both leak the
+  // component and, once a later edge compared against it, misattribute the
+  // slot. Only relinquish it if it is still OURS: a newer edge may already
+  // hold it, and clearing it then would strand THAT one open.
+  useEffect(
+    () => () => {
+      if (closeOpenEdgeTooltip === closeSelf) closeOpenEdgeTooltip = null;
+    },
+    [closeSelf],
+  );
+
+  return { isVisible, show, showAtElement, hide: closeSelf, getAnchor, moveTo: moveAnchorTo };
+}
+
 function DirectedEdge({
   element,
   onSelect,
@@ -1460,7 +2095,17 @@ function DirectedEdge({
   // and PF's selection state is used for nothing but firing the event.
   Omit<WithSelectionProps, 'selected'>) {
   const data = element.getData() as EdgeData | undefined;
-  const colour = data?.isError ? 'var(--dg-color-error)' : 'var(--dg-tree-guide)';
+  // ERROR KEEPS PRECEDENCE (issue #170): a leg's `isError` is a fact about what
+  // happened on the wire, not a risk grade, so it wins even over a critical risk
+  // level. Risk colour is next, present only when the caller passed
+  // `riskLevelByInteraction` AND this edge's interaction has an entry in it —
+  // with the risk layer off the map is not passed, so `data?.riskLevel` is
+  // `undefined` and this falls straight through unchanged.
+  const colour = data?.isError
+    ? 'var(--dg-color-error)'
+    : data?.riskLevel !== undefined
+      ? riskLevelColorVar(data.riskLevel)
+      : 'var(--dg-tree-guide)';
   // `selected` stripped HERE rather than in the destructure above, because the lint
   // config permits no unused binding and a `_`-prefixed one would need a rule change to
   // exempt. Deleting the key off a shallow copy says the same thing with no config
@@ -1468,8 +2113,43 @@ function DirectedEdge({
   // the HOC injects the prop regardless of what the type declares.
   const pfProps: Record<string, unknown> = { ...rest };
   delete pfProps.selected;
+  // Visibility is OURS, not PF's — see `useEdgeTooltip` for why Popper's
+  // own hover handling cannot be used here.
+  const {
+    isVisible: isTooltipVisible,
+    show: showTooltip,
+    showAtElement: showTooltipAtElement,
+    hide: hideTooltip,
+    getAnchor: getTooltipAnchor,
+    moveTo: moveTooltipTo,
+  } = useEdgeTooltip();
+  // Tags + level only — see `edgeTooltipText`. Empty for an unclassified edge,
+  // which suppresses the tooltip below.
+  const tooltipText = edgeTooltipText(data);
   return (
+    <>
     <g
+      // The one hover event that is reliable on an SVG `<g>` in every
+      // browser, and the only thing that opens a tooltip. Its coordinates
+      // place the tooltip AT THE POINTER rather than at the centre of this
+      // element's bounding box — see `useEdgeTooltip`'s `anchorRef`.
+      onMouseEnter={(e) => showTooltip(e.clientX, e.clientY)}
+      // Re-anchor as the pointer travels along the edge, so a tooltip opened
+      // at one end of a long arrow follows the cursor instead of staying
+      // pinned where the hover began. Does NOT open or close anything — only
+      // `mouseenter` opens, only another edge (or a scroll) closes.
+      onMouseMove={(e) => {
+        if (isTooltipVisible) moveTooltipTo(e.clientX, e.clientY);
+      }}
+      // KEYBOARD PARITY. `Tooltip`'s default `trigger` is
+      // `'mouseenter focus'`, but a CONTROLLED `Tooltip` (`isVisible`) does
+      // none of its own trigger wiring, so focus/blur are handled here or not
+      // at all — and a keyboard user must reach the same tooltip a mouse user
+      // does. Unlike the pointer case, blur DOES close: focus moving away is
+      // an unambiguous, reliably-delivered signal, not the jittery
+      // hit-testing question `mouseleave` on a 2px stroke asks.
+      onFocus={(e) => showTooltipAtElement(e.currentTarget)}
+      onBlur={hideTooltip}
       // `--pf-topology__edge--Stroke` is the right lever, and the only one that
       // works from out here. The line (`.pf-topology__edge__link`) and the
       // ARROWHEAD (`.pf-topology-connector-arrow`) both paint from
@@ -1513,6 +2193,7 @@ function DirectedEdge({
       // which is why this is an addition to them rather than the only way in.
       role="button"
       tabIndex={0}
+      onContextMenu={data?.onContextMenu}
       // Named so the focus ring can be stated on the element that actually RECEIVES
       // focus. `dg-graph-edge` itself lands on PF's inner `<g>` (via `className`), which
       // is not focusable, so a `:focus-visible` rule keyed on it would never match.
@@ -1521,7 +2202,7 @@ function DirectedEdge({
       // label was only "edge" would be reachable and unidentifiable.
       aria-label={`Interaction leg, seq ${data?.seq ?? '?'}, ${data?.legType ?? ''}: ${
         data?.title ?? ''
-      }${data?.isError ? ' (failed)' : ''}${edgeLineageSuffix(data)}`}
+      }${data?.isError ? ' (failed)' : ''}${edgeClassificationSuffix(data)}${edgeLineageSuffix(data)}`}
       // Reflects the app's selection (per INTERACTION, so both legs read as pressed
       // together) — the state a sighted reader gets from the weight/dash treatment.
       aria-pressed={data?.isSelected ?? false}
@@ -1537,8 +2218,19 @@ function DirectedEdge({
       }}
     >
       {/* The interaction's summary, plus which leg of it this arrow is — the
-          hover text, now that the visible label is the compact seq number. */}
-      <title>{`#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}`}</title>
+          hover text, now that the visible label is the compact seq number or,
+          with the risk layer on, the regulatory-tag string (see
+          `edgeClassificationSuffix`'s docstring —
+          the hover text carries the FULL tags + level list either way, never
+          truncated the way the visible tag is).
+
+          KEPT DELIBERATELY alongside the interactive `Tooltip` below, rather
+          than removed as redundant, once it became clear this element never
+          produced a VISIBLE tooltip in this app (native SVG `<title>` simply
+          doesn't, in the browsers this app targets) — see the bug report and
+          `Tooltip`'s note. Both read from `edgeHoverText` so they can't drift
+          apart; a test asserts they stay equal. */}
+      <title>{edgeHoverText(data)}</title>
       {/* `CurvedEdge`, not PF's `DefaultEdge` — a drop-in at these props that draws a
           smooth arc through the routed bendpoint instead of a polyline corner. Every
           feature relied on below (the click target, the arrowhead, the tag, the wide
@@ -1606,6 +2298,92 @@ function DirectedEdge({
           .join(' ')}
       />
     </g>
+    {/* THE ACTUAL VISIBLE TOOLTIP — the fix. Everything above this renders the
+        edge itself and never changes shape; this is a SIBLING, not a child,
+        because `Tooltip` (via `Popper`, which it forwards `triggerRef` to)
+        portals its floating content into `document.body` regardless of
+        where it is mounted in the tree, so nesting it inside the `<g>` would
+        buy nothing and would place it among elements PF re-layers on hover
+        and drag for no reason.
+
+        NO `children` PASSED, and that is load-bearing, not an omission.
+        `Tooltip.d.ts` declares `children` OPTIONAL; leaving it out makes
+        `Tooltip` pass `trigger: undefined` down to `Popper`, and BOTH of
+        Popper's trigger-rendering branches gate on
+        `trigger && React.isValidElement(trigger)` — so with no children,
+        Popper renders NO in-place DOM of its own at all. That specifically
+        avoids the `!triggerRef` branch, which wraps its trigger in an HTML
+        `<div style="display:contents">` — invalid inside `<svg>`. Passing
+        the `<g>` above as `children` instead of relying on `triggerRef`
+        would risk exactly that wrapper landing inside the SVG tree.
+
+        `aria="none"`: belt-and-braces, not strictly required today (the
+        `aria-describedby` cloning `Tooltip` would otherwise do can't run
+        with no `children` regardless), but it states the intent plainly —
+        the accessible name is `aria-label` above, this tooltip is a VISUAL
+        affordance only — and keeps that true even if a future edit adds
+        `children` for some other reason. */}
+    {/* Suppressed entirely for an unclassified edge rather than rendered
+        empty: the tooltip's only content is now the classification, so with
+        none there is nothing to show and an empty box following the cursor
+        would be worse than no tooltip. The `<title>` above still carries that
+        edge's full identity either way. */}
+    {tooltipText !== '' && (
+    <Tooltip
+      // The POINTER anchor, not `edgeRef`. Popper calls a function-valued
+      // `triggerRef` to resolve its reference element, which is the seam a
+      // virtual reference goes through — see `useEdgeTooltip`'s `anchorRef`
+      // for why the edge's own bounding box placed the tooltip ~100px from
+      // the cursor.
+      triggerRef={getTooltipAnchor}
+      content={tooltipText}
+      aria="none"
+      // CONTROLLED (issue #213): visibility is ours, so the `mouseleave`
+      // Chrome never fires for an SVG `<g>` stops being load-bearing.
+      // `triggerRef` is still required, and still used: it is what Popper
+      // positions the floating content against.
+      isVisible={isTooltipVisible}
+      // `trigger="manual"` is REQUIRED, not redundant with `isVisible`.
+      // PF gates its listener wiring on `trigger` (default
+      // `'mouseenter focus'`), NOT on `isVisible`: `Tooltip.tsx` passes
+      // `onMouseEnter/onMouseLeave/onFocus/onBlur` plus
+      // `onPopperMouseEnter/onPopperMouseLeave` and a document-level
+      // Escape handler down to `Popper` whenever those triggers are
+      // named, and `Popper` attaches each one it is given. Those
+      // callbacks drive PF's OWN internal `visible` state, which our
+      // `isVisible` prop only re-syncs when the prop itself changes
+      // value — so any of them firing desyncs the tooltip from what this
+      // component believes is open, and it would stay desynced until the
+      // next edge hover. `'manual'` is the one value that makes
+      // `Tooltip.tsx` pass `false` for all of them, so nothing is
+      // attached and there is nothing to desync.
+      //
+      // Two of those paths happen to be inert in PF 5.4.14 anyway, but
+      // only by accident and NOT because of `isVisible`: the popper-side
+      // mouseenter/mouseleave never attach (`Tooltip.tsx` recreates
+      // `popperRef` with `createRef()` in its render body, so the ref
+      // object `Popper` captured in its effect is always a stale one and
+      // `popperElement` is null when the listeners would be added), and
+      // the Escape handler fires but reads a stale `visible === false`
+      // from its closure and no-ops. Depending on either would be
+      // depending on someone else's bug staying unfixed.
+      trigger="manual"
+      // No open/close animation delay. The delays exist to keep a
+      // tooltip from flickering as a pointer crosses a dense row of
+      // triggers; here a single tooltip is replaced outright when
+      // another edge claims the slot, so a 300ms entry delay only makes
+      // the swap look sluggish.
+      entryDelay={0}
+      exitDelay={0}
+      // The fade itself is what keeps a hidden tooltip's node mounted (Popper
+      // unmounts it only after `animationDuration`). A stranded-looking node
+      // during that window is harmless in a browser, but it is indistinguishable
+      // from the #213 bug when inspecting the DOM — so dismissal here is
+      // immediate and total rather than animated.
+      animationDuration={0}
+    />
+    )}
+    </>
   );
 }
 
@@ -1805,6 +2583,12 @@ export interface EntityGraphProps {
    */
   selectedInteractionId?: string | null;
   /**
+   * The flow view's selected ENTITY id (its `?eid`), or `null`. Drives the node's
+   * `aria-pressed`, from the app's selection for the same reason as
+   * `selectedInteractionId`. Only meaningful where `onSelectEntity` is wired.
+   */
+  selectedEntityId?: string | null;
+  /**
    * Fired with the clicked edge's parent INTERACTION id.
    *
    * An ID, not the `Interaction` object, and that is the seam: this component holds a
@@ -1819,6 +2603,12 @@ export interface EntityGraphProps {
    * subscription for why the two are one callback rather than two.
    */
   onSelectInteraction?: (interactionId: string | null) => void;
+  /**
+   * A right-click on an edge, with that leg's interaction id and leg type: the
+   * shortcut to tracking the values on that leg (`lib/labelTrack`). The browser's
+   * own menu is suppressed only when a handler is given.
+   */
+  onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
   /**
    * Fired with the clicked NODE's entity id.
    *
@@ -1899,12 +2689,62 @@ export interface EntityGraphProps {
   legend?: React.ReactNode;
   /** `data-testid` on the wrapper, so each tab is addressable as itself. */
   testId?: string;
+  /**
+   * Interaction id -> risk level (issue #170), from
+   * `lib/riskForestAdapter.ts`'s `riskLevelByInteraction`. Passed only with
+   * the risk layer on, which is what keeps the node/edge colours byte-for-byte
+   * unchanged with it off: every risk-colour branch below is reached only when
+   * this is present.
+   *
+   * An interaction absent from the map (its `risk` was `null` — not yet
+   * computed) gets no edge/node treatment at all, same as an absent map;
+   * only an explicit entry paints anything, so "not yet computed" is never
+   * drawn as a colour.
+   */
+  riskLevelByInteraction?: ReadonlyMap<string, string>;
+  /**
+   * Interaction id -> regulatory tags + sensitivity level(s) (issue #170
+   * follow-up: regulatory tags as edge labels), from
+   * `lib/riskForestAdapter.ts`'s `classificationByInteraction`. Passed by the
+   * Execution Flow view with the risk layer on; omitted otherwise.
+   *
+   * WHEN SUPPLIED (checked by presence, not by whether a given edge has an
+   * entry), this REPURPOSES the edge's visible tag slot: the tag becomes
+   * `edgeTagLabel(classification?.tags ?? [])` instead of the seq number —
+   * presence, not per-edge hit, so a layer with zero classified interactions
+   * draws bare arrows rather than seq numbers — see `lib/graph.ts`'s `label`
+   * docstring for why this
+   * happens at the renderer rather than by changing what `deriveGraph`
+   * itself puts in `GraphEdgeSpec.label`. `''` for an edge with no entry
+   * (drawn as no visible tag at all — `showTag`'s truthiness gate), never
+   * the seq number in that case, so the risk view's edges never mix two
+   * vocabularies (a bare number could otherwise be misread as a tag count).
+   *
+   * The full tags + level list, not just the capped visible string, also
+   * feeds `EdgeData.classification` for the hover text — see
+   * `edgeClassificationSuffix`.
+   */
+  classificationByInteraction?: ReadonlyMap<string, InteractionClassification>;
+  /**
+   * Suppress the built-in "N entity pair(s) with multiple interactions"
+   * notice. That notice's whole premise is the request/response leg pair a
+   * completed interaction normally draws in the same channel — see the
+   * notice's own comment below, "a single completed interaction always puts
+   * two arrows... so counting edges would fire this notice on virtually every
+   * trace". With one edge per interaction (request legs only) the notice is
+   * answering a question about response arrows that are not drawn — noise,
+   * not a caveat.
+   */
+  hideParallelGroupsNotice?: boolean;
 }
 
 /**
  * THE ONE graph renderer: a directed graph of a trace's **Entities** (nodes) and
  * **Interaction legs** (edges), each edge labelled with that leg's trace-wide
- * `seq`, optionally with a subset highlighted.
+ * `seq` — or, with the risk layer on (`classificationByInteraction` supplied),
+ * with its interaction's regulatory tags instead, see
+ * {@link EntityGraphProps.classificationByInteraction} — optionally with a
+ * subset highlighted.
  *
  * One edge per LEG, not per interaction: the request travels caller → callee and
  * the response travels back callee → caller (ADR-0025), so a completed
@@ -1939,12 +2779,17 @@ export function EntityGraph({
   traceId,
   highlight,
   selectedInteractionId = null,
+  selectedEntityId = null,
   onSelectInteraction,
+  onContextMenuInteraction,
   onSelectEntity,
   notices,
   controls,
   legend,
   testId = 'execution-flow-graph',
+  riskLevelByInteraction,
+  classificationByInteraction,
+  hideParallelGroupsNotice = false,
 }: EntityGraphProps) {
   // One Visualization instance for the view's lifetime. Created lazily in state
   // (not a ref-with-side-effects) so React owns it; the factory is registered
@@ -2095,11 +2940,22 @@ export function EntityGraph({
    * per render, so the join is not worth avoiding — and `?? ''` keeps "no highlight"
    * a stable, distinct value rather than colliding with an empty highlight.
    */
+  /** The right-click callback as a latest-value ref (the same reasoning as
+   *  `onSelectRef` below); `hasContextMenu` is the primitive the model effect
+   *  depends on. */
+  const onContextMenuRef = useRef(onContextMenuInteraction);
+  onContextMenuRef.current = onContextMenuInteraction;
+  const hasContextMenu = onContextMenuInteraction != null;
+
   const highlightKey = highlight
     ? [
         highlight.selectedNodeId ?? '',
         highlight.nodeIds.join(','),
         highlight.edgeIds.join(','),
+        // Pending is CONTENT too: an empty answer (`no-adjacent`) leaves every set above
+        // unchanged when it lands, and only this flag says the roles must now dim.
+        highlight.isAnswerPending ? 'pending' : '',
+        highlight.isQuestion ? 'question' : '',
         // The reachability sets are part of the CONTENT, so they belong in the digest:
         // they are baked into the element `data` exactly as the roles are, and a
         // digest that ignored them would leave the source colouring painted from a
@@ -2119,6 +2975,10 @@ export function EntityGraph({
         highlight.reachability?.frontierNodeIds.join(',') ?? '',
       ].join('|')
     : '';
+
+  // A primitive for the model effect's dependency list: whether a node click does
+  // anything is what decides if a node is a button (see `NodeData.isSelectable`).
+  const nodesSelectable = onSelectEntity !== undefined;
 
   // Push the derived spec into the topology model whenever it changes.
   useEffect(() => {
@@ -2178,6 +3038,22 @@ export function EntityGraph({
     // moves again. Routing against the cell keeps the detour a property of the
     // LAYOUT, which is the thing it is dodging.
     const cellById = new Map(spec.nodes.map((n) => [n.id, { column: n.column, row: n.row }]));
+    // A node's risk colour (see `NodeData.riskLevel`'s STOPGAP note) is the
+    // worst level among the edges it touches, as either source or target —
+    // built once per model push rather than per node, since it is one pass
+    // over `spec.edges` regardless of node count. `undefined` for a node with
+    // no risk-mapped incident edge, which leaves it uncoloured, not "safe".
+    const riskLevelByNode = new Map<string, string>();
+    if (riskLevelByInteraction !== undefined) {
+      for (const e of spec.edges) {
+        const level = riskLevelByInteraction.get(e.interactionId);
+        if (level === undefined) continue;
+        for (const nodeId of [e.source, e.target]) {
+          const existing = riskLevelByNode.get(nodeId);
+          riskLevelByNode.set(nodeId, existing === undefined ? level : moreSevereRiskLevel(existing, level));
+        }
+      }
+    }
     const model: Model = {
       // No `layout` key: see the controller's note. Omitting it leaves
       // `BaseGraph.currentLayout` undefined, so `graph.layout()` is a no-op and
@@ -2201,7 +3077,18 @@ export function EntityGraph({
           label: n.label,
           width: NODE_DIAMETER,
           height: NODE_DIAMETER,
-          shape: NodeShape.ellipse,
+          // THE ONE SHAPE DECISION (issue #218), read from `lib/entityKind` through
+          // the NAME→NAME table above. Was hardcoded `NodeShape.ellipse` for every
+          // node; a kind the map does not name still resolves to exactly that, so an
+          // unrecognised kind draws as it always did.
+          //
+          // A MODEL FIELD, not something the renderer does: PF's `getShapeComponent`
+          // switches on `getNodeShape()` to pick the shape component, and the matching
+          // anchor (`EllipseAnchor` / `RectAnchor` / the polygon one) comes with it —
+          // so edge endpoints follow the new outline without this file computing
+          // anything. Setting it in `KindColouredNode` instead would leave the anchors
+          // on the ellipse and the arrows meeting the shapes at the wrong points.
+          shape: SHAPE_TO_NODE_SHAPE[shapeForKind(n.kind)],
           x,
           y,
           // The whole spec row rides along as `data` so the renderers read kind /
@@ -2219,6 +3106,9 @@ export function EntityGraph({
             // rather than on a new "which tab" prop that would be a second way to say
             // the same thing and could contradict it.
             kindColoured: highlight === undefined,
+            riskLevel: riskLevelByNode.get(n.id),
+            isSelectable: nodesSelectable,
+            isSelected: n.id === selectedEntityId,
             arrival: arrivalOf(`node:${n.id}`, from !== undefined),
           } satisfies NodeData,
         };
@@ -2253,6 +3143,16 @@ export function EntityGraph({
           bendpoints: moves ? [[drawn.x, drawn.y] as PointTuple] : route,
           data: {
             ...e,
+            // `DirectedEdge` reads only `data?.label` for its visible tag, so this is
+            // the single place that knows about `classificationByInteraction`: SUPPLIED
+            // (checked by presence, not by whether THIS edge has an entry) → the tag
+            // slot becomes the classification string, `''` for an edge with no entry —
+            // never the seq number in that case, so the risk layer's edges never mix
+            // two vocabularies (a bare number could be misread as a tag count). Else →
+            // `e.label` (the seq number).
+            label: classificationByInteraction
+              ? edgeTagLabel(classificationByInteraction.get(e.interactionId)?.tags ?? [])
+              : e.label,
             highlight: roleOf(e.id, highlight, false),
             // Per INTERACTION, so both legs of the selected one are marked — see
             // EdgeData. A primitive comparison, so this adds nothing the effect's
@@ -2260,6 +3160,15 @@ export function EntityGraph({
             // digest, unlike the highlight's object).
             isSelected: selectedInteractionId != null && e.interactionId === selectedInteractionId,
             lineage: edgeLineageFactsOf(e.id, highlight),
+            onContextMenu: hasContextMenu
+              ? (ev: React.MouseEvent) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  onContextMenuRef.current?.(e.interactionId, e.legType, { x: ev.clientX, y: ev.clientY });
+                }
+              : undefined,
+            riskLevel: riskLevelByInteraction?.get(e.interactionId),
+            classification: classificationByInteraction?.get(e.interactionId),
             arrival: arrivalOf(`edge:${e.id}`, drawnEdges.has(e.id)),
           } satisfies EdgeData,
         };
@@ -2292,8 +3201,29 @@ export function EntityGraph({
     // re-applied on every push rather than only on a poll: selecting an edge is now
     // one more thing that rebuilds the model, and the reader's dragged nodes have to
     // ride through it exactly as they ride through a highlight change.
+    //
+    // `riskLevelByInteraction` is listed directly too, same reasoning as
+    // `selectedInteractionId`: the risk colour is baked into element `data`, so a
+    // toggle of the risk layer (or a re-read of the risk) must rebuild the model.
+    // `classificationByInteraction` joins them for the same reason — both the tag
+    // string and the hover-text record are baked into element `data`.
+    //
+    // `selectedEntityId` and `nodesSelectable` are primitives baked into the node
+    // `data` the same way, so they are listed directly for the same reason.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controller, spec, traceId, harvestDraggedPositions, highlightKey, selectedInteractionId]);
+  }, [
+    controller,
+    spec,
+    traceId,
+    harvestDraggedPositions,
+    highlightKey,
+    selectedInteractionId,
+    riskLevelByInteraction,
+    classificationByInteraction,
+    selectedEntityId,
+    nodesSelectable,
+    hasContextMenu,
+  ]);
 
   /**
    * "Put it back": every node returns to its layered (column, row) cell and the
@@ -2495,6 +3425,13 @@ export function EntityGraph({
           </div>
         </VisualizationProvider>
       </div>
+      {/* THE ENTITY-SHAPE KEY, on every view (issue #218) — see `EntityShapeLegend` for
+          why `EntityGraph` renders it itself instead of routing it through the `legend`
+          slot below. FIRST of the two keys: the outlines are a standing property of
+          every graph this component draws, whereas whatever a caller passes below is
+          specific to one view, so the general key reads before the particular one. */}
+      <EntityShapeLegend />
+
       {/* THE LEGEND, immediately below the surface — a key belongs under the picture it
           decodes, and above the prose so it stays adjacent to the drawing it explains.
           See `EntityGraphProps.legend`. */}
@@ -2541,7 +3478,7 @@ export function EntityGraph({
                 (d) =>
                   `${d.label} (missing ${d.missing}, ${d.legCount} leg${d.legCount === 1 ? '' : 's'})`,
               )
-              .join('; ')}. They are still listed in full on the Interaction flow tab.`}
+              .join('; ')}. They are still listed in full on the Interactions and Entities tab.`}
           </Alert>
         )}
         {/* EDGE CASE: entities that no interaction names. They ARE drawn (an
@@ -2574,7 +3511,7 @@ export function EntityGraph({
             response) in the same channel, so counting edges would fire this notice
             on virtually every trace — noise that is always on carries no
             information. See lib/graph's parallelGroups. */}
-        {spec.parallelGroups.length > 0 && (
+        {spec.parallelGroups.length > 0 && !hideParallelGroupsNotice && (
           <Alert
             variant="info"
             isInline
@@ -2612,9 +3549,8 @@ function graphReadState({
   if (isLoading) return <Spinner aria-label="Loading execution flow graph" />;
 
   // A failed read is NOT an empty graph: "no entities" and "we could not ask"
-  // demand different actions (wait vs retry), the same distinction ADR-0028's
-  // LineageState draws. Reporting a fetch failure as an empty trace would be a
-  // silent under-report.
+  // demand different actions (wait vs retry). Reporting a fetch failure as an
+  // empty trace would be a silent under-report.
   if (isError) {
     return (
       <Alert variant="warning" title="Could not load the execution flow" isInline>
@@ -2658,14 +3594,32 @@ export function ExecutionFlowGraph({
   traceId,
   selectedInteractionId = null,
   onSelectInteraction,
+  highlight,
+  onContextMenuInteraction,
+  riskLevelByInteraction,
+  classificationByInteraction,
+  edgesPerInteraction = false,
 }: {
   traceId: string;
   selectedInteractionId?: string | null;
   onSelectInteraction?: (interactionId: string | null) => void;
+  /** The label lineage overlay (`lib/labelTrack`), when values are tracked. */
+  highlight?: GraphHighlight;
+  /** One edge per interaction (its request leg) instead of one per leg — `requestLegsOnly`. The parallel-groups notice is off then, for the reason given on `hideParallelGroupsNotice`. */
+  edgesPerInteraction?: boolean;
+  onContextMenuInteraction?: (interactionId: string, legType: 'request' | 'response', at: { x: number; y: number }) => void;
+  /**
+   * The trace page's risk layer: the two risk seams of {@link EntityGraph}
+   * (`riskLevelByInteraction`, `classificationByInteraction`), passed straight
+   * through. Both `undefined` with the layer off, so this tab is as it was then.
+   */
+  riskLevelByInteraction?: ReadonlyMap<string, string>;
+  classificationByInteraction?: ReadonlyMap<string, InteractionClassification>;
 }) {
   // One reading of the two, so a re-read never draws a half-updated trace — see
   // `useEntitiesAndInteractions`.
-  const { entities, interactions, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
+  const { entities, interactions: allLegs, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
+  const interactions = useMemo(() => (edgesPerInteraction ? requestLegsOnly(allLegs) : allLegs), [edgesPerInteraction, allLegs]);
 
   const spec = useMemo(() => deriveGraph(entities, interactions), [entities, interactions]);
 
@@ -2682,6 +3636,11 @@ export function ExecutionFlowGraph({
         traceId={traceId}
         selectedInteractionId={selectedInteractionId}
         onSelectInteraction={onSelectInteraction}
+        highlight={highlight}
+        onContextMenuInteraction={onContextMenuInteraction}
+        riskLevelByInteraction={riskLevelByInteraction}
+        classificationByInteraction={classificationByInteraction}
+        hideParallelGroupsNotice={edgesPerInteraction}
       />
     )
   );
@@ -2748,8 +3707,8 @@ export function ExecutionFlowGraph({
  * pure test can reach it.
  *
  * WHAT REPLACED WHAT. This tab previously rolled its own answer up client-side from
- * the per-leg `byLeg` map (`lib/lineageGraph`, now deleted): direct sources only,
- * one hop, explicitly refusing to walk transitively because "a transitive claim the
+ * the former per-leg data-lineage map (`lib/lineageGraph`, now deleted): direct
+ * sources only, one hop, explicitly refusing to walk transitively because "a transitive claim the
  * backend never derived would be the UI inventing lineage". That reasoning was
  * right, and ADR-0028 D15 records that it is precisely what the server removed —
  * the backend now derives the multi-hop claim, so it is citable. The tab therefore
@@ -2788,15 +3747,27 @@ export function LineageGraph({
   entities,
   interactions,
   status,
+  stoppedAtSeq,
   isLineageError,
+  isLineageLoading,
   selectedEntityId,
   lineageSource = null,
   onLineageSourceChange,
   selectedInteractionId = null,
   onSelectInteraction,
   onSelectEntity,
+  riskLevelByInteraction,
+  edgesPerInteraction = false,
 }: {
   traceId: string;
+  /** One edge per interaction (its request leg) instead of one per leg — see `ExecutionFlowGraph`'s prop of the same name. */
+  edgesPerInteraction?: boolean;
+  /**
+   * The trace page's risk layer: edge colours by risk level, passed straight
+   * through to {@link EntityGraph} — see {@link EntityGraphProps.riskLevelByInteraction}.
+   * Omitted with the layer off, so this tab's colours are unchanged then.
+   */
+  riskLevelByInteraction?: ReadonlyMap<string, string>;
   /**
    * The flow view's ALREADY-FETCHED reads, passed in rather than re-queried.
    *
@@ -2809,16 +3780,18 @@ export function LineageGraph({
   entities: readonly Entity[];
   interactions: readonly Interaction[];
   /**
-   * The trace's coverage (ADR-0028 D6), from the flow view's `useDataLineage`.
-   *
-   * Still taken from the caller even though this tab no longer reads `byLeg`: the
-   * coverage banner above the tabs and this tab's repeat of it must quote ONE value,
-   * and the reachability responses carry their own `status` that could in principle
-   * be read at a different instant. Passing the caller's keeps the two agreeing.
+   * The trace's coverage (ADR-0028 D6), from the flow view's `useDataLineage`, for this
+   * view's coverage banner. Taken from the trace-level read rather than from the
+   * reachability responses, which carry their own `status` only once an entity and a
+   * source are chosen; the banner shows before either.
    */
   status: LineageStatus;
+  /** Where a `partial` derivation stopped (the leg seq), for the banner. */
+  stoppedAtSeq: number | null;
   /** The trace-scoped lineage read failed — nothing is known, not "no sources". */
   isLineageError: boolean;
+  /** The trace-scoped lineage read is still in flight — coverage not yet known. */
+  isLineageLoading: boolean;
   /** The flow view's `?eid` selection. THE one notion of "selected entity". */
   selectedEntityId: string | null;
   /**
@@ -2904,7 +3877,17 @@ export function LineageGraph({
 
   // Derived ONCE and handed to both the highlight and the renderer, so the
   // highlight can only ever name elements that are actually on screen.
-  const spec = useMemo(() => deriveGraph(entities, interactions), [entities, interactions]);
+  const drawn = useMemo(() => (edgesPerInteraction ? requestLegsOnly(interactions) : interactions), [edgesPerInteraction, interactions]);
+  const spec = useMemo(() => deriveGraph(entities, drawn), [entities, drawn]);
+  // With edges per interaction the served route is still resolved against the
+  // per-LEG graph, then each response leg folds onto its interaction's one arrow
+  // — otherwise a hop through a response leg, how an agent mostly receives
+  // data (ADR-0025), would light its nodes and not the arrow between them.
+  const fullSpec = useMemo(() => (edgesPerInteraction ? deriveGraph(entities, interactions) : spec), [edgesPerInteraction, entities, interactions, spec]);
+  const foldEdges = useCallback(
+    (ids: readonly string[]) => (edgesPerInteraction ? [...new Set(ids.map((id) => id.replace(/:response$/, ':request')))].sort() : [...ids]),
+    [edgesPerInteraction],
+  );
 
   const sources = useMemo(
     () =>
@@ -2935,7 +3918,7 @@ export function LineageGraph({
           isError: reach.fanout.isError,
           isLoading: reach.fanout.isLoading,
         },
-        graph: spec,
+        graph: fullSpec,
       }),
     [
       selectedEntityId,
@@ -2946,7 +3929,7 @@ export function LineageGraph({
       reach.fanout.data,
       reach.fanout.isError,
       reach.fanout.isLoading,
-      spec,
+      fullSpec,
     ],
   );
 
@@ -2963,14 +3946,17 @@ export function LineageGraph({
     () => ({
       selectedNodeId: reachability.selectedNodeId,
       nodeIds: reachability.litNodeIds,
-      edgeIds: reachability.litEdgeIds,
+      edgeIds: foldEdges(reachability.litEdgeIds),
+      // EITHER direction, not both: with one half landed, dimming would paint every
+      // entity outside it as absent from the half still being walked.
+      isAnswerPending: reachability.fanin.isLoading || reachability.fanout.isLoading,
       reachability: {
         dataSourceNodeIds: sources.sourceNodeIds,
         chosenSourceNodeId: sources.chosenSourceNodeId,
         upstreamNodeIds: reachability.fanin.nodeIds,
         downstreamNodeIds: reachability.fanout.nodeIds,
-        upstreamEdgeIds: reachability.fanin.edgeIds,
-        downstreamEdgeIds: reachability.fanout.edgeIds,
+        upstreamEdgeIds: foldEdges(reachability.fanin.edgeIds),
+        downstreamEdgeIds: foldEdges(reachability.fanout.edgeIds),
         // Both walks' frontiers, unioned: a node the reader cannot yet see through is
         // provisional regardless of which direction discovered that.
         frontierNodeIds: [
@@ -2988,7 +3974,7 @@ export function LineageGraph({
         ]),
       },
     }),
-    [reachability, sources.sourceNodeIds, sources.chosenSourceNodeId],
+    [reachability, sources.sourceNodeIds, sources.chosenSourceNodeId, foldEdges],
   );
 
   // Friendly names for the natural keys the notices quote, from the same helper
@@ -3020,16 +4006,35 @@ export function LineageGraph({
     isError: entitiesQ.isLoadingError || interactionsQ.isLoadingError,
     nodeCount: spec.nodes.length,
   });
-  if (readState) return readState;
+  // THE TRACE-LEVEL COVERAGE (ADR-0028 D6), the one copy of this banner on the trace
+  // page. ABOVE the view, not among the notices: those sit below a graph sized to the
+  // viewport, so a reader opening a shared link would not see it, and the failure it
+  // prevents is taking the marked sources for the full set before anything is clicked.
+  // Shown before an entity or a source is chosen, and over the loading and empty
+  // states too, since it is about the trace rather than about the picture.
+  const coverage = (
+    <LineageCoverageAlert
+      status={status}
+      stoppedAtSeq={stoppedAtSeq}
+      isError={isLineageError}
+      isLoading={isLineageLoading}
+    />
+  );
+  if (readState) return <>{coverage}{readState}</>;
 
   return (
+    <>
+    {coverage}
     <EntityGraph
       spec={spec}
       traceId={traceId}
       highlight={highlight}
       selectedInteractionId={selectedInteractionId}
+      selectedEntityId={selectedEntityId}
       onSelectInteraction={onSelectInteraction}
       onSelectEntity={onSelectEntity}
+      riskLevelByInteraction={riskLevelByInteraction}
+      hideParallelGroupsNotice={edgesPerInteraction}
       testId="lineage-graph"
       /* THE LEGEND, in its own slot so it renders BELOW the graph rather than above it
          with the notices. A colour with no key is a puzzle, so every treatment the
@@ -3250,21 +4255,6 @@ export function LineageGraph({
             </Alert>
           )}
 
-          {/* THE TRACE-LEVEL PREFIX (ADR-0028 D6). Reused verbatim rather than
-              reworded: the truncation is a fact about the whole trace, so the tab
-              must not invent a second phrasing of it. Only rendered for a selection —
-              the banner is already on screen above the tabs at all times (see
-              FlowTables), and this repeat exists so the caveat sits next to the answer
-              it qualifies. */}
-          {reachability.selectedNodeId !== null && !isLineageError && (
-            <LineageCoverageAlert
-              status={status}
-              stoppedAtSeq={null}
-              isError={false}
-              isLoading={false}
-            />
-          )}
-
           {/* PER-DIRECTION STATE. One component, rendered twice, so fan-in and
               fan-out cannot end up worded differently for the same state — and so
               each keeps its own four-way outcome rather than being merged into a
@@ -3286,6 +4276,7 @@ export function LineageGraph({
         </>
       }
     />
+    </>
   );
 }
 

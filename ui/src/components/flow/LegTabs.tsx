@@ -1,17 +1,21 @@
 import { useState, type ReactNode } from 'react';
 import { CodeBlock, CodeBlockCode, Spinner, Tab, TabTitleText, Tabs } from '@patternfly/react-core';
 
-import { usePayload } from '../../api/hooks';
+import { useLegLabels, usePayload } from '../../api/hooks';
 import { DetailList } from '../DetailList';
-import { ClassificationView } from '../ClassificationView';
-import { DataLineageView } from '../DataLineageView';
-import type { LineageState } from '../../types';
+import { ClassificationView, type LegLabelsState } from '../ClassificationView';
+import { LabelLineageTable } from '../LabelLineageTable';
+import { useInRouterContext, useSearchParams, type To } from 'react-router-dom';
+import type { HopLinks } from '../../lib/hopLinks';
+import type { LineageHop } from '../../types';
 
 /** One **Interaction leg**'s governance surface, as the outer tabs address it. */
 export type Leg = {
   /** `Request` / `Response` — the outer tab's label and the a11y qualifier for
    *  that leg's inner tab set. */
   label: string;
+  /** Which leg of the interaction this is — the key into the labels read. */
+  legType: 'request' | 'response';
   /** The leg's payload content hash. Non-null by construction: a leg that
    *  carried no payload contributes no tab at all (see the note below). */
   hash: string;
@@ -21,32 +25,26 @@ export type Leg = {
    *  reads it from here and not from the fetched payload resource (#286).
    *  Null when the protocol has no semantic body kind. */
   kind: string | null;
-  /**
-   * What is currently known about this leg's lineage: a derived triple, "not
-   * derived yet", or "the read failed" — three states, never one overloaded
-   * `null` (see {@link LineageState}).
-   */
-  lineage: LineageState;
 };
 
 /** The three facts under a leg, in tab order. Payload leads: it is the thing a
  *  reader most often opened the panel for, and the two derived facts read as
  *  commentary on it. */
-const SECTIONS = ['payload', 'classification', 'lineage'] as const;
+const SECTIONS = ['payload', 'classification', 'labels'] as const;
 type Section = (typeof SECTIONS)[number];
 
 const SECTION_LABEL: Record<Section, string> = {
   payload: 'Payload',
   classification: 'Classification',
-  lineage: 'Data lineage',
+  labels: 'Data lineage',
 };
 
 /**
  * The flow detail panel's per-leg governance surface: **two levels of tabs**.
  * The outer level picks the leg (`Request` / `Response`); the inner level picks
  * which of that leg's three facts to show — **Payload** (the body itself),
- * **Classification** (the verdict), and **Data lineage** (the provenance
- * triple).
+ * **Classification** (the verdict), and **Data lineage** (label lineage: where
+ * each carried-in value came from).
  *
  * Why tabs and not one expanded blob (the pre-#121 shape): the three facts are
  * read for different reasons and are rarely wanted together — a reader chasing a
@@ -62,21 +60,27 @@ const SECTION_LABEL: Record<Section, string> = {
  *   - **Classification** is an inlined nullable field of `GET /api/payloads/{hash}`
  *     (ADR-0024) — so it rides on the *payload* read and selecting its tab must
  *     trigger that read.
- *   - **Data lineage** is keyed by the leg, not the content hash (ADR-0028 D5),
- *     and comes from the one trace-scoped read the panel already holds. It is
- *     passed *in*, so selecting its tab fetches nothing.
+ *   - The **Labels** beside the verdict (found here / carried in) and the
+ *     **Data lineage** pane come from one read per *interaction*, made the
+ *     first time either pane opens and shared by both legs.
  *
  * `legs` carries only the legs that actually carried a payload — the panel's
- * existing guard, kept. Lineage is keyed on the leg rather than the hash, so a
- * `Data lineage` tab for a payload-less leg would *typecheck*; it would just
- * lie. P-data-lineage derives the triple from payload content, so a leg with no
- * payload has no provenance to derive and would sit on "Lineage not yet
- * computed" forever — the eventual-consistency wording promising a derivation
- * that is never coming. That is precisely the "we don't know yet" / "there is
- * nothing" conflation the tri-state discipline exists to prevent, so the leg
- * gets no tab instead.
+ * existing guard, kept. Labels are found on and carried into payload content,
+ * so a leg with no payload has nothing to show under any of the three tabs, and
+ * gets no tab at all.
  */
-export function LegTabs({ legs }: { legs: Leg[] }) {
+export function LegTabs({
+  legs,
+  traceId,
+  interactionId = null,
+}: {
+  legs: Leg[];
+  /** The trace and interaction the legs belong to, for the labels read (one per
+   *  interaction, shared by both legs). Without them the Classification pane is
+   *  the classifier's verdict alone. */
+  traceId?: string;
+  interactionId?: string | null;
+}) {
   // Which leg's pane is showing, tracked by label so the identity survives a
   // re-render. Component-local on purpose: no URL param, and it may reset when
   // the selected row changes — matching the disclosures this replaced.
@@ -122,7 +126,12 @@ export function LegTabs({ legs }: { legs: Leg[] }) {
         leg (a fresh mount per `key`) is the intended consequence: each leg opens
         on Payload.
       */}
-      <LegPanel key={active.label} leg={active} />
+      <LegPanel
+        key={active.label}
+        leg={active}
+        traceId={traceId}
+        interactionId={traceId ? interactionId : null}
+      />
     </div>
   );
 }
@@ -132,9 +141,38 @@ export function LegTabs({ legs }: { legs: Leg[] }) {
  * both legs — `Request` and `Response` are structurally identical, so there is
  * exactly one statement of the three sections in the codebase.
  */
-function LegPanel({ leg }: { leg: Leg }) {
-  const { label, hash, kind, lineage } = leg;
+function LegPanel({
+  leg,
+  traceId,
+  interactionId,
+}: {
+  leg: Leg;
+  traceId?: string;
+  interactionId: string | null;
+}) {
+  const { label, legType, hash, kind } = leg;
   const [section, setSection] = useState<Section>('payload');
+  // The labels read (found here / carried in) is per INTERACTION and lazy: it
+  // fires the first time a leg's Classification or Data lineage pane opens and
+  // stays enabled after, so tabbing away and back does not flip it off and on.
+  // The other leg reads the same cache entry, enabled or not.
+  const [labelsWanted, setLabelsWanted] = useState(false);
+  const labelsQ = useLegLabels(traceId ?? '', interactionId, labelsWanted);
+  // Only an answered read reaches the view: loading or failed is not "nothing
+  // carried in", so the view stays the classifier's alone until then. The read
+  // is pinned to the leg's current payload and to whether the classifier had
+  // read it; the payload read is not refreshed live and the labels read is, so
+  // when either disagrees with the payload this pane shows (one of the two
+  // reads is stale), it is treated as not answered. The classifier's verdict is
+  // never set beside another payload's labels, nor "Not yet classified" beside
+  // rows found here.
+  const legLabels = labelsQ.data?.byLeg.get(legType) ?? null;
+  const labelsFor = (classified: boolean): LegLabelsState | undefined =>
+    labelsQ.isSuccess &&
+    (legLabels == null ||
+      (legLabels.payload_hash === hash && (legLabels.found != null) === classified))
+      ? { leg: legLabels, lineageStatus: labelsQ.data.lineageStatus }
+      : undefined;
 
   // ONE payload read per leg, shared by the two sections that need it (Payload
   // and Classification — the verdict is an inlined field of the payload
@@ -153,8 +191,7 @@ function LegPanel({ leg }: { leg: Leg }) {
   // Laziness therefore lives one level up, where it is actually observable:
   // `LegTabs` mounts ONLY the active leg, so an untouched leg issues no read at
   // all (see the `key={active.label}` note above, and the LegTabs tests that pin
-  // both halves). Data lineage costs nothing regardless — it reads the `lineage`
-  // prop from the trace-scoped query the panel already holds (ADR-0028 D5).
+  // both halves).
   const { data, isLoading, isError } = usePayload(hash);
 
   /**
@@ -169,9 +206,8 @@ function LegPanel({ leg }: { leg: Leg }) {
    * it" is not "the server has no verdict yet"**. `classification == null` is a
    * real answer — the ADR-0024 eventual-consistency window — and rendering
    * "Not yet classified" while the read is merely in flight (or never started)
-   * would put that claim on screen for a payload nobody has asked about. Same
-   * discipline `lineageOfLeg` applies to the lineage triple: an unknown is never
-   * dressed up as a derivation.
+   * would put that claim on screen for a payload nobody has asked about: an
+   * unknown is never dressed up as a derivation.
    */
   const whenLoaded = (body: (payload: NonNullable<typeof data>) => ReactNode): ReactNode => {
     if (isLoading) return <Spinner size="md" aria-label={`Loading ${label} payload`} />;
@@ -188,16 +224,19 @@ function LegPanel({ leg }: { leg: Leg }) {
     <>
       <Tabs
         activeKey={section}
-        onSelect={(_e, key) => setSection(key as Section)}
+        onSelect={(_e, key) => {
+          setSection(key as Section);
+          if (key === 'classification' || key === 'labels') setLabelsWanted(true);
+        }}
         // `isSecondary` is what makes the nesting legible: PF draws the inner set
         // in its lighter, tighter secondary treatment against the primary leg
         // tabs above, so the two levels do not read as one flat row of five.
         isSecondary
-        // At the panel's old 320px floor these three labels (`Payload` /
-        // `Classification` / `Data lineage`) did not fit on one line and PF fell
-        // back to its horizontal scroll buttons, hiding `Data lineage` behind a
-        // forward arrow. The floor is now 520px (`--dg-detail-panel-min`), which
-        // fits all three — so these labels should never be reachable in practice.
+        // At the panel's old 320px floor the section labels did not fit on one
+        // line and PF fell back to its horizontal scroll buttons, hiding the last
+        // tab behind a forward arrow. The floor is now 520px
+        // (`--dg-detail-panel-min`), which fits all three — so these labels
+        // should never be reachable in practice.
         // Kept because PF renders the buttons off its own width measurement, not
         // off our var: at an extreme zoom or font-size they can still appear, and
         // an unlabelled scroll button is an a11y hole.
@@ -254,18 +293,65 @@ function LegPanel({ leg }: { leg: Leg }) {
             zero-Findings verdict — and, per `whenLoaded` above, distinct again
             from a read that has not landed. */}
         {section === 'classification' &&
-          whenLoaded((payload) => <ClassificationView classification={payload.classification} />)}
+          whenLoaded((payload) => (
+            <ClassificationView
+              classification={payload.classification}
+              labels={labelsFor(payload.classification != null)}
+            />
+          ))}
 
-        {/* The P-data-lineage metadata for THIS LEG (issue #119): the payload's
-            data sources, the transformations applied per source, and the
-            unordered set of entities it passed through. An undelivered
-            derivation renders as "lineage not yet computed" (the
-            eventual-consistency window, ADR-0028) and a failed read as an
-            explicit error — never as each other, and never as a derived answer.
-            No payload fetch here: the state is already in hand from the
-            trace-scoped read (ADR-0028 D5). */}
-        {section === 'lineage' && <DataLineageView state={lineage} />}
+        {/* Data lineage (label lineage) for THIS LEG: per carried-in value, its
+            origin, the previous hop, and on demand the full chains.
+            Its own read (the same per-interaction labels read the
+            Classification tab shares), so a failed or unanswered read says so
+            here rather than reading as "nothing carried in". The row is pinned
+            to this pane's payload hash, as the Classification tab pins it. */}
+        {section === 'labels' &&
+          (labelsQ.isSuccess ? (
+            <LabelLineagePane
+              leg={(() => {
+                const row = labelsQ.data.byLeg.get(legType) ?? null;
+                return row != null && row.payload_hash !== hash ? null : row;
+              })()}
+              lineageStatus={labelsQ.data.lineageStatus}
+              traceId={traceId ?? ''}
+              interactionId={interactionId ?? undefined}
+            />
+          ) : labelsQ.isError ? (
+            <div style={{ color: 'var(--dg-color-error)', fontSize: '0.85rem' }}>Failed to load data lineage.</div>
+          ) : (
+            <Spinner size="md" aria-label={`Loading ${label} data lineage`} />
+          ))}
       </div>
     </>
   );
+}
+
+/**
+ * `LabelLineageTable` with this view's hop links: a hop in this trace selects its
+ * interaction here (`?iid=`, the other params kept, the entity selection dropped),
+ * the same convention the Classification tab's origin links use. Plain text
+ * outside a router.
+ */
+function LabelLineagePane(props: {
+  leg: Parameters<typeof LabelLineageTable>[0]['leg'];
+  lineageStatus: Parameters<typeof LabelLineageTable>[0]['lineageStatus'];
+  traceId: string;
+  interactionId?: string;
+}) {
+  const routed = useInRouterContext();
+  return routed ? <RoutedLabelLineagePane {...props} /> : <LabelLineageTable {...props} />;
+}
+
+function RoutedLabelLineagePane(props: Parameters<typeof LabelLineagePane>[0]) {
+  const [params] = useSearchParams();
+  const links: HopLinks = {
+    sameTrace: (hop: LineageHop): To => {
+      const next = new URLSearchParams(params);
+      next.delete('eid');
+      next.set('iid', hop.interaction_id);
+      return { search: next.toString() };
+    },
+  };
+  return <LabelLineageTable {...props} links={links} />;
 }

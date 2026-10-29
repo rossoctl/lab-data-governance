@@ -6,19 +6,18 @@ import type { LineageStatus } from '../../types';
  * The trace-level **Data lineage** coverage warning (issue #120, ADR-0028 D6).
  *
  * When a leg's payload is absent, lineage is derived only up to that point and the
- * trace is marked `partial`. Rendered at the top of the flow view and outside the
- * tables' right-hand gutter, because the failure mode is a reader taking the rows
- * that DO carry lineage for the full set of data sources — so the warning has to
- * be on screen before anything is clicked, and stay there while the detail panel
- * is open. A message hidden behind a payload expansion would not prevent the
+ * trace is marked `partial`. Rendered once, at the top of the Lineage view
+ * (`LineageGraph`), the only view that shows this derivation's results — above the
+ * graph and unconditionally, because the failure mode is a reader taking the sources
+ * that ARE marked for the full set — so the warning has to be on screen before
+ * anything is clicked. A message shown only after a selection would not prevent the
  * mistake; it would only be available to someone who already suspected it.
  *
  * Only `partial` warns about a truncation. `complete` needs no banner (the
  * absence of a warning is the "no truncation" statement, and a permanent green
  * box trains the reader to stop reading the strip). `null` — not yet derived —
- * deliberately says nothing either: there is no established truncation to report,
- * and the per-payload blocks already state "lineage not yet computed" for that
- * window. Claiming a truncation nobody has established would make the banner
+ * deliberately says nothing either: there is no established truncation to report.
+ * Claiming a truncation nobody has established would make the banner
  * noise, which is how a real one gets ignored.
  *
  * `isError` and `isLoading` are the two exceptions to that silence, and neither is
@@ -30,7 +29,7 @@ import type { LineageStatus } from '../../types';
  * prefix claim it never obtained. Distinct from the `null` case, where the read
  * did succeed and simply has nothing yet.
  *
- * `isLoading` is the same argument one step earlier: the tables paint before this
+ * `isLoading` is the same argument one step earlier: the graph paints before this
  * query settles, so without its own arm an in-flight read reaches `status === null`
  * and goes silent — publishing the clean-coverage signal while the answer is still
  * unknown. Worded as *not yet known* and left non-assertive, since it resolves on
@@ -48,8 +47,8 @@ export function LineageCoverageAlert({
   isError: boolean;
   /**
    * The trace-scoped lineage read is still in flight. Needs its own arm for the
-   * same reason as `isError`: the tables render before this query settles (their
-   * spinner gates on the interactions/entities reads only), and an in-flight read
+   * same reason as `isError`: the graph renders before this query settles (the
+   * view's spinner gates on the interactions/entities reads only), and an in-flight read
    * has established nothing about coverage — but in this view silence is read as
    * the affirmative "no truncation" statement. Falling through to `status ===
    * null` would emit exactly the clean-coverage signal a `partial` trace exists
@@ -81,7 +80,7 @@ export function LineageCoverageAlert({
         title="Data lineage coverage for this trace is unknown"
         // Same assertive upgrade as the truncation warning below: a reader must
         // learn that the coverage claim is missing before they act on whatever
-        // lineage the per-leg blocks do or do not show.
+        // lineage the view shows.
         role="alert"
         style={{ marginBottom: '0.75rem' }}
       >
@@ -104,7 +103,7 @@ export function LineageCoverageAlert({
       // An explicit `role="alert"` upgrades that to assertive: this is not
       // status chatter, it is "what you are about to read is not the whole
       // picture", and a screen-reader user must get it before they act on the
-      // source list — the same reason it is rendered before the tables.
+      // source list — the same reason it is rendered above the graph.
       role="alert"
       style={{ marginBottom: '0.75rem' }}
     >
