@@ -92,7 +92,7 @@ def test_0008_is_applied_in_the_chain(migrated_dsn: str) -> None:
     """A fresh migrate applies 0008 (it is in the chain). What this revision adds
     is asserted structurally by the tests above; this pins that the revision is
     reachable. The single head-revision assertion lives below, in
-    ``test_head_is_0021`` — the same reason 0007's test stopped asserting head
+    ``test_head_is_0026`` — the same reason 0007's test stopped asserting head
     once 0008 landed."""
     from alembic.config import Config
     from alembic.script import ScriptDirectory
@@ -102,9 +102,9 @@ def test_0008_is_applied_in_the_chain(migrated_dsn: str) -> None:
     assert "0008_payload_classifications" in walked
 
 
-def test_head_is_0021(migrated_dsn: str) -> None:
+def test_head_is_0026(migrated_dsn: str) -> None:
     """Applying the chain to head lands on the current head revision
-    (`0021_causal_leg_order`).
+    (`0026_causal_leg_order`).
 
     The chain is LINEAR. `main`'s branch keeps its shipped numbers
     (0010_entity_ready_notify → 0011_drop_leg_original_seq) and the lineage chain
@@ -128,7 +128,7 @@ def test_head_is_0021(migrated_dsn: str) -> None:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0021_causal_leg_order"
+    assert version == "0026_causal_leg_order"
 
 
 def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:

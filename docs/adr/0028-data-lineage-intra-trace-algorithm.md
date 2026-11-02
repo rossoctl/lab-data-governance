@@ -338,7 +338,7 @@ Two consequences worth stating, because both are load-bearing:
 The original derived-stream pattern (`payload_classifications`, the streaming
 P-interactions `flush`) re-derived by upsert because those derivations only grew:
 a payload got classified, a trace gained interactions. Sidecar reconciliation
-can now delete interactions and legs, which migration 0021 handles with deletion
+can now delete interactions and legs, which migration 0026 handles with deletion
 triggers and replay. `lineage_metadata` had already broken the growth assumption
 when D6's cutoff
 landed, so it needs one operation more than its siblings. Recorded as its own
@@ -1147,7 +1147,7 @@ FKs, idempotent re-derive):
   (`lineage_status` ENUM: `complete` | `partial`, `NOT NULL`) and
   `stopped_at_seq` (`BIGINT`, nullable). **Shipped** as migration
   `0014_lineage_trace_status` (issue #120). Migration
-  `0021_causal_leg_order` adds `prefix_leg_keys` (`TEXT[]`, inclusive causal prefix
+  `0026_causal_leg_order` adds `prefix_leg_keys` (`TEXT[]`, inclusive causal prefix
   through the cutoff leg) for missing-row recovery; `stopped_at_seq` still identifies
   that leg by its ingestion cursor. A CHECK constraint pairs status and stop —
   `partial` requires a cutoff identifier, `complete` forbids one — so a
@@ -1157,7 +1157,7 @@ FKs, idempotent re-derive):
   cursor column: nothing drains this table, and a trace's coverage is not a stream
   of events.
 - **`data_lineage_dirty_traces`** — PK `trace_id`, with a generation from
-  `data_lineage_dirty_generation` (migration `0021_causal_leg_order`). Interaction
+  `data_lineage_dirty_generation` (migration `0026_causal_leg_order`). Interaction
   and leg writes queue changed traces for replay without rewinding the ingestion
   cursor. A generation is removed only if no later correction replaced it.
 
@@ -1216,7 +1216,7 @@ matching how ADR-0024/0025 name their PKs.
   loses its lineage too. This would be per-leg state, not the trace-level row
   D8 added.
 
-- A cheaper path for the remaining entity-arrival staleness scan. Migration 0021
+- A cheaper path for the remaining entity-arrival staleness scan. Migration 0026
   added a durable dirty-trace queue for interaction and leg corrections, including
   deletions. Delete triggers remove lineage for vanished legs before its interaction
   identity is lost. The per-wake join still catches a producer entity that arrives

@@ -901,7 +901,7 @@ re-derivation no longer covers are **deleted** as well, so the persisted lineage
 of a trace is exactly the derivation's output. `interaction_legs` carries no
 `trace_id`, so the trace is reached by joining through `interactions`. A durable
 dirty-trace queue replays parent, endpoint and leg corrections without moving the
-ingestion cursor; migration 0021 invalidates old lineage and queues its backfill.
+ingestion cursor; migration 0026 invalidates old lineage and queues its backfill.
 
 **Flow view**:
 The UI surface that renders one **Trace**'s derived **Interaction**/**Entity**

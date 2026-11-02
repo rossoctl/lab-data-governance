@@ -26,7 +26,7 @@ would freeze the first, most partial answer.
 **The drain has three arms** (:func:`_drain_spec`, issues #137 and #279). The cursor
 arm handles new legs with ``seq > cursor``. The durable dirty-trace queue replays
 traces when a parent, endpoint, payload or occurrence time is corrected, or a leg
-is deleted, without a new leg ``seq``; migration 0021 also queues existing traces for a causal-order
+is deleted, without a new leg ``seq``; migration 0026 also queues existing traces for a causal-order
 backfill. The stale sweep handles an entity that lands after its leg was consumed.
 All three use the same whole-trace derivation; only the cursor arm advances the
 ingestion cursor. Earlier reasons for the non-cursored arms include:
@@ -537,7 +537,7 @@ def _fetch_stale_traces(tx: db.Transaction, cursor: int, limit: int) -> list[str
     before.
 
     A ``lineage_metadata`` row whose leg was deleted has nothing to compare against
-    in this scan. Migration 0021 handles that case at deletion time: the trigger
+    in this scan. Migration 0026 handles that case at deletion time: the trigger
     removes the row and queues its old trace before the interaction can disappear.
 
     Returns distinct trace ids, not legs: :func:`process_leg` re-derives a whole
@@ -736,6 +736,6 @@ def run(stop_event: threading.Event, dsn: str, matcher: Matcher | None = None) -
     *stop_event* is set. See :func:`_driver.run`.
 
     Passes :func:`_drain_spec` through ``_driver.run``'s ``drain_fn`` seam so each
-    wake also drains corrected traces and the stale-row sweep. Migration 0021
+    wake also drains corrected traces and the stale-row sweep. Migration 0026
     notifies on causal-input corrections; polling bounds missed notifications."""
     _driver.run(_spec(matcher), stop_event, dsn, drain_fn=_drain_spec)

@@ -17,8 +17,17 @@ an independently observed tool response keeps its own time.
 missing-payload cutoff. ``stopped_at_seq`` remains the cutoff leg's ingestion id,
 but cannot be used as a numeric boundary for missing-row recovery.
 
-Revision ID: 0021_causal_leg_order
-Revises: 0020_entity_namespace
+**Numbered 0026, on 0022.** This revision was written as 0021 on 0020, and
+main's 0022 (issue #286) shipped on the same parent first. Two revisions off one
+parent are two heads, and only the unshipped one may move (see 0020's note). The
+``risk`` chain already stamps 0023 and 0024 in a live ``alembic_version``, and
+0025 is taken on a lineage branch, so this revision takes the next free number.
+On 0022 the content kind lives on ``interaction_legs``, not on the payload row,
+so the inferred-tool repair below reads the leg's kind, with a structural
+fallback for legs written before 0022 (see the repair's comment).
+
+Revision ID: 0026_causal_leg_order
+Revises: 0022_content_kind_on_legs
 Create Date: 2026-10-06
 """
 
@@ -29,8 +38,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "0021_causal_leg_order"
-down_revision: Union[str, Sequence[str], None] = "0020_entity_namespace"
+revision: str = "0026_causal_leg_order"
+down_revision: Union[str, Sequence[str], None] = "0022_content_kind_on_legs"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -168,6 +177,13 @@ def upgrade() -> None:
     # Response legs are moved only when they still look synthetic: the same
     # response payload and end boundary as the originating LLM. A tool with
     # independently observed completion keeps that observation.
+    #
+    # "Carries tool-call arguments" is read from the leg's own content kind
+    # (0022). Legs written before 0022 have no kind: 0022 dropped the payload
+    # row's column without a backfill, and it runs before this revision. For
+    # those legs the test is structural. An inferred call without arguments
+    # takes its request body off the shared LLM span, so a request body that is
+    # neither of the LLM's own bodies is the call's arguments.
     op.execute(
         """
         WITH inferred_tool_calls AS (
@@ -186,12 +202,10 @@ def upgrade() -> None:
             JOIN interaction_legs tool_request
               ON tool_request.interaction_id = tool_ix.id
              AND tool_request.leg_type = 'request'
+             AND tool_request.payload_hash IS NOT NULL
             LEFT JOIN interaction_legs tool_response
               ON tool_response.interaction_id = tool_ix.id
              AND tool_response.leg_type = 'response'
-            JOIN interaction_payloads args
-              ON args.content_hash = tool_request.payload_hash
-             AND args.content_kind = 'tool_call_arguments'
             JOIN interaction_spans tool_anchor
               ON tool_anchor.interaction_id = tool_ix.id
              AND tool_anchor.role = 'anchor'
@@ -214,6 +228,14 @@ def upgrade() -> None:
             LEFT JOIN interaction_legs llm_response
               ON llm_response.interaction_id = llm_ix.id
              AND llm_response.leg_type = 'response'
+            WHERE tool_request.content_kind = 'tool_call_arguments'
+               OR (
+                   tool_request.content_kind IS NULL
+                   AND tool_request.payload_hash
+                       IS DISTINCT FROM llm_request.payload_hash
+                   AND tool_request.payload_hash
+                       IS DISTINCT FROM llm_response.payload_hash
+               )
         )
         UPDATE interaction_legs leg
         SET occurred_at = inferred.projected_at

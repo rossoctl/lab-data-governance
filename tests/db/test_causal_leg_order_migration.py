@@ -1,4 +1,4 @@
-"""Migration 0021 replays persisted lineage in causal trace order."""
+"""Migration 0026 replays persisted lineage in causal trace order."""
 
 from __future__ import annotations
 
@@ -178,4 +178,83 @@ def test_legacy_inferred_tool_times_are_projected_before_lineage_replay(
         ("observed-tool", "response", next_start),
         ("out-tool", "request", end),
         ("out-tool", "response", end),
+    ]
+
+
+def test_inferred_tool_repair_reads_the_leg_content_kind_after_0022(
+    pg_dsn: str, monkeypatch,
+) -> None:
+    """On a database already at 0022 the content kind lives on the leg (issue
+    #286), so the repair reads ``interaction_legs.content_kind``. A kinded leg is
+    trusted: ``tool_call_arguments`` is projected even when its body equals the
+    LLM's (bodies are content-addressed), and any other kind is never moved.
+    """
+    monkeypatch.setenv("DATABASE_URL", pg_dsn)
+    cfg = _alembic_config()
+    command.upgrade(cfg, "0022_content_kind_on_legs")
+
+    start = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+    end = start + dt.timedelta(seconds=5)
+    with psycopg.connect(pg_dsn) as conn:
+        conn.execute(
+            "INSERT INTO entities (id, kind, natural_key, display_name, "
+            "detected_from, seq, original_seq) VALUES "
+            "('agent', 'agent', 'agent:a', 'a', 'inferred', 1, 1), "
+            "('llm', 'llm', 'llm:m', 'm', 'inferred', 2, 2), "
+            "('tool', 'tool', 'tool:t', 't', 'inferred', 3, 3)"
+        )
+        conn.execute(
+            "INSERT INTO spans (trace_id, span_id, kind, name, started_at, "
+            "ended_at, arrival_seq) VALUES "
+            "('trace', 'llm-span', 'INTERNAL', 'messages.create', %s, %s, 1)",
+            (start, end),
+        )
+        conn.execute(
+            "INSERT INTO interaction_payloads (content_hash, content, byte_size) "
+            "VALUES ('prompt', '{}'::jsonb, 2), ('completion', '{}'::jsonb, 2)"
+        )
+        conn.execute(
+            "INSERT INTO interactions (id, trace_id, caller_entity_id, "
+            "callee_entity_id, summary) VALUES "
+            "('llm-ix', 'trace', 'agent', 'llm', 'call'), "
+            "('kinded-tool', 'trace', 'agent', 'tool', 'call'), "
+            "('other-kind', 'trace', 'agent', 'tool', 'call')"
+        )
+        conn.execute(
+            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, "
+            "role, leg_type) VALUES "
+            "('llm-ix', 'trace', 'llm-span', 'anchor', 'request'), "
+            "('kinded-tool', 'trace', 'llm-span#tool:t#12', 'anchor', 'request'), "
+            "('other-kind', 'trace', 'llm-span#tool:t#14', 'anchor', 'request')"
+        )
+        for interaction_id, request_seq, payload, kind in (
+            ("llm-ix", 10, "prompt", "llm_chat_prompt"),
+            # The arguments body equals the completion's: only the kind says
+            # this is a tool call's arguments.
+            ("kinded-tool", 12, "completion", "tool_call_arguments"),
+            ("other-kind", 14, "completion", "llm_completion"),
+        ):
+            response_payload = "completion" if interaction_id == "llm-ix" else None
+            conn.execute(
+                "INSERT INTO interaction_legs (interaction_id, leg_type, "
+                "occurred_at, payload_hash, content_kind, error, seq) VALUES "
+                "(%s, 'request', %s, %s, %s, false, %s), "
+                "(%s, 'response', %s, %s, NULL, false, %s)",
+                (
+                    interaction_id, start, payload, kind, request_seq,
+                    interaction_id, end, response_payload, request_seq + 1,
+                ),
+            )
+
+    command.upgrade(cfg, "head")
+    with psycopg.connect(pg_dsn) as conn:
+        rows = conn.execute(
+            "SELECT interaction_id, leg_type::text, occurred_at "
+            "FROM interaction_legs WHERE interaction_id IN "
+            "('kinded-tool', 'other-kind') AND leg_type = 'request' "
+            "ORDER BY interaction_id"
+        ).fetchall()
+    assert rows == [
+        ("kinded-tool", "request", end),
+        ("other-kind", "request", start),
     ]
