@@ -10,6 +10,8 @@ triggers reaching the change hub:
   latest record is the answer; ``require_approval`` is returned as decided;
 - unjudged: a record whose request body was not captured or was cut says so, at once,
   with the record's verdict; a body-size fact of 0 or a payload is what makes it decided;
+- what was caught: rules, labels and, on a block, the payload with each finding replaced;
+  a value never reaches the answer; a text that cannot be rendered leaves the block standing;
 - pending at ``wait_ms``; ``wait_ms`` above 3000 is refused, never clamped;
 - identity: with a secret, no or a wrong bearer is 401;
 - the cap: beyond ``max_waiters`` the answer is 503 ``verdict_busy`` at once;
@@ -39,6 +41,7 @@ import pytest
 import uvicorn
 
 from data_governance import db
+from data_governance.processors.classification.projection import project
 from data_governance.processors.interactions.procedure import _interaction_id
 from data_governance.risk.api import verdict_app, verdict_routes
 from data_governance.risk.api.verdict_app import build_verdict_app
@@ -176,7 +179,8 @@ def test_existing_record_answers_at_once(serve, configured_db) -> None:
     assert body["verdict"] == "block"
     assert body["exchange_id"] == _EXCHANGE
     assert body["version"] == 1
-    assert sorted(body) == ["exchange_id", "state", "verdict", "version", "waited_ms"], "the verdict, nothing about what was caught"
+    assert body["rules"] == ["DG-001"]
+    assert sorted(body) == ["exchange_id", "labels", "rules", "state", "verdict", "version", "waited_ms"]
 
 
 def test_no_record_waits_then_pending(serve) -> None:
@@ -272,7 +276,7 @@ def test_a_body_the_sidecar_did_not_emit_is_unjudged_at_once(serve, configured_d
     assert body["state"] == "unjudged"
     assert body["reason"] == "body_not_captured"
     assert body["verdict"] == "allow", "the record's verdict, as it is"
-    assert sorted(body) == ["exchange_id", "reason", "state", "verdict", "version", "waited_ms"]
+    assert sorted(body) == ["exchange_id", "labels", "reason", "rules", "state", "verdict", "version", "waited_ms"]
 
 
 def test_a_body_with_no_size_fact_is_unjudged(serve, configured_db) -> None:
@@ -300,6 +304,129 @@ def test_a_block_on_what_was_read_stays_a_block(serve, configured_db) -> None:
     with serve() as (base, _app):
         body = _get(base, 100).json()
     assert (body["state"], body["verdict"]) == ("unjudged", "block"), "the gate denies on the verdict"
+
+
+# --- what was caught -------------------------------------------------------------
+
+
+_SSN = "123-45-6789"
+_PAYLOAD = {"drug": "Lisinopril", "ssn": _SSN}
+_TEXT = project(_PAYLOAD)
+_FINDING = {"entity_type": "PN", "category": "person.govID", "sensitivity_level": "RESTRICTED",
+            "start": _TEXT.index(_SSN), "end": _TEXT.index(_SSN) + len(_SSN), "text": _SSN}
+
+
+def _classify(dsn: str, content_hash: str, findings) -> None:
+    with psycopg.connect(dsn) as conn:
+        conn.execute(
+            "INSERT INTO payload_classifications (content_hash, sensitivity_level, regulatory_tags, "
+            "contains_identity_bundle, is_personalized, primary_domain, findings, model_version) "
+            "VALUES (%s, 'RESTRICTED', '{}', false, false, 'person', %s::jsonb, 2)",
+            (content_hash, json.dumps(findings)),
+        )
+        conn.commit()
+
+
+def test_a_block_says_what_was_caught_and_never_the_value(serve, configured_db) -> None:
+    _seed(configured_db, payload_hash="h-pii", payload=_PAYLOAD)
+    _classify(configured_db, "h-pii", [_FINDING])
+    _write_record(configured_db, enforcement="block")
+    with serve() as (base, _app):
+        r = _get(base, 100)
+    body = r.json()
+    assert body["state"] == "decided"
+    assert body["rules"] == ["DG-001"]
+    assert body["labels"] == ["person.govID"]
+    assert body["redacted_payload"] == _TEXT.replace(_SSN, "[person.govID]")
+    assert _SSN not in r.text
+
+
+def test_what_was_caught_is_the_request_legs_own(serve, configured_db) -> None:
+    _seed(configured_db, payload_hash="h-req", payload=_PAYLOAD)
+    answer = {"note": "from the response"}
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("INSERT INTO interaction_payloads (content_hash, content, byte_size) VALUES ('h-resp', %s::jsonb, 2)",
+                     (json.dumps(answer),))
+        conn.execute("INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, payload_hash, error) "
+                     "VALUES (%s, 'response', now(), 'h-resp', false)", (_IID,))
+        conn.commit()
+    _classify(configured_db, "h-req", [_FINDING])
+    response_text = project(answer)
+    _classify(configured_db, "h-resp", [{"entity_type": "X", "category": "response.only", "start": 0, "end": 1,
+                                         "text": response_text[0]}])
+    _write_record(configured_db, enforcement="block")
+    with serve() as (base, _app):
+        body = _get(base, 100).json()
+    assert body["labels"] == ["person.govID"]
+    assert body["redacted_payload"] == _TEXT.replace(_SSN, "[person.govID]")
+
+
+def test_an_allow_has_labels_and_no_text(serve, configured_db) -> None:
+    _seed(configured_db, payload_hash="h-allow", payload=_PAYLOAD)
+    _classify(configured_db, "h-allow", [_FINDING])
+    _write_record(configured_db, enforcement="allow")
+    with serve() as (base, _app):
+        r = _get(base, 100)
+    body = r.json()
+    assert (body["verdict"], body["labels"]) == ("allow", ["person.govID"])
+    assert "redacted_payload" not in body
+    assert _SSN not in r.text
+
+
+def test_an_unjudged_block_has_the_text_it_read(serve, configured_db) -> None:
+    cut = f"ssn {_SSN} and more…[truncated]"
+    _seed(configured_db, payload_hash="h-cut3", payload=cut, span_attributes={
+        "http.request.body.size": 9000, "input.value": cut})
+    _classify(configured_db, "h-cut3", [{"category": "person.govID", "start": 4, "end": 15, "text": _SSN}])
+    _write_record(configured_db, enforcement="block")
+    with serve() as (base, _app):
+        body = _get(base, 100).json()
+    assert (body["state"], body["reason"]) == ("unjudged", "body_truncated")
+    assert body["redacted_payload"] == "ssn [person.govID] and more…[truncated]"
+
+
+def test_an_unclassified_block_has_no_text_and_no_labels(serve, configured_db) -> None:
+    _seed(configured_db, payload_hash="h-none", payload=_PAYLOAD)
+    _write_record(configured_db, enforcement="block")
+    with serve() as (base, _app):
+        r = _get(base, 100)
+    body = r.json()
+    assert (body["verdict"], body["labels"]) == ("block", [])
+    assert "redacted_payload" not in body
+    assert _SSN not in r.text
+
+
+def test_a_stored_payload_above_the_cap_is_not_fetched(serve, configured_db, monkeypatch) -> None:
+    """The seed stores byte_size 2, so a cap below that leaves the body unread."""
+    monkeypatch.setattr(verdict_routes, "REDACTED_MAX_BYTES", 1)
+    calls = []
+    monkeypatch.setattr(verdict_routes, "_redact", lambda *a: calls.append(a) or "x")
+    _seed(configured_db, payload_hash="h-big", payload=_PAYLOAD)
+    _classify(configured_db, "h-big", [_FINDING])
+    _write_record(configured_db, enforcement="block")
+    with serve() as (base, _app):
+        body = _get(base, 100).json()
+    assert body["verdict"] == "block" and body["labels"] == ["person.govID"]
+    assert "redacted_payload" not in body and calls == []
+
+
+def test_a_malformed_finding_leaves_the_text_out_and_the_block_stands(serve, configured_db, caplog) -> None:
+    _seed(configured_db, payload_hash="h-bad", payload=_PAYLOAD)
+    _classify(configured_db, "h-bad", [{**_FINDING, "start": 0, "end": 3}])
+    _write_record(configured_db, enforcement="block")
+    with caplog.at_level(logging.WARNING, logger=verdict_routes.log.name), serve() as (base, _app):
+        r = _get(base, 100)
+    body = r.json()
+    assert (r.status_code, body["verdict"]) == (200, "block")
+    assert "redacted_payload" not in body
+    assert _SSN not in caplog.text and "no redacted payload" in caplog.text
+
+
+def test_pending_names_the_exchange(serve) -> None:
+    with serve() as (base, _app):
+        body = _get(base, 0).json()
+    assert sorted(body) == ["exchange_id", "state", "waited_ms"]
+    assert (body["state"], body["exchange_id"]) == ("pending", _EXCHANGE)
 
 
 def test_a_parser_reduction_reads_as_decided(serve, configured_db) -> None:
