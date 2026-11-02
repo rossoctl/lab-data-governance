@@ -50,7 +50,7 @@ Three clones, side by side:
 |---|---|---|
 | this repo | `rossoctl/lab-data-governance` | the branch under test |
 | the app | `s-and-p-team/agent-examples-snp` | `main` at `642167f` or later: it carries the pinned dependency set (#23), the ledger (#25), `apps/lineage_lab` (#27) and the partner-notification variant (#29) |
-| cortex | `rossoctl/cortex` | `main` at `a617df61` or later: the sidecar speaks contract v1.8 (rossoctl/cortex#1506: plain-HTTP bodies and body sizes), the version the pins name. Its attach kit also keeps the app's own OpenTelemetry core (rossoctl/cortex#1311, `ec6a922`); on an older kit step 3's bake fails with dependency conflicts |
+| cortex | `rossoctl/cortex` | `main` at `a617df61` or later: the sidecar speaks contract v1.8 (rossoctl/cortex#1506: plain-HTTP bodies and body sizes). The pins name v1.8.1, and the copies match only once cortex has that revision, on the Sentry gate's branch until it lands. Its attach kit also keeps the app's own OpenTelemetry core (rossoctl/cortex#1311, `ec6a922`); on an older kit step 3's bake fails with dependency conflicts |
 
 ```sh
 git clone https://github.com/s-and-p-team/agent-examples-snp.git     # main
