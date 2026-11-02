@@ -237,13 +237,14 @@ def _read_states(keys: list[_Key], notify_undecided: bool = False) -> dict[str, 
     each undecided one on the priority decision channel in the same transaction."""
     ids, traces, exchanges = (list(column) for column in zip(*keys, strict=True))
     params = (len(_TRUNCATED_SUFFIX), _TRUNCATED_SUFFIX, ids, traces, exchanges)
+    exchange_of = {key[0]: key[2] for key in keys}
     states: dict[str, _State] = {}
     with db.transaction() as tx:
         for (iid, version, enforcement, has_leg, payload_hash, payload_present, classified,
              body_size, truncated) in tx.fetch_all(_STATE_SQL, params):
             record = None
             if version is not None:
-                record = {"state": "decided", "verdict": enforcement, "interaction_id": iid, "version": version}
+                record = {"state": "decided", "verdict": enforcement, "exchange_id": exchange_of[iid], "version": version}
                 reason = _unread_body(has_leg, payload_hash, body_size, truncated)
                 if reason is not None:
                     record.update(state="unjudged", reason=reason)
@@ -418,7 +419,7 @@ class VerdictService:
             waited_ms = int((time.monotonic() - started) * 1000)
             if waiter.future.done():
                 return {**waiter.future.result(), "waited_ms": waited_ms}, waiter
-            return {"state": "pending", "interaction_id": interaction_id, "waited_ms": waited_ms}, waiter
+            return {"state": "pending", "exchange_id": key[2], "waited_ms": waited_ms}, waiter
         finally:
             peers = self._waiters.get(interaction_id)
             if peers is not None:

@@ -13,7 +13,7 @@ shipped manifests, so that is the payload's own labels.
 | field | when | what |
 |---|---|---|
 | `state` | always | `decided`, `unjudged` or `pending` (below) |
-| `interaction_id`, `waited_ms` | always | `uuid5(trace_id/exchange_id)`; the time this request waited |
+| `exchange_id`, `waited_ms` | always | the exchange asked about; the time this request waited |
 | `verdict`, `version` | decided, unjudged | the record's enforcement type as the policy wrote it (a gate denies only those in its `deny_on`, by default `block`), and its version |
 | `reason` | unjudged | `body_not_captured` or `body_truncated` |
 
