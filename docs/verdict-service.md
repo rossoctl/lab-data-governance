@@ -16,6 +16,9 @@ shipped manifests, so that is the payload's own labels.
 | `exchange_id`, `waited_ms` | always | the exchange asked about; the time this request waited |
 | `verdict`, `version` | decided, unjudged | the record's enforcement type as the policy wrote it (a gate denies only those in its `deny_on`, by default `block`), and its version |
 | `reason` | unjudged | `body_not_captured` or `body_truncated` |
+| `rules` | decided, unjudged | the rule ids that fired on the record; `[]` when none |
+| `labels` | decided, unjudged | the sorted distinct categories of the request payload's own findings (a finding's entity type when its category is empty); `[]` when none or not classified |
+| `redacted_payload` | a `block`, decided or unjudged, whose payload renders | the classifier's text of the payload, each finding replaced by `[<label>]` |
 
 - **`decided`:** a record evidences the request leg, and the sidecar reported the body whole or there was none. With no
   request leg at all (a derivation that never writes one), the latest record.
@@ -25,12 +28,20 @@ shipped manifests, so that is the payload's own labels.
   than contract v1.8. A value ending `…[truncated]` is `body_truncated`. The answer comes at once, with no wasted wait.
 - **`pending`:** `wait_ms` passed with no record.
 
-The gate refuses an `unjudged` answer unless its verdict is one it denies anyway. So **with `capture_io` off every gated
-request that has a body is refused**, MCP `tools/list` and `initialize` to a gated outside host included. With it on, so
-is a body longer than `max_payload_bytes` (default 4096) unless what was read blocks it, and an MCP `ping`,
-`notifications/initialized` or `tools/list` with no params, which the parser reduces to nothing, so an MCP session to a
-gated outside host does not get through its handshake. A request with no body is judged either way. No setting changes
-any of this yet.
+**What the gate does with `unjudged`.** It refuses the answer unless its verdict is one it denies anyway, with one
+exception: with `capture_io` off it lets a `body_not_captured` body through, because whoever turned capture off gave up
+judging bodies. With capture on it refuses a body longer than `max_payload_bytes` (default 4096) unless what was read blocks
+it. Messages that carry no data, an agent card fetch and the plain MCP handshake messages, never reach the service: the gate
+lets them through without asking. No setting changes any of this yet.
+
+**`redacted_payload`.** The text the classifier judged, not the agent's bytes: for a tool call the canonical JSON of the
+arguments, for a body cut at `max_payload_bytes` the cut text, with its `…[truncated]` end. Each finding is replaced, and
+overlapping findings merge into one placeholder naming the first. It replaces findings and nothing else, so everything the
+classifier did not flag stays: field names, other values, where each finding sits. A reader of it learns what the classifier
+catches. It is text, not always JSON: a flagged bare number leaves `"quantity": [medical.codes]`. It is left out, and the verdict stands, when the request has no payload or it is not classified, when the stored payload is
+above 32 KiB, when a finding does not fit the text at its offsets, or when the text would be above 32 KiB JSON-encoded. A
+block with no findings of its own, reachable only with `RISK_INHERITED_LABELS=on`, sends the text unchanged with `labels` empty.
+It covers a `block` only: a gate that also denies another verdict gets no text for it.
 
 **What `decided` does not cover.** For a2a, mcp and inference, `input.value` is the parser's reduction of the body, not
 the body. What a parser leaves out of it no record judges, and no span fact says it was left out, so the service cannot
@@ -45,7 +56,8 @@ waiter cap, never a queue), 500 `verdict_unavailable` (the database did not answ
 `Authorization: Bearer <VERDICT_SECRET>` (constant-time compare). The process refuses to start without the secret;
 `dg.sh component install` creates Secret `dg-verdict-secret` when absent, and the manual steps create it by hand. The
 NetworkPolicy admits namespaces labelled `rossoctl-enabled=true` to this port; the full API stays platform-only. The
-secret identifies a gated sidecar, not a workload (issue #343).
+secret identifies a gated sidecar, not a workload (issue #343). So the secret also guards a block's `redacted_payload`, which keeps
+whatever the classifier did not flag.
 
 A gate reads the value from its own config or a mounted file (`verdict_secret`, `verdict_secret_file`), so it has to be
 copied into each gated namespace; nothing here does that. `dg.sh component uninstall` without `--keep-data` deletes the
