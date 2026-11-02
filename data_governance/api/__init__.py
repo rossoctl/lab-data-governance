@@ -392,7 +392,7 @@ async def _interactions_handler(request: Request) -> Response:
     interactions the processor materialised for a trace (parent identity row +
     nested request/response legs, computed ``duration_seconds`` / ``any_error``,
     span/anchor counts — ADR-0025), ordered by request-leg causal position.
-    ``leg_order`` gives the trace-wide request/response order (ADR-0034).
+    ``leg_order`` gives the trace-wide request/response order (ADR-0035).
     All that logic lives behind the **Interaction retrieval** seam; the handler
     only parses the id and encodes the result.
     """

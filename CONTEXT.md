@@ -288,7 +288,7 @@ A leg becomes actionable for a governance consumer only at **Leg readiness**
 The trace-local order of currently known **Interaction legs**: a parent's request
 precedes a child's request, each request precedes its own response, and occurrence
 time orders otherwise ready legs. Reconciliation can change this order while each
-leg's ingestion `seq` remains fixed (ADR-0034).
+leg's ingestion `seq` remains fixed (ADR-0035).
 _Avoid_: treating `seq` as the trace's execution step.
 
 **Leg provenance** (derived vs. observed):
@@ -313,7 +313,7 @@ from a single span. This varies by which P-interactions algorithm wrote the legs
   delegation the responding agent's wrapper span, distinct from the request's
   call-site span. Each leg's ingestion `seq` is its edge's `order` within this
   graph projection, preserving request-before-response and nested-call LIFO
-  order there; cross-service ordering is derived separately by ADR-0034. The parent stays oriented
+  order there; cross-service ordering is derived separately by ADR-0035. The parent stays oriented
   caller→callee (see "Interaction leg" — orientation is on the parent, not the
   leg); only the leg's timing/payload/error/`seq` are per-leg.
   A tool inferred solely from an LLM's message attributes has no observed tool

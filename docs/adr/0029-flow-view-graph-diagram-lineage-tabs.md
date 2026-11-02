@@ -35,7 +35,7 @@ ADR-0020 rejected a view with two specific properties. Neither holds here.
 - **"Redundant with the Interaction flow view."** The deleted graph drew entities as
   nodes and *interactions* as edges — the same caller→callee relation the flow tables
   already tabulate, restated as a canvas. The Execution Flow graph draws **legs** as
-  edges, tagged with their causal step (ADR-0034). That is not the tables' relation: ADR-0025 split each
+  edges, tagged with their causal step (ADR-0035). That is not the tables' relation: ADR-0025 split each
   interaction into request and response legs running in *opposite* directions, so an
   agent's data mostly arrives as the responses to its own calls. The per-leg,
   causally ordered picture is what makes a data path legible, and it is precisely what a

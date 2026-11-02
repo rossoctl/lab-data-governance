@@ -154,7 +154,7 @@ This is necessary to compute the lineage Of the payloads in the trace
 The numbered arrows below represent causal execution positions of interaction legs,
 not database `seq` values. A parent's request precedes its child's request, and a
 request precedes its own response. Otherwise ready legs follow occurrence time;
-`seq` is only a deterministic tie-breaker and ingestion cursor (ADR-0034).
+`seq` is only a deterministic tie-breaker and ingestion cursor (ADR-0035).
 
 consider the following examples (arrows identify interactions and payloads, numbers represent their causal leg order and nodes represent entities)
 

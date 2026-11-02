@@ -12,7 +12,7 @@ metadata**. This ADR records the intra-trace algorithm and the decisions that
 shaped it. The human-owned spec lives at `docs/data_lineage_alg.md`; this ADR
 captures the *why* and the settled boundaries.
 
-**Ordering amendment (issue #279):** ADR-0034 defines trace-local causal leg order.
+**Ordering amendment (issue #279):** ADR-0035 defines trace-local causal leg order.
 Older passages below describing `seq` as execution order record the former
 implementation; the current D1, D4, D6 and D15 rules use causal position while
 `seq` remains the durable ingestion cursor.
@@ -98,7 +98,7 @@ does not change in the traversal.
 
 ### D1 — "Prior" and inbound routing are structural, from the interaction legs
 
-Traversal is in **causal leg order, per trace** (ADR-0034). A payload is
+Traversal is in **causal leg order, per trace** (ADR-0035). A payload is
 **inbound to entity E** iff, in an earlier leg, E is the **callee** and the
 payload is the **request** leg, OR E is the **caller** and the payload is the **response**
 leg. That single rule generates `inbound(i)` from the interaction table —
@@ -211,7 +211,7 @@ lookup ("where did this content go / come from"), not as the primary key.
 ### D6 — Absent payload: positional prefix cutoff (interim)
 
 If a leg's `payload_hash` is absent, lineage is computed **up to that point
-only** — a positional prefix in trace-local causal order (ADR-0034). Processing
+only** — a positional prefix in trace-local causal order (ADR-0035). Processing
 stops at the first leg with an absent payload; legs before it in that order get
 lineage, and that leg and later ones get none. The trace's lineage is then marked
 **`partial`** (vs `complete`), recording the cutoff leg's ingestion `seq` as an
@@ -626,7 +626,7 @@ inconsistency rather than as two different facts.
 
 ### D13 — The drain needs a second, non-cursored arm to catch legs rewritten in place
 
-**Updated by ADR-0034.** The current drain has a third arm: a durable dirty-trace
+**Updated by ADR-0035.** The current drain has a third arm: a durable dirty-trace
 queue for parent, endpoint, leg timing and payload corrections, deletions, and the
 migration backfill. The staleness sweep described here remains for missing producer entities
 and as a repair path for older data; neither non-cursored arm rewinds `seq`.
@@ -802,7 +802,7 @@ D14 settled *what* the reads are and *which two tables* answer them; it delibera
 did not fix the edge rule. This records what the implementation had to decide, because
 each choice is one a later editor could plausibly reverse.
 
-**Ordering updated by ADR-0034.** The source-membership and per-leg direction
+**Ordering updated by ADR-0035.** The source-membership and per-leg direction
 rules below still apply. Every temporal comparison now uses the shared trace-local
 causal position. Numeric examples below illustrate positions in that order, not
 database ingestion `seq` values.
@@ -888,7 +888,7 @@ belongs to a leg has violated it, and the fix is to persist the attribution at i
 not to compute it here.
 
 **Clause 4: causal position governs eligibility AND order.** Data cannot flow
-backwards in the trace's derived leg order. The shared causal position (ADR-0034)
+backwards in the trace's derived leg order. The shared causal position (ADR-0035)
 *gates* which edges may be crossed and *orders* departures within an entity.
 `seq` remains the leg's durable ingestion cursor, so a late parent's larger `seq`
 must not exclude its earlier hop.

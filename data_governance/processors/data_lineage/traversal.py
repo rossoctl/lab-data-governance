@@ -21,7 +21,7 @@ and in the ADR-0025 schema each arrow is one leg: #1/#6 are the request/response
 legs of the user→agent interaction, #2/#3 of the first agent→llm call, #4/#5 of
 the second. The example's numbers denote execution positions, not the database's
 ingestion ``seq``. Each leg is ordered from its parent request, own request and
-occurrence time (ADR-0034), then processed once. The spec calls
+occurrence time (ADR-0035), then processed once. The spec calls
 ``merge_lineage`` at every one of #2-#6 (``:171-175``); selection is two-way, so the
 only question per leg is whether anything was inbound at all.
 

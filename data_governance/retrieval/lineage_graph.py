@@ -40,7 +40,7 @@ being quietly weakened by a walk sharing its file.
   not cross it even though some *other* source's content did.
 - **Clause 4 is causal scoping.** Data cannot flow backwards in the trace's derived
   leg order. Parent-request and own-request precedence override cross-service
-  clock disagreement, then occurrence time orders ready legs (ADR-0034). The
+  clock disagreement, then occurrence time orders ready legs (ADR-0035). The
   database ``seq`` remains an ingestion cursor and is returned as such; it cannot
   gate a lineage hop when a late parent has a larger ``seq`` than its child.
 - **Per-leg direction, never the interaction's caller->callee.** A response leg
@@ -237,7 +237,7 @@ class LineageGraphLegView:
     caller), which is the direction the walk actually followed.
 
     ``seq`` is the leg's own ingestion cursor value. The route list itself is
-    ordered by the trace's causal leg positions (ADR-0034).
+    ordered by the trace's causal leg positions (ADR-0035).
     """
 
     interaction_id: str
