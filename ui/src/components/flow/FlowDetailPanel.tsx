@@ -47,11 +47,13 @@ export function FlowDetailPanel({
     selection.requestPayloadHash && {
       label: 'Request',
       hash: selection.requestPayloadHash,
+      kind: selection.requestContentKind,
       lineage: lineageOfLeg(lineageQ, selection, 'request'),
     },
     selection.responsePayloadHash && {
       label: 'Response',
       hash: selection.responsePayloadHash,
+      kind: selection.responseContentKind,
       lineage: lineageOfLeg(lineageQ, selection, 'response'),
     },
   ].filter((l): l is Leg => Boolean(l));

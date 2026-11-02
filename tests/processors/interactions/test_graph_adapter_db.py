@@ -257,3 +257,42 @@ def test_persisted_leg_seq_is_globally_unique_and_matches_expected_order(
         (c.replace("_", "-"), e.replace("_", "-")) for c, e in EXPECTED_ORDER
     ]
     assert persisted_order == expected
+
+
+def test_graph_legs_carry_their_own_content_kind(configured_db: str) -> None:
+    """Issue #286: the graph adapter stamps each leg with the kind of ITS OWN
+    extraction, so a bodied leg carries a kind, a bodyless one carries NULL, and
+    two legs that share a content-addressed payload row each keep their own kind
+    (the row carries none)."""
+    trace_id = _load_into_db("travel_agent_II")
+    spans = _read_trace(trace_id)
+    rows = graph_adapter.adapt(extract(spans), spans)
+    _flush(rows, _sentinel(spans))
+
+    with db.transaction() as tx:
+        leg_rows = tx.fetch_all(
+            "SELECT l.interaction_id::text, l.leg_type::text, l.payload_hash, l.content_kind "
+            "FROM interaction_legs l JOIN interactions i ON i.id = l.interaction_id "
+            "WHERE i.trace_id = %s",
+            (trace_id,),
+        )
+        payload_cols = {
+            r[0] for r in tx.fetch_all(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'interaction_payloads'"
+            )
+        }
+
+    assert leg_rows
+    stored = {(iid, t): k for iid, t, _h, k in leg_rows}
+    # Every stored leg carries exactly the kind its own extraction produced
+    # (the adapter's per-leg rows) — never the first writer's, never a constant.
+    expected = {
+        (ix_id, leg.leg_type): leg.content_kind
+        for ix_id, legs in rows.legs_by_ix.items()
+        for leg in legs
+    }
+    assert stored == expected
+    assert sum(1 for k in stored.values() if k is not None) > 0
+    assert all(k is None for _iid, _t, h, k in leg_rows if h is None)
+    assert "content_kind" not in payload_cols

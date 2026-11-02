@@ -11,7 +11,8 @@ import {
   TabTitleText,
 } from '@patternfly/react-core';
 
-import { useInteractions, useEntities, useDataLineage } from '../api/hooks';
+import { useDataLineage } from '../api/hooks';
+import { useEntitiesAndInteractions } from '../api/live';
 import { fetchJson } from '../api/client';
 import {
   computeInteractionDepths,
@@ -221,8 +222,10 @@ export function FlowTables({
   lineageSource = null,
   onLineageSourceChange,
 }: FlowTablesProps) {
-  const interactionsQ = useInteractions(traceId);
-  const entitiesQ = useEntities(traceId);
+  // One reading of the two, so a live re-read never shows (or hands the Lineage
+  // tab) a half-updated trace — see `useEntitiesAndInteractions`.
+  const { entities, interactions, legOrder, entitiesQ, interactionsQ } =
+    useEntitiesAndInteractions(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
   // Persisted **Data lineage** for the whole trace (ADR-0028), read ONCE per
   // trace and keyed per leg — not per payload expansion. TanStack caches on
@@ -246,9 +249,6 @@ export function FlowTables({
   const selectedEntityId = selection?.kind === 'entity' ? selection.id : null;
   const selectedInteractionId = selection?.kind === 'interaction' ? selection.id : null;
 
-  const interactions = useMemo(() => interactionsQ.data?.interactions ?? [], [interactionsQ.data]);
-  const legOrder = useMemo(() => interactionsQ.data?.leg_order ?? [], [interactionsQ.data]);
-  const entities = useMemo(() => entitiesQ.data ?? [], [entitiesQ.data]);
   const entById = useMemo(() => {
     const m = new Map<string, Entity>();
     entities.forEach((e) => m.set(e.id, e));
@@ -394,6 +394,8 @@ export function FlowTables({
       pinLabel: ix.summary || ix.id,
       requestPayloadHash: reqLeg?.payload_hash ?? null,
       responsePayloadHash: respLeg?.payload_hash ?? null,
+      requestContentKind: reqLeg?.content_kind ?? null,
+      responseContentKind: respLeg?.content_kind ?? null,
     });
     onSelectionChange?.({ iid: ix.id });
   }
@@ -423,6 +425,8 @@ export function FlowTables({
       pinLabel: e.display_name || e.id,
       requestPayloadHash: null, // entities carry no payload
       responsePayloadHash: null,
+      requestContentKind: null,
+      responseContentKind: null,
     });
     onSelectionChange?.({ eid: e.id });
   }
@@ -578,7 +582,10 @@ export function FlowTables({
       <LineageCoverageAlert
         status={lineageQ.data?.status ?? null}
         stoppedAtSeq={lineageQ.data?.stoppedAtSeq ?? null}
-        isError={lineageQ.isError}
+        // `isLoadingError`, not `isError`: a failed BACKGROUND re-read (the page is
+        // live, ADR-0034) keeps the last answer, and the banner keeps quoting it.
+        // Only a read that never produced an answer is "unknown".
+        isError={lineageQ.isLoadingError}
         // The `isLoading` gate above covers the interactions/entities reads only,
         // so these tables are already on screen while the lineage read is in
         // flight. The banner needs to know that, or its silence claims complete
@@ -732,7 +739,7 @@ export function FlowTables({
               // leave two suppliers of one answer. The trace's `status` still comes
               // from this read, so the coverage banner and the tab quote one value.
               status={lineageQ.data?.status ?? null}
-              isLineageError={lineageQ.isError}
+              isLineageError={lineageQ.isLoadingError}
               selectedEntityId={selectedEntityId}
               // THE OTHER HALF OF THE QUESTION. The reachability read is
               // `fanin(entity, source)` / `fanout(entity, source)` with `source`

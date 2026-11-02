@@ -20,15 +20,13 @@ import psycopg
 from data_governance.processors.classification import driver, metrics
 
 
-def _insert_payload(
-    dsn: str, *, content_hash: str, content_kind: str = "unknown"
-) -> None:
+def _insert_payload(dsn: str, *, content_hash: str, content: str = "{}") -> None:
     with psycopg.connect(dsn) as conn:
         conn.execute(
             "INSERT INTO interaction_payloads "
-            "(content_hash, content_kind, content, byte_size) "
-            "VALUES (%s, %s, '{}'::jsonb, 2)",
-            (content_hash, content_kind),
+            "(content_hash, content, byte_size) "
+            "VALUES (%s, %s::jsonb, %s)",
+            (content_hash, content, len(content)),
         )
         conn.commit()
 
@@ -59,13 +57,13 @@ def test_projection_fallback_counter_is_registered() -> None:
 def test_unknown_kind_payload_increments_projection_fallback(
     configured_db: str,
 ) -> None:
-    """A payload whose **Content kind** is ``unknown`` has no **Text projection
-    rule** branch, so projection falls back to whole-JSONB serialization and the
+    """A payload whose ``content`` has no prose shape the **Text projection
+    rule** recognises falls back to whole-JSONB serialization and the
     projection-coverage counter increments (#81, CONTEXT.md Text projection
     rule)."""
     registry = metrics.make_registry()
 
-    _insert_payload(configured_db, content_hash="u0", content_kind="unknown")
+    _insert_payload(configured_db, content_hash="u0", content="{}")
 
     driver.drain(0)
 
@@ -78,13 +76,15 @@ def test_unknown_kind_payload_increments_projection_fallback(
 def test_projected_kind_payload_does_not_increment_fallback(
     configured_db: str,
 ) -> None:
-    """A payload whose **Content kind** has a projection branch is projected
-    directly, so the projection-coverage counter stays at 0 while the payload is
-    still classified (#81)."""
+    """A payload whose ``content`` has a prose projection (here the LLM message
+    envelope) is projected directly, so the projection-coverage counter stays at
+    0 while the payload is still classified (#81)."""
     registry = metrics.make_registry()
 
     _insert_payload(
-        configured_db, content_hash="p0", content_kind="llm_chat_prompt"
+        configured_db,
+        content_hash="p0",
+        content='{"messages": [{"message.role": "user", "message.content": "hi"}]}',
     )
 
     driver.drain(0)
@@ -93,21 +93,18 @@ def test_projected_kind_payload_does_not_increment_fallback(
     assert registry.get_sample_value("payloads_classified_total") == 1.0
 
 
-def test_unbranched_kind_payload_increments_projection_fallback(
+def test_structured_payload_increments_projection_fallback(
     configured_db: str,
 ) -> None:
-    """A payload whose **Content kind** exists but has no **Text projection rule**
-    branch (e.g. ``http_request_body`` — recognised by P-interactions but not yet
-    projected by P-classification) takes the whole-JSONB fallback and so DOES
-    increment the projection-coverage counter (#81, #78). This pins the counter to
-    the rule's *actual* fallback set (``projection.is_projectable``) rather than a
-    hand-maintained kind list — the earlier hardcoded set treated ``http_*`` /
-    ``agent_message`` as projectable and would have undercounted them."""
+    """A structured body that is not the message envelope (an http body, a
+    tool's JSON arguments) takes the whole-JSONB fallback and so DOES increment
+    the projection-coverage counter (#81, #78). This pins the counter to the
+    rule's *actual* fallback path (``projection.is_projectable``) rather than a
+    hand-maintained list; since #286 the rule is keyed on the content's shape,
+    never on a **Content kind** (the kind is the leg's, not the payload's)."""
     registry = metrics.make_registry()
 
-    _insert_payload(
-        configured_db, content_hash="h0", content_kind="http_request_body"
-    )
+    _insert_payload(configured_db, content_hash="h0", content='{"city": "Tokyo"}')
 
     driver.drain(0)
 

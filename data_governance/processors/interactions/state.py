@@ -73,13 +73,14 @@ LEG_READY_CHANNEL = "dg_interaction_leg_ready"
 # lower seq; ADR-0027 Reversal). See the Leg-provenance term in CONTEXT.md.
 
 
-def _legs_of(ix: procedure.Interaction) -> list[tuple[str, Any, str | None]]:
+def _legs_of(ix: procedure.Interaction) -> list[tuple[str, Any, str | None, str | None]]:
     """Forward projection: one interaction -> [(leg_type, occurred_at,
-    payload_hash), ...], request leg first. Both legs are always emitted so the
-    parent is never leg-less (ADR-0025)."""
+    payload_hash, content_kind), ...], request leg first. Both legs are always
+    emitted so the parent is never leg-less (ADR-0025). The kind is the leg's
+    own, from its extraction (issue #286)."""
     return [
-        ("request", ix.started_at, ix.request_payload_hash),
-        ("response", ix.ended_at, ix.response_payload_hash),
+        ("request", ix.started_at, ix.request_payload_hash, ix.request_content_kind),
+        ("response", ix.ended_at, ix.response_payload_hash, ix.response_content_kind),
     ]
 
 
@@ -351,16 +352,19 @@ def _rehydrate_derived(
         # ``procedure._materialise`` sets it at creation (``seq=primary_span.seq``)
         # — keeping the in-memory shape faithful without depending on a shared leg
         # seq that no longer exists.
+        # ``content_kind`` is read back too: it is the leg's own fact (issue
+        # #286) and the flush re-stamps every leg, so a rehydrated interaction
+        # that forgot it would write NULL over it on the next span.
         legrows = tx.fetch_all(
             f"SELECT interaction_id, leg_type::text, occurred_at, payload_hash, "
-            f"error FROM interaction_legs "
+            f"error, content_kind FROM interaction_legs "
             f"WHERE interaction_id IN ({iph})",
             list(visible_ix),
         )
         legs_by_ix: dict[str, dict[str, tuple]] = {}
-        for ix_id, leg_type, occurred_at, payload_hash, err in legrows:
+        for ix_id, leg_type, occurred_at, payload_hash, err, kind in legrows:
             legs_by_ix.setdefault(ix_id, {})[leg_type] = (
-                occurred_at, payload_hash, err,
+                occurred_at, payload_hash, err, kind,
             )
         for ix_id, tid, parent, caller, callee, summary in irows:
             primary_anchor = anchor_of.get(ix_id)
@@ -369,7 +373,7 @@ def _rehydrate_derived(
             legs = legs_by_ix.get(ix_id, {})
             req = legs.get("request")
             resp = legs.get("response")
-            err = (req or resp or (None, None, None))[2]
+            err = (req or resp or (None, None, None, None))[2]
             # ``Interaction.seq`` from the anchor span (as _materialise does).
             # The primary anchor span is in the loaded lineage (_span_by_id_index).
             anchor_span = proc._span_by_id_index.get(primary_anchor)
@@ -390,6 +394,8 @@ def _rehydrate_derived(
                 original_seq=seq,
                 anchor_rule="",
                 primary_anchor_span_id=primary_anchor,
+                request_content_kind=req[3] if req else None,
+                response_content_kind=resp[3] if resp else None,
             )
 
     # entity_spans for the lineage region (seq <= horizon) → entity_spans list.
@@ -512,9 +518,9 @@ def flush(
 
     for p in proc.payloads.values():
         tx.execute(
-            "INSERT INTO interaction_payloads (content_hash, content_kind, content, byte_size) "
-            "VALUES (%s, %s, %s::jsonb, %s) ON CONFLICT (content_hash) DO NOTHING",
-            (p.content_hash, p.content_kind, _json.dumps(p.content, default=str), p.byte_size),
+            "INSERT INTO interaction_payloads (content_hash, content, byte_size) "
+            "VALUES (%s, %s::jsonb, %s) ON CONFLICT (content_hash) DO NOTHING",
+            (p.content_hash, _json.dumps(p.content, default=str), p.byte_size),
         )
 
     # 3. interactions + interaction_legs (ADR-0025 boundary projection).
@@ -572,29 +578,32 @@ def flush(
             for leg in supplied:
                 tx.execute(
                     "INSERT INTO interaction_legs (interaction_id, leg_type, "
-                    "occurred_at, payload_hash, error, seq) "
-                    "VALUES (%s, %s, %s, %s, %s, %s) "
+                    "occurred_at, payload_hash, content_kind, error, seq) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                     "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
                     "occurred_at = EXCLUDED.occurred_at, "
                     "payload_hash = EXCLUDED.payload_hash, "
+                    "content_kind = EXCLUDED.content_kind, "
                     "error = EXCLUDED.error",
                     (ix.id, leg.leg_type, leg.occurred_at, leg.payload_hash,
-                     leg.error, leg.seq),
+                     leg.content_kind, leg.error, leg.seq),
                 )
         else:
             # occurred_at may be NULL if the span had no start/end yet; the
             # authoritative recompute (step 4b) folds the leg's territory in.
             # ``seq`` is intentionally omitted → DB-owned nextval DEFAULT.
-            for leg_type, occurred_at, payload_hash in _legs_of(ix):
+            for leg_type, occurred_at, payload_hash, content_kind in _legs_of(ix):
                 tx.execute(
                     "INSERT INTO interaction_legs (interaction_id, leg_type, "
-                    "occurred_at, payload_hash, error) "
-                    "VALUES (%s, %s, %s, %s, %s) "
+                    "occurred_at, payload_hash, content_kind, error) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) "
                     "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
                     "occurred_at = EXCLUDED.occurred_at, "
                     "payload_hash = EXCLUDED.payload_hash, "
+                    "content_kind = EXCLUDED.content_kind, "
                     "error = EXCLUDED.error",
-                    (ix.id, leg_type, occurred_at, payload_hash, ix.error),
+                    (ix.id, leg_type, occurred_at, payload_hash,
+                     content_kind, ix.error),
                 )
 
     # 4. interaction_spans — scoped to the span_ids _repair_after_arrival

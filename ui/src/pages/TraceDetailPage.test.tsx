@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor, waitForElementToBeRemoved, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, waitForElementToBeRemoved, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { renderWithProviders } from '../test/renderWithProviders';
@@ -1400,5 +1400,54 @@ describe('TraceDetailPage', () => {
     await waitFor(() => expect(screen.getByText('child-1')).toBeInTheDocument());
     // No spinner was ever shown for this path.
     expect(screen.queryByLabelText(/highlighting/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * THE PAGE IS LIVE (ADR-0034). jsdom has no EventSource, so the hook is off in every
+ * other test in this file and no label renders; here a stand-in stream drives it.
+ */
+describe('TraceDetailPage live label', () => {
+  class FakeEventSource {
+    static last: FakeEventSource | null = null;
+    onerror: ((e: Event) => void) | null = null;
+    private listeners = new Map<string, Set<(e: Event) => void>>();
+    constructor(public readonly url: string) {
+      FakeEventSource.last = this;
+    }
+    addEventListener(type: string, fn: (e: Event) => void) {
+      if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+      this.listeners.get(type)!.add(fn);
+    }
+    removeEventListener() {}
+    close() {}
+    change(id: string) {
+      this.listeners.get('change')?.forEach((fn) => fn(new MessageEvent('change', { lastEventId: id })));
+    }
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+    vi.stubGlobal('EventSource', FakeEventSource);
+    FakeEventSource.last = null;
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('opens the trace stream and shows Live, then Polling while the stream errors', async () => {
+    mockFetch();
+    renderWithProviders(harness(), { route: '/traces/T1/spans' });
+    await waitFor(() => expect(screen.getByRole('tab', { name: /Span tree/i })).toBeInTheDocument());
+    expect(screen.queryByTestId('live-mode')).toBeNull();
+    const es = FakeEventSource.last;
+    expect(es?.url).toBe('/api/traces/T1/events');
+
+    await act(async () => es!.change('v1'));
+    expect(screen.getByTestId('live-mode')).toHaveTextContent('Live');
+
+    await act(async () => es!.onerror?.(new Event('error')));
+    expect(screen.getByTestId('live-mode')).toHaveTextContent('Polling');
+
+    await act(async () => es!.change('v1'));
+    expect(screen.getByTestId('live-mode')).toHaveTextContent('Live');
   });
 });

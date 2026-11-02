@@ -12,9 +12,11 @@ import {
   Alert,
   Breadcrumb,
   BreadcrumbItem,
+  Label,
 } from '@patternfly/react-core';
 
 import { useTrace } from '../api/hooks';
+import { useTraceLive } from '../api/live';
 import { PinStore, colorForSlot } from '../lib/pins';
 import { fetchJson } from '../api/client';
 import { SpanTree, type SpanTreeHandle } from '../components/SpanTree';
@@ -134,8 +136,17 @@ export function TraceDetailPage() {
   const [isRevealing, setIsRevealing] = useState(false);
   const revealTokenRef = useRef(0);
 
-  const { data: entry, isLoading, isError } = useTrace(traceId);
+  // `isLoadingError`, not `isError`: once the page has a trace, a failed
+  // BACKGROUND re-read (the live stream below re-reads on every change) keeps the
+  // data it has and must not flip the whole page to "Trace not found".
+  const { data: entry, isLoading, isLoadingError } = useTrace(traceId);
   const root = entry?.listing_root ?? null;
+
+  // THE PAGE IS LIVE while it is open (ADR-0034): one subscription to the trace's
+  // change stream, owned here because liveness is a property of the page, not of
+  // a tab. Every view below keeps reading through its own query hooks; this only
+  // invalidates them when the trace's version token changes.
+  const live = useTraceLive(traceId);
 
   const selParam = searchParams.get('sel');
 
@@ -498,6 +509,24 @@ export function TraceDetailPage() {
 
       <Title headingLevel="h2" size="lg" style={{ marginTop: '0.5rem' }}>
         Trace detail
+        {/* The one visible fact about liveness: whether this page is on the
+            change stream or on its polling fallback. Not a control — there is no
+            way to switch it off, by design (ADR-0034). */}
+        {live !== 'off' && (
+          <Label
+            isCompact
+            color={live === 'stream' ? 'green' : 'gold'}
+            data-testid="live-mode"
+            style={{ marginLeft: '0.75rem', verticalAlign: 'middle' }}
+            title={
+              live === 'stream'
+                ? 'Updates arrive as the trace is derived'
+                : 'The change stream is down; re-reading every few seconds until it returns'
+            }
+          >
+            {live === 'stream' ? 'Live' : 'Polling'}
+          </Label>
+        )}
       </Title>
 
       <Tabs
@@ -559,7 +588,7 @@ export function TraceDetailPage() {
 
       {isLoading ? (
         <Spinner aria-label="Loading trace" />
-      ) : isError || !root ? (
+      ) : isLoadingError || !root ? (
         <Alert variant="warning" title="Trace not found" isInline>
           This trace has no spans (it may still be draining, or the id is wrong).
         </Alert>

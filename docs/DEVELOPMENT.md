@@ -98,6 +98,9 @@ preserved), making it read as just-arrived in the UI.
 sending (printing the new id), so re-loading a fixture you have already ingested
 reads as genuinely new data — a plain re-replay is a no-op because span upserts
 are finalization-only and the interactions cursor has already passed those seqs.
+Ids a span names inside itself (`lineage.exchange.id`, links, event attributes,
+a `tracestate` member such as `lineage-parent` on an application's own spans)
+follow the rewrite, so the copy is a trace the producers could have emitted.
 
 Takes a full path, `*.json` path, or bare stem. Override the target with
 `--endpoint` (gRPC wants a bare `host:port`, HTTP wants a full URL):

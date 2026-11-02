@@ -22,7 +22,9 @@ direction)` single-table shape:
   leg_type)` with `leg_type ∈ {request, response}`, holding the leg-dependent
   fields: `occurred_at`, `payload_hash`, `error`, `seq`. (As accepted this also listed
   `original_seq`; migration `0011_drop_leg_original_seq` removed it — issue #133, and
-  see the note under *Per-leg `seq`* below.)
+  see the note under *Per-leg `seq`* below. Migration `0022_content_kind_on_legs`
+  added `content_kind` — the role the leg's body played, moved off the shared
+  payload row; issue #286.)
 
 ## Why two tables instead of `(id, direction)`
 

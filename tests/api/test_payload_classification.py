@@ -34,8 +34,8 @@ def _base_url(server: SpansApiServer) -> str:
 def _insert_payload(conn: psycopg.Connection, *, content_hash: str) -> None:
     conn.execute(
         "INSERT INTO interaction_payloads "
-        "(content_hash, content_kind, content, byte_size) "
-        "VALUES (%s, 'unknown', '{}'::jsonb, 2)",
+        "(content_hash, content, byte_size) "
+        "VALUES (%s, '{}'::jsonb, 2)",
         (content_hash,),
     )
 
@@ -131,13 +131,14 @@ def test_payload_still_carries_its_own_fields_alongside_classification(
     api_server, configured_db
 ):
     """The classification field is additive — the payload's own fields
-    (content_hash, content_kind, content, byte_size) are unchanged."""
+    (content_hash, content, byte_size) are unchanged. No content_kind: the
+    payload resource is bytes-only, the kind is the leg's (#286)."""
     with psycopg.connect(configured_db) as conn:
         _insert_payload(conn, content_hash="both")
         conn.commit()
 
     body = httpx.get(f"{_base_url(api_server)}/api/payloads/both").json()
     assert body["content_hash"] == "both"
-    assert body["content_kind"] == "unknown"
+    assert "content_kind" not in body
     assert body["byte_size"] == 2
     assert body["classification"] is None

@@ -80,7 +80,8 @@ def insert_span(configured_db: str):
 @pytest.fixture()
 def api_server(configured_db: str) -> Iterator[SpansApiServer]:
     port = _free_port()
-    server = SpansApiServer(host="127.0.0.1", port=port)
+    # The change hub listens on the same DB the reads use (ADR-0034).
+    server = SpansApiServer(host="127.0.0.1", port=port, listen_dsn=configured_db)
     server.start()
     try:
         _wait_port("127.0.0.1", port)

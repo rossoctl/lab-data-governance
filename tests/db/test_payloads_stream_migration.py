@@ -95,8 +95,8 @@ def _insert_payload(conn: psycopg.Connection, *, content_hash: str) -> None:
     omit ``seq`` so the DEFAULT allocates it."""
     conn.execute(
         "INSERT INTO interaction_payloads "
-        "(content_hash, content_kind, content, byte_size) "
-        "VALUES (%s, 'unknown', '{}'::jsonb, 2)",
+        "(content_hash, content, byte_size) "
+        "VALUES (%s, '{}'::jsonb, 2)",
         (content_hash,),
     )
 
@@ -140,8 +140,8 @@ def test_insert_allocates_monotonic_seq(migrated_dsn: str) -> None:
         for content_hash in ("h2", "h1", "h0"):
             (seq,) = conn.execute(
                 "INSERT INTO interaction_payloads "
-                "(content_hash, content_kind, content, byte_size) "
-                "VALUES (%s, 'unknown', '{}'::jsonb, 2) RETURNING seq",
+                "(content_hash, content, byte_size) "
+                "VALUES (%s, '{}'::jsonb, 2) RETURNING seq",
                 (content_hash,),
             ).fetchone()
             allocated.append(seq)
@@ -199,8 +199,8 @@ def test_seq_does_not_advance_on_conflict_do_nothing(migrated_dsn: str) -> None:
     with psycopg.connect(migrated_dsn) as conn:
         conn.execute(
             "INSERT INTO interaction_payloads "
-            "(content_hash, content_kind, content, byte_size) "
-            "VALUES ('c0', 'unknown', '{}'::jsonb, 2)"
+            "(content_hash, content, byte_size) "
+            "VALUES ('c0', '{}'::jsonb, 2)"
         )
         (first_seq,) = conn.execute(
             "SELECT seq FROM interaction_payloads WHERE content_hash = 'c0'"
@@ -208,8 +208,8 @@ def test_seq_does_not_advance_on_conflict_do_nothing(migrated_dsn: str) -> None:
         # Re-ingest the same content-addressed body (the dedup case).
         conn.execute(
             "INSERT INTO interaction_payloads "
-            "(content_hash, content_kind, content, byte_size) "
-            "VALUES ('c0', 'unknown', '{}'::jsonb, 2) "
+            "(content_hash, content, byte_size) "
+            "VALUES ('c0', '{}'::jsonb, 2) "
             "ON CONFLICT (content_hash) DO NOTHING"
         )
         (second_seq,) = conn.execute(

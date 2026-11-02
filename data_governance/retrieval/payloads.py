@@ -45,11 +45,12 @@ class ClassificationView:
 class PayloadView:
     """A content-addressed **Payload** with its inline nullable
     **Classification**. ``classification`` is ``None`` in the
-    eventual-consistency window before P-classification has run.
+    eventual-consistency window before P-classification has run. Bytes only:
+    the **Content kind** is the referencing leg's (``InteractionLegView``),
+    not the payload's (issue #286).
     """
 
     content_hash: str
-    content_kind: str
     content: Any
     byte_size: int
     classification: ClassificationView | None
@@ -83,7 +84,7 @@ def get_payload(content_hash: str) -> PayloadView | None:
     """
     with db.transaction() as tx:
         row = tx.fetch_one(
-            "SELECT p.content_hash, p.content_kind, p.content, p.byte_size, "
+            "SELECT p.content_hash, p.content, p.byte_size, "
             "       c.sensitivity_level, c.regulatory_tags, "
             "       c.contains_identity_bundle, c.is_personalized, "
             "       c.primary_domain, c.findings, c.model_version "
@@ -97,8 +98,7 @@ def get_payload(content_hash: str) -> PayloadView | None:
             return None
         return PayloadView(
             content_hash=row[0],
-            content_kind=row[1],
-            content=row[2],
-            byte_size=row[3],
-            classification=_classification_view(row[4:]),
+            content=row[1],
+            byte_size=row[2],
+            classification=_classification_view(row[3:]),
         )

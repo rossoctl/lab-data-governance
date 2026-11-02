@@ -80,6 +80,7 @@ class LegRow:
     payload_hash: str | None
     error: bool | None
     seq: int  # the edge's global execution ordinal (`order`) — request < its response
+    content_kind: str | None = None  # the role this leg's body played (issue #286)
 
 
 @dataclasses.dataclass
@@ -465,6 +466,8 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         anchor_span_id: str
         req: str | None
         resp: str | None
+        req_kind: str | None
+        resp_kind: str | None
 
     # Directed edges grouped by unordered entity pair, so request/response of one
     # call meet. `entity_pair -> [_Leg sorted by order]`.
@@ -486,6 +489,8 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
                 anchor_span_id=anchor.span_id,
                 req=_ensure_payload(pi.request_payload_hash),
                 resp=_ensure_payload(pi.response_payload_hash),
+                req_kind=pi.request_content_kind,
+                resp_kind=pi.response_content_kind,
             )
         )
 
@@ -590,6 +595,8 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
                 error=error,
                 request_payload_hash=req_hash,
                 response_payload_hash=resp_hash,
+                request_content_kind=req_leg.req_kind if req_leg is not None else None,
+                response_content_kind=resp_leg.resp_kind if resp_leg is not None else None,
                 summary=primary.pi.summary,
                 seq=seq,
                 original_seq=seq,
@@ -642,6 +649,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
                         else req_leg.pi.started_at
                     ),
                     payload_hash=req_hash,
+                    content_kind=req_leg.req_kind,
                     error=req_leg.pi.error,
                     seq=req_leg.pi.order,
                 )
@@ -655,6 +663,7 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
                         else resp_leg.pi.ended_at
                     ),
                     payload_hash=resp_hash,
+                    content_kind=resp_leg.resp_kind,
                     error=resp_leg.pi.error,
                     seq=resp_leg.pi.order,
                 )

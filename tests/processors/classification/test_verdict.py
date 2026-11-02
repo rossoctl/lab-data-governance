@@ -26,7 +26,7 @@ def test_default_detector_yields_a_real_public_zero_finding_verdict() -> None:
     zero-**Findings** verdict — never a null (ADR-0024) — even though the content
     projects to real prose. model_version stays 1 until #79 bumps it."""
     content = {"messages": [{"message.role": "user", "message.content": "Book me a flight."}]}
-    v = verdict.classify("h0", "llm_chat_prompt", content)
+    v = verdict.classify("h0", content)
 
     assert v.sensitivity_level == "PUBLIC"
     assert v.findings == []
@@ -41,7 +41,7 @@ def test_empty_payload_is_a_real_public_verdict() -> None:
     """A payload with no projectable text is still classified — a real clean
     verdict, not a null and not a skip (ADR-0024: null means only 'not yet
     processed')."""
-    v = verdict.classify("empty", "unknown", {})
+    v = verdict.classify("empty", {})
     assert v.sensitivity_level == "PUBLIC"
     assert v.findings == []
 
@@ -58,7 +58,7 @@ def test_injected_detector_drives_a_real_non_public_verdict() -> None:
             # Offsets into the projected Classifiable text ("John Smith 123-45-6789").
             return [(0, 10, "PN"), (11, 22, "SSN")]
 
-    v = verdict.classify("h1", "llm_chat_prompt", content, detector=FakeDetector())
+    v = verdict.classify("h1", content, detector=FakeDetector())
 
     assert v.sensitivity_level == "RESTRICTED"
     assert v.contains_identity_bundle is True
@@ -81,6 +81,6 @@ def test_findings_offsets_index_the_projected_text_not_the_jsonb() -> None:
             assert text == "email jane@doe.org"  # projection ran before detection
             return [(6, 18, "EMAIL")]
 
-    v = verdict.classify("h2", "llm_chat_prompt", content, detector=FakeDetector())
+    v = verdict.classify("h2", content, detector=FakeDetector())
     assert v.sensitivity_level == "CONFIDENTIAL"
     assert v.findings[0]["text"] == "jane@doe.org"

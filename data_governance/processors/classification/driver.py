@@ -70,12 +70,12 @@ _DRAIN_BATCH = 500
 @dataclasses.dataclass(frozen=True)
 class Payload:
     """One row of the ``interaction_payloads`` stream, as P-classification reads
-    it: the content-addressed key, its **Content kind**, the JSONB ``content``
-    the classifier projects into **Classifiable text**, and the ``seq`` the loop
-    advances the cursor by."""
+    it: the content-addressed key, the JSONB ``content`` the classifier projects
+    into **Classifiable text**, and the ``seq`` the loop advances the cursor by.
+    No **Content kind**: that is a property of each leg that references the
+    bytes, not of the bytes (issue #286), and the verdict does not depend on it."""
 
     content_hash: str
-    content_kind: str
     content: object
     seq: int
 
@@ -111,21 +111,19 @@ def process_payload(
     commit atomically (ADR-0007).
     """
     # Projection-coverage signal (issue #81). Count a fallback exactly when the
-    # **Text projection rule** has no branch for this payload's **Content kind**
-    # (``unknown`` or any unbranched kind), so projection falls back to whole-JSONB
-    # serialization (CONTEXT.md **Text projection rule**). Keyed off the rule's
-    # own branch set via :func:`projection.is_projectable` — the single source of
-    # truth — so the counter tracks the *actual* fallback path and cannot drift
-    # from it: #78's real projection folded this hook onto the rule (issue #81
-    # planned exactly this), and adding a branch later moves projection and its
-    # coverage counter together. ``metrics`` is referenced as a module global so a
-    # test's metrics.make_registry() rebind is picked up.
-    if not projection.is_projectable(payload.content_kind):
+    # **Text projection rule** recognises no prose shape in this payload's
+    # ``content`` and serialises the whole JSONB instead (CONTEXT.md **Text
+    # projection rule**). Keyed off the rule's own shape test via
+    # :func:`projection.is_projectable` — the single source of truth — so the
+    # counter tracks the *actual* fallback path and cannot drift from it; adding
+    # a shape later moves projection and its coverage counter together.
+    # ``metrics`` is referenced as a module global so a test's
+    # metrics.make_registry() rebind is picked up.
+    if not projection.is_projectable(payload.content):
         metrics.projection_fallbacks_total.inc()
 
     v = verdict.classify(
         payload.content_hash,
-        payload.content_kind,
         payload.content,
         detector=detector,
         model_version=model_version,
@@ -167,14 +165,11 @@ def process_payload(
 
 def _fetch_batch(tx: db.Transaction, cursor: int, limit: int) -> list[Payload]:
     rows = tx.fetch_all(
-        "SELECT content_hash, content_kind, content, seq "
+        "SELECT content_hash, content, seq "
         "FROM interaction_payloads WHERE seq > %s ORDER BY seq ASC LIMIT %s",
         (cursor, limit),
     )
-    return [
-        Payload(content_hash=r[0], content_kind=r[1], content=r[2], seq=int(r[3]))
-        for r in rows
-    ]
+    return [Payload(content_hash=r[0], content=r[1], seq=int(r[2])) for r in rows]
 
 
 def _spec(
