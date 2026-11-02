@@ -97,6 +97,13 @@ if [[ "${REUSE_CLASSIFICATION}" -eq 1 ]]; then
         echo "error: --reuse-classification requires ${CLASSIFICATION_IMAGE} in the local ${CONTAINER_TOOL} image cache" >&2
         exit 2
     fi
+    # The verdict service runs from this image too, so an image built before it
+    # would leave its pods crash-looping.
+    if ! "${CONTAINER_TOOL}" run --rm --entrypoint python "${CACHED_CLASSIFICATION_IMAGE}" \
+            -c 'import data_governance.risk.api.verdict_app' >/dev/null 2>&1; then
+        echo "error: the cached ${CACHED_CLASSIFICATION_IMAGE} has no verdict service; rebuild it (drop --reuse-classification)" >&2
+        exit 2
+    fi
 fi
 
 # Refresh uv.lock to match pyproject.toml BEFORE either build. Both Containerfiles
@@ -198,5 +205,7 @@ Done. These tags are present in the '${KIND_CLUSTER}' Kind cluster:
 
 Next:
   kubectl apply -f ${REPO_ROOT#${PWD}/}/deploy/k8s/
+  # once: the verdict service does not start without its bearer
+  kubectl -n data-governance create secret generic dg-verdict-secret --from-literal=secret="\$(openssl rand -hex 32)"
 
 EOF

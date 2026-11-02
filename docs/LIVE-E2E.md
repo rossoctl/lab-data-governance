@@ -105,6 +105,7 @@ accepted. These are the repo's own install steps (`docs/RISK-E2E-REPRODUCE.md` Â
 CONTAINER_TOOL=podman deploy/build-and-load.sh
 deploy/patch-rossoctl-collector.sh                      # idempotent: the traces/data_governance pipeline
 kubectl apply -f deploy/k8s/
+kubectl -n data-governance get secret dg-verdict-secret >/dev/null 2>&1 || kubectl -n data-governance create secret generic dg-verdict-secret --from-literal=secret="$(openssl rand -hex 32)"   # the verdict service's bearer
 deploy/create-opa-configmap.sh                          # the shipped catalog
 kubectl -n data-governance rollout restart deploy --selector app.kubernetes.io/part-of=data-governance   # includes opa
 kubectl -n data-governance rollout status deploy --selector app.kubernetes.io/part-of=data-governance --timeout=300s

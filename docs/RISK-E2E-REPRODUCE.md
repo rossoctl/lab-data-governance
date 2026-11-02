@@ -59,6 +59,9 @@ git switch risk
 # Apply the manifests (includes leg-ready, the risk trace trigger, and OPA):
 kubectl apply -f deploy/k8s/
 
+# The verdict service's bearer (it does not start without one):
+kubectl -n data-governance get secret dg-verdict-secret >/dev/null 2>&1 || kubectl -n data-governance create secret generic dg-verdict-secret --from-literal=secret="$(openssl rand -hex 32)"
+
 # Ship the COMPILED policy bundle to OPA and (re)start it:
 ./deploy/create-opa-configmap.sh
 kubectl -n data-governance rollout restart deploy/opa
