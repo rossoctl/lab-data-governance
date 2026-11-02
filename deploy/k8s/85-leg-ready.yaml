@@ -139,6 +139,13 @@ spec:
             # a stopped label-lineage pod holds this stream (by design).
             - name: RISK_INHERITED_LABELS
               value: "off"
+            # Priority decision: an interaction the verdict service names on
+            # dg_priority_decision (a Sentry gate waits on it) is computed as soon
+            # as its request leg is ready, out of seq order, in a turn shared
+            # with the cursor arm. "off" leaves the cursor arm alone; a lost
+            # notify only costs latency (processors/leg_ready/priority_decision.py).
+            - name: LEG_READY_PRIORITY_DECISION
+              value: "on"
           # No ports / no Service (metrics on 9094 stay in-pod); no probes —
           # no HTTP serving surface, k8s restarts on process exit.
           resources:
