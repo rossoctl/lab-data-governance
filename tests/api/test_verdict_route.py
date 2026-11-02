@@ -174,9 +174,9 @@ def test_existing_record_answers_at_once(serve, configured_db) -> None:
     body = r.json()
     assert body["state"] == "decided"
     assert body["verdict"] == "block"
-    assert body["interaction_id"] == _IID
+    assert body["exchange_id"] == _EXCHANGE
     assert body["version"] == 1
-    assert sorted(body) == ["interaction_id", "state", "verdict", "version", "waited_ms"], "the verdict, nothing about what was caught"
+    assert sorted(body) == ["exchange_id", "state", "verdict", "version", "waited_ms"], "the verdict, nothing about what was caught"
 
 
 def test_no_record_waits_then_pending(serve) -> None:
@@ -272,7 +272,7 @@ def test_a_body_the_sidecar_did_not_emit_is_unjudged_at_once(serve, configured_d
     assert body["state"] == "unjudged"
     assert body["reason"] == "body_not_captured"
     assert body["verdict"] == "allow", "the record's verdict, as it is"
-    assert sorted(body) == ["interaction_id", "reason", "state", "verdict", "version", "waited_ms"]
+    assert sorted(body) == ["exchange_id", "reason", "state", "verdict", "version", "waited_ms"]
 
 
 def test_a_body_with_no_size_fact_is_unjudged(serve, configured_db) -> None:
