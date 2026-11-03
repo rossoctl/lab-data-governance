@@ -11,14 +11,21 @@ downstream request before the request that caused it and derive false lineage.
 
 For every trace read, build one order from the currently known interaction legs.
 A parent's request precedes each child's request, and a request precedes its own
-response when both are present. Among legs ready under those constraints, prefer
-`occurred_at`, then use `seq` and the leg key for deterministic ties. Missing
-parents, legs and times leave only the constraints supported by current evidence.
-Invalid parent cycles are broken deterministically without dropping legs: only the
-earliest leg on a cycle that no other remaining leg constrains is released, so a valid
-child of a cycle member still follows its parent's request, and a self-parent
-constrains nothing. A parent response need not wait for a child response because calls can finish
-asynchronously. The shared backend rule supplies the trace interactions API's
+response when both are present. A child's response precedes its parent's response,
+because a synchronous caller answers only after its callee has. The one exception is
+a clearly asynchronous parent: both response times are known and the parent's is
+earlier than the child's by more than a clock-skew tolerance of one second. Leg times
+come from different pods' clocks and from span ends that each SDK closes at its own
+point, so a synchronous parent can appear to answer a few milliseconds early; a parent
+that genuinely finished first is apart by far more. An unknown time is not evidence of
+asynchrony, so the child response still comes first. Among legs ready under those
+constraints, prefer `occurred_at`, then use `seq` and the leg key for deterministic
+ties. Missing parents, legs and times leave only the constraints supported by current
+evidence; in particular, a child still in flight never holds its parent's response
+back. Invalid parent cycles are broken deterministically without dropping legs: only
+the earliest leg on a cycle that no other remaining leg constrains is released, so a
+valid child of a cycle member still follows its parent's request, and a self-parent
+constrains nothing. The shared backend rule supplies the trace interactions API's
 `leg_order`, lineage derivation, lineage leg reads and lineage graph hop positions.
 UI tables and diagrams use that API order and display one-based causal steps.
 

@@ -14,6 +14,16 @@ import heapq
 from dataclasses import dataclass
 from collections.abc import Iterable, Iterator
 
+#: How far a parent's response may be timed before its child's response and
+#: still be read as the synchronous return that waited for it. Leg times come
+#: from different pods' clocks and from span ends that each SDK closes at its
+#: own point after the bytes leave, so a synchronous caller can appear to answer
+#: a few milliseconds before its callee. Cross-pod skew plus that jitter stays
+#: well inside one second, while a parent that genuinely finished first (a
+#: fire-and-forget delegation or a stream it stopped waiting on) is apart from
+#: the child's response by far more than that.
+CLOCK_SKEW_TOLERANCE = dt.timedelta(seconds=1)
+
 
 @dataclass(frozen=True, slots=True)
 class LegOrderKey:
@@ -34,17 +44,23 @@ class LegOrderEvent:
         return LegOrderKey(self.interaction_id, self.leg_type)
 
 
-def _priority(event: LegOrderEvent) -> tuple[bool, dt.datetime, int, str, str]:
-    occurred_at = event.occurred_at
+def _utc(occurred_at: dt.datetime | str | None) -> dt.datetime | None:
+    """A leg time as an aware UTC datetime: ISO strings are parsed, naive values
+    are UTC, and an unparseable string is an unknown time."""
     if isinstance(occurred_at, str):
         try:
             occurred_at = dt.datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
         except ValueError:
-            occurred_at = None
-    if occurred_at is not None:
-        if occurred_at.tzinfo is None:
-            occurred_at = occurred_at.replace(tzinfo=dt.timezone.utc)
-        occurred_at = occurred_at.astimezone(dt.timezone.utc)
+            return None
+    if occurred_at is None:
+        return None
+    if occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=dt.timezone.utc)
+    return occurred_at.astimezone(dt.timezone.utc)
+
+
+def _priority(event: LegOrderEvent) -> tuple[bool, dt.datetime, int, str, str]:
+    occurred_at = _utc(event.occurred_at)
     return (
         occurred_at is None,
         occurred_at or dt.datetime.max.replace(tzinfo=dt.timezone.utc),
@@ -54,16 +70,31 @@ def _priority(event: LegOrderEvent) -> tuple[bool, dt.datetime, int, str, str]:
     )
 
 
+def _clearly_asynchronous(child_response: LegOrderEvent, parent_response: LegOrderEvent) -> bool:
+    """Whether both response times are known and the parent answered more than
+    :data:`CLOCK_SKEW_TOLERANCE` before its child did."""
+    child_at = _utc(child_response.occurred_at)
+    parent_at = _utc(parent_response.occurred_at)
+    return (
+        child_at is not None
+        and parent_at is not None
+        and child_at - parent_at > CLOCK_SKEW_TOLERANCE
+    )
+
+
 def order_legs(events: Iterable[LegOrderEvent]) -> list[LegOrderKey]:
     """Order every known leg once, even with missing parents, times or bad cycles.
 
     A parent request precedes each child request; a call's request precedes its
-    response. No child-response/parent-response constraint is invented, since an
-    asynchronous parent may finish first. Among currently unconstrained legs,
-    the earliest occurrence wins. ``seq`` is only a deterministic tie-breaker.
-    If invalid parent links form a cycle, the earliest leg on a cycle that
-    nothing outside it still constrains is released first; a self-parent
-    constrains nothing.
+    response. A child's response precedes its parent's response, unless both
+    times are known and the parent answered more than
+    :data:`CLOCK_SKEW_TOLERANCE` earlier, which only an asynchronous parent does.
+    Each constraint applies only between legs that are both present, so a child
+    still in flight never holds its parent's response back. Among currently
+    unconstrained legs, the earliest occurrence wins. ``seq`` is only a
+    deterministic tie-breaker. If invalid parent links form a cycle, the
+    earliest leg on a cycle that nothing outside it still constrains is released
+    first; a self-parent constrains nothing.
     """
     by_key = {event.key: event for event in events}
     followers: dict[LegOrderKey, set[LegOrderKey]] = {key: set() for key in by_key}
@@ -82,12 +113,19 @@ def order_legs(events: Iterable[LegOrderEvent]) -> list[LegOrderKey]:
             indegree[after] += 1
 
     for event in by_key.values():
-        if event.leg_type == "request" and event.parent_interaction_id:
-            precedes(
-                LegOrderKey(event.parent_interaction_id, "request"), event.key
-            )
-        if event.leg_type == "response":
-            precedes(LegOrderKey(event.interaction_id, "request"), event.key)
+        parent = event.parent_interaction_id
+        if event.leg_type == "request":
+            if parent:
+                precedes(LegOrderKey(parent, "request"), event.key)
+            continue
+        if event.leg_type != "response":
+            continue
+        precedes(LegOrderKey(event.interaction_id, "request"), event.key)
+        parent_response = by_key.get(LegOrderKey(parent, "response")) if parent else None
+        if parent_response is not None and not _clearly_asynchronous(
+            event, parent_response
+        ):
+            precedes(event.key, parent_response.key)
 
     ready = [(_priority(by_key[key]), key) for key, degree in indegree.items() if degree == 0]
     heapq.heapify(ready)

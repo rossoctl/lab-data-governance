@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import random
 from itertools import permutations
 
-from data_governance.interaction_order import LegOrderEvent, LegOrderKey, order_legs
+from data_governance.interaction_order import (
+    CLOCK_SKEW_TOLERANCE,
+    LegOrderEvent,
+    LegOrderKey,
+    order_legs,
+)
 
 
 def _event(
@@ -80,6 +86,138 @@ def test_invalid_parent_cycle_has_a_deterministic_complete_order() -> None:
         assert result.index(LegOrderKey("a", "request")) < result.index(
             LegOrderKey("a", "response")
         )
+
+
+# --- a child's response precedes its parent's, unless clearly asynchronous ---
+
+_T0 = dt.datetime(2026, 11, 2, 13, 0, 20, tzinfo=dt.timezone.utc)
+
+
+def _at(milliseconds: int | None) -> dt.datetime | None:
+    return None if milliseconds is None else _T0 + dt.timedelta(milliseconds=milliseconds)
+
+
+def _nested_call(child_response_ms: int | None, parent_response_ms: int | None) -> list[LegOrderEvent]:
+    """Parent P delegates to child K; only the two response times vary."""
+    return [
+        LegOrderEvent("P", "request", None, _at(0), 1),
+        LegOrderEvent("K", "request", "P", _at(10), 2),
+        LegOrderEvent("K", "response", "P", _at(child_response_ms), 3),
+        LegOrderEvent("P", "response", None, _at(parent_response_ms), 4),
+    ]
+
+
+_SYNCHRONOUS = [
+    ("P", "request"), ("K", "request"), ("K", "response"), ("P", "response"),
+]
+_TOLERANCE_MS = CLOCK_SKEW_TOLERANCE // dt.timedelta(milliseconds=1)
+
+
+def test_the_clock_skew_tolerance_is_one_second() -> None:
+    assert CLOCK_SKEW_TOLERANCE == dt.timedelta(seconds=1)
+
+
+def test_child_response_precedes_parent_response_within_callee_clock_skew() -> None:
+    # The callee's clock stamps its response 5 ms after the caller's response.
+    assert _assert_order_independent(_nested_call(105, 100)) == _SYNCHRONOUS
+
+
+def test_child_response_precedes_parent_response_at_exactly_the_tolerance() -> None:
+    events = _nested_call(100 + _TOLERANCE_MS, 100)
+    assert _assert_order_independent(events) == _SYNCHRONOUS
+
+
+def test_parent_response_may_precede_a_child_response_beyond_the_tolerance() -> None:
+    events = _nested_call(100 + _TOLERANCE_MS + 1, 100)
+    assert _assert_order_independent(events) == [
+        ("P", "request"), ("K", "request"), ("P", "response"), ("K", "response"),
+    ]
+
+
+def test_an_untimed_child_response_precedes_its_parent_response() -> None:
+    assert _assert_order_independent(_nested_call(None, 100)) == _SYNCHRONOUS
+
+
+def test_an_untimed_parent_response_follows_its_child_response() -> None:
+    # Untimed legs sort after timed ones and then by seq, which here would put
+    # P's response (seq 3) before K's untimed request and its response.
+    events = [
+        LegOrderEvent("P", "request", None, _at(0), 1),
+        LegOrderEvent("K", "request", "P", None, 5),
+        LegOrderEvent("K", "response", "P", _at(50), 6),
+        LegOrderEvent("P", "response", None, None, 3),
+    ]
+    assert _assert_order_independent(events) == _SYNCHRONOUS
+
+
+def test_untimed_responses_put_the_child_response_first_despite_seq() -> None:
+    events = [
+        LegOrderEvent("P", "request", None, _at(0), 1),
+        LegOrderEvent("K", "request", "P", _at(10), 2),
+        LegOrderEvent("K", "response", "P", None, 4),
+        LegOrderEvent("P", "response", None, None, 3),
+    ]
+    assert _assert_order_independent(events) == _SYNCHRONOUS
+
+
+def test_child_response_rule_compares_times_across_representations() -> None:
+    # Naive datetimes and offset-free strings are UTC, as they are for ordering.
+    naive_child = (_T0 + dt.timedelta(milliseconds=105)).replace(tzinfo=None)
+    zulu_parent = (_T0 + dt.timedelta(milliseconds=100)).isoformat().replace("+00:00", "Z")
+    events = _nested_call(0, 0)
+    events[2] = dataclasses.replace(events[2], occurred_at=naive_child)
+    events[3] = dataclasses.replace(events[3], occurred_at=zulu_parent)
+    assert _assert_order_independent(events) == _SYNCHRONOUS
+    paris = dt.timezone(dt.timedelta(hours=1))
+    events[2] = dataclasses.replace(
+        events[2], occurred_at=(_T0 + dt.timedelta(milliseconds=2000)).astimezone(paris)
+    )
+    assert _assert_order_independent(events) == [
+        ("P", "request"), ("K", "request"), ("P", "response"), ("K", "response"),
+    ]
+
+
+def test_child_response_rule_chains_through_a_grandchild() -> None:
+    events = [
+        LegOrderEvent("P", "request", None, _at(0), 1),
+        LegOrderEvent("K", "request", "P", _at(10), 2),
+        LegOrderEvent("G", "request", "K", _at(20), 3),
+        LegOrderEvent("G", "response", "K", _at(130), 4),
+        LegOrderEvent("K", "response", "P", _at(120), 5),
+        LegOrderEvent("P", "response", None, _at(110), 6),
+    ]
+    assert _assert_order_independent(events) == [
+        ("P", "request"), ("K", "request"), ("G", "request"),
+        ("G", "response"), ("K", "response"), ("P", "response"),
+    ]
+
+
+def test_an_in_flight_child_does_not_hold_back_its_parent_response() -> None:
+    # K has no response yet. P's response is still placed by its own time,
+    # before a later unrelated request, rather than waiting for K.
+    events = [
+        LegOrderEvent("P", "request", None, _at(0), 1),
+        LegOrderEvent("K", "request", "P", _at(10), 2),
+        LegOrderEvent("P", "response", None, _at(100), 3),
+        LegOrderEvent("S", "request", None, _at(200), 4),
+    ]
+    assert _assert_order_independent(events) == [
+        ("P", "request"), ("K", "request"), ("P", "response"), ("S", "request"),
+    ]
+
+
+def test_cyclic_parents_make_a_response_cycle_broken_after_both_requests() -> None:
+    # A <-> B are each other's parent and answer within the tolerance, so each
+    # response would wait for the other. Both requests are released first.
+    events = [
+        _event("A", "request", 3, None, "B"),
+        _event("B", "request", 4, None, "A"),
+        _event("A", "response", 1, "2026-01-01T00:00:00.500Z", "B"),
+        _event("B", "response", 2, "2026-01-01T00:00:00Z", "A"),
+    ]
+    assert _assert_order_independent(events) == [
+        ("A", "request"), ("B", "request"), ("B", "response"), ("A", "response"),
+    ]
 
 
 # --- cycle breaking: only a leg ON an unconstrained cycle is released early ---
@@ -197,8 +335,47 @@ def _random_trace(rng: random.Random) -> list[LegOrderEvent]:
     return events
 
 
+def _as_utc(occurred_at: dt.datetime | str | None) -> dt.datetime | None:
+    if isinstance(occurred_at, str):
+        occurred_at = dt.datetime.fromisoformat(occurred_at)
+    if occurred_at is not None and occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=dt.timezone.utc)
+    return occurred_at
+
+
+def _constraints(events: list[LegOrderEvent]) -> dict[LegOrderKey, set[LegOrderKey]]:
+    """The specified precedence edges, written out independently of the module."""
+    by_key = {event.key: event for event in events}
+    edges: dict[LegOrderKey, set[LegOrderKey]] = {}
+
+    def add(before: LegOrderKey, after: LegOrderKey) -> None:
+        if before != after and before in by_key and after in by_key:
+            edges.setdefault(before, set()).add(after)
+
+    for event in events:
+        parent = event.parent_interaction_id or ""
+        if event.leg_type == "request":
+            add(LegOrderKey(parent, "request"), event.key)
+            continue
+        add(LegOrderKey(event.interaction_id, "request"), event.key)
+        parent_response = by_key.get(LegOrderKey(parent, "response"))
+        if parent_response is None:
+            continue
+        child_at = _as_utc(event.occurred_at)
+        parent_at = _as_utc(parent_response.occurred_at)
+        asynchronous = (
+            child_at is not None
+            and parent_at is not None
+            and child_at - parent_at > CLOCK_SKEW_TOLERANCE
+        )
+        if not asynchronous:
+            add(event.key, parent_response.key)
+    return edges
+
+
 def test_random_traces_keep_every_constraint_outside_a_cycle() -> None:
     rng = random.Random(281)
+    checked_response_edges = 0
     for _ in range(500):
         events = _random_trace(rng)
         result = order_legs(events)
@@ -207,22 +384,22 @@ def test_random_traces_keep_every_constraint_outside_a_cycle() -> None:
         assert len(result) == len(set(result))
         position = {key: index for index, key in enumerate(result)}
 
+        # A response never precedes its own request, even when a cycle is broken.
         for key in keys:
             request = LegOrderKey(key.interaction_id, "request")
             if key.leg_type == "response" and request in keys:
                 assert position[request] < position[key], (events, result)
 
-        # Parent request -> child request, for each edge that is not on a cycle.
-        request_edges: dict[LegOrderKey, set[LegOrderKey]] = {}
-        for event in events:
-            parent = LegOrderKey(event.parent_interaction_id or "", "request")
-            if event.leg_type == "request" and parent in keys and parent != event.key:
-                request_edges.setdefault(parent, set()).add(event.key)
-        for parent, children in request_edges.items():
-            for child in children:
-                if parent not in _reachable(child, request_edges):
-                    assert position[parent] < position[child], (events, result)
+        # Parent request -> child request, and child response -> parent
+        # response unless clearly asynchronous: each holds off a cycle.
+        edges = _constraints(events)
+        for before, afters in edges.items():
+            for after in afters:
+                if before not in _reachable(after, edges):
+                    assert position[before] < position[after], (before, after, events, result)
+                    checked_response_edges += before.leg_type == after.leg_type == "response"
 
         shuffled = list(events)
         rng.shuffle(shuffled)
         assert order_legs(shuffled) == result
+    assert checked_response_edges > 100
