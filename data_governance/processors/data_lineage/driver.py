@@ -311,9 +311,10 @@ def _upsert_status(
     A complete trace writes NULL and an empty prefix. The table's CHECK pairs
     the status with ``stopped_at_seq``.
 
-    Only ever called for a trace that actually derived something — see
-    :func:`process_leg`'s early return, which leaves the row absent on purpose so
-    the read reports *unknown*.
+    Only ever called for a trace that actually derived something. A trace with
+    no legs takes :func:`process_leg`'s early return instead, which DELETEs any
+    status row an earlier derivation wrote (its legs may since have been
+    deleted), so the read reports *unknown* rather than a stale ``complete``.
     """
     tx.execute(
         "INSERT INTO lineage_trace_status "
