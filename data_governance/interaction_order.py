@@ -152,6 +152,15 @@ def order_legs(events: Iterable[LegOrderEvent]) -> list[LegOrderKey]:
     return ordered
 
 
+
+def leg_positions(events: Iterable[LegOrderEvent]) -> dict[LegOrderKey, int]:
+    """Each leg's zero-based position in :func:`order_legs`, iterating in that order.
+
+    The one way a reader or the lineage derivation turns the causal order into
+    sort keys, so every consumer numbers a trace's legs identically.
+    """
+    return {key: position for position, key in enumerate(order_legs(events))}
+
 def _unconstrained_cycles(
     remaining: set[LegOrderKey],
     followers: dict[LegOrderKey, set[LegOrderKey]],

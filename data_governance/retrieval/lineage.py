@@ -56,7 +56,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from data_governance import db
-from data_governance.interaction_order import LegOrderEvent, order_legs
+from data_governance.interaction_order import (
+    LegOrderEvent,
+    LegOrderKey,
+    leg_positions,
+)
 
 __all__ = [
     "DataLineageLegView",
@@ -247,22 +251,17 @@ def get_data_lineage(trace_id: str) -> GetDataLineageResult:
             "WHERE i.trace_id = %s",
             (trace_id,),
         )
-        position = {
-            (key.interaction_id, key.leg_type): index
-            for index, key in enumerate(
-                order_legs(
-                    LegOrderEvent(
-                        interaction_id=r[0],
-                        leg_type=r[1],
-                        parent_interaction_id=r[9],
-                        occurred_at=r[8],
-                        seq=r[7],
-                    )
-                    for r in rows
-                )
+        position = leg_positions(
+            LegOrderEvent(
+                interaction_id=r[0],
+                leg_type=r[1],
+                parent_interaction_id=r[9],
+                occurred_at=r[8],
+                seq=r[7],
             )
-        }
-        rows.sort(key=lambda r: position[(r[0], r[1])])
+            for r in rows
+        )
+        rows.sort(key=lambda r: position[LegOrderKey(r[0], r[1])])
         return GetDataLineageResult(
             legs=[
                 DataLineageLegView(

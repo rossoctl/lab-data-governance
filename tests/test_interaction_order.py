@@ -11,6 +11,7 @@ from data_governance.interaction_order import (
     CLOCK_SKEW_TOLERANCE,
     LegOrderEvent,
     LegOrderKey,
+    leg_positions,
     order_legs,
 )
 
@@ -86,6 +87,23 @@ def test_invalid_parent_cycle_has_a_deterministic_complete_order() -> None:
         assert result.index(LegOrderKey("a", "request")) < result.index(
             LegOrderKey("a", "response")
         )
+
+
+def test_leg_positions_number_the_causal_order_and_iterate_in_it() -> None:
+    events = [
+        _event("child", "request", 1, "2026-01-01T00:00:01Z", "parent"),
+        _event("parent", "response", 2, "2026-01-01T00:00:12Z"),
+        _event("parent", "request", 3, "2026-01-01T00:00:10Z"),
+    ]
+    positions = leg_positions(events)
+    assert list(positions) == order_legs(events)
+    assert positions == {
+        LegOrderKey("parent", "request"): 0,
+        LegOrderKey("child", "request"): 1,
+        LegOrderKey("parent", "response"): 2,
+    }
+    assert leg_positions(iter(events)) == positions
+    assert leg_positions([]) == {}
 
 
 # --- a child's response precedes its parent's, unless clearly asynchronous ---

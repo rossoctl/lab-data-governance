@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from data_governance import db
-from data_governance.interaction_order import LegOrderEvent, LegOrderKey, order_legs
+from data_governance.interaction_order import LegOrderEvent, LegOrderKey, leg_positions
 from data_governance.sidecar_facts import classify_attrs
 
 __all__ = [
@@ -584,7 +584,7 @@ def get_interactions(trace_id: str) -> GetInteractionsResult:
             (trace_id,),
         )
         views = _assemble_interactions(tx, identity_rows)
-        leg_order = order_legs(
+        position = leg_positions(
             LegOrderEvent(
                 interaction_id=ix.id,
                 leg_type=leg.leg_type,
@@ -595,7 +595,6 @@ def get_interactions(trace_id: str) -> GetInteractionsResult:
             for ix in views
             for leg in ix.legs
         )
-        position = {key: index for index, key in enumerate(leg_order)}
         views.sort(
             key=lambda ix: (
                 position.get(
@@ -608,7 +607,7 @@ def get_interactions(trace_id: str) -> GetInteractionsResult:
                 ix.id,
             )
         )
-        return GetInteractionsResult(interactions=views, leg_order=leg_order)
+        return GetInteractionsResult(interactions=views, leg_order=list(position))
 
 
 def get_interactions_feed(

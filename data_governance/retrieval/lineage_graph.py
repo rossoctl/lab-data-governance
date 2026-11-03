@@ -127,7 +127,11 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from data_governance import db
-from data_governance.interaction_order import LegOrderEvent, order_legs
+from data_governance.interaction_order import (
+    LegOrderEvent,
+    LegOrderKey,
+    leg_positions,
+)
 from data_governance.processors.data_lineage.memory import TARGET_KINDS
 
 from .lineage import _lineage_tables_exist, _trace_status
@@ -762,24 +766,19 @@ def _adjacency(
     window) contributes no edge in any map: there is no node to walk to or from,
     and inventing one would be a claim about an entity we cannot name.
     """
-    position_by_key = {
-        (key.interaction_id, key.leg_type): position
-        for position, key in enumerate(
-            order_legs(
-                LegOrderEvent(
-                    interaction_id=interaction_id,
-                    leg_type=leg_type,
-                    parent_interaction_id=parent_interaction_id,
-                    occurred_at=occurred_at,
-                    seq=int(seq),
-                )
-                for (
-                    interaction_id, leg_type, seq, _caller_id, _callee_id,
-                    _data_sources, parent_interaction_id, occurred_at,
-                ) in rows
-            )
+    position_by_key = leg_positions(
+        LegOrderEvent(
+            interaction_id=interaction_id,
+            leg_type=leg_type,
+            parent_interaction_id=parent_interaction_id,
+            occurred_at=occurred_at,
+            seq=seq,
         )
-    }
+        for (
+            interaction_id, leg_type, seq, _caller_id, _callee_id,
+            _data_sources, parent_interaction_id, occurred_at,
+        ) in rows
+    )
     derived: dict[str, list[_Edge]] = {}
     undelivered: dict[str, list[tuple[str, int]]] = {}
     for (
@@ -788,7 +787,7 @@ def _adjacency(
     ) in rows:
         if caller_id is None or callee_id is None:
             continue
-        position = position_by_key[(interaction_id, leg_type)]
+        position = position_by_key[LegOrderKey(interaction_id, leg_type)]
         if leg_type == "response":
             producer, consumer = callee_id, caller_id
         else:

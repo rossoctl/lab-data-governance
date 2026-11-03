@@ -67,7 +67,11 @@ import dataclasses
 import datetime as dt
 import enum
 
-from data_governance.interaction_order import LegOrderEvent, order_legs
+from data_governance.interaction_order import (
+    LegOrderEvent,
+    LegOrderKey,
+    leg_positions,
+)
 from data_governance.matching import Matcher
 
 from . import memory, operations
@@ -263,23 +267,18 @@ def derive_trace_lineage(
     name to root ``init`` at. Conflating the two would mark a trace partial over
     an entity row that is milliseconds behind.
     """
-    position = {
-        (key.interaction_id, key.leg_type): index
-        for index, key in enumerate(
-            order_legs(
-                LegOrderEvent(
-                    interaction_id=str(leg.interaction_id),
-                    leg_type=leg.leg_type,
-                    parent_interaction_id=leg.parent_interaction_id,
-                    occurred_at=leg.occurred_at,
-                    seq=leg.seq,
-                )
-                for leg in legs
-            )
+    position = leg_positions(
+        LegOrderEvent(
+            interaction_id=leg.interaction_id,
+            leg_type=leg.leg_type,
+            parent_interaction_id=leg.parent_interaction_id,
+            occurred_at=leg.occurred_at,
+            seq=leg.seq,
         )
-    }
+        for leg in legs
+    )
     ordered = sorted(
-        legs, key=lambda leg: position[(str(leg.interaction_id), leg.leg_type)]
+        legs, key=lambda leg: position[LegOrderKey(leg.interaction_id, leg.leg_type)]
     )
 
     # Metadata of each already-derived LEG, keyed `(interaction_id, leg_type)` — the

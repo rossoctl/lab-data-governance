@@ -26,7 +26,7 @@ import json
 from pathlib import Path
 
 from data_governance import db
-from data_governance.interaction_order import LegOrderEvent, order_legs
+from data_governance.interaction_order import LegOrderEvent, LegOrderKey, leg_positions
 from data_governance.matching import MatchResult
 from data_governance.processors.data_lineage import driver, traversal
 from data_governance.processors.interactions import graph_driver
@@ -123,7 +123,7 @@ def _derived(trace_id: str) -> list[DerivedLeg]:
     with db.transaction() as tx:
         legs, entities = driver.load_trace(tx, trace_id)
     result = traversal.derive_trace_lineage(legs, entities, matcher=_match_always)
-    ordered_keys = order_legs(
+    position = leg_positions(
         LegOrderEvent(
             interaction_id=leg.interaction_id,
             leg_type=leg.leg_type,
@@ -133,10 +133,6 @@ def _derived(trace_id: str) -> list[DerivedLeg]:
         )
         for leg in legs
     )
-    position = {
-        (key.interaction_id, key.leg_type): index
-        for index, key in enumerate(ordered_keys)
-    }
     out = []
     for leg in legs:
         entry = result.legs.get((leg.interaction_id, leg.leg_type))
@@ -147,7 +143,7 @@ def _derived(trace_id: str) -> list[DerivedLeg]:
         out.append(
             DerivedLeg(
                 seq=leg.seq,
-                position=position[(leg.interaction_id, leg.leg_type)],
+                position=position[LegOrderKey(leg.interaction_id, leg.leg_type)],
                 interaction_id=leg.interaction_id,
                 leg_type=leg.leg_type,
                 caller=caller,
