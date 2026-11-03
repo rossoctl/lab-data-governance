@@ -25,6 +25,8 @@ main's 0022 (issue #286) shipped on the same parent first. Two revisions off one
 parent are two heads, and only the unshipped one may move (see 0020's note). The
 ``risk`` chain already stamps 0023 and 0024 in a live ``alembic_version``, and
 0025 is taken on a lineage branch, so this revision takes the next free number.
+This supersedes 0022's note that it would re-parent onto this PR's 0021: 0022
+shipped unchanged, and this revision moved onto it instead.
 On 0022 the content kind lives on ``interaction_legs``, not on the payload row,
 so the inferred-tool repair below reads the leg's kind, with a structural
 fallback for legs written before 0022 (see the repair's comment).
