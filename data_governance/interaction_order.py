@@ -71,16 +71,28 @@ def _clearly_asynchronous(child_at: dt.datetime, parent_response_at: dt.datetime
     return child_at - parent_response_at > CLOCK_SKEW_TOLERANCE
 
 
-def _sort_time(own: dt.datetime | None, bound: dt.datetime | None) -> dt.datetime | None:
-    """A child leg's sort time from its own time and its parent response's."""
-    if bound is None:
-        # An untimed parent response already sorts after every timed leg.
+def _sort_time(
+    own: dt.datetime | None,
+    bound_own: dt.datetime | None,
+    bound_at: dt.datetime | None,
+) -> dt.datetime | None:
+    """A child leg's sort time from its own time and its parent response's.
+
+    Asynchrony is judged against the parent response's OWN time (*bound_own*):
+    whether the parent answered before its child is a fact about those two
+    legs, not about where the parent was itself placed. An unknown time on
+    either side is no evidence of asynchrony. The pull goes to the parent
+    response's SORT time (*bound_at*), so a grandchild follows its parent's
+    response wherever that response was pulled.
+    """
+    if bound_at is None:
+        # An untimed, unpulled parent response sorts after every timed leg.
         return own
     if own is None:
-        return bound
-    if _clearly_asynchronous(own, bound):
+        return bound_at
+    if bound_own is not None and _clearly_asynchronous(own, bound_own):
         return own
-    return min(own, bound)
+    return min(own, bound_at)
 
 
 def _bounds(by_key: Mapping[LegOrderKey, LegOrderEvent]) -> dict[LegOrderKey, LegOrderKey | None]:
@@ -109,10 +121,13 @@ def _sort_ranks(by_key: Mapping[LegOrderKey, LegOrderEvent]) -> dict[LegOrderKey
     """Each leg's rank in sort-time order; a lower rank is preferred when ready.
 
     Sort times are computed from the root of the interaction tree down, so a
-    grandchild is bounded by its parent's already-bounded time. A leg whose
-    sort time equals its bound's was pulled into that response: it joins the
-    group of legs ranked immediately before the response, ordered among
-    themselves by their own times, each followed by its own group. So at an
+    grandchild is bounded by its parent's already-bounded time, and a request
+    after its own timed response, which caps it. A request observed later
+    than its own response, or untimed, travels with that response: it joins
+    the response's group. Otherwise a leg whose sort time equals its bound's
+    was pulled into that response and joins its group. A group ranks
+    immediately before its response: a request travelling with it first, the
+    rest by their own times, each followed by its own group. So at an
     equal sort time a descendant's response precedes its ancestor's, while a
     leg pulled into a sibling's response stays behind a response that answered
     before that sibling did. Other legs rank by sort time; occurrence time,
@@ -123,35 +138,81 @@ def _sort_ranks(by_key: Mapping[LegOrderKey, LegOrderEvent]) -> dict[LegOrderKey
     at: dict[LegOrderKey, dt.datetime | None] = {}
     group: dict[LegOrderKey, list[LegOrderKey]] = {key: [] for key in by_key}
     roots: list[LegOrderKey] = []
+
+    def own_response(key: LegOrderKey) -> LegOrderKey | None:
+        """A request's own response, when it is present and timed."""
+        if key.leg_type != "request":
+            return None
+        response = LegOrderKey(key.interaction_id, "response")
+        return response if response in by_key and own[response] is not None else None
+
+    def place(key: LegOrderKey) -> None:
+        bound = bounds[key]
+        at[key] = (
+            own[key] if bound is None else _sort_time(own[key], own[bound], at[bound])
+        )
+        response = own_response(key)
+        # A request never sorts after its own timed response: an untimed
+        # request, or one a skewed clock stamped after its response, would
+        # otherwise hold that response back behind a later sibling. Such a
+        # request travels with its response: it joins the response's group,
+        # whether the cap or the parent's pull brought it to that time. A
+        # request observed at or before its response keeps ranking by its own
+        # time, so equal times still fall back to occurrence time and ``seq``.
+        late = response is not None and (own[key] is None or own[key] > own[response])
+        if response is not None and (at[key] is None or at[response] < at[key]):
+            at[key] = at[response]
+        if late and at[key] == at[response]:
+            group[response].append(key)
+        elif bound is not None and at[key] == at[bound]:
+            group[bound].append(key)
+        else:
+            roots.append(key)
+
     for start in by_key:
-        unplaced: list[LegOrderKey] = []
-        key: LegOrderKey | None = start
-        while key is not None and key not in at:
-            unplaced.append(key)
-            key = bounds[key]
-        for key in reversed(unplaced):
-            bound = bounds[key]
-            at[key] = own[key] if bound is None else _sort_time(own[key], at[bound])
-            if bound is not None and at[key] == at[bound]:
-                group[bound].append(key)
+        # Place a leg only after its bound and, for a request, its own timed
+        # response: both feed its sort time. Bounds lead to another component
+        # of the parent links at every step and a response's bound is never
+        # its own request, so this walk always ends.
+        pending = [start]
+        while pending:
+            key = pending[-1]
+            if key in at:
+                pending.pop()
+                continue
+            needed = [
+                dep for dep in (bounds[key], own_response(key))
+                if dep is not None and dep not in at
+            ]
+            if needed:
+                pending.extend(needed)
             else:
-                roots.append(key)
+                pending.pop()
+                place(key)
 
     def by_own_time(key: LegOrderKey) -> tuple:
         event = by_key[key]
         return (own[key] is None, own[key] or _LAST, event.seq, key.interaction_id, key.leg_type)
 
+    def members(owner: LegOrderKey) -> Iterator[LegOrderKey]:
+        """*owner*'s group in rank order. A request grouped into its own
+        response ranks first there: it is the leg that response waits for."""
+        return iter(sorted(
+            group[owner],
+            key=lambda key: (key.interaction_id != owner.interaction_id, by_own_time(key)),
+        ))
+
     rank: dict[LegOrderKey, int] = {}
     for root in sorted(roots, key=lambda key: (at[key] is None, at[key] or _LAST, by_own_time(key))):
-        pending = [(root, iter(sorted(group[root], key=by_own_time)))]
-        while pending:
-            key, members = pending[-1]
-            member = next(members, None)
+        walk = [(root, members(root))]
+        while walk:
+            key, rest = walk[-1]
+            member = next(rest, None)
             if member is None:
-                pending.pop()
+                walk.pop()
                 rank[key] = len(rank)
             else:
-                pending.append((member, iter(sorted(group[member], key=by_own_time))))
+                walk.append((member, members(member)))
     return rank
 
 
@@ -178,9 +239,10 @@ def order_legs(events: Iterable[LegOrderEvent]) -> list[LegOrderKey]:
     response's sort time, so a synchronous child answers before its parent even
     when the callee's clock runs ahead, while the parent's response is never
     moved later for its child. An untimed child leg takes the parent response's
-    time; a child leg timed more than :data:`CLOCK_SKEW_TOLERANCE` after it,
-    which only an asynchronous child is, keeps its own. A child still in flight
-    holds nothing back. Legs pulled into a response rank just before it, so at
+    sort time; a child leg timed more than :data:`CLOCK_SKEW_TOLERANCE` after
+    the parent response's own time, which only an asynchronous child is, keeps
+    its own. A request never sorts after its own timed response. A child still
+    in flight holds nothing back. Legs pulled into a response rank just before it, so at
     an equal sort time a descendant's response precedes its ancestor's;
     occurrence time, ``seq`` and the leg key break remaining ties. If
     invalid parent links form a cycle, the earliest leg on a remaining cycle is
@@ -201,17 +263,26 @@ def order_legs(events: Iterable[LegOrderEvent]) -> list[LegOrderKey]:
     heapq.heapify(ready)
 
     remaining = set(by_key)
+    # Each leg follows at most one other, so the cycles of the precedence
+    # graph are disjoint and fixed: ordering a leg never closes a new one.
+    # Find their members once, not on every break.
+    on_cycles = [(rank[key], key) for key in _on_cycles(remaining, followers)]
+    heapq.heapify(on_cycles)
     ordered: list[LegOrderKey] = []
     while remaining:
         if ready:
             _, key = heapq.heappop(ready)
         else:
             # Every remaining leg waits on its one remaining preceder, so invalid
-            # parent links form a cycle of requests. A leg follows at most one
-            # other, so no leg outside a cycle constrains a leg on it: release
-            # the earliest leg on a cycle. A leg merely downstream of one, such
-            # as a valid child or a response, keeps waiting for its preceder.
-            key = min(_on_cycles(remaining, followers), key=rank.__getitem__)
+            # parent links form a cycle of requests. No leg outside a cycle
+            # constrains a leg on it: release the earliest leg on a remaining
+            # cycle. A leg merely downstream of one, such as a valid child or a
+            # response, keeps waiting for its preceder. A cycle member ordered
+            # since (its cycle was broken earlier) is skipped.
+            while True:
+                _, key = heapq.heappop(on_cycles)
+                if key in remaining:
+                    break
         remaining.remove(key)
         ordered.append(key)
         for after in followers[key]:

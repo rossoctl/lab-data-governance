@@ -233,8 +233,10 @@ def test_an_in_flight_child_does_not_hold_back_its_parent_response() -> None:
 
 def test_cyclic_parents_pull_no_time_so_each_response_keeps_its_own() -> None:
     # A <-> B are each other's parent and answer within the tolerance. A
-    # parent link on a cycle pulls no time, so once the request cycle breaks
-    # at A, A's timed response is ready before B's untimed request.
+    # parent link on a cycle pulls no time, so each response keeps its own.
+    # Each untimed request is capped at its own response's time, so the
+    # request cycle breaks at B, whose response came first, and B's response
+    # is ready before A's request.
     events = [
         _event("A", "request", 3, None, "B"),
         _event("B", "request", 4, None, "A"),
@@ -242,7 +244,7 @@ def test_cyclic_parents_pull_no_time_so_each_response_keeps_its_own() -> None:
         _event("B", "response", 2, "2026-01-01T00:00:00Z", "A"),
     ]
     assert _assert_order_independent(events) == [
-        ("A", "request"), ("A", "response"), ("B", "request"), ("B", "response"),
+        ("B", "request"), ("B", "response"), ("A", "request"), ("A", "response"),
     ]
 
 
@@ -495,6 +497,37 @@ def test_a_request_never_holds_its_own_response_past_a_later_sibling(
     assert _assert_shuffle_independent(events) == [
         ("R", "request"), ("P", "request"), ("P", "response"),
         ("Q", "request"), ("Q", "response"), ("R", "response"),
+    ]
+
+
+def test_a_request_stamped_after_its_response_travels_with_it_into_the_parent() -> None:
+    # i1's request is stamped after i1's own response; both are pulled to
+    # i0's response. The request must stay attached to its response there,
+    # not rank by its skewed stamp behind i2, which was sent after i1 answered.
+    events = [
+        LegOrderEvent("i0", "request", None, _at(6000), 155),
+        LegOrderEvent("i0", "response", None, _at(0), 157),
+        LegOrderEvent("i1", "request", "i0", _at(800), 74),
+        LegOrderEvent("i1", "response", "i0", _at(0), 35),
+        LegOrderEvent("i2", "request", "i0", _at(205), 41),
+    ]
+    assert _assert_shuffle_independent(events) == [
+        ("i0", "request"), ("i1", "request"), ("i1", "response"),
+        ("i2", "request"), ("i0", "response"),
+    ]
+
+
+def test_requests_at_their_responses_time_still_order_by_seq() -> None:
+    # Every leg shares one time and there are no parent links: a request at
+    # its response's time is not moved, so ``seq`` decides, as it ran.
+    events = [
+        _event("UA", "request", 1, "2026-01-01T00:00:00Z"),
+        _event("AT", "request", 2, "2026-01-01T00:00:00Z"),
+        _event("AT", "response", 3, "2026-01-01T00:00:00Z"),
+        _event("UA", "response", 4, "2026-01-01T00:00:00Z"),
+    ]
+    assert _assert_order_independent(events) == [
+        ("UA", "request"), ("AT", "request"), ("AT", "response"), ("UA", "response"),
     ]
 
 
@@ -753,24 +786,37 @@ def _sort_times(events: list[LegOrderEvent]) -> dict[LegOrderKey, dt.datetime | 
 
     A child's leg is pulled no later than its parent's response's sort time; an
     untimed child leg takes that time; a leg timed more than the tolerance after
-    it keeps its own; an untimed parent response pulls no timed leg; and a
-    parent link on a parent cycle pulls nothing.
+    the parent response's OWN time keeps its own (an unknown time on either side
+    is no evidence of asynchrony); a parent response with no sort time pulls
+    nothing; a parent link on a parent cycle pulls nothing; and a request never
+    sorts after its own timed response's sort time.
     """
     by_key = {event.key: event for event in events}
 
+    def own_time(key: LegOrderKey) -> dt.datetime | None:
+        return _as_utc(by_key[key].occurred_at)
+
     def sort_time(key: LegOrderKey) -> dt.datetime | None:
-        own = _as_utc(by_key[key].occurred_at)
+        own = own_time(key)
         bound = _bounding_response(key, events)
-        if bound is None:
-            return own
-        bound_time = sort_time(bound)
-        if bound_time is None:
-            return own
-        if own is None:
-            return bound_time
-        if own - bound_time > CLOCK_SKEW_TOLERANCE:
-            return own
-        return min(own, bound_time)
+        pulled = own
+        if bound is not None:
+            bound_time = sort_time(bound)
+            bound_own = own_time(bound)
+            if bound_time is None:
+                pulled = own
+            elif own is None:
+                pulled = bound_time
+            elif bound_own is not None and own - bound_own > CLOCK_SKEW_TOLERANCE:
+                pulled = own
+            else:
+                pulled = min(own, bound_time)
+        response = LegOrderKey(key.interaction_id, "response")
+        if key.leg_type == "request" and response in by_key and own_time(response) is not None:
+            capped = sort_time(response)
+            if pulled is None or capped < pulled:
+                return capped
+        return pulled
 
     return {key: sort_time(key) for key in by_key}
 
@@ -782,9 +828,9 @@ def _assert_synchronous_children_answer_first(
 ) -> int:
     """A child response precedes its parent's response unless the child is
     clearly asynchronous: its request or response is timed more than the
-    tolerance after the parent response's sort time. A child linked to its
-    parent through a parent cycle is exempt. Returns how many pairs were
-    checked."""
+    tolerance after the parent response's OWN time. An unknown parent time is
+    no evidence of asynchrony. A child linked to its parent through a parent
+    cycle is exempt. Returns how many pairs were checked."""
     keys = {event.key for event in events}
     own = {event.key: _as_utc(event.occurred_at) for event in events}
     checked = 0
@@ -794,10 +840,10 @@ def _assert_synchronous_children_answer_first(
         parent_response = _bounding_response(key, events)
         if parent_response is None:
             continue
-        bound = times[parent_response]
+        answered_at = own[parent_response]
         child_legs = (LegOrderKey(key.interaction_id, leg) for leg in ("request", "response"))
-        if bound is not None and any(
-            own.get(leg) is not None and own[leg] - bound > CLOCK_SKEW_TOLERANCE
+        if answered_at is not None and any(
+            own.get(leg) is not None and own[leg] - answered_at > CLOCK_SKEW_TOLERANCE
             for leg in child_legs
         ):
             continue
