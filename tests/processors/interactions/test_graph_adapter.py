@@ -19,6 +19,8 @@ import datetime as dt
 import pytest
 
 from data_governance.interaction_order import LegOrderEvent, order_legs
+from data_governance.matching import get_matcher
+from data_governance.processors.data_lineage import traversal
 from data_governance.processors.interactions import graph_adapter, procedure
 from data_governance.processors.interactions.graph.extractor import extract
 from tests.processors.interactions.graph.conftest import load_trace_spans
@@ -342,15 +344,56 @@ def test_merged_replay_is_timed_at_the_completion_that_disclosed_it(
     assert min(leg.seq for leg in tool_legs) > llm_response.seq
 
 
-def test_output_inferred_tool_on_an_unended_llm_span_stays_in_its_turn() -> None:
-    """A span with no recorded end gives no response boundary. The output call
-    falls back to the LLM span's start, the latest boundary known, so the
-    shared order keeps it after its LLM request and before the next turn
-    instead of sorting it, untimed, to the end of the trace."""
-    unended, next_turn = "e6c6ccd898f3291c", "18f5c4ad29dd9fd9"
+def _ordered_legs(rows) -> dict[tuple[str, str], int]:
+    """Each leg's position in the shared causal order (ADR-0035)."""
+    order = order_legs(
+        LegOrderEvent(
+            ix.id, leg.leg_type, ix.parent_interaction_id, leg.occurred_at, leg.seq
+        )
+        for ix in rows.interactions_by_anchor.values()
+        for leg in rows.legs_by_ix[ix.id]
+    )
+    return {(key.interaction_id, key.leg_type): i for i, key in enumerate(order)}
+
+
+def _tool_request_lineage(rows, tool: procedure.Interaction):
+    entities = {
+        entity.id: traversal.Entity(entity.id, entity.natural_key, entity.kind)
+        for entity in rows.entities.values()
+    }
+    legs = [
+        traversal.Leg(
+            ix.id, leg.leg_type, leg.seq, ix.caller_entity_id, ix.callee_entity_id,
+            leg.payload_hash, ix.parent_interaction_id, leg.occurred_at,
+        )
+        for ix in rows.interactions_by_anchor.values()
+        for leg in rows.legs_by_ix[ix.id]
+    ]
+    derived = traversal.derive_trace_lineage(legs, entities, matcher=get_matcher())
+    return derived.legs[(tool.id, "request")].lineage
+
+
+@pytest.mark.parametrize(
+    ("unended", "next_turn"),
+    [
+        ("4e1044d00d8d8d07", "e6c6ccd898f3291c"),
+        ("e6c6ccd898f3291c", "18f5c4ad29dd9fd9"),
+    ],
+    ids=["first-turn", "second-turn"],
+)
+def test_output_inferred_tool_on_an_unended_llm_span_stays_in_its_turn(
+    unended: str, next_turn: str,
+) -> None:
+    """A span with no recorded end gives no response boundary. The LLM's own
+    response and the output call it disclosed both fall back to the LLM span's
+    start, the latest boundary known, so the shared order keeps the exchange
+    whole: the LLM request and response, then the call, then the next turn.
+    Neither leg sorts, untimed, to the end of the trace, and the call's lineage
+    still passes through the LLM that disclosed it."""
+    base = load_trace_spans("patent_agent_II")
     spans = [
         dataclasses.replace(span, ended_at=None) if span.span_id == unended else span
-        for span in load_trace_spans("patent_agent_II")
+        for span in base
     ]
     rows = graph_adapter.adapt(extract(spans), spans)
     assert rows.legs_by_ix is not None
@@ -364,23 +407,59 @@ def test_output_inferred_tool_on_an_unended_llm_span_stays_in_its_turn() -> None
             and ix.primary_anchor_span_id == anchor
         )
 
-    tool = _call("tool", unended)
+    llm, tool = _call("llm", unended), _call("tool", unended)
     assert {leg.occurred_at for leg in rows.legs_by_ix[tool.id]} == {started_at}
+    assert [(leg.leg_type, leg.occurred_at) for leg in rows.legs_by_ix[llm.id]] == [
+        ("request", started_at),
+        ("response", started_at),
+    ]
 
-    order = order_legs(
-        LegOrderEvent(
-            ix.id, leg.leg_type, ix.parent_interaction_id, leg.occurred_at, leg.seq
-        )
-        for ix in rows.interactions_by_anchor.values()
-        for leg in rows.legs_by_ix[ix.id]
-    )
-    position = {(key.interaction_id, key.leg_type): i for i, key in enumerate(order)}
+    position = _ordered_legs(rows)
     assert (
-        position[(_call("llm", unended).id, "request")]
+        position[(llm.id, "request")]
+        < position[(llm.id, "response")]
         < position[(tool.id, "request")]
         < position[(tool.id, "response")]
         < position[(_call("llm", next_turn).id, "request")]
     )
+
+    # The same call's lineage with the span's end recorded: the LLM hop that
+    # disclosed it is part of it, and an unknown end must not lose it.
+    ended_rows = graph_adapter.adapt(extract(base), base)
+    assert _tool_request_lineage(rows, tool) == _tool_request_lineage(ended_rows, tool)
+    assert by_id[llm.callee_entity_id].natural_key in (
+        _tool_request_lineage(rows, tool).entities
+    )
+
+
+def test_an_unended_llm_call_enclosing_a_call_keeps_its_response_untimed() -> None:
+    """ADK's ``call_llm`` span encloses the ``execute_tool`` span it led to, so
+    the LLM call is that tool call's parent. Its start is no boundary for its
+    response: the response follows the child's, and a start-time response
+    would precede the child's by more than the clock-skew tolerance and read
+    as an asynchronous parent (ADR-0035). An unknown time is not evidence of
+    asynchrony, so this response stays untimed and still follows its child."""
+    base = load_trace_spans("travel_agent_II")
+    rows = graph_adapter.adapt(extract(base), base)
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    interactions = {ix.id: ix for ix in rows.interactions_by_anchor.values()}
+    child = next(
+        ix for ix in interactions.values()
+        if ix.parent_interaction_id is not None
+        and by_id[interactions[ix.parent_interaction_id].callee_entity_id].kind == "llm"
+    )
+    parent = interactions[child.parent_interaction_id]
+    unended = parent.primary_anchor_span_id
+    spans = [
+        dataclasses.replace(span, ended_at=None) if span.span_id == unended else span
+        for span in base
+    ]
+    rows = graph_adapter.adapt(extract(spans), spans)
+    assert rows.legs_by_ix is not None
+    legs = {leg.leg_type: leg for leg in rows.legs_by_ix[parent.id]}
+    assert legs["response"].occurred_at is None
+    position = _ordered_legs(rows)
+    assert position[(child.id, "response")] < position[(parent.id, "response")]
 
 
 def test_tool_call_resolved_to_observed_peer_keeps_observed_times() -> None:

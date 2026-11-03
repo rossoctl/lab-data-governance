@@ -327,6 +327,45 @@ def _compute_parents(
         ix.parent_interaction_id = parent_id
 
 
+def _time_unended_llm_responses(
+    interactions: list[procedure.Interaction],
+    legs_by_ix: dict[str, list[LegRow]],
+    span_by_id: dict[str, Span],
+    llm_entity_ids: set[str],
+) -> None:
+    """Time an LLM call's response leg at its span's start when the span has
+    no recorded end, as an output tool call it disclosed already is.
+
+    Untimed, the response sorts after every timed leg of the trace, behind the
+    output call and later turns, and lineage loses the LLM hop of that call.
+    The start is the one boundary known, and the graph `order` keeps the
+    response after its request and before the call. As in the sidecar path's
+    `resp.ended_at or resp.started_at`, only a response leg the graph already
+    emitted is timed; none is made up for an exchange without one. Only the
+    LLM call's own: a tool call inferred on the same span is timed in ``adapt``.
+
+    An LLM call that encloses another call keeps its untimed response. Its
+    response follows the enclosed call's, so a start time would read as an
+    asynchronous parent and order it before the call it waited on (ADR-0035).
+    Runs after ``_compute_parents``, the only source of that nesting.
+    """
+    enclosing = {ix.parent_interaction_id for ix in interactions}
+    for ix in interactions:
+        anchor = span_by_id.get(ix.primary_anchor_span_id)
+        if (
+            ix.id in enclosing
+            or ix.callee_entity_id not in llm_entity_ids
+            or anchor is None
+            or anchor.ended_at is not None
+            or extract_facts(anchor).kind != Kind.LLM
+        ):
+            continue
+        for leg in legs_by_ix.get(ix.id, []):
+            if leg.leg_type == "response" and leg.occurred_at is None:
+                leg.occurred_at = anchor.started_at
+                ix.ended_at = anchor.started_at
+
+
 # ---------------------------------------------------------------------------
 # Adapter entry
 # ---------------------------------------------------------------------------
@@ -622,7 +661,8 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             # An LLM span with no recorded end has no response boundary. Its
             # start (never NULL) is the one boundary known, as in the sidecar
             # path's `resp.ended_at or resp.started_at`. The call then stays in
-            # its LLM exchange, after the request by its higher `order`, and is
+            # its LLM exchange, after the request and the LLM response
+            # (`_time_unended_llm_responses`) by its higher `order`, and is
             # not sorted untimed to the end of the trace.
             inferred_tool_time = (
                 anchor_span.ended_at or anchor_span.started_at
@@ -700,6 +740,12 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
     # exists (the walk needs the full anchor→interaction map).
     all_interactions = list(interactions_by_anchor.values())
     _compute_parents(all_interactions, span_by_id)
+    _time_unended_llm_responses(
+        all_interactions,
+        legs_by_ix,
+        span_by_id,
+        {entity.id for entity in entities.values() if entity.kind == "llm"},
+    )
 
     # interaction_spans territory (info/connector): every non-anchor span in the
     # trace goes to its innermost enclosing interaction (ADR-0008), mirroring the
