@@ -203,6 +203,15 @@ def upgrade() -> None:
     # response payload and end boundary as the originating LLM. A tool with
     # independently observed completion keeps that observation.
     #
+    # The LLM call compared is the one holding the span's own anchor row. The
+    # adapter gives that row to the span's first call by callee key, so an LLM
+    # (`llm:` sorts before `tool:`). The row is unique per span, while synthetic
+    # `<span>#<callee>#<order>` rows can name other LLM calls, including ones
+    # left by an earlier derivation of the trace, whose legs may disagree about
+    # the side. DISTINCT ON keeps one row per tool call, so each leg takes one
+    # defined projection. As in the adapter, an output call on an LLM span
+    # with no recorded end falls back to the span's start.
+    #
     # "Carries tool-call arguments" is read from the leg's own content kind
     # (0022). Legs written before 0022 have no kind: 0022 dropped the payload
     # row's column without a backfill, and it runs before this revision. For
@@ -212,11 +221,13 @@ def upgrade() -> None:
     op.execute(
         """
         WITH inferred_tool_calls AS (
-            SELECT tool_ix.id AS interaction_id,
+            SELECT DISTINCT ON (tool_ix.id)
+                   tool_ix.id AS interaction_id,
                    s.ended_at AS old_response_at,
                    llm_response.payload_hash AS llm_response_hash,
                    CASE
-                       WHEN tool_request.seq > llm_response.seq THEN s.ended_at
+                       WHEN tool_request.seq > llm_response.seq
+                           THEN COALESCE(s.ended_at, s.started_at)
                        WHEN COALESCE(tool_response.seq, tool_request.seq)
                             < llm_request.seq THEN s.started_at
                    END AS projected_at
@@ -240,7 +251,7 @@ def upgrade() -> None:
             JOIN interaction_spans llm_anchor
               ON llm_anchor.trace_id = tool_ix.trace_id
              AND llm_anchor.role = 'anchor'
-             AND split_part(llm_anchor.span_id, '#', 1) = s.span_id
+             AND llm_anchor.span_id = s.span_id
             JOIN interactions llm_ix
               ON llm_ix.id = llm_anchor.interaction_id
              AND llm_ix.caller_entity_id = tool_ix.caller_entity_id
@@ -261,6 +272,7 @@ def upgrade() -> None:
                    AND tool_request.payload_hash
                        IS DISTINCT FROM llm_response.payload_hash
                )
+            ORDER BY tool_ix.id, tool_anchor.span_id
         )
         UPDATE interaction_legs leg
         SET occurred_at = inferred.projected_at

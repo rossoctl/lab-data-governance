@@ -181,6 +181,138 @@ def test_legacy_inferred_tool_times_are_projected_before_lineage_replay(
     ]
 
 
+def _seed_one_llm_span_at_0022(conn, *, started_at, ended_at) -> None:
+    conn.execute(
+        "INSERT INTO entities (id, kind, natural_key, display_name, "
+        "detected_from, seq, original_seq) VALUES "
+        "('agent', 'agent', 'agent:a', 'a', 'inferred', 1, 1), "
+        "('llm', 'llm', 'llm:m', 'm', 'inferred', 2, 2), "
+        "('tool', 'tool', 'tool:t', 't', 'inferred', 3, 3)"
+    )
+    conn.execute(
+        "INSERT INTO spans (trace_id, span_id, kind, name, started_at, "
+        "ended_at, arrival_seq) VALUES "
+        "('trace', 'llm-span', 'INTERNAL', 'messages.create', %s, %s, 1)",
+        (started_at, ended_at),
+    )
+
+
+def _insert_legs(conn, rows) -> None:
+    # An inferred tool's synthetic response carries its LLM's completion body,
+    # which is how the repair recognises a response it may move.
+    for interaction_id, request_seq, request_time, response_time, payload, kind in rows:
+        conn.execute(
+            "INSERT INTO interaction_legs (interaction_id, leg_type, "
+            "occurred_at, payload_hash, content_kind, error, seq) VALUES "
+            "(%s, 'request', %s, %s, %s, false, %s), "
+            "(%s, 'response', %s, %s, NULL, false, %s)",
+            (
+                interaction_id, request_time, payload, kind, request_seq,
+                interaction_id, response_time, "completion", request_seq + 1,
+            ),
+        )
+
+
+def test_inferred_tool_repair_uses_the_llm_call_that_owns_the_span(
+    pg_dsn: str, monkeypatch,
+) -> None:
+    """Several LLM interactions can name one LLM span: the call holding the
+    span's own anchor row, and calls on synthetic ``span#llm:...#N`` rows (a
+    second co-anchored call, or one left by an earlier derivation of the
+    trace). Their legs can place the tool on opposite sides of the exchange.
+    The repair compares the tool with the call that owns the span's anchor
+    row, which is unique per span, so it has one defined outcome.
+    """
+    monkeypatch.setenv("DATABASE_URL", pg_dsn)
+    cfg = _alembic_config()
+    command.upgrade(cfg, "0022_content_kind_on_legs")
+
+    start = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+    end = start + dt.timedelta(seconds=5)
+    with psycopg.connect(pg_dsn) as conn:
+        _seed_one_llm_span_at_0022(conn, started_at=start, ended_at=end)
+        conn.execute(
+            "INSERT INTO interaction_payloads (content_hash, content, byte_size) "
+            "VALUES ('prompt', '{}'::jsonb, 2), ('completion', '{}'::jsonb, 2), "
+            "('args', '{}'::jsonb, 2)"
+        )
+        # The synthetic-anchor call is written first so a scan meets it first.
+        conn.execute(
+            "INSERT INTO interactions (id, trace_id, caller_entity_id, "
+            "callee_entity_id, summary) VALUES "
+            "('co-anchored-llm', 'trace', 'agent', 'llm', 'call'), "
+            "('llm-ix', 'trace', 'agent', 'llm', 'call'), "
+            "('tool-ix', 'trace', 'agent', 'tool', 'call')"
+        )
+        conn.execute(
+            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, "
+            "role, leg_type) VALUES "
+            "('co-anchored-llm', 'trace', 'llm-span#llm:m#20', 'anchor', 'request'), "
+            "('llm-ix', 'trace', 'llm-span', 'anchor', 'request'), "
+            "('tool-ix', 'trace', 'llm-span#tool:t#12', 'anchor', 'request')"
+        )
+        _insert_legs(conn, [
+            # Against this call the tool follows the LLM response: output.
+            ("llm-ix", 10, start, end, "prompt", "llm_chat_prompt"),
+            # Against this one it precedes the LLM request: an input replay.
+            ("co-anchored-llm", 20, start, end, "prompt", "llm_chat_prompt"),
+            ("tool-ix", 12, start, end, "args", "tool_call_arguments"),
+        ])
+
+    command.upgrade(cfg, "head")
+    with psycopg.connect(pg_dsn) as conn:
+        rows = conn.execute(
+            "SELECT leg_type::text, occurred_at FROM interaction_legs "
+            "WHERE interaction_id = 'tool-ix' ORDER BY leg_type"
+        ).fetchall()
+    assert rows == [("request", end), ("response", end)]
+
+
+def test_output_tool_on_an_unended_llm_span_is_projected_to_its_start(
+    pg_dsn: str, monkeypatch,
+) -> None:
+    """An LLM span with no recorded end gives no response boundary. As in the
+    graph adapter, an output call falls back to the span's start, so neither
+    tool leg is left untimed."""
+    monkeypatch.setenv("DATABASE_URL", pg_dsn)
+    cfg = _alembic_config()
+    command.upgrade(cfg, "0022_content_kind_on_legs")
+
+    start = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+    with psycopg.connect(pg_dsn) as conn:
+        _seed_one_llm_span_at_0022(conn, started_at=start, ended_at=None)
+        conn.execute(
+            "INSERT INTO interaction_payloads (content_hash, content, byte_size) "
+            "VALUES ('prompt', '{}'::jsonb, 2), ('completion', '{}'::jsonb, 2), "
+            "('args', '{}'::jsonb, 2)"
+        )
+        conn.execute(
+            "INSERT INTO interactions (id, trace_id, caller_entity_id, "
+            "callee_entity_id, summary) VALUES "
+            "('llm-ix', 'trace', 'agent', 'llm', 'call'), "
+            "('tool-ix', 'trace', 'agent', 'tool', 'call')"
+        )
+        conn.execute(
+            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, "
+            "role, leg_type) VALUES "
+            "('llm-ix', 'trace', 'llm-span', 'anchor', 'request'), "
+            "('tool-ix', 'trace', 'llm-span#tool:t#12', 'anchor', 'request')"
+        )
+        # The old projection copied the span's start and its missing end.
+        _insert_legs(conn, [
+            ("llm-ix", 10, start, None, "prompt", "llm_chat_prompt"),
+            ("tool-ix", 12, start, None, "args", "tool_call_arguments"),
+        ])
+
+    command.upgrade(cfg, "head")
+    with psycopg.connect(pg_dsn) as conn:
+        rows = conn.execute(
+            "SELECT leg_type::text, occurred_at FROM interaction_legs "
+            "WHERE interaction_id = 'tool-ix' ORDER BY leg_type"
+        ).fetchall()
+    assert rows == [("request", start), ("response", start)]
+
+
 def test_inferred_tool_repair_reads_the_leg_content_kind_after_0022(
     pg_dsn: str, monkeypatch,
 ) -> None:
