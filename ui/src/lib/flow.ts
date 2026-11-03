@@ -216,6 +216,14 @@ export interface LegOrderKey {
   leg_type: 'request' | 'response';
 }
 
+/**
+ * The empty leg order, as ONE frozen value. A component's optional `legOrder`
+ * prop defaults to this rather than to a `= []` literal, which would be a new
+ * array on every render and so a changed dependency for every `useMemo` keyed on
+ * it — re-deriving (and, for the graph, re-pushing) the picture each time.
+ */
+export const NO_LEG_ORDER: readonly LegOrderKey[] = Object.freeze([]);
+
 /** The trace-scoped interactions resource. */
 export interface TraceInteractions {
   interactions: Interaction[];

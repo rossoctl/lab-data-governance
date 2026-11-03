@@ -8,6 +8,7 @@ import {
 
 import { deriveSequenceDiagram, type MessageSpec } from '../lib/sequenceDiagram';
 import { kindColorVar } from '../lib/entityKind';
+import { NO_LEG_ORDER } from '../lib/flow';
 import type { Entity, Interaction, LegOrderKey } from '../types';
 
 /**
@@ -206,7 +207,8 @@ function MessageRow({
 export function InteractionDiagram({
   entities,
   interactions,
-  legOrder = [],
+  // A shared constant, not `= []`: `spec` is memoised on `legOrder`.
+  legOrder = NO_LEG_ORDER,
   selectedId,
   onSelect,
 }: {

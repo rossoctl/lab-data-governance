@@ -2286,6 +2286,37 @@ describe('LineageGraph', () => {
     vi.restoreAllMocks();
   });
 
+  it('pushes no new model when re-rendered with the same reads and no legOrder', async () => {
+    // `legOrder` is optional. Its default must be ONE stable empty value, not a
+    // fresh `[]` per render: `spec` is memoised on it and the model push is keyed on
+    // `spec`, so a new array every render would re-derive the graph and repaint it on
+    // every unrelated re-render (a selection, a pin, a poll).
+    const entities = ENTITIES;
+    const interactions = [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)];
+    mockLineageApi({ entities, interactions, summary: SUMMARY_WITH_SOURCE });
+    // A FRESH element each time, with the same prop values: re-passing one element
+    // object would let React bail out and never re-render the component at all.
+    const graph = () => (
+      <LineageGraph
+        traceId="T1"
+        entities={entities}
+        interactions={interactions}
+        status="complete"
+        isLineageError={false}
+        selectedEntityId={null}
+        lineageSource={SOURCE_E1}
+      />
+    );
+    const { rerender } = renderWithProviders(graph());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const pushes = modelPushes;
+
+    rerender(graph());
+    rerender(graph());
+
+    expect(modelPushes).toBe(pushes);
+  });
+
   // --- The sharing itself: one graph, two tabs.
 
   it('draws the SAME nodes and edges the Execution Flow tab draws', async () => {

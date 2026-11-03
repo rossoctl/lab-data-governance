@@ -171,6 +171,7 @@ import {
   type DirectionHighlight,
 } from '../lib/lineageReachability';
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
+import { NO_LEG_ORDER } from '../lib/flow';
 import { kindColorVar, nodeNeutralColorVar } from '../lib/entityKind';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import { LineageSourceNotices, LineageSourcePicker } from './flow/LineageSourcePicker';
@@ -2788,7 +2789,9 @@ export function LineageGraph({
   traceId,
   entities,
   interactions,
-  legOrder = [],
+  // A shared constant, not `= []`: `spec` (and the model push keyed on it) is
+  // memoised on `legOrder`, so a fresh array per render would repaint every time.
+  legOrder = NO_LEG_ORDER,
   status,
   isLineageError,
   selectedEntityId,
