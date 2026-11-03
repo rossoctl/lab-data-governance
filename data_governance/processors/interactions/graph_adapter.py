@@ -619,8 +619,15 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
         inferred_tool_time = None
         if phase is not None:
             assert anchor_span is not None
+            # An LLM span with no recorded end has no response boundary. Its
+            # start (never NULL) is the one boundary known, as in the sidecar
+            # path's `resp.ended_at or resp.started_at`. The call then stays in
+            # its LLM exchange, after the request by its higher `order`, and is
+            # not sorted untimed to the end of the trace.
             inferred_tool_time = (
-                anchor_span.ended_at if phase == "output" else anchor_span.started_at
+                anchor_span.ended_at or anchor_span.started_at
+                if phase == "output"
+                else anchor_span.started_at
             )
         # A response on a distinct tool span is independently observed.
         project_inferred_response = (

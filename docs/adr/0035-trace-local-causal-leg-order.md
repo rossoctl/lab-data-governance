@@ -32,8 +32,10 @@ UI tables and diagrams use that API order and display one-based causal steps.
 The graph algorithm also infers tool calls from LLM message attributes. Those
 calls have no independent tool execution span: an output call is known at the
 LLM response boundary, while an input replay is known at the LLM request
-boundary. Its synthetic legs use that boundary as their occurrence time. A
-tool resolved to an observed peer keeps the observed timing. Migration 0026
+boundary. Its synthetic legs use that boundary as their occurrence time. An
+LLM span with no recorded end gives an output call its start instead, so the
+call stays in its LLM exchange. A tool resolved to an observed peer keeps the
+observed timing. Migration 0026
 corrects existing inferred-tool rows before replaying their lineage.
 
 `interaction_legs.seq` remains the durable ingestion cursor for the cross-trace

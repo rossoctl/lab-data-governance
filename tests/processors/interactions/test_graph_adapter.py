@@ -18,6 +18,7 @@ import datetime as dt
 
 import pytest
 
+from data_governance.interaction_order import LegOrderEvent, order_legs
 from data_governance.processors.interactions import graph_adapter, procedure
 from data_governance.processors.interactions.graph.extractor import extract
 from tests.processors.interactions.graph.conftest import load_trace_spans
@@ -339,6 +340,47 @@ def test_merged_replay_is_timed_at_the_completion_that_disclosed_it(
         span_by_id[disclosing_span].ended_at
     }
     assert min(leg.seq for leg in tool_legs) > llm_response.seq
+
+
+def test_output_inferred_tool_on_an_unended_llm_span_stays_in_its_turn() -> None:
+    """A span with no recorded end gives no response boundary. The output call
+    falls back to the LLM span's start, the latest boundary known, so the
+    shared order keeps it after its LLM request and before the next turn
+    instead of sorting it, untimed, to the end of the trace."""
+    unended, next_turn = "e6c6ccd898f3291c", "18f5c4ad29dd9fd9"
+    spans = [
+        dataclasses.replace(span, ended_at=None) if span.span_id == unended else span
+        for span in load_trace_spans("patent_agent_II")
+    ]
+    rows = graph_adapter.adapt(extract(spans), spans)
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    started_at = next(span.started_at for span in spans if span.span_id == unended)
+
+    def _call(kind: str, anchor: str) -> procedure.Interaction:
+        return next(
+            ix for ix in rows.interactions_by_anchor.values()
+            if by_id[ix.callee_entity_id].kind == kind
+            and ix.primary_anchor_span_id == anchor
+        )
+
+    tool = _call("tool", unended)
+    assert {leg.occurred_at for leg in rows.legs_by_ix[tool.id]} == {started_at}
+
+    order = order_legs(
+        LegOrderEvent(
+            ix.id, leg.leg_type, ix.parent_interaction_id, leg.occurred_at, leg.seq
+        )
+        for ix in rows.interactions_by_anchor.values()
+        for leg in rows.legs_by_ix[ix.id]
+    )
+    position = {(key.interaction_id, key.leg_type): i for i, key in enumerate(order)}
+    assert (
+        position[(_call("llm", unended).id, "request")]
+        < position[(tool.id, "request")]
+        < position[(tool.id, "response")]
+        < position[(_call("llm", next_turn).id, "request")]
+    )
 
 
 def test_tool_call_resolved_to_observed_peer_keeps_observed_times() -> None:
