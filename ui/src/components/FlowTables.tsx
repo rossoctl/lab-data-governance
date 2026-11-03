@@ -20,7 +20,6 @@ import {
   flatLegRows,
   httpSummary,
   isInfrastructure,
-  legLineageKey,
   legOfType,
   parseLegViewKey,
   type LegViewKey,
@@ -267,6 +266,11 @@ export function FlowTables({
   // `infraTotal` is how many rows the filter WOULD hide, computed whether or not
   // it is currently hiding them — the affordance names that count in both states
   // ("2 hidden — show" / "Hide 2"), so it cannot be derived from the filtered list.
+  //
+  // ORDER IS THE SERVER'S. `GET /traces/{tid}/interactions` already sorts its rows
+  // by each request's position in the causal `leg_order` (ADR-0035), and the
+  // filter keeps that order; nothing here re-sorts. A second sort of one list
+  // would be a second copy of the ordering rule, free to drift from the backend's.
   const { displayedInteractions, infraTotal } = useMemo(() => {
     const byId = new Map(interactions.map((ix) => [ix.id, ix]));
     // Infrastructure rows that a visible row parents through, and so must stay.
@@ -286,25 +290,11 @@ export function FlowTables({
     }
 
     const hide = (ix: Interaction) => isInfrastructure(ix) && !keepAsAncestor.has(ix.id);
-    const displayedInteractions = showInfra ? [...interactions] : interactions.filter((ix) => !hide(ix));
-    const legPosition = new Map(
-      legOrder.map((key, index) => [legLineageKey(key.interaction_id, key.leg_type), index]),
-    );
-    const interactionPosition = (ix: Interaction): number =>
-      legPosition.get(legLineageKey(ix.id, 'request'))
-      ?? (ix.legs ?? []).reduce(
-        (first, leg) => Math.min(
-          first,
-          legPosition.get(legLineageKey(ix.id, leg.leg_type)) ?? Number.MAX_SAFE_INTEGER,
-        ),
-        Number.MAX_SAFE_INTEGER,
-      );
-    displayedInteractions.sort((a, b) => interactionPosition(a) - interactionPosition(b));
     return {
-      displayedInteractions,
+      displayedInteractions: showInfra ? interactions : interactions.filter((ix) => !hide(ix)),
       infraTotal: interactions.filter(hide).length,
     };
-  }, [interactions, legOrder, showInfra]);
+  }, [interactions, showInfra]);
 
   // Depths come from the FULL list, not the displayed one: a visible row's
   // indentation must not shift because a sibling was hidden. `computeInteractionDepths`

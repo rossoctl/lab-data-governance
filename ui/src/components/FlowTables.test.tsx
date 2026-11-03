@@ -1574,7 +1574,9 @@ describe('FlowTables', () => {
     (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
       if (url.endsWith('/interactions')) return {
         ok: true, status: 200, json: async () => ({
-          interactions: [child, responseOnly, parent],
+          // In the order the server serves them: by each interaction's request
+          // position in `leg_order` (its first leg's, for a response-only row).
+          interactions: [parent, responseOnly, child],
           leg_order: [
             { interaction_id: 'parent', leg_type: 'request' },
             { interaction_id: 'response-only', leg_type: 'response' },
@@ -1602,6 +1604,53 @@ describe('FlowTables', () => {
     const flatRows = within(flat).getAllByRole('row').slice(1);
     expect(flatRows.map((row) => within(row).getAllByRole('cell')[0].textContent)).toEqual(['1', '2', '3']);
     expect(flatRows.map((row) => within(row).getAllByRole('cell')[1].textContent)).toEqual(['9', '2', '1']);
+  });
+
+  it('renders the Tree in the order the server serves interactions, without re-sorting it', async () => {
+    // The server owns interaction order (`retrieval.get_interactions` sorts by each
+    // request's causal position, ADR-0035), so the table renders the array as served
+    // and never re-derives that order from `leg_order` — two sorts of one list are
+    // two places for the rule to drift. Proved with a served order that differs from
+    // the request-position order a client re-sort WOULD produce: the child directly
+    // under its parent, where a re-sort would push the unrelated root between them.
+    const parent = {
+      ...INTERACTIONS[0], id: 'parent', parent_interaction_id: null, span_count: 9,
+      legs: [{ ...INTERACTIONS[0].legs[0], seq: 1 }],
+    };
+    const otherRoot = {
+      ...INTERACTIONS[0], id: 'other-root', parent_interaction_id: null, span_count: 5,
+      legs: [{ ...INTERACTIONS[0].legs[0], seq: 2 }],
+    };
+    const child = {
+      ...INTERACTIONS[0], id: 'child', parent_interaction_id: 'parent', span_count: 1,
+      caller_entity_id: 'e2', callee_entity_id: 'e1',
+      legs: [{ ...INTERACTIONS[0].legs[0], seq: 3 }],
+    };
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return {
+        ok: true, status: 200, json: async () => ({
+          interactions: [parent, child, otherRoot],
+          leg_order: [
+            { interaction_id: 'parent', leg_type: 'request' },
+            { interaction_id: 'other-root', leg_type: 'request' },
+            { interaction_id: 'child', leg_type: 'request' },
+          ],
+        }),
+      };
+      if (url.endsWith('/entities')) return {
+        ok: true, status: 200, json: async () => ({ entities: ENTITIES }),
+      };
+      return { ok: true, status: 200, json: async () => ({ legs: [] }) };
+    });
+
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    const tree = await screen.findByLabelText('Interactions');
+    const treeRows = within(tree).getAllByRole('row').slice(1);
+    expect(treeRows.map((row) => within(row).getAllByRole('cell').at(-1)?.textContent)).toEqual([
+      '9 (1 anchor)', '1 (1 anchor)', '5 (1 anchor)',
+    ]);
   });
 
   it('renders an older server\'s interactions that carry neither leg_order nor legs', async () => {
