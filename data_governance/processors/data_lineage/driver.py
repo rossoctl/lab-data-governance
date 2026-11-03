@@ -83,6 +83,7 @@ import threading
 from data_governance import db
 from data_governance.matching import Matcher, get_matcher
 from data_governance.processors import _driver
+from data_governance.processors.trace_lock import lock_trace
 
 from . import traversal
 from .traversal import Entity, Leg
@@ -124,10 +125,14 @@ def load_trace(tx: db.Transaction, trace_id: str) -> tuple[list[Leg], dict[str, 
     The join through ``interactions`` is what scopes the read to one trace and what
     supplies the caller/callee identity the traversal routes on (ADR-0025 keeps both
     on the parent). Parent links and occurrence times also feed the traversal's
-    causal ordering; SQL row order has no execution meaning. Key-share locks keep
-    these rows alive until the derived writes commit. A concurrent reconciliation
-    deletion then runs its cleanup trigger afterward, so it cannot leave orphaned
-    lineage rows written after the deletion.
+    causal ordering; SQL row order has no execution meaning, so the read has no
+    ``ORDER BY``.
+
+    The read takes no row locks. A reconciliation deletion of these rows is held
+    off by the trace's writer lock, which :func:`process_leg` takes before calling
+    this (:mod:`data_governance.processors.trace_lock`). Row locks here would
+    deadlock against the reconciler's DELETE, and would rewrite every row of the
+    trace on every re-derivation.
 
     Payload *content* is loaded separately by :func:`load_payloads` — it is needed
     only to feed the matcher, and the default matcher reads neither argument, so
@@ -140,9 +145,7 @@ def load_trace(tx: db.Transaction, trace_id: str) -> tuple[list[Leg], dict[str, 
         "       i.parent_interaction_id, l.occurred_at "
         "FROM interaction_legs l "
         "JOIN interactions i ON i.id = l.interaction_id "
-        "WHERE i.trace_id = %s "
-        "ORDER BY l.interaction_id, l.leg_type "
-        "FOR KEY SHARE OF l, i",
+        "WHERE i.trace_id = %s",
         (trace_id,),
     )
     legs = [
@@ -216,7 +219,13 @@ def process_leg(tx: db.Transaction, leg: ArrivingLeg, matcher: Matcher) -> None:
 
     A trace with no legs clears its previous coverage claim, if any: after
     reconciliation deletes its last leg, an old ``complete`` claim is false.
+
+    The trace's writer lock is taken first and held until *tx* ends, so sidecar
+    reconciliation cannot delete the trace's legs between this read and the writes
+    (:mod:`data_governance.processors.trace_lock`). Every arm of the drain (cursor,
+    dirty queue, stale sweep) runs one trace per transaction through here.
     """
+    lock_trace(tx, leg.trace_id)
     legs, entities = load_trace(tx, leg.trace_id)
     if not legs:
         # An earlier derivation may have covered legs that were later deleted.
@@ -667,10 +676,12 @@ def _redrive_dirty(spec: _driver.StreamSpec[ArrivingLeg], limit: int) -> int:
     for trace_id, generation in queued:
         with db.transaction() as tx:
             spec.process_item(tx, ArrivingLeg(trace_id=trace_id, seq=0))
-        # Remove the generation after the derivation commits. This lets a
-        # concurrent reconciler finish a leg deletion once our key-share locks
-        # release, without a queue-row/leg-row lock cycle. A crash here causes
-        # an idempotent replay; a newer generation survives the conditional delete.
+        # Remove the generation after the derivation commits, in a transaction
+        # of its own. It takes no trace lock and holds nothing but this queue
+        # row, so it can safely wait behind an interactions writer whose
+        # triggers are re-queueing the trace, and the derivation never waits on
+        # that row while it holds the trace lock. A crash here causes an
+        # idempotent replay; a newer generation survives the conditional delete.
         with db.transaction() as tx:
             tx.execute(
                 "DELETE FROM data_lineage_dirty_traces "

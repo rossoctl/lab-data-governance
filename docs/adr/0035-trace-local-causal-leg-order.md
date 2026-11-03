@@ -52,10 +52,15 @@ numeric `seq` comparisons never define that prefix or a graph hop.
 Sidecar reconciliation can also remove interactions and legs. Delete triggers
 remove lineage rows for vanished legs and queue their old trace so the retained
 legs are derived again. If no legs remain, the processor removes the trace's old
-coverage claim. During derivation, key-share locks keep the interaction and leg
-rows alive until the lineage writes commit; a concurrent deletion then cleans up
-those rows afterward. This prevents an orphaned lineage row from being inserted
-after its leg was deleted.
+coverage claim. Sidecar reconciliation and lineage derivation of a trace each
+take a transaction-scoped advisory lock on that trace before reading it and hold
+it until commit, so the two never interleave. A lineage write therefore cannot
+land after a concurrent deletion's triggers have run, which would leave an
+orphaned lineage row that no later derivation removes. Row locks taken by the
+lineage read cannot give this guarantee: the reconciler's delete and the read
+lock the same rows in different orders, so either processor can be chosen as a
+deadlock victim, and every re-derivation would rewrite a lock into every row of
+the trace.
 
 Risk processing on the unmerged `origin/risk` branch needs its own reconciliation
 change before a corrected parent or endpoint can be treated as current. It remains
