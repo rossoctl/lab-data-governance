@@ -292,7 +292,7 @@ export function FlowTables({
     );
     const interactionPosition = (ix: Interaction): number =>
       legPosition.get(legLineageKey(ix.id, 'request'))
-      ?? ix.legs.reduce(
+      ?? (ix.legs ?? []).reduce(
         (first, leg) => Math.min(
           first,
           legPosition.get(legLineageKey(ix.id, leg.leg_type)) ?? Number.MAX_SAFE_INTEGER,

@@ -1604,6 +1604,36 @@ describe('FlowTables', () => {
     expect(flatRows.map((row) => within(row).getAllByRole('cell')[1].textContent)).toEqual(['9', '2', '1']);
   });
 
+  it('renders an older server\'s interactions that carry neither leg_order nor legs', async () => {
+    // A pre-ADR-0035 server sends no `leg_order`, and a pre-ADR-0025 row has no
+    // `legs`. Every other leg read in the flow view tolerates the absent array
+    // (`ix.legs ?? []`), so the Tree table must too rather than throw a TypeError.
+    // TWO rows, because a one-row list never reaches a sort comparator.
+    const legless = (id: string, spans: number) => {
+      const row: Partial<(typeof INTERACTIONS)[0]> = { ...INTERACTIONS[0], id, span_count: spans };
+      delete row.legs;
+      return row;
+    };
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
+      if (url.endsWith('/interactions')) return {
+        ok: true, status: 200, json: async () => ({ interactions: [legless('a', 3), legless('b', 4)] }),
+      };
+      if (url.endsWith('/entities')) return {
+        ok: true, status: 200, json: async () => ({ entities: ENTITIES }),
+      };
+      return { ok: true, status: 200, json: async () => ({ legs: [] }) };
+    });
+
+    renderWithProviders(
+      <FlowTablesWithLegTabs traceId="T1" pins={new PinStore()} onPinsChange={() => {}} />,
+    );
+    const tree = await screen.findByLabelText('Interactions');
+    const treeRows = within(tree).getAllByRole('row').slice(1);
+    expect(treeRows.map((row) => within(row).getAllByRole('cell').at(-1)?.textContent)).toEqual([
+      '3 (1 anchor)', '4 (1 anchor)',
+    ]);
+  });
+
   it('flat view draws no connector line for a single-leg interaction (response in flight)', async () => {
     // One interaction with only a request leg — no partner, so no line.
     const SINGLE = [
