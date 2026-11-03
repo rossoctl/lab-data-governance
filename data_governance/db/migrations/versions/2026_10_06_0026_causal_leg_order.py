@@ -62,6 +62,13 @@ def upgrade() -> None:
         )
         """
     )
+    # The processor drains the queue oldest generation first, in LIMITed
+    # batches. The upgrade below queues every trace, so the read needs an
+    # index rather than a full scan and sort.
+    op.execute(
+        "CREATE INDEX data_lineage_dirty_traces_generation_idx "
+        "ON data_lineage_dirty_traces (generation)"
+    )
     # Queue (or re-queue under a newer generation) one trace and wake the
     # processor. 0012 announces leg inserts and updates on the same channel;
     # this covers interaction corrections and deletions, which it does not.

@@ -118,6 +118,37 @@ def test_dirty_triggers_fire_on_update_and_delete_only(
     assert _dirty_trigger_events(migrated_dsn, table) == {"UPDATE", "DELETE"}
 
 
+def test_the_queue_has_an_index_for_its_generation_order(migrated_dsn: str) -> None:
+    """The processor reads ``ORDER BY generation LIMIT n``. After the backfill
+    queues every trace, that read must not scan and sort the whole queue."""
+    idx = _indexes(migrated_dsn, QUEUE)
+    assert any(
+        d.replace(" ", "").endswith("(generation)")
+        for name, d in idx.items()
+        if name != f"{QUEUE}_pkey"
+    ), sorted(idx.items())
+
+
+def test_the_processor_queue_read_can_use_the_generation_index(
+    migrated_dsn: str,
+) -> None:
+    """The planner can answer the driver's queue read from the index without a
+    sort. A small test table would be scanned anyway, so sequential scans and
+    explicit sorts are disabled for the EXPLAIN."""
+    with psycopg.connect(migrated_dsn) as conn:
+        conn.execute("SET enable_seqscan = off")
+        conn.execute("SET enable_sort = off")
+        plan = "\n".join(
+            r[0]
+            for r in conn.execute(
+                f"EXPLAIN SELECT trace_id, generation FROM {QUEUE} "
+                "ORDER BY generation LIMIT 500"
+            ).fetchall()
+        )
+    assert f"Index Scan using {QUEUE}_generation_idx" in plan, plan
+    assert "Sort" not in plan, plan
+
+
 # --- what does not queue -----------------------------------------------------
 
 
@@ -369,3 +400,4 @@ def test_downgrade_then_upgrade_round_trips(pg_dsn: str, monkeypatch) -> None:
 
     command.upgrade(cfg, "head")
     assert _dirty_trigger_events(pg_dsn, "interactions") == {"UPDATE", "DELETE"}
+    assert any("(generation)" in d for d in _indexes(pg_dsn, QUEUE).values())
