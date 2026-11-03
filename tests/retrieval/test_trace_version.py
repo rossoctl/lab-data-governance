@@ -359,3 +359,43 @@ def test_before_the_leg_content_kind_migration_the_token_still_works(
             assert retrieval.get_trace_version(_TID) != before
         finally:
             db.close_pool()
+
+
+@pytest.mark.parametrize("revision", ["0013_lineage_metadata", "0014_lineage_trace_status"])
+def test_before_the_lineage_entities_rename_the_token_still_works(
+    pg_dsn: str, monkeypatch, revision: str
+) -> None:
+    """``lineage_metadata`` arrives in 0013 with the entity set named
+    ``entity_path``; 0015 renames it ``entities``. A DB between the two must
+    still get a token, and a rewrite of that set must still move it."""
+    from alembic import command
+
+    from data_governance import db
+    from data_governance.db.migrate import _alembic_config
+
+    monkeypatch.setenv("DATABASE_URL", pg_dsn)
+    command.upgrade(_alembic_config(), revision)
+    with psycopg.connect(pg_dsn) as conn:
+        conn.execute(
+            "INSERT INTO interactions (id, trace_id, caller_entity_id, "
+            "callee_entity_id, summary) VALUES ('ix1', %s, 'e1', 'e1', 's')",
+            (_TID,),
+        )
+        conn.execute(
+            "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at) "
+            "VALUES ('ix1', 'request', now())"
+        )
+        conn.execute(
+            "INSERT INTO lineage_metadata (interaction_id, leg_type, data_sources, "
+            "entity_path, seq) VALUES ('ix1', 'request', '{a}', '{e1}', 1)"
+        )
+        conn.commit()
+        db.close_pool()
+        db.configure(pg_dsn)
+        try:
+            before = retrieval.get_trace_version(_TID)
+            conn.execute("UPDATE lineage_metadata SET entity_path = '{e1,e2}'")
+            conn.commit()
+            assert retrieval.get_trace_version(_TID) != before
+        finally:
+            db.close_pool()

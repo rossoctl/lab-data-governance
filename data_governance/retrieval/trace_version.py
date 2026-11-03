@@ -55,8 +55,8 @@ arithmetically compared. A trace with nothing derived yet has a token too
 (all marks zero), so a page opened before derivation starts can still wait on
 it. Before the derived-table migrations have run the token is the same
 all-zero value: never an error, like every other retrieval read. A table or
-column that a later migration adds is probed first, and read as absent until
-it exists.
+column that a later migration adds or renames is probed first: an added one
+reads as absent until it exists, a renamed one under its earlier name.
 """
 
 from __future__ import annotations
@@ -71,19 +71,33 @@ _TABLES = ("interactions", "interaction_legs", "lineage_metadata", "lineage_trac
 
 #: Added by migration 0022, after its table.
 _LEG_CONTENT_KIND = "interaction_legs.content_kind"
+#: Named ``entity_path`` when 0013 creates the table; 0015 renames it.
+_LINEAGE_ENTITIES = "lineage_metadata.entities"
+
+#: Every column the token reads that a migration after its table's creation
+#: adds or renames. The rest date from their table's creation (0004, 0009,
+#: 0013, 0014).
+_COLUMNS = (_LEG_CONTENT_KIND, _LINEAGE_ENTITIES)
 
 
 def _existing_schema(tx: db.Transaction) -> set[str]:
     """The probed tables that exist, plus ``table.column`` for each probed
-    column that does. One round trip."""
+    column that does. One round trip.
+
+    Each column is matched as its own ``table_name``/``column_name`` pair:
+    the catalog view filters those before it joins, while a match on the
+    joined text runs about four times slower, on every wake of every page.
+    """
+    pairs = [column.split(".") for column in _COLUMNS]
     rows = tx.fetch_all(
         "SELECT table_name::text FROM information_schema.tables "
         "WHERE table_name = ANY(%s) "
         "UNION ALL "
         "SELECT table_name::text || '.' || column_name::text "
         "FROM information_schema.columns "
-        "WHERE table_name = 'interaction_legs' AND column_name = 'content_kind'",
-        (list(_TABLES),),
+        "WHERE "
+        + " OR ".join(["(table_name = %s AND column_name = %s)"] * len(pairs)),
+        (list(_TABLES), *(name for pair in pairs for name in pair)),
     )
     return {r[0] for r in rows}
 
@@ -155,11 +169,15 @@ def get_trace_version(trace_id: str) -> str:
             # writes each row under its leg's preserved seq, so re-deriving a
             # corrected trace rewrites rows in place with no seq moving.
             # Arrays and JSONB render canonically as text; key order fixed.
+            # Before 0015 the entity set is ``entity_path``: the same values.
+            entities = (
+                "m.entities" if _LINEAGE_ENTITIES in present else "m.entity_path"
+            )
             row = tx.fetch_one(
                 "SELECT COALESCE(MAX(m.seq), 0), "
                 "  md5(string_agg(ROW(m.interaction_id, m.leg_type, m.seq, "
                 "                     m.data_sources, m.source_transformations, "
-                "                     m.entities)::text, "
+                f"                     {entities})::text, "
                 "                 '|' ORDER BY m.interaction_id, m.leg_type)) "
                 "FROM lineage_metadata m "
                 "WHERE m.interaction_id = ANY(ARRAY("
