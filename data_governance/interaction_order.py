@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import heapq
 from dataclasses import dataclass
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,15 +61,24 @@ def order_legs(events: Iterable[LegOrderEvent]) -> list[LegOrderKey]:
     response. No child-response/parent-response constraint is invented, since an
     asynchronous parent may finish first. Among currently unconstrained legs,
     the earliest occurrence wins. ``seq`` is only a deterministic tie-breaker.
-    If invalid parent links form a cycle, the smallest remaining event breaks it.
+    If invalid parent links form a cycle, the earliest leg on a cycle that
+    nothing outside it still constrains is released first; a self-parent
+    constrains nothing.
     """
     by_key = {event.key: event for event in events}
     followers: dict[LegOrderKey, set[LegOrderKey]] = {key: set() for key in by_key}
+    preceders: dict[LegOrderKey, set[LegOrderKey]] = {key: set() for key in by_key}
     indegree = {key: 0 for key in by_key}
 
     def precedes(before: LegOrderKey, after: LegOrderKey) -> None:
-        if before in by_key and after in by_key and after not in followers[before]:
+        if (
+            before != after
+            and before in by_key
+            and after in by_key
+            and after not in followers[before]
+        ):
             followers[before].add(after)
+            preceders[after].add(before)
             indegree[after] += 1
 
     for event in by_key.values():
@@ -90,10 +99,12 @@ def order_legs(events: Iterable[LegOrderEvent]) -> list[LegOrderKey]:
             if key not in remaining:
                 continue
         else:
-            # Break a parent-link cycle at a request. A response may have the
-            # earliest timestamp, but its own request must still come first.
-            requests = (key for key in remaining if key.leg_type == "request")
-            key = min(requests, key=lambda candidate: _priority(by_key[candidate]))
+            # Every remaining leg waits on another remaining leg, so invalid
+            # parent links form a cycle. Release a leg only from a cycle that
+            # no other remaining leg constrains: a leg merely downstream of a
+            # cycle, such as a valid child or a response, keeps its order.
+            candidates = _unconstrained_cycles(remaining, followers, preceders)
+            key = min(candidates, key=lambda candidate: _priority(by_key[candidate]))
         remaining.remove(key)
         ordered.append(key)
         for child in followers[key]:
@@ -101,3 +112,70 @@ def order_legs(events: Iterable[LegOrderEvent]) -> list[LegOrderKey]:
             if indegree[child] == 0 and child in remaining:
                 heapq.heappush(ready, (_priority(by_key[child]), child))
     return ordered
+
+
+def _unconstrained_cycles(
+    remaining: set[LegOrderKey],
+    followers: dict[LegOrderKey, set[LegOrderKey]],
+    preceders: dict[LegOrderKey, set[LegOrderKey]],
+) -> list[LegOrderKey]:
+    """The legs of each remaining strongly connected component with no remaining
+    predecessor outside itself.
+
+    Called only when no remaining leg is ready and self-edges are never added,
+    so each such component is a genuine cycle. A response and its own request
+    never share one, because no constraint leads from a response to a request:
+    a response in such a component has had its request released already.
+    """
+    component = _strong_components(remaining, followers)
+    blocked = {
+        component[after]
+        for after in remaining
+        for before in preceders[after]
+        if before in remaining and component[before] != component[after]
+    }
+    return [key for key in remaining if component[key] not in blocked]
+
+
+def _strong_components(
+    nodes: set[LegOrderKey], followers: dict[LegOrderKey, set[LegOrderKey]]
+) -> dict[LegOrderKey, int]:
+    """Tarjan's strongly connected components of the subgraph on *nodes*,
+    iterative so that a long parent chain cannot exhaust the recursion limit."""
+    index: dict[LegOrderKey, int] = {}
+    low: dict[LegOrderKey, int] = {}
+    component: dict[LegOrderKey, int] = {}
+    stack: list[LegOrderKey] = []
+    on_stack: set[LegOrderKey] = set()
+
+    def visit(node: LegOrderKey) -> Iterator[LegOrderKey]:
+        index[node] = low[node] = len(index)
+        stack.append(node)
+        on_stack.add(node)
+        return iter([after for after in followers[node] if after in nodes])
+
+    for root in nodes:
+        if root in index:
+            continue
+        work = [(root, visit(root))]
+        while work:
+            node, pending = work[-1]
+            for after in pending:
+                if after not in index:
+                    work.append((after, visit(after)))
+                    break
+                if after in on_stack:
+                    low[node] = min(low[node], index[after])
+            else:
+                work.pop()
+                if work:
+                    caller = work[-1][0]
+                    low[caller] = min(low[caller], low[node])
+                if low[node] == index[node]:
+                    while True:
+                        member = stack.pop()
+                        on_stack.discard(member)
+                        component[member] = index[node]
+                        if member == node:
+                            break
+    return component

@@ -13,9 +13,11 @@ For every trace read, build one order from the currently known interaction legs.
 A parent's request precedes each child's request, and a request precedes its own
 response when both are present. Among legs ready under those constraints, prefer
 `occurred_at`, then use `seq` and the leg key for deterministic ties. Missing
-parents, legs and times leave only the constraints supported by current evidence;
-invalid parent cycles are broken deterministically without dropping legs. A
-parent response need not wait for a child response because calls can finish
+parents, legs and times leave only the constraints supported by current evidence.
+Invalid parent cycles are broken deterministically without dropping legs: only the
+earliest leg on a cycle that no other remaining leg constrains is released, so a valid
+child of a cycle member still follows its parent's request, and a self-parent
+constrains nothing. A parent response need not wait for a child response because calls can finish
 asynchronously. The shared backend rule supplies the trace interactions API's
 `leg_order`, lineage derivation, lineage leg reads and lineage graph hop positions.
 UI tables and diagrams use that API order and display one-based causal steps.
