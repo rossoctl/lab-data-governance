@@ -191,7 +191,7 @@ def test_unknown_trace_still_streams_an_all_zero_token(listening_server) -> None
     try:
         first = reader.next_event(timeout=5.0)
         assert first is not None
-        assert first["id"] == "legs=0;es=0;dig=0;lin=0;st=@0"
+        assert first["id"] == "legs=0;es=0;dig=0;lin=0:0;st=@0"
     finally:
         reader.close()
 

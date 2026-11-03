@@ -19,7 +19,8 @@ diff:
   caller_entity_id, callee_entity_id)`` and its legs ``(interaction_id,
   leg_type, occurred_at, payload_hash, error, content_kind)`` — the inputs the
   causal leg order (ADR-0035) and the derived views read.
-- ``lin``: the highest ``lineage_metadata.seq`` in the trace, plus the trace's
+- ``lin``: the highest ``lineage_metadata.seq`` in the trace and an md5 of the
+  trace's lineage rows (the triple each read returns), plus the trace's
   lineage ``status``/``stopped_at_seq``. The lineage processor writes after the
   interactions processor and the status can flip with no new metadata row.
 
@@ -36,6 +37,13 @@ each as a record (where NULL and ``''`` render differently), and
 ``occurred_at`` as its epoch in seconds — the same instant to the microsecond
 whatever the session's ``TimeZone`` or ``DateStyle``. A re-derive that writes
 identical values back therefore leaves the token alone.
+
+The lineage rows have the same property one step later: the lineage
+processor writes each row under its leg's preserved ``seq``, so re-deriving a
+corrected trace rewrites rows in place with ``MAX(seq)`` unchanged and the
+status often unchanged too. The interactions-side correction has already
+moved ``dig`` by then, but a page that re-read before the lineage write landed
+would keep the old lineage, so ``lin`` carries a digest of the rows as well.
 
 The digest replaces an earlier ``ix`` mark, the number of ``interactions``
 rows: the digest lists every interaction of the trace by id, so it already
@@ -133,6 +141,7 @@ def get_trace_version(trace_id: str) -> str:
         legs = es = 0
         digest = "0"
         lin = 0
+        lin_digest = "0"
         status = ""
         stopped = 0
         if "interactions" in present:
@@ -142,14 +151,25 @@ def get_trace_version(trace_id: str) -> str:
             if row[2] is not None:
                 digest = str(row[2])
         if "lineage_metadata" in present:
+            # The rows' own content, not only MAX(seq): the lineage processor
+            # writes each row under its leg's preserved seq, so re-deriving a
+            # corrected trace rewrites rows in place with no seq moving.
+            # Arrays and JSONB render canonically as text; key order fixed.
             row = tx.fetch_one(
-                "SELECT COALESCE(MAX(m.seq), 0) FROM lineage_metadata m "
-                "JOIN interactions i ON i.id = m.interaction_id "
-                "WHERE i.trace_id = %s",
+                "SELECT COALESCE(MAX(m.seq), 0), "
+                "  md5(string_agg(ROW(m.interaction_id, m.leg_type, m.seq, "
+                "                     m.data_sources, m.source_transformations, "
+                "                     m.entities)::text, "
+                "                 '|' ORDER BY m.interaction_id, m.leg_type)) "
+                "FROM lineage_metadata m "
+                "WHERE m.interaction_id = ANY(ARRAY("
+                "  SELECT id FROM interactions WHERE trace_id = %s))",
                 (trace_id,),
             )
             assert row is not None
             lin = int(row[0])
+            if row[1] is not None:
+                lin_digest = str(row[1])
         if "lineage_trace_status" in present:
             row = tx.fetch_one(
                 "SELECT status::text, stopped_at_seq FROM lineage_trace_status "
@@ -159,4 +179,7 @@ def get_trace_version(trace_id: str) -> str:
             if row is not None:
                 status = str(row[0])
                 stopped = int(row[1] or 0)
-    return f"legs={legs};es={es};dig={digest};lin={lin};st={status}@{stopped}"
+    return (
+        f"legs={legs};es={es};dig={digest};"
+        f"lin={lin}:{lin_digest};st={status}@{stopped}"
+    )

@@ -56,7 +56,7 @@ def _add_interaction(conn, *, ix_id: str, trace_id: str, entity_id: str) -> None
 
 
 def test_fresh_trace_is_all_zero_and_stable(configured_db: str) -> None:
-    assert retrieval.get_trace_version(_TID) == "legs=0;es=0;dig=0;lin=0;st=@0"
+    assert retrieval.get_trace_version(_TID) == "legs=0;es=0;dig=0;lin=0:0;st=@0"
     assert retrieval.get_trace_version(_TID) == retrieval.get_trace_version(_TID)
 
 
@@ -128,7 +128,7 @@ def test_before_any_migration_the_token_is_all_zero(pg_dsn: str) -> None:
     db.close_pool()
     db.configure(pg_dsn)
     try:
-        assert retrieval.get_trace_version(_TID) == "legs=0;es=0;dig=0;lin=0;st=@0"
+        assert retrieval.get_trace_version(_TID) == "legs=0;es=0;dig=0;lin=0:0;st=@0"
     finally:
         db.close_pool()
 
@@ -286,6 +286,41 @@ def test_another_traces_correction_does_not_change_the_token(
     )
     raw_conn.commit()
     assert retrieval.get_trace_version(_TID) == before
+
+
+def test_a_lineage_rewrite_under_the_same_seq_changes_the_token(
+    configured_db: str, raw_conn
+) -> None:
+    """The lineage processor re-derives a corrected trace and upserts each row
+    under the leg's preserved ``seq`` (``data_lineage/driver.py:_upsert``), with
+    the coverage status unchanged. The interactions-side correction already
+    moved the token, but the page may have re-read lineage before this write
+    landed — so the rewrite must move the token again on its own."""
+    _seed_two_interactions(raw_conn)
+    raw_conn.execute(
+        "INSERT INTO lineage_metadata (interaction_id, leg_type, data_sources, "
+        "entities, payload_hash, seq) VALUES ('ix2', 'request', '{a}', '{e1}', 'h-req', 3)"
+    )
+    raw_conn.execute(
+        "INSERT INTO lineage_trace_status (trace_id, status) VALUES (%s, 'complete')",
+        (_TID,),
+    )
+    raw_conn.commit()
+    before = retrieval.get_trace_version(_TID)
+    raw_conn.execute(
+        "UPDATE lineage_metadata SET data_sources = '{a,b}', entities = '{e1,e2}' "
+        "WHERE interaction_id = 'ix2'"
+    )
+    raw_conn.commit()
+    assert retrieval.get_trace_version(_TID) != before
+    raw_conn.execute(
+        "UPDATE lineage_metadata SET data_sources = data_sources, entities = entities"
+    )
+    raw_conn.commit()
+    after = retrieval.get_trace_version(_TID)
+    raw_conn.execute("UPDATE lineage_metadata SET data_sources = '{a,b}'")
+    raw_conn.commit()
+    assert retrieval.get_trace_version(_TID) == after
 
 
 def test_before_the_leg_content_kind_migration_the_token_still_works(
