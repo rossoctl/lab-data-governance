@@ -975,19 +975,30 @@ def merge_identical_interactions(
         if first is None:
             seen[key] = server_id
             continue
-        # Same logical call — fold this server into the survivor, taking the
+        # Same logical call — fold one server into the other, taking the
         # *originating* call band (output band wins over input replay). Both of
         # a server's forward edges (source→server, server→target) carry the same
         # call band (the response leg is no longer minted at 2.c — it is formed
         # at Step 3.b), so we take one representative order per server and stamp
         # the merged band onto every surviving forward edge.
+        #
+        # An output-side server survives over an input replay seen first (an
+        # earlier span's input history, or a skewed clock). Its source node's
+        # span becomes the call's anchor, so the anchor and the band name the
+        # same LLM span: the one whose output disclosed the call. Same-side
+        # merges keep the first server seen, the earliest occurrence.
+        dropped = server_id
         s_edges = incident[first]
         d_edges = incident[server_id]
         if s_edges and d_edges:
             merged = _originating_order(s_edges[0].order, d_edges[0].order)
+            if s_edges[0].order < 0 <= d_edges[0].order:
+                dropped = first
+                seen[key] = server_id
+                s_edges = d_edges
             for e in s_edges:
                 e.order = merged
-        drop_servers.add(server_id)
+        drop_servers.add(dropped)
         edges_merged += 1
 
     if drop_servers:

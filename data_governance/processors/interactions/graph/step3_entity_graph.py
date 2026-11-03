@@ -378,9 +378,9 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
         call_edge = EntityEdge.make(src_eid, dst_eid, order=call_order)
         _anchor_and_payload(call_edge, src.id, tgt.id)
         if "_tool_call_arguments" in src.attributes:
-            # A replay can leave the input-side source node as the survivor,
-            # while Step 2.d's merged call band correctly names the output
-            # side as the origin of the logical call.
+            # The call band names the side of the LLM exchange the call came
+            # from. Step 2.d keeps an output-side server over its input
+            # replay, so the band and this anchor name the same LLM span.
             if call_order > 0:
                 call_edge.inferred_tool_phase = "output"
             elif call_order < 0:

@@ -13,6 +13,9 @@ skipped where Docker is unavailable.
 
 from __future__ import annotations
 
+import dataclasses
+import datetime as dt
+
 import pytest
 
 from data_governance.processors.interactions import graph_adapter, procedure
@@ -253,6 +256,89 @@ def test_replayed_tool_call_keeps_its_output_boundary() -> None:
             leg.occurred_at == response.occurred_at
             for leg in rows.legs_by_ix[call.id]
         )
+
+
+_ANTHROPIC_FIRST_LLM = "a000000000000002"
+_ANTHROPIC_SECOND_LLM = "a000000000000003"
+_PRIOR_ART = '{"action": "search", "query": "prior art"}'
+
+
+def _history_then_reissue(span):
+    """The first request already carries the `prior art` call as history from an
+    earlier turn; the second completion issues the identical call afresh."""
+    attrs = dict(span.attributes)
+    out_calls = "llm.output_messages.0.message.tool_calls"
+    if span.span_id == _ANTHROPIC_FIRST_LLM:
+        for key in [k for k in attrs if k.startswith(out_calls)]:
+            del attrs[key]
+        history = "llm.input_messages.1.message"
+        attrs[f"{history}.role"] = "assistant"
+        attrs[f"{history}.tool_calls.0.tool_call.function.name"] = "database"
+        attrs[f"{history}.tool_calls.0.tool_call.function.arguments"] = _PRIOR_ART
+        attrs[f"{history}.tool_calls.0.tool_call.id"] = "toolu_earlier_turn"
+    elif span.span_id == _ANTHROPIC_SECOND_LLM:
+        for key in [
+            k for k in attrs
+            if k.startswith(("llm.input_messages.1.", "llm.input_messages.2.", out_calls))
+        ]:
+            del attrs[key]
+        attrs[f"{out_calls}.0.tool_call.function.name"] = "database"
+        attrs[f"{out_calls}.0.tool_call.function.arguments"] = _PRIOR_ART
+    return dataclasses.replace(span, attributes=attrs)
+
+
+def _replay_clock_runs_early(span):
+    """The replaying span's clock reads before the span that disclosed the call,
+    so it is the first occurrence Step 2.d sees."""
+    if span.span_id != _ANTHROPIC_SECOND_LLM:
+        return span
+    skew = dt.timedelta(seconds=2)
+    return dataclasses.replace(
+        span, started_at=span.started_at - skew, ended_at=span.ended_at - skew
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "disclosing_span"),
+    [
+        (_history_then_reissue, _ANTHROPIC_SECOND_LLM),
+        (_replay_clock_runs_early, _ANTHROPIC_FIRST_LLM),
+    ],
+    ids=["history-then-reissue", "replay-clock-runs-early"],
+)
+def test_merged_replay_is_timed_at_the_completion_that_disclosed_it(
+    mutate, disclosing_span: str,
+) -> None:
+    """Step 2.d merges an input-side replay into its output-side call. When the
+    replay is the first occurrence seen, the merged call must still be anchored
+    on, and timed at the response of, the LLM span whose output disclosed it,
+    and so follow that LLM response."""
+    spans = [mutate(span) for span in load_trace_spans("trace_anthropic_tool_calls")]
+    rows = graph_adapter.adapt(extract(spans), spans)
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    span_by_id = {span.span_id: span for span in spans}
+    prior_art = [
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].natural_key.endswith(":database")
+        and rows.payloads[ix.request_payload_hash].content == _PRIOR_ART
+    ]
+    assert len(prior_art) == 1
+    call = prior_art[0]
+    assert call.primary_anchor_span_id == disclosing_span
+    llm = next(
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "llm"
+        and ix.primary_anchor_span_id == disclosing_span
+    )
+    llm_response = next(
+        leg for leg in rows.legs_by_ix[llm.id] if leg.leg_type == "response"
+    )
+    tool_legs = rows.legs_by_ix[call.id]
+    assert {leg.occurred_at for leg in tool_legs} == {
+        span_by_id[disclosing_span].ended_at
+    }
+    assert min(leg.seq for leg in tool_legs) > llm_response.seq
 
 
 def test_tool_call_resolved_to_observed_peer_keeps_observed_times() -> None:
