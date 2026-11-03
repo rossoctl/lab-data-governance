@@ -5,10 +5,13 @@ claims, then queue every trace with legs for re-derivation by the data-lineage
 processor. The queue is durable across restarts and is also filled when an
 interaction's parent/endpoints or a leg's timing/payload changes in place.
 Deleting an interaction or leg also queues the old trace and removes lineage
-for the deleted leg before its trace identity disappears. Inserts are not
-queued: a new leg reaches the processor through its ``seq`` cursor, and an
-interaction gains lineage only through its legs. Queuing them too would derive
-every new trace twice and put a row-level function on every write.
+for the deleted leg before its trace identity disappears. An inserted leg is
+queued only when the ``seq`` cursor might never offer it: its ``seq`` is at or
+below the data-lineage cursor or the ``seq`` of a leg outside its statement. The
+graph algorithm writes its own edge ordinals as ``seq``, so its legs can land
+there, even in a trace that is already derived. A leg taking the next ``seq``
+reaches the processor through the cursor, and an interaction gains lineage only
+through its legs. Queuing those too would derive every new trace twice.
 
 The graph algorithm used to give tool calls inferred from an LLM span the
 span's full start/end interval. Project existing output calls to the LLM
@@ -91,9 +94,10 @@ def upgrade() -> None:
         $$
         """
     )
-    # Only corrections and deletions queue. A new leg takes a new seq and
-    # reaches the processor through its cursor; an interaction without legs
-    # has no lineage and constrains no leg's order. The UPDATE triggers filter
+    # Corrections and deletions queue. A new leg normally takes a new seq and
+    # reaches the processor through its cursor; the insert trigger further down
+    # queues one that cannot. An interaction without legs has no lineage and
+    # constrains no leg's order. The UPDATE triggers filter
     # on causal inputs in WHEN, so an unchanged re-derivation upsert never
     # enters plpgsql. A DELETE trigger's WHEN cannot read NEW, hence two
     # triggers per table.
@@ -108,7 +112,7 @@ def upgrade() -> None:
                 RETURN NULL;
             END IF;
             -- The sidecar writer links a new child's parent before writing
-            -- its legs. Those legs arrive through the cursor.
+            -- its legs. Inserting those legs reaches the processor.
             IF NOT EXISTS (
                 SELECT 1 FROM interaction_legs WHERE interaction_id = NEW.id
             ) THEN
@@ -190,6 +194,71 @@ def upgrade() -> None:
         CREATE TRIGGER dg_lineage_leg_deleted
         AFTER DELETE ON interaction_legs
         FOR EACH ROW EXECUTE FUNCTION dg_mark_lineage_leg_dirty()
+        """
+    )
+    # A new leg reaches the cursor arm only if the leg's seq ends up above the
+    # cursor when the leg becomes visible. The streaming and sidecar writers
+    # take nextval, above every stored leg. The graph writer supplies its
+    # trace's edge ordinals, which can sit at or below the cursor, including in
+    # a trace that is already derived. The stale sweep skips such a leg when it
+    # has no payload or lies outside a partial trace's stored causal prefix.
+    #
+    # Below the cursor is not the whole test. The cursor also passes a seq
+    # while the leg is uncommitted if it derives a committed leg with an equal
+    # or higher seq, and graph ordinals of other traces are commonly higher. So
+    # a leg queues unless its seq is above both the cursor and every leg written
+    # outside its statement. Rows of the same statement commit together and
+    # are excluded, so a multi-row nextval insert queues nothing. Every leg a
+    # snapshot shows here is committed, or written earlier by this transaction.
+    # With one leg writer at a time, which the nextval cursor already assumes,
+    # no leg that commits before this one can pass it unseen.
+    #
+    # Statement-level with a transition table, as WHEN cannot hold a subquery:
+    # the cursor and the highest other seq are two index reads per statement,
+    # and an upsert that inserted nothing returns before both.
+    op.execute(
+        """
+        CREATE FUNCTION dg_mark_lineage_legs_inserted() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        DECLARE
+            reach BIGINT;
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM inserted_legs) THEN
+                RETURN NULL;
+            END IF;
+            SELECT GREATEST(
+                COALESCE((
+                    SELECT last_processed_seq FROM processor_state
+                    WHERE processor_name = 'data_lineage'
+                ), 0),
+                (
+                    SELECT l.seq FROM interaction_legs l
+                    WHERE (l.interaction_id, l.leg_type) NOT IN (
+                        SELECT n.interaction_id, n.leg_type FROM inserted_legs n
+                    )
+                    ORDER BY l.seq DESC
+                    LIMIT 1
+                )
+            ) INTO reach;
+            PERFORM dg_queue_lineage_trace(behind.trace_id)
+            FROM (
+                SELECT DISTINCT i.trace_id
+                FROM inserted_legs n
+                JOIN interactions i ON i.id = n.interaction_id
+                WHERE n.seq <= reach
+                ORDER BY i.trace_id
+            ) behind;
+            RETURN NULL;
+        END;
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER dg_lineage_leg_inserted
+        AFTER INSERT ON interaction_legs
+        REFERENCING NEW TABLE AS inserted_legs
+        FOR EACH STATEMENT EXECUTE FUNCTION dg_mark_lineage_legs_inserted()
         """
     )
 
@@ -309,6 +378,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     # The timestamp correction above is a data repair. Downgrading removes the
     # new replay machinery but does not invent the old, misleading tool times.
+    op.execute("DROP TRIGGER IF EXISTS dg_lineage_leg_inserted ON interaction_legs")
+    op.execute("DROP FUNCTION IF EXISTS dg_mark_lineage_legs_inserted()")
     op.execute("DROP TRIGGER IF EXISTS dg_lineage_leg_deleted ON interaction_legs")
     op.execute("DROP TRIGGER IF EXISTS dg_lineage_leg_dirty ON interaction_legs")
     op.execute("DROP FUNCTION IF EXISTS dg_mark_lineage_leg_dirty()")

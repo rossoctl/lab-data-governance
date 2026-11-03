@@ -26,8 +26,11 @@ would freeze the first, most partial answer.
 **The drain has three arms** (:func:`_drain_spec`, issues #137 and #279). The cursor
 arm handles new legs with ``seq > cursor``. The durable dirty-trace queue replays
 traces when a parent, endpoint, payload or occurrence time is corrected, or a leg
-is deleted, without a new leg ``seq``; migration 0026 also queues existing traces for a causal-order
-backfill. The stale sweep handles an entity that lands after its leg was consumed.
+is deleted, without a new leg ``seq``. It also takes a new leg the cursor may never
+offer: one whose supplied ``seq`` (a graph edge ordinal) is at or below the cursor
+or another leg's ``seq``. Migration 0026 also queues existing traces for a
+causal-order backfill. The stale sweep handles an entity that lands after its leg
+was consumed.
 All three use the same whole-trace derivation; only the cursor arm advances the
 ingestion cursor. Earlier reasons for the non-cursored arms include:
 

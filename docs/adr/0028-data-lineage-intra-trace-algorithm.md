@@ -627,9 +627,10 @@ inconsistency rather than as two different facts.
 ### D13 — The drain needs a second, non-cursored arm to catch legs rewritten in place
 
 **Updated by ADR-0035.** The current drain has a third arm: a durable dirty-trace
-queue for parent, endpoint, leg timing and payload corrections, deletions, and the
-migration backfill. The staleness sweep described here remains for missing producer entities
-and as a repair path for older data; neither non-cursored arm rewinds `seq`.
+queue for parent, endpoint, leg timing and payload corrections, deletions, new legs
+whose supplied `seq` the cursor may never offer, and the migration backfill. The
+staleness sweep described here remains for missing producer entities and as a
+repair path for older data; neither non-cursored arm rewinds `seq`.
 
 D9 established that a re-derivation must delete stale rows as well as upsert, and
 justified it by noting that legs are rewritten in place and that migration 0012's
@@ -1159,8 +1160,11 @@ FKs, idempotent re-derive):
 - **`data_lineage_dirty_traces`** — PK `trace_id`, with a generation from
   `data_lineage_dirty_generation` (migration `0026_causal_leg_order`). In-place
   corrections and deletions of interactions and legs queue their traces for replay
-  without rewinding the ingestion cursor; new legs arrive through the cursor and
-  are not queued. A generation is removed only if no later correction replaced it.
+  without rewinding the ingestion cursor. A new leg normally arrives through the
+  cursor and is not queued. A new leg is queued when its `seq` is at or below the
+  data-lineage cursor or another leg's `seq`, since the cursor may never offer it:
+  the graph algorithm stores its edge ordinals as `seq`. A generation is removed
+  only if no later correction replaced it.
 
 This section fixes the keys and the fact that a trace-level status must exist,
 matching how ADR-0024/0025 name their PKs.
