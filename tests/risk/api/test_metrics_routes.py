@@ -415,19 +415,20 @@ def test_top_rules_unknown_rule_id_has_null_name_and_level(
     assert item["risk_level"] is None
 
 
-def test_top_rules_ranked_by_count_descending(
+def test_top_rules_ranked_by_severity_before_count(
     client, configured_db, insert_interaction_risk, varied_catalog, monkeypatch
 ):
     _freeze(monkeypatch)
     for i in range(3):
         insert_interaction_risk(
-            interaction_id=f"ix-crit-{i}",
-            triggered_rule_ids=["FX-CRIT-BLOCK"],
+            interaction_id=f"ix-low-{i}",
+            trace_id=f"tr-low-{i}",
+            triggered_rule_ids=["FX-LOW-ALLOW"],
             computed_at=NOW - dt.timedelta(hours=1),
         )
     insert_interaction_risk(
-        interaction_id="ix-low",
-        triggered_rule_ids=["FX-LOW-ALLOW"],
+        interaction_id="ix-crit",
+        triggered_rule_ids=["FX-CRIT-BLOCK"],
         computed_at=NOW - dt.timedelta(hours=1),
     )
     body = client.get("/risk/metrics/top-rules?window=24h").json()

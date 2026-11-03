@@ -327,7 +327,7 @@ not seeded by migration.
 | `GET` | `/risk/metrics/summary` | Dashboard summary |
 | `GET` | `/risk/metrics/risk-distribution` | Records by risk level |
 | `GET` | `/risk/metrics/enforcement-distribution` | Records by enforcement type |
-| `GET` | `/risk/metrics/top-rules` | Most-frequently-triggered rules |
+| `GET` | `/risk/metrics/top-rules` | Rules fired, most severe first, then by traces |
 | `GET` | `/risk/metrics/top-traces` | Highest-risk traces |
 | `GET` | `/risk/metrics/risk-by-category` | Records by rule category |
 

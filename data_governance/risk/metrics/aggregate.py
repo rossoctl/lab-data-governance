@@ -98,6 +98,7 @@ from data_governance import db
 from data_governance.retrieval.risk import TraceRiskView
 from data_governance.retrieval.risk import _row_to_trace_view as _row_to_trace_risk_view
 from data_governance.retrieval.risk import _TRACE_COLUMNS
+from data_governance.retrieval.risk import _risk_rank
 from data_governance.risk.rules import catalog
 from data_governance.risk.rules.catalog import ENFORCEMENT_ORDER, RISK_LEVEL_ORDER
 
@@ -450,6 +451,11 @@ def get_top_rules(
     time_to: dt.datetime | None = None,
     limit: int = 10,
 ) -> list[TopRuleView]:
+    """FR-DAS-051: top N rules fired across current interaction risk records,
+    ranked by the rule's ``risk_level`` severity, then distinct traces, then
+    interactions, then ``rule_id`` (so the ``limit`` cut keeps the most severe
+    rules; a rule with no catalog level sorts last).
+    """
     with db.transaction() as tx:
         if not _risk_tables_exist(tx):
             return []
@@ -487,7 +493,14 @@ def get_top_rules(
             )
         )
 
-    items.sort(key=lambda item: item.count, reverse=True)
+    items.sort(
+        key=lambda item: (
+            _risk_rank(item.risk_level),
+            -item.trace_count,
+            -item.count,
+            item.rule_id,
+        )
+    )
     return items[:limit]
 
 
