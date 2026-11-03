@@ -35,8 +35,8 @@ LLM response boundary, while an input replay is known at the LLM request
 boundary. Its synthetic legs use that boundary as their occurrence time. An
 LLM span with no recorded end gives an output call its start instead, so the
 call stays in its LLM exchange. A tool resolved to an observed peer keeps the
-observed timing. Migration 0026
-corrects existing inferred-tool rows before replaying their lineage.
+observed timing. Migration 0026 corrects existing inferred-tool rows before
+replaying their lineage.
 
 `interaction_legs.seq` remains the durable ingestion cursor for the cross-trace
 feed, leg readiness and other stream drains. It is not rewritten to repair a trace.
