@@ -1,11 +1,13 @@
 """Migration 0026's dirty-trace queue: what fills it, and how it is read.
 
-New legs reach the data-lineage processor through its ingestion cursor
+New legs normally reach the data-lineage processor through its ingestion cursor
 (``seq > cursor``), so the queue is for what the cursor cannot see: an in-place
-correction or a deletion, which leaves no new ``seq``. Queuing inserts as well
-would derive every fresh trace twice and run a row-level plpgsql function on
-every write. The triggers therefore fire on UPDATE and DELETE only, and a
-correction to an interaction that has no legs yet queues nothing.
+correction or a deletion, which leaves no new ``seq``, and a new leg whose
+supplied ``seq`` the cursor may already have passed. Queuing every insert would
+derive every fresh trace twice. Interaction triggers therefore fire on UPDATE
+and DELETE only; legs add a statement-level INSERT trigger that queues only legs
+at or below the cursor or another leg's ``seq``. A correction to an interaction
+that has no legs yet queues nothing.
 """
 
 from __future__ import annotations
@@ -111,11 +113,15 @@ def _indexes(dsn: str, table: str) -> dict[str, str]:
 # --- shape -------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("table", ["interactions", "interaction_legs"])
-def test_dirty_triggers_fire_on_update_and_delete_only(
-    migrated_dsn: str, table: str,
-) -> None:
-    assert _dirty_trigger_events(migrated_dsn, table) == {"UPDATE", "DELETE"}
+@pytest.mark.parametrize(
+    ("table", "events"),
+    [
+        ("interactions", {"UPDATE", "DELETE"}),
+        ("interaction_legs", {"INSERT", "UPDATE", "DELETE"}),
+    ],
+)
+def test_dirty_trigger_events(migrated_dsn: str, table: str, events: set[str]) -> None:
+    assert _dirty_trigger_events(migrated_dsn, table) == events
 
 
 def test_the_queue_has_an_index_for_its_generation_order(migrated_dsn: str) -> None:
@@ -155,6 +161,26 @@ def test_the_processor_queue_read_can_use_the_generation_index(
 def test_inserting_a_fresh_trace_leaves_the_queue_empty(migrated_dsn: str) -> None:
     with psycopg.connect(migrated_dsn) as conn:
         _insert_trace(conn)
+        conn.commit()
+    assert _queued(migrated_dsn) == set()
+
+
+def test_a_next_seq_leg_past_the_cursor_is_not_queued(migrated_dsn: str) -> None:
+    """A leg taking ``nextval`` lies past the cursor and every stored leg, so the
+    cursor offers it, also when its trace is already derived."""
+    _seed(migrated_dsn)
+    with psycopg.connect(migrated_dsn) as conn:
+        _set_cursor(conn, _max_seq(conn))
+        conn.execute(
+            "INSERT INTO interactions (id, trace_id, parent_interaction_id, "
+            "caller_entity_id, callee_entity_id, summary) "
+            "VALUES ('late', %s, 'parent', 'agent', 'tool', 'call')",
+            (TRACE,),
+        )
+        conn.execute(
+            "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
+            "payload_hash, error) VALUES ('late', 'request', now(), 'l-req', false)"
+        )
         conn.commit()
     assert _queued(migrated_dsn) == set()
 
@@ -212,6 +238,102 @@ def test_an_unchanged_upsert_is_not_queued(migrated_dsn: str) -> None:
             "occurred_at = EXCLUDED.occurred_at, "
             "payload_hash = EXCLUDED.payload_hash, error = EXCLUDED.error"
         )
+        conn.commit()
+    assert _queued(migrated_dsn) == set()
+
+
+# --- inserts the cursor cannot reach queue -----------------------------------
+
+
+def _set_cursor(conn: psycopg.Connection, seq: int) -> None:
+    conn.execute(
+        "INSERT INTO processor_state (processor_name, last_processed_seq) "
+        "VALUES ('data_lineage', %s) ON CONFLICT (processor_name) "
+        "DO UPDATE SET last_processed_seq = EXCLUDED.last_processed_seq",
+        (seq,),
+    )
+
+
+def _max_seq(conn: psycopg.Connection) -> int:
+    return int(conn.execute("SELECT max(seq) FROM interaction_legs").fetchone()[0])
+
+
+def _insert_graph_leg(conn: psycopg.Connection, seq: int) -> None:
+    """A leg with a supplied ``seq``, as the graph writer stores its edge
+    ordinal, on a new call in the seeded trace."""
+    conn.execute(
+        "INSERT INTO interactions (id, trace_id, parent_interaction_id, "
+        "caller_entity_id, callee_entity_id, summary) "
+        "VALUES ('late', %s, 'parent', 'agent', 'tool', 'call')",
+        (TRACE,),
+    )
+    conn.execute(
+        "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
+        "payload_hash, error, seq) VALUES ('late', 'request', now(), NULL, false, %s)",
+        (seq,),
+    )
+
+
+@pytest.mark.parametrize("offset", [0, -1], ids=["at", "below"])
+def test_a_leg_inserted_at_or_below_the_cursor_queues_its_trace(
+    migrated_dsn: str, offset: int,
+) -> None:
+    """The cursor arm reads ``seq > cursor`` and will never offer this leg."""
+    _seed(migrated_dsn)
+    with psycopg.connect(migrated_dsn) as conn:
+        cursor = _max_seq(conn) + 100
+        _set_cursor(conn, cursor)
+        _insert_graph_leg(conn, cursor + offset)
+        conn.commit()
+    assert _queued(migrated_dsn) == {TRACE}
+
+
+def test_a_leg_inserted_below_another_legs_seq_queues_its_trace(
+    migrated_dsn: str,
+) -> None:
+    """The cursor can pass a ``seq`` before its leg commits, by deriving a
+    committed leg that carries a higher one."""
+    _seed(migrated_dsn)
+    with psycopg.connect(migrated_dsn) as conn:
+        _set_cursor(conn, 0)
+        _insert_graph_leg(conn, _max_seq(conn) - 1)
+        conn.commit()
+    assert _queued(migrated_dsn) == {TRACE}
+
+
+def test_re_deriving_a_stored_leg_behind_the_cursor_is_not_queued(
+    migrated_dsn: str,
+) -> None:
+    """A graph re-derivation upserts every leg of its trace with the same
+    supplied ``seq``. A leg that already exists takes the conflict path, which
+    inserts no row, so the insert trigger queues nothing."""
+    _seed(migrated_dsn)
+    with psycopg.connect(migrated_dsn) as conn:
+        _set_cursor(conn, _max_seq(conn) + 100)
+        (seq,) = conn.execute(
+            "SELECT seq FROM interaction_legs "
+            "WHERE interaction_id = 'child' AND leg_type = 'request'"
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO interaction_legs (interaction_id, leg_type, occurred_at, "
+            "payload_hash, error, seq) "
+            "VALUES ('child', 'request', '2026-01-01T00:00:01Z', 'c-req', true, %s) "
+            "ON CONFLICT (interaction_id, leg_type) DO UPDATE SET "
+            "occurred_at = EXCLUDED.occurred_at, "
+            "payload_hash = EXCLUDED.payload_hash, error = EXCLUDED.error",
+            (seq,),
+        )
+        conn.commit()
+    assert _queued(migrated_dsn) == set()
+
+
+def test_a_leg_inserted_past_the_cursor_and_every_leg_is_not_queued(
+    migrated_dsn: str,
+) -> None:
+    _seed(migrated_dsn)
+    with psycopg.connect(migrated_dsn) as conn:
+        _set_cursor(conn, 0)
+        _insert_graph_leg(conn, _max_seq(conn) + 10)
         conn.commit()
     assert _queued(migrated_dsn) == set()
 
