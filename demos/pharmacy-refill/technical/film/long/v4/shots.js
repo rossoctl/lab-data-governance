@@ -8,6 +8,7 @@
 //   night    run N1 (t) after run B (b=): the trace list with both; B's records write (rec=); the nightly's records
 //            answer (ans=) read alone and carried in across sessions; the export's verdict and its link back
 //   fixed    run C (t) and N2 (n2=): each report's payload and its allow
+//   dash     Sentry's risk dashboard, the last 24 hours (no trace)
 //   take/film.sh stills runs every mode with the take's ids (<take>/ids.json)
 const { chromium } = require('playwright'); const fs = require('fs'), path = require('path');
 const [outArg, ...kv] = process.argv.slice(2); const A = Object.fromEntries(kv.map(s => s.split(/=(.*)/s).slice(0, 2)));
@@ -46,7 +47,9 @@ const PORT = process.env.HTTP_PORT || '8080', DG = `http://dg.localtest.me:${POR
 
   if (A.mode === 'tap') {
     await open(A.t, null, 0); boxes.graph = await graphBox(); boxes.nodes = await content();
-    boxes.lookPair = await pair(/^pharmacy-assistant$/, /^lookup-patient$/); await shot('graph');
+    boxes.lookPair = await pair(/^pharmacy-assistant$/, /^lookup-patient$/);
+    // one exchange alone on the graph: the two end nodes side by side, their glyphs and arcs above their labels
+    { const c = await pair(/^pharmacy-demo-client$/, /^pharmacy-assistant$/); boxes.clientPair = [c[0], c[1] - 85, c[2], c[3] + 85]; } await shot('graph');
     await open(A.t, A.look, 0); boxes.who = await bb(panel.getByText('summary', { exact: true }).locator('..'));
     boxes.whoPair = await pair(/^pharmacy-assistant$/, /^lookup-patient$/); await shot('exchange');
     await center(pre()); boxes.what = await bb(pre()); await shot('sent');
@@ -119,6 +122,13 @@ const PORT = process.env.HTTP_PORT || '8080', DG = `http://dg.localtest.me:${POR
     await allow('c-allow');
     await open(A.n2, A.n2rep); boxes.n2 = await pair(/^export-dispense-batch$/, /^demand-forec/); await center(pre()); boxes.n2Payload = await bb(pre()); await shot('n2-payload');
     await allow('n2-allow');
+  }
+  if (A.mode === 'dash') {   // Sentry's risk dashboard over the take's day: the tiles, the distribution, the top rules, the alerts' critical rows
+    await p.goto(`${DG}/ui/risk?window=24h`, { waitUntil: 'domcontentloaded' }); await p.waitForTimeout(6000);
+    const card = t => p.getByText(t, { exact: true }).first().locator('xpath=ancestor::*[contains(concat(" ",@class," ")," pf-v5-c-card ")][1]');
+    boxes.tiles = await union(card('Agents'), card('Rules triggered')); boxes.bar = await bb(card('Risk Distribution')); boxes.rules = await bb(card('Top rules'));
+    const al = card('Alerts'); const rows = al.locator('tbody tr').filter({ hasText: 'critical' }); const n = await rows.count();
+    boxes.alerts = n ? await union(rows.first(), rows.last()) : await bb(al); boxes.alertCritical = n; await shot('page');
   }
   fs.writeFileSync(path.join(out, 'boxes.json'), JSON.stringify(boxes, null, 1)); console.log(JSON.stringify(boxes));
   await b.close();

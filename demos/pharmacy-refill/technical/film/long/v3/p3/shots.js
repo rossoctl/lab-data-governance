@@ -12,6 +12,8 @@ const PORT = process.env.HTTP_PORT || '8080', DG = `http://dg.localtest.me:${POR
   const box = async l => l.first().boundingBox().catch(() => null), boxes = {};
   await p.goto(DG + '/ui/risk/rules', { waitUntil: 'domcontentloaded' }); await p.waitForTimeout(5000); await p.mouse.move(5, 1075);
   boxes.rules = await box(p.locator('table')); boxes.rows = await p.locator('table tbody tr').count();
+  { const rs = await Promise.all(['pii_to_untrusted_external', 'phi_to_untrusted_external', 'restricted_external_sharing'].map(n => box(p.locator('table tbody tr').filter({ hasText: n }))));   // the three the film tells
+    const x = Math.min(...rs.map(r => r.x)), y = Math.min(...rs.map(r => r.y)); boxes.three = { x, y, width: Math.max(...rs.map(r => r.x + r.width)) - x, height: Math.max(...rs.map(r => r.y + r.height)) - y }; }
   await p.screenshot({ path: path.join(out, 'rules.png') });
   await p.goto(DG + '/ui/risk/rules/DG-001', { waitUntil: 'domcontentloaded' }); await p.waitForTimeout(5000); await p.mouse.move(5, 1075);
   boxes.conditions = await box(p.locator('table')); boxes.enforcement = await box(p.getByText('Enforcement suggestion').locator('..'));

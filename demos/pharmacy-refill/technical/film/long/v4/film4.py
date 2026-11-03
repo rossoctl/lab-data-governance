@@ -1,4 +1,4 @@
-"""film4.py — the technical film (v4.3): the 2:35 pitch as it is (its picture, film/pitch-2m35/master/sentry_pitch_demo.mp4,
+"""film4.py — the technical film (v4.4): the 2:35 pitch as it is (its picture, film/pitch-2m35/master/sentry_pitch_demo.mp4,
 from lab-dg demo/pharmacy-refill-pitch; pins.yaml) with nine
 technical sections spliced into its pauses (v4/narration.yaml). Each section is a steps.js stage: the
 camera pushes from the pitch's frame at the cut through a door in it, through Sentry's real pages and our panels (rings
@@ -107,7 +107,7 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
         n = len(list((TAKE / "live").glob("*.png")))
         steps = [("L1", {"img": f"{up}/live/0001.png", "seq": {"dir": f"{up}/live", "n": n}, "ff": COUNTS.get("ff", "▶▶"), "hold": n / FPS + 0.4,
                          "cam": [0, 0, 1300, 731]}),     # no ring here: its veil would dim the graph as it grows
-                 ("L2", {"img": S("shots/tap", "graph"), "cam": grow(tap["nodes"], 70), "ring": grow(tap["lookPair"], 8), "label": "One exchange", "sub": "a request and its reply"}),
+                 ("L2", {"img": S("shots/tap", "graph"), "cam": grow(tap["nodes"], 70), "ring": grow(tap.get("clientPair") or [tap["lookPair"][0] - 243, tap["lookPair"][1] - 85, 367, 98], 8), "label": "One exchange", "sub": "a request and its reply", "side": "below"}),
                  ("L3", {"img": S("shots/tap", "graph"), "cam": grow(tap["nodes"], 70), "ring": grow(tap["nodes"], 24),
                          "label": f"{COUNTS.get('N', '')} interactions · one tap", "sub": f"{COUNTS.get('T', '')} among agents and tools · {COUNTS.get('M', '')} calls to the model"}),
                  ("L4", {"img": S("shots/tap", "exchange"), "cam": panel(grow(tap["who"], 30)), "ring": grow(tap["who"], 6),
@@ -132,10 +132,10 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
         info = [enf[0], cond[1] + 10, 460, enf[1] + enf[3] - cond[1] - 10]   # the rule's information: name, id, categories, risk, enforcement (under its heading)
         rows3 = [cond[0], cond[1] + 2 * cond[3] / 5, cond[2], 3 * cond[3] / 5]   # a header and four rows: data item, destination ×2
         ccam = [cond[0] - 120, cond[1] - 140, cond[2] + 240, cond[3] + 400]
-        steps = [("L1", {"img": f"{p3}/rules.png", "cam": [0, 120, 1920, 600], "ring": grow(rb("rules"), 4), "label": "The policy · three rules", "side": "below"}),
+        steps = [("L1", {"img": f"{p3}/rules.png", "cam": [0, 120, 1920, 600], "ring": grow(rb("rules"), 4), "label": "The policy · six rules", "sub": "graded from critical to low", "side": "below"}),
                  ("L2", {"img": f"{p3}/dg001.png", "cam": [0, 100, 1000, 420], "ring": grow(info, 6), "label": "The first rule",
                          "sub": "personal data → an untrusted external destination · suggested enforcement: block", "side": "below"}),
-                 ("L3", {"img": f"{p3}/rules.png", "cam": [0, 120, 1920, 600], "ring": grow(rb("rules"), 4), "label": "The second · health data · the third · restricted", "side": "below"}),
+                 ("L3", {"img": f"{p3}/rules.png", "cam": [0, 120, 1920, 600], "ring": grow(rb("three"), 4), "label": "The second · health data · the third · restricted", "side": "below"}),
                  ("L4", {"img": S("panels/out", "inside"), "notag": True, "ring": grow(ins["d-courier"], 6), "tone": "green",
                          "label": "Inside: a service of this cluster", "side": "below"}),
                  ("L4b", {"img": S("panels/out", "inside"), "notag": True, "ring": grow(ins["setting"], 6),
@@ -149,15 +149,15 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
         o = pn["opaA"]
         steps = [("L1", {"img": S("shots/level1", "red"), "cam": near(l1["red"]), "ring": l1["red"], "tone": "red", "label": "Level 1 · the full record", "sub": "report-dispense → demand-forecast.example"}),
                  ("L2", {"img": S("shots/level1", "payload"), "cam": panel(l1["payload"]), "ring": l1["payload"], "label": "What was sent", "sub": "her name, birth date and number"}),
-                 ("L3", {"img": S("shots/level1", "cls"), "cam": [1000, l1["found"][1] - 200, 920, 518], "ring": grow(l1["found"], 6), "label": "Classification",
-                         "sub": "found here: the classifier · carried in: data lineage", "hold": 4.5}),
+                 ("L3", {"img": S("shots/level1", "cls"), "cam": [1000, l1["found"][1] - 200, 920, 518], "ring": grow([*l1["found"][:3], 22], 6), "label": "Classification",
+                         "sub": "found here: the classifier", "hold": 4.5}),
                  ("L4", {"img": S("shots/level1", "cls-name"), "cam": [1000, max(l1["nameRow"][1] - 240, 0), 920, 518], "ring": l1["nameRow"], "tone": "red",
                          "label": "Found here: her name", "sub": "PN · restricted · PII"}),
                  ("L5", {"img": S("panels/out", "opaA"), "notag": True, "cam": grow(o["input"], 30),
                          "ring": grow([o["i-found"][0], o["i-event"][1], o["input"][2] - 60, o["i-found"][1] + o["i-found"][3] - o["i-event"][1]], 4),
                          "label": "The input to OPA", "sub": "found here: PII · restricted", "side": "right"}),
-                 ("L6", {"img": S("panels/out", "opaA"), "notag": True, "ring": grow(o["i-carried"], 4), "label": "Carried in: the number is an MRN",
-                         "sub": "health data · the second rule", "side": "below"}),
+                 ("L6", {"img": S("panels/out", "opaA"), "notag": True, "ring": grow(o["i-found"], 4), "label": "Her name",
+                         "sub": "the first and third rules", "side": "right"}),
                  ("L6b", {"img": S("panels/out", "opaA"), "notag": True, "ring": grow(o["answer"], 4), "tone": "red", "label": "OPA’s answer",
                           "sub": "critical · block · most restrictive", "side": "left"}),
                  ("L7", {"img": S("shots/level1", "verdict"), "cam": panel(l1["verdict"]), "ring": grow(l1["verdict"], 6), "tone": "red",
@@ -177,8 +177,8 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
                  ("L7", {**hop("hop4", "Hop 4", "report-dispense → demand-forecast.example"), "tone": "red"}),
                  ("L8", {"img": S("shots/level2", "readings"), "cam": panel(l2["readings"]), "ring": l2["carried"], "tone": "red",
                          "label": "Carried in: her MRN", "sub": "MRN · restricted · PHI, PII · matched on the exact value"}),
-                 ("L9", {"img": S("panels/out", "opaB"), "notag": True, "ring": grow([o["i-carried"][0], o["i-carried"][1], o["answer"][0] + o["answer"][2] - o["i-carried"][0], max(o["i-carried"][3], o["answer"][3])], 4),
-                         "tone": "red", "label": "Same three rules", "sub": "critical · block", "side": "below"})]
+                 ("L9", {"img": S("panels/out", "opaB"), "notag": True, "ring": grow([o["i-carried"][0], o["answer"][1], o["answer"][0] + o["answer"][2] - o["i-carried"][0], o["i-carried"][1] + o["i-carried"][3] - o["answer"][1]], 4),
+                         "tone": "red", "label": "Three rules fire", "sub": "risk level critical · suggested enforcement: block", "side": "below"})]
     elif name == "I7":
         nb = boxes("shots/night")
         steps = [("L1", {"img": S("shots/night", "list"), "cam": [0, 60, 1920, 560], "ring": grow(nb["rowN"], 4), "label": "The nightly batch", "sub": "its own session, its own trace", "side": "below"}),
@@ -188,7 +188,7 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
                  ("L4", {"img": S("shots/night", "cross"), "cam": panel(nb["cross"]), "ring": grow(nb["cross"], 6), "tone": "red", "label": "Carried in across sessions",
                          "sub": "her MRN · origin: the patient lookup, in the trace of Rosa’s refill"}),
                  ("L5", {"img": S("shots/night", "verdict"), "cam": panel(nb["verdict"]), "ring": grow(nb["verdict"], 6), "tone": "red",
-                         "label": "Critical · recommend block", "sub": "the same three rules"})]
+                         "label": "Critical · suggested enforcement: block", "sub": "linked back to Rosa’s refill"})]
     elif name == "I8":
         fb = boxes("shots/fixed")
         steps = [("L1", {"img": S("shots/fixed", "c-payload"), "cam": panel(fb["cPayload"]), "ring": fb["cPayload"], "tone": "green", "label": "The fixed app", "sub": "the drug and the dates · no patient key"}),
@@ -198,7 +198,12 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
                  ("L4", {"img": S("shots/fixed", "c-payload"), "cam": FULL, "label": "Find the leak · check the fix"})]
     elif name == "I9":
         g = pn["grid"]
-        steps = [("L1", {"img": S("panels/out", "grid"), "notag": True, "ring": grow(g["grid"], 8), "hold": 5.5})]
+        db = boxes("shots/dash")
+        steps = [("L1", {"img": S("panels/out", "grid"), "notag": True, "ring": grow(g["grid"], 8), "hold": 5.5}),
+                 ("L2", {"img": S("shots/dash", "page"), "cam": FULL, "ring": grow(db["tiles"], 6), "label": "The risk dashboard", "sub": "two apps · one policy", "side": "below"}),
+                 ("L3", {"img": S("shots/dash", "page"), "cam": panel(db["bar"]), "ring": grow(db["bar"], 6), "label": "Every exchange, graded", "sub": "critical · high · medium · none", "side": "below"}),
+                 ("L4", {"img": S("shots/dash", "page"), "cam": panel(db["rules"]), "ring": grow(db["rules"], 6), "label": "The rules behind them", "side": "below", "hold": 4.0}),
+                 ("L5", {"img": S("shots/dash", "page"), "cam": panel(db["alerts"]), "ring": grow(db["alerts"], 6), "tone": "red", "label": "The three sessions we followed", "sub": "critical · at the top", "side": "left"})]
     return spec, steps
 
 

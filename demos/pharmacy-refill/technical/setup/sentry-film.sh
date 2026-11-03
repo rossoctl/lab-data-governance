@@ -5,7 +5,7 @@
 #
 #   setup/sentry-film.sh check        this machine: tools, versions, memory, disk, ports, keys, repo access   (read-only)
 #   setup/sentry-film.sh plan         this cluster: what is there, and what `up` would do                     (read-only)
-#   setup/sentry-film.sh media <zip>  a git checkout only: the binary parts (voice, music, the v4.2 take's media), from the
+#   setup/sentry-film.sh media <zip>  a git checkout only: the binary parts (voice, music, the v4.4 take's media), from the
 #                                     pinned zip (pins.yaml → media); files already here are never overwritten
 #   setup/sentry-film.sh sources      the three checkouts at their pins (clone, or fetch + check out)
 #   setup/sentry-film.sh cluster      the kind cluster + the agent platform: create, or complete what is missing  ~25 min
@@ -13,8 +13,9 @@
 #   setup/sentry-film.sh sentry       Sentry at its pin (build, load, install or roll) + the take's settings    ~30 min
 #   setup/sentry-film.sh app          the pharmacy app at its pin (deploy; another version is replaced)         ~10 min
 #   setup/sentry-film.sh instrument   lineage + payload capture on every agent and tool                         ~20 min
+#   setup/sentry-film.sh travel       the travel app at its pin, with lineage + capture (the dashboard's second app) ~30 min
 #   setup/sentry-film.sh doctor       is everything the take needs in place?        (read-only; exit 0 = ready)
-#   setup/sentry-film.sh up           sources → cluster → cli → sentry → app → instrument → doctor
+#   setup/sentry-film.sh up           sources → cluster → cli → sentry → app → instrument → travel → doctor
 #   CONFIRM=<cluster> setup/sentry-film.sh recreate     delete this kind cluster and build it again (asks nothing else)
 #
 # Every change is appended to state/<cluster>/changes.log with how to undo it.
@@ -30,6 +31,7 @@ KUBECONFIG=${KUBECONFIG:-$HOME/.kube/$CLUSTER.kubeconfig}; CLI_CONTEXT=${CLI_CON
 SRC=${SRC:-$HOME/sentry-film/src}; LLM_MODEL=${LLM_MODEL:-qwen2.5:7b}
 export KUBECONFIG KIND_EXPERIMENTAL_PROVIDER=podman CONTAINER_ENGINE=podman
 export PATH="$HOME/.config/rossoctl:$PATH"
+export GIT_TERMINAL_PROMPT=0   # with no git credentials, fail at once instead of waiting on a password prompt
 CTX=kind-$CLUSTER; NODE=$CLUSTER-control-plane; NS=pharmacy; DGNS=data-governance
 STATE=$PKG/state/$CLUSTER; mkdir -p "$STATE"
 PLATFORM_DIR=$SRC/kagenti; SENTRY_DIR=$SRC/lab-data-governance; APP_DIR=$SRC/agent-examples-snp
@@ -159,9 +161,11 @@ PY
   done
   [ -n "${ELEVENLABS_API_KEY:-}" ] && ok "ELEVENLABS_API_KEY set (new or changed lines, music)" \
     || note "ELEVENLABS_API_KEY not set: the film rebuilds from the voice cache; a changed line or new music needs it"
+  [ -n "${LLM_API_KEY:-}" ] && ok "LLM_API_KEY set (the travel app's model, through the organization's gateway)" \
+    || note "LLM_API_KEY not set: setup stops at the travel app; a film from the shipped take needs no cluster and no such key"
   [ -n "${GEMINI_API_KEY:-}" ] && ok "GEMINI_API_KEY set (the film review's model pass)" \
     || note "GEMINI_API_KEY not set: review.py runs every check but the Gemini pass"
-  if [ -n "$(ls "$PKG/film/long/tts11" 2>/dev/null)" ]; then ok "the media parts are here (voice cache, music, the v4.2 take)"
+  if [ -n "$(ls "$PKG/film/long/tts11" 2>/dev/null)" ]; then ok "the media parts are here (voice cache, music, the v4.4 take)"
   else bad "the media parts are missing (a git checkout carries the text only)" "download $(pin media file) from $(pin media url), then: setup/sentry-film.sh media <that zip>"; fi
   [ "$FAILS" = 0 ] && say "check passed" || die "$FAILS item(s) above" "fix them, then run check again"
 }
@@ -268,6 +272,7 @@ step_cluster() {
      $(pin platform flags) --rossoctl-values "$HERE/platform-values.yaml"; }
   run_logged "$STATE/platform-install.log" - _platform \
     || die "the platform installer failed" "read $STATE/platform-install.log (its last lines name the step); run this step again, it resumes"
+  k -n rossoctl-system rollout status deploy/rossoctl-backend --timeout=600s >/dev/null 2>&1 || true   # the installer returns while its image is still pulling
   local gaps; gaps=$(platform_gaps)
   [ -z "$gaps" ] || die "after the installer, still missing: $(echo "$gaps" | tr '\n' ';')" "read $STATE/platform-install.log"
   ok "the agent platform is complete"; platform_settings
@@ -421,8 +426,8 @@ opa_policy() {   # OPA's policy: compiled from Sentry's rule catalog by its own 
   say "OPA's policy (${rules:-none served}): compiling Sentry's rule catalog into the opa-policy ConfigMap"
   [ -x "$SENTRY_DIR/.venv/bin/python" ] || { say "Sentry's Python env, once (uv sync)"; (cd "$SENTRY_DIR" && uv sync --frozen --no-dev --python 3.11 >/dev/null); }
   k -n $DGNS get cm opa-policy -o yaml > "$STATE/opa-policy-before.yaml" 2>/dev/null || true
-  (cd "$SENTRY_DIR" && kubectl config use-context "$CTX" >/dev/null && bash deploy/create-opa-configmap.sh) | tail -2
-  changed "opa-policy ConfigMap from Sentry's catalog (deploy/create-opa-configmap.sh)" "kubectl -n $DGNS apply -f $STATE/opa-policy-before.yaml (empty: delete the ConfigMap)"
+  (cd "$SENTRY_DIR" && kubectl config use-context "$CTX" >/dev/null && bash deploy/create-opa-configmap.sh "$PKG/$(pin settings opa_catalog)") | tail -2
+  changed "opa-policy ConfigMap from the film's catalog (deploy/create-opa-configmap.sh $(pin settings opa_catalog))" "kubectl -n $DGNS apply -f $STATE/opa-policy-before.yaml (empty: delete the ConfigMap)"
   k -n $DGNS rollout restart deploy/opa deploy/data-governance-ui >/dev/null   # both read it once at start
   k -n $DGNS rollout status deploy/opa --timeout=300s >/dev/null; k -n $DGNS rollout status deploy/data-governance-ui --timeout=300s >/dev/null
   rules=$(opa_rules); [ "$rules" = "$want" ] && ok "OPA serves the policy: $rules" \
@@ -471,6 +476,18 @@ step_app() {
 }
 
 # ----------------------------------------------------------------------------------------------------- instrument
+# Two apps do not fit an 8-CPU node at their pods' stock requests (200 m each, real use ~1 m), and the rollouts need room too. Limits are
+# unchanged. Agents and tools only: the stores hold their data in emptyDir, so rolling one loses it.
+step_room() {
+  local want=10m d todo=""
+  for d in $(k -n $NS get cm -o name | sed -n 's#.*authbridge-config-##p'); do
+    [ "$(k -n $NS get deploy "$d" -o jsonpath='{.spec.template.spec.containers[0].resources.requests.cpu}')" = $want ] || todo="$todo $d"; done
+  if [ -z "$todo" ]; then ok "the pharmacy's agents and tools request $want CPU each, so both apps fit"; return; fi
+  say "the pharmacy's agents and tools: CPU requests → $want, so both apps fit the node (limits unchanged)"
+  for d in $todo; do k -n $NS set resources "deploy/$d" --requests=cpu=$want >/dev/null; done
+  for d in $todo; do k -n $NS rollout status "deploy/$d" --timeout=600s >/dev/null || die "$d did not roll out after its CPU request changed" "kubectl -n $NS get pods"; done
+  changed "pharmacy agents and tools: CPU requests → $want" "redeploy the app (CONFIRM=$NS setup/sentry-film.sh app)"
+}
 lineage_count() { local n=0 c cm; for cm in $(k -n $NS get cm -o name 2>/dev/null | grep authbridge-config-); do
   c=$(k -n $NS get "$cm" -o jsonpath='{.data.config\.yaml}'); echo "$c" | grep -q lineage-telemetry && echo "$c" | grep -q 'capture_io: true' && n=$((n + 1)); done; echo $n; }
 step_instrument() {
@@ -487,6 +504,51 @@ step_instrument() {
   [ "$(lineage_count)" = "$want" ] && ok "lineage + capture on all $want; restore copies in $STATE/restore/ (take.sh relineage uses them)" \
     || die "lineage + capture on $(lineage_count) of $want" "read $STATE/instrument.log; run this step again"
   "$PKG/take/take.sh" pin
+}
+
+# ----------------------------------------------------------------------------------------------------- travel app
+travel_ns() { python3 -c 'import yaml,sys; print(yaml.safe_load(open(sys.argv[1]))["travel_app"]["namespace"])' "$PKG/pins.yaml"; }
+travel_lineage() { local n=0 c cm tn; tn=$(travel_ns); for cm in $(k -n "$tn" get cm -o name 2>/dev/null | grep authbridge-config-); do
+  c=$(k -n "$tn" get "$cm" -o jsonpath='{.data.config\.yaml}'); echo "$c" | grep -q lineage-telemetry && echo "$c" | grep -q 'capture_io: true' && n=$((n + 1)); done; echo $n; }
+step_travel() {
+  at_pin agent-examples-snp "$APP_DIR"; at_pin lab-data-governance "$SENTRY_DIR"
+  local tn img; tn=$(travel_ns); img=$(pin travel_app store_image)
+  if [ "$(travel_lineage)" -ge 12 ] && [ -z "$(k -n "$tn" get pods --no-headers 2>/dev/null | awk '{split($2,a,"/"); if (a[1]!=a[2] && $3!="Completed") print}')" ]; then
+    ok "the travel app runs, with lineage + capture on $(travel_lineage)"; return; fi
+  if ! { k get ns "$tn" >/dev/null 2>&1 && [ -f "$STATE/travel.deployed" ]; }; then
+    step_cli
+    podman image exists "$img" || { say "the travel app's store image (no longer served): rebuilt from Bitnami's archive of the same release"
+      podman build -q -t "$img" -f "$PKG/setup/files/minio-wrap.Containerfile" "$PKG/setup/files" >/dev/null; }
+    [ -n "${LLM_API_KEY:-}" ] || die "the travel app's manifest calls its model through the organization's LLM gateway, and needs its key" "export LLM_API_KEY=<the gateway's key>, then setup/sentry-film.sh travel (the pharmacy uses local ollama and needs no key)"
+    say "the travel app at $(pin agent-examples-snp | cut -c1-9) through proxy mode (deploy.sh, ~10 min)"
+    # deploy.sh loads the store with `kind load docker-image`, and kind looks an image up with a `docker` command, podman or not.
+    mkdir -p "$STATE/shim"; printf '#!/bin/sh\nexec podman "$@"\n' > "$STATE/shim/docker"; chmod +x "$STATE/shim/docker"
+    _deploy_travel() { cd "$APP_DIR" && PATH="$STATE/shim:$PATH" ROSSOCTL_CONTEXT="$CLI_CONTEXT" KIND_CLUSTER="$CLUSTER" bash deploy.sh --app travel_advisor --mode proxy; }
+    run_logged "$STATE/travel-deploy.log" '^(>>|==|ERROR|error|\[FAIL\])' _deploy_travel || die "deploy.sh failed for travel_advisor" "read $STATE/travel-deploy.log"
+    touch "$STATE/travel.deployed"
+    changed "travel app deployed (namespace $tn)" "(cd $APP_DIR && APP=travel_advisor KIND_CLUSTER=$CLUSTER ROSSOCTL_CONTEXT=$CLI_CONTEXT bash undeploy.sh)"
+  fi
+  # A travel turn on a CPU-only model runs past the sidecar's 300 s limits: its route timeouts and Envoy's default stream_idle_timeout.
+  if k -n "$tn" get cm envoy-config >/dev/null 2>&1 && ! k -n "$tn" get cm envoy-config -o jsonpath='{.data.envoy\.yaml}' | grep -q stream_idle_timeout; then
+    k -n "$tn" get cm envoy-config -o yaml > "$STATE/travel-envoy-before.yaml"
+    k -n "$tn" get cm envoy-config -o json | python3 -c 'import json,re,sys
+d=json.load(sys.stdin); y=d["data"]["envoy.yaml"]; y=y.replace("timeout: 300s","timeout: 1800s").replace("message_timeout: 310s","message_timeout: 1810s")
+y=re.sub(r"^( *)route_config:", lambda m: m.group(1)+"stream_idle_timeout: 1800s\n"+m.group(0), y, flags=re.M); d["data"]["envoy.yaml"]=y; print(json.dumps({"data":d["data"]}))' > "$STATE/travel-envoy.json"
+    k -n "$tn" patch cm envoy-config --type merge --patch-file "$STATE/travel-envoy.json" >/dev/null
+    changed "travel-advisor envoy-config: 1800 s limits" "kubectl -n $tn apply -f $STATE/travel-envoy-before.yaml, then roll its pods"
+    # Agents and tools only: the stores hold their data in emptyDir, so rolling one loses it.
+    local d agents; agents=$(k -n "$tn" get cm -o name | sed -n 's#.*authbridge-config-##p')
+    for d in $agents; do k -n "$tn" rollout restart "deploy/$d" >/dev/null; done
+    for d in $agents; do k -n "$tn" rollout status "deploy/$d" --timeout=600s >/dev/null || die "$d did not come back after the sidecar limits changed" "kubectl -n $tn get pods"; done
+  fi
+  say "Sentry's lineage wiring on the travel app (dg.sh namespace $tn instrument, ~20 min)"
+  _instrument_travel() { cd "$SENTRY_DIR" && kubectl config use-context "$CTX" >/dev/null && KIND_CLUSTER="$CLUSTER" bash deploy/dg.sh namespace "$tn" instrument; }
+  run_logged "$STATE/travel-instrument.log" '^>>|^error|^Error' _instrument_travel || die "dg.sh namespace $tn instrument failed" "read $STATE/travel-instrument.log"
+  local cm; for cm in $(k -n "$tn" get cm -o name | grep authbridge-config-); do
+    k -n "$tn" get "$cm" -o json | python3 -c 'import sys,json; d=json.load(sys.stdin); k="config.yaml"; print(json.dumps({"data":{k:d["data"][k].replace("capture_io: false","capture_io: true")}}))' > "$STATE/travel-capture.json"
+    k -n "$tn" patch "$cm" --type merge --patch-file "$STATE/travel-capture.json" >/dev/null; done
+  changed "lineage + payload capture on $tn" "redeploy the travel app"
+  [ "$(travel_lineage)" -ge 12 ] && ok "lineage + capture on $(travel_lineage) travel agents and tools" || die "lineage + capture on only $(travel_lineage) in $tn" "read $STATE/travel-instrument.log"
 }
 
 # --------------------------------------------------------------------------------------------------------- doctor
@@ -515,6 +577,13 @@ for d,kv in yaml.safe_load(open(sys.argv[1]))["settings"]["env"].items():
   local r; r=$(app_rev 2>/dev/null || echo absent); [ "$r" = same ] && ok "pharmacy runs the pinned code" || bad "pharmacy: $r" "setup/sentry-film.sh app"
   local nr; nr=$(k -n $NS get pods --no-headers 2>/dev/null | awk '{split($2,a,"/"); if (a[1]!=a[2] && $3!="Completed") print $1}' | tr '\n' ' ')
   [ -z "$nr" ] && ok "pharmacy pods ready" || bad "pharmacy pods not ready: $nr" "kubectl --context $CTX -n $NS get pods"
+  k -n "$(travel_ns)" exec deploy/postgres -- sh -c 'psql -U "$POSTGRES_USER" -d "${POSTGRES_DB:-postgres}" -Atc "SELECT 1 FROM bookings LIMIT 0"' >/dev/null 2>&1 && ok "the travel app's store has its tables" \
+    || bad "the travel app's store has no tables (its data lives in emptyDir: was it restarted?)" "kubectl --context $CTX delete ns $(travel_ns); setup/sentry-film.sh travel"
+  k -n $NS get deploy report-dispense -o jsonpath='{.spec.template.spec.containers[0].image}' | grep -q pharmacy-otel && ok "the pharmacy's agents run their own image tag" \
+    || bad "the pharmacy's agents share an image tag with the next app deployed: a roll runs that app's code" "kubectl --context $CTX delete ns $NS $(travel_ns); setup/sentry-film.sh up"
+  k -n $NS exec deploy/postgres -- sh -c 'psql -U "$POSTGRES_USER" -d pharmacy -Atc "SELECT 1 FROM fills LIMIT 0"' >/dev/null 2>&1 && ok "the pharmacy's store has its tables" \
+    || bad "the pharmacy's store has no tables (its data lives in emptyDir: was it restarted?)" "kubectl --context $CTX delete ns $NS; setup/sentry-film.sh up"
+  local tn tl; tn=$(travel_ns); tl=$(travel_lineage); [ "$tl" -ge 12 ] && ok "travel app: lineage + capture on $tl" || bad "travel app: lineage + capture on $tl of 12" "setup/sentry-film.sh travel"
   local n; n=$(lineage_count); [ "$n" -ge 13 ] && ok "lineage + capture on $n agents and tools" \
     || bad "lineage + capture on $n of 13" "take/take.sh relineage <deploy> after a roll, or setup/sentry-film.sh instrument"
   [ -s "$STATE/restore/authbridge-config-report-dispense.json" ] && ok "restore copies for take.sh relineage" || bad "no restore copies in $STATE/restore (they are per checkout)" "copy them from the checkout that ran instrument on this cluster (its state/$CLUSTER/restore/), or run setup/sentry-film.sh instrument (~20 min)"
@@ -552,7 +621,7 @@ step_plan() {
 case "${1:-}" in
   check|sources|recreate) "step_$1" ;;
   media) step_media "${2:-}" ;;
-  plan|cluster|cli|sentry|app|instrument|doctor) kubeconfig_has; "step_$1" ;;
-  up) step_sources; kubeconfig_has; step_cluster; step_cli; step_sentry; step_app; step_instrument; step_doctor ;;
+  plan|cluster|cli|sentry|app|room|instrument|travel|doctor) kubeconfig_has; "step_$1" ;;
+  up) step_sources; kubeconfig_has; step_cluster; step_cli; step_sentry; step_app; step_room; step_instrument; step_travel; step_doctor ;;
   *) sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 2 ;;
 esac

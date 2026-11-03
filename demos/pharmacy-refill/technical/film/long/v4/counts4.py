@@ -28,6 +28,9 @@ SQL = f"""select json_build_object(
 d = json.loads(dgsql(SQL))
 d["T"] = d["N"] - d["M"]
 d["S"] = len(ORDER)
+# the risk dashboard's own numbers, as its page shows them (the last 24 hours)
+dist = json.loads(__import__("urllib.request").request.urlopen(f"http://dg.localtest.me:{__import__('os').environ['HTTP_PORT']}/risk/metrics/risk-distribution?window=24h", timeout=30).read())["distribution"]
+d.update(DJ=dist["total"], DC=dist["critical"], DH=dist["high"], DM=dist["medium"], DL=dist["low"])
 d["runs"] = {k: {"trace": RUNS[k], **(d["forecaster"] or {}).get(RUNS[k], {})} for k in ORDER}
 d["ff"] = "▶▶ ×" + __import__("os").environ.get("LIVE_SPEED", "7")
 del d["forecaster"]

@@ -19,6 +19,7 @@ v = {"name": take.name, "cluster": env.get("CLUSTER", "?"), "date": starts["A"].
      "app_sha": pins["agent-examples-snp"]["sha"][:7],
      "gap_B": gap("A", "B"), "gap_N1": gap("B", "N1"), "gap_C": gap("N1", "C"), "gap_N2": gap("C", "N2"),
      **{f"{k}8": t[k][:8] for k in t}, **{k: c[k] for k in ("N", "M", "T", "J", "F")}}
+v.update({k: c[k] for k in ("DJ", "DC", "DH", "DM", "DL")})
 out = (HERE / "take-facts.template.yaml").read_text().format(**v)
 (take / "take-facts.yaml").write_text(out)
 print(f">> take-facts.yaml: {v['N']} interactions in A, {v['J']} judged, {v['F']} flagged; gaps {v['gap_B']}/{v['gap_N1']}/{v['gap_C']}/{v['gap_N2']} min")

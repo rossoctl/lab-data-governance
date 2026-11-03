@@ -1,0 +1,68 @@
+{
+ "cues": {
+  "zoomEnd": 1.2,
+  "steps": [
+   1.2,
+   9.123,
+   16.898,
+   21.602,
+   30.447,
+   33.51,
+   38.211,
+   46.054
+  ],
+  "pull": 52.656,
+  "pullEnd": 53.456,
+  "end": 53.756
+ },
+ "lines": [
+  [
+   "tts11/d35b817236fd9418-t1.12.wav",
+   1.5,
+   7.723,
+   "In this demo, Sentry holds the company policy as six rules, graded from critical to low. Three of them matter for this story."
+  ],
+  [
+   "tts11/d1eddcbab4f3cb36-t1.12.wav",
+   9.423,
+   7.575,
+   "The first rule: personal data, sent to an untrusted external destination. Its suggested enforcement is block."
+  ],
+  [
+   "tts11/9a43906edd582300-t1.12.wav",
+   17.198,
+   4.505,
+   "The second says the same for health data, and the third for restricted data."
+  ],
+  [
+   "tts11/bb0dd1661332e8fc-t1.12.wav",
+   21.902,
+   8.645,
+   "Untrusted means outside the organization. The cluster's own services count as inside. Here the contracted courier runs as one of them."
+  ],
+  [
+   "tts11/1bc5dea487225faf-t1.12.wav",
+   30.747,
+   2.862,
+   "So does any address on a list the company sets."
+  ],
+  [
+   "tts11/25069a8b50ca755c-t1.12.wav",
+   33.81,
+   4.501,
+   "The forecaster's address is on neither: external, and untrusted."
+  ],
+  [
+   "tts11/c0ce7dd89423b2d0-t1.12.wav",
+   38.511,
+   7.644,
+   "Sentry evaluates the rules with O P A, the Open Policy Agent. Here are the first rule's conditions, as Sentry shows them."
+  ],
+  [
+   "tts11/ebd939f30bc6100c-t1.12.wav",
+   46.354,
+   6.002,
+   "Any flow that carries personal data to a destination that is external and untrusted fires the rule."
+  ]
+ ]
+}

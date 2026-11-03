@@ -1,8 +1,8 @@
 # RUNBOOK — reproduce the technical film, from nothing
 
-The film (`final/sentry-technical-film-v4.3.mp4`, 8:54) is the 2:35 pitch of the pharmacy-refill demo, as made, with
+The film (`final/sentry-technical-film-v4.4.mp4`, 9:43) is the 2:35 pitch of the pharmacy-refill demo, as made, with
 nine "under the hood" sections spliced into its pauses: Sentry's real pages from a live run, the policy's rules on
-Sentry's own pages, the exact input Sentry sends OPA, the number tracked hop by hop, the verdicts. Every screen in a section comes from a take
+Sentry's own pages, the exact input Sentry sends OPA, the number tracked hop by hop, the verdicts, the risk dashboard. Every screen in a section comes from a take
 on a real cluster. This runbook takes a Mac (or a RHEL 9 Linux host, § 0) from nothing to that film, rebuilt from a take of its own.
 
 Every command runs from this folder (the package root). Each script says what it found before it changes anything,
@@ -14,10 +14,10 @@ exception is the demo app's own `fills` table, emptied before each refill of a t
 | 0 | the machine: tools, memory, disk, access, keys | ~30 min once |
 | 1 | your settings: `film.env` | 2 min |
 | 2 | read the cluster before touching it: `plan` | 1 min |
-| 3 | set up: platform, Sentry, the app, lineage wiring | ~60 min from nothing (measured: platform 13, Sentry 12 with a warm build cache — ~25 cold —, app 6, instrument 20) |
-| 4 | the take: five sessions | 43 min (measured) |
+| 3 | set up: platform, Sentry, the two apps, lineage wiring | ~90 min from nothing (measured: platform 13, Sentry 12 with a warm build cache — ~25 cold —; the two apps with their wiring 58) |
+| 4 | the take: five sessions, two travel bookings | 52 min (measured) |
 | 5 | check the verdicts | 1 min |
-| 6 | build the film | ~30 min (measured: stills 3, OPA + panels 0.5, cards 3.5, sections 8–10, join 4, review 6.5) |
+| 6 | build the film | ~40 min (measured on 8 vCPU: up to the cards 11, sections 20, join 4, review 6.5) |
 | 7 | review, look, list the differences | ~15 min |
 | 8 | change it: words, voice, sections, story | |
 | 9 | when something fails | |
@@ -26,7 +26,7 @@ exception is the demo app's own `fills` table, emptied before each refill of a t
 ## 0. The machine
 
 From git (this folder in lab-data-governance) you have the text; the binary parts (the voice cache, the music, the
-v4.2 take's recording, stills, cards and rendered sections, the pitch and the finished film) come in one zip, pinned in
+v4.4 take's recording, stills, cards and rendered sections, the pitch and the finished film) come in one zip, pinned in
 `pins.yaml` → media. Download it from the link there (Box: sign in), then
 `setup/sentry-film.sh media <the zip>` (it checks the sha256 and never overwrites a file you have). From the zip itself
 you already have everything; its text is a snapshot of the day it was made, and the git folder holds the current text.
@@ -78,16 +78,21 @@ cold: torch's CUDA wheels, 6.6 GB; `sentry` waits for the API server to settle a
 What that one run shows: setup, a take, the film and its review (without the Gemini pass) all complete on Linux; the
 five verdicts match v4.2's and so do the counts, but for one (104 exchanges judged, v4.2 102: one line voiced anew);
 the live graph runs slower on CPU (I2 57 s vs 43 s). What it does not show yet: `up` took four passes there while
-these Linux fixes were made, so the fixes have not yet run in one pass on a fresh host.
+these Linux fixes were made, so the fixes have not yet run in one pass on a fresh host. v4.4 used that host again with a new cluster:
+`up` took five passes while the two-app fixes of § 3 and § 9 were made; after them, the two apps from deployment to `doctor` ran in one pass.
+
+The travel app (the second app, only the dashboard shows it) calls its model through the organization's LLM gateway, as its manifest pins it, so
+`setup/sentry-film.sh travel` needs that gateway reachable and `LLM_API_KEY` in the environment; it stops and says so otherwise. The pharmacy uses local ollama. Without
+the gateway you can still rebuild the film from the shipped take with no cluster.
 
 What runs without the keys:
 
 | | no key | needs `ELEVENLABS_API_KEY` | needs `GEMINI_API_KEY` |
 |---|---|---|---|
 | setup, take, check, stills, panels, cards | yes | | |
-| a section whose words are as in v4.2 or v4.3 | yes (the voice cache `film/long/tts11/` holds every line of both) | | |
+| a section whose words are as in v4.4 | yes (the voice cache `film/long/tts11/` holds its lines) | | |
 | a line whose words change (an edit, or a count that differs in a new take) | | yes: it stops and names the line (no key on this machine: voice that line where the key is, from this package's own `narration.yaml`, and copy only its wav into `film/long/tts11/` under the name the stop prints) | |
-| the music | yes (the four pieces in `film/long/v4/music/` stretch to the new lengths) | new pieces only | |
+| the music | yes (the four pieces in `film/long/v4/music/` stretch to the new lengths; past ~10 % it is audible, so compose that piece again) | new pieces only | |
 | the review | words heard, frozen frames, loudness | | the claims check and the watch pass (~$0.45 a film) |
 
 ## 1. Your settings: `film.env`
@@ -121,7 +126,7 @@ the app or replace it. When a layer cannot be fixed without deleting something, 
 ## 3. Set up
 
 ```sh
-setup/sentry-film.sh up             # sources → cluster → cli → sentry → app → instrument → doctor
+setup/sentry-film.sh up             # sources → cluster → cli → sentry → app → room → instrument → travel → doctor
 ```
 
 or one step at a time (each is idempotent; when one stops, fix what it prints and run it again):
@@ -133,7 +138,9 @@ or one step at a time (each is idempotent; when one stops, fix what it prints an
 | `cli` | a CLI context for this cluster, logged in with the platform's service account | reuses the context; stops if that name points at another cluster | seconds |
 | `sentry` | builds Sentry's two images from the pin (each labelled with its commit), loads them into the node, installs Sentry and hooks the platform's collector to it, sets the take's four settings (`pins.yaml` → settings), compiles OPA's policy from Sentry's rule catalog (`deploy/create-opa-configmap.sh`, with Sentry's own Python env made by `uv`; Sentry's installer does not do it, and OPA waits for it) | keeps pods already at the pin; otherwise rebuilds and rolls them, keeping the data; saves every setting it changes in `state/<cluster>/changes.log` | ~25 min first time, ~5 min after |
 | `app` | deploys the pharmacy app at its pin through the platform's proxy mode (`deploy.sh`) | keeps an app whose code matches the pin (four pods' code hashed against the checkout); another version needs `CONFIRM=pharmacy` | ~10 min |
-| `instrument` | Sentry's lineage wiring on the app's 13 agents and tools, payload capture on, the configs saved for `take.sh relineage`, the plain pods pinned to the digest they run | skips when all 13 are wired and the copies exist | ~20 min |
+| `room` | lowers the pharmacy's agents' and tools' CPU requests to 10 m, so two apps fit an 8-CPU node | skips when they are at 10 m | ~1 min |
+| `instrument` | Sentry's lineage wiring on the app's 13 agents and tools, payload capture on, the configs saved for `take.sh relineage`, the plain pods pinned to the digest they run, the agents and tools moved to their own image tag | skips when all 13 are wired and the copies exist | ~20 min |
+| `travel` | the second app, travel_advisor, at the same pin (`deploy.sh`), with lineage + capture on its 12 agents and tools. Only the risk dashboard shows it. **It comes after `instrument`**: it overwrites the shared image tags | skips when it runs and is wired | ~15 min |
 | `doctor` | read-only: every check the take needs; exit 0 = ready | | 1 min |
 
 Sentry's console is then at `http://dg.localtest.me:<HTTP_PORT>/ui/traces`; the platform's at
@@ -150,12 +157,18 @@ What the setup changes beyond the pinned code, and why:
 | console memory 1 GiB | its Data lineage reads need it (ships 512 MiB) |
 | payload capture on in the 13 sidecars | the film shows payloads (the instrument default is off) |
 | plain pods pinned to their digest | they run `:latest` with `imagePullPolicy: Always`; a restart could pull another build |
+| the policy has six rules (`pins.yaml` → settings.opa_catalog, `setup/files/rules_source-film.json`) | Sentry's catalog at the pin, plus DG-011, DG-012, DG-013 on card and financial data, so the dashboard shows every grade; the pharmacy's three rules are as they were |
+| the pharmacy's agents and tools: CPU requests 10 m, limits unchanged | each sidecared pod requests 200 m and uses ~1 m; two apps fill 8 CPUs by requests alone. Never the stores: their data lives in `emptyDir`, and a roll loses it |
+| the pharmacy's agents and tools on `pharmacy-otel:film`, a tag of their own | `deploy.sh` and the shim bake use one fixed tag per repo: the travel app's build replaces it, and a rolled pharmacy pod would run travel code |
+| a `docker` → `podman` shim on the PATH, for the travel app's `deploy.sh` only | it runs `kind load docker-image`, which looks images up with a `docker` command |
+| the travel app's MinIO image rebuilt from Bitnami's archive (`setup/files/minio-wrap.Containerfile`) | its manifest pins a release MinIO no longer serves |
+| the travel app's sidecar limits 1800 s | a travel turn on a CPU-only model runs past the stock 300 s |
 
 ## 4. The take
 
 ```sh
 setup/sentry-film.sh doctor          # must print "ready"
-take/sequence.sh my-take             # → film/takes/my-take/ (~45 min, mostly two 15.5-min waits; never re-run into a take)
+take/sequence.sh my-take             # → film/takes/my-take/ (~52 min, mostly two 15.5-min waits; never re-run into a take)
 ```
 
 Five sessions in the pitch's order:
@@ -167,6 +180,7 @@ Five sessions in the pitch's order:
 | N1 | level 3 · the nightly batch, its own session | | `mrn` | ~3.5 min after B |
 | C | the fixed app · no patient key | `none` | `none` | > 15 min after N1 |
 | N2 | the fixed app's nightly batch | | `none` | ~3.5 min after C |
+| T1, T2 | two bookings in the travel app, for the dashboard (each ~1 min: its model is the gateway's, see § 3) | | | after N2 |
 
 Rules (the script keeps them; keep them when you run steps by hand with `take/take.sh`):
 1. **One run at a time, nobody else on the cluster's pharmacy app.** Another conversation or a pod roll changes what
@@ -194,7 +208,11 @@ take/film.sh check my-take
 If one differs, **stop: the words follow the run, never the reverse.** Find out why (`take/take.sh verdicts <trace>`
 lists every exchange with its risk, rules and carried-in labels). The usual cause is a broken rule of § 4: a refill
 inside another's window, a key switch without relineage, another conversation. Record a new take. Counts may differ
-from v4.2's (A was 28 interactions there); the narration reads them from the take's `counts.json`.
+from v4.4's (A was 29 interactions there); the narration reads them from the take's `counts.json`.
+
+The dashboard counts everything in its 24-hour window, so one take must be alone there: `film.sh stills` stops unless it shows
+the take's 3 critical exchanges. After a failed take, `take/take.sh forget <the new take's start, UTC>` drops the earlier risk
+records. And read I9 L3 against the new `counts.json`: it names the grades the run shows (v4.4: high and medium; no low).
 
 ## 6. Build the film
 
@@ -221,19 +239,18 @@ take/film.sh all my-take             # check → live → ids → counts → fac
 take lacks that needs no cluster (the live frames from `rec/A.webm`, the repainted pitch and its door frames from
 `cards/`). A take's rendered sections stay in `out/`, so after a change only the changed sections are rendered again. The ones that read Sentry need the take's cluster up; the
 rest work on the take folder alone, so a take can be rebuilt on any machine with the package. The shipped take
-`film/takes/v4.2/` is the one films v4.2 and v4.3 were made from: `take/film.sh stage v4.2 && take/film.sh join v4.2 film-v4.3`
-rebuilds v4.3 with no cluster at all. (v4.2 came back byte for byte this way on the Mac it was made on, 10-26, with the
-kit as in lab-dg #336; an encoder on a machine with another core count may differ in the last pixels.) The stages load their fonts from Google Fonts, so a render needs the network.
+`film/takes/v4.4/` is the one film v4.4 was made from: `take/film.sh stage v4.4 && take/film.sh join v4.4 film-v4.4`
+rebuilds v4.4 with no cluster at all (an encoder on a machine with another core count may differ in the last pixels). The stages load their fonts from Google Fonts, so a render needs the network.
 
 ## 7. Review, look, list the differences
 
-1. `film/takes/<take>/review/<film>/REPORT.md`: word error rate of the heard voice against the script (v4.2: see `final/`), frozen
+1. `film/takes/<take>/review/<film>/REPORT.md`: word error rate of the heard voice against the script (v4.4: see `final/`), frozen
    frames, loudness (-16 LUFS integrated), every line against the facts, and Gemini's findings. Findings are leads:
    check each against the frame before acting.
 2. **Look at the frames.** Open the film at each section (the plan's `cuts` and `sections` give the times) and check
    that every ring sits on what its label names. A different take moves Sentry's graph: each hop's box in I6 comes
    from the graph (`shots/level2/boxes.json`), so check them one by one.
-3. **List every difference from v4.2**: counts (`counts.json` vs `film/takes/v4.2/counts.json`), lines whose words
+3. **List every difference from v4.4**: counts (`counts.json` vs `film/takes/v4.4/counts.json`), lines whose words
    changed (`film.plan.json` "script"), length, the frames that look different, the review's numbers.
    A slower model (ollama on CPU) makes run A longer, and I2's live graph plays all of it at ×7: the film grows by
    (A's length − ~52 s) / 7 (a Linux CPU take: I2 57 s vs 43 s, film 9:31 vs 9:17). `LIVE_SPEED=` sets the factor.
@@ -247,16 +264,18 @@ kit as in lab-dg #336; an encoder on a machine with another core count may diffe
 | the voice | `common.VOICE` in `film/long/common.py` (ElevenLabs voice id + model); its pace: the `VOICE_TEMPO` line at the top of `film4.py` (1.12; the shell's value is ignored; the cache keeps one file per tempo) | all 86 lines are spoken again (key, credits), then all nine stages, join and review: `take/film.sh words <take>` (~30 min) |
 | where a section cuts into the pitch, and its door | `film4.CUT` (a frame of the pitch) and `film4.DOOR` (the rectangle the camera enters) | `take/film.sh cards <take>` (door frames), then `words` |
 | a section's pictures | `film4.section()`: each step's `img` (a still), `cam` (the camera's rectangle), `ring`, `label`, `sub`, `tone` | `words <take> <I…>` |
-| the app's map (its card, its rings) | `film/long/v4/map-views.json` | `take/film.sh map <take>` (no cluster), then `words <take> I1` |
+| the app's map | its card: `film/long/v4/map-views.json`; its rings: `do_map` in `take/film.sh` (`path1`, `path2`) | `take/film.sh map <take>` (no cluster), then `words <take> I1` |
 | a still itself | `film/long/v4/shots.js` (Sentry's pages), `film/long/v3/p1/shots.js` (rossoctl), `v3/p3/shots.js` (the policy) | `take/film.sh stills <take>` (needs the take's cluster), then `words` |
 | the music | `film/long/v4/score.py` (STORY, HOOD, GLOBAL, PIECES); delete a piece in `v4/music/` to compose it again (key, credits) | `$PYTHON film/long/v4/score.py compose`, then `join` |
 | the repainted crops | `film/long/v4/fixes/cards.py` (CARDS: which frames, which lines; the new text comes from `ids.json`) | `take/film.sh cards <take>`, then `join` |
+| the pitch's own pictures (the tap's outline) | `film/long/v4/fixes/tap_ring.py` | `take/film.sh cards <take>`, then `join` |
+| the risk dashboard's section | I9 in `narration.yaml` and `film4.section()`; its boxes: `mode=dash` in `shots.js`; its counts (`DJ`, `DC`, `DH`, `DM`, `DL`): `counts4.py` | `stills`, `counts`, then `words <take> I9` |
 | the review | `film/long/review.py`; its truth file `take/take-facts.template.yaml`; its brief `film/long/v4/review-prompt-onevoice.md` | `take/film.sh facts <take> && take/film.sh review <take>` |
-| a changes reel for a reviewer | `film/long/v4/reel/pairs.py` (which lines changed, in words or picture, and their notes; v4.2 → v4.3 shipped), `reel.py` (cuts and cards) | `$PYTHON film/long/v4/reel/pairs.py before.plan.json after.plan.json > pairs.json && $PYTHON film/long/v4/reel/reel.py before.mp4 after.mp4 reel.mp4 pairs.json` (v4.2's film is in the v4.2 zip) |
-| the story (order, a new section) | `film4.CUT`/`DOOR`/`section()` + `narration.yaml` + `score.PIECES`; the pitch itself is not changed | a new take only if a new screen is needed |
+| a changes reel for a reviewer | `film/long/v4/reel/pairs.py` (which lines changed, in words or picture, and their notes; v4.3 → v4.4 shipped), `reel.py` (cuts and cards) | `$PYTHON film/long/v4/reel/pairs.py before.plan.json after.plan.json > pairs.json && $PYTHON film/long/v4/reel/reel.py before.mp4 after.mp4 reel.mp4 pairs.json` (v4.3's film is in the v4.3 zip) |
+| the story (order, a new section) | `film4.CUT`/`DOOR`/`section()` + `narration.yaml` + `score.PIECES`; the pitch's words are not changed | a new take only if a new screen is needed |
 
-A fact said in words often sits in more than one place: "three rules" is in `narration.yaml` (I4 L1, I6 L9, I7 L5), in
-on-screen labels in `film4.section()` ("The policy · three rules", "Same three rules") and in
+A fact said in words often sits in more than one place: the policy's size is in `narration.yaml` (I4 L1), in the on-screen
+label in `film4.section()` ("The policy · six rules"), in `pins.yaml` → settings.opa_rules and in
 `take/take-facts.template.yaml`. Before changing one, `grep -rn "<the words>" film/long take` and change them together;
 the review's claim check flags a narration that disagrees with the facts.
 
@@ -279,6 +298,10 @@ pair there when you add one.
 | `sentry`: migrate fails "Can't locate revision" | the database is newer than this Sentry | `plan` explains; `CONFIRM=data-governance … sentry` |
 | `app`: `deploy.sh` preflight refuses | the CLI talks to another cluster, or the token expired | `setup/sentry-film.sh cli`, then `app`; `state/<cluster>/app-deploy.log` names the check |
 | `doctor`: agents cannot reach ollama | ollama listens on 127.0.0.1 only, or is not running | macOS: `brew services restart ollama`, `OLLAMA_HOST=0.0.0.0` if needed; Linux: the systemd drop-in in § 0 “On Linux” (needed always) |
+| `doctor`: the pharmacy's store has no tables | a store's pod rolled; its data lives in `emptyDir` | `kubectl --context kind-<cluster> delete ns pharmacy travel-advisor`, then `up` |
+| `doctor`: the pharmacy's agents share an image tag | `instrument` ran before the own-tag step existed, or by hand | as above: the app, then `instrument`, then `travel`, in that order |
+| a tool crashes `KeyError: <tool>`, or `key` stops "did not come up" | a pod runs another app's code: the tag above | as above |
+| `travel`: "Insufficient cpu" | the node is short of requests; `room` was skipped, or other apps run | `setup/sentry-film.sh room` (needs `up`'s order on a fresh app), or remove the other apps |
 | `doctor`: lineage on fewer than 13 | a pod rolled since `instrument` | `take/take.sh relineage <deployment>`, or `instrument` again |
 | `doctor`: last pharmacy conversation < 960 s | a refill would land in another session's window | wait the printed seconds |
 | `sequence.sh`: `rec_live` "no new trace" | the collector is not forwarding to Sentry, or the app failed | `doctor`; `kubectl -n pharmacy logs deploy/pharmacy-assistant` |

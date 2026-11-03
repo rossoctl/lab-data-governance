@@ -35,5 +35,8 @@ $T reset; $T key none report-dispense export-dispense-batch
 $T at "$(after N1)"; $T run C refill rosa
 sleep 200
 $T run N2 nightly
+sleep 60
+$T travel T1
+$T travel T2
 echo ">> $(date -u +%FT%TZ) take done: $TAKE"
 echo "next: take/film.sh check $NAME"

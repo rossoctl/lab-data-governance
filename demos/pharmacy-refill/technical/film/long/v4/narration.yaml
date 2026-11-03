@@ -26,7 +26,7 @@ I3:   # after "…built on lineage, classification, and risk assessment." — ho
   L5: "Lineage follows each value from exchange to exchange, and its label travels with it."
   L6: "Risk assessment checks every exchange against the company policy, and records a verdict."
 I4:   # after "Personal data must not leave the organization." — the policy, for real
-  L1: "In this demo, Sentry holds the company policy as three rules."
+  L1: "In this demo, Sentry holds the company policy as six rules, graded from critical to low. Three of them matter for this story."
   L2: "The first rule: personal data, sent to an untrusted external destination. Its suggested enforcement is block."
   L3: "The second says the same for health data, and the third for restricted data."
   L4: "Untrusted means outside the organization. The cluster's own services count as inside. Here the contracted courier runs as one of them."
@@ -40,8 +40,8 @@ I5:   # after "Most data governance tools can do it, and so does Sentry." — le
   L3: "Classification reads it: it finds each value, names its type, and gives it its tags and its sensitivity."
   L4: "Her name is found right here: personal data, restricted. A check that sees only this message has enough."
   L5: "So the input Sentry sends to O P A reads: personal data, restricted, going to an external, untrusted destination."
-  L6: "The first and third rules fire on what is found here. The second, for health data, fires on the number: lineage knows it is her medical record number."
-  L6b: "O P A combines the rules, most restrictive first: risk level critical, suggested enforcement block."
+  L6: "The first and third rules fire on her name."
+  L6b: "O P A combines the rules, most restrictive first: risk level critical, suggested enforcement: block."
   L7: "Sentry raises an alert and recommends the block."
   L8: "The courier gets her name and address too. It runs inside the organization, so that call is allowed."
 I6:   # after "…four hops downstream and out of context, it still catches the leak." — four hops, on the graph
@@ -53,13 +53,13 @@ I6:   # after "…four hops downstream and out of context, it still catches the 
   L6: "Hop three. Fulfillment passes it to the report tool."
   L7: "Hop four. The report sends it to the forecaster."
   L8: "At every hop, Sentry matches the exact value, so the label, medical record number, travels with it."
-  L9: "O P A now gets the carried label. The same three rules fire: critical, recommend block."
+  L9: "O P A now gets the carried label. Three rules fire. The decision: risk level critical, suggested enforcement: block."
 I7:   # after "…so this leak is blocked too." — another session, for real
   L1: "Here is what actually happens inside Sentry, at level three. The nightly job runs as a session of its own, with its own trace."
   L2: "The shared database is the pharmacy's records service. During Rosa's refill, it saved the fill under her number."
   L3: "At night, the batch reads the day's fills from the records. Red alone, the number in that answer is an operational I D again."
   L4: "Lineage reaches back across sessions: the records got that number in Rosa's refill, where it came from the patient lookup, next to her name. The label comes with it."
-  L5: "Reading the records stays inside, so that call is allowed. The risk is the next call: the batch's export to the forecaster. Critical, recommend block, on the same three rules, linked back to Rosa's refill."
+  L5: "Reading the records stays inside, so that call is allowed. The risk is the next call: the batch's export to the forecaster. The decision: risk level critical, suggested enforcement: block, linked back to Rosa's refill."
 I8:   # after "…sending the vendor only what it needs, Sentry lets it through." — the fix, checked
   L1: "Inside Sentry, the fixed app. The report now sends the drug and the dates. No patient key."
   L2: "Nothing in it is personal data, so no rule fires: allowed, no alert."
@@ -67,3 +67,7 @@ I8:   # after "…sending the vendor only what it needs, Sentry lets it through.
   L4: "The fix is in the app. Sentry found the leak, and it confirms the fix."
 I9:   # after "…within a session and across session boundaries." — this run, in Sentry's own verdicts
   L1: "Every verdict in this film is Sentry's own, from one run on Kubernetes: {S} sessions, {J} exchanges judged, {F} flagged."
+  L2: "Sentry watches every app in the cluster, and its risk dashboard shows the whole picture. Here is the pharmacy, beside a travel booking app, under the same policy."
+  L3: "Of {DJ} exchanges, {DC} are critical. {DH} are high and {DM} medium: card and financial data moving inside the travel app. Worth reviewing, not an emergency."
+  L4: "These are the rules behind those numbers."
+  L5: "At the top: the sessions that sent Rosa's number to the forecaster, the three we just followed."

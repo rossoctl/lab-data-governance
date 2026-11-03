@@ -1,0 +1,32 @@
+{
+ "external": {
+  "mov": "card-external.mov",
+  "x": 1136,
+  "y": 838,
+  "n": 1510
+ },
+ "chain": {
+  "mov": "card-chain.mov",
+  "x": 996,
+  "y": 880,
+  "n": 2712
+ },
+ "cross": {
+  "mov": "card-cross.mov",
+  "x": 150,
+  "y": 812,
+  "n": 3360
+ },
+ "alert": {
+  "mov": "card-alert.mov",
+  "x": 100,
+  "y": 892,
+  "n": 1590
+ },
+ "risky": {
+  "mov": "card-risky.mov",
+  "x": 840,
+  "y": 206,
+  "n": 540
+ }
+}

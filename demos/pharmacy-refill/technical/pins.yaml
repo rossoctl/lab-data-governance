@@ -1,4 +1,4 @@
-# pins.yaml — the exact code, film and settings the technical film (v4.2) is built on. setup/sentry-film.sh reads this
+# pins.yaml — the exact code, film and settings the technical film (v4.4) is built on. setup/sentry-film.sh reads this
 # file; it checks out these commits, refuses a checkout with local changes, and says so when a cluster runs another
 # version. Moving a pin means a new take, and every verdict and count the narration says checked against it
 # (RUNBOOK.md § 6).
@@ -24,6 +24,10 @@ agent-examples-snp:             # the pharmacy app (apps/pharmacy_refills) and i
   repo: https://github.com/s-and-p-team/agent-examples-snp
   sha: 93363877cff764e14bb12877d3abdcec054ef150
   note: main after PR 50 (the fills table behind a records service the sidecars see); tree = 9801614
+travel_app:                     # a second app under the same policy, for the risk dashboard: same repo and pin as the pharmacy app
+  path: apps/travel_advisor
+  namespace: travel-advisor
+  store_image: docker.io/minio/minio:RELEASE.2024-11-07T00-52-20Z   # no longer served; setup/files/minio-wrap.Containerfile rebuilds it
 pitch:                          # the 2:35 pitch film the technical film is built around (Git LFS; public)
   repo: https://github.com/rossoctl/lab-data-governance
   sha: e157e9e1a78457d73243cf83c74ac0e8f16b75fa
@@ -31,14 +35,15 @@ pitch:                          # the 2:35 pitch film the technical film is buil
   path: demos/pharmacy-refill/pitch/sentry_pitch_demo.mp4
   url: https://media.githubusercontent.com/media/rossoctl/lab-data-governance/e157e9e1a78457d73243cf83c74ac0e8f16b75fa/demos/pharmacy-refill/pitch/sentry_pitch_demo.mp4
   sha256: afe40c3b57e7fb5a6ac92bf1ed4cb5229eb9c4a1124aca3e185a7d2eb2246b0b
-media:                          # the binary parts git does not carry: the voice cache, the music, the v4.2 take's recording,
+media:                          # the binary parts git does not carry: the voice cache, the music, the v4.4 take's recording,
                                 # stills, cards, rendered sections, the pitch film and the finished film (setup/sentry-film.sh media)
-  file: sentry-technical-film-v4.3-full.zip
+  file: sentry-technical-film-v4.4-full.zip
   url: https://ibm.box.com/s/ckv7aj1a6hre6h679itib0zahmh2mxmy   # the Box folder "Sentry technical film" (sign in); the zip is in it
-  sha256: 9d4f4a8918853df78fbb20dcf03928384078b3ceea1aad1898d7c06a66d153f2
+  sha256: ea3df62578944150e979865b14a3e2ee7b25160305722a67688dea5be87dcb28
 sidecar: the platform's proxy sidecar as its operator pins it (authbridge v0.7.0-alpha.10 at the platform pin)
 model:
   agents: qwen2.5:7b through ollama on the host (host.containers.internal:11434)
+  travel_agents: claude-haiku-4-5-20251001 through the organization's LLM gateway, as the travel app's manifest pins it (LLM_API_KEY)
   voice: ElevenLabs Eleven v4, voice George, tempo 1.12 (film/long/common.py); lines cached in film/long/tts11/
   music: ElevenLabs Music (film/long/v4/score.py); the film's score cached in film/long/v4/music/
   review: Gemini (film/long/review.py, GEMINI_API_KEY); local Whisper (faster-whisper) for the word check
@@ -51,4 +56,5 @@ settings:                       # Sentry's settings for the take (setup/sentry-f
     data-governance-label-lineage:
       LABEL_CROSS_TRACE_WINDOW_HOURS: "0.25"            # how far back another conversation is linked: 15 min (ships 0 = off)
   ui_memory: 1Gi                                        # the console's Data lineage reads need it (ships 512Mi)
-  opa_rules: DG-001 DG-002 DG-004                       # the policy OPA serves (ships with Sentry, deploy/k8s/95-opa.yaml)
+  opa_rules: DG-001 DG-002 DG-004 DG-011 DG-012 DG-013   # the policy OPA serves: Sentry's three + three on payment and financial data
+  opa_catalog: setup/files/rules_source-film.json       # compiled by Sentry's own deploy/create-opa-configmap.sh

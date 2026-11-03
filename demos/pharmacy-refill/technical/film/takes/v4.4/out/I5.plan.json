@@ -1,0 +1,75 @@
+{
+ "cues": {
+  "zoomEnd": 1.2,
+  "steps": [
+   1.2,
+   8.409,
+   12.818,
+   19.883,
+   26.732,
+   35.363,
+   38.422,
+   46.125,
+   49.246
+  ],
+  "pull": 55.855,
+  "pullEnd": 56.655,
+  "end": 56.955
+ },
+ "lines": [
+  [
+   "tts11/fa50059059cbaaa5-t1.12.wav",
+   1.5,
+   7.009,
+   "Here is what actually happens inside Sentry, at level one: the report to the forecaster, from Rosa's refill."
+  ],
+  [
+   "tts11/92d1ccfbedd39554-t1.12.wav",
+   8.709,
+   4.209,
+   "Its payload holds her name, her birth date, and her medical record number."
+  ],
+  [
+   "tts11/181df3417a6149ca-t1.12.wav",
+   13.118,
+   6.864,
+   "Classification reads it: it finds each value, names its type, and gives it its tags and its sensitivity."
+  ],
+  [
+   "tts11/e2e9838e46c237bd-t1.12.wav",
+   20.183,
+   6.65,
+   "Her name is found right here: personal data, restricted. A check that sees only this message has enough."
+  ],
+  [
+   "tts11/6db3c1b0f6b02a98-t1.12.wav",
+   27.032,
+   8.43,
+   "So the input Sentry sends to O P A reads: personal data, restricted, going to an external, untrusted destination."
+  ],
+  [
+   "tts11/1277ae7c2a37a83d-t1.12.wav",
+   35.663,
+   2.86,
+   "The first and third rules fire on her name."
+  ],
+  [
+   "tts11/915f66b60f93e94c-t1.12.wav",
+   38.722,
+   7.503,
+   "O P A combines the rules, most restrictive first: risk level critical, suggested enforcement: block."
+  ],
+  [
+   "tts11/50040fa723be2e6a-t1.12.wav",
+   46.425,
+   2.921,
+   "Sentry raises an alert and recommends the block."
+  ],
+  [
+   "tts11/45b5cce7ad84fd7c-t1.12.wav",
+   49.546,
+   6.009,
+   "The courier gets her name and address too. It runs inside the organization, so that call is allowed."
+  ]
+ ]
+}

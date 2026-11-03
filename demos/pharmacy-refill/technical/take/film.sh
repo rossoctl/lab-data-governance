@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# film.sh <step> [take] — the film from a take (film/takes/<take>, default v4.2: the take film v4.2 was made from).
+# film.sh <step> [take] — the film from a take (film/takes/<take>, default v4.4: the take film v4.4 was made from).
 # Steps that read Sentry need the take's cluster up (film.env); the rest work on the take folder alone.
 #
 #   film.sh check  <take>   the five verdicts against the film's; stops when one differs (the words follow the run)   [cluster]
@@ -21,7 +21,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd); PKG=$(cd "$HERE/.." && pwd); LONG=$PKG/film/long
 [ -f "${FILM_ENV:-$PKG/film.env}" ] || { echo "no ${FILM_ENV:-$PKG/film.env} yet: cp $PKG/film.env.example $PKG/film.env, then read it" >&2; exit 2; }
 set -a; . "${FILM_ENV:-$PKG/film.env}"; set +a
-step=${1:-}; NAME=${2:-v4.2}; shift 2 2>/dev/null || shift $#
+step=${1:-}; NAME=${2:-v4.4}; shift 2 2>/dev/null || shift $#
 case "$NAME" in /*) TAKE=$NAME ;; *) TAKE=$PKG/film/takes/$NAME ;; esac
 [ -d "$TAKE" ] || { echo "no take at $TAKE (take/sequence.sh <name> records one)" >&2; exit 1; }
 export FILM_TAKE=$TAKE NODE_PATH=$PKG/node_modules HTTP_PORT KUBECONFIG
@@ -82,10 +82,15 @@ do_live() {
 }
 
 do_ids()    { python3 "$HERE/ids.py" "$TAKE" > /dev/null && say "ids.json: $(id cards origin) · $(id cards cross_trace)"; }
+dash_one_take() {   # the dashboard counts its whole window: a failed take on this cluster would show in the film
+  local c; c=$(curl -fsS "http://dg.localtest.me:$HTTP_PORT/risk/metrics/risk-distribution?window=24h" | python3 -c 'import json,sys; print(json.load(sys.stdin)["distribution"]["critical"])')
+  [ "$c" = 3 ] || { echo "STOP: the dashboard counts $c critical exchanges, the take has 3: earlier sessions are in its window. Drop them: take/take.sh forget <this take's start, UTC>" >&2; exit 1; }
+}
 do_counts() { "$PY" "$LONG/v4/counts4.py" > /dev/null && say "counts.json: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(" ".join("%s=%s" % (k, d[k]) for k in "NMTJF"))' "$TAKE/counts.json")"; }
 do_facts()  { "$PY" "$HERE/facts.py" "$TAKE"; }
 
 do_stills() {
+  dash_one_take
   cd "$LONG"
   local A B N1 C N2; A=$(id traces A); B=$(id traces B); N1=$(id traces N1); C=$(id traces C); N2=$(id traces N2)
   say "Sentry's pages (5 modes), rossoctl's catalogs, the policy, the map"
@@ -94,6 +99,7 @@ do_stills() {
   node v4/shots.js "$TAKE/shots/level2" mode=level2 t="$B" rep="$(id B rep)" | tail -1 | cut -c1-120
   node v4/shots.js "$TAKE/shots/night" mode=night t="$N1" b="$B" rec="$(id B rec)" ans="$(id N1 ans)" rep="$(id N1 rep)" bAt="$(id B bAt)" nAt="$(id N1 nAt)" | tail -1 | cut -c1-120
   node v4/shots.js "$TAKE/shots/fixed" mode=fixed t="$C" rep="$(id C rep)" n2="$N2" n2rep="$(id N2 rep)" | tail -1 | cut -c1-120
+  node v4/shots.js "$TAKE/shots/dash" mode=dash | tail -1 | cut -c1-120
   node v3/p1/shots.js "$TAKE/shots/rossoctl" | tail -1 | cut -c1-120
   node v3/p3/shots.js "$TAKE/shots/policy" | tail -1 | cut -c1-120
   do_map
@@ -108,7 +114,7 @@ p = sys.argv[1]; b = json.load(open(p)); n = b["flow"]["nodes"]
 U = lambda *ks: (lambda xs: [min(x[0] for x in xs), min(x[1] for x in xs), max(x[0] + x[2] for x in xs) - min(x[0] for x in xs),
                              max(x[1] + x[3] for x in xs) - min(x[1] for x in xs)])([n[k] for k in ks])
 g = lambda r, d=8: [r[0] - d, r[1] - d, r[2] + 2 * d, r[3] + 2 * d]
-b["flow"]["path1"] = g(U("assistant", "lookup", "clinical", "review", "records")); b["flow"]["path2"] = g(U("report", "fcst"))
+b["flow"]["path1"] = g(U("assistant", "lookup", "clinical", "review", "fulfil", "delivery", "report", "records")); b["flow"]["path2"] = g(U("report", "fcst"))
 json.dump(b, open(p, "w"), indent=1)
 PY
 }

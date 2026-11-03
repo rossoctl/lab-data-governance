@@ -20,6 +20,9 @@ from env import TAKE  # noqa: E402
 CUT = {"I1": 626, "I2": 626, "I3": 974, "I4": 1180, "I5": 1945, "I6": 3078, "I7": 3556, "I8": 3904, "I9": 4468}   # = film4.CUT
 OUT = TAKE / "pitch-fixed.mp4"
 cards = json.loads((TAKE / "cards" / "cards.json").read_text())
+sys.path.insert(0, str(HERE))
+import tap_ring  # noqa: E402
+cards["tap"] = tap_ring.build(PITCH, TAKE / "cards" / "card-tap.mov")   # the pitch's tap highlight, redrawn to fit its button
 ins, chain, last = ["-i", str(PITCH)], [], "0:v"
 for j, c in enumerate(cards.values()):
     ins += ["-i", str(TAKE / "cards" / c["mov"])]

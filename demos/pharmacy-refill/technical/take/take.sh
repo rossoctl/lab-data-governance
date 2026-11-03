@@ -8,8 +8,9 @@
 #   take.sh verdicts <trace>               per exchange: caller → callee, risk, enforcement, rules, crossings, carried-in labels
 #   take.sh at <epoch seconds>             wait until then (date +%s)
 #   take.sh since                          seconds since the last pharmacy conversation Sentry recorded
+#   take.sh forget <UTC time>              drop the risk records from before then (a failed take), so the dashboard counts one take only
 #   take.sh capture                        after instrument: payload capture on in every sidecar config; saves them (relineage's source)
-#   take.sh pin                            pin the plain pods (records, demo client, vendors) to the digest they run now
+#   take.sh pin                            pin the plain pods (records, demo client, vendors) to the digest they run now, and the agents and tools to their own tag
 # Runs and logs go to $TAKE (sequence.sh sets it to film/takes/<name>); restore copies are in ../state/<cluster>/restore/.
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd); PKG=$(cd "$HERE/.." && pwd)
@@ -54,7 +55,7 @@ case "${1:-}" in
     [ -n "$roll" ] || exit 0
     echo ">> $(date -u +%FT%TZ) key $key$roll" | tee -a "$TAKE/keys.log"
     for d in $roll; do k -n $NS set env "deploy/$d" "DEMAND_KEY=$key" >/dev/null; done
-    for d in $roll; do k -n $NS rollout status "deploy/$d" --timeout=300s >/dev/null; done
+    for d in $roll; do k -n $NS rollout status "deploy/$d" --timeout=300s >/dev/null || { echo "STOP: $d did not come up after the key switch (kubectl --context $CTX -n $NS logs deploy/$d)" >&2; exit 1; }; done
     relineage $roll | tee -a "$TAKE/keys.log"; [ "${PIPESTATUS[0]}" = 0 ] ;;
   relineage) shift; relineage "$@" ;;
   capture)
@@ -74,11 +75,29 @@ case "${1:-}" in
       c=$(k -n $NS get deploy "$d" -o jsonpath='{.spec.template.spec.containers[0].name}')
       k -n $NS set image "deploy/$d" "$c=$ref" | tee -a "$R/../pin.log"
     done
-    k -n $NS rollout status deploy --timeout=300s >/dev/null && echo "plain pods pinned" ;;
+    k -n $NS rollout status deploy --timeout=300s >/dev/null && echo "plain pods pinned"
+    # Every app's deploy and shim bake use one fixed tag, so the next app's overwrites it, and a key roll here would come up running that app's code.
+    shim=docker.io/library/agent-examples-snp-otel:latest; own=docker.io/library/pharmacy-otel:film
+    agents=$(k -n $NS get deploy -o jsonpath='{range .items[*]}{.metadata.name} {.spec.template.spec.containers[0].image}{"\n"}{end}' | awk -v s="$shim" '$2==s {print $1}')
+    [ -n "$agents" ] || exit 0
+    podman exec "$CLUSTER-control-plane" ctr -n k8s.io images tag --force "$shim" "$own" >/dev/null
+    for d in $agents; do k -n $NS set image "deploy/$d" "$(k -n $NS get deploy "$d" -o jsonpath='{.spec.template.spec.containers[0].name}')=$own" >/dev/null; done
+    for d in $agents; do k -n $NS rollout status "deploy/$d" --timeout=300s >/dev/null; done
+    relineage $agents | tail -1; echo "agents and tools on their own tag, $own" ;;
   at)        # a time already past returns at once
     utc() { python3 -c 'import sys,datetime as d; print(d.datetime.fromtimestamp(int(sys.argv[1]), d.timezone.utc).strftime(sys.argv[2]))' "$@"; }
     echo ">> $(date -u +%FT%TZ) waiting until $(utc "$2" %FT%TZ) ($(( $2 - $(date +%s) )) s)"
     while [ "$(date +%s)" -lt "$2" ]; do sleep 5; done; echo ">> $(date -u +%FT%TZ) at $(utc "$2" %T)" ;;
+  forget)    # the dashboard counts everything in its window: drop the risk records of sessions before <UTC time>, e.g. a failed take. Spans and traces stay.
+    [ -n "${2:-}" ] || { echo "usage: take.sh forget <UTC time, e.g. 2026-11-02T19:51:00Z>" >&2; exit 2; }
+    dgsql <<SQL
+BEGIN;
+DELETE FROM alerts WHERE "timestamp" < '$2';
+DELETE FROM trace_risk_records WHERE computed_at < '$2';
+DELETE FROM interaction_risk_records WHERE computed_at < '$2';
+COMMIT;
+SQL
+    ;;
   since)
     dgsql <<'SQL'
 select extract(epoch from now() - max(l.occurred_at))::int from interaction_legs l join interactions i on i.id = l.interaction_id
@@ -99,6 +118,15 @@ SQL
     [ -n "$tr" ] || { echo "Sentry recorded no trace since $t0: is the collector forwarding? (setup/sentry-film.sh doctor)" >&2; exit 1; }
     echo "trace $tr  t0 $t0  done $(date -u +%FT%TZ)" | tee -a "$TAKE/$label.log"
     echo "$label $tr $t0" >> "$TAKE/traces.txt" ;;
+  travel)    # one travel-app booking (the dashboard's second app); travel.txt, apart from the film's five sessions
+    label=$2; t0=$(date -u +%FT%TZ); tn=travel-advisor
+    echo ">> $label $t0 travel demo.py" | tee "$TAKE/$label.log"
+    k -n $tn exec deploy/demo-client -- python3 /app/app/demo.py 2>&1 | tee -a "$TAKE/$label.log"
+    sleep 20
+    tr=$(dgsql <<<"select trace_id from spans where started_at >= '$t0' and parent_id is null and name like 'travel-advisor a2a%' order by started_at limit 1")
+    [ -n "$tr" ] || { echo "Sentry recorded no travel trace since $t0" >&2; exit 1; }
+    echo "trace $tr  t0 $t0  done $(date -u +%FT%TZ)" | tee -a "$TAKE/$label.log"
+    echo "$label $tr $t0" >> "$TAKE/travel.txt" ;;
   verdicts)
     t=$2
     dgsql <<SQL
