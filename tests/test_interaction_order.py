@@ -445,6 +445,89 @@ def test_a_pulled_leg_sorts_just_before_its_parent_response_not_by_depth() -> No
     ]
 
 
+def test_asynchrony_is_judged_against_the_parent_responses_own_time() -> None:
+    # R answers at 100 ms. P, R's child, answers at 1050 ms: more than the
+    # tolerance after R, so P keeps that time and is pulled nowhere. K, P's
+    # child, answers 60 ms after P's own response: K is synchronous with P
+    # and must answer first, however P itself was placed.
+    events = [
+        LegOrderEvent("R", "request", None, _at(0), 1),
+        LegOrderEvent("R", "response", None, _at(100), 2),
+        LegOrderEvent("P", "request", "R", _at(10), 3),
+        LegOrderEvent("P", "response", "R", _at(1050), 4),
+        LegOrderEvent("K", "request", "P", _at(20), 5),
+        LegOrderEvent("K", "response", "P", _at(1110), 6),
+    ]
+    order = _assert_shuffle_independent(events)
+    assert order.index(("K", "response")) < order.index(("P", "response"))
+
+
+def test_a_child_of_a_pulled_untimed_response_is_not_judged_asynchronous() -> None:
+    # P's response is untimed and is pulled to R's. An unknown time is not
+    # evidence of asynchrony, so K, P's child, still answers before P.
+    events = [
+        LegOrderEvent("R", "request", None, _at(0), 1),
+        LegOrderEvent("R", "response", None, _at(100), 2),
+        LegOrderEvent("P", "request", "R", _at(10), 3),
+        LegOrderEvent("P", "response", "R", None, 4),
+        LegOrderEvent("K", "request", "P", _at(20), 5),
+        LegOrderEvent("K", "response", "P", _at(1200), 6),
+    ]
+    order = _assert_shuffle_independent(events)
+    assert order.index(("K", "response")) < order.index(("P", "response"))
+
+
+@pytest.mark.parametrize("p_request_ms", [None, 103], ids=["untimed", "after-own-response"])
+def test_a_request_never_holds_its_own_response_past_a_later_sibling(
+    p_request_ms: int | None,
+) -> None:
+    # P answers at 100 ms; its sibling Q is sent at 102 ms. P's request is
+    # untimed, or stamped 3 ms after P's own response by a skewed clock. It
+    # must not drag P's response behind Q's request.
+    events = [
+        LegOrderEvent("R", "request", None, _at(0), 1),
+        LegOrderEvent("P", "request", "R", _at(p_request_ms), 2),
+        LegOrderEvent("P", "response", "R", _at(100), 3),
+        LegOrderEvent("Q", "request", "R", _at(102), 4),
+        LegOrderEvent("Q", "response", "R", _at(200), 5),
+        LegOrderEvent("R", "response", None, _at(300), 6),
+    ]
+    assert _assert_shuffle_independent(events) == [
+        ("R", "request"), ("P", "request"), ("P", "response"),
+        ("Q", "request"), ("Q", "response"), ("R", "response"),
+    ]
+
+
+def test_an_untimed_root_request_does_not_hold_its_response_past_a_later_root() -> None:
+    events = [
+        LegOrderEvent("P", "request", None, None, 1),
+        LegOrderEvent("P", "response", None, _at(100), 2),
+        LegOrderEvent("S", "request", None, _at(200), 3),
+    ]
+    assert _assert_shuffle_independent(events) == [
+        ("P", "request"), ("P", "response"), ("S", "request"),
+    ]
+
+
+def test_many_disjoint_parent_cycles_are_broken_in_bounded_time() -> None:
+    import time
+
+    events = []
+    for n in range(2000):
+        a, b = f"a{n:05d}", f"b{n:05d}"
+        events += [
+            LegOrderEvent(a, "request", b, _at(n), 4 * n),
+            LegOrderEvent(b, "request", a, _at(n), 4 * n + 1),
+            LegOrderEvent(a, "response", b, _at(n + 1), 4 * n + 2),
+            LegOrderEvent(b, "response", a, _at(n + 1), 4 * n + 3),
+        ]
+    started = time.perf_counter()
+    order = order_legs(events)
+    assert len(order) == len(events)
+    # Re-finding cycles over every remaining leg on each break took ~30 s here.
+    assert time.perf_counter() - started < 5
+
+
 def test_a_long_parent_chain_and_a_long_cycle_are_ordered_without_recursion() -> None:
     # Every response is stamped within a few ms after the trace root's, so each
     # is pulled to its parent's already-pulled time; only depth orders them.
