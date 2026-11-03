@@ -5,7 +5,10 @@ claims, then queue every trace with legs for re-derivation by the data-lineage
 processor. The queue is durable across restarts and is also filled when an
 interaction's parent/endpoints or a leg's timing/payload changes in place.
 Deleting an interaction or leg also queues the old trace and removes lineage
-for the deleted leg before its trace identity disappears.
+for the deleted leg before its trace identity disappears. Inserts are not
+queued: a new leg reaches the processor through its ``seq`` cursor, and an
+interaction gains lineage only through its legs. Queuing them too would derive
+every new trace twice and put a row-level function on every write.
 
 The graph algorithm used to give tool calls inferred from an LLM span the
 span's full start/end interval. Project existing output calls to the LLM
@@ -59,41 +62,54 @@ def upgrade() -> None:
         )
         """
     )
+    # Queue (or re-queue under a newer generation) one trace and wake the
+    # processor. 0012 announces leg inserts and updates on the same channel;
+    # this covers interaction corrections and deletions, which it does not.
     op.execute(
         """
-        CREATE FUNCTION dg_mark_lineage_interaction_dirty() RETURNS trigger
+        CREATE FUNCTION dg_queue_lineage_trace(trace TEXT) RETURNS void
         LANGUAGE plpgsql AS $$
-        DECLARE
-            trace TEXT;
         BEGIN
-            IF TG_OP = 'DELETE' THEN
-                DELETE FROM lineage_metadata WHERE interaction_id = OLD.id;
-                trace := OLD.trace_id;
-            ELSIF TG_OP = 'UPDATE'
-               AND NEW.parent_interaction_id IS NOT DISTINCT FROM OLD.parent_interaction_id
-               AND NEW.caller_entity_id IS NOT DISTINCT FROM OLD.caller_entity_id
-               AND NEW.callee_entity_id IS NOT DISTINCT FROM OLD.callee_entity_id
-               AND NEW.trace_id IS NOT DISTINCT FROM OLD.trace_id
-            THEN
-                RETURN NEW;
-            ELSE
-                trace := NEW.trace_id;
-                IF TG_OP = 'UPDATE' AND NEW.trace_id IS DISTINCT FROM OLD.trace_id THEN
-                    INSERT INTO data_lineage_dirty_traces (trace_id)
-                    VALUES (OLD.trace_id)
-                    ON CONFLICT (trace_id) DO UPDATE
-                        SET generation = nextval('data_lineage_dirty_generation');
-                END IF;
+            IF trace IS NULL THEN
+                RETURN;
             END IF;
             INSERT INTO data_lineage_dirty_traces (trace_id)
             VALUES (trace)
             ON CONFLICT (trace_id) DO UPDATE
                 SET generation = nextval('data_lineage_dirty_generation');
             PERFORM pg_notify('dg_legs_inserted', '');
+        END;
+        $$
+        """
+    )
+    # Only corrections and deletions queue. A new leg takes a new seq and
+    # reaches the processor through its cursor; an interaction without legs
+    # has no lineage and constrains no leg's order. The UPDATE triggers filter
+    # on causal inputs in WHEN, so an unchanged re-derivation upsert never
+    # enters plpgsql. A DELETE trigger's WHEN cannot read NEW, hence two
+    # triggers per table.
+    op.execute(
+        """
+        CREATE FUNCTION dg_mark_lineage_interaction_dirty() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
             IF TG_OP = 'DELETE' THEN
-                RETURN OLD;
+                DELETE FROM lineage_metadata WHERE interaction_id = OLD.id;
+                PERFORM dg_queue_lineage_trace(OLD.trace_id);
+                RETURN NULL;
             END IF;
-            RETURN NEW;
+            -- The sidecar writer links a new child's parent before writing
+            -- its legs. Those legs arrive through the cursor.
+            IF NOT EXISTS (
+                SELECT 1 FROM interaction_legs WHERE interaction_id = NEW.id
+            ) THEN
+                RETURN NULL;
+            END IF;
+            PERFORM dg_queue_lineage_trace(NEW.trace_id);
+            IF NEW.trace_id <> OLD.trace_id THEN
+                PERFORM dg_queue_lineage_trace(OLD.trace_id);
+            END IF;
+            RETURN NULL;
         END;
         $$
         """
@@ -101,7 +117,21 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER dg_lineage_interaction_dirty
-        AFTER INSERT OR UPDATE OR DELETE ON interactions
+        AFTER UPDATE ON interactions
+        FOR EACH ROW
+        WHEN (
+            NEW.parent_interaction_id IS DISTINCT FROM OLD.parent_interaction_id
+            OR NEW.caller_entity_id IS DISTINCT FROM OLD.caller_entity_id
+            OR NEW.callee_entity_id IS DISTINCT FROM OLD.callee_entity_id
+            OR NEW.trace_id IS DISTINCT FROM OLD.trace_id
+        )
+        EXECUTE FUNCTION dg_mark_lineage_interaction_dirty()
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER dg_lineage_interaction_deleted
+        AFTER DELETE ON interactions
         FOR EACH ROW EXECUTE FUNCTION dg_mark_lineage_interaction_dirty()
         """
     )
@@ -109,53 +139,24 @@ def upgrade() -> None:
         """
         CREATE FUNCTION dg_mark_lineage_leg_dirty() RETURNS trigger
         LANGUAGE plpgsql AS $$
-        DECLARE
-            trace TEXT;
-            interaction TEXT;
         BEGIN
-            IF TG_OP = 'DELETE' THEN
-                DELETE FROM lineage_metadata
-                WHERE interaction_id = OLD.interaction_id AND leg_type = OLD.leg_type;
-                interaction := OLD.interaction_id;
-            ELSIF TG_OP = 'UPDATE'
-               AND NEW.occurred_at IS NOT DISTINCT FROM OLD.occurred_at
-               AND NEW.payload_hash IS NOT DISTINCT FROM OLD.payload_hash
-               AND NEW.seq IS NOT DISTINCT FROM OLD.seq
-               AND NEW.interaction_id IS NOT DISTINCT FROM OLD.interaction_id
-               AND NEW.leg_type IS NOT DISTINCT FROM OLD.leg_type
-            THEN
-                RETURN NEW;
-            ELSE
-                interaction := NEW.interaction_id;
-                IF TG_OP = 'UPDATE' AND (
-                    NEW.interaction_id IS DISTINCT FROM OLD.interaction_id OR
-                    NEW.leg_type IS DISTINCT FROM OLD.leg_type
-                ) THEN
-                    DELETE FROM lineage_metadata
-                    WHERE interaction_id = OLD.interaction_id AND leg_type = OLD.leg_type;
-                    SELECT i.trace_id INTO trace FROM interactions i
-                    WHERE i.id = OLD.interaction_id;
-                    IF trace IS NOT NULL THEN
-                        INSERT INTO data_lineage_dirty_traces (trace_id)
-                        VALUES (trace)
-                        ON CONFLICT (trace_id) DO UPDATE
-                            SET generation = nextval('data_lineage_dirty_generation');
-                    END IF;
+            IF TG_OP = 'UPDATE' THEN
+                PERFORM dg_queue_lineage_trace(
+                    (SELECT trace_id FROM interactions WHERE id = NEW.interaction_id)
+                );
+                IF NEW.interaction_id = OLD.interaction_id
+                   AND NEW.leg_type = OLD.leg_type THEN
+                    RETURN NULL;
                 END IF;
             END IF;
-            SELECT i.trace_id INTO trace FROM interactions i
-            WHERE i.id = interaction;
-            IF trace IS NOT NULL THEN
-                INSERT INTO data_lineage_dirty_traces (trace_id)
-                VALUES (trace)
-                ON CONFLICT (trace_id) DO UPDATE
-                    SET generation = nextval('data_lineage_dirty_generation');
-            END IF;
-            PERFORM pg_notify('dg_legs_inserted', '');
-            IF TG_OP = 'DELETE' THEN
-                RETURN OLD;
-            END IF;
-            RETURN NEW;
+            -- A deleted or re-keyed leg leaves its old position. Remove that
+            -- position's lineage before its trace identity can disappear.
+            DELETE FROM lineage_metadata
+            WHERE interaction_id = OLD.interaction_id AND leg_type = OLD.leg_type;
+            PERFORM dg_queue_lineage_trace(
+                (SELECT trace_id FROM interactions WHERE id = OLD.interaction_id)
+            );
+            RETURN NULL;
         END;
         $$
         """
@@ -163,7 +164,22 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER dg_lineage_leg_dirty
-        AFTER INSERT OR UPDATE OR DELETE ON interaction_legs
+        AFTER UPDATE ON interaction_legs
+        FOR EACH ROW
+        WHEN (
+            NEW.occurred_at IS DISTINCT FROM OLD.occurred_at
+            OR NEW.payload_hash IS DISTINCT FROM OLD.payload_hash
+            OR NEW.seq IS DISTINCT FROM OLD.seq
+            OR NEW.interaction_id IS DISTINCT FROM OLD.interaction_id
+            OR NEW.leg_type IS DISTINCT FROM OLD.leg_type
+        )
+        EXECUTE FUNCTION dg_mark_lineage_leg_dirty()
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER dg_lineage_leg_deleted
+        AFTER DELETE ON interaction_legs
         FOR EACH ROW EXECUTE FUNCTION dg_mark_lineage_leg_dirty()
         """
     )
@@ -272,10 +288,13 @@ def upgrade() -> None:
 def downgrade() -> None:
     # The timestamp correction above is a data repair. Downgrading removes the
     # new replay machinery but does not invent the old, misleading tool times.
+    op.execute("DROP TRIGGER IF EXISTS dg_lineage_leg_deleted ON interaction_legs")
     op.execute("DROP TRIGGER IF EXISTS dg_lineage_leg_dirty ON interaction_legs")
     op.execute("DROP FUNCTION IF EXISTS dg_mark_lineage_leg_dirty()")
+    op.execute("DROP TRIGGER IF EXISTS dg_lineage_interaction_deleted ON interactions")
     op.execute("DROP TRIGGER IF EXISTS dg_lineage_interaction_dirty ON interactions")
     op.execute("DROP FUNCTION IF EXISTS dg_mark_lineage_interaction_dirty()")
+    op.execute("DROP FUNCTION IF EXISTS dg_queue_lineage_trace(TEXT)")
     op.execute("DROP TABLE IF EXISTS data_lineage_dirty_traces")
     op.execute("DROP SEQUENCE IF EXISTS data_lineage_dirty_generation")
     op.execute("ALTER TABLE lineage_trace_status DROP COLUMN prefix_leg_keys")
