@@ -39,9 +39,9 @@ being quietly weakened by a walk sharing its file.
   it is a leg this source's content demonstrably did not travel on, so the walk must
   not cross it even though some *other* source's content did.
 - **Clause 4 is causal scoping.** Data cannot flow backwards in the trace's derived
-  leg order. Parent-request, own-request and child-response precedence override
-  cross-service clock disagreement (a child's response yields to its parent's only
-  when the parent is clearly asynchronous), then occurrence time orders ready legs
+  leg order. Parent-request and own-request precedence override cross-service clock
+  disagreement, then occurrence time orders ready legs, with a child's legs pulled no
+  later than its parent's response unless the child is clearly asynchronous
   (ADR-0035). The
   database ``seq`` remains an ingestion cursor and is returned as such; it cannot
   gate a lineage hop when a late parent has a larger ``seq`` than its child.

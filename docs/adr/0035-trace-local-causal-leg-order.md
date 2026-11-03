@@ -11,23 +11,36 @@ downstream request before the request that caused it and derive false lineage.
 
 For every trace read, build one order from the currently known interaction legs.
 A parent's request precedes each child's request, and a request precedes its own
-response when both are present. A child's response precedes its parent's response,
-because a synchronous caller answers only after its callee has. The one exception is
-a clearly asynchronous parent: both response times are known and the parent's is
-earlier than the child's by more than a clock-skew tolerance of one second. Leg times
-come from different pods' clocks and from span ends that each SDK closes at its own
-point, so a synchronous parent can appear to answer a few milliseconds early; a parent
-that genuinely finished first is apart by far more. An unknown time is not evidence of
-asynchrony, so the child response still comes first. Among legs ready under those
-constraints, prefer `occurred_at`, then use `seq` and the leg key for deterministic
-ties. Missing parents, legs and times leave only the constraints supported by current
-evidence; in particular, a child still in flight never holds its parent's response
-back. Invalid parent cycles are broken deterministically without dropping legs: only
-the earliest leg on a cycle that no other remaining leg constrains is released, so a
-valid child of a cycle member still follows its parent's request, and a self-parent
-constrains nothing. The shared backend rule supplies the trace interactions API's
-`leg_order`, lineage derivation, lineage leg reads and lineage graph hop positions.
-UI tables and diagrams use that API order and display one-based causal steps.
+response when both are present. Among legs ready under those constraints, the
+earliest sort time wins. A leg's sort time is its `occurred_at`, except that a
+child's leg is pulled no later than its parent's response's sort time, because a
+synchronous caller answers only after its callee has. The parent's response is never
+moved later to wait for its child, so a sibling call sent after that response still
+follows it. Sort times are computed from the root of the interaction tree down, so a
+grandchild is bounded by its parent's already-pulled time. Leg times come from
+different pods' clocks and from span ends that each SDK closes at its own point, so a
+callee can appear to act a few milliseconds after its caller already answered; a
+child the parent did not wait for is apart by far more. A child leg timed more than
+a clock-skew tolerance of one second after its parent's response is therefore clearly
+asynchronous and keeps its own time. A child leg with no time takes the parent
+response's time, since an unknown time is not evidence of asynchrony. An untimed
+parent response pulls no timed leg, because it already sorts after every timed one.
+The pull applies to the child's request as well as its response: the child's
+response cannot be ordered before its own request, so a request stamped after the
+parent's response, or untimed, would otherwise hold the child's response back behind
+it. Legs pulled into a response rank immediately before it, ordered among themselves
+by their own times, so at an equal sort time a descendant's response precedes its
+ancestor's. Remaining ties use `occurred_at`, then `seq` and the leg key. Only the
+order changes: `occurred_at` stays what was observed. Missing parents, legs and times
+leave only the constraints supported by current evidence; in particular, a child still
+in flight never holds its parent's response back, and a parent with no response pulls
+nothing. Invalid parent cycles are broken deterministically without dropping legs:
+only the earliest leg on a cycle that no other remaining leg constrains is released,
+so a valid child of a cycle member still follows its parent's request. A parent link
+on a cycle pulls no time, and a self-parent constrains nothing. The shared backend
+rule supplies the trace interactions API's `leg_order`, lineage derivation, lineage
+leg reads and lineage graph hop positions. UI tables and diagrams use that API order
+and display one-based causal steps.
 
 The graph algorithm also infers tool calls from LLM message attributes. Those
 calls have no independent tool execution span: an output call is known at the
