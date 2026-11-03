@@ -1157,9 +1157,10 @@ FKs, idempotent re-derive):
   cursor column: nothing drains this table, and a trace's coverage is not a stream
   of events.
 - **`data_lineage_dirty_traces`** — PK `trace_id`, with a generation from
-  `data_lineage_dirty_generation` (migration `0026_causal_leg_order`). Interaction
-  and leg writes queue changed traces for replay without rewinding the ingestion
-  cursor. A generation is removed only if no later correction replaced it.
+  `data_lineage_dirty_generation` (migration `0026_causal_leg_order`). In-place
+  corrections and deletions of interactions and legs queue their traces for replay
+  without rewinding the ingestion cursor; new legs arrive through the cursor and
+  are not queued. A generation is removed only if no later correction replaced it.
 
 This section fixes the keys and the fact that a trace-level status must exist,
 matching how ADR-0024/0025 name their PKs.
