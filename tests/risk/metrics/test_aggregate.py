@@ -376,14 +376,40 @@ def test_top_rules_respects_limit(configured_db, insert_interaction_risk, varied
     insert_interaction_risk(
         interaction_id="ix-1", triggered_rule_ids=["FX-CRIT-BLOCK"], computed_at=NOW
     )
-    insert_interaction_risk(
-        interaction_id="ix-2", triggered_rule_ids=["FX-LOW-ALLOW"], computed_at=NOW
-    )
+    for i in range(2, 4):
+        insert_interaction_risk(
+            interaction_id=f"ix-{i}", triggered_rule_ids=["FX-LOW-ALLOW"], computed_at=NOW
+        )
 
     time_from, time_to = _window()
     items = metrics.get_top_rules(time_from=time_from, time_to=time_to, limit=1)
 
-    assert len(items) == 1
+    # The cut keeps the most severe rule, not the most frequent one.
+    assert [item.rule_id for item in items] == ["FX-CRIT-BLOCK"]
+
+
+def test_top_rules_same_level_ranked_by_traces(configured_db, insert_interaction_risk):
+    # Neither id is in the catalog, so both share one (unknown) level.
+    # RULE-A fires on more exchanges, RULE-B on more traces.
+    for i in range(3):
+        insert_interaction_risk(
+            interaction_id=f"ix-a-{i}",
+            trace_id="tr-a",
+            triggered_rule_ids=["RULE-A"],
+            computed_at=NOW,
+        )
+    for i in range(2):
+        insert_interaction_risk(
+            interaction_id=f"ix-b-{i}",
+            trace_id=f"tr-b-{i}",
+            triggered_rule_ids=["RULE-B"],
+            computed_at=NOW,
+        )
+
+    time_from, time_to = _window()
+    items = metrics.get_top_rules(time_from=time_from, time_to=time_to, limit=10)
+
+    assert [item.rule_id for item in items] == ["RULE-B", "RULE-A"]
 
 
 def test_top_rules_risk_level_distribution_breaks_down_by_interaction_risk_level(
