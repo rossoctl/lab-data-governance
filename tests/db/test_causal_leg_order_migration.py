@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 
 import psycopg
+import pytest
 from alembic import command
 
 from data_governance import db, retrieval
@@ -191,8 +192,10 @@ def _seed_one_llm_span_at_0022(conn, *, started_at, ended_at) -> None:
     )
     conn.execute(
         "INSERT INTO spans (trace_id, span_id, kind, name, started_at, "
-        "ended_at, arrival_seq) VALUES "
-        "('trace', 'llm-span', 'INTERNAL', 'messages.create', %s, %s, 1)",
+        "ended_at, arrival_seq, attributes, scope) VALUES "
+        "('trace', 'llm-span', 'INTERNAL', 'messages.create', %s, %s, 1, "
+        "'{\"openinference.span.kind\": \"LLM\", \"llm.model_name\": \"m\"}'::jsonb, "
+        "'{\"name\": \"openinference.instrumentation.anthropic\"}'::jsonb)",
         (started_at, ended_at),
     )
 
@@ -268,12 +271,12 @@ def test_inferred_tool_repair_uses_the_llm_call_that_owns_the_span(
     assert rows == [("request", end), ("response", end)]
 
 
-def test_output_tool_on_an_unended_llm_span_is_projected_to_its_start(
+def test_unended_llm_exchange_is_repaired_before_lineage_replay(
     pg_dsn: str, monkeypatch,
 ) -> None:
-    """An LLM span with no recorded end gives no response boundary. As in the
-    graph adapter, an output call falls back to the span's start, so neither
-    tool leg is left untimed."""
+    """Repair the LLM response too, so its output call inherits the LLM hop.
+    The lineage cursor has already passed these legs; the migration queue is
+    what must repair their persisted provenance."""
     monkeypatch.setenv("DATABASE_URL", pg_dsn)
     cfg = _alembic_config()
     command.upgrade(cfg, "0022_content_kind_on_legs")
@@ -303,14 +306,97 @@ def test_output_tool_on_an_unended_llm_span_is_projected_to_its_start(
             ("llm-ix", 10, start, None, "prompt", "llm_chat_prompt"),
             ("tool-ix", 12, start, None, "args", "tool_call_arguments"),
         ])
+        conn.execute(
+            "INSERT INTO processor_state (processor_name, last_processed_seq, updated_at) "
+            "VALUES ('data_lineage', 13, now())"
+        )
 
     command.upgrade(cfg, "head")
     with psycopg.connect(pg_dsn) as conn:
         rows = conn.execute(
-            "SELECT leg_type::text, occurred_at FROM interaction_legs "
-            "WHERE interaction_id = 'tool-ix' ORDER BY leg_type"
+            "SELECT interaction_id, leg_type::text, occurred_at, seq "
+            "FROM interaction_legs ORDER BY seq"
         ).fetchall()
-    assert rows == [("request", start), ("response", start)]
+    assert rows == [
+        ("llm-ix", "request", start, 10),
+        ("llm-ix", "response", start, 11),
+        ("tool-ix", "request", start, 12),
+        ("tool-ix", "response", start, 13),
+    ]
+
+    db.close_pool()
+    db.configure(pg_dsn)
+    try:
+        assert driver.drain(13) == 13
+        result = retrieval.get_data_lineage("trace")
+        assert result.status == "complete"
+        assert [(leg.interaction_id, leg.leg_type) for leg in result.legs] == [
+            ("llm-ix", "request"), ("llm-ix", "response"),
+            ("tool-ix", "request"), ("tool-ix", "response"),
+        ]
+        tool_request = result.legs[2]
+        assert tool_request.lineage is not None
+        assert tool_request.lineage.entities == ["agent:a", "llm:m"]
+    finally:
+        db.close_pool()
+
+
+@pytest.mark.parametrize("scenario", [
+    "enclosing_call", "observed_response", "request_only", "ended_span",
+    "transport_scope", "non_llm_span",
+])
+def test_llm_response_backfill_preserves_observed_and_incomplete_calls(
+    pg_dsn: str, monkeypatch, scenario: str,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", pg_dsn)
+    cfg = _alembic_config()
+    command.upgrade(cfg, "0022_content_kind_on_legs")
+
+    start = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+    end = start + dt.timedelta(seconds=5)
+    response_at = end if scenario == "observed_response" else None
+    with psycopg.connect(pg_dsn) as conn:
+        _seed_one_llm_span_at_0022(
+            conn, started_at=start, ended_at=end if scenario == "ended_span" else None,
+        )
+        conn.execute(
+            "INSERT INTO interactions (id, trace_id, caller_entity_id, "
+            "callee_entity_id, summary) VALUES "
+            "('llm-ix', 'trace', 'agent', 'llm', 'call')"
+        )
+        conn.execute(
+            "INSERT INTO interaction_spans (interaction_id, trace_id, span_id, "
+            "role, leg_type) VALUES "
+            "('llm-ix', 'trace', 'llm-span', 'anchor', 'request')"
+        )
+        _insert_legs(conn, [("llm-ix", 10, start, response_at, "prompt", "llm_chat_prompt")])
+        if scenario == "enclosing_call":
+            conn.execute(
+                "INSERT INTO interactions (id, trace_id, caller_entity_id, "
+                "callee_entity_id, summary, parent_interaction_id) VALUES "
+                "('child', 'trace', 'agent', 'tool', 'call', 'llm-ix')"
+            )
+        elif scenario == "request_only":
+            conn.execute(
+                "DELETE FROM interaction_legs "
+                "WHERE interaction_id = 'llm-ix' AND leg_type = 'response'"
+            )
+        elif scenario == "transport_scope":
+            conn.execute(
+                "UPDATE spans SET scope = '{\"name\": \"opentelemetry.instrumentation.httpx\"}'::jsonb"
+            )
+        elif scenario == "non_llm_span":
+            conn.execute(
+                "UPDATE spans SET attributes = '{\"openinference.span.kind\": \"TOOL\"}'::jsonb"
+            )
+
+    command.upgrade(cfg, "head")
+    with psycopg.connect(pg_dsn) as conn:
+        response = conn.execute(
+            "SELECT occurred_at, seq FROM interaction_legs "
+            "WHERE interaction_id = 'llm-ix' AND leg_type = 'response'"
+        ).fetchone()
+    assert response == (None if scenario == "request_only" else (response_at, 11))
 
 
 def test_inferred_tool_repair_reads_the_leg_content_kind_after_0022(

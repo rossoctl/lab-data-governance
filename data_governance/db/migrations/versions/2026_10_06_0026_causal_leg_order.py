@@ -18,6 +18,8 @@ span's full start/end interval. Project existing output calls to the LLM
 completion boundary and input replays to its request boundary before replay.
 Only tool calls sharing the LLM anchor and carrying tool-call arguments qualify;
 an independently observed tool response keeps its own time.
+An unended LLM span also gives its own existing, untimed response its start,
+unless the LLM call encloses another call, matching the graph adapter.
 
 ``prefix_leg_keys`` records the inclusive causal prefix at a partial trace's
 missing-payload cutoff. ``stopped_at_seq`` remains the cutoff leg's ingestion id,
@@ -360,6 +362,49 @@ def upgrade() -> None:
         """
     )
 
+    # An output call on an unended LLM span was moved to the span's start above.
+    # Its LLM's own response must land there too, before the call's higher graph
+    # ordinal, or lineage replay loses the LLM hop. Mirror the graph adapter's
+    # _time_unended_llm_responses: only an existing untimed response on a real
+    # OpenInference LLM span, and not a call enclosing another interaction.
+    # Read the span evidence rather than content_kind, which 0022 did not
+    # backfill on old legs. Synthetic anchor ids still name the same real span.
+    # Freeze this repair in SQL so later adapter changes cannot alter upgrades.
+    op.execute(
+        """
+        WITH unended_llm_calls AS (
+            SELECT DISTINCT ON (llm_ix.id)
+                   llm_ix.id AS interaction_id, s.started_at
+            FROM interactions llm_ix
+            JOIN entities llm_entity
+              ON llm_entity.id = llm_ix.callee_entity_id
+             AND llm_entity.kind = 'llm'
+            JOIN interaction_spans anchor
+              ON anchor.interaction_id = llm_ix.id
+             AND anchor.trace_id = llm_ix.trace_id
+             AND anchor.role = 'anchor'
+            JOIN spans s
+              ON s.trace_id = llm_ix.trace_id
+             AND s.span_id = split_part(anchor.span_id, '#', 1)
+            WHERE s.ended_at IS NULL
+              AND s.attributes ->> 'openinference.span.kind' = 'LLM'
+              AND starts_with(s.scope ->> 'name', 'openinference.instrumentation.')
+              AND NOT EXISTS (
+                  SELECT 1 FROM interactions child
+                  WHERE child.trace_id = llm_ix.trace_id
+                    AND child.parent_interaction_id = llm_ix.id
+              )
+            ORDER BY llm_ix.id, anchor.span_id
+        )
+        UPDATE interaction_legs leg
+        SET occurred_at = llm.started_at
+        FROM unended_llm_calls llm
+        WHERE leg.interaction_id = llm.interaction_id
+          AND leg.leg_type = 'response'
+          AND leg.occurred_at IS NULL
+        """
+    )
+
     # A previous complete claim can be wrong even when every payload exists.
     # Remove both the metadata and the claim before replay; absence reads as
     # unknown while the durable queue is drained.
@@ -376,8 +421,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # The timestamp correction above is a data repair. Downgrading removes the
-    # new replay machinery but does not invent the old, misleading tool times.
+    # The timestamp corrections above are data repairs. Downgrading removes
+    # the replay machinery while retaining the repaired times.
     op.execute("DROP TRIGGER IF EXISTS dg_lineage_leg_inserted ON interaction_legs")
     op.execute("DROP FUNCTION IF EXISTS dg_mark_lineage_legs_inserted()")
     op.execute("DROP TRIGGER IF EXISTS dg_lineage_leg_deleted ON interaction_legs")
