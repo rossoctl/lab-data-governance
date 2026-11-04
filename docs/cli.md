@@ -11,6 +11,7 @@ dg.sh component  [install|uninstall|status]
 dg.sh component  install [--no-build|--reuse-classification]
 dg.sh namespaces [list]
 dg.sh namespace  <ns> [instrument|status] [<entity>]
+dg.sh namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]...
 ```
 
 There are no global options. The shim and existing-proxy reconciliation assets
@@ -119,6 +120,57 @@ converged; a namespace ConfigMap without the pipeline is reported even while
 running pods still carry it, because the next pod admission would drop it. It
 may truthfully report `sidecar=none`; that state is diagnostic and is not
 accepted by `instrument`.
+
+## The Sentry gate
+
+```sh
+./deploy/dg.sh namespace <ns> instrument --enforce [--pass-host <glob>]...
+./deploy/dg.sh namespace <ns> instrument --observe [--pass-host <glob>]...
+```
+
+`instrument --enforce` does what `instrument` does and adds the Sentry gate to the namespace's
+`authbridge-runtime-config`, the source every pod admission renders the sidecar's config from. On both
+chains `lineage-telemetry` gets `capture_io: true` (the gate can only judge what lineage captured) and
+`export_delay_ms: 10` (the verdict service answers once the request span has left the sidecar). The
+outbound chain gets a `sentry-gate` entry after `lineage-telemetry` (the gate requires lineage before it)
+with three keys:
+
+| key | value |
+|---|---|
+| `verdict_url` | the verdict service, `http://data-governance-verdict.data-governance.svc:8080/enforce/v1` (`DG_VERDICT_URL` overrides it) |
+| `verdict_secret` | the shared secret, read from Secret `data-governance/dg-verdict-secret` and written inline; `/v1/pipeline` masks it |
+| `pass_hosts` | the `--pass-host` globs, repeatable (`path.Match` syntax, port stripped and case-folded; a glob the gate would refuse, such as an unclosed `[`, is a usage error); left out when there are none |
+
+Every other gate key keeps the gate's default (`wait_ms` 2000, `deny_on` `[block]`, `pass_single_label`
+true, so a cluster short name always passes). An existing `sentry-gate` entry anywhere in the source is
+replaced by this one. `--pass-host` replaces the pass list; without it a re-run keeps the list the
+namespace's gate carries, so emptying it means removing `pass_hosts` from the gate's entry in
+`authbridge-runtime-config` by hand.
+
+Then each workload's live `/v1/pipeline` is checked against the gated pipeline (lineage before the gate,
+the lineage values above, the gate's URL, pass list and mode, a secret present), and each one not on it
+is rolled and verified. A second run with the same flags writes nothing and rolls nothing.
+
+`--observe` writes the same with the gate's entry in the pipeline's own observe mode (`on_error:
+observe`): the gate asks and waits as when enforcing, and every refusal it would make is recorded and not
+made. `--enforce` on an observing namespace switches it back.
+
+It refuses, mutating nothing, when a sidecar's image has no `sentry-gate` that takes `verdict_url`,
+`verdict_secret` and `pass_hosts` (read from the image's `/v1/plugins`), when the verdict Secret is empty,
+and when an `<entity>` is named: the gate is a namespace setting. `instrument` without `--enforce` or
+`--observe` refuses on a namespace whose source carries the gate, mutating nothing, and names the run that
+keeps it: the lineage reconciler appends lineage after every entry it does not manage, so it would put the
+gate before lineage. No verb removes the gate.
+
+`status` on a gated namespace prints the gate's mode and pass list
+(`namespace <ns>: sentry-gate mode=enforce pass_hosts=a.example,b.example`) and checks the source and each
+live pipeline against the gated pipeline in that mode, with that pass list; when the source has drifted it
+advises the run with the namespace's own `--enforce` or `--observe`.
+
+The secret is copied, not referenced: whoever can read ConfigMaps in a gated namespace can read it, and
+after `component uninstall` and `install` draw a new one, every gated namespace refuses with
+`verdict_unauthorized` until its `instrument --enforce` (or `--observe`) runs again. The secret reaches
+no command line and no log of `dg.sh`.
 
 ## Typical flow
 
