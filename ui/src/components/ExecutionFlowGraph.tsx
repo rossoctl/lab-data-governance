@@ -510,7 +510,7 @@ const ROW_STEP_Y = 96;
 
 /**
  * How far, in px, an ADJACENT-COLUMN edge bows off the straight line between its
- * two cells — applied with the causal step parity sign, so a request and its response
+ * two cells — applied with opposite request/response signs, so the two legs
  * arc to opposite sides of the same span.
  *
  * Sized for LEGIBILITY, not clearance: there is nothing between two adjacent
@@ -627,6 +627,31 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
 }
 
 /**
+ * Parallel calls get distinct magnitudes, ordered by their stable interaction
+ * ids. Scales stay between one and two so adjacent bows remain in the row gutter.
+ * Both directions of an endpoint pair share these lanes; causal steps do not
+ * affect routing.
+ */
+function edgeLaneScales(edges: readonly GraphEdgeSpec[]): ReadonlyMap<string, number> {
+  const callsByPair = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    const pair = JSON.stringify([edge.source, edge.target].sort());
+    let calls = callsByPair.get(pair);
+    if (calls === undefined) {
+      calls = new Set<string>();
+      callsByPair.set(pair, calls);
+    }
+    calls.add(edge.interactionId);
+  }
+  const scales = new Map<string, number>();
+  for (const calls of callsByPair.values()) {
+    const ids = [...calls].sort();
+    ids.forEach((id, index) => scales.set(id, 1 + index / Math.max(1, ids.length - 1)));
+  }
+  return scales;
+}
+
+/**
  * The bendpoints for one edge, or `[]` for a straight line.
  *
  * THE COLUMN-SKIPPING EDGE is the problem this solves, and it is the one the
@@ -648,8 +673,8 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
  * router (per-lane channel assignment, corner radii) is a much larger thing, and it
  * would have to be re-derived on every drag: a bendpoint is stored geometry, and a
  * dragged node's edges would keep their stale detour. Keeping the detour to one point
- * that is a pure function of the two ENDPOINT CELLS means it is recomputed with the
- * model and stays honest.
+ * that is a pure function of the endpoint cells and the call's lane means it is
+ * recomputed with the model and stays honest.
  *
  * NOTE ON WHAT "THROUGH IT" MEANS NOW. It used to mean a POLYLINE — that is what PF's
  * `DefaultEdge` draws, an `L` to the bendpoint and an `L` onwards. The graph no longer
@@ -660,13 +685,10 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
  * the same way — but the shape it produces is an arc, not a corner, and the clearance
  * it buys is identical.
  *
- * THE OFFSET SIGN alternates with the edge's causal step parity, so two edges over the
- * same span — a request and its response, or two parallel interactions — detour
- * to OPPOSITE sides instead of tracing the same line. That is what stops
- * same-pair edges from drawing exactly on top of one another, which the staircase
- * did (and which its own comment admitted). Parity, not an index into the group,
- * because it needs no second pass over the edge list and each step is unique
- * per leg.
+ * Requests and responses use opposite signs. Parallel calls between the same
+ * endpoints have distinct magnitudes from `edgeLaneScales`, so each leg follows
+ * its own curve even when other calls interleave its request and response.
+ * Reordering the same calls changes their step labels while keeping their lanes.
  *
  * AN ADJACENT-COLUMN PAIR IS BOWED, NOT LEFT STRAIGHT — and this is the case that
  * matters most, because it is the shape of an ordinary call. An earlier version of
@@ -675,11 +697,9 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
  * reason an edge needs routing: A→B and B→A over one column step share BOTH
  * anchor points, so the request and its response were drawn exactly on top of each
  * other — one line with an arrowhead at each end and the two step tags colliding.
- * The claim that parity "stops same-pair edges from drawing on top of one another"
- * was therefore only true for the spans that fell past that early return, i.e. the
- * rarer ones.
+ * A separating offset therefore applies to adjacent cells too.
  *
- * So `spans === 1` now gets a SMALL parity-signed bow (`ADJACENT_BOW_Y`) rather
+ * So `spans === 1` now gets a SMALL signed bow (`ADJACENT_BOW_Y`) rather
  * than the half-row lift a skipping edge takes: the pair has to separate enough to
  * read as two arrows, while each still reads as the direct connection it is. There
  * is nothing between the two cells to clear, so the offset is sized for legibility
@@ -688,6 +708,7 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
 function edgeBendpoints(
   edge: GraphEdgeSpec,
   cellById: ReadonlyMap<string, { column: number; row: number }>,
+  laneScale: number,
   // `[x, y]` tuples, not `Point`s: `EdgeModel.bendpoints` is `PointTuple[]` and
   // `BaseEdge.setModel` is what constructs the `Point`s from them. Handing it
   // `Point`s instead type-errors, and would be the wrong side of that seam anyway.
@@ -704,13 +725,13 @@ function edgeBendpoints(
   const a = gridPosition(from);
   const b = gridPosition(to);
   // Opposite sides for the two legs of a pair, so they do not retrace one line.
-  const side = edge.step % 2 === 0 ? 1 : -1;
+  const side = (edge.legType === 'request' ? -1 : 1) * laneScale;
 
   if (spans === 1) {
     // ADJACENT COLUMNS — the ordinary call, and the pair that used to overlap
     // exactly (see the note above). Nothing sits between the two cells, so this
     // bow exists purely to separate the request from its response: a small
-    // parity-signed lift at the midpoint, so the two legs arc apart and each
+    // signed lift at the midpoint, so the two legs arc apart and each
     // keeps its own step tag legible instead of both landing on one line.
     return [[(a.x + b.x) / 2, (a.y + b.y) / 2 + side * ADJACENT_BOW_Y]];
   }
@@ -2179,6 +2200,7 @@ export function EntityGraph({
     // moves again. Routing against the cell keeps the detour a property of the
     // LAYOUT, which is the thing it is dodging.
     const cellById = new Map(spec.nodes.map((n) => [n.id, { column: n.column, row: n.row }]));
+    const laneScales = edgeLaneScales(spec.edges);
     const model: Model = {
       // No `layout` key: see the controller's note. Omitting it leaves
       // `BaseGraph.currentLayout` undefined, so `graph.layout()` is a no-op and
@@ -2225,7 +2247,7 @@ export function EntityGraph({
         };
       }),
       edges: spec.edges.map((e) => {
-        const route = edgeBendpoints(e, cellById);
+        const route = edgeBendpoints(e, cellById, laneScales.get(e.interactionId)!);
         const drawn = drawnBend.get(e.id);
         // Same rule as a node: an existing one-bend route is pushed where it is
         // drawn and moved to its new route with the nodes at its ends.
@@ -2245,7 +2267,7 @@ export function EntityGraph({
           // graph.
           edgeStyle: e.isSelfCall ? EdgeStyle.dashed : EdgeStyle.solid,
           // THE ROUTING, and the apex the drawn arc bends through. One point for every
-          // edge that connects two distinct cells — a small parity-signed bow for the
+          // edge that connects two distinct cells — a small signed bow for the
           // adjacent-column pair (so a request and its response separate rather than
           // retrace one line), a larger detour for an edge that skips columns or stays
           // within one. Empty ONLY for a self-call, which has nowhere to bend to. See
