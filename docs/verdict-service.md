@@ -60,7 +60,9 @@ secret identifies a gated sidecar, not a workload (issue #343). So the secret al
 whatever the classifier did not flag.
 
 A gate reads the value from its own config or a mounted file (`verdict_secret`, `verdict_secret_file`), so it has to be
-copied into each gated namespace; nothing here does that. `dg.sh component uninstall` without `--keep-data` deletes the
+copied into each gated namespace: `dg.sh namespace <ns> instrument --enforce` (or `--observe`) writes it into the
+namespace's `authbridge-runtime-config` ([cli.md](cli.md#the-sentry-gate)), where whoever can read ConfigMaps in that
+namespace can read it. `dg.sh component uninstall` without `--keep-data` deletes the
 Secret and the next install draws a new value, after which gates holding the old one get 401 and refuse.
 
 ## How the wait is short
@@ -81,8 +83,8 @@ Three things keep the answer inside the time the gate holds the request:
   the leg.
 
 The sidecar must export its request span well inside `wait_ms`, which is lineage's `export_delay_ms`: the service can
-answer only once it has the span, and that setting's default of 5000 ms is past any wait. A gate's `verdict_url` ends in
-`/enforce/v1`.
+answer only once it has the span, and that setting's default of 5000 ms is past any wait; `instrument --enforce` sets it
+to 10. A gate's `verdict_url` ends in `/enforce/v1`.
 
 Classification cost grows with the body. Measured with the real model at a 2-CPU limit: 4 KB 1.2 s, 16 KB 3.9 s,
 64 KB 16.7 s, 256 KB 70 s, and 512 KB killed the pod at its 3 GiB limit. So at the default `max_payload_bytes` one payload

@@ -22,6 +22,7 @@
 #   dg.sh component  install [--no-build|--reuse-classification]
 #   dg.sh namespaces [list]
 #   dg.sh namespace  <ns> [instrument|status] [<entity>]
+#   dg.sh namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]...
 #
 # Fail-loud posture: every preflight and every unresolved input is a loud,
 # non-zero exit — never a silent no-op.
@@ -101,6 +102,7 @@ Usage:
   ${PROG} component  install [--no-build|--reuse-classification]
   ${PROG} namespaces [list]
   ${PROG} namespace  <ns> [instrument|status] [<entity>]
+  ${PROG} namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]...
 EOF
 }
 
@@ -805,8 +807,10 @@ namespace_status() {
     local runtime_json runtime_reason=""
     if ! runtime_json="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json 2>/dev/null)"; then
         runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} could not be read"
+    elif ! adopt_namespace_gate "${ns}" "${runtime_json}" status; then
+        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} carries a Sentry gate, and the verdict Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} cannot be read"
     elif ! configmap_is_canonical "${runtime_json}"; then
-        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} differs from the canonical lineage pipeline; run 'dg.sh namespace ${ns} instrument'"
+        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} differs from the canonical lineage pipeline; run 'dg.sh namespace ${ns} instrument${DG_GATE_MODE:+ --${DG_GATE_MODE}}'"
     fi
 
     local name json deployment_json type cm cm_data lineage
@@ -1091,6 +1095,10 @@ proxy_environment_valid() {
 
 render_runtime_config() {
     local cm_json="$1"
+    if [[ -n "${DG_GATE_MODE}" ]]; then
+        render_gated_runtime_config "${cm_json}"
+        return
+    fi
     printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render \
         --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}"
 }
@@ -1148,11 +1156,14 @@ configmap_is_canonical() {
     local cm_json="$1" rendered
     rendered="$(render_runtime_config "${cm_json}" 2>/dev/null)" \
         || return 1
-    python3 -c '
+    # Both documents on stdin, never on a command line: a gated one carries the secret.
+    { printf '%s\n' "${cm_json}"; printf '%s' "${rendered}"; } | python3 -c '
 import json, sys
-current, rendered = (json.loads(value) for value in sys.argv[1:])
+text, decoder = sys.stdin.read(), json.JSONDecoder()
+current, end = decoder.raw_decode(text)
+rendered, _ = decoder.raw_decode(text[end:].lstrip())
 sys.exit(0 if current.get("data", {}).get("config.yaml") == rendered.get("data", {}).get("config.yaml") else 1)
-' "${cm_json}" "${rendered}"
+'
 }
 
 proxy_catalog_has_lineage() {
@@ -1172,6 +1183,10 @@ live_pipeline_is_canonical() {
     [[ "${status}" -eq 0 && -n "${body}" ]] || return 1
     expected="$(printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-contract 2>/dev/null)" \
         || return 1
+    if [[ -n "${DG_GATE_MODE}" ]]; then
+        gated_pipeline_valid "${body}" "${expected}"
+        return
+    fi
     printf '%s' "${body}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-valid \
         --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
         --expected "${expected}"
@@ -1252,6 +1267,8 @@ preflight_trusted_proxies() {
         resolve_admitted_proxy "${ns}" "${entity}" preflight proxy
         proxy_catalog_has_lineage "${ns}" "${proxy[pod_name]}" \
             || die "instrument: '${entity}'s AuthBridge image does not advertise the a2a-parser, mcp-parser, inference-parser, and lineage-telemetry plugins. Deploy a lineage-capable Cortex proxy image first; mutating nothing."
+        [[ -z "${DG_GATE_MODE}" ]] || proxy_catalog_has_gate "${ns}" "${proxy[pod_name]}" \
+            || die "instrument --${DG_GATE_MODE}: '${entity}'s AuthBridge image has no sentry-gate that takes ${DG_GATE_KEYS// /, }. Deploy a Cortex proxy image with it first; mutating nothing."
 
         app="$(app_container_of "${dep}")"
         [[ -n "${app}" ]] || die "instrument: '${entity}' must have exactly one application container. Mutating nothing."
@@ -1328,7 +1345,7 @@ roll_onto_namespace_lineage() {
         fi
         sleep 2
     done
-    die "instrument: '${entity}' rolled, but /v1/pipeline does not report the ${ns}/${DG_RUNTIME_CONFIGMAP} lineage pipeline. Re-run 'dg.sh namespace ${ns} instrument' to continue; 'status' shows which workloads are live."
+    die "instrument: '${entity}' rolled, but /v1/pipeline does not report the ${ns}/${DG_RUNTIME_CONFIGMAP} lineage pipeline. Re-run 'dg.sh namespace ${ns} instrument${DG_GATE_MODE:+ --${DG_GATE_MODE}}' to continue; 'status' shows which workloads are live."
 }
 
 
@@ -1358,12 +1375,21 @@ namespace_instrument() {
         return 0
     fi
 
+    # With a gate, the secret and the pass list are read first: an empty secret
+    # refuses the run before anything is written.
+    if [[ -n "${DG_GATE_MODE}" ]]; then
+        [[ -z "${entity}" ]] || die "instrument --${DG_GATE_MODE}: the gate is a namespace setting; run it without <entity>. Mutating nothing."
+        keep_namespace_pass_list "${ns}"
+        build_gate_spec
+    fi
+
     # The namespace ConfigMap reaches every sidecar in <ns> at its next pod
     # admission, so only a namespace-wide run, which preflights every trusted
     # agent/tool, may change it.
     local runtime_json rendered write="yes"
     runtime_json="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json)" \
         || die "instrument: could not read ${ns}/${DG_RUNTIME_CONFIGMAP}, which Rossoctl renders every sidecar config from. Mutating nothing."
+    adopt_namespace_gate "${ns}" "${runtime_json}" instrument
     rendered="$(render_runtime_config "${runtime_json}")" \
         || die "instrument: ${ns}/${DG_RUNTIME_CONFIGMAP} is outside the safe reconciliation envelope. Mutating nothing."
     configmap_is_canonical "${runtime_json}" && write="no"
@@ -1400,6 +1426,128 @@ namespace_instrument() {
     err ">> instrument: done for trusted proxy namespace '${ns}'."
 }
 
+# ---------------------------------------------------------------------------
+# The Sentry gate: instrument --enforce|--observe (#342). instrument renders the
+# verdict URL, the shared secret and the pass list into the gate's entry of
+# authbridge-runtime-config, after lineage-telemetry, beside lineage's
+# capture_io on and export_delay_ms 10.
+# ---------------------------------------------------------------------------
+
+DG_VERDICT_URL="${DG_VERDICT_URL:-http://data-governance-verdict.${DG_NAMESPACE}.svc:8080/enforce/v1}"
+GATE_CONFIG_TOOL="${SCRIPT_DIR}/gate_config.py"
+# The config keys instrument writes into the gate's entry; an image whose gate
+# lacks one would refuse the whole config.
+DG_GATE_KEYS="verdict_url verdict_secret pass_hosts"
+# enforce | observe while instrument runs with a gate; empty otherwise.
+DG_GATE_MODE=""
+DG_GATE_SPEC_FILE=""
+DG_GATE_PASS_HOSTS=()
+
+# verdict_secret_value: the verdict service's bearer from its Secret; a loud die
+# when it cannot be read. Never printed by dg.sh.
+verdict_secret_value() {
+    local out
+    out="$(kubectl -n "${DG_NAMESPACE}" get secret "${DG_VERDICT_SECRET}" -o 'jsonpath={.data.secret}')" \
+        || die "could not read Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET}, the verdict service's bearer (dg.sh component install creates it)"
+    # Stripped as the verdict service strips it: a hand-made Secret's trailing newline would
+    # otherwise reach the gate, which refuses a secret with whitespace.
+    printf '%s' "${out}" | python3 -c 'import base64, sys; sys.stdout.write(base64.b64decode(sys.stdin.read().strip()).decode().strip())'
+}
+
+# build_gate_spec: read the secret and write the gate's spec (verdict URL,
+# secret, pass list) to DG_GATE_SPEC_FILE. Refuses an empty secret before
+# anything is written.
+build_gate_spec() {
+    local secret
+    secret="$(verdict_secret_value)"
+    [[ -n "${secret}" ]] || die "instrument --${DG_GATE_MODE}: ${DG_NAMESPACE}/${DG_VERDICT_SECRET} is empty. Mutating nothing."
+    DG_GATE_SPEC_FILE="$(mktemp)"
+    # The spec holds the secret: removed however the run ends.
+    trap 'rm -f "${DG_GATE_SPEC_FILE:-}"' EXIT
+    printf '%s' "${secret}" | python3 -c '
+import json, sys
+url, path = sys.argv[1], sys.argv[2]
+spec = {"verdict_url": url, "verdict_secret": sys.stdin.read(), "pass_hosts": sys.argv[3:]}
+open(path, "w").write(json.dumps(spec))
+' "${DG_VERDICT_URL}" "${DG_GATE_SPEC_FILE}" "${DG_GATE_PASS_HOSTS[@]+"${DG_GATE_PASS_HOSTS[@]}"}"
+    err ">> instrument --${DG_GATE_MODE}: verdict_url ${DG_VERDICT_URL}"
+}
+
+render_gated_runtime_config() {
+    local cm_json="$1"
+    printf '%s' "${cm_json}" \
+        | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        | python3 "${GATE_CONFIG_TOOL}" apply --kit-dir "${KIT_DIR}" --spec "${DG_GATE_SPEC_FILE}" \
+            --mode "${DG_GATE_MODE}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}"
+}
+
+gated_pipeline_valid() {
+    local body="$1" expected="$2"
+    printf '%s' "${body}" | python3 "${GATE_CONFIG_TOOL}" pipeline-valid --kit-dir "${KIT_DIR}" \
+        --spec "${DG_GATE_SPEC_FILE}" --mode "${DG_GATE_MODE}" \
+        --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" --expected "${expected}" 2>/dev/null
+}
+
+# proxy_catalog_has_gate <ns> <pod>: the sidecar's catalog has a sentry-gate
+# whose config takes every key instrument writes (DG_GATE_KEYS).
+proxy_catalog_has_gate() {
+    local ns="$1" pod="$2" catalog
+    catalog="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
+        wget -qO- http://127.0.0.1:9094/v1/plugins 2>/dev/null)" || return 1
+    printf '%s' "${catalog}" | python3 -c '
+import json, sys
+gate = next((p for p in json.load(sys.stdin).get("plugins") or [] if p.get("name") == "sentry-gate"), None)
+fields = {f.get("name") for f in (gate or {}).get("fields") or []}
+sys.exit(0 if set(sys.argv[1].split()) <= fields else 1)' "${DG_GATE_KEYS}"
+}
+
+# read_namespace_gate <runtime-json>: the gate entry of the namespace source as
+# {"mode", "pass_hosts"}, {} when it carries none.
+read_namespace_gate() {
+    printf '%s' "$1" | python3 "${GATE_CONFIG_TOOL}" read --kit-dir "${KIT_DIR}" 2>/dev/null || printf '{}'
+}
+
+# gate_pass_hosts <gate-json>: its pass list, one host per line.
+gate_pass_hosts() {
+    python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["pass_hosts"]))' "$1" | sed '/^$/d'
+}
+
+# adopt_namespace_gate <ns> <runtime-json> <instrument|status>: a run without
+# --enforce|--observe on a namespace whose source carries the gate. instrument refuses:
+# the lineage reconciler appends lineage after every entry it does not manage, so a
+# plain run would put the gate before lineage, with capture off. status reads the
+# gate's mode and pass list, prints them, and checks the source against the gated
+# render in that mode with that pass list.
+adopt_namespace_gate() {
+    local ns="$1" runtime_json="$2" verb="$3" gate mode
+    [[ -z "${DG_GATE_MODE}" ]] || return 0
+    gate="$(read_namespace_gate "${runtime_json}")"
+    [[ "${gate}" != "{}" ]] || return 0
+    mode="$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["mode"])' "${gate}")"
+    if [[ "${verb}" == "instrument" ]]; then
+        die "instrument: ${ns}/${DG_RUNTIME_CONFIGMAP} carries the Sentry gate (${mode}); run 'dg.sh namespace ${ns} instrument --${mode}', which keeps lineage before the gate and the gate's pass list. Mutating nothing."
+    fi
+    DG_GATE_MODE="${mode}"
+    mapfile -t DG_GATE_PASS_HOSTS < <(gate_pass_hosts "${gate}")
+    printf 'namespace %s: sentry-gate mode=%s pass_hosts=%s\n' "${ns}" "${mode}" \
+        "$(IFS=,; printf '%s' "${DG_GATE_PASS_HOSTS[*]:-(none)}")"
+    ( build_gate_spec ) >/dev/null 2>&1 || { err "status: the verdict Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} cannot be read"; return 1; }
+    build_gate_spec 2>/dev/null
+}
+
+# keep_namespace_pass_list <ns>: --enforce|--observe without --pass-host keeps the pass list
+# the namespace's gate already carries, so re-running the command status advises never
+# empties it; --pass-host given replaces it.
+keep_namespace_pass_list() {
+    local ns="$1" runtime gate
+    [[ ${#DG_GATE_PASS_HOSTS[@]} -eq 0 ]] || return 0
+    runtime="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json 2>/dev/null)" || return 0
+    gate="$(read_namespace_gate "${runtime}")"
+    [[ "${gate}" != "{}" ]] || return 0
+    mapfile -t DG_GATE_PASS_HOSTS < <(gate_pass_hosts "${gate}")
+    err ">> instrument --${DG_GATE_MODE}: pass list kept from the namespace's gate: ${DG_GATE_PASS_HOSTS[*]:-(none)} (--pass-host replaces it)"
+}
+
 # --- namespace <ns> [instrument|status] [<entity>] -------------------------
 
 cmd_namespace() {
@@ -1410,6 +1558,28 @@ cmd_namespace() {
 
     case "${action}" in
         instrument)
+            shift 2
+            entity=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --enforce|--observe)
+                        [[ -z "${DG_GATE_MODE}" ]] || usage_error "instrument: give one of --enforce, --observe"
+                        DG_GATE_MODE="${1#--}" ;;
+                    --pass-host)
+                        [[ $# -ge 2 && -n "$2" ]] || usage_error "instrument: --pass-host needs a host glob"
+                        # A glob the gate refuses would make every sidecar refuse its config.
+                        local pass_problem
+                        pass_problem="$(python3 "${GATE_CONFIG_TOOL}" pass-host-problem -- "$2")" \
+                            || usage_error "instrument: --pass-host '$2' is a glob the gate refuses: ${pass_problem}"
+                        DG_GATE_PASS_HOSTS+=("$2"); shift ;;
+                    --*) usage_error "instrument: unknown option '$1'" ;;
+                    *) [[ -z "${entity}" ]] || usage_error "instrument: one <entity> at most"; entity="$1" ;;
+                esac
+                shift
+            done
+            if [[ -z "${DG_GATE_MODE}" && ${#DG_GATE_PASS_HOSTS[@]} -gt 0 ]]; then
+                usage_error "instrument: --pass-host applies to --enforce and --observe only"
+            fi
             namespace_instrument "${ns}" "${entity}"
             ;;
         status)
