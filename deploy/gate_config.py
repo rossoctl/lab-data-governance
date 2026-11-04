@@ -13,20 +13,21 @@ from), then pipes the result through ``apply`` here, which:
 - removes any ``sentry-gate`` entry and writes one after ``lineage-telemetry`` on the
   outbound chain (the gate requires lineage before it; the reverse order makes the
   sidecar refuse the config), with the verdict URL, the shared secret, the pass
-  list and, when the spec names them, the wait (``wait_ms``), the fallback (``deny`` or
-  ``allow``), the ``fail_mode`` rows and the ``sources`` slices rendered from the
-  namespace's fail-mode document (``fail_mode.py``), and under ``--observe`` the
-  framework's ``on_error: observe``. Every other gate key keeps the gate's default
-  (``wait_ms`` absent is the gate's 2000, ``fallback`` absent its ``deny``).
+  list and, when the spec names them, the wait (``wait_ms``), the fallback (``deny`` or ``allow``), the
+  ``fail_mode`` rows and the ``sources`` slices rendered from the namespace's fail-mode
+  document (``fail_mode.py``) and that document's ``fail_mode_revision``, and under
+  ``--observe`` the framework's ``on_error: observe``. Every other gate key keeps the gate's default (``wait_ms`` absent
+  is the gate's 2000, ``fallback`` absent its ``deny``).
 
 ``pipeline-valid`` reads a sidecar's ``/v1/pipeline`` and says whether it runs
 exactly that: the plugin names of the ConfigMap, lineage before the gate, the
 lineage values above, the gate's URL, pass list, wait, fallback, ``fail_mode`` rows (as a set
-by destination), ``sources`` slices (by source, each slice's rows as a set by destination)
-and mode, and a secret present (the endpoint masks its value).
+by destination), ``sources`` slices (by source, each slice's rows as a set by destination),
+``fail_mode_revision`` and mode, and a secret present (the endpoint masks its value).
 
 ``read`` gives the gate entry of a runtime ConfigMap: its mode, pass list, wait, fallback, the
-number of its ``fail_mode`` rows and the number of its ``sources`` slices.
+number of its ``fail_mode`` rows, the number of its ``sources`` slices and its
+``fail_mode_revision``.
 
 ``pass-host-problem <glob>`` says why the gate would refuse a ``--pass-host`` glob.
 
@@ -109,6 +110,8 @@ def gate_block(indent: int, spec: dict, mode: str) -> list[str]:
             lines += [f"{key}    {field}: {scalar(slice_[field])}\n" for field in SETTING_KEYS if field in slice_]
             if slice_.get("fail_mode"):
                 lines += row_lines(f"{key}    ", slice_["fail_mode"])
+    if spec.get("fail_mode_revision"):
+        lines.append(f"{key}fail_mode_revision: {scalar(spec['fail_mode_revision'])}\n")
     if spec.get("pass_hosts"):
         lines.append(f"{key}pass_hosts:\n")
         lines += [f"{key}- {scalar(host)}\n" for host in spec["pass_hosts"]]
@@ -215,6 +218,8 @@ def pipeline_problems(document: dict, expected: dict, otel_endpoint: str, namesp
             {s: v for s, v in live_sources.items() if s not in masked}) != slices_by_source(
             {s: v for s, v in want_sources.items() if s not in masked}):
         problems.append("gate sources slices differ")
+    if (config.get("fail_mode_revision") or "") != (spec.get("fail_mode_revision") or ""):
+        problems.append("gate fail_mode_revision differs")
     if not config.get("verdict_secret"):
         problems.append("gate has no verdict secret")
     if (gate.get("onError") == "observe") != (mode == "observe"):
@@ -234,9 +239,9 @@ def pipeline_valid_command(args: argparse.Namespace) -> int:
 
 def read_command(args: argparse.Namespace) -> int:
     """The gate entry of a runtime ConfigMap as {"mode", "pass_hosts", "wait_ms", "fallback",
-    "fail_mode_rows", "sources"}, {} when none; wait_ms and fallback are None when the entry
-    has no such key; sources counts the slices. Each key is read at the indentation of the
-    entry's config keys, so a row's or a slice's wait or fallback is not the gate's."""
+    "fail_mode_rows", "sources", "fail_mode_revision"}, {} when none; wait_ms, fallback and
+    fail_mode_revision are None when the entry has no such key; sources counts the slices. Each key is read at the indentation of the entry's
+    config keys, so a row's or a slice's wait or fallback is not the gate's."""
     reconcile = load_reconcile(args.kit_dir)
     config = (json.load(sys.stdin).get("data") or {}).get("config.yaml") or ""
     lines = config.splitlines(keepends=True)
@@ -253,12 +258,14 @@ def read_command(args: argparse.Namespace) -> int:
         fallback = re.search(rf"^{k}fallback:\s*(\S+)\s*$", text, re.M)
         rows = re.search(rf"^{k}fail_mode:\n((?:{k}(?:- |  ).*\n)*)", text, re.M)
         sources = re.search(rf"^{k}sources:\n((?:{k}  .*\n)*)", text, re.M)
+        revision = re.search(rf"^{k}fail_mode_revision:\s*(\S+)\s*$", text, re.M)
         json.dump({"mode": "observe" if re.search(r"on_error:\s*observe", text) else "enforce",
                    "pass_hosts": [h.split("- ", 1)[1].strip().strip("'") for h in hosts.group(1).splitlines()] if hosts else [],
                    "wait_ms": int(wait_ms.group(1)) if wait_ms else None,
                    "fallback": fallback.group(1).strip("'\"") if fallback else None,
                    "fail_mode_rows": len(re.findall(rf"^{k}- ", rows.group(1), re.M)) if rows else 0,
-                   "sources": len(re.findall(rf"^{k}  \S", sources.group(1), re.M)) if sources else 0},
+                   "sources": len(re.findall(rf"^{k}  \S", sources.group(1), re.M)) if sources else 0,
+                   "fail_mode_revision": revision.group(1).strip("'\"") if revision else None},
                   sys.stdout)
         return 0
     json.dump({}, sys.stdout)
@@ -325,7 +332,7 @@ def main() -> int:
     for name, func in (("apply", apply_command), ("pipeline-valid", pipeline_valid_command)):
         p = sub.add_parser(name)
         p.add_argument("--kit-dir", required=True)
-        p.add_argument("--spec", required=True, help="JSON: verdict_url, verdict_secret, pass_hosts, wait_ms, fallback, fail_mode and sources (optional)")
+        p.add_argument("--spec", required=True, help="JSON: verdict_url, verdict_secret, pass_hosts, wait_ms, fallback, fail_mode, sources and fail_mode_revision (optional)")
         p.add_argument("--mode", choices=MODES, required=True)
         p.add_argument("--otel-endpoint", required=True)
         if name == "pipeline-valid":
