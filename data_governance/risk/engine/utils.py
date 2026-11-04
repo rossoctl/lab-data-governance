@@ -591,10 +591,13 @@ def fingerprint(
     classifications: dict[str, Verdict | object],
     anchor: AnchorFacts | None = None,
     inherited: labels.Inherited | None = None,
+    *,
+    caller_entity_id: str | None = None,
+    callee_entity_id: str | None = None,
 ) -> str:
     """A canonical fingerprint string over the evidence that feeds one
     interaction risk computation — the legs, their classifications, and the
-    anchor span's wire facts (issue #163).
+    anchor span's wire facts (issue #163), and the endpoints passed to OPA.
 
     Used to detect whether evidence actually changed since the last OPA call
     (FR-DAS-014 idempotency): compare this against the fingerprint stored
@@ -603,4 +606,9 @@ def fingerprint(
     freshly-computed Python values).
     """
     normalized = _normalize_for_fingerprint(legs, classifications, anchor, inherited)
+    if caller_entity_id is not None or callee_entity_id is not None:
+        normalized["processing_agents"] = {
+            "caller_entity_id": caller_entity_id,
+            "callee_entity_id": callee_entity_id,
+        }
     return json.dumps(normalized, sort_keys=True, default=str)

@@ -16,19 +16,19 @@
  * re-walking `interactions`, so the diagram's arrows, the graph's edges and the
  * Flat table's rows are the SAME list in the SAME order by construction rather
  * than by coincidence. A completed interaction therefore contributes TWO messages
- * pointing opposite ways — `A→B` at the request's `seq` and `B→A` at the
- * response's — because that is what actually travelled on the wire (ADR-0025), and
+ * pointing opposite ways — `A→B` for the request and `B→A` for the
+ * response — because that is what actually travelled on the wire (ADR-0025), and
  * a single caller→callee arrow would assert that a response either did not exist
  * or did not travel.
  *
  * WHAT THIS ADDS OVER graph.ts, and why it is not just a re-projection of it: a
  * sequence diagram has a horizontal ORDER (which lifeline gets which column) and a
- * vertical one (which message is on which row). The graph has neither — Dagre
- * decides node placement and the edges carry only a seq label. That column
+ * vertical one (which message is on which row). The graph assigns its own
+ * layered node positions, and its edges carry causal step labels. That column
  * assignment is the whole substance of this module, so it is derived here rather
  * than bolted onto `GraphSpec`.
  */
-import { flatLegRows, legDirection, type Entity, type Interaction } from './flow';
+import { flatLegRows, legDirection, type Entity, type Interaction, type LegOrderKey } from './flow';
 
 /**
  * One lifeline: an **Entity** that at least one drawable message touches, plus the
@@ -45,7 +45,7 @@ export interface LifelineSpec {
   naturalKey: string;
   /**
    * This lifeline's column, 0-based, left to right. Assigned in FIRST-ENCOUNTER
-   * order by leg `seq`: the entity that first appears as a message's source or
+   * order by causal leg position: the entity first appearing as a message's source or
    * target gets column 0, the next newly-seen entity column 1, and so on.
    *
    * NOT the `entities` read's own order (which is the API's, effectively
@@ -83,11 +83,13 @@ export interface MessageSpec {
   fromIndex: number;
   /** The destination lifeline's column index. Never out of range. */
   toIndex: number;
-  /** The leg's trace-wide `seq` — the vertical ordering, and the visible tag. */
+  /** The leg's ingestion `seq`, retained as metadata. */
   seq: number;
+  /** One-based position in the backend's causal order. */
+  step: number;
   /**
-   * The arrow's visible text: this leg's `seq`, as a string. A leg has exactly one
-   * `seq`, so the label stays a single number and remains legible on a short
+   * The arrow's visible text: this leg's one-based causal step. The label stays
+   * a single number and remains legible on a short
    * horizontal arrow between adjacent lifelines — which is why the interaction's
    * prose `summary` is `title` (hover) rather than the label, exactly as on the
    * graph's edges.
@@ -166,7 +168,7 @@ export interface DroppedInteraction {
 export interface SequenceDiagramSpec {
   /** One per PARTICIPATING entity, in first-encounter order (see `index`). */
   lifelines: LifelineSpec[];
-  /** One per drawable leg, ordered by the trace-wide leg `seq`. */
+  /** One per drawable leg, ordered by the backend's trace-local causal order. */
   messages: MessageSpec[];
   /** Interactions with an unresolved participant; never silently discarded. */
   dropped: DroppedInteraction[];
@@ -206,7 +208,7 @@ export interface SequenceDiagramSpec {
  * Derive the sequence diagram from a trace's entities and interactions.
  *
  * Every LEG of every interaction with both endpoints resolved to a known entity
- * becomes a message, in `seq` order; interactions whose endpoints are unresolved or
+ * becomes a message, in causal order; interactions whose endpoints are unresolved or
  * dangling are reported in `dropped`. Lifelines are the entities those messages
  * actually touch, columned by first encounter; entities no interaction names at all
  * are reported in `isolated` (see the field's note for why they get no column).
@@ -214,6 +216,7 @@ export interface SequenceDiagramSpec {
 export function deriveSequenceDiagram(
   entities: readonly Entity[],
   interactions: readonly Interaction[],
+  legOrder: readonly LegOrderKey[] = [],
 ): SequenceDiagramSpec {
   const byId = new Map<string, Entity>();
   for (const e of entities) byId.set(e.id, e);
@@ -247,16 +250,16 @@ export function deriveSequenceDiagram(
 
   // THE reuse point, shared with the graph: the Flat view's own row derivation,
   // not a second walk of `interactions`. It already flattens interactions to legs
-  // and sorts them by the trace-wide `seq`, which is exactly the message set and
+  // and sorts them by the backend's causal order, which is exactly the message set and
   // exactly the top-to-bottom order this view wants — so the diagram's rows and
   // the Flat table's rows are the same list, guaranteed.
   //
   // An interaction with only a request leg contributes exactly one row and
   // therefore exactly one arrow: there is no response leg to invent, so no phantom
   // return arrow is drawn for a call still in flight.
-  const rows = flatLegRows(interactions).filter(({ ix }) => drawable.has(ix.id));
+  const rows = flatLegRows(interactions, legOrder).filter(({ ix }) => drawable.has(ix.id));
 
-  // Column assignment, in ONE pass over the already-seq-sorted rows: the first
+  // Column assignment, in ONE pass over the already-ordered rows: the first
   // time an entity is seen as a source or a target it claims the next column.
   // Source before target within a leg, so the initiator of the very first request
   // lands in column 0 (a target-first order would put the callee leftmost and make
@@ -298,7 +301,7 @@ export function deriveSequenceDiagram(
     });
 
   const messages: MessageSpec[] = [];
-  for (const { ix, leg } of rows) {
+  for (const { ix, leg, step } of rows) {
     // The per-leg swap, shared with FlatLegsTable and the graph
     // (flow.legDirection): a request flows caller → callee, a response flows back
     // callee → caller.
@@ -317,7 +320,8 @@ export function deriveSequenceDiagram(
       fromIndex,
       toIndex,
       seq: leg.seq,
-      label: String(leg.seq),
+      step,
+      label: String(step),
       title: ix.summary || ix.id,
       // This leg's own error, tri-state: only an explicit `true` is a failure.
       isError: leg.error === true,

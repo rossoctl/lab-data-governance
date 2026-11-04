@@ -111,8 +111,12 @@ def test_interactions_list_has_counts_and_no_bulk_maps(seeded, api_server):
     resp = httpx.get(f"{_base_url(api_server)}/api/traces/{seeded}/interactions")
     assert resp.status_code == 200
     body = resp.json()
-    # Lean shape: interactions only — no entities, no spans_by_* maps.
-    assert set(body) == {"interactions"}
+    # One trace-scoped order accompanies the interactions; entity/span maps stay separate.
+    assert set(body) == {"interactions", "leg_order"}
+    assert body["leg_order"] == [
+        {"interaction_id": _IX_ID, "leg_type": "request"},
+        {"interaction_id": _IX_ID, "leg_type": "response"},
+    ]
     (ix,) = body["interactions"]
     assert ix["id"] == _IX_ID
     assert ix["span_count"] == 2

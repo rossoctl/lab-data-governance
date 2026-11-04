@@ -110,6 +110,8 @@ def test_existing_rows_are_numbered_in_stream_order(pg_dsn: str, monkeypatch) ->
 
     monkeypatch.setenv("DATABASE_URL", pg_dsn)
     cfg = _alembic_config()
+    # Both branches precede 0023; main's 0022 alone has no risk tables.
+    command.upgrade(cfg, "0019_interaction_risk_seq")
     command.upgrade(cfg, "0022_content_kind_on_legs")
     with psycopg.connect(pg_dsn) as conn:
         # Inserted out of order, so heap order and stream order differ.
@@ -145,6 +147,7 @@ def test_sequence_restarts_above_a_stored_alerts_cursor(pg_dsn: str, monkeypatch
 
     monkeypatch.setenv("DATABASE_URL", pg_dsn)
     cfg = _alembic_config()
+    command.upgrade(cfg, "0019_interaction_risk_seq")
     command.upgrade(cfg, "0022_content_kind_on_legs")
     with psycopg.connect(pg_dsn) as conn:
         for version in (1, 2):

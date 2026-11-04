@@ -9,7 +9,7 @@ unbroken run of ready legs in seq order, and advances a plain single-BIGINT
 
 The bespoke drain — the one deviation
 -------------------------------------
-This is the **one place** the shared ``_driver.drain`` cannot be reused verbatim.
+The shared ``_driver.drain`` cannot drive this readiness-gated cursor verbatim.
 ``_driver.drain`` advances the cursor to ``item_seq(item)`` for *every* fetched
 item unconditionally (monotonic in ``seq``); the leg-readiness predicate is
 non-monotonic in ``seq`` — a low-``seq`` unready leg can sit behind a high-``seq``
@@ -41,16 +41,18 @@ Inherited labels (``RISK_INHERITED_LABELS=on``)
 -----------------------------------------------
 With the flag on, readiness also waits for label lineage: a payload-bearing leg is
 ready only once ``leg_inherited_labels`` holds its row at the leg's current
-``payload_hash``, so a decision never runs before label lineage has derived the
-leg. The row reflects what was classified at that moment: a leg whose inputs are
+trace and ``payload_hash``, and the trace has no pending label correction replay.
+The row reflects what was classified at that moment: a leg whose inputs are
 classified later (on the lab traces an egress's inputs often have higher seqs)
 is decided first with the labels known then, and the labels that land later (a
 re-derivation changed an already-decided leg's summary) are queued by label
 lineage in ``risk_recompute_requests``; after the cursor arm,
 :func:`_drain_recompute_requests` re-delivers those interactions through the
 observer — never moving the cursor, fenced on it like the cursor arm — and claims
-each request by deleting it in the transaction of its write. The stale-callee
-case (#284) may later share this drain.
+each request by generation in the transaction of its write. Structural corrections
+to parents, endpoints, trace membership and legs use the same durable drain in
+both flag modes. With the flag off, fulfilling structural work retains any
+pending label-only request for a later run with the flag on.
 
 Atomicity
 ---------
@@ -189,9 +191,12 @@ SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
 # leg's current payload.
 _FETCH_WITH_LABELS_SQL = """
 SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
-       (l.payload_hash IS NULL
-        OR (pc.content_hash IS NOT NULL AND m.payload_hash = l.payload_hash)) AS ready
+       ((l.payload_hash IS NULL
+        OR (pc.content_hash IS NOT NULL AND m.payload_hash = l.payload_hash
+            AND m.trace_id = i.trace_id))
+        AND NOT EXISTS (SELECT 1 FROM label_lineage_dirty_traces d WHERE d.trace_id = i.trace_id)) AS ready
   FROM interaction_legs l
+  LEFT JOIN interactions i ON i.id = l.interaction_id
   LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
   LEFT JOIN leg_inherited_labels m
          ON m.interaction_id = l.interaction_id AND m.leg_type = l.leg_type
@@ -316,7 +321,7 @@ def _drain_spec(
     :class:`~data_governance.db.LockLost`.
     """
     cursor = _drain_prefix(spec, cursor, observer, guard)
-    if observer is not None and _labels_on():
+    if observer is not None:
         _drain_recompute_requests(cursor, observer, guard, spec.batch_size)
     return cursor
 
@@ -387,13 +392,17 @@ def _drain_prefix(
 # payload not yet classified, or not yet derived by label lineage, holds its
 # request until it is, so a recompute never decides on a pending verdict.
 _RECOMPUTE_SQL = """
-SELECT r.interaction_id, r.requested_at, l.leg_type::text, l.payload_hash, l.seq
+SELECT r.interaction_id, r.generation, l.leg_type::text, l.payload_hash, l.seq, r.labels_pending
   FROM risk_recompute_requests r
+  JOIN interactions i ON i.id = r.interaction_id
   JOIN LATERAL (
         SELECT leg_type, payload_hash, seq FROM interaction_legs
          WHERE interaction_id = r.interaction_id ORDER BY seq DESC LIMIT 1
        ) l ON true
- WHERE l.seq <= %s
+ WHERE l.seq <= %(cursor)s
+   AND (r.base_recompute OR (%(labels_on)s AND r.labels_pending))
+   AND (NOT %(labels_on)s OR NOT EXISTS (
+        SELECT 1 FROM label_lineage_dirty_traces d WHERE d.trace_id = i.trace_id))
    AND NOT EXISTS (
         SELECT 1 FROM interaction_legs x
           LEFT JOIN payload_classifications pc ON pc.content_hash = x.payload_hash
@@ -401,15 +410,17 @@ SELECT r.interaction_id, r.requested_at, l.leg_type::text, l.payload_hash, l.seq
                  ON m.interaction_id = x.interaction_id AND m.leg_type = x.leg_type
          WHERE x.interaction_id = r.interaction_id
            AND x.payload_hash IS NOT NULL
-           AND (pc.content_hash IS NULL OR m.payload_hash IS DISTINCT FROM x.payload_hash))
- ORDER BY r.requested_at, r.interaction_id
- LIMIT %s
+           AND (pc.content_hash IS NULL OR (%(labels_on)s AND (
+                m.payload_hash IS DISTINCT FROM x.payload_hash OR m.trace_id IS DISTINCT FROM i.trace_id))))
+ ORDER BY r.generation
+ LIMIT %(limit)s
 """
 
 
 _ORPHAN_REQUESTS_SQL = (
     "DELETE FROM risk_recompute_requests r "
-    "WHERE NOT EXISTS (SELECT 1 FROM interaction_legs l WHERE l.interaction_id = r.interaction_id)"
+    "WHERE NOT EXISTS (SELECT 1 FROM interaction_legs l WHERE l.interaction_id = r.interaction_id) "
+    "OR NOT EXISTS (SELECT 1 FROM interactions i WHERE i.id = r.interaction_id)"
 )
 
 
@@ -419,11 +430,10 @@ def _drain_recompute_requests(
     guard: Callable[[], None] | None,
     limit: int,
 ) -> int:
-    """Re-deliver the interactions label lineage queued in
-    ``risk_recompute_requests`` (their inherited labels changed after this
-    consumer passed them). The observer re-gathers evidence — the fingerprint now
-    carries the labels — and its write commits with the request's delete; a
-    request re-queued meanwhile (a newer ``requested_at``) survives. A deferral
+    """Re-deliver interactions queued for structural or inherited-label changes
+    after this consumer passed them. The observer re-gathers evidence, and its
+    write commits with the generation-fenced request claim; a request re-queued
+    meanwhile survives even when its timestamp is unchanged. A deferral
     stops the pass, the request stays for the next wake. A request whose
     interaction has no legs left is dropped. Never moves the cursor. Returns how
     many were recomputed.
@@ -435,11 +445,12 @@ def _drain_recompute_requests(
     A request another consumer already took, or that was re-queued meanwhile,
     claims nothing and the computation is dropped: an older computation never
     lands after a newer one."""
+    labels_on = _labels_on()
     with db.transaction() as tx:
         tx.execute(_ORPHAN_REQUESTS_SQL)
-        rows = tx.fetch_all(_RECOMPUTE_SQL, (cursor, limit))
+        rows = tx.fetch_all(_RECOMPUTE_SQL, {"cursor": cursor, "limit": limit, "labels_on": labels_on})
     done = 0
-    for interaction_id, requested_at, leg_type, payload_hash, seq in rows:
+    for interaction_id, generation, leg_type, payload_hash, seq, labels_pending in rows:
         if guard is not None:
             guard()
         leg = Leg(interaction_id=interaction_id, leg_type=leg_type, payload_hash=payload_hash,
@@ -452,16 +463,25 @@ def _drain_recompute_requests(
             break
         with db.transaction() as tx:
             _advance_from(tx, PROCESSOR_NAME, cursor, cursor)
-            claimed = tx.fetch_one(
-                "DELETE FROM risk_recompute_requests WHERE interaction_id = %s AND requested_at = %s "
-                "RETURNING 1", (interaction_id, requested_at))
+            if not labels_on and labels_pending:
+                # Fulfill the structural correction while retaining the label
+                # request for a later run with inherited labels enabled.
+                claim_sql = (
+                    "UPDATE risk_recompute_requests SET base_recompute = false "
+                    "WHERE interaction_id = %s AND generation = %s AND base_recompute RETURNING 1"
+                )
+            else:
+                claim_sql = (
+                    "DELETE FROM risk_recompute_requests WHERE interaction_id = %s AND generation = %s RETURNING 1"
+                )
+            claimed = tx.fetch_one(claim_sql, (interaction_id, generation))
             if claimed is None:
                 continue
             if write is not None:
                 write(tx)
         done += 1
     if done:
-        log.info("recomputed %d interaction(s) whose inherited labels changed", done)
+        log.info("recomputed %d corrected interaction(s)", done)
     return done
 
 

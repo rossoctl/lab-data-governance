@@ -5,10 +5,11 @@ The generic drain/poll/LISTEN-wake loop lives in
 the trace-trigger *stream spec* — the ``interaction_risk_records`` batch
 fetch, the per-record recompute procedure, and the
 ``dg_interaction_risk_written`` channel / ``risk_trace_trigger`` cursor name —
-mirroring the P-entity-ready adapter exactly. Like ``entities``, the
+using the shared loop for new records. Like ``entities``, the
 ``interaction_risk_records`` stream has **no readiness gate** (a risk record
 is actionable the moment it is inserted — the table is insert-only and
-immutably versioned), so the shared ``_driver`` is reused **verbatim**.
+immutably versioned). After the ordinary cursor drain, an independent durable
+queue replays corrections and deletions that insert no new risk record.
 
 Each record is handled in ONE transaction that runs the trace recompute
 (:func:`data_governance.risk.engine.trace_compute.compute_trace_risk`, passed
@@ -24,6 +25,10 @@ burst of records for the same trace coalesces at the NOTIFY layer but NOT at
 the drain layer — each record past the cursor still drives its own recompute;
 all but the last are typically idempotent no-ops once the rollup reflects the
 latest state.
+
+Correction replay never moves that cursor. It commits each rollup under the
+shared trace lock, then acknowledges only the queue generation it observed in a
+separate transaction. A concurrent correction survives for the next wake.
 
 The cursor is a ``seq`` watermark, so this stream inherits the repo's
 insert-allocation caveat (``docs/PROJECT.md`` §3): a ``seq`` allocated earlier
@@ -120,11 +125,36 @@ def read_cursor(tx: db.Transaction) -> int:
     return _driver.read_cursor(tx, PROCESSOR_NAME)
 
 
+def _drain_corrections(limit: int) -> None:
+    with db.transaction() as tx:
+        queued = tx.fetch_all(
+            "SELECT trace_id, generation FROM trace_risk_recompute_requests ORDER BY generation LIMIT %s",
+            (limit,),
+        )
+    for trace_id, generation in queued:
+        with db.transaction() as tx:
+            trace_compute.compute_trace_risk(trace_id, tx=tx)
+        # Acknowledge only after the rollup commits, without holding its trace
+        # lock while waiting on a correction producer's queue-row lock.
+        with db.transaction() as tx:
+            tx.execute(
+                "DELETE FROM trace_risk_recompute_requests WHERE trace_id = %s AND generation = %s",
+                (trace_id, generation),
+            )
+        metrics.trace_recomputes_total.inc()
+
+
+def _drain_spec(spec: _driver.StreamSpec[RiskWritten], cursor: int) -> int:
+    cursor = _driver.drain(spec, cursor)
+    _drain_corrections(spec.batch_size)
+    return cursor
+
+
 def drain(cursor: int) -> int:
-    """Recompute for every record past *cursor*, one transaction per record.
-    Returns the new cursor (the seq of the last record processed, or *cursor*
-    if none)."""
-    return _driver.drain(_spec(), cursor)
+    """Drain new risk records, then replay corrected traces without moving the
+    ingestion cursor. Deletion needs this second arm because it writes no new
+    interaction risk record."""
+    return _drain_spec(_spec(), cursor)
 
 
 def run(stop_event: threading.Event, dsn: str) -> None:
@@ -137,4 +167,4 @@ def run(stop_event: threading.Event, dsn: str) -> None:
     poll-only if the LISTEN connection is unavailable — a missing/severed
     notification only costs latency (ADR-0015, AC-DAS-018).
     """
-    _driver.run(_spec(), stop_event, dsn)
+    _driver.run(_spec(), stop_event, dsn, drain_fn=_drain_spec)

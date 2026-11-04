@@ -18,6 +18,7 @@ import type {
   Entity,
   Interaction,
   InteractionLeg,
+  LegOrderKey,
   LineageGraphEntity,
   LineageReachability,
   LineageStatus,
@@ -253,7 +254,11 @@ function mkIx(
 }
 
 /** Stub the two reads the graph makes. `null` for either → that read fails. */
-function mockApi(entities: Entity[] | null, interactions: Interaction[] | null) {
+function mockApi(
+  entities: Entity[] | null,
+  interactions: Interaction[] | null,
+  legOrder?: LegOrderKey[],
+) {
   (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
     if (url.endsWith('/entities')) {
       if (entities === null) return { ok: false, status: 500, json: async () => ({}) };
@@ -261,7 +266,7 @@ function mockApi(entities: Entity[] | null, interactions: Interaction[] | null) 
     }
     if (url.endsWith('/interactions')) {
       if (interactions === null) return { ok: false, status: 500, json: async () => ({}) };
-      return { ok: true, status: 200, json: async () => ({ interactions }) };
+      return { ok: true, status: 200, json: async () => ({ interactions, leg_order: legOrder }) };
     }
     return { ok: true, status: 200, json: async () => ({}) };
   });
@@ -1618,6 +1623,69 @@ describe('ExecutionFlowGraph', () => {
     expect(req!.x).toBe(resp!.x);
   });
 
+  it('separates a parent request and response with an interleaved child step', async () => {
+    mockApi(ENTITIES, [
+      mkIx({
+        id: 'parent',
+        legs: [
+          { ...mkLeg('request', 2), occurred_at: '2026-05-01T12:00:00Z' },
+          { ...mkLeg('response', 3), occurred_at: '2026-05-01T12:00:02Z' },
+        ],
+      }),
+      mkIx({
+        id: 'child', caller_entity_id: 'e2', callee_entity_id: 'e3',
+        parent_interaction_id: 'parent',
+        legs: [{ ...mkLeg('request', 4), occurred_at: '2026-05-01T12:00:01Z' }],
+      }),
+    ], [
+      { interaction_id: 'parent', leg_type: 'request' },
+      { interaction_id: 'child', leg_type: 'request' },
+      { interaction_id: 'parent', leg_type: 'response' },
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(3));
+    expect(capturedController?.getEdgeById('parent:request')?.getData()).toMatchObject({
+      label: '1', step: 1, seq: 2,
+    });
+    expect(capturedController?.getEdgeById('parent:response')?.getData()).toMatchObject({
+      label: '3', step: 3, seq: 3,
+    });
+    const request = bendsOf('parent:request')[0]!;
+    const response = bendsOf('parent:response')[0]!;
+    const mid = cell(0, 0).y;
+    expect(Math.sign(request.y - mid)).toBe(-Math.sign(response.y - mid));
+    expect(request).not.toEqual(response);
+  });
+
+  it.each([false, true])('gives parallel calls distinct routes (reverse caller: %s)', async (reverse) => {
+    mockApi(ENTITIES.slice(0, 2), [
+      mkIx({ id: 'first' }, 1),
+      mkIx({
+        id: 'second',
+        caller_entity_id: reverse ? 'e2' : 'e1',
+        callee_entity_id: reverse ? 'e1' : 'e2',
+      }, 3),
+    ], [
+      { interaction_id: 'first', leg_type: 'request' },
+      { interaction_id: 'second', leg_type: 'request' },
+      { interaction_id: 'first', leg_type: 'response' },
+      { interaction_id: 'second', leg_type: 'response' },
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+    const ids = ['first:request', 'first:response', 'second:request', 'second:response'];
+    expect(new Set(ids.map((id) => JSON.stringify(bendsOf(id)))).size).toBe(4);
+    if (!reverse) {
+      const mid = cell(0, 0).y;
+      const rowPitch = cell(0, 1).y - mid;
+      for (const id of ids) {
+        expect(Math.abs(bendsOf(id)[0]!.y - mid)).toBeLessThan(rowPitch / 2);
+      }
+    }
+  });
+
   it('keeps the adjacent-column bow inside the row gutter', async () => {
     // The bow separates the pair; it must NOT wander so far that it enters the
     // neighbouring row's band, where it would read as pointing at a different
@@ -2469,6 +2537,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
           source: 'e1',
           target: 'e2',
           label: '1',
+          step: 1,
           seq: 1,
           title: 'summary-i1',
           isError: false,
@@ -2481,6 +2550,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
           source: 'e2',
           target: 'e1',
           label: '2',
+          step: 2,
           seq: 2,
           title: 'summary-i1',
           isError: false,
@@ -2605,6 +2675,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       source: 'e2',
       target: 'e3',
       label: '3',
+      step: 3,
       seq: 3,
       title: 'summary-i2',
       isError: false,
@@ -2757,7 +2828,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
       const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
-      expect(title).toContain('#1');
+      expect(title).toContain('Step 1 · ingest seq 1');
       expect(title).toContain('PII, GDPR (RESTRICTED)');
       expect(title).not.toContain('none');
     });
@@ -2933,7 +3004,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
 
       // ...and the long-form identity is still available non-visually.
       const title = document.querySelector('[data-id="i1:request"] title')?.textContent ?? '';
-      expect(title).toContain('#1 request — summary-i1');
+      expect(title).toContain('Step 1 · ingest seq 1 · request — summary-i1');
       expect(title).not.toContain('none');
     });
 
@@ -2962,7 +3033,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       expect(tooltip).toBe('PII, GDPR (RESTRICTED)');
 
       // The <title> keeps the full identity the tooltip dropped...
-      expect(title).toBe('#1 request — summary-i1 — PII, GDPR (RESTRICTED)');
+      expect(title).toBe('Step 1 · ingest seq 1 · request — summary-i1 — PII, GDPR (RESTRICTED)');
       // ...and ends with exactly the tooltip's string, so the shared
       // classification formatting cannot drift between the two.
       expect(title.endsWith(tooltip)).toBe(true);
@@ -2976,7 +3047,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
       const plainLabel = screen
         .getByRole('button', { name: /seq 1, request:/i })
         .getAttribute('aria-label');
-      expect(plainLabel).toBe('Interaction leg, seq 1, request: summary-i1');
+      expect(plainLabel).toBe('Interaction leg, step 1, ingest seq 1, request: summary-i1');
       unmount();
 
       // With a highlight that puts this leg on the upstream route AND a
@@ -3024,10 +3095,10 @@ describe('EntityGraph risk colouring (issue #170)', () => {
 
         expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag text')?.textContent).toBe('PI');
         expect(document.querySelector('[data-id="i1:request"] title')?.textContent).toBe(
-          '#1 request — summary-i1 — PI (INTERNAL) · carried in: PI, PII (RESTRICTED)',
+          'Step 1 · ingest seq 1 · request — summary-i1 — PI (INTERNAL) · carried in: PI, PII (RESTRICTED)',
         );
         expect(screen.getByRole('button', { name: /seq 1, request:/i }).getAttribute('aria-label')).toBe(
-          'Interaction leg, seq 1, request: summary-i1 — PI (INTERNAL) · carried in: PI, PII (RESTRICTED)',
+          'Interaction leg, step 1, ingest seq 1, request: summary-i1 — PI (INTERNAL) · carried in: PI, PII (RESTRICTED)',
         );
 
         fireEvent.mouseEnter(document.querySelector('[data-id="i1:request"] .dg-graph-edge-focus')!);
@@ -3041,7 +3112,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
 
         expect(document.querySelector('[data-id="i1:request"] .pf-topology__edge__tag')).toBeNull();
         expect(document.querySelector('[data-id="i1:request"] title')?.textContent).toBe(
-          '#1 request — summary-i1 — carried in: PII (RESTRICTED)',
+          'Step 1 · ingest seq 1 · request — summary-i1 — carried in: PII (RESTRICTED)',
         );
       });
 
@@ -3049,7 +3120,7 @@ describe('EntityGraph risk colouring (issue #170)', () => {
         renderWithClassification(new Map([['i1', { tags: ['PI'], levels: ['INTERNAL'] }]]));
         await waitFor(() => expect(edgeEls()).toHaveLength(2));
 
-        expect(document.querySelector('[data-id="i1:request"] title')?.textContent).toBe('#1 request — summary-i1 — PI (INTERNAL)');
+        expect(document.querySelector('[data-id="i1:request"] title')?.textContent).toBe('Step 1 · ingest seq 1 · request — summary-i1 — PI (INTERNAL)');
       });
     });
   });
@@ -3555,6 +3626,39 @@ describe('LineageGraph', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('pushes no new model when re-rendered with the same reads and no legOrder', async () => {
+    // `legOrder` is optional. Its default must be ONE stable empty value, not a
+    // fresh `[]` per render: `spec` is memoised on it and the model push is keyed on
+    // `spec`, so a new array every render would re-derive the graph and repaint it on
+    // every unrelated re-render (a selection, a pin, a poll).
+    const entities = ENTITIES;
+    const interactions = [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)];
+    mockLineageApi({ entities, interactions, summary: SUMMARY_WITH_SOURCE });
+    // A FRESH element each time, with the same prop values: re-passing one element
+    // object would let React bail out and never re-render the component at all.
+    const graph = () => (
+      <LineageGraph
+        traceId="T1"
+        entities={entities}
+        interactions={interactions}
+        status="complete"
+        stoppedAtSeq={null}
+        isLineageLoading={false}
+        isLineageError={false}
+        selectedEntityId={null}
+        lineageSource={SOURCE_E1}
+      />
+    );
+    const { rerender } = renderWithProviders(graph());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const pushes = modelPushes;
+
+    rerender(graph());
+    rerender(graph());
+
+    expect(modelPushes).toBe(pushes);
   });
 
   // --- The sharing itself: one graph, two tabs.
@@ -4880,7 +4984,7 @@ describe('LineageGraph', () => {
     await waitFor(() =>
       expect(screen.getByText(/not the complete set of data sources/i)).toBeInTheDocument(),
     );
-    expect(screen.getByText(/up to leg seq 7/i)).toBeInTheDocument();
+    expect(screen.getByText(/before the leg with ingest seq 7/i)).toBeInTheDocument();
     // ABOVE the graph, not among the notices below it: the graph fills the viewport,
     // so a banner after it is off screen when a shared link opens the view.
     // Looked up AFTER the graph lands: the banner also paints over the loading state,
@@ -5142,6 +5246,7 @@ describe('entity shapes by kind (issue #218)', () => {
           source: 'e1',
           target: 'e2',
           label: '1',
+          step: 1,
           seq: 1,
           title: 'summary-i1',
           isError: false,

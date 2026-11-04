@@ -41,6 +41,7 @@ import psycopg
 import pytest
 
 from data_governance import db
+from data_governance import retrieval
 from data_governance.processors.risk.trace_trigger import driver
 
 
@@ -269,6 +270,50 @@ def test_ghost_interaction_records_do_not_contribute(configured_db: str) -> None
     assert current[1] == "low", "the ghost's critical must not poison the rollup"
     assert current[3] == 1, "interaction_count counts only live interactions"
     assert [str(u) for u in current[5]] == [live_id]
+
+
+def test_deletion_without_a_new_risk_record_recomputes_the_trace(configured_db: str) -> None:
+    _insert_risk_record(configured_db, interaction_id="kept", trace_id="corrected-trace", risk_level="low")
+    _insert_risk_record(configured_db, interaction_id="deleted", trace_id="corrected-trace", risk_level="critical")
+    cursor = driver.drain(0)
+    assert retrieval.get_trace_risk("corrected-trace").trace_risk_level == "critical"
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("DELETE FROM interactions WHERE id = 'deleted'")
+
+    assert driver.drain(cursor) == cursor
+    current = retrieval.get_trace_risk("corrected-trace")
+    assert current.interaction_count == 1
+    assert current.trace_risk_level == "low"
+    assert retrieval.get_interaction_risk("deleted").risk_level == "critical"
+
+
+def test_trace_move_replays_the_old_rollup_and_uses_only_current_trace_records(configured_db: str) -> None:
+    _insert_risk_record(configured_db, interaction_id="old-kept", trace_id="old-trace", risk_level="low")
+    _insert_risk_record(configured_db, interaction_id="moved", trace_id="old-trace", risk_level="critical")
+    _insert_risk_record(configured_db, interaction_id="new-kept", trace_id="new-trace", risk_level="low")
+    cursor = driver.drain(0)
+    assert retrieval.get_trace_risk("old-trace").trace_risk_level == "critical"
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE interactions SET trace_id = 'new-trace' WHERE id = 'moved'")
+
+    assert driver.drain(cursor) == cursor
+    old = retrieval.get_trace_risk("old-trace")
+    new = retrieval.get_trace_risk("new-trace")
+    assert old.trace_risk_level == "low" and old.interaction_count == 1
+    assert new.trace_risk_level == "low" and new.interaction_count == 1
+
+    _insert_risk_record(configured_db, interaction_id="moved", trace_id="new-trace",
+                        version=2, risk_level="critical", with_interaction=False)
+    driver.drain(cursor)
+    new = retrieval.get_trace_risk("new-trace")
+    assert new.trace_risk_level == "critical" and new.interaction_count == 2
+    assert retrieval.get_trace_risk("old-trace") == old
+    history = retrieval.get_interaction_risk_history("moved").items
+    assert [(r.version, r.trace_id) for r in history] == [(1, "old-trace"), (2, "new-trace")]
+    assert {r.interaction_id for r in retrieval.list_interaction_risk(trace_id="old-trace").items} == {"old-kept"}
+    assert {r.interaction_id for r in retrieval.list_interaction_risk(trace_id="new-trace").items} == {
+        "new-kept", "moved",
+    }
 
 
 # --- failure atomicity: recompute failure holds the cursor --------------------

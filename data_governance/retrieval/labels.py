@@ -396,7 +396,7 @@ _LEGS_SQL = (
     "ORDER BY l.seq ASC"
 )
 
-# The edges into the legs at their current payloads; the origin's seq and
+# The edges into the legs at their current trace and payloads; the origin's seq and
 # caller/callee are LEFT JOINs, so a missing origin leg reads as nulls rather
 # than dropping the edge.
 _EDGES_SQL = (
@@ -406,6 +406,8 @@ _EDGES_SQL = (
     "       e.unit_start, e.unit_end, e.unit_text, e.unit_value, e.match_kind, "
     "       e.origin_trace_id, ol.seq, ce.display_name, ke.display_name, e.edge_id "
     "FROM payload_label_edges e "
+    "JOIN interactions current_i "
+    "  ON current_i.id = e.to_interaction_id AND current_i.trace_id = e.trace_id "
     "JOIN unnest(%s::text[], %s::text[]) AS cur(leg_type, payload_hash) "
     "  ON cur.leg_type = e.to_leg_type::text AND cur.payload_hash = e.to_payload_hash "
     "LEFT JOIN interaction_legs ol "

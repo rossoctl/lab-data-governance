@@ -178,3 +178,24 @@ def test_control_a_string_never_classified_travels_nowhere(name: str) -> None:
     d = derive(name)
     assert all(S_PRIME not in (e.to.matched_text or "") for e in d.edges)
     assert all(S_PRIME not in o.unit.value.canonical for occs in d.occurrences.values() for o in occs)
+
+
+def test_a_child_with_an_earlier_clock_inherits_from_its_recorded_parent() -> None:
+    t0 = dt.datetime(2026, 10, 15, 12, 0, tzinfo=dt.timezone.utc)
+    t = fold.TraceInput(
+        trace_id="causal-labels",
+        legs=[
+            fold.WireLeg("parent", "request", 20, "u", "a", "origin",
+                         occurred_at=t0 + dt.timedelta(seconds=2)),
+            fold.WireLeg("child", "request", 10, "a", "t", "forwarded",
+                         parent_interaction_id="parent", occurred_at=t0 + dt.timedelta(seconds=1)),
+        ],
+        entities=ENTITIES,
+        payloads={"origin": P, "forwarded": Q},
+        findings={"origin": [_finding(P, S)], "forwarded": []},
+    )
+    d = fold.derive(t, find.exact)
+    assert [(e.from_key, e.to_key, e.unit.value.canonical) for e in d.edges] == [
+        (("parent", "request"), ("child", "request"), S),
+    ]
+    assert d.legs[("child", "request")].inherited_tags_whole == ("PII",)

@@ -23,7 +23,7 @@ describe('LineageCoverageAlert', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('warns about the truncation on a partial trace, and cites the stop position', () => {
+  it('warns about the causal cutoff and identifies seq as the ingest id', () => {
     render(
       <LineageCoverageAlert
         status="partial"
@@ -36,7 +36,9 @@ describe('LineageCoverageAlert', () => {
       screen.getByText(/Data lineage for this trace is incomplete/),
     ).toBeInTheDocument();
     // Assertive, not polite: this must land before the reader acts on the source list.
-    expect(screen.getByRole('alert')).toBeInTheDocument();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(/ingest seq 42/);
+    expect(alert).toHaveTextContent(/later legs in causal order/);
   });
 
   it('reports a failed read as unknown coverage rather than borrowing partial wording', () => {

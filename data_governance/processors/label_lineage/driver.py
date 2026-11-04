@@ -17,7 +17,12 @@ The discipline is leg-ready's and data lineage's, nothing new:
   membership), the status row upserted (:mod:`.store`). A crash re-does the run;
   the derivation is idempotent and order-independent, a function of committed
   state.
-- **The stale arm.** The cursor never revisits a leg it passed, so a second arm
+- **Correction replay.** An independent dirty-trace queue re-derives corrected
+  parents, endpoints, times, trace membership and deleted legs after the cursor
+  has passed them. Each derivation takes the shared trace lock before reading;
+  its observed queue generation is acknowledged after commit, so a newer
+  correction remains queued. Empty traces lose their derived rows and coverage.
+- **The stale arm.** The cursor never revisits a leg it passed, so this arm
   re-derives traces holding a leg at or below the cursor whose label row was
   derived from another payload or matcher, was derived before the payload was
   classified, or is missing although the payload is classified. It never moves the
@@ -31,8 +36,9 @@ When a re-derivation changes a leg's inherited summary — including a leg that
 gains its first edges — the leg's interaction is written to
 ``risk_recompute_requests`` in the same transaction. That is a fact about the
 derivation; this processor reads no risk configuration. Leg-ready alone decides
-what to do with the requests (``RISK_INHERITED_LABELS``): drain and recompute when
-on, leave them when off (one row per interaction bounds the table).
+what to do with label-only requests (``RISK_INHERITED_LABELS``): recompute when
+on, retain them when off (one row per interaction bounds the table). Structural
+correction requests are processed in either mode without losing pending labels.
 """
 
 from __future__ import annotations
@@ -46,6 +52,7 @@ from data_governance.label_lineage import find, fold
 from data_governance.processors import _driver
 from data_governance.processors import readiness_cursor as rc
 from data_governance.processors.data_lineage.traversal import Entity
+from data_governance.processors.trace_lock import lock_trace
 
 from . import store
 
@@ -101,12 +108,13 @@ def load_trace(tx: db.Transaction, trace_id: str) -> fold.TraceInput:
     classified ones — one snapshot, in the caller's transaction."""
     rows = tx.fetch_all(
         "SELECT l.interaction_id, l.leg_type::text, l.seq, i.caller_entity_id, i.callee_entity_id, "
-        "       l.payload_hash, l.occurred_at "
+        "       l.payload_hash, l.occurred_at, i.parent_interaction_id "
         "FROM interaction_legs l JOIN interactions i ON i.id = l.interaction_id "
         "WHERE i.trace_id = %s",
         (trace_id,),
     )
-    legs = [fold.WireLeg(r[0], r[1], int(r[2]), r[3], r[4], r[5], occurred_at=r[6]) for r in rows]
+    legs = [fold.WireLeg(r[0], r[1], int(r[2]), r[3], r[4], r[5], occurred_at=r[6],
+                         parent_interaction_id=r[7]) for r in rows]
     entity_ids = sorted({leg.caller_entity_id for leg in legs} | {leg.callee_entity_id for leg in legs})
     hashes = sorted({leg.payload_hash for leg in legs if leg.payload_hash is not None})
     entities = {
@@ -129,8 +137,13 @@ def load_trace(tx: db.Transaction, trace_id: str) -> fold.TraceInput:
 def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config) -> set[str]:
     """Re-derive *trace_id* and write it within *tx*. Returns the interactions whose
     inherited summary changed, and queues their recompute in the same transaction."""
+    lock_trace(tx, trace_id)
     trace = load_trace(tx, trace_id)
     if not trace.legs:
+        tx.execute("DELETE FROM payload_label_edges WHERE trace_id = %s", (trace_id,))
+        tx.execute("DELETE FROM leg_inherited_labels WHERE trace_id = %s", (trace_id,))
+        tx.execute("DELETE FROM label_lineage_trace_status WHERE trace_id = %s", (trace_id,))
+        tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
         return set()
     changed = store.write(tx, fold.derive(trace, config.finder), config.matcher)
     # The rows just written are what leg-ready's readiness waits for with the risk
@@ -139,7 +152,8 @@ def derive_and_persist(tx: db.Transaction, trace_id: str, config: Config) -> set
     if changed:
         tx.execute_many(
             "INSERT INTO risk_recompute_requests (interaction_id, reason) VALUES (%s, %s) "
-            "ON CONFLICT (interaction_id) DO UPDATE SET requested_at = now(), reason = EXCLUDED.reason",
+            "ON CONFLICT (interaction_id) DO UPDATE SET requested_at = now(), "
+            "reason = EXCLUDED.reason, labels_pending = true",
             [(interaction_id, "inherited labels changed") for interaction_id in sorted(changed)],
         )
     return changed
@@ -159,11 +173,20 @@ def _drain_ready(spec: _driver.StreamSpec[ReadyLeg], cursor: int, config: Config
         if not result.delivered:
             return cursor
         by_seq = {leg.seq: leg for leg in batch}
-        traces = dict.fromkeys(by_seq[item.seq].trace_id for item in result.delivered)
+        traces = sorted({by_seq[item.seq].trace_id for item in result.delivered})
         with db.transaction() as tx:
+            # Take every trace lock before queue/derived-row locks, in sorted
+            # order, because this cursor transaction can cover several traces.
+            for trace_id in traces:
+                lock_trace(tx, trace_id)
+            queued = tx.fetch_all(
+                "SELECT trace_id, generation FROM label_lineage_dirty_traces WHERE trace_id = ANY(%s)",
+                (traces,),
+            )
             for trace_id in traces:
                 derive_and_persist(tx, trace_id, config)
             _driver.advance_cursor(tx, spec.processor_name, result.cursor)
+        _ack_dirty(queued)
         cursor = result.cursor
         if len(result.delivered) < len(batch) or len(batch) < spec.batch_size:
             return cursor
@@ -201,6 +224,34 @@ def _redrive_stale(cursor: int, config: Config, limit: int = _DRAIN_BATCH) -> in
     return len(traces)
 
 
+def _ack_dirty(queued: list[tuple]) -> None:
+    # Acknowledgment takes only queue-row locks, after derivation committed.
+    # A new correction's generation survives; a crash causes an idempotent replay.
+    if not queued:
+        return
+    with db.transaction() as tx:
+        tx.execute_many(
+            "DELETE FROM label_lineage_dirty_traces WHERE trace_id = %s AND generation = %s",
+            queued,
+        )
+        tx.execute("SELECT pg_notify(%s, '')", (NOTIFY_CHANNEL,))
+
+
+def _redrive_dirty(config: Config, limit: int = _DRAIN_BATCH) -> int:
+    with db.transaction() as tx:
+        queued = tx.fetch_all(
+            "SELECT trace_id, generation FROM label_lineage_dirty_traces ORDER BY generation LIMIT %s",
+            (limit,),
+        )
+    for trace_id, generation in queued:
+        with db.transaction() as tx:
+            derive_and_persist(tx, trace_id, config)
+        _ack_dirty([(trace_id, generation)])
+    if queued:
+        log.info("label-lineage re-derived %d corrected trace(s)", len(queued))
+    return len(queued)
+
+
 def _spec() -> _driver.StreamSpec[ReadyLeg]:
     """The stream spec for the shared wake loop. ``process_item`` is never driven
     by ``_driver.drain`` here (the drain is the readiness-gated one above)."""
@@ -220,10 +271,11 @@ def read_cursor(tx: db.Transaction) -> int:
 
 
 def drain(cursor: int, config: Config | None = None) -> int:
-    """One wake: the cursor arm, then the stale arm over the advanced cursor.
+    """One wake: the cursor arm, correction replay, then the stale arm.
     Returns the new cursor."""
     config = config or configured()
     cursor = _drain_ready(_spec(), cursor, config)
+    _redrive_dirty(config)
     _redrive_stale(cursor, config)
     return cursor
 

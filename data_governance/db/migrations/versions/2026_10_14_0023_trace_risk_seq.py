@@ -48,8 +48,13 @@ single-replica trace-trigger processor).
 
 Hand-written ``op.execute`` only, per ADR-0002/0005.
 
+Both branches are prerequisites: 0019 supplies the DAS tables and interaction
+risk cursor, while 0022 supplies main's shared schema. Joining them here lets
+existing main databases apply the missing risk migrations before this DDL,
+without moving the shipped ancestry of 0020 or 0022.
+
 Revision ID: 0023_trace_risk_seq
-Revises: 0022_content_kind_on_legs
+Revises: 0022_content_kind_on_legs, 0019_interaction_risk_seq
 Create Date: 2026-10-14
 """
 
@@ -61,7 +66,10 @@ from alembic import op
 
 
 revision: str = "0023_trace_risk_seq"
-down_revision: Union[str, Sequence[str], None] = "0022_content_kind_on_legs"
+down_revision: Union[str, Sequence[str], None] = (
+    "0022_content_kind_on_legs",
+    "0019_interaction_risk_seq",
+)
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

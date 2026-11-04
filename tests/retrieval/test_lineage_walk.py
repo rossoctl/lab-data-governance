@@ -10,7 +10,7 @@ correctly.
 
 Row shape throughout is the one :func:`~data_governance.retrieval.lineage_graph.
 _fetch_legs` returns: ``(interaction_id, leg_type, seq, caller_id, callee_id,
-data_sources)``, where ``data_sources`` is the **stored** ``TEXT[]`` — or ``None`` for a
+data_sources, parent_interaction_id, occurred_at)``, where ``data_sources`` is the **stored** ``TEXT[]`` — or ``None`` for a
 leg whose lineage is not derived yet. It is a set, not a boolean: the previous shape was
 ``has_lineage: bool``, and reducing the row to that boolean is precisely what made the
 old walk unable to test the spec's hop rule at all.
@@ -51,6 +51,8 @@ def _row(
     caller: str | None,
     callee: str | None,
     data_sources: list[str] | None | object = _UNSET,
+    parent_id: str | None = None,
+    occurred_at: str | None = None,
 ) -> tuple:
     """One ``_fetch_legs`` row.
 
@@ -65,6 +67,8 @@ def _row(
         caller,
         callee,
         [_S] if data_sources is _UNSET else data_sources,
+        parent_id,
+        occurred_at,
     )
 
 
@@ -423,18 +427,13 @@ def test_the_seq_gate_is_strict_at_a_request_response_pair() -> None:
     ]
 
 
-def test_a_leg_at_exactly_the_arrival_seq_is_not_eligible() -> None:
-    """Strictness, asserted directly rather than only via the pair above.
-
-    Two legs cannot really share a ``seq``, so this is a guard on the comparison rather
-    than a reachable state — but it is the line a future editor would relax, and
-    relaxing it removes the termination argument (see ``_walk``).
-    """
+def test_equal_ingestion_seqs_still_get_distinct_causal_positions() -> None:
+    """The walk uses unique trace positions even when event tie breakers agree."""
     rows = [
         _row("i0", "request", 7, "seed", "a"),
         _row("i1", "request", 7, "a", "b"),
     ]
-    assert _reach(rows, "seed", FANOUT) == {"a": 1}
+    assert _reach(rows, "seed", FANOUT) == {"a": 1, "b": 2}
 
 
 # ---------------------------------------------------------------------------

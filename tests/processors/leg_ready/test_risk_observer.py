@@ -29,9 +29,14 @@ import threading
 import time
 
 import psycopg
+import pytest
 
 from data_governance import db
+from data_governance import retrieval
+from data_governance.label_lineage import find
+from data_governance.processors.label_lineage import driver as label_lineage
 from data_governance.processors.leg_ready import driver
+from data_governance.risk import config
 from data_governance.risk.engine import compute
 from data_governance.risk.engine.observer import make_risk_observer
 from data_governance.risk.engine.opa import OpaDecision, OpaRequestError
@@ -155,6 +160,52 @@ def test_ready_leg_produces_risk_record_via_consumer(configured_db: str) -> None
     assert _risk_versions(configured_db, "ix-auto") == [(1, ["request"])]
     assert _cursor(configured_db) == seq
     assert len(opa.calls) == 1
+
+
+@pytest.mark.parametrize("inherited_mode", ["off", "on"])
+def test_endpoint_correction_recomputes_after_the_ingestion_cursor_advanced(
+    configured_db: str, monkeypatch, inherited_mode: str,
+) -> None:
+    monkeypatch.setattr(config, "inherited_labels_mode", lambda: inherited_mode)
+    opa = _FakeOpaClient()
+    observer = make_risk_observer(opa)
+    _insert_leg(configured_db, interaction_id="ix-correction", leg_type="request")
+    label_cursor = label_lineage.drain(0, label_lineage.Config(find.exact, "exact"))
+    cursor = driver.drain(0, observer)
+    assert retrieval.get_interaction_risk("ix-correction").version == 1
+
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE interactions SET caller_entity_id = 'corrected-caller' "
+                     "WHERE id = 'ix-correction'")
+
+    label_lineage.drain(label_cursor, label_lineage.Config(find.exact, "exact"))
+    assert driver.drain(cursor, observer) == cursor
+    current = retrieval.get_interaction_risk("ix-correction")
+    assert current.version == 2
+    assert current.caller_entity_id == "corrected-caller"
+    assert len(opa.calls) == 2
+
+
+@pytest.mark.parametrize("inherited_mode", ["off", "on"])
+def test_a_new_leg_below_the_cursor_is_replayed(configured_db: str, monkeypatch, inherited_mode: str) -> None:
+    monkeypatch.setattr(config, "inherited_labels_mode", lambda: inherited_mode)
+    opa = _FakeOpaClient()
+    observer = make_risk_observer(opa)
+    _insert_leg(configured_db, interaction_id="first", leg_type="request")
+    label_config = label_lineage.Config(find.exact, "exact")
+    label_cursor = label_lineage.drain(0, label_config)
+    cursor = driver.drain(0, observer)
+
+    with psycopg.connect(configured_db) as conn:
+        _mk_interaction(conn, "late")
+        conn.execute("INSERT INTO interaction_legs (interaction_id, leg_type, seq, occurred_at) "
+                     "VALUES ('late', 'request', %s, now())", (cursor,))
+
+    label_lineage.drain(label_cursor, label_config)
+    assert driver.drain(cursor, observer) == cursor
+    current = retrieval.get_interaction_risk("late")
+    assert current is not None and current.version == 1
+    assert len(opa.calls) == 2
 
 
 def test_response_leg_attached_later_produces_version_2(configured_db: str) -> None:

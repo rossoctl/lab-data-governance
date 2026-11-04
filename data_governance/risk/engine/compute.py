@@ -90,7 +90,8 @@ SELECT %(interaction_id)s,
 _LATEST_RISK_RECORD_SQL = (
     "SELECT version, risk_level, enforcement_type, policy_event_count, "
     "triggered_rule_ids, legs_evidenced, classification_summary, "
-    "opa_policy_versions_used, overall_confidence "
+    "opa_policy_versions_used, overall_confidence, trace_id, "
+    "parent_interaction_id, caller_entity_id, callee_entity_id "
     "FROM interaction_risk_records WHERE interaction_id = %s "
     "ORDER BY version DESC LIMIT 1"
 )
@@ -203,7 +204,12 @@ def _get_or_refresh_decision(
     second OPA call.
     """
     fingerprint = utils.fingerprint(
-        evidence.legs, evidence.classifications, evidence.anchor, evidence.inherited
+        evidence.legs,
+        evidence.classifications,
+        evidence.anchor,
+        evidence.inherited,
+        caller_entity_id=evidence.caller_entity_id,
+        callee_entity_id=evidence.callee_entity_id,
     )
 
     with db.transaction() as tx:
@@ -262,8 +268,16 @@ def _normalized_latest_record(row: tuple | None) -> dict | None:
         classification_summary,
         opa_policy_versions_used,
         overall_confidence,
+        trace_id,
+        parent_interaction_id,
+        caller_entity_id,
+        callee_entity_id,
     ) = row
     return {
+        "trace_id": trace_id,
+        "parent_interaction_id": parent_interaction_id,
+        "caller_entity_id": caller_entity_id,
+        "callee_entity_id": callee_entity_id,
         "risk_level": risk_level,
         "enforcement_type": enforcement_type,
         "policy_event_count": policy_event_count,
@@ -312,6 +326,10 @@ def _record_params(
     fired_rule_ids = [r for r in decision.triggered_rules if r != FALLBACK_RULE_ID]
     policy_event_count = 1 if fired_rule_ids else 0
     normalized = {
+        "trace_id": trace_id,
+        "parent_interaction_id": parent_interaction_id,
+        "caller_entity_id": caller_entity_id,
+        "callee_entity_id": callee_entity_id,
         "risk_level": decision.risk_level,
         "enforcement_type": decision.enforcement_type,
         "policy_event_count": policy_event_count,

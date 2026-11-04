@@ -1,14 +1,16 @@
 """Leg-ready with ``RISK_INHERITED_LABELS=on``: readiness waits for label lineage's
-row at the leg's current payload, and interactions queued in
+row at the leg's current trace and payload, and interactions queued in
 ``risk_recompute_requests`` are re-delivered after the cursor arm — never moving
-the cursor, each request deleted with its write. With the flag off neither
-happens."""
+the cursor, each request claimed with its write. With the flag off structural
+corrections still run, retaining pending label-only obligations."""
 
 from __future__ import annotations
 
 import psycopg
 import pytest
 
+from data_governance.label_lineage import find
+from data_governance.processors.label_lineage import driver as label_lineage
 from data_governance.processors.leg_ready import driver
 from data_governance.risk import config
 from tests.processors.leg_ready.test_driver import _classify, _cursor, _insert_leg
@@ -138,6 +140,31 @@ def test_on_a_request_queued_again_during_the_recompute_survives(configured_db: 
     assert _requests(configured_db) == {"ix"}
 
 
+def test_on_requeue_with_the_same_timestamp_fences_the_older_write(configured_db: str, labels_on) -> None:
+    seq = _insert_leg(configured_db, interaction_id="ix", leg_type="request", payload_hash=None)
+    driver.drain(0, _Observer())
+    _request(configured_db, "ix")
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("DELETE FROM processor_state WHERE processor_name = 'wrote:ix'")
+        timestamp = conn.execute("SELECT requested_at FROM risk_recompute_requests").fetchone()[0]
+
+    class RequeueDuringCompute(_Observer):
+        def __call__(self, leg):
+            with psycopg.connect(configured_db) as conn:
+                conn.execute("UPDATE risk_recompute_requests SET reason = 'another correction' "
+                             "WHERE interaction_id = %s", (leg.interaction_id,))
+            return super().__call__(leg)
+
+    assert driver.drain(seq, RequeueDuringCompute()) == seq
+    with psycopg.connect(configured_db) as conn:
+        assert conn.execute("SELECT requested_at FROM risk_recompute_requests").fetchone() == (timestamp,)
+        assert conn.execute("SELECT 1 FROM processor_state WHERE processor_name = 'wrote:ix'").fetchone() is None
+    assert _requests(configured_db) == {"ix"}
+    observer = _Observer()
+    driver.drain(seq, observer)
+    assert observer.seen == ["ix"] and _requests(configured_db) == set()
+
+
 def test_on_a_request_waits_until_every_leg_of_its_interaction_is_ready(configured_db: str, labels_on) -> None:
     """A leg rewritten in place to a payload not yet classified (or not yet
     derived by label lineage) holds its interaction's request: a recompute on a
@@ -156,7 +183,9 @@ def test_on_a_request_waits_until_every_leg_of_its_interaction_is_ready(configur
     _classify(configured_db, "h2")
     driver.drain(seq, observer)
     assert observer.seen == [] and _requests(configured_db) == {"ix"}  # h2 not derived by label lineage
-    _label_row(configured_db, "ix", "request", "h2")
+    # A corrected trace stays held until label lineage re-derives and
+    # acknowledges its correction, even if an old row already exists.
+    label_lineage.drain(0, label_lineage.Config(find.exact, "exact"))
     driver.drain(seq, observer)
     assert observer.seen == ["ix"] and _requests(configured_db) == set()
 
@@ -236,3 +265,24 @@ def test_off_requests_are_not_drained(configured_db: str) -> None:
     observer = _Observer()
     driver.drain(seq, observer)
     assert observer.seen == [] and _requests(configured_db) == {"ix"}
+
+
+def test_off_structural_replay_retains_labels_for_later_enablement(configured_db: str, monkeypatch) -> None:
+    seq = _insert_leg(configured_db, interaction_id="ix", leg_type="request", payload_hash=None)
+    driver.drain(0, _Observer())
+    _request(configured_db, "ix")
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("UPDATE interactions SET callee_entity_id = caller_entity_id WHERE id = 'ix'")
+
+    observer = _Observer()
+    assert driver.drain(seq, observer) == seq
+    assert observer.seen == ["ix"] and _requests(configured_db) == {"ix"}
+    driver.drain(seq, observer)
+    assert observer.seen == ["ix"]  # structural work was fulfilled, labels remain
+
+    monkeypatch.setattr(config, "inherited_labels_mode", lambda: "on")
+    driver.drain(seq, observer)
+    assert observer.seen == ["ix"]  # the label correction is still pending
+    label_lineage.drain(0, label_lineage.Config(find.exact, "exact"))
+    assert driver.drain(seq, observer) == seq
+    assert observer.seen == ["ix", "ix"] and _requests(configured_db) == set()

@@ -274,6 +274,44 @@ describe('useEntitiesAndInteractions — one reading of the two (ADR-0034)', () 
     expect(ids(result.current.entities)).toEqual(['e1', 'e2']);
   });
 
+  it('holds the causal leg order with the interactions it orders (ADR-0035)', async () => {
+    // Here the ENTITIES read is the slow one: the interactions answer (and its
+    // new leg_order) lands first and must not be shown until both are in.
+    const order = (iids: string[]) => iids.map((iid) => ({ interaction_id: iid, leg_type: 'request' }));
+    let legOrder = ['i1'];
+    let holdEntities: Promise<void> | null = null;
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const r = replies.T1;
+      if (String(url).endsWith('/entities')) {
+        if (holdEntities) await holdEntities;
+        return { ok: true, status: 200, json: async () => ({ entities: r.entities.map((id) => ({ id })) }) } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ interactions: r.interactions.map((id) => ({ id })), leg_order: order(legOrder) }),
+      } as Response;
+    });
+    replies.T1 = { entities: ['e1'], interactions: ['i1'] };
+    const { client, result } = setup('T1');
+    await waitFor(() => expect(result.current.legOrder).toEqual(order(['i1'])));
+
+    replies.T1 = { entities: ['e1', 'e2'], interactions: ['i1', 'i2'] };
+    legOrder = ['i2', 'i1'];
+    let release!: () => void;
+    holdEntities = new Promise<void>((r) => (release = r));
+    act(() => void client.invalidateQueries());
+    // The interactions answer is in; the entities answer is not.
+    await waitFor(() => expect(result.current.interactionsQ.data?.leg_order).toEqual(order(['i2', 'i1'])));
+    expect(ids(result.current.interactions)).toEqual(['i1']);
+    expect(result.current.legOrder).toEqual(order(['i1']));
+
+    await act(async () => release());
+    await waitFor(() => expect(ids(result.current.entities)).toEqual(['e1', 'e2']));
+    expect(ids(result.current.interactions)).toEqual(['i1', 'i2']);
+    expect(result.current.legOrder).toEqual(order(['i2', 'i1']));
+  });
+
   it('never shows one trace\'s pair under another trace', async () => {
     replies.T1 = { entities: ['a1'], interactions: ['ai'] };
     replies.T2 = { entities: ['b1'], interactions: ['bi'] };

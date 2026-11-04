@@ -59,7 +59,7 @@ export function InteractionsTable({
               isClickable
               onRowClick={() => onSelect(ix)}
               {...rowProps(selectedId === ix.id)}
-              {...trackProps(litEdgeIds, ix.legs.map((l) => `${ix.id}:${l.leg_type}`))}
+              {...trackProps(litEdgeIds, (ix.legs ?? []).map((l) => `${ix.id}:${l.leg_type}`))}
               onContextMenu={
                 onContextMenuInteraction
                   ? (e) => {

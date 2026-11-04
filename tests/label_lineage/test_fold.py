@@ -166,10 +166,14 @@ def test_an_unclassified_payload_makes_the_trace_partial_and_still_carries() -> 
     assert ("SSN", "123-45-6789") in from_store(t, into(d, annotated))
 
 
-def test_a_leg_without_a_wire_time_sorts_last() -> None:
+def test_an_untimed_request_precedes_its_timed_response() -> None:
     t = trace_input("R8")
     legs = [dataclasses.replace(x, occurred_at=None) if i == 3 else x for i, x in enumerate(t.legs)]
-    assert fold.wire_order(legs)[-1].occurred_at is None
+    request = legs[3]
+    assert request.leg_type == "request"
+    response = next(x for x in legs if x.interaction_id == request.interaction_id and x.leg_type == "response")
+    ordered = fold.wire_order(legs)
+    assert ordered.index(request) < ordered.index(response)
     assert fold.derive(dataclasses.replace(t, legs=legs), find.exact).status.status == "complete"
 
 

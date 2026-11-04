@@ -21,6 +21,7 @@ import psycopg
 import pytest
 
 from data_governance import db
+from data_governance import retrieval
 from data_governance.risk.engine.compute import (
     compute_interaction_risk,
     prepare_interaction_risk,
@@ -188,6 +189,42 @@ def test_unchanged_evidence_does_not_call_opa_again(seeded: str):
     compute_interaction_risk(_IX_ID, opa_client=opa)
     assert len(opa.calls) == 1
     assert _policy_decision_versions(seeded) == [1]
+
+
+def test_corrected_endpoint_replaces_a_cached_decision_with_unchanged_payloads(seeded: str):
+    opa = _FakeOpaClient([_decision(risk_level="low"), _decision(risk_level="high")])
+    compute_interaction_risk(_IX_ID, opa_client=opa)
+    assert retrieval.get_interaction_risk(_IX_ID).risk_level == "low"
+
+    with psycopg.connect(seeded) as conn:
+        conn.execute("UPDATE interactions SET callee_entity_id = 'corrected-tool' WHERE id = %s", (_IX_ID,))
+
+    compute_interaction_risk(_IX_ID, opa_client=opa)
+    current = retrieval.get_interaction_risk(_IX_ID)
+    assert current.risk_level == "high"
+    assert current.callee_entity_id == "corrected-tool"
+
+
+def test_same_decision_updates_corrected_parent_and_endpoints(seeded: str):
+    opa = _FakeOpaClient([_decision()])
+    compute_interaction_risk(_IX_ID, opa_client=opa)
+
+    with psycopg.connect(seeded) as conn:
+        _insert_interaction(conn, interaction_id="corrected-parent")
+        conn.execute(
+            "UPDATE interactions SET parent_interaction_id = 'corrected-parent', "
+            "caller_entity_id = 'corrected-caller', callee_entity_id = 'corrected-callee' "
+            "WHERE id = %s",
+            (_IX_ID,),
+        )
+
+    compute_interaction_risk(_IX_ID, opa_client=opa)
+    current = retrieval.get_interaction_risk(_IX_ID)
+    assert current.version == 2
+    assert current.risk_level == "low"
+    assert current.parent_interaction_id == "corrected-parent"
+    assert current.caller_entity_id == "corrected-caller"
+    assert current.callee_entity_id == "corrected-callee"
 
 
 # --- new evidence -> new version (AC-DAS-004 at engine level) -----------------

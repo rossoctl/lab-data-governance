@@ -377,6 +377,14 @@ def build_entity_graph(graph: BaseGraph, spans_by_id: dict[str, Span]) -> Entity
         placeholder (it never survives to a consumer)."""
         call_edge = EntityEdge.make(src_eid, dst_eid, order=call_order)
         _anchor_and_payload(call_edge, src.id, tgt.id)
+        if "_tool_call_arguments" in src.attributes:
+            # The call band names the side of the LLM exchange the call came
+            # from. Step 2.d keeps an output-side server over its input
+            # replay, so the band and this anchor name the same LLM span.
+            if call_order > 0:
+                call_edge.inferred_tool_phase = "output"
+            elif call_order < 0:
+                call_edge.inferred_tool_phase = "input"
         entity_graph.edges.append(call_edge)
         # Response leg — formed structurally at Step 3.b (not carried from 2.c).
         resp_edge = EntityEdge.make(dst_eid, src_eid, order=resp_order)

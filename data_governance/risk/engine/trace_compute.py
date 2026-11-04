@@ -2,7 +2,8 @@
 
 ``compute_trace_risk`` is this engine's one directly-callable entry point;
 the trace-risk-trigger processor (``processors/risk/trace_trigger``, #102/#164)
-drives it once per new interaction risk record. It only needs a ``trace_id``:
+drives it for new interaction risk records and durable correction requests.
+It only needs a ``trace_id``:
 
     gather the trace's current (latest-version per interaction_id)
     interaction risk records -> aggregate (FR-DAS-021, via
@@ -44,6 +45,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from data_governance import db
+from data_governance.processors.trace_lock import lock_trace
 from data_governance.risk.engine.trace_aggregate import (
     CurrentInteractionRisk,
     TraceRiskAggregate,
@@ -69,18 +71,16 @@ _LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
 # interaction_count and could freeze a stale risk level into every future
 # trace version). Re-reading the live lineage table at aggregation time is
 # the DAS discipline (FR-DAS-004: read live, never cache) — the records
-# themselves stay append-only and untouched. The filter takes effect at the
-# trace's next recompute: a re-keyed exchange's replacement gets a record of
-# its own, which triggers one. An interaction deleted with no replacement
-# triggers none, so until some later record in that trace arrives, the
-# latest trace record still counts it (a known seam).
+# themselves stay append-only and untouched. Migration 0028 queues the old and
+# new traces on moves and the old trace on deletion, so the filter takes effect
+# through correction replay even when no replacement risk record is inserted.
 _CURRENT_INTERACTION_RISK_SQL = """
 SELECT DISTINCT ON (r.interaction_id)
     r.interaction_risk_id, r.risk_level, r.enforcement_type,
     r.policy_event_count, r.triggered_rule_ids, r.caller_entity_id,
     r.callee_entity_id, r.overall_confidence
 FROM interaction_risk_records r
-JOIN interactions i ON i.id = r.interaction_id
+JOIN interactions i ON i.id = r.interaction_id AND i.trace_id = r.trace_id
 WHERE r.trace_id = %s
 ORDER BY r.interaction_id, r.version DESC
 """
@@ -211,6 +211,7 @@ def _record_params(trace_id: str, aggregate: TraceRiskAggregate) -> tuple[dict, 
 
 
 def _compute_in(tx: db.Transaction, trace_id: str) -> None:
+    lock_trace(tx, trace_id)
     tx.execute(_LOCK_SQL, (f"risk:trace:{trace_id}",))
     current_records = _fetch_current_records(tx, trace_id)
     aggregate = aggregate_trace_risk(current_records)

@@ -142,13 +142,14 @@ def _fetch_anchor(tx: db.Transaction, interaction_id: str) -> utils.AnchorFacts 
     return facts
 
 
-# Each leg's edges are pinned to the payload the leg carries NOW: an edge derived
-# from a payload the leg was rewritten away from must not reach OPA (the recompute
-# arm has no readiness predicate to hold it back).
+# Each leg's edges are pinned to its current trace and payload. Corrections must
+# not send old-trace or old-payload edges to OPA while label cleanup is pending.
 _INHERITED_SQL = (
     "SELECT e.to_leg_type::text, e.trace_id, e.entity_type, e.regulatory_tags, e.sensitivity_level, "
     "e.match_kind, e.matched_text, e.matched_start, e.matched_end, e.recombined, e.origin_trace_id "
     "FROM payload_label_edges e "
+    "JOIN interactions current_i "
+    "  ON current_i.id = e.to_interaction_id AND current_i.trace_id = e.trace_id "
     "JOIN unnest(%s::text[], %s::text[]) AS cur(leg_type, payload_hash) "
     "  ON cur.leg_type = e.to_leg_type::text AND cur.payload_hash = e.to_payload_hash "
     "WHERE e.to_interaction_id = %s "

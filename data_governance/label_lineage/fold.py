@@ -21,6 +21,7 @@ import dataclasses
 import datetime as dt
 from collections.abc import Mapping, Sequence
 
+from data_governance.interaction_order import LegOrderEvent, LegOrderKey, leg_positions
 from data_governance.processors.classification.projection import project
 from data_governance.processors.data_lineage.traversal import Entity, Leg, inbound_sets
 
@@ -32,8 +33,13 @@ from .value import find_all
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class WireLeg(Leg):
-    """A leg with the time it was on the wire — the fold's order key."""
+    """A leg with its observed time and recorded parent, for causal ordering.
 
+    Keep the time as the seventh positional argument accepted before the shared
+    ``Leg`` grew its parent field; new parent identity is keyword-only here.
+    """
+
+    parent_interaction_id: str | None = dataclasses.field(default=None, kw_only=True)
     occurred_at: dt.datetime | None = None
 
 
@@ -53,19 +59,18 @@ class TraceInput:
 
 
 def wire_order(legs: Sequence[WireLeg]) -> list[WireLeg]:
-    """Legs in the order they were on the wire: ``occurred_at``, then ``seq``.
+    """The shared trace-local causal order (ADR-0035), using recorded parents.
 
-    ``seq`` alone is not causal: the interactions processor re-keys a tool entity
-    after its echo and mints new legs, so on the lab traces the egress request's
-    ``seq`` is lower than the store read that fed it, while its ``occurred_at`` is
-    later. A leg with no wire time sorts after the timed ones, by ``seq``.
+    Observed times order otherwise ready legs; ingestion ``seq`` breaks ties.
+    The fold still routes absent payloads and pairs memoryless responses with
+    their own requests.
     """
-    def key(leg: WireLeg) -> tuple:
-        if leg.occurred_at is None:
-            return (1, leg.seq, leg.interaction_id, leg.leg_type)
-        return (0, leg.occurred_at, leg.seq, leg.interaction_id, leg.leg_type)
-
-    return sorted(legs, key=key)
+    positions = leg_positions(
+        LegOrderEvent(leg.interaction_id, leg.leg_type, leg.parent_interaction_id,
+                      leg.occurred_at, leg.seq)
+        for leg in legs
+    )
+    return sorted(legs, key=lambda leg: positions[LegOrderKey(leg.interaction_id, leg.leg_type)])
 
 
 def derive(trace_input: TraceInput, finder: Finder) -> Derivation:

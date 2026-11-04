@@ -40,6 +40,8 @@ pyproject.toml
   and adding it speculatively widens the surface.
 - **Migrations: Alembic without SQLAlchemy ORM** (per ADR-0002). Raw SQL via
   `op.execute(...)`. The schema is the source of truth, not Python models.
+  For deployments created from the main or risk branch, follow the
+  [combined-schema upgrade procedure](migrations-main-risk.md).
 - **Tests: pytest + testcontainers-python.** Each test session starts a
   throwaway Postgres container; tests get a fresh database per test. No mocking
   of Postgres — that is the whole point of the layered design (Layer 1's job is

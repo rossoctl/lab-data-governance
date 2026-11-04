@@ -397,27 +397,22 @@ def _build_list_query(
     limit: int,
     sort: str,
 ) -> tuple[str, list[Any]]:
-    # Stage 1: latest-per-interaction_id reduction. Only trace_id is pushed
-    # down here — an interaction can't change trace between versions, so
-    # this can't alter which version is "latest," and it lets
-    # interaction_risk_records_trace_idx prune the scan.
-    current_conditions: list[str] = []
-    current_params: list[Any] = []
-    if trace_id is not None:
-        current_conditions.append("trace_id = %s")
-        current_params.append(trace_id)
-    current_where = (
-        " WHERE " + " AND ".join(current_conditions) if current_conditions else ""
-    )
+    # Stage 1: latest-per-interaction_id reduction before every filter. A
+    # correction can move an interaction between traces; filtering here would
+    # resurrect its superseded record in the old trace's list (AC-DAS-016).
     current_cte = (
         f"SELECT DISTINCT ON (interaction_id) {_SELECT_COLS} "
-        f"FROM interaction_risk_records{current_where} "
+        f"FROM interaction_risk_records "
         f"ORDER BY interaction_id, version DESC"
     )
 
     # Stage 2: rank + filters over the reduced set.
     filter_conditions: list[str] = []
     filter_params: list[Any] = []
+
+    if trace_id is not None:
+        filter_conditions.append("trace_id = %s")
+        filter_params.append(trace_id)
 
     if entity_id is not None:
         filter_conditions.append("(caller_entity_id = %s OR callee_entity_id = %s)")
@@ -475,8 +470,7 @@ def _build_list_query(
         f"ORDER BY {order_sql} LIMIT %s"
     )
     params = (
-        list(current_params)
-        + [list(RISK_LEVEL_ORDER), _RISK_RANK_UNKNOWN]
+        [list(RISK_LEVEL_ORDER), _RISK_RANK_UNKNOWN]
         + filter_params
         + [limit + 1]
     )

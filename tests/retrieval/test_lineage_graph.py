@@ -89,11 +89,13 @@ def _seed_interaction(
     ix_id: str,
     caller: str,
     callee: str,
+    parent_id: str | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO interactions (id, trace_id, caller_entity_id, "
-        "callee_entity_id, summary) VALUES (%s, %s, %s, %s, 'call')",
-        (ix_id, trace_id, caller, callee),
+        "callee_entity_id, summary, parent_interaction_id) "
+        "VALUES (%s, %s, %s, %s, 'call', %s)",
+        (ix_id, trace_id, caller, callee, parent_id),
     )
 
 
@@ -312,6 +314,45 @@ def test_the_traversed_legs_are_reported_as_the_route(seeded: str) -> None:
         (_AGENT, _TOOL, "request"),
         (_TOOL, _AGENT, "response"),
         (_AGENT, _USER, "response"),
+    ]
+
+
+def test_late_parent_keeps_lower_seq_child_on_the_lineage_route(
+    configured_db: str,
+) -> None:
+    """The trace's causal order, not insertion order, gates and lists hops."""
+    with psycopg.connect(configured_db) as conn:
+        _seed_entity(conn, _USER, "user", _SRC_USER, 1)
+        _seed_entity(conn, _AGENT, "agent", "advisor", 2)
+        _seed_entity(conn, _TOOL, "tool", "search", 3)
+        _seed_interaction(
+            conn, _TID, _IX_AT, _AGENT, _TOOL, parent_id=_IX_UA
+        )
+        _seed_leg(conn, _IX_AT, "request")
+        _seed_interaction(conn, _TID, _IX_UA, _USER, _AGENT)
+        _seed_leg(conn, _IX_UA, "request")
+        seqs = _leg_seqs(conn, _TID)
+        assert seqs[(_IX_AT, "request")] < seqs[(_IX_UA, "request")]
+        _seed_lineage(
+            conn, _IX_AT, "request", data_sources=[_SRC_USER],
+            seq=seqs[(_IX_AT, "request")],
+        )
+        _seed_lineage(
+            conn, _IX_UA, "request", data_sources=[_SRC_USER],
+            seq=seqs[(_IX_UA, "request")],
+        )
+        conn.commit()
+
+    fanout = retrieval.get_lineage_graph(_TID, _USER, retrieval.FANOUT, _SRC_USER)
+    assert {e.id: e.hops for e in fanout.entities} == {_AGENT: 1, _TOOL: 2}
+    assert [(leg.interaction_id, leg.leg_type) for leg in fanout.legs] == [
+        (_IX_UA, "request"), (_IX_AT, "request"),
+    ]
+
+    fanin = retrieval.get_lineage_graph(_TID, _TOOL, retrieval.FANIN, _SRC_USER)
+    assert {e.id: e.hops for e in fanin.entities} == {_AGENT: 1, _USER: 2}
+    assert [(leg.interaction_id, leg.leg_type) for leg in fanin.legs] == [
+        (_IX_UA, "request"), (_IX_AT, "request"),
     ]
 
 

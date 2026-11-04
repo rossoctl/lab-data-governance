@@ -7,7 +7,7 @@ interaction legs.
 :class:`TraceLineage` (per-leg **data lineage** + the trace's coverage) out. The
 database is :mod:`.driver`'s job; the metadata construction is :mod:`.operations`'.
 
-**The traversal unit is the interaction LEG, in leg ``seq`` order.** The spec's
+**The traversal unit is the interaction LEG, in trace-local causal order.** The spec's
 worked example (``docs/data_lineage_alg.md:140-153``) numbers arrows::
 
     -1-> Agent
@@ -19,9 +19,11 @@ worked example (``docs/data_lineage_alg.md:140-153``) numbers arrows::
 
 and in the ADR-0025 schema each arrow is one leg: #1/#6 are the request/response
 legs of the user→agent interaction, #2/#3 of the first agent→llm call, #4/#5 of
-the second. So "each interaction ``i`` in ``seq`` order" (D4) resolves to each leg
-in leg-``seq`` order — which is also the only ordering the schema offers, since the
-parent ``interactions`` row deliberately has no ``seq`` (ADR-0025). The spec calls
+the second. The example's numbers denote execution positions, not the database's
+ingestion ``seq``. Each leg is ordered from its parent request, own request and
+occurrence time, with a child's legs pulled no later than its parent's response
+unless the child is clearly asynchronous (ADR-0035,
+:func:`~data_governance.interaction_order.order_legs`), then processed once. The spec calls
 ``merge_lineage`` at every one of #2-#6 (``:171-175``); selection is two-way, so the
 only question per leg is whether anything was inbound at all.
 
@@ -31,7 +33,7 @@ performed the transformation, so it is the one ``init`` roots at and the one the
 entity set is extended with.
 
 **Inbound routing is purely structural (D1).** A payload is inbound to entity E
-iff, in a leg with lower ``seq``, E is the callee and the payload is the request,
+iff, in a causally earlier leg, E is the callee and the payload is the request,
 OR E is the caller and the payload is the response. No span-level heuristics, no
 attribute sniffing — just the leg table.
 
@@ -50,8 +52,8 @@ kind defaults today (``tool`` ✓, ``llm``/``agent`` ✗). Passed into
 origin is already rooted at the entity.
 
 **An absent payload truncates the trace (D6, interim).** Traversal stops at the
-first leg in ``seq`` order with no ``payload_hash``; the result is a *prefix* plus
-a ``PARTIAL`` status naming the ``seq`` it stopped at. A payload we do not have
+first leg in causal order with no ``payload_hash``; the result is a *prefix* plus
+a ``PARTIAL`` status naming the cutoff leg's ingestion ``seq``. A payload we do not have
 gives the matcher nothing to compare and hides the provenance of everything
 downstream, so the honest answer is less lineage and a loud flag — never a quietly
 shorter list a consumer could read as the complete set of sources.
@@ -64,9 +66,15 @@ span's ancestors ∪ subtree under a seq horizon — ADR-0007/0016). This module
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import enum
 from collections.abc import Sequence
 
+from data_governance.interaction_order import (
+    LegOrderEvent,
+    LegOrderKey,
+    leg_positions,
+)
 from data_governance.matching import Matcher
 
 from . import memory, operations
@@ -125,6 +133,8 @@ class Leg:
     caller_entity_id: str
     callee_entity_id: str
     payload_hash: str | None
+    parent_interaction_id: str | None = None
+    occurred_at: dt.datetime | str | None = None
 
 
 class LineageStatus(enum.StrEnum):
@@ -178,6 +188,9 @@ class TraceLineage:
     legs: dict[LegKey, LegLineage]
     status: LineageStatus = LineageStatus.COMPLETE
     stopped_at_seq: int | None = None
+    # Inclusive causal prefix, including a missing-payload cutoff leg. Used by
+    # the driver's stale-row sweep; seq cannot describe this boundary.
+    prefix_leg_keys: tuple[LegKey, ...] = ()
 
 
 def _producer_id(leg: Leg) -> str:
@@ -205,8 +218,8 @@ def derive_trace_lineage(
 ) -> TraceLineage:
     """Derive the data lineage of every leg of one trace.
 
-    *legs* need not be sorted — this sorts by ``seq`` itself, so a caller's row
-    order cannot change the answer. *entities* maps ``entity_id -> Entity``.
+    *legs* need not be sorted — this derives their causal order, so a caller's
+    row order cannot change the answer. *entities* maps ``entity_id -> Entity``.
     *matcher* is the resolved semantic matcher (the caller gets it from
     :func:`data_governance.matching.get_matcher`; this function never names an
     implementation).
@@ -224,7 +237,7 @@ def derive_trace_lineage(
     (the ADR-0028 D5 key) plus the trace-level coverage ``status`` /
     ``stopped_at_seq``.
 
-    Op selection, per leg in ``seq`` order (D4/D11) — two-way, on emptiness alone::
+    Op selection, per leg in causal order (D4/D11) — two-way, on emptiness alone::
 
         |inbound| == 0  -> init_lineage(entity)   # D3(1) structural
         otherwise       -> merge_lineage(*inbound, out, entity, is_entity_source)
@@ -236,7 +249,7 @@ def derive_trace_lineage(
     called with.
 
     **An absent payload TRUNCATES the trace (ADR-0028 D6, interim).** Traversal
-    stops at the first leg in ``seq`` order whose ``payload_hash`` is ``None``:
+    stops at the first leg in causal order whose ``payload_hash`` is ``None``:
     legs before it keep their lineage, that leg and every later one get none, and
     the result is ``PARTIAL`` with ``stopped_at_seq`` set to the gap's ``seq``. A
     payload we do not have gives the matcher nothing to compare, and everything
@@ -257,7 +270,19 @@ def derive_trace_lineage(
     name to root ``init`` at. Conflating the two would mark a trace partial over
     an entity row that is milliseconds behind.
     """
-    ordered = sorted(legs, key=lambda leg: (leg.seq, leg.interaction_id, leg.leg_type))
+    position = leg_positions(
+        LegOrderEvent(
+            interaction_id=leg.interaction_id,
+            leg_type=leg.leg_type,
+            parent_interaction_id=leg.parent_interaction_id,
+            occurred_at=leg.occurred_at,
+            seq=leg.seq,
+        )
+        for leg in legs
+    )
+    ordered = sorted(
+        legs, key=lambda leg: position[LegOrderKey(leg.interaction_id, leg.leg_type)]
+    )
 
     # Metadata of each already-derived LEG, keyed `(interaction_id, leg_type)` — the
     # input side of the next op.
@@ -290,6 +315,10 @@ def derive_trace_lineage(
         for leg in ordered
     }
     result: dict[LegKey, LegLineage] = {}
+    prefix_leg_keys = tuple(
+        (leg.interaction_id, leg.leg_type)
+        for leg in (ordered if stop is None else ordered[:stop + 1])
+    )
 
     for leg in covered:
         producer = entities.get(_producer_id(leg))
@@ -300,14 +329,15 @@ def derive_trace_lineage(
             )
 
     if stop is not None:
-        # D6's cutoff: this leg gets no lineage and neither does anything after it.
-        # Reporting the seq is what keeps the truncation from being silent.
+        # D6's cutoff: the missing-payload leg belongs to the inclusive causal
+        # prefix, but gets no lineage and neither does anything after it.
         return TraceLineage(
             legs=result,
             status=LineageStatus.PARTIAL,
             stopped_at_seq=ordered[stop].seq,
+            prefix_leg_keys=prefix_leg_keys,
         )
-    return TraceLineage(legs=result)
+    return TraceLineage(legs=result, prefix_leg_keys=prefix_leg_keys)
 
 
 def inbound_sets(
@@ -321,8 +351,8 @@ def inbound_sets(
     D1 (a request is inbound to its callee, a response to its caller, and only
     from an earlier leg) folded with D2 (an accumulating consumer retains every
     prior, a memoryless one only its latest). Pure, and shared: data lineage walks
-    ``seq`` order over the legs before the D6 cutoff; label lineage walks wire
-    order over every leg. Each leg given is routed, so the caller passes exactly
+    causal order over the legs before the D6 cutoff; label lineage supplies its
+    own ordered legs. Each leg given is routed, so the caller passes exactly
     the legs it wants routed. A leg whose producing entity is unknown gets no
     entry; one whose consumer is unknown is routed nowhere.
 

@@ -11,34 +11,11 @@ from __future__ import annotations
 import psycopg
 
 
-def test_head_is_0024(migrated_dsn: str) -> None:
-    """Applying the chain to head lands on the current head revision (0024 —
-    the label-lineage tables, issue #272, parent 0023; before that 0023, the
-    trace-risk seq cursor column + NOTIFY trigger, issue #175, parent 0022;
-    before that 0022, `main`'s content_kind-on-the-leg revision (#288), parent
-    0020 — ``entities.namespace``, chained after 0019).
-
-    The chain is LINEAR. Merging `main`'s lineage chain (0012-0015) into this
-    branch produced two heads, since this branch's own 0012/0013 (DAS risk
-    tables, interaction policy decisions) had numbered from the same
-    0011_drop_leg_original_seq parent. Resolved by re-parenting this branch's
-    two revisions onto `main`'s new head and renumbering them 0016-0017 (see
-    ``0016_das_risk_tables``'s docstring) — the same fix `main` applied to its
-    own lineage-chain collision when it renumbered 0012-0015.
-
-    0019 was the second application of that same fix (#164's cursor column
-    re-parented onto 0018_trace_aggregation_modes). 0020 is the third: `main`'s
-    ``entities.namespace`` column was written on `main` at 0020, numbered past
-    its own head (0015) specifically so this merge only needs one line changed
-    — its ``down_revision`` re-parented onto this branch's 0019 (see the
-    revision's own docstring).
-
-    This is the one canonical head-revision assertion (mirrors
-    ``test_classifications_migration.py::test_head_is_0015`` on `main` before
-    this merge); every other migration's test asserts mere chain-reachability
-    instead, so a new revision landing on top only has to edit this file."""
+def test_head_is_0028(migrated_dsn: str) -> None:
+    """Both migration branches converge on one head. Other migration tests assert
+    their schema and reachability without duplicating this head assertion."""
     with psycopg.connect(migrated_dsn) as conn:
         (version,) = conn.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-    assert version == "0024_label_lineage"
+    assert version == "0028_correction_replay"

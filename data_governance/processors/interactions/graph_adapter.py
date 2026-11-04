@@ -51,6 +51,7 @@ from data_governance.retrieval import Span
 
 from . import caller_inference as ci
 from . import procedure
+from .graph.adapters import Kind, extract_facts
 from .graph.extractor import ExtractResult
 from .graph.graph import EntityNode
 
@@ -71,10 +72,11 @@ class LegRow:
     its own anchor span and its own global ``order``. The streaming algorithm has
     no such per-leg data — it does NOT populate ``legs_by_ix`` and ``state.flush``
     falls back to its ``_legs_of`` derived-leg projection, so streaming output is
-    byte-identical. See ``ProductionRows.legs_by_ix``."""
+    byte-identical. Inferred tool calls with no observed tool span project their
+    leg times to the LLM message boundary. See ``ProductionRows.legs_by_ix``."""
 
     leg_type: str  # 'request' | 'response'
-    occurred_at: Any  # request leg = request edge started_at; response = its own ended_at
+    occurred_at: Any  # edge time, or LLM boundary for an inferred tool
     payload_hash: str | None
     error: bool | None
     seq: int  # the edge's global execution ordinal (`order`) — request < its response
@@ -323,6 +325,45 @@ def _compute_parents(
                 break
             cur = parent
         ix.parent_interaction_id = parent_id
+
+
+def _time_unended_llm_responses(
+    interactions: list[procedure.Interaction],
+    legs_by_ix: dict[str, list[LegRow]],
+    span_by_id: dict[str, Span],
+    llm_entity_ids: set[str],
+) -> None:
+    """Time an LLM call's response leg at its span's start when the span has
+    no recorded end, as an output tool call it disclosed already is.
+
+    Untimed, the response sorts after every timed leg of the trace, behind the
+    output call and later turns, and lineage loses the LLM hop of that call.
+    The start is the one boundary known, and the graph `order` keeps the
+    response after its request and before the call. As in the sidecar path's
+    `resp.ended_at or resp.started_at`, only a response leg the graph already
+    emitted is timed; none is made up for an exchange without one. Only the
+    LLM call's own: a tool call inferred on the same span is timed in ``adapt``.
+
+    An LLM call that encloses another call keeps its untimed response. Its
+    response follows the enclosed call's, so a start time would read as an
+    asynchronous parent and order it before the call it waited on (ADR-0035).
+    Runs after ``_compute_parents``, the only source of that nesting.
+    """
+    enclosing = {ix.parent_interaction_id for ix in interactions}
+    for ix in interactions:
+        anchor = span_by_id.get(ix.primary_anchor_span_id)
+        if (
+            ix.id in enclosing
+            or ix.callee_entity_id not in llm_entity_ids
+            or anchor is None
+            or anchor.ended_at is not None
+            or extract_facts(anchor).kind != Kind.LLM
+        ):
+            continue
+        for leg in legs_by_ix.get(ix.id, []):
+            if leg.leg_type == "response" and leg.occurred_at is None:
+                leg.occurred_at = anchor.started_at
+                ix.ended_at = anchor.started_at
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +644,39 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             )
         )
 
+        # Inferred tool calls have no independently observed execution span.
+        # Output-side calls are known at the originating LLM completion;
+        # input-side replays are known at its request boundary. Their phase
+        # survives in the request edge after Step 2.d resolves any replay.
+        phase = req_leg.pi.inferred_tool_phase if req_leg is not None else None
+        if phase is not None and (
+            anchor_span is None or extract_facts(anchor_span).kind != Kind.LLM
+        ):
+            # An inferred peer can fold into an observed tool whose own span
+            # then anchors this exchange. Its measured time takes precedence.
+            phase = None
+        inferred_tool_time = None
+        if phase is not None:
+            assert anchor_span is not None
+            # An LLM span with no recorded end has no response boundary. Its
+            # start (never NULL) is the one boundary known, as in the sidecar
+            # path's `resp.ended_at or resp.started_at`. The call then stays in
+            # its LLM exchange, after the request and the LLM response
+            # (`_time_unended_llm_responses`) by its higher `order`, and is
+            # not sorted untimed to the end of the trace.
+            inferred_tool_time = (
+                anchor_span.ended_at or anchor_span.started_at
+                if phase == "output"
+                else anchor_span.started_at
+            )
+        # A response on a distinct tool span is independently observed.
+        project_inferred_response = (
+            phase is not None
+            and req_leg is not None
+            and resp_leg is not None
+            and resp_leg.anchor_span_id == req_leg.anchor_span_id
+        )
+
         # Per-leg rows (ADR-0025): each leg carries its OWN edge's data, so the
         # response leg reflects the responding endpoint's own anchor span — its
         # `ended_at` (genuinely distinct from the request edge's for an A2A
@@ -617,7 +691,10 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             legs.append(
                 LegRow(
                     leg_type="request",
-                    occurred_at=req_leg.pi.started_at,
+                    occurred_at=(
+                        inferred_tool_time if phase is not None
+                        else req_leg.pi.started_at
+                    ),
                     payload_hash=req_hash,
                     content_kind=req_leg.req_kind,
                     error=req_leg.pi.error,
@@ -628,7 +705,10 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
             legs.append(
                 LegRow(
                     leg_type="response",
-                    occurred_at=resp_leg.pi.ended_at,
+                    occurred_at=(
+                        inferred_tool_time if project_inferred_response
+                        else resp_leg.pi.ended_at
+                    ),
                     payload_hash=resp_hash,
                     content_kind=resp_leg.resp_kind,
                     error=resp_leg.pi.error,
@@ -660,6 +740,12 @@ def adapt(result: ExtractResult, spans: list[Span]) -> ProductionRows:
     # exists (the walk needs the full anchor→interaction map).
     all_interactions = list(interactions_by_anchor.values())
     _compute_parents(all_interactions, span_by_id)
+    _time_unended_llm_responses(
+        all_interactions,
+        legs_by_ix,
+        span_by_id,
+        {entity.id for entity in entities.values() if entity.kind == "llm"},
+    )
 
     # interaction_spans territory (info/connector): every non-anchor span in the
     # trace goes to its innermost enclosing interaction (ADR-0008), mirroring the
