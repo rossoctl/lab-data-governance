@@ -49,7 +49,9 @@ tell. Plain HTTP carries the whole text body.
 
 Errors: 400 (`bad_key`, `bad_wait_ms`, `wait_ms_too_large`), 401 `unauthorized`, 503 `verdict_busy` (the per-process
 waiter cap, never a queue), 500 `verdict_unavailable` (the database did not answer, within the manifest's
-`DB_POOL_TIMEOUT` of 3 s). The gate treats anything else as no verdict.
+`DB_POOL_TIMEOUT` of 3 s). The gate treats anything else as no verdict. A `pending` or `verdict_busy` answer, a 5xx and
+no answer at all are a slow or dead service, which the gate's `fallback` decides (`deny` by default, set by `instrument
+--fallback`, [cli.md](cli.md#the-sentry-gate)); a 3xx or 4xx stays refused as a setup fault.
 
 ## Who may ask
 

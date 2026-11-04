@@ -12,16 +12,18 @@ from), then pipes the result through ``apply`` here, which:
   once the request span has left the sidecar;
 - removes any ``sentry-gate`` entry and writes one after ``lineage-telemetry`` on the
   outbound chain (the gate requires lineage before it; the reverse order makes the
-  sidecar refuse the config), with the verdict URL, the shared secret and the pass
-  list from the spec, and under ``--observe`` the framework's ``on_error: observe``.
-  Every other gate key keeps the gate's default.
+  sidecar refuse the config), with the verdict URL, the shared secret, the pass
+  list and, when the spec names them, the wait (``wait_ms``) and the fallback (``deny``
+  or ``allow``), and under ``--observe`` the framework's ``on_error: observe``. Every
+  other gate key keeps the gate's default (``wait_ms`` absent is the gate's 2000,
+  ``fallback`` absent its ``deny``).
 
 ``pipeline-valid`` reads a sidecar's ``/v1/pipeline`` and says whether it runs
 exactly that: the plugin names of the ConfigMap, lineage before the gate, the
-lineage values above, the gate's URL, pass list and mode, and a secret present
-(the endpoint masks its value).
+lineage values above, the gate's URL, pass list, wait, fallback and mode, and a secret
+present (the endpoint masks its value).
 
-``read`` gives the gate entry of a runtime ConfigMap: its mode and pass list.
+``read`` gives the gate entry of a runtime ConfigMap: its mode, pass list, wait and fallback.
 
 ``pass-host-problem <glob>`` says why the gate would refuse a ``--pass-host`` glob.
 
@@ -38,6 +40,8 @@ import re
 import sys
 
 GATE_PLUGIN = "sentry-gate"
+DEFAULT_WAIT_MS = 2000  # the gate's own default when its entry has no wait_ms
+DEFAULT_FALLBACK = "deny"  # the gate's own default when its entry has no fallback
 EXPORT_DELAY_MS = 10
 MODES = ("enforce", "observe")
 
@@ -78,6 +82,10 @@ def gate_block(indent: int, spec: dict, mode: str) -> list[str]:
         f"{key}verdict_url: {scalar(spec['verdict_url'])}\n",
         f"{key}verdict_secret: {scalar(spec['verdict_secret'])}\n",
     ]
+    if spec.get("wait_ms"):
+        lines.append(f"{key}wait_ms: {scalar(spec['wait_ms'])}\n")
+    if spec.get("fallback"):
+        lines.append(f"{key}fallback: {scalar(spec['fallback'])}\n")
     if spec.get("pass_hosts"):
         lines.append(f"{key}pass_hosts:\n")
         lines += [f"{key}- {scalar(host)}\n" for host in spec["pass_hosts"]]
@@ -155,6 +163,10 @@ def pipeline_problems(document: dict, expected: dict, otel_endpoint: str, namesp
         problems.append("gate verdict_url differs")
     if (config.get("pass_hosts") or []) != (spec.get("pass_hosts") or []):
         problems.append("gate pass_hosts differ")
+    if (config.get("wait_ms") or DEFAULT_WAIT_MS) != (spec.get("wait_ms") or DEFAULT_WAIT_MS):
+        problems.append("gate wait_ms differs")
+    if (config.get("fallback") or DEFAULT_FALLBACK) != (spec.get("fallback") or DEFAULT_FALLBACK):
+        problems.append("gate fallback differs")
     if not config.get("verdict_secret"):
         problems.append("gate has no verdict secret")
     if (gate.get("onError") == "observe") != (mode == "observe"):
@@ -173,7 +185,8 @@ def pipeline_valid_command(args: argparse.Namespace) -> int:
 
 
 def read_command(args: argparse.Namespace) -> int:
-    """The gate entry of a runtime ConfigMap as {"mode", "pass_hosts"}, {} when none."""
+    """The gate entry of a runtime ConfigMap as {"mode", "pass_hosts", "wait_ms", "fallback"},
+    {} when none; wait_ms and fallback are None when the entry has no such key."""
     reconcile = load_reconcile(args.kit_dir)
     config = (json.load(sys.stdin).get("data") or {}).get("config.yaml") or ""
     lines = config.splitlines(keepends=True)
@@ -184,8 +197,12 @@ def read_command(args: argparse.Namespace) -> int:
             continue
         text = "".join(block)
         hosts = re.search(r"^\s*pass_hosts:\n((?:\s*- .*\n)*)", text, re.M)
+        wait_ms = re.search(r"^\s*wait_ms:\s*(\d+)\s*$", text, re.M)
+        fallback = re.search(r"^\s*fallback:\s*(\S+)\s*$", text, re.M)
         json.dump({"mode": "observe" if re.search(r"on_error:\s*observe", text) else "enforce",
-                   "pass_hosts": [h.split("- ", 1)[1].strip().strip("'") for h in hosts.group(1).splitlines()] if hosts else []},
+                   "pass_hosts": [h.split("- ", 1)[1].strip().strip("'") for h in hosts.group(1).splitlines()] if hosts else [],
+                   "wait_ms": int(wait_ms.group(1)) if wait_ms else None,
+                   "fallback": fallback.group(1).strip("'\"") if fallback else None},
                   sys.stdout)
         return 0
     json.dump({}, sys.stdout)
@@ -252,7 +269,7 @@ def main() -> int:
     for name, func in (("apply", apply_command), ("pipeline-valid", pipeline_valid_command)):
         p = sub.add_parser(name)
         p.add_argument("--kit-dir", required=True)
-        p.add_argument("--spec", required=True, help="JSON: verdict_url, verdict_secret, pass_hosts")
+        p.add_argument("--spec", required=True, help="JSON: verdict_url, verdict_secret, pass_hosts, wait_ms and fallback (optional)")
         p.add_argument("--mode", choices=MODES, required=True)
         p.add_argument("--otel-endpoint", required=True)
         if name == "pipeline-valid":

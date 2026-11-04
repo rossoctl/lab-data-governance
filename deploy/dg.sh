@@ -22,7 +22,7 @@
 #   dg.sh component  install [--no-build|--reuse-classification]
 #   dg.sh namespaces [list]
 #   dg.sh namespace  <ns> [instrument|status] [<entity>]
-#   dg.sh namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]...
+#   dg.sh namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]... [--wait-ms <n>] [--fallback deny|allow] [--allow-open-default]
 #
 # Fail-loud posture: every preflight and every unresolved input is a loud,
 # non-zero exit — never a silent no-op.
@@ -102,7 +102,7 @@ Usage:
   ${PROG} component  install [--no-build|--reuse-classification]
   ${PROG} namespaces [list]
   ${PROG} namespace  <ns> [instrument|status] [<entity>]
-  ${PROG} namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]...
+  ${PROG} namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]... [--wait-ms <n>] [--fallback deny|allow] [--allow-open-default]
 EOF
 }
 
@@ -1379,7 +1379,7 @@ namespace_instrument() {
     # refuses the run before anything is written.
     if [[ -n "${DG_GATE_MODE}" ]]; then
         [[ -z "${entity}" ]] || die "instrument --${DG_GATE_MODE}: the gate is a namespace setting; run it without <entity>. Mutating nothing."
-        keep_namespace_pass_list "${ns}"
+        keep_namespace_gate_settings "${ns}"
         build_gate_spec
     fi
 
@@ -1428,8 +1428,8 @@ namespace_instrument() {
 
 # ---------------------------------------------------------------------------
 # The Sentry gate: instrument --enforce|--observe (#342). instrument renders the
-# verdict URL, the shared secret and the pass list into the gate's entry of
-# authbridge-runtime-config, after lineage-telemetry, beside lineage's
+# verdict URL, the shared secret, the pass list, the wait and the fallback (when given) into
+# the gate's entry of authbridge-runtime-config, after lineage-telemetry, beside lineage's
 # capture_io on and export_delay_ms 10.
 # ---------------------------------------------------------------------------
 
@@ -1437,11 +1437,18 @@ DG_VERDICT_URL="${DG_VERDICT_URL:-http://data-governance-verdict.${DG_NAMESPACE}
 GATE_CONFIG_TOOL="${SCRIPT_DIR}/gate_config.py"
 # The config keys instrument writes into the gate's entry; an image whose gate
 # lacks one would refuse the whole config.
-DG_GATE_KEYS="verdict_url verdict_secret pass_hosts"
+DG_GATE_KEYS="verdict_url verdict_secret pass_hosts fallback"
 # enforce | observe while instrument runs with a gate; empty otherwise.
 DG_GATE_MODE=""
 DG_GATE_SPEC_FILE=""
 DG_GATE_PASS_HOSTS=()
+# deny | allow when --fallback is given or the namespace's gate carries one;
+# empty: no fallback key is written and the gate's own default (deny) holds.
+DG_GATE_FALLBACK=""
+DG_GATE_ALLOW_OPEN_DEFAULT=0
+# 1..3000 when --wait-ms is given or the namespace's gate carries one; empty: no
+# wait_ms key is written and the gate's own default (2000) holds.
+DG_GATE_WAIT_MS=""
 
 # verdict_secret_value: the verdict service's bearer from its Secret; a loud die
 # when it cannot be read. Never printed by dg.sh.
@@ -1455,7 +1462,7 @@ verdict_secret_value() {
 }
 
 # build_gate_spec: read the secret and write the gate's spec (verdict URL,
-# secret, pass list) to DG_GATE_SPEC_FILE. Refuses an empty secret before
+# secret, wait and fallback when set, pass list) to DG_GATE_SPEC_FILE. Refuses an empty secret before
 # anything is written.
 build_gate_spec() {
     local secret
@@ -1466,10 +1473,14 @@ build_gate_spec() {
     trap 'rm -f "${DG_GATE_SPEC_FILE:-}"' EXIT
     printf '%s' "${secret}" | python3 -c '
 import json, sys
-url, path = sys.argv[1], sys.argv[2]
-spec = {"verdict_url": url, "verdict_secret": sys.stdin.read(), "pass_hosts": sys.argv[3:]}
+url, path, wait_ms, fallback = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+spec = {"verdict_url": url, "verdict_secret": sys.stdin.read(), "pass_hosts": sys.argv[5:]}
+if wait_ms:
+    spec["wait_ms"] = int(wait_ms)
+if fallback:
+    spec["fallback"] = fallback
 open(path, "w").write(json.dumps(spec))
-' "${DG_VERDICT_URL}" "${DG_GATE_SPEC_FILE}" "${DG_GATE_PASS_HOSTS[@]+"${DG_GATE_PASS_HOSTS[@]}"}"
+' "${DG_VERDICT_URL}" "${DG_GATE_SPEC_FILE}" "${DG_GATE_WAIT_MS}" "${DG_GATE_FALLBACK}" "${DG_GATE_PASS_HOSTS[@]+"${DG_GATE_PASS_HOSTS[@]}"}"
     err ">> instrument --${DG_GATE_MODE}: verdict_url ${DG_VERDICT_URL}"
 }
 
@@ -1502,7 +1513,8 @@ sys.exit(0 if set(sys.argv[1].split()) <= fields else 1)' "${DG_GATE_KEYS}"
 }
 
 # read_namespace_gate <runtime-json>: the gate entry of the namespace source as
-# {"mode", "pass_hosts"}, {} when it carries none.
+# {"mode", "pass_hosts", "wait_ms", "fallback"} (wait_ms and fallback null when absent), {} when
+# it carries none.
 read_namespace_gate() {
     printf '%s' "$1" | python3 "${GATE_CONFIG_TOOL}" read --kit-dir "${KIT_DIR}" 2>/dev/null || printf '{}'
 }
@@ -1512,12 +1524,22 @@ gate_pass_hosts() {
     python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["pass_hosts"]))' "$1" | sed '/^$/d'
 }
 
+# gate_wait_ms <gate-json>: its wait_ms, empty when the entry has none.
+gate_wait_ms() {
+    python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("wait_ms") or "")' "$1"
+}
+
+# gate_fallback <gate-json>: its fallback, empty when the entry has none.
+gate_fallback() {
+    python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("fallback") or "")' "$1"
+}
+
 # adopt_namespace_gate <ns> <runtime-json> <instrument|status>: a run without
 # --enforce|--observe on a namespace whose source carries the gate. instrument refuses:
 # the lineage reconciler appends lineage after every entry it does not manage, so a
 # plain run would put the gate before lineage, with capture off. status reads the
-# gate's mode and pass list, prints them, and checks the source against the gated
-# render in that mode with that pass list.
+# gate's mode, pass list, wait and fallback, prints them, and checks the source against
+# the gated render in that mode with that pass list, wait and fallback.
 adopt_namespace_gate() {
     local ns="$1" runtime_json="$2" verb="$3" gate mode
     [[ -z "${DG_GATE_MODE}" ]] || return 0
@@ -1529,23 +1551,38 @@ adopt_namespace_gate() {
     fi
     DG_GATE_MODE="${mode}"
     mapfile -t DG_GATE_PASS_HOSTS < <(gate_pass_hosts "${gate}")
-    printf 'namespace %s: sentry-gate mode=%s pass_hosts=%s\n' "${ns}" "${mode}" \
-        "$(IFS=,; printf '%s' "${DG_GATE_PASS_HOSTS[*]:-(none)}")"
+    DG_GATE_WAIT_MS="$(gate_wait_ms "${gate}")"
+    DG_GATE_FALLBACK="$(gate_fallback "${gate}")"
+    printf 'namespace %s: sentry-gate mode=%s pass_hosts=%s wait_ms=%s fallback=%s\n' "${ns}" "${mode}" \
+        "$(IFS=,; printf '%s' "${DG_GATE_PASS_HOSTS[*]:-(none)}")" "${DG_GATE_WAIT_MS:-2000}" "${DG_GATE_FALLBACK:-deny}"
     ( build_gate_spec ) >/dev/null 2>&1 || { err "status: the verdict Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} cannot be read"; return 1; }
     build_gate_spec 2>/dev/null
 }
 
-# keep_namespace_pass_list <ns>: --enforce|--observe without --pass-host keeps the pass list
-# the namespace's gate already carries, so re-running the command status advises never
-# empties it; --pass-host given replaces it.
-keep_namespace_pass_list() {
+# keep_namespace_gate_settings <ns>: --enforce|--observe without --pass-host keeps the pass
+# list the namespace's gate already carries, without --wait-ms its wait and without
+# --fallback its fallback, so re-running the command status advises changes none of them;
+# --pass-host, --wait-ms or --fallback given replaces it.
+keep_namespace_gate_settings() {
     local ns="$1" runtime gate
-    [[ ${#DG_GATE_PASS_HOSTS[@]} -eq 0 ]] || return 0
+    [[ ${#DG_GATE_PASS_HOSTS[@]} -eq 0 || -z "${DG_GATE_WAIT_MS}" || -z "${DG_GATE_FALLBACK}" ]] || return 0
     runtime="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json 2>/dev/null)" || return 0
     gate="$(read_namespace_gate "${runtime}")"
     [[ "${gate}" != "{}" ]] || return 0
-    mapfile -t DG_GATE_PASS_HOSTS < <(gate_pass_hosts "${gate}")
-    err ">> instrument --${DG_GATE_MODE}: pass list kept from the namespace's gate: ${DG_GATE_PASS_HOSTS[*]:-(none)} (--pass-host replaces it)"
+    if [[ ${#DG_GATE_PASS_HOSTS[@]} -eq 0 ]]; then
+        mapfile -t DG_GATE_PASS_HOSTS < <(gate_pass_hosts "${gate}")
+        err ">> instrument --${DG_GATE_MODE}: pass list kept from the namespace's gate: ${DG_GATE_PASS_HOSTS[*]:-(none)} (--pass-host replaces it)"
+    fi
+    if [[ -z "${DG_GATE_WAIT_MS}" ]]; then
+        DG_GATE_WAIT_MS="$(gate_wait_ms "${gate}")"
+        [[ -z "${DG_GATE_WAIT_MS}" ]] \
+            || err ">> instrument --${DG_GATE_MODE}: wait_ms kept from the namespace's gate: ${DG_GATE_WAIT_MS} (--wait-ms replaces it)"
+    fi
+    if [[ -z "${DG_GATE_FALLBACK}" ]]; then
+        DG_GATE_FALLBACK="$(gate_fallback "${gate}")"
+        [[ -z "${DG_GATE_FALLBACK}" ]] \
+            || err ">> instrument --${DG_GATE_MODE}: fallback kept from the namespace's gate: ${DG_GATE_FALLBACK} (--fallback replaces it)"
+    fi
 }
 
 # --- namespace <ns> [instrument|status] [<entity>] -------------------------
@@ -1572,13 +1609,26 @@ cmd_namespace() {
                         pass_problem="$(python3 "${GATE_CONFIG_TOOL}" pass-host-problem -- "$2")" \
                             || usage_error "instrument: --pass-host '$2' is a glob the gate refuses: ${pass_problem}"
                         DG_GATE_PASS_HOSTS+=("$2"); shift ;;
+                    --wait-ms)
+                        [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]{0,3}$ && "$2" -le 3000 ]] \
+                            || usage_error "instrument: --wait-ms takes a whole number of milliseconds, 1..3000"
+                        DG_GATE_WAIT_MS="$2"; shift ;;
+                    --fallback)
+                        [[ $# -ge 2 && ( "$2" == "deny" || "$2" == "allow" ) ]] \
+                            || usage_error "instrument: --fallback takes deny or allow"
+                        DG_GATE_FALLBACK="$2"; shift ;;
+                    --allow-open-default) DG_GATE_ALLOW_OPEN_DEFAULT=1 ;;
                     --*) usage_error "instrument: unknown option '$1'" ;;
                     *) [[ -z "${entity}" ]] || usage_error "instrument: one <entity> at most"; entity="$1" ;;
                 esac
                 shift
             done
-            if [[ -z "${DG_GATE_MODE}" && ${#DG_GATE_PASS_HOSTS[@]} -gt 0 ]]; then
-                usage_error "instrument: --pass-host applies to --enforce and --observe only"
+            if [[ -z "${DG_GATE_MODE}" && ( ${#DG_GATE_PASS_HOSTS[@]} -gt 0 || -n "${DG_GATE_WAIT_MS}" \
+                    || -n "${DG_GATE_FALLBACK}" || "${DG_GATE_ALLOW_OPEN_DEFAULT}" == "1" ) ]]; then
+                usage_error "instrument: --pass-host, --wait-ms, --fallback and --allow-open-default apply to --enforce and --observe only"
+            fi
+            if [[ "${DG_GATE_FALLBACK}" == "allow" && "${DG_GATE_ALLOW_OPEN_DEFAULT}" != "1" ]]; then
+                die "instrument --${DG_GATE_MODE}: --fallback allow lets every request the pass list does not name leave unjudged while the verdict service is slow or down; pass --allow-open-default to accept that. Mutating nothing."
             fi
             namespace_instrument "${ns}" "${entity}"
             ;;
