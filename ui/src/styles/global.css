@@ -496,6 +496,45 @@ body {
   padding: 0.125rem;
 }
 
+/* The graph filter bar (issue #220): the entity and risk pickers, the count of
+   what the filter keeps, and the magnifier switch — one row above the surface. */
+.dg-graph-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.dg-graph-filter .pf-v5-c-form-control {
+  width: auto;
+  flex: 0 0 auto;
+}
+.dg-graph-filter__count {
+  color: var(--pf-v5-global--Color--200);
+  font-size: var(--pf-v5-global--FontSize--sm);
+}
+
+/* The magnifier lens (issue #220, `flow/GraphMagnifier`): a round window over
+   the surface showing an enlarged clone of the drawing under the pointer. Never
+   a hit target, so the graph beneath keeps every click, drag and hover. */
+.dg-graph-magnifier {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: 50%;
+  border: 2px solid var(--pf-v5-global--active-color--100);
+  background: var(--dg-surface-panel);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+.dg-graph-magnifier__clone {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  transform: translate(var(--dg-lens-x), var(--dg-lens-y)) scale(var(--dg-lens-zoom));
+}
+
 /* The per-edge `seq` tag (PF's DefaultConnectorTag). Muted rather than
    full-contrast: the tag is an ordinal reference a reader looks up when they need
    it, not the primary content of the arrow, and at two tags per interaction a
