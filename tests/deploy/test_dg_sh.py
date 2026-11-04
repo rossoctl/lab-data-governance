@@ -31,12 +31,15 @@ supersedes ADR-0032); we assert it is now rejected as an unknown option. The
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.deploy.fake_configmap_kubectl import RUNTIME_CONFIG_WITH_LINEAGE
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +86,16 @@ if [[ "$*" == *"get"* && "$*" == *"namespace"* && "$*" == *"data-governance"* ]]
 fi
 if [[ "$*" == *"get"* && "$*" == *"otel-collector-config"* ]]; then
   printf '%s' "traces/data_governance"; exit 0
+fi
+# The namespace AuthBridge ConfigMap instrument reads before its preflight,
+# already carrying lineage so a single-entity run may proceed.
+if [[ "$*" == *"get configmap authbridge-runtime-config"* ]]; then
+  printf '%s' '{RUNTIME_CM}'
+  exit 0
+fi
+if [[ "$*" == *"get agentruntimes"* ]]; then
+  printf '%s' '{{"items": []}}'
+  exit 0
 fi
 # Namespace listing.
 if [[ "$*" == *"get namespace"* || "$*" == *"get namespaces"* || "$*" == *"get ns"* ]]; then
@@ -176,9 +189,12 @@ def sandbox(tmp_path: Path):
     # (both shims are build inputs; ADR-0033 D4).
     for f in ("container-runtime.sh", "Dockerfile.otel-shim", "otel-instrumentors.txt",
               "lineage-propagate-hook.py",
-              "rossoctl_turnspan.py", "rossoctl_turnspan.pth", "attest-otel-shim.py",
-              "reconcile-existing-proxy.py"):
+              "rossoctl_turnspan.py", "rossoctl_turnspan.pth", "attest-otel-shim.py"):
         (kitdir / f).write_text("# stub\n")
+    # instrument renders the namespace ConfigMap before its preflight.
+    (kitdir / "reconcile-existing-proxy.py").write_text(
+        (REPO_ROOT / "deploy" / "lineage-attach" / "reconcile-existing-proxy.py").read_text()
+    )
 
     class _Sandbox:
         def __init__(self) -> None:
@@ -194,6 +210,9 @@ def sandbox(tmp_path: Path):
             self, ns_out: str = "", entity_out: str = "", get_fails: bool = False
         ) -> None:
             body = _FAKE_KUBECTL_TMPL.format(
+                RUNTIME_CM=json.dumps(
+                    {"kind": "ConfigMap", "data": {"config.yaml": RUNTIME_CONFIG_WITH_LINEAGE}}
+                ),
                 NS_OUT=ns_out,
                 ENTITY_OUT=entity_out,
                 GET_FAILS="1" if get_fails else "0",
