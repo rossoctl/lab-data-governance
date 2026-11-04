@@ -54,6 +54,8 @@ import {
 } from '../lib/labelTrack';
 import type { LegLabels } from '../types';
 import { InteractionsTable } from './flow/InteractionsTable';
+import { GraphFilterBar } from './flow/GraphFilterBar';
+import { filterTrace, NO_GRAPH_FILTER, type GraphFilter } from '../lib/graphFilter';
 import type { Selection } from './flow/selection';
 import type { Entity, Interaction, SpanEvidence } from '../types';
 
@@ -405,10 +407,23 @@ export function FlowTables({
     if (!edgesPerInteraction) return h;
     return { ...h, edgeIds: [...new Set(h.edgeIds.map((id) => id.replace(/:response$/, ':request')))] };
   }, [trackHighlight, edgesPerInteraction]);
+  // The Execution Flow graph's filter and magnifier (issue #220). The count the
+  // filter bar shows is computed from the same inputs the graph filters.
+  const [graphFilter, setGraphFilter] = useState<GraphFilter>(NO_GRAPH_FILTER);
+  const [magnifier, setMagnifier] = useState(false);
+  const graphFilterShown = useMemo(
+    () => filterTrace(entities, interactions, graphFilter, riskColours).interactions.length,
+    [entities, interactions, graphFilter, riskColours],
+  );
+  // A risk filter means nothing with the risk layer off.
+  useEffect(() => {
+    if (!risk) setGraphFilter((f) => (f.minRiskLevel == null ? f : { ...f, minRiskLevel: null }));
+  }, [risk]);
   // Tracking is per trace: a new trace starts with nothing tracked.
   useEffect(() => {
     setTracked(new Map());
     setPicker(null);
+    setGraphFilter(NO_GRAPH_FILTER);
   }, [traceId]);
   const closePicker = useCallback(() => setPicker(null), []);
   /**
@@ -1125,6 +1140,18 @@ export function FlowTables({
             />
           </ToggleGroup>
         )}
+        {legView === 'graph' && (
+          <GraphFilterBar
+            entities={entities}
+            filter={graphFilter}
+            onFilterChange={setGraphFilter}
+            risk={risk}
+            shown={graphFilterShown}
+            total={interactions.length}
+            magnifier={magnifier}
+            onMagnifierChange={setMagnifier}
+          />
+        )}
         {infraTotal > 0 && legView !== 'graph' && legView !== 'lineage' && (
           <Button
             variant="link"
@@ -1241,6 +1268,8 @@ export function FlowTables({
               highlight={graphHighlight}
               onContextMenuInteraction={trackDefaultOf}
               edgesPerInteraction={edgesPerInteraction}
+              filter={graphFilter}
+              magnifier={magnifier}
               // The risk layer: edge colours by risk level and the classification
               // tags in the edges' tag slot, both `undefined` with the layer off so
               // this view is byte-for-byte as before then

@@ -186,6 +186,8 @@ import type { InteractionClassification } from '../lib/classificationSummary';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import { LineageSourceNotices, LineageSourcePicker } from './flow/LineageSourcePicker';
 import { LineageEntityPicker } from './flow/LineageEntityPicker';
+import { GraphMagnifier } from './flow/GraphMagnifier';
+import { filterTrace, NO_GRAPH_FILTER, type GraphFilter } from '../lib/graphFilter';
 import type { Entity, Interaction, LineageStatus } from '../types';
 
 /**
@@ -2757,6 +2759,8 @@ export interface EntityGraphProps {
    * not a caveat.
    */
   hideParallelGroupsNotice?: boolean;
+  /** Show the magnifying lens over the surface (issue #220, `flow/GraphMagnifier`). */
+  magnifier?: boolean;
 }
 
 /**
@@ -2810,7 +2814,11 @@ export function EntityGraph({
   riskLevelByInteraction,
   classificationByInteraction,
   hideParallelGroupsNotice = false,
+  magnifier = false,
 }: EntityGraphProps) {
+  // The surface element, for the magnifier (state, not a ref, so the lens
+  // mounts once the element exists).
+  const [surfaceEl, setSurfaceEl] = useState<HTMLDivElement | null>(null);
   // One Visualization instance for the view's lifetime. Created lazily in state
   // (not a ref-with-side-effects) so React owns it; the factory is registered
   // once here, and the model is pushed in by the effect below.
@@ -3396,7 +3404,8 @@ export function EntityGraph({
           and an instruction to "select an entity" whose control sat below the fold
           would be unfollowable. See `EntityGraphProps.controls`. */}
       {controls}
-      <div className="dg-graph-surface">
+      <div className="dg-graph-surface" ref={setSurfaceEl}>
+        {magnifier && <GraphMagnifier surface={surfaceEl} />}
         <VisualizationProvider controller={controller}>
           <VisualizationSurface />
           {/* Zoom controls. PF's own `TopologyControlBar` rather than four
@@ -3620,8 +3629,14 @@ export function ExecutionFlowGraph({
   riskLevelByInteraction,
   classificationByInteraction,
   edgesPerInteraction = false,
+  filter = NO_GRAPH_FILTER,
+  magnifier = false,
 }: {
   traceId: string;
+  /** Keep only part of the trace (issue #220, `lib/graphFilter`); the default keeps all. */
+  filter?: GraphFilter;
+  /** Show the magnifying lens over the graph (issue #220). */
+  magnifier?: boolean;
   selectedInteractionId?: string | null;
   onSelectInteraction?: (interactionId: string | null) => void;
   /** The label lineage overlay (`lib/labelTrack`), when values are tracked. */
@@ -3639,11 +3654,18 @@ export function ExecutionFlowGraph({
 }) {
   // Hold entities, interactions and their causal leg order in one reading,
   // so a re-read never draws a half-updated trace.
-  const { entities, interactions: allLegs, legOrder, entitiesQ, interactionsQ } =
+  const { entities: allEntities, interactions: allLegs, legOrder, entitiesQ, interactionsQ } =
     useEntitiesAndInteractions(traceId);
+  // The filter first, on whole interactions (the call tree is per interaction),
+  // then the edge mode.
+  const filtered = useMemo(
+    () => filterTrace(allEntities, allLegs, filter, riskLevelByInteraction),
+    [allEntities, allLegs, filter, riskLevelByInteraction],
+  );
+  const entities = filtered.entities;
   const interactions = useMemo(
-    () => (edgesPerInteraction ? requestLegsOnly(allLegs) : allLegs),
-    [edgesPerInteraction, allLegs],
+    () => (edgesPerInteraction ? requestLegsOnly(filtered.interactions) : filtered.interactions),
+    [edgesPerInteraction, filtered.interactions],
   );
 
   const spec = useMemo(() => deriveGraph(entities, interactions, legOrder), [entities, interactions, legOrder]);
@@ -3654,8 +3676,16 @@ export function ExecutionFlowGraph({
       // `isLoadingError`: a failed BACKGROUND re-read (the page is live, ADR-0034)
       // keeps the picture it has rather than replacing it with the failure alert.
       isError: entitiesQ.isLoadingError || interactionsQ.isLoadingError,
-      nodeCount: spec.nodes.length,
-    }) ?? (
+      // The trace's own size, not the filtered one: a filter that keeps nothing is
+      // not "this trace may still be draining" — that case is worded below.
+      nodeCount: allEntities.length,
+    }) ??
+    (spec.nodes.length === 0 ? (
+      <EmptyState>
+        <EmptyStateHeader titleText="Nothing matches the filter" headingLevel="h4" />
+        <EmptyStateBody>No interaction in this trace passes the graph filter. Clear or widen it to see the graph.</EmptyStateBody>
+      </EmptyState>
+    ) : (
       <EntityGraph
         spec={spec}
         traceId={traceId}
@@ -3666,8 +3696,9 @@ export function ExecutionFlowGraph({
         riskLevelByInteraction={riskLevelByInteraction}
         classificationByInteraction={classificationByInteraction}
         hideParallelGroupsNotice={edgesPerInteraction}
+        magnifier={magnifier}
       />
-    )
+    ))
   );
 }
 
