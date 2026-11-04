@@ -223,7 +223,8 @@ export function FlowTables({
 }: FlowTablesProps) {
   // One reading of the two, so a live re-read never shows (or hands the Lineage
   // tab) a half-updated trace — see `useEntitiesAndInteractions`.
-  const { entities, interactions, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
+  const { entities, interactions, legOrder, entitiesQ, interactionsQ } =
+    useEntitiesAndInteractions(traceId);
   const [selection, setSelection] = useState<Selection | null>(null);
   // Persisted **Data lineage** for the whole trace (ADR-0028), read ONCE per
   // trace and keyed per leg — not per payload expansion. TanStack caches on
@@ -265,6 +266,11 @@ export function FlowTables({
   // `infraTotal` is how many rows the filter WOULD hide, computed whether or not
   // it is currently hiding them — the affordance names that count in both states
   // ("2 hidden — show" / "Hide 2"), so it cannot be derived from the filtered list.
+  //
+  // ORDER IS THE SERVER'S. `GET /traces/{tid}/interactions` already sorts its rows
+  // by each request's position in the causal `leg_order` (ADR-0035), and the
+  // filter keeps that order; nothing here re-sorts. A second sort of one list
+  // would be a second copy of the ordering rule, free to drift from the backend's.
   const { displayedInteractions, infraTotal } = useMemo(() => {
     const byId = new Map(interactions.map((ix) => [ix.id, ix]));
     // Infrastructure rows that a visible row parents through, and so must stay.
@@ -294,7 +300,10 @@ export function FlowTables({
   // indentation must not shift because a sibling was hidden. `computeInteractionDepths`
   // over the filtered list would re-root orphaned subtrees at depth 0.
   const depthById = useMemo(() => computeInteractionDepths(interactions), [interactions]);
-  const flatRows = useMemo(() => flatLegRows(displayedInteractions), [displayedInteractions]);
+  const flatRows = useMemo(
+    () => flatLegRows(displayedInteractions, legOrder),
+    [displayedInteractions, legOrder],
+  );
   const flatConnectors = useMemo(() => flatConnectorRoles(flatRows), [flatRows]);
   // Read the pin colors directly on render (NOT via useMemo keyed on `pins`):
   // `pins` is a stable mutable store reference, so a memo keyed on it would
@@ -628,7 +637,7 @@ export function FlowTables({
         {/* STILL FIVE PRESENTATIONS OF ONE DATASET, but they are no longer all reached
             from here. This component renders whichever one `legView` names — the
             depth-indented parent/child tree, one row per request/response leg ordered by
-            the trace-wide `seq`, that leg sequence as a UML sequence diagram, the
+            the backend's causal leg order, that leg sequence as a UML sequence diagram, the
             directed Execution Flow graph, or that graph with a chosen data source's
             reachability highlighted.
 
@@ -645,7 +654,7 @@ export function FlowTables({
             Interaction diagram / Execution Flow / Lineage were three more tabs here
             until they were promoted to top-level views beside Span tree
             (`TraceDetailPage`'s ViewKey). What is left is the two renderings of ONE row
-            set — indented by parent, or flat by seq — which is a genuine sub-choice of
+            set — indented by parent, or flat in causal order — which is a genuine sub-choice of
             "the tables" and not a peer of the pictures.
             Hidden entirely (`showLegTabs`) when this component is rendering one of the
             promoted views: there the top-level tabs already decide the presentation, and
@@ -712,6 +721,7 @@ export function FlowTables({
               traceId={traceId}
               entities={entities}
               interactions={interactions}
+              legOrder={legOrder}
               // `byLeg` is deliberately NOT passed any more. This tab's highlight now
               // comes from the SERVED reachability reads (ADR-0028 D14/D15), which the
               // tab queries itself — the per-leg map answered a strictly weaker
@@ -809,6 +819,7 @@ export function FlowTables({
           <InteractionDiagram
             entities={entities}
             interactions={displayedInteractions}
+            legOrder={legOrder}
             selectedId={selectedInteractionId}
             onSelect={selectInteraction}
           />

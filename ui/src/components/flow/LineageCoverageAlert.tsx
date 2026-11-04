@@ -108,18 +108,17 @@ export function LineageCoverageAlert({
       role="alert"
       style={{ marginBottom: '0.75rem' }}
     >
-      {/* Naming the stop position matters as much as the warning: it tells the
-          reader WHERE the picture ends, so they can see which rows are covered
-          rather than distrusting all of them equally. The seq is the leg
-          sequence shown in the flat view's Seq column, so it is a position the
-          reader can actually locate. The null fallback is unreachable against a
+      {/* Naming the cutoff leg matters as much as the warning: the reader can
+          find its ingest seq in the Flat table, then use the causal Step order
+          to see which rows are covered. Seq identifies the leg but does not
+          define the prefix. The null fallback is unreachable against a
           current server (the status table CHECK-pairs `partial` with a stop seq),
           but the warning must survive an older one rather than render "leg
           null". */}
       {stoppedAtSeq === null
-        ? 'Lineage was derived only up to the first leg missing a payload.'
-        : `Lineage was derived only up to leg seq ${stoppedAtSeq}, where a payload is missing.`}{' '}
-      Legs from that point on have no lineage, so what is shown is{' '}
+        ? 'Lineage stops before the first leg with a missing payload.'
+        : `Lineage stops before the leg with ingest seq ${stoppedAtSeq}, whose payload is missing.`}{' '}
+      That leg and later legs in causal order have no lineage, so what is shown is{' '}
       <strong>not the complete set of data sources</strong> for this trace.
     </Alert>
   );

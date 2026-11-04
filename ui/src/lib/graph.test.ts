@@ -42,8 +42,8 @@ function leg(
 
 /**
  * An interaction with BOTH legs — the normal completed shape. `reqSeq`/`respSeq`
- * are explicit because the trace-wide `seq` ordering (and therefore the edge
- * order) is exactly what several of these tests are about.
+ * are explicit because older-server fixtures omit `leg_order` and fall back
+ * to `seq`; other tests supply the backend order explicitly.
  */
 function ix(
   id: string,
@@ -160,14 +160,29 @@ describe('deriveGraph', () => {
     });
   });
 
-  it("labels each edge with its OWN leg's seq, not the interaction's", () => {
-    // A leg has exactly one seq, and the two legs of one interaction have
-    // different ones — frequently far apart, since other interactions' legs
-    // interleave.
+  it('labels each edge with its causal step and keeps the ingestion seq', () => {
     const g = deriveGraph([ent('e1'), ent('e2')], [ix('i1', 'e1', 'e2', 3, 9)]);
 
-    expect(g.edges.map((e) => e.label)).toEqual(['3', '9']);
+    expect(g.edges.map((e) => e.label)).toEqual(['1', '2']);
     expect(g.edges.map((e) => e.seq)).toEqual([3, 9]);
+  });
+
+  it('uses the backend order when a child has a lower ingestion seq', () => {
+    const g = deriveGraph(
+      [ent('client'), ent('agent'), ent('tool')],
+      [
+        ixReqOnly('child', 'agent', 'tool', 1, { parent_interaction_id: 'parent' }),
+        ixReqOnly('parent', 'client', 'agent', 2),
+      ],
+      [
+        { interaction_id: 'parent', leg_type: 'request' },
+        { interaction_id: 'child', leg_type: 'request' },
+      ],
+    );
+
+    expect(g.edges.map((e) => e.id)).toEqual(['parent:request', 'child:request']);
+    expect(g.edges.map((e) => [e.label, e.seq])).toEqual([['1', 2], ['2', 1]]);
+    expect(g.nodes.map((n) => n.id)).toEqual(expect.arrayContaining(['client', 'agent', 'tool']));
   });
 
   it('gives each leg a distinct edge id at the (interaction, leg_type) grain', () => {

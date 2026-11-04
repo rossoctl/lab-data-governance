@@ -13,8 +13,14 @@ skipped where Docker is unavailable.
 
 from __future__ import annotations
 
+import dataclasses
+import datetime as dt
+
 import pytest
 
+from data_governance.interaction_order import LegOrderEvent, order_legs
+from data_governance.matching import get_matcher
+from data_governance.processors.data_lineage import traversal
 from data_governance.processors.interactions import graph_adapter, procedure
 from data_governance.processors.interactions.graph.extractor import extract
 from tests.processors.interactions.graph.conftest import load_trace_spans
@@ -175,6 +181,303 @@ def test_co_anchored_inferred_tool_call_stays_distinct() -> None:
     # Expect both the LLM calls and the inferred database + file tool calls.
     assert any("tool:database" in s for s in summaries)
     assert any("tool:file" in s for s in summaries)
+
+
+def test_output_inferred_tool_legs_follow_the_llm_response() -> None:
+    """A tool call found in an LLM output has no independently observed time.
+    Its request and response belong at the LLM completion boundary, after the
+    response that disclosed the call, rather than at the LLM request start.
+    """
+    _, rows = _adapt("patent_agent_II")
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    llm_by_anchor = {
+        ix.primary_anchor_span_id: ix
+        for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "llm"
+    }
+    tool_calls = [
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "tool"
+    ]
+    assert len(tool_calls) == 2
+    for tool_call in tool_calls:
+        llm = llm_by_anchor[tool_call.primary_anchor_span_id]
+        llm_response = next(
+            leg for leg in rows.legs_by_ix[llm.id] if leg.leg_type == "response"
+        )
+        tool_legs = rows.legs_by_ix[tool_call.id]
+        assert {leg.leg_type for leg in tool_legs} == {"request", "response"}
+        assert all(
+            leg.occurred_at == llm_response.occurred_at for leg in tool_legs
+        )
+
+
+def test_input_only_tool_replay_precedes_the_llm_request() -> None:
+    _, rows = _adapt("trace_inferred_observed_merge")
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    calendar = next(
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].natural_key.endswith(":calendar")
+    )
+    llm = next(
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "llm"
+    )
+    assert calendar.primary_anchor_span_id == llm.primary_anchor_span_id
+    llm_request = next(
+        leg for leg in rows.legs_by_ix[llm.id] if leg.leg_type == "request"
+    )
+    assert all(
+        leg.occurred_at == llm_request.occurred_at
+        for leg in rows.legs_by_ix[calendar.id]
+    )
+
+
+def test_replayed_tool_call_keeps_its_output_boundary() -> None:
+    """An input replay of a prior output must retain that output's time."""
+    _, rows = _adapt("trace_anthropic_tool_calls")
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    llm_by_anchor = {
+        ix.primary_anchor_span_id: ix
+        for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "llm"
+    }
+    database_calls = [
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].natural_key.endswith(":database")
+    ]
+    assert len(database_calls) == 2
+    for call in database_calls:
+        llm = llm_by_anchor[call.primary_anchor_span_id]
+        response = next(
+            leg for leg in rows.legs_by_ix[llm.id] if leg.leg_type == "response"
+        )
+        assert all(
+            leg.occurred_at == response.occurred_at
+            for leg in rows.legs_by_ix[call.id]
+        )
+
+
+_ANTHROPIC_FIRST_LLM = "a000000000000002"
+_ANTHROPIC_SECOND_LLM = "a000000000000003"
+_PRIOR_ART = '{"action": "search", "query": "prior art"}'
+
+
+def _history_then_reissue(span):
+    """The first request already carries the `prior art` call as history from an
+    earlier turn; the second completion issues the identical call afresh."""
+    attrs = dict(span.attributes)
+    out_calls = "llm.output_messages.0.message.tool_calls"
+    if span.span_id == _ANTHROPIC_FIRST_LLM:
+        for key in [k for k in attrs if k.startswith(out_calls)]:
+            del attrs[key]
+        history = "llm.input_messages.1.message"
+        attrs[f"{history}.role"] = "assistant"
+        attrs[f"{history}.tool_calls.0.tool_call.function.name"] = "database"
+        attrs[f"{history}.tool_calls.0.tool_call.function.arguments"] = _PRIOR_ART
+        attrs[f"{history}.tool_calls.0.tool_call.id"] = "toolu_earlier_turn"
+    elif span.span_id == _ANTHROPIC_SECOND_LLM:
+        for key in [
+            k for k in attrs
+            if k.startswith(("llm.input_messages.1.", "llm.input_messages.2.", out_calls))
+        ]:
+            del attrs[key]
+        attrs[f"{out_calls}.0.tool_call.function.name"] = "database"
+        attrs[f"{out_calls}.0.tool_call.function.arguments"] = _PRIOR_ART
+    return dataclasses.replace(span, attributes=attrs)
+
+
+def _replay_clock_runs_early(span):
+    """The replaying span's clock reads before the span that disclosed the call,
+    so it is the first occurrence Step 2.d sees."""
+    if span.span_id != _ANTHROPIC_SECOND_LLM:
+        return span
+    skew = dt.timedelta(seconds=2)
+    return dataclasses.replace(
+        span, started_at=span.started_at - skew, ended_at=span.ended_at - skew
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "disclosing_span"),
+    [
+        (_history_then_reissue, _ANTHROPIC_SECOND_LLM),
+        (_replay_clock_runs_early, _ANTHROPIC_FIRST_LLM),
+    ],
+    ids=["history-then-reissue", "replay-clock-runs-early"],
+)
+def test_merged_replay_is_timed_at_the_completion_that_disclosed_it(
+    mutate, disclosing_span: str,
+) -> None:
+    """Step 2.d merges an input-side replay into its output-side call. When the
+    replay is the first occurrence seen, the merged call must still be anchored
+    on, and timed at the response of, the LLM span whose output disclosed it,
+    and so follow that LLM response."""
+    spans = [mutate(span) for span in load_trace_spans("trace_anthropic_tool_calls")]
+    rows = graph_adapter.adapt(extract(spans), spans)
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    span_by_id = {span.span_id: span for span in spans}
+    prior_art = [
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].natural_key.endswith(":database")
+        and rows.payloads[ix.request_payload_hash].content == _PRIOR_ART
+    ]
+    assert len(prior_art) == 1
+    call = prior_art[0]
+    assert call.primary_anchor_span_id == disclosing_span
+    llm = next(
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "llm"
+        and ix.primary_anchor_span_id == disclosing_span
+    )
+    llm_response = next(
+        leg for leg in rows.legs_by_ix[llm.id] if leg.leg_type == "response"
+    )
+    tool_legs = rows.legs_by_ix[call.id]
+    assert {leg.occurred_at for leg in tool_legs} == {
+        span_by_id[disclosing_span].ended_at
+    }
+    assert min(leg.seq for leg in tool_legs) > llm_response.seq
+
+
+def _ordered_legs(rows) -> dict[tuple[str, str], int]:
+    """Each leg's position in the shared causal order (ADR-0035)."""
+    order = order_legs(
+        LegOrderEvent(
+            ix.id, leg.leg_type, ix.parent_interaction_id, leg.occurred_at, leg.seq
+        )
+        for ix in rows.interactions_by_anchor.values()
+        for leg in rows.legs_by_ix[ix.id]
+    )
+    return {(key.interaction_id, key.leg_type): i for i, key in enumerate(order)}
+
+
+def _tool_request_lineage(rows, tool: procedure.Interaction):
+    entities = {
+        entity.id: traversal.Entity(entity.id, entity.natural_key, entity.kind)
+        for entity in rows.entities.values()
+    }
+    legs = [
+        traversal.Leg(
+            ix.id, leg.leg_type, leg.seq, ix.caller_entity_id, ix.callee_entity_id,
+            leg.payload_hash, ix.parent_interaction_id, leg.occurred_at,
+        )
+        for ix in rows.interactions_by_anchor.values()
+        for leg in rows.legs_by_ix[ix.id]
+    ]
+    derived = traversal.derive_trace_lineage(legs, entities, matcher=get_matcher())
+    return derived.legs[(tool.id, "request")].lineage
+
+
+@pytest.mark.parametrize(
+    ("unended", "next_turn"),
+    [
+        ("4e1044d00d8d8d07", "e6c6ccd898f3291c"),
+        ("e6c6ccd898f3291c", "18f5c4ad29dd9fd9"),
+    ],
+    ids=["first-turn", "second-turn"],
+)
+def test_output_inferred_tool_on_an_unended_llm_span_stays_in_its_turn(
+    unended: str, next_turn: str,
+) -> None:
+    """A span with no recorded end gives no response boundary. The LLM's own
+    response and the output call it disclosed both fall back to the LLM span's
+    start, the latest boundary known, so the shared order keeps the exchange
+    whole: the LLM request and response, then the call, then the next turn.
+    Neither leg sorts, untimed, to the end of the trace, and the call's lineage
+    still passes through the LLM that disclosed it."""
+    base = load_trace_spans("patent_agent_II")
+    spans = [
+        dataclasses.replace(span, ended_at=None) if span.span_id == unended else span
+        for span in base
+    ]
+    rows = graph_adapter.adapt(extract(spans), spans)
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    started_at = next(span.started_at for span in spans if span.span_id == unended)
+
+    def _call(kind: str, anchor: str) -> procedure.Interaction:
+        return next(
+            ix for ix in rows.interactions_by_anchor.values()
+            if by_id[ix.callee_entity_id].kind == kind
+            and ix.primary_anchor_span_id == anchor
+        )
+
+    llm, tool = _call("llm", unended), _call("tool", unended)
+    assert {leg.occurred_at for leg in rows.legs_by_ix[tool.id]} == {started_at}
+    assert [(leg.leg_type, leg.occurred_at) for leg in rows.legs_by_ix[llm.id]] == [
+        ("request", started_at),
+        ("response", started_at),
+    ]
+
+    position = _ordered_legs(rows)
+    assert (
+        position[(llm.id, "request")]
+        < position[(llm.id, "response")]
+        < position[(tool.id, "request")]
+        < position[(tool.id, "response")]
+        < position[(_call("llm", next_turn).id, "request")]
+    )
+
+    # The same call's lineage with the span's end recorded: the LLM hop that
+    # disclosed it is part of it, and an unknown end must not lose it.
+    ended_rows = graph_adapter.adapt(extract(base), base)
+    assert _tool_request_lineage(rows, tool) == _tool_request_lineage(ended_rows, tool)
+    assert by_id[llm.callee_entity_id].natural_key in (
+        _tool_request_lineage(rows, tool).entities
+    )
+
+
+def test_an_unended_llm_call_enclosing_a_call_keeps_its_response_untimed() -> None:
+    """ADK's ``call_llm`` span encloses the ``execute_tool`` span it led to, so
+    the LLM call is that tool call's parent. Its start is no boundary for its
+    response: the response follows the child's, and a start-time response
+    would precede the child's by more than the clock-skew tolerance and read
+    as an asynchronous parent (ADR-0035). An unknown time is not evidence of
+    asynchrony, so this response stays untimed and still follows its child."""
+    base = load_trace_spans("travel_agent_II")
+    rows = graph_adapter.adapt(extract(base), base)
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    interactions = {ix.id: ix for ix in rows.interactions_by_anchor.values()}
+    child = next(
+        ix for ix in interactions.values()
+        if ix.parent_interaction_id is not None
+        and by_id[interactions[ix.parent_interaction_id].callee_entity_id].kind == "llm"
+    )
+    parent = interactions[child.parent_interaction_id]
+    unended = parent.primary_anchor_span_id
+    spans = [
+        dataclasses.replace(span, ended_at=None) if span.span_id == unended else span
+        for span in base
+    ]
+    rows = graph_adapter.adapt(extract(spans), spans)
+    assert rows.legs_by_ix is not None
+    legs = {leg.leg_type: leg for leg in rows.legs_by_ix[parent.id]}
+    assert legs["response"].occurred_at is None
+    position = _ordered_legs(rows)
+    assert position[(child.id, "response")] < position[(parent.id, "response")]
+
+
+def test_tool_call_resolved_to_observed_peer_keeps_observed_times() -> None:
+    spans, rows = _adapt("trace_inferred_observed_merge")
+    assert rows.legs_by_ix is not None
+    by_id = {entity.id: entity for entity in rows.entities.values()}
+    observed_peer = next(
+        ix for ix in rows.interactions_by_anchor.values()
+        if by_id[ix.callee_entity_id].kind == "agent"
+        and "weather-tool" in by_id[ix.callee_entity_id].natural_key
+    )
+    anchor = next(
+        span for span in spans
+        if span.span_id == observed_peer.primary_anchor_span_id
+    )
+    legs = {leg.leg_type: leg for leg in rows.legs_by_ix[observed_peer.id]}
+    assert legs["request"].occurred_at == anchor.started_at
+    assert legs["response"].occurred_at == anchor.ended_at
 
 
 @pytest.mark.parametrize("fixture", FIXTURES)

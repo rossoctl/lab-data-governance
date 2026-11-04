@@ -140,7 +140,7 @@ import {
 // what made it read as reassurance while going stale. It authorised three real bugs,
 // all found by review and all fixed in global.css:
 //   - five of six edge-tag colour rules were dead — `.dg-graph-edge-tag text` is
-//     (0,1,1) and so is PF's `.pf-topology__edge__tag > text`, so every seq tag
+//     (0,1,1) and so is PF's `.pf-topology__edge__tag > text`, so every step tag
 //     rendered in PF's white, error tags included;
 //   - a selected node lost its 4px ring to PF's (0,3,0)
 //     `.pf-topology__node.pf-m-selected .pf-…__background`, collapsing to 2px — the
@@ -171,6 +171,7 @@ import {
   type DirectionHighlight,
 } from '../lib/lineageReachability';
 import { displayNamesByKey, lineageLabel } from '../lib/lineageLabels';
+import { NO_LEG_ORDER } from '../lib/flow';
 import { kindColorVar, nodeNeutralColorVar } from '../lib/entityKind';
 import { LineageCoverageAlert } from './flow/LineageCoverageAlert';
 import { LineageSourceNotices, LineageSourcePicker } from './flow/LineageSourcePicker';
@@ -509,7 +510,7 @@ const ROW_STEP_Y = 96;
 
 /**
  * How far, in px, an ADJACENT-COLUMN edge bows off the straight line between its
- * two cells — applied with the `seq` parity sign, so a request and its response
+ * two cells — applied with opposite request/response signs, so the two legs
  * arc to opposite sides of the same span.
  *
  * Sized for LEGIBILITY, not clearance: there is nothing between two adjacent
@@ -522,7 +523,7 @@ const ROW_STEP_Y = 96;
  * so 18px separates the two legs plainly without crowding either neighbour.
  *
  * The two legs therefore sit 36px apart at the midpoint — comfortably more than
- * the `seq` tags need to stop colliding, which is the specific defect this fixes.
+ * the step tags need to stop colliding, which is the specific defect this fixes.
  */
 const ADJACENT_BOW_Y = 18;
 
@@ -626,6 +627,31 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
 }
 
 /**
+ * Parallel calls get distinct magnitudes, ordered by their stable interaction
+ * ids. Scales stay between one and two so adjacent bows remain in the row gutter.
+ * Both directions of an endpoint pair share these lanes; causal steps do not
+ * affect routing.
+ */
+function edgeLaneScales(edges: readonly GraphEdgeSpec[]): ReadonlyMap<string, number> {
+  const callsByPair = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    const pair = JSON.stringify([edge.source, edge.target].sort());
+    let calls = callsByPair.get(pair);
+    if (calls === undefined) {
+      calls = new Set<string>();
+      callsByPair.set(pair, calls);
+    }
+    calls.add(edge.interactionId);
+  }
+  const scales = new Map<string, number>();
+  for (const calls of callsByPair.values()) {
+    const ids = [...calls].sort();
+    ids.forEach((id, index) => scales.set(id, 1 + index / Math.max(1, ids.length - 1)));
+  }
+  return scales;
+}
+
+/**
  * The bendpoints for one edge, or `[]` for a straight line.
  *
  * THE COLUMN-SKIPPING EDGE is the problem this solves, and it is the one the
@@ -647,8 +673,8 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
  * router (per-lane channel assignment, corner radii) is a much larger thing, and it
  * would have to be re-derived on every drag: a bendpoint is stored geometry, and a
  * dragged node's edges would keep their stale detour. Keeping the detour to one point
- * that is a pure function of the two ENDPOINT CELLS means it is recomputed with the
- * model and stays honest.
+ * that is a pure function of the endpoint cells and the call's lane means it is
+ * recomputed with the model and stays honest.
  *
  * NOTE ON WHAT "THROUGH IT" MEANS NOW. It used to mean a POLYLINE — that is what PF's
  * `DefaultEdge` draws, an `L` to the bendpoint and an `L` onwards. The graph no longer
@@ -659,13 +685,10 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
  * the same way — but the shape it produces is an arc, not a corner, and the clearance
  * it buys is identical.
  *
- * THE OFFSET SIGN alternates with the edge's `seq` parity, so two edges over the
- * same span — a request and its response, or two parallel interactions — detour
- * to OPPOSITE sides instead of tracing the same line. That is what stops
- * same-pair edges from drawing exactly on top of one another, which the staircase
- * did (and which its own comment admitted). Parity, not an index into the group,
- * because it needs no second pass over the edge list and `seq` is already unique
- * per leg.
+ * Requests and responses use opposite signs. Parallel calls between the same
+ * endpoints have distinct magnitudes from `edgeLaneScales`, so each leg follows
+ * its own curve even when other calls interleave its request and response.
+ * Reordering the same calls changes their step labels while keeping their lanes.
  *
  * AN ADJACENT-COLUMN PAIR IS BOWED, NOT LEFT STRAIGHT — and this is the case that
  * matters most, because it is the shape of an ordinary call. An earlier version of
@@ -673,12 +696,10 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
  * straight line there crosses no intervening cell. True, but it missed the other
  * reason an edge needs routing: A→B and B→A over one column step share BOTH
  * anchor points, so the request and its response were drawn exactly on top of each
- * other — one line with an arrowhead at each end and the two `seq` tags colliding.
- * The claim that parity "stops same-pair edges from drawing on top of one another"
- * was therefore only true for the spans that fell past that early return, i.e. the
- * rarer ones.
+ * other — one line with an arrowhead at each end and the two step tags colliding.
+ * A separating offset therefore applies to adjacent cells too.
  *
- * So `spans === 1` now gets a SMALL parity-signed bow (`ADJACENT_BOW_Y`) rather
+ * So `spans === 1` now gets a SMALL signed bow (`ADJACENT_BOW_Y`) rather
  * than the half-row lift a skipping edge takes: the pair has to separate enough to
  * read as two arrows, while each still reads as the direct connection it is. There
  * is nothing between the two cells to clear, so the offset is sized for legibility
@@ -687,6 +708,7 @@ function useFadeIn(arrival: Arrival | undefined): (el: SVGGElement | null) => vo
 function edgeBendpoints(
   edge: GraphEdgeSpec,
   cellById: ReadonlyMap<string, { column: number; row: number }>,
+  laneScale: number,
   // `[x, y]` tuples, not `Point`s: `EdgeModel.bendpoints` is `PointTuple[]` and
   // `BaseEdge.setModel` is what constructs the `Point`s from them. Handing it
   // `Point`s instead type-errors, and would be the wrong side of that seam anyway.
@@ -703,14 +725,14 @@ function edgeBendpoints(
   const a = gridPosition(from);
   const b = gridPosition(to);
   // Opposite sides for the two legs of a pair, so they do not retrace one line.
-  const side = edge.seq % 2 === 0 ? 1 : -1;
+  const side = (edge.legType === 'request' ? -1 : 1) * laneScale;
 
   if (spans === 1) {
     // ADJACENT COLUMNS — the ordinary call, and the pair that used to overlap
     // exactly (see the note above). Nothing sits between the two cells, so this
     // bow exists purely to separate the request from its response: a small
-    // parity-signed lift at the midpoint, so the two legs arc apart and each
-    // keeps its own `seq` tag legible instead of both landing on one line.
+    // signed lift at the midpoint, so the two legs arc apart and each
+    // keeps its own step tag legible instead of both landing on one line.
     return [[(a.x + b.x) / 2, (a.y + b.y) / 2 + side * ADJACENT_BOW_Y]];
   }
 
@@ -1142,7 +1164,7 @@ function KindColouredNode({ element, ...rest }: React.ComponentProps<typeof Defa
  *      {@link TANGENT_SAMPLE_T} — this is the one thing a naive fork gets visibly
  *      wrong, because PF's default aim is the chord from the last bendpoint and on a
  *      bowed edge that chord points measurably off the curve's actual heading.
- *   2. THE `seq` TAG (`DefaultConnectorTag`), with PF's `ScaleDetailsLevel` gating
+ *   2. THE STEP TAG (`DefaultConnectorTag`), with PF's `ScaleDetailsLevel` gating
  *      and hover rescale, unchanged. The tag places itself at the CHORD midpoint,
  *      which is now off the curve by half the bendpoint offset — see the note at its
  *      call site for why that is left alone.
@@ -1380,10 +1402,10 @@ function pointFromPair([x, y]: [number, number]): Point {
 /**
  * The one custom edge renderer: one **Interaction leg**, drawn with a directional
  * end terminal (the arrowhead that makes the leg's direction readable), the leg's
- * `seq` as its visible tag, the error colour when THAT LEG failed, and CLICKABLE to
+ * causal step as its visible tag, the error colour when THAT LEG failed, and CLICKABLE to
  * select its parent interaction.
  *
- * The visible text is the seq NUMBER, not the interaction's summary: a completed
+ * The visible text is the step NUMBER, not the interaction's summary: a completed
  * interaction now contributes two edges, so the graph carries roughly twice the
  * labels it used to and prose would collide into unreadable overlap on short
  * arrows. The summary is still one hover away in the `<title>`.
@@ -1495,7 +1517,7 @@ function DirectedEdge({
       // focuses the whole arrow and there is no competing focus target inside.
       //
       // WHAT THIS HONESTLY DOES NOT GIVE, stated rather than glossed:
-      //   - THE TAB ORDER IS DOCUMENT ORDER, which for edges is `seq` order (the model's
+      //   - THE TAB ORDER IS DOCUMENT ORDER, which for edges is causal order (the model's
       //     edge array) — not spatial order, and not grouped by interaction. A reader
       //     tabbing through a busy trace walks every leg of every interaction in
       //     chronological order. That is a defensible order (it is the Flat tab's order)
@@ -1519,7 +1541,7 @@ function DirectedEdge({
       className="dg-graph-edge-focus"
       // The same facts the `<title>` carries, as the accessible NAME: an arrow whose
       // label was only "edge" would be reachable and unidentifiable.
-      aria-label={`Interaction leg, seq ${data?.seq ?? '?'}, ${data?.legType ?? ''}: ${
+      aria-label={`Interaction leg, step ${data?.step ?? '?'}, ingest seq ${data?.seq ?? '?'}, ${data?.legType ?? ''}: ${
         data?.title ?? ''
       }${data?.isError ? ' (failed)' : ''}${edgeLineageSuffix(data)}`}
       // Reflects the app's selection (per INTERACTION, so both legs read as pressed
@@ -1537,8 +1559,8 @@ function DirectedEdge({
       }}
     >
       {/* The interaction's summary, plus which leg of it this arrow is — the
-          hover text, now that the visible label is the compact seq number. */}
-      <title>{`#${data?.seq ?? '?'} ${data?.legType ?? ''} — ${data?.title ?? ''}`}</title>
+          hover text, now that the visible label is the compact step number. */}
+      <title>{`Step ${data?.step ?? '?'} · ingest seq ${data?.seq ?? '?'} · ${data?.legType ?? ''} — ${data?.title ?? ''}`}</title>
       {/* `CurvedEdge`, not PF's `DefaultEdge` — a drop-in at these props that draws a
           smooth arc through the routed bendpoint instead of a polyline corner. Every
           feature relied on below (the click target, the arrowhead, the tag, the wide
@@ -1554,7 +1576,7 @@ function DirectedEdge({
         // and this leg's direction — the whole point of the view — is unreadable.
         endTerminalType={EdgeTerminalType.directional}
         endTerminalSize={12}
-        // The leg's `seq`, via PF's own connector tag rather than a hand-placed
+        // The leg's causal step, via PF's own connector tag rather than a hand-placed
         // <text>: it positions itself along the edge and rescales with the zoom,
         // which a bespoke label would have to reimplement.
         tag={data?.label}
@@ -1567,11 +1589,11 @@ function DirectedEdge({
           // tag's colour to its error arrow: one leg, one signal.
           data && data.highlight !== 'none' ? `dg-graph-edge-tag--${data.highlight}` : '',
           // The tag comes back OUT of the dim with its arrow when the interaction is
-          // selected: a selected-but-dimmed leg whose seq number stayed faded would
+          // selected: a selected-but-dimmed leg whose step number stayed faded would
           // be the one arrow the reader is looking at and the one number they cannot
           // read. See `dg-graph-edge-tag--selected` in global.css.
           data?.isSelected ? 'dg-graph-edge-tag--selected' : '',
-          // The tag takes its arrow's direction hue, so the seq number stays visually
+          // The tag takes its arrow's direction hue, so the step number stays visually
           // attached to the route it labels rather than floating in the label grey.
           data?.lineage.isUpstream ? 'dg-graph-edge-tag--upstream' : '',
           data?.lineage.isDownstream ? 'dg-graph-edge-tag--downstream' : '',
@@ -1903,12 +1925,12 @@ export interface EntityGraphProps {
 
 /**
  * THE ONE graph renderer: a directed graph of a trace's **Entities** (nodes) and
- * **Interaction legs** (edges), each edge labelled with that leg's trace-wide
- * `seq`, optionally with a subset highlighted.
+ * **Interaction legs** (edges), each edge labelled with its trace-local causal
+ * step, optionally with a subset highlighted.
  *
  * One edge per LEG, not per interaction: the request travels caller → callee and
  * the response travels back callee → caller (ADR-0025), so a completed
- * interaction draws two arrows pointing opposite ways at two different seqs. The
+ * interaction draws two arrows pointing opposite ways at two different steps. The
  * edge set comes from `flatLegRows` — the Flat table's own row derivation — so the
  * arrows and that table's rows are the same list in the same order by
  * construction.
@@ -2178,6 +2200,7 @@ export function EntityGraph({
     // moves again. Routing against the cell keeps the detour a property of the
     // LAYOUT, which is the thing it is dodging.
     const cellById = new Map(spec.nodes.map((n) => [n.id, { column: n.column, row: n.row }]));
+    const laneScales = edgeLaneScales(spec.edges);
     const model: Model = {
       // No `layout` key: see the controller's note. Omitting it leaves
       // `BaseGraph.currentLayout` undefined, so `graph.layout()` is a no-op and
@@ -2224,7 +2247,7 @@ export function EntityGraph({
         };
       }),
       edges: spec.edges.map((e) => {
-        const route = edgeBendpoints(e, cellById);
+        const route = edgeBendpoints(e, cellById, laneScales.get(e.interactionId)!);
         const drawn = drawnBend.get(e.id);
         // Same rule as a node: an existing one-bend route is pushed where it is
         // drawn and moved to its new route with the nodes at its ends.
@@ -2244,7 +2267,7 @@ export function EntityGraph({
           // graph.
           edgeStyle: e.isSelfCall ? EdgeStyle.dashed : EdgeStyle.solid,
           // THE ROUTING, and the apex the drawn arc bends through. One point for every
-          // edge that connects two distinct cells — a small parity-signed bow for the
+          // edge that connects two distinct cells — a small signed bow for the
           // adjacent-column pair (so a request and its response separate rather than
           // retrace one line), a larger detour for an edge that skips columns or stays
           // within one. Empty ONLY for a self-call, which has nowhere to bend to. See
@@ -2565,7 +2588,7 @@ export function EntityGraph({
             own arrow rather than being collapsed into one with a count, which would
             lose the per-leg identity the rest of the UI keys on. The notice still
             matters even though `edgeBendpoints` now fans same-span edges to
-            alternating sides by seq parity: fanning separates two, not necessarily
+            alternating sides by step parity: fanning separates two, not necessarily
             five, so a busy channel can still read as fewer arrows than it holds —
             and the reader is pointed at the Flat tab where each is its own row.
 
@@ -2663,11 +2686,12 @@ export function ExecutionFlowGraph({
   selectedInteractionId?: string | null;
   onSelectInteraction?: (interactionId: string | null) => void;
 }) {
-  // One reading of the two, so a re-read never draws a half-updated trace — see
-  // `useEntitiesAndInteractions`.
-  const { entities, interactions, entitiesQ, interactionsQ } = useEntitiesAndInteractions(traceId);
+  // One reading of the three (entities, interactions and their causal leg order),
+  // so a re-read never draws a half-updated trace — see `useEntitiesAndInteractions`.
+  const { entities, interactions, legOrder, entitiesQ, interactionsQ } =
+    useEntitiesAndInteractions(traceId);
 
-  const spec = useMemo(() => deriveGraph(entities, interactions), [entities, interactions]);
+  const spec = useMemo(() => deriveGraph(entities, interactions, legOrder), [entities, interactions, legOrder]);
 
   return (
     graphReadState({
@@ -2787,6 +2811,9 @@ export function LineageGraph({
   traceId,
   entities,
   interactions,
+  // A shared constant, not `= []`: `spec` (and the model push keyed on it) is
+  // memoised on `legOrder`, so a fresh array per render would repaint every time.
+  legOrder = NO_LEG_ORDER,
   status,
   isLineageError,
   selectedEntityId,
@@ -2808,6 +2835,7 @@ export function LineageGraph({
    */
   entities: readonly Entity[];
   interactions: readonly Interaction[];
+  legOrder?: readonly import('../types').LegOrderKey[];
   /**
    * The trace's coverage (ADR-0028 D6), from the flow view's `useDataLineage`.
    *
@@ -2904,7 +2932,7 @@ export function LineageGraph({
 
   // Derived ONCE and handed to both the highlight and the renderer, so the
   // highlight can only ever name elements that are actually on screen.
-  const spec = useMemo(() => deriveGraph(entities, interactions), [entities, interactions]);
+  const spec = useMemo(() => deriveGraph(entities, interactions, legOrder), [entities, interactions, legOrder]);
 
   const sources = useMemo(
     () =>

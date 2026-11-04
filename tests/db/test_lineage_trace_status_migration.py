@@ -107,12 +107,13 @@ def test_pk_is_trace_id(migrated_dsn: str) -> None:
     assert _pk_columns(migrated_dsn, TABLE) == ["trace_id"]
 
 
-def test_columns_are_exactly_trace_status_and_stop_position(migrated_dsn: str) -> None:
-    """The ADR names the shape: ``(trace_id -> status, stopped_at_seq)``."""
+def test_columns_include_the_causal_prefix(migrated_dsn: str) -> None:
+    """A partial status also records which causal legs precede its cutoff."""
     assert set(_columns(migrated_dsn, TABLE)) == {
         "trace_id",
         "status",
         "stopped_at_seq",
+        "prefix_leg_keys",
     }
 
 

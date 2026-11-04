@@ -48,8 +48,8 @@ function leg(
 
 /**
  * An interaction with BOTH legs — the normal completed shape. `reqSeq`/`respSeq`
- * are explicit because the trace-wide `seq` ordering drives BOTH the row order and
- * the column assignment, which is what most of these tests are about.
+ * are explicit because older-server fixtures omit `leg_order` and fall back
+ * to `seq` for row and first-encounter column order.
  */
 function ix(
   id: string,
@@ -239,6 +239,24 @@ describe('deriveSequenceDiagram', () => {
       'i2:response',
       'i1:response',
     ]);
+  });
+
+  it('uses the backend order when a child has a lower ingestion seq', () => {
+    const d = deriveSequenceDiagram(
+      [ent('client'), ent('agent'), ent('tool')],
+      [
+        ixReqOnly('child', 'agent', 'tool', 1, { parent_interaction_id: 'parent' }),
+        ixReqOnly('parent', 'client', 'agent', 2),
+      ],
+      [
+        { interaction_id: 'parent', leg_type: 'request' },
+        { interaction_id: 'child', leg_type: 'request' },
+      ],
+    );
+
+    expect(d.messages.map((m) => m.key)).toEqual(['parent:request', 'child:request']);
+    expect(d.messages.map((m) => [m.label, m.seq])).toEqual([['1', 2], ['2', 1]]);
+    expect(d.lifelines.map((l) => l.id)).toEqual(['client', 'agent', 'tool']);
   });
 
   it('draws exactly ONE message for an in-flight interaction with only a request leg', () => {

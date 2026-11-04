@@ -82,13 +82,10 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
 def test_0015_is_applied_in_the_chain(migrated_dsn: str) -> None:
     """A fresh migrate applies this revision (it is reachable in the chain).
 
-    This revision *is* currently the head, but the assertion here is deliberately
-    only reachability. Per the convention this repo already follows, the head
-    assertion travels with whichever revision is head and lives in exactly ONE
-    place, so a new revision moves one line — that place is
-    ``test_classifications_migration.py::test_head_is_0015``. Keeping this test to
-    reachability means a later revision landing on top does not have to edit this
-    file at all.
+    The assertion is deliberately only reachability. Per the convention this
+    repo follows, the head assertion lives in one place in
+    ``test_classifications_migration.py``. Later revisions do not change this
+    rename's reachability contract.
 
     Renumbered from 0013 to 0015 when the lineage chain was re-parented onto
     ``main``'s 0011_drop_leg_original_seq to make the chain linear (which also
@@ -107,9 +104,9 @@ def test_0015_is_applied_in_the_chain(migrated_dsn: str) -> None:
 def test_downgrade_restores_the_old_name_and_upgrade_renames_back(
     pg_dsn: str, monkeypatch
 ) -> None:
-    """upgrade -> downgrade(0014) -> upgrade round-trips the NAME while carrying the
-    ROWS through untouched. A rename that quietly dropped a governance claim's
-    contents would be a far worse bug than the misleading name it fixed."""
+    """upgrade(0015) -> downgrade(0014) -> upgrade(0015) round-trips the NAME
+    while carrying rows through untouched. Later lineage replay migrations may
+    invalidate derived rows and are outside this rename's contract."""
     from alembic import command
 
     from data_governance.db.migrate import _alembic_config
@@ -117,7 +114,7 @@ def test_downgrade_restores_the_old_name_and_upgrade_renames_back(
     monkeypatch.setenv("DATABASE_URL", pg_dsn)
     cfg = _alembic_config()
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0015_lineage_entities_rename")
     with psycopg.connect(pg_dsn, autocommit=True) as conn:
         conn.execute(
             f"INSERT INTO {TABLE} (interaction_id, leg_type, data_sources, "
@@ -143,7 +140,7 @@ def test_downgrade_restores_the_old_name_and_upgrade_renames_back(
         ).fetchone()
     assert sorted(values) == ["agent:a", "llm:x"], "the rename must not touch rows"
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0015_lineage_entities_rename")
     cols = _columns(pg_dsn, TABLE)
     assert "entities" in cols and "entity_path" not in cols
     with psycopg.connect(pg_dsn) as conn:

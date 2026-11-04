@@ -17,6 +17,7 @@ import type {
   Entity,
   Interaction,
   InteractionLeg,
+  LegOrderKey,
   LineageGraphEntity,
   LineageReachability,
   LineageStatus,
@@ -191,7 +192,11 @@ function mkIx(
 }
 
 /** Stub the two reads the graph makes. `null` for either → that read fails. */
-function mockApi(entities: Entity[] | null, interactions: Interaction[] | null) {
+function mockApi(
+  entities: Entity[] | null,
+  interactions: Interaction[] | null,
+  legOrder?: LegOrderKey[],
+) {
   (fetch as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
     if (url.endsWith('/entities')) {
       if (entities === null) return { ok: false, status: 500, json: async () => ({}) };
@@ -199,7 +204,7 @@ function mockApi(entities: Entity[] | null, interactions: Interaction[] | null) 
     }
     if (url.endsWith('/interactions')) {
       if (interactions === null) return { ok: false, status: 500, json: async () => ({}) };
-      return { ok: true, status: 200, json: async () => ({ interactions }) };
+      return { ok: true, status: 200, json: async () => ({ interactions, leg_order: legOrder }) };
     }
     return { ok: true, status: 200, json: async () => ({}) };
   });
@@ -1269,6 +1274,69 @@ describe('ExecutionFlowGraph', () => {
     expect(req!.x).toBe(resp!.x);
   });
 
+  it('separates a parent request and response with an interleaved child step', async () => {
+    mockApi(ENTITIES, [
+      mkIx({
+        id: 'parent',
+        legs: [
+          { ...mkLeg('request', 2), occurred_at: '2026-05-01T12:00:00Z' },
+          { ...mkLeg('response', 3), occurred_at: '2026-05-01T12:00:02Z' },
+        ],
+      }),
+      mkIx({
+        id: 'child', caller_entity_id: 'e2', callee_entity_id: 'e3',
+        parent_interaction_id: 'parent',
+        legs: [{ ...mkLeg('request', 4), occurred_at: '2026-05-01T12:00:01Z' }],
+      }),
+    ], [
+      { interaction_id: 'parent', leg_type: 'request' },
+      { interaction_id: 'child', leg_type: 'request' },
+      { interaction_id: 'parent', leg_type: 'response' },
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(3));
+    expect(capturedController?.getEdgeById('parent:request')?.getData()).toMatchObject({
+      label: '1', step: 1, seq: 2,
+    });
+    expect(capturedController?.getEdgeById('parent:response')?.getData()).toMatchObject({
+      label: '3', step: 3, seq: 3,
+    });
+    const request = bendsOf('parent:request')[0]!;
+    const response = bendsOf('parent:response')[0]!;
+    const mid = cell(0, 0).y;
+    expect(Math.sign(request.y - mid)).toBe(-Math.sign(response.y - mid));
+    expect(request).not.toEqual(response);
+  });
+
+  it.each([false, true])('gives parallel calls distinct routes (reverse caller: %s)', async (reverse) => {
+    mockApi(ENTITIES.slice(0, 2), [
+      mkIx({ id: 'first' }, 1),
+      mkIx({
+        id: 'second',
+        caller_entity_id: reverse ? 'e2' : 'e1',
+        callee_entity_id: reverse ? 'e1' : 'e2',
+      }, 3),
+    ], [
+      { interaction_id: 'first', leg_type: 'request' },
+      { interaction_id: 'second', leg_type: 'request' },
+      { interaction_id: 'first', leg_type: 'response' },
+      { interaction_id: 'second', leg_type: 'response' },
+    ]);
+    renderWithProviders(<ExecutionFlowGraph traceId="T1" />);
+
+    await waitFor(() => expect(edgeEls()).toHaveLength(4));
+    const ids = ['first:request', 'first:response', 'second:request', 'second:response'];
+    expect(new Set(ids.map((id) => JSON.stringify(bendsOf(id)))).size).toBe(4);
+    if (!reverse) {
+      const mid = cell(0, 0).y;
+      const rowPitch = cell(0, 1).y - mid;
+      for (const id of ids) {
+        expect(Math.abs(bendsOf(id)[0]!.y - mid)).toBeLessThan(rowPitch / 2);
+      }
+    }
+  });
+
   it('keeps the adjacent-column bow inside the row gutter', async () => {
     // The bow separates the pair; it must NOT wander so far that it enters the
     // neighbouring row's band, where it would read as pointing at a different
@@ -2284,6 +2352,37 @@ describe('LineageGraph', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('pushes no new model when re-rendered with the same reads and no legOrder', async () => {
+    // `legOrder` is optional. Its default must be ONE stable empty value, not a
+    // fresh `[]` per render: `spec` is memoised on it and the model push is keyed on
+    // `spec`, so a new array every render would re-derive the graph and repaint it on
+    // every unrelated re-render (a selection, a pin, a poll).
+    const entities = ENTITIES;
+    const interactions = [mkIx({ id: 'i1', caller_entity_id: 'e1', callee_entity_id: 'e2' }, 1)];
+    mockLineageApi({ entities, interactions, summary: SUMMARY_WITH_SOURCE });
+    // A FRESH element each time, with the same prop values: re-passing one element
+    // object would let React bail out and never re-render the component at all.
+    const graph = () => (
+      <LineageGraph
+        traceId="T1"
+        entities={entities}
+        interactions={interactions}
+        status="complete"
+        isLineageError={false}
+        selectedEntityId={null}
+        lineageSource={SOURCE_E1}
+      />
+    );
+    const { rerender } = renderWithProviders(graph());
+    await waitFor(() => expect(edgeEls()).toHaveLength(2));
+    const pushes = modelPushes;
+
+    rerender(graph());
+    rerender(graph());
+
+    expect(modelPushes).toBe(pushes);
   });
 
   // --- The sharing itself: one graph, two tabs.

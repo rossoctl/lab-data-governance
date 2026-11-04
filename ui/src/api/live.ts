@@ -159,6 +159,10 @@ export function useTraceLive(traceId: string): LiveMode {
  * Only for a re-read of the SAME trace. A different trace is a different picture,
  * and its reads are passed through as they are (the loading state covers the gap).
  *
+ * `legOrder` is the interactions read's trace-local causal leg order (ADR-0035).
+ * It comes from the same held reading as `interactions`, so a view never orders
+ * one reading's legs by another reading's order.
+ *
  * The queries are returned as well, for their loading/error flags.
  */
 export function useEntitiesAndInteractions(traceId: string) {
@@ -179,6 +183,10 @@ export function useEntitiesAndInteractions(traceId: string) {
   }
   const reading = take ? latest : held;
   const entities = useMemo(() => reading.entities ?? [], [reading.entities]);
-  const interactions = useMemo(() => reading.interactions ?? [], [reading.interactions]);
-  return { entities, interactions, entitiesQ, interactionsQ };
+  const interactions = useMemo(
+    () => reading.interactions?.interactions ?? [],
+    [reading.interactions],
+  );
+  const legOrder = useMemo(() => reading.interactions?.leg_order ?? [], [reading.interactions]);
+  return { entities, interactions, legOrder, entitiesQ, interactionsQ };
 }

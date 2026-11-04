@@ -30,6 +30,7 @@ import re
 from typing import Any
 
 from data_governance import db
+from data_governance.processors.trace_lock import lock_trace
 from data_governance.retrieval import Span
 from data_governance.retrieval.spans import _COLUMNS, _row_to_span
 from data_governance.sidecar_facts import Kinds, classify_attrs
@@ -373,7 +374,12 @@ def derive_trace(tx: db.Transaction, trace_id: str) -> None:
     """Reconcile one trace's interaction graph from ALL its spans. Idempotent;
     order-independent. Deletes this trace's derived rows no longer justified by
     the current span set, then retires only globally unreferenced provisional
-    host:port agent/tool entities."""
+    host:port agent/tool entities.
+
+    Takes the trace's writer lock first, so the span read, the plan and the
+    deletes all happen while no lineage derivation of the trace is in progress
+    (see :mod:`data_governance.processors.trace_lock`)."""
+    lock_trace(tx, trace_id)
     _write(tx, plan_trace(trace_id, _fetch_trace_spans(tx, trace_id)))
 
 

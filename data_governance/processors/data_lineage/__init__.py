@@ -16,7 +16,7 @@ The layering, innermost first — each layer is testable without the one outside
   single named place; nothing else tests ``kind == "agent"`` or ``kind == "tool"``.
 - :mod:`.traversal` — two-way op selection (D4/D11), structural inbound routing
   (D1), and D6's absent-payload prefix cutoff with the trace's
-  ``complete``/``partial`` coverage, over one trace's legs in leg-``seq`` order.
+  ``complete``/``partial`` coverage, over one trace's legs in causal order.
   Pure.
 - :mod:`.driver` — the DB adapter over the shared cursor loop: drains the
   ``interaction_legs`` stream, re-derives the arriving leg's whole trace, upserts

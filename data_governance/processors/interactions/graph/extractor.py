@@ -95,6 +95,7 @@ class Interaction:
     # delegation — so consumers sort by `order` ALONE. Copied from
     # `EntityEdge.order`.
     order: int = 0
+    inferred_tool_phase: str | None = None
     # Each leg's content kind (the role its body played); rides on the leg row,
     # not on the content-addressed payload (issue #286).
     request_content_kind: str | None = None
@@ -341,6 +342,7 @@ def _derive_interactions(
             response_payload_hash=resp_hash,
             summary=f"{caller_label} → {callee_label}",
             order=ee.order,
+            inferred_tool_phase=ee.inferred_tool_phase,
             request_content_kind=req_pl.content_kind if req_pl else None,
             response_content_kind=resp_pl.content_kind if resp_pl else None,
         ))

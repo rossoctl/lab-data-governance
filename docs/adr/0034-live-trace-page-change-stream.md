@@ -23,9 +23,13 @@ own arrangement of it being lost.
 `GET /api/traces/{tid}/events` is a Server-Sent Events stream with one event
 type, `change`, whose `id` and `data` are the trace's **Trace version** token.
 The token (`retrieval.get_trace_version`) is a digest of the derived
-high-water marks for that trace — highest `interaction_legs.seq`, counts of
-`interactions` and `entity_spans`, highest `lineage_metadata.seq`, the lineage
-status — and is compared for equality only. It says *that* the trace changed,
+marks for that trace — highest `interaction_legs.seq`, the count of
+`entity_spans`, an md5 of the interactions' parents and endpoints and the
+legs' times, payloads, outcomes and content kinds, highest
+`lineage_metadata.seq`, the lineage status — and is compared for equality
+only. The md5 is there because a re-derivation corrects rows in place under
+their preserved `seq` (ADR-0035), which moves no high-water mark and no
+count. It says *that* the trace changed,
 never *what*: every read the page makes is a whole-trace read, so "changed" is
 already the full instruction.
 
@@ -154,7 +158,8 @@ still straddle a commit in a narrow window; the next change event corrects it.
   hub. A proxy in front of the API must pass `text/event-stream` through
   unbuffered (the stream sets `X-Accel-Buffering: no`); one that does not
   leaves the page on its polling fallback, visibly.
-- The token read is three small indexed queries per wake per open page. A
+- The token read is a schema probe and three small indexed queries per wake
+  per open page; the first aggregates the trace's interactions and legs. A
   burst on another trace wakes every stream (the notify is global) and costs
   each one a read that finds no change — bounded by the coalescing grace.
 - Reset View still snaps: it is the reader's own act and reads as one.

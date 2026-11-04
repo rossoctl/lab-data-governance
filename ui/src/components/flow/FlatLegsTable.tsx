@@ -12,7 +12,7 @@ import { StatusText } from './StatusText';
 
 /**
  * The **Interactions** table's flat variant: one row per request/response leg,
- * ordered by the trace-wide leg `seq`, ignoring the parent/child tree (so no
+ * ordered by the backend's trace-local causal order, ignoring the tree (so no
  * depth indentation). A row click still selects the leg's parent *interaction* —
  * legs have no selection of their own — and the connector column draws the
  * bracket tying a request row to its (usually non-adjacent) response row.
@@ -37,7 +37,8 @@ export function FlatLegsTable({
     <Table aria-label="Interactions (flat)" variant="compact">
       <Thead>
         <Tr>
-          <Th>Seq</Th>
+          <Th>Step</Th>
+          <Th>Ingest seq</Th>
           <Th>Time</Th>
           <Th screenReaderText="Pinned" />
           <Th screenReaderText="Request/response link" />
@@ -48,7 +49,7 @@ export function FlatLegsTable({
         </Tr>
       </Thead>
       <Tbody>
-        {rows.map(({ ix, leg }, i) => {
+        {rows.map(({ ix, leg, step }, i) => {
           // A response flows callee → caller, so the two columns swap on a
           // response leg (ADR-0025). The swap itself lives in `legDirection` in
           // lib/flow, shared with the Execution Flow graph's edge derivation, so
@@ -63,7 +64,10 @@ export function FlatLegsTable({
               onRowClick={() => onSelect(ix)}
               {...rowProps(selectedId === ix.id)}
             >
-              <Td dataLabel="Seq" className="dg-mono">
+              <Td dataLabel="Step" className="dg-mono">
+                {step}
+              </Td>
+              <Td dataLabel="Ingest seq" className="dg-mono">
                 {leg.seq}
               </Td>
               <Td dataLabel="Time" className="dg-mono">
