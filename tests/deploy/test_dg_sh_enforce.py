@@ -27,11 +27,12 @@ SECRET = "0123abcd" * 8
 _WRAPPER = r"""#!/usr/bin/env bash
 if [[ "$*" == *"exec"* && "$*" == *"/v1/plugins"* ]]; then
   [[ -n "${KUBECTL_LOG:-}" ]] && printf '%s\n' "$*" >> "$KUBECTL_LOG"
-  gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"pass_single_label"},{"name":"wait_ms"},{"name":"deny_on"},{"name":"verdict_secret"},{"name":"verdict_secret_file"},{"name":"fallback"}]}'
+  gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"pass_single_label"},{"name":"wait_ms"},{"name":"deny_on"},{"name":"verdict_secret"},{"name":"verdict_secret_file"},{"name":"fallback"},{"name":"fail_mode"}]}'
   case "${GATE_CATALOG:-full}" in
     none) gate="" ;;
-    no-secret) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"fallback"}]}' ;;
-    no-fallback) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"verdict_secret"}]}' ;;
+    no-secret) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"fallback"},{"name":"fail_mode"}]}' ;;
+    no-fallback) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"verdict_secret"},{"name":"fail_mode"}]}' ;;
+    no-fail-mode) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"verdict_secret"},{"name":"fallback"}]}' ;;
   esac
   printf '%s' '{"plugins":[{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry"}'"$gate"']}'
   exit 0
@@ -354,13 +355,14 @@ def test_a_plain_instrument_on_a_gated_namespace_refuses(gated) -> None:
         assert mutations(gated) == []
 
 
-@pytest.mark.parametrize("catalog", ["none", "no-secret", "no-fallback"])
+@pytest.mark.parametrize("catalog", ["none", "no-secret", "no-fallback", "no-fail-mode"])
 def test_an_image_whose_gate_cannot_take_the_config_refuses_before_any_write(gated, catalog) -> None:
-    """An image with no sentry-gate, or one lacking a key instrument writes (verdict_secret, fallback), is refused before any write."""
+    """D7 (no-fail-mode): an image with no sentry-gate, or one lacking a key instrument writes (verdict_secret,
+    fallback, fail_mode), is refused before any write."""
     gated.set_flag(GATE_CATALOG=catalog)
     result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
     assert result.returncode != 0
-    assert "verdict_url, verdict_secret, pass_hosts, fallback" in result.stderr and "mutating nothing" in result.stderr
+    assert "verdict_url, verdict_secret, pass_hosts, fallback, fail_mode" in result.stderr and "mutating nothing" in result.stderr
     assert mutations(gated) == []
 
 
@@ -441,6 +443,157 @@ def test_a_pass_host_starting_with_a_dash_is_a_glob(gated) -> None:
     assert plugin(written(gated), "outbound", "sentry-gate")["config"]["pass_hosts"] == ["-x.example"]
 
 
+# --- the fail-mode document: fail-mode set|show|validate, and its rows in the gate ---------
+
+ROWS = [{"destination": "peer.example", "wait_ms": 100}, {"destination": "slow.example", "fallback": "deny", "wait_ms": 3000}]
+ALLOW_ROW = {"destination": "open.example", "fallback": "allow"}
+
+
+def fail_mode_cm(box, text: str) -> None:
+    """The namespace holds ConfigMap dg-fail-mode with ``text`` as its table."""
+    (box.fixdir / "cm-dg-fail-mode.json").write_text(json.dumps({
+        "apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "dg-fail-mode", "namespace": "travel-advisor"},
+        "data": {"table": text}}))
+
+
+def document(*rows: dict) -> str:
+    return json.dumps({"rows": list(rows)}, indent=2) + "\n"
+
+
+def test_fail_mode_validate_never_touches_the_cluster(gated, tmp_path) -> None:
+    """D2 through dg.sh: validate exits 0 on a good document and non-zero naming the rule on a bad one, with no kubectl call."""
+    good, bad = tmp_path / "good.json", tmp_path / "bad.json"
+    good.write_text(document(*ROWS))
+    bad.write_text(document({"destination": "peer.example:8443", "fallback": "deny"}))
+    assert gated.run("namespace", "travel-advisor", "fail-mode", "validate", str(good)).returncode == 0
+    result = gated.run("namespace", "travel-advisor", "fail-mode", "validate", str(bad))
+    assert result.returncode != 0 and "a destination has no port" in result.stderr
+    assert gated.kubectl_calls() == []
+
+
+def test_fail_mode_set_writes_the_document_verbatim_and_show_prints_it(gated, tmp_path) -> None:
+    """D3: show with no ConfigMap says so; set writes dg-fail-mode/table byte for byte; show prints it; a bad document writes nothing."""
+    result = gated.run("namespace", "travel-advisor", "fail-mode", "show")
+    assert result.returncode == 0 and result.stdout == "" and "has no dg-fail-mode" in result.stderr
+    text = '{"rows": [ {"destination": "Peer.example",\r\n "wait_ms": 100} ]}  \n\n'
+    doc = tmp_path / "doc.json"
+    doc.write_bytes(text.encode())
+    result = gated.run("namespace", "travel-advisor", "fail-mode", "set", str(doc))
+    assert result.returncode == 0, result.stderr
+    assert "next 'dg.sh namespace travel-advisor instrument'" in result.stderr
+    written_cm = json.loads((gated.fixdir / "cm-dg-fail-mode-wired.json").read_text())
+    assert written_cm["metadata"] == {"name": "dg-fail-mode", "namespace": "travel-advisor"}
+    assert written_cm["data"] == {"table": text}
+    result = gated.run("namespace", "travel-advisor", "fail-mode", "show")
+    assert result.returncode == 0 and result.stdout == text.replace("\r\n", "\n")  # the run reads stdout in text mode
+    gated.log.unlink()
+    bad = tmp_path / "bad.json"
+    bad.write_text(document({"destination": "peer.example"}))
+    result = gated.run("namespace", "travel-advisor", "fail-mode", "set", str(bad))
+    assert result.returncode != 0 and "a row gives wait_ms or fallback" in result.stderr and "unchanged" in result.stderr
+    assert gated.kubectl_calls() == []
+    assert json.loads((gated.fixdir / "cm-dg-fail-mode-wired.json").read_text())["data"] == {"table": text}
+
+
+def test_instrument_renders_the_rows_into_the_gate(gated) -> None:
+    """D4: with dg-fail-mode, instrument --enforce writes fail_mode rows (same keys, document order) after fallback;
+    without it the gate's block is commit 1's (no fail_mode key)."""
+    assert gated.run("namespace", "travel-advisor", "instrument", "--enforce").returncode == 0
+    assert "fail_mode" not in plugin(written(gated), "outbound", "sentry-gate")["config"]
+    _adopt_written(gated)
+    fail_mode_cm(gated, document(*ROWS))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--fallback", "deny")
+    assert result.returncode == 0, result.stderr
+    assert "fail_mode rows from travel-advisor/dg-fail-mode: 2" in result.stderr
+    config = plugin(written(gated), "outbound", "sentry-gate")["config"]
+    assert config["fail_mode"] == [{"destination": "peer.example", "wait_ms": 100},
+                                   {"destination": "slow.example", "wait_ms": 3000, "fallback": "deny"}]
+    assert list(config) == ["verdict_url", "verdict_secret", "fallback", "fail_mode"]
+
+
+def test_a_row_with_allow_needs_allow_open_default(gated) -> None:
+    """D4: a row with fallback allow refuses instrument before any write unless --allow-open-default is given."""
+    fail_mode_cm(gated, document(ROWS[0], ALLOW_ROW))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--observe")
+    assert result.returncode != 0
+    assert "has a row with fallback allow" in result.stderr and "--allow-open-default" in result.stderr
+    assert mutations(gated) == []
+    result = gated.run("namespace", "travel-advisor", "instrument", "--observe", "--allow-open-default")
+    assert result.returncode == 0, result.stderr
+    assert plugin(written(gated), "outbound", "sentry-gate")["config"]["fail_mode"][1] == ALLOW_ROW
+
+
+def test_the_allow_row_check_fails_closed(gated, tmp_path) -> None:
+    """When the check for allow rows cannot run, instrument refuses; it never reads as a document with no allow row."""
+    fail_mode_cm(gated, document(ROWS[0], ALLOW_ROW))
+    real = sys.executable
+    shim = gated.bindir / "python3"
+    shim.write_text('#!/bin/bash\nif [[ "$*" == *\'"fallback") == "allow"\'* ]]; then exit 3; fi\n'
+                    f'exec "{real}" "$@"\n')
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode != 0 and "could not check the fail-mode document" in result.stderr, result.stderr
+    assert mutations(gated) == []
+
+
+@pytest.mark.parametrize("table", [
+    document({"destination": "peer.example", "fallback": "deny"}, {"destination": "peer.example", "wait_ms": 5}),
+    "rows:\n- destination: peer.example\n",
+    None,
+])
+def test_an_invalid_document_refuses_instrument_before_any_write(gated, table) -> None:
+    """D5: a dg-fail-mode holding an invalid document (or none) refuses instrument before any write, naming fail-mode validate."""
+    if table is None:
+        (gated.fixdir / "cm-dg-fail-mode.json").write_text(json.dumps({"metadata": {"name": "dg-fail-mode"}, "data": {}}))
+    else:
+        fail_mode_cm(gated, table)
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode != 0
+    assert "is not a valid fail-mode document" in result.stderr and "fail-mode validate" in result.stderr
+    assert mutations(gated) == []
+    assert not (gated.fixdir / "cm-authbridge-runtime-config-wired.json").exists()
+
+
+def test_status_names_an_invalid_document_as_invalid(gated) -> None:
+    """status on a gated namespace whose fail-mode document is readable but invalid says it is not valid and names
+    fail-mode validate, not only that something cannot be read."""
+    gated.set_namespace({"travel-advisor": RUNNING})
+    assert gated.run("namespace", "travel-advisor", "instrument", "--enforce").returncode == 0
+    _adopt_written(gated)
+    fail_mode_cm(gated, "rows:\n- destination: peer.example\n")
+    result = gated.run("namespace", "travel-advisor", "status")
+    out = result.stdout + result.stderr
+    assert "is not valid" in out and "fail-mode validate" in out, out
+    assert mutations(gated) == []
+
+
+def test_a_pod_on_other_rows_is_rolled_and_status_counts_the_rows(gated) -> None:
+    """D6: status prints the row count and live=yes; a pod running other rows is rolled with nothing written;
+    a document set but not yet instrumented shows as a drifted source."""
+    gated.set_namespace({"travel-advisor": RUNNING})
+    fail_mode_cm(gated, document(*ROWS))
+    assert gated.run("namespace", "travel-advisor", "instrument", "--enforce").returncode == 0
+    _adopt_written(gated)
+    status = gated.run("namespace", "travel-advisor", "status")
+    assert "sentry-gate mode=enforce pass_hosts=(none) wait_ms=2000 fallback=deny fail_mode_rows=2" in status.stdout, status.stdout
+    assert "live=yes" in status.stdout, status.stdout
+    stale = json.loads((gated.fixdir / "cm-authbridge-runtime-config.json").read_text())
+    stale["data"]["config.yaml"] = stale["data"]["config.yaml"].replace("wait_ms: 100", "wait_ms: 200")
+    (gated.fixdir / "pod-cm-travel-advisor.json").write_text(json.dumps(stale))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode == 0, result.stderr
+    assert not any(c.startswith(("replace", "apply")) for c in gated.kubectl_calls())
+    assert any("deployment/travel-advisor" in c for c in restarts(gated))
+    for f in gated.fixdir.glob("restarted-*"):
+        f.unlink()
+    (gated.fixdir / "pod-cm-travel-advisor.json").unlink()
+    gated.log.unlink()
+    fail_mode_cm(gated, document(ROWS[0]))
+    status = gated.run("namespace", "travel-advisor", "status")
+    assert "fail_mode_rows=2" in status.stdout and "instrument --enforce" in status.stdout, status.stdout
+    assert mutations(gated) == []
+
+
 # --- status ---------------------------------------------------------------------------------
 
 
@@ -452,7 +605,7 @@ def test_status_reads_the_gate(gated) -> None:
     _adopt_written(gated)
     result = gated.run("namespace", "travel-advisor", "status")
     assert result.returncode == 0, result.stderr
-    assert "namespace travel-advisor: sentry-gate mode=observe pass_hosts=h.example,k.example wait_ms=2000 fallback=deny" in result.stdout
+    assert "namespace travel-advisor: sentry-gate mode=observe pass_hosts=h.example,k.example wait_ms=2000 fallback=deny fail_mode_rows=0" in result.stdout
     line = next(l for l in result.stdout.splitlines() if l.startswith("travel-advisor"))
     assert "live=yes" in line, line
     # A source that no longer matches the gated render: the advice keeps the gate's mode.
@@ -532,6 +685,33 @@ def test_the_live_check_compares_every_field(change) -> None:
     assert bool(problems) == bool(change), problems
     if not change:
         assert gate_config.pipeline_problems(doc, expected, ENDPOINT, KIT.NAMESPACE_FILE, KIT.MANAGED_PLUGINS, SPEC, "observe")
+
+
+def test_the_live_check_compares_the_rows_as_a_set_by_destination() -> None:
+    """D6: fail_mode rows in another order, or a destination in another case or with a trailing dot, are the same; a changed
+    or missing row differs."""
+    rows = [{"destination": "a.example", "wait_ms": 100}, {"destination": "b.example", "fallback": "allow"}]
+    spec = dict(SPEC, fail_mode=rows)
+    for live, same in ((rows, True), (rows[::-1], True), ([dict(rows[0], destination="A.Example"), rows[1]], True),
+                       ([dict(rows[0], destination="a.example."), rows[1]], True),
+                       ([rows[0]], False), ([rows[0], dict(rows[1], fallback="deny")], False), (None, False)):
+        doc, expected = _live() if live is None else _live(**{"outbound.sentry-gate.fail_mode": live})
+        problems = gate_config.pipeline_problems(doc, expected, ENDPOINT, KIT.NAMESPACE_FILE, KIT.MANAGED_PLUGINS, spec, "enforce")
+        assert (problems == []) == same, (live, problems)
+
+
+def test_read_takes_the_gate_keys_not_a_row_s(tmp_path) -> None:
+    """read counts the fail_mode rows, and a row's wait_ms or fallback is not read as the gate's."""
+    import subprocess
+
+    lines = gate_config.gate_block(4, dict(SPEC, fail_mode=[{"destination": "a.example", "fallback": "allow"},
+                                                             {"destination": "b.example", "wait_ms": 5}]), "enforce")
+    config = "pipeline:\n  inbound:\n    plugins:\n    - name: jwt-validation\n  outbound:\n    plugins:\n" + "".join(lines)
+    result = subprocess.run([sys.executable, str(REPO_ROOT / "deploy" / "gate_config.py"), "read", "--kit-dir",
+                             str(REPO_ROOT / "deploy" / "lineage-attach")], input=json.dumps({"data": {"config.yaml": config}}),
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"mode": "enforce", "pass_hosts": ["h.example"], "wait_ms": None, "fallback": None, "fail_mode_rows": 2}
 
 
 def test_the_live_check_wants_the_gate_after_lineage() -> None:
