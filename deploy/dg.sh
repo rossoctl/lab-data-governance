@@ -764,6 +764,14 @@ namespace_status() {
         return 0
     fi
 
+    # Read once: every pod admission renders this ConfigMap's pipeline.
+    local runtime_json runtime_reason=""
+    if ! runtime_json="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json 2>/dev/null)"; then
+        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} could not be read"
+    elif ! configmap_is_canonical "${runtime_json}"; then
+        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} differs from the canonical lineage pipeline; run 'dg.sh namespace ${ns} instrument'"
+    fi
+
     local name json deployment_json type cm cm_data lineage
     while IFS= read -r name; do
         [[ -n "${name}" ]] || continue
@@ -810,7 +818,7 @@ namespace_status() {
             lineage="no (lineage-telemetry not wired)"
         fi
         if deployment_is_trusted "${deployment_json}" && [[ "${type}" == "proxy" ]]; then
-            local live="yes" reason="live" pod_json pod_name cm_json app_name
+            local live="yes" reason="live" pod_json pod_name app_name
             pod_json="$(get_pod_json_soft "${ns}" "${name}" || true)"
             if ! deployment_activation_valid "${deployment_json}"; then
                 live="no"; reason="application shim or LINEAGE_PROPAGATE missing"
@@ -824,15 +832,12 @@ namespace_status() {
                 live="no"; reason="running application failed two-shim attestation"
             elif [[ -z "${cm}" ]]; then
                 live="no"; reason="mounted ConfigMap unresolved"
+            elif [[ -n "${runtime_reason}" ]]; then
+                live="no"; reason="${runtime_reason}"
             else
-                cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json 2>/dev/null || true)"
-                if ! configmap_is_canonical "${cm_json}" "${name}" "${pod_json}"; then
-                    live="no"; reason="mounted ConfigMap drifted"
-                else
-                    pod_name="$(pod_name_of "${pod_json}")"
-                    if ! live_pipeline_is_canonical "${ns}" "${pod_name}" "${name}" "${cm_json}"; then
-                        live="no"; reason="live pipeline has not converged"
-                    fi
+                pod_name="$(pod_name_of "${pod_json}")"
+                if ! live_pipeline_is_canonical "${ns}" "${pod_name}" "${runtime_json}"; then
+                    live="no"; reason="live pipeline has not converged"
                 fi
             fi
             printf '%s\tsidecar=present\ttype=%s\tlineage=%s\tlive=%s (%s)\n' \
@@ -855,6 +860,12 @@ namespace_status() {
 # own OTEL_ENDPOINT default too, so passing it is a no-op belt-and-braces that
 # also documents the destination in the kit-invocation log.
 DG_OTEL_ENDPOINT="otel-collector.rossoctl-system.svc.cluster.local:4317"
+
+# Rossoctl admission rebuilds each sidecar's authbridge-config-<name> from this
+# namespace ConfigMap on every pod admission (roll, pod delete, scale-up), so the
+# lineage pipeline is written here; written into the per-workload ConfigMap it
+# would be lost at the next admission (#326).
+DG_RUNTIME_CONFIGMAP="authbridge-runtime-config"
 
 # The Kind cluster the shim bake `kind load`s the -otel image into. The kit's
 # container-runtime.sh reads KIND_CLUSTER_NAME (default `rossoctl`), but dg.sh
@@ -1041,16 +1052,10 @@ proxy_environment_valid() {
     proxy_listener_contract "$1" >/dev/null
 }
 
-render_existing_proxy_config() {
-    local cm_json="$1" self_id="$2" pod_json="$3"
-    local contract forward_addr reverse_addr reverse_backend
-    contract="$(proxy_listener_contract "${pod_json}")" || return 1
-    IFS=$'\t' read -r forward_addr reverse_addr reverse_backend <<< "${contract}"
+render_runtime_config() {
+    local cm_json="$1"
     printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render \
-        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
-        --forward-proxy-addr "${forward_addr}" \
-        --reverse-proxy-addr "${reverse_addr}" \
-        --reverse-proxy-backend "${reverse_backend}"
+        --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}"
 }
 
 deployment_activation_valid() {
@@ -1103,8 +1108,8 @@ sys.exit(0 if ready and containers.get("authbridge-proxy") is True else 1)
 }
 
 configmap_is_canonical() {
-    local cm_json="$1" self_id="$2" pod_json="$3" rendered
-    rendered="$(render_existing_proxy_config "${cm_json}" "${self_id}" "${pod_json}" 2>/dev/null)" \
+    local cm_json="$1" rendered
+    rendered="$(render_runtime_config "${cm_json}" 2>/dev/null)" \
         || return 1
     python3 -c '
 import json, sys
@@ -1123,7 +1128,7 @@ proxy_catalog_has_lineage() {
 }
 
 live_pipeline_is_canonical() {
-    local ns="$1" pod="$2" self_id="$3" cm_json="$4" body expected status
+    local ns="$1" pod="$2" cm_json="$3" body expected status
     status=0
     body="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
         wget -qO- http://127.0.0.1:9094/v1/pipeline 2>/dev/null)" || status=$?
@@ -1131,19 +1136,19 @@ live_pipeline_is_canonical() {
     expected="$(printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-contract 2>/dev/null)" \
         || return 1
     printf '%s' "${body}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-valid \
-        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
         --expected "${expected}"
 }
 
 # resolve_admitted_proxy <ns> <entity> <preflight|post-rollout> <snapshot-var>:
 # validate the selected Running pod's admitted proxy and mounted ConfigMap,
-# then fill the caller's associative array with pod, pod_name, and cm_json.
+# then fill the caller's associative array with pod_name.
 # Both phases need the same platform-owned contract; the phase only changes the
 # diagnostic and whether we can promise that no workload was mutated.
 resolve_admitted_proxy() {
     local ns="$1" entity="$2" phase="$3"
     local -n snapshot="$4"
-    local note="" pod type pod_name cm cm_json
+    local note="" pod type pod_name cm
     case "${phase}" in
         preflight) note=" Mutating nothing." ;;
         post-rollout) ;;
@@ -1164,12 +1169,34 @@ resolve_admitted_proxy() {
     cm="$(sidecar_config_cm "${pod}")"
     [[ -n "${cm}" ]] \
         || die "instrument: '${entity}' has no mounted AuthBridge ConfigMap during ${phase}.${note}"
-    cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
-        || die "instrument: could not read ConfigMap '${cm}' for '${entity}' during ${phase}.${note}"
 
-    snapshot[pod]="${pod}"
     snapshot[pod_name]="${pod_name}"
-    snapshot[cm_json]="${cm_json}"
+}
+
+# agentruntimes_allow_lineage <ns> <names> <write yes|no>: refuse, mutating
+# nothing, when a selected workload's AgentRuntime sets pluginPreset (admission
+# then renders a fixed plugin list without lineage-telemetry), or when a run that
+# writes the namespace ConfigMap would also reach an AgentRuntime target it does
+# not preflight (a StatefulSet, a Sandbox, an unselected Deployment).
+agentruntimes_allow_lineage() {
+    local ns="$1" names="$2" write="$3" runtimes refusal
+    runtimes="$(kubectl -n "${ns}" get agentruntimes -o json)" \
+        || die "instrument: failed to read AgentRuntimes in namespace '${ns}' (kubectl get failed; see the kubectl error above). Mutating nothing."
+    refusal="$(printf '%s' "${runtimes}" | python3 -c '
+import json, sys
+names, write = set(sys.argv[1].split()), sys.argv[2] == "yes"
+for item in json.load(sys.stdin).get("items") or []:
+    spec = item.get("spec") or {}
+    target = spec.get("targetRef") or {}
+    kind, name = target.get("kind") or "Deployment", target.get("name")
+    if name in names and spec.get("pluginPreset"):
+        print("%s sets pluginPreset %r, which renders a fixed plugin list without lineage-telemetry" % (name, spec["pluginPreset"]))
+        break
+    if write and (kind != "Deployment" or name not in names):
+        print("%s/%s has an AgentRuntime this run does not preflight, so a pod admitted for it would run the namespace lineage pipeline unchecked" % (kind, name))
+        break
+' "${names}" "${write}")"
+    [[ -z "${refusal}" ]] || die "instrument: ${refusal}. Mutating nothing."
 }
 
 preflight_trusted_proxies() {
@@ -1188,8 +1215,6 @@ preflight_trusted_proxies() {
         resolve_admitted_proxy "${ns}" "${entity}" preflight proxy
         proxy_catalog_has_lineage "${ns}" "${proxy[pod_name]}" \
             || die "instrument: '${entity}'s AuthBridge image does not advertise the a2a-parser, mcp-parser, inference-parser, and lineage-telemetry plugins. Deploy a lineage-capable Cortex proxy image first; mutating nothing."
-        render_existing_proxy_config "${proxy[cm_json]}" "${entity}" "${proxy[pod]}" >/dev/null \
-            || die "instrument: '${entity}'s existing proxy ConfigMap is outside the safe #256 reconciliation envelope. Mutating nothing."
 
         app="$(app_container_of "${dep}")"
         [[ -n "${app}" ]] || die "instrument: '${entity}' must have exactly one application container. Mutating nothing."
@@ -1220,7 +1245,7 @@ preflight_trusted_proxies() {
     rm -f "${cache_file}"
 }
 
-instrument_existing_proxy() {
+roll_onto_shim() {
     local ns="$1" entity="$2" app="$3" shim="$4"
     local patch
     patch="$(python3 -c '
@@ -1233,26 +1258,40 @@ print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image"
         || die "instrument: failed to patch the application container for '${entity}'"
     kubectl -n "${ns}" rollout status "deployment/${entity}" --timeout=180s \
         || die "instrument: rollout of '${entity}' did not become ready"
+}
 
+# roll_onto_namespace_lineage <ns> <entity> <runtime-cm-json>: roll the workload
+# unless its pod already runs the namespace pipeline, then verify the newly
+# admitted pod's live pipeline against it.
+roll_onto_namespace_lineage() {
+    local ns="$1" entity="$2" runtime_json="$3"
     local -A proxy=()
-    local amended
+    # Rossoctl may roll the workload to stamp the namespace ConfigMap's new
+    # hash, before or after our own roll: wait out a rollout in flight here, and
+    # read the current pod on each verify attempt below.
+    kubectl -n "${ns}" rollout status "deployment/${entity}" --timeout=180s \
+        || die "instrument: rollout of '${entity}' did not become ready"
     resolve_admitted_proxy "${ns}" "${entity}" post-rollout proxy
-    amended="$(render_existing_proxy_config "${proxy[cm_json]}" "${entity}" "${proxy[pod]}")" \
-        || die "instrument: failed to reconcile '${entity}'s post-rollout proxy pipeline"
-    printf '%s' "${amended}" | kubectl apply -f - \
-        || die "instrument: failed to apply '${entity}'s reconciled proxy ConfigMap"
+    if live_pipeline_is_canonical "${ns}" "${proxy[pod_name]}" "${runtime_json}"; then
+        err ">> instrument: '${entity}' already runs the namespace lineage pipeline (no rollout)."
+        return 0
+    fi
+    err ">> instrument: rolling '${entity}' so admission renders the ${ns}/${DG_RUNTIME_CONFIGMAP} lineage pipeline"
+    kubectl -n "${ns}" rollout restart "deployment/${entity}" \
+        || die "instrument: failed to roll '${entity}'"
+    kubectl -n "${ns}" rollout status "deployment/${entity}" --timeout=180s \
+        || die "instrument: rollout of '${entity}' did not become ready"
 
-    # A projected ConfigMap can take up to the kubelet sync period plus cache
-    # propagation (commonly around two minutes) to reach the mounted file.
-    local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-90}"
+    local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-90}" pod_json
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        if live_pipeline_is_canonical "${ns}" "${proxy[pod_name]}" "${entity}" "${amended}"; then
-            err ">> instrument: '${entity}' lineage pipeline hot-reloaded and is live (no second rollout)."
+        pod_json="$(get_pod_json "${ns}" "${entity}")"
+        if live_pipeline_is_canonical "${ns}" "$(pod_name_of "${pod_json}")" "${runtime_json}"; then
+            err ">> instrument: '${entity}' admitted with the namespace lineage pipeline and is live."
             return 0
         fi
         sleep 2
     done
-    die "instrument: '${entity}' ConfigMap was reconciled but /v1/pipeline did not converge after hot reload; no second rollout was performed"
+    die "instrument: '${entity}' rolled, but /v1/pipeline does not report the ${ns}/${DG_RUNTIME_CONFIGMAP} lineage pipeline. Re-run 'dg.sh namespace ${ns} instrument' to continue; 'status' shows which workloads are live."
 }
 
 
@@ -1282,14 +1321,42 @@ namespace_instrument() {
         return 0
     fi
 
+    # The namespace ConfigMap reaches every sidecar in <ns> at its next pod
+    # admission, so only a namespace-wide run, which preflights every trusted
+    # agent/tool, may change it.
+    local runtime_json rendered write="yes"
+    runtime_json="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json)" \
+        || die "instrument: could not read ${ns}/${DG_RUNTIME_CONFIGMAP}, which Rossoctl renders every sidecar config from. Mutating nothing."
+    rendered="$(render_runtime_config "${runtime_json}")" \
+        || die "instrument: ${ns}/${DG_RUNTIME_CONFIGMAP} is outside the safe reconciliation envelope. Mutating nothing."
+    configmap_is_canonical "${runtime_json}" && write="no"
+    if [[ -n "${entity}" && "${write}" == "yes" ]]; then
+        die "instrument: ${ns}/${DG_RUNTIME_CONFIGMAP} differs from the canonical lineage pipeline, and writing it reaches every agent/tool in '${ns}'. Run 'dg.sh namespace ${ns} instrument' first. Mutating nothing."
+    fi
+    agentruntimes_allow_lineage "${ns}" "${names}" "${write}"
+
     # All checks and shim builds finish before the first workload mutation.
     # The trusted-label check here remains defense in depth.
     local plan_file name app shim
     plan_file="$(mktemp)"
     preflight_trusted_proxies "${ns}" "${names}" "${plan_file}"
+
+    # Rossoctl may roll every workload in <ns> when the namespace ConfigMap
+    # changes, so every application propagates trace context before it does.
     while IFS=$'\t' read -r name app shim; do
         [[ -n "${name}" ]] || continue
-        instrument_existing_proxy "${ns}" "${name}" "${app}" "${shim}"
+        roll_onto_shim "${ns}" "${name}" "${app}" "${shim}"
+    done < "${plan_file}"
+    # replace carries the read's resourceVersion: a write by anyone else since
+    # then fails it instead of being reverted.
+    if [[ "${write}" == "yes" ]]; then
+        err ">> instrument: writing the lineage pipeline into ${ns}/${DG_RUNTIME_CONFIGMAP}"
+        printf '%s' "${rendered}" | kubectl replace -f - \
+            || die "instrument: failed to write ${ns}/${DG_RUNTIME_CONFIGMAP} (changed since it was read? re-run); applications are on the shim, no workload was rolled onto lineage"
+    fi
+    while IFS=$'\t' read -r name app shim; do
+        [[ -n "${name}" ]] || continue
+        roll_onto_namespace_lineage "${ns}" "${name}" "${rendered}"
     done < "${plan_file}"
     rm -f "${plan_file}"
 

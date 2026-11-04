@@ -7,11 +7,14 @@ The operation has two phases:
 
 1. Preflight every selected entity. Require a trusted Rossoctl label, a running
    pod with one admitted `authbridge-proxy`, the platform proxy environment, a
-   lineage-capable plugin catalog, a safely reconcilable ConfigMap, and an
-   attested two-shim application image.
+   lineage-capable plugin catalog, a safely reconcilable namespace
+   `authbridge-runtime-config`, and an attested two-shim application image.
 2. After every preflight succeeds, roll each application onto the shim image,
-   reconcile the admitted proxy ConfigMap, and verify the live hot-reloaded
-   pipeline.
+   reconcile the namespace ConfigMap, then roll each workload not yet running
+   its pipeline and verify the newly admitted one.
+   Admission rebuilds each per-workload ConfigMap from the namespace one on
+   every pod admission, so lineage written there survives rolls and
+   scale-ups.
 
 The boundary is deliberate: Rossoctl owns workload identity, authentication,
 and sidecar lifecycle; Data Governance owns only application trace propagation
