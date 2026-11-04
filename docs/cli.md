@@ -143,7 +143,8 @@ with these keys:
 | `pass_hosts` | the `--pass-host` globs, repeatable (`path.Match` syntax, port stripped and case-folded; a glob the gate would refuse, such as an unclosed `[`, is a usage error); left out when there are none |
 | `wait_ms` | `--wait-ms <n>`, 1..3000: how long the gate holds a request for a verdict; left out without `--wait-ms`, which is the gate's default, 2000 |
 | `fallback` | `--fallback deny` or `allow`: what a request gets when a slow or dead verdict service gives no verdict (`deny` refuses it with a 503, `allow` delivers it unjudged); left out without `--fallback`, which is the gate's default, `deny` |
-| `fail_mode` | the rows of the namespace's fail-mode document ([below](#the-fail-mode-document)), each with only the keys it has; left out when there is no document or it has no rows |
+| `fail_mode` | the destination rows of the namespace's fail-mode document ([below](#the-fail-mode-document)), each with only the keys it has; left out when there is no document or it has none |
+| `sources` | one slice per source workload the document names: its defaults and its rows ([below](#the-fail-mode-document)); left out when no row names a source |
 
 Every other gate key keeps the gate's default (`deny_on` `[block]`, `pass_single_label`
 true, so a cluster short name always passes). An existing `sentry-gate` entry anywhere in the source is
@@ -158,8 +159,10 @@ keeps an `allow` already in the gate does not ask for the flag again. A fail-mod
 needs the flag the same way, on every run while the document holds that row.
 
 Then each workload's live `/v1/pipeline` is checked against the gated pipeline (lineage before the gate,
-the lineage values above, the gate's URL, pass list, wait, fallback, `fail_mode` rows (as a set by destination)
-and mode, a secret present; a `wait_ms` absent counts as 2000, a `fallback` absent as `deny`), and each one not on it
+the lineage values above, the gate's URL, pass list, wait, fallback, `fail_mode` rows (as a set by destination),
+`sources` slices (by source, each slice's rows as a set by destination; a slice `/v1/pipeline` masks, for a source
+named like a secret's key such as `chaos-monkey`, by its presence) and mode, a secret present; a
+`wait_ms` absent counts as 2000, a `fallback` absent as `deny`), and each one not on it
 is rolled and verified. A second run with the same flags writes nothing and rolls nothing.
 
 `--observe` writes the same with the gate's entry in the pipeline's own observe mode (`on_error:
@@ -167,7 +170,7 @@ observe`): the gate asks and waits as when enforcing, and every refusal it would
 made. `--enforce` on an observing namespace switches it back.
 
 It refuses, mutating nothing, when a sidecar's image has no `sentry-gate` that takes `verdict_url`,
-`verdict_secret`, `pass_hosts`, `fallback` and `fail_mode` (read from the image's `/v1/plugins`), when the
+`verdict_secret`, `pass_hosts`, `fallback`, `fail_mode` and `sources` (read from the image's `/v1/plugins`), when the
 namespace's fail-mode document is not valid (it names `fail-mode validate`), when the verdict Secret is empty,
 and when an `<entity>` is named: the gate is a namespace setting. `instrument` without `--enforce` or
 `--observe` refuses on a namespace whose source carries the gate, mutating nothing, and names the run that
@@ -175,10 +178,10 @@ keeps it: the lineage reconciler appends lineage after every entry it does not m
 gate before lineage. No verb removes the gate.
 
 `status` on a gated namespace prints the gate's mode, pass list, wait, fallback and the number of its
-`fail_mode` rows (`namespace <ns>: sentry-gate mode=enforce pass_hosts=a.example,b.example wait_ms=2000
-fallback=deny fail_mode_rows=2`, `2000` and `deny` too when the entry has none) and checks the source and
-each live pipeline against the gated pipeline in that mode, with that pass list, wait and fallback and the rows of the namespace's
-fail-mode document; when the source has drifted, also after a `fail-mode set` not yet applied, it
+`fail_mode` rows and of its `sources` slices (`namespace <ns>: sentry-gate mode=enforce
+pass_hosts=a.example,b.example wait_ms=2000 fallback=deny fail_mode_rows=2 sources=1`, `2000` and `deny` too when
+the entry has none) and checks the source and each live pipeline against the gated pipeline in that mode, with that
+pass list, wait and fallback and the rows and slices of the namespace's fail-mode document; when the source has drifted, also after a `fail-mode set` not yet applied, it
 advises the run with the namespace's own `--enforce` or `--observe`.
 
 The secret is copied, not referenced: whoever can read ConfigMaps in a gated namespace can read it, and
@@ -194,30 +197,69 @@ no command line and no log of `dg.sh`.
 ./deploy/dg.sh namespace <ns> fail-mode show
 ```
 
-The fail-mode document overrides the gate's wait and fallback for requests to named destination hosts.
-It is JSON, kept verbatim as key `table` of ConfigMap `dg-fail-mode` in the app namespace:
+The fail-mode document overrides the gate's wait and fallback for some requests: those to a destination
+host, those from a source workload, or those from a workload to a host. It is JSON, kept verbatim as key
+`table` of ConfigMap `dg-fail-mode` in the app namespace:
 
 ```json
 {"rows": [
-  {"destination": "partner.example", "fallback": "allow"},
-  {"destination": "slow-tool.example", "wait_ms": 3000, "fallback": "deny"}
+  {"source": "desk", "wait_ms": 100},
+  {"destination": "partner.example", "wait_ms": 50, "fallback": "deny"},
+  {"source": "desk", "destination": "partner.example", "fallback": "allow"},
+  {"destination": "slow-tool.example", "wait_ms": 3000}
 ]}
 ```
 
 | key | value |
 |---|---|
-| `destination` | a host: not empty, no port, no scheme, no `/`, no whitespace, no wildcard (`*`, `?`, `[`), once per document. The gate takes a row when the request's host, port stripped, case-folded and without a trailing dot, equals it folded the same way; nothing else matches (no glob, no suffix) |
-| `wait_ms` | 1..3000: how long the gate holds a request to that host for a verdict, instead of its default |
-| `fallback` | `deny` or `allow`: what a request to that host gets when the wait ends with no verdict, instead of the gate's fallback |
+| `source` | a workload: not empty, no whitespace, no `/`. It is the workload name lineage reports as `self_id` for the requests the workload sends, compared exactly |
+| `destination` | a host: not empty, no port, no scheme, no `/`, no whitespace, no wildcard (`*`, `?`, `[`). The gate takes a row when the request's host, port stripped, case-folded and without a trailing dot, equals it folded the same way; nothing else matches (no glob, no suffix) |
+| `wait_ms` | 1..3000: how long the gate holds a request for a verdict, instead of its default |
+| `fallback` | `deny` or `allow`: what a request gets when the wait ends with no verdict, instead of the gate's fallback |
 
-A row gives `wait_ms` or `fallback` or both, and no other key; what it leaves out keeps the gate's value.
+A row names a source, a destination or both, and gives `wait_ms` or `fallback` or both, and no other key.
+So there are three kinds of row: a destination row covers every request to that host, a source row every
+request from that workload, a pair row (both named) the requests from that workload to that host. Each
+(source, destination) appears once in a document. Per key, the most specific row wins: pair > destination >
+source > the gate's own value, so a destination row (the host's risk) holds over a source row (the
+workload's tolerance), and only a pair row overrides it for one workload. What no row gives keeps the
+gate's value. A workload no row names needs nothing: its requests take the destination rows and the gate's
+values, including a workload added after the document was set.
+
+`instrument` renders the destination rows as the gate's `fail_mode`, and per source a slice under
+`sources`: its defaults are the source row's keys, its rows, for each destination with a destination row or
+a pair row of that source, the pair's keys over the destination row's. The gate fills a slice row's missing
+key from the slice's defaults, and those from its own keys. The document above renders to:
+
+```yaml
+fail_mode:
+- destination: partner.example
+  wait_ms: 50
+  fallback: deny
+- destination: slow-tool.example
+  wait_ms: 3000
+sources:
+  desk:
+    wait_ms: 100
+    fail_mode:
+    - destination: partner.example
+      wait_ms: 50
+      fallback: allow
+    - destination: slow-tool.example
+      wait_ms: 3000
+```
+
+so a request from `desk` to `partner.example` waits 50 ms and is delivered on no verdict, from `desk` to
+`slow-tool.example` waits 3000 ms, from `desk` anywhere else waits 100 ms, and from any other workload to
+`partner.example` waits 50 ms and is refused.
+
 `fail-mode validate <file>` checks a file against these rules, one line per problem naming the rule, and
 never touches the cluster. `fail-mode set <file>` validates the file, and only a valid one is written
 to `dg-fail-mode`. `fail-mode show` prints the namespace's document, or says there is none.
 
-The gates take a document at the next `instrument --enforce` (or `--observe`), which renders its rows into
-the gate's entry; that run, not `set`, rolls the pods. Deleting `dg-fail-mode` with `kubectl` and re-running `instrument`
-removes the rows.
+The gates take a document at the next `instrument --enforce` (or `--observe`), which renders its rows and
+slices into the gate's entry; that run, not `set`, rolls the pods. Deleting `dg-fail-mode` with `kubectl` and re-running `instrument`
+removes the rows and slices.
 
 ## Typical flow
 

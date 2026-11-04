@@ -14,18 +14,19 @@ from), then pipes the result through ``apply`` here, which:
   outbound chain (the gate requires lineage before it; the reverse order makes the
   sidecar refuse the config), with the verdict URL, the shared secret, the pass
   list and, when the spec names them, the wait (``wait_ms``), the fallback (``deny`` or
-  ``allow``) and the ``fail_mode`` rows of the namespace's fail-mode document
-  (``fail_mode.py``), and under ``--observe`` the framework's ``on_error: observe``.
-  Every other gate key keeps the gate's default (``wait_ms`` absent is the gate's 2000,
-  ``fallback`` absent its ``deny``).
+  ``allow``), the ``fail_mode`` rows and the ``sources`` slices rendered from the
+  namespace's fail-mode document (``fail_mode.py``), and under ``--observe`` the
+  framework's ``on_error: observe``. Every other gate key keeps the gate's default
+  (``wait_ms`` absent is the gate's 2000, ``fallback`` absent its ``deny``).
 
 ``pipeline-valid`` reads a sidecar's ``/v1/pipeline`` and says whether it runs
 exactly that: the plugin names of the ConfigMap, lineage before the gate, the
 lineage values above, the gate's URL, pass list, wait, fallback, ``fail_mode`` rows (as a set
-by destination) and mode, and a secret present (the endpoint masks its value).
+by destination), ``sources`` slices (by source, each slice's rows as a set by destination)
+and mode, and a secret present (the endpoint masks its value).
 
-``read`` gives the gate entry of a runtime ConfigMap: its mode, pass list, wait, fallback and
-the number of its ``fail_mode`` rows.
+``read`` gives the gate entry of a runtime ConfigMap: its mode, pass list, wait, fallback, the
+number of its ``fail_mode`` rows and the number of its ``sources`` slices.
 
 ``pass-host-problem <glob>`` says why the gate would refuse a ``--pass-host`` glob.
 
@@ -41,7 +42,7 @@ from pathlib import Path
 import re
 import sys
 
-from fail_mode import ROW_KEYS, fold_host
+from fail_mode import ROW_KEYS, SETTING_KEYS, fold_host
 
 GATE_PLUGIN = "sentry-gate"
 DEFAULT_WAIT_MS = 2000  # the gate's own default when its entry has no wait_ms
@@ -76,6 +77,15 @@ def scalar(value) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+def row_lines(pad: str, rows: list[dict]) -> list[str]:
+    """``fail_mode:`` and its rows at ``pad``, each row with only the keys it has."""
+    lines = [f"{pad}fail_mode:\n"]
+    for row in rows:
+        fields = [field for field in ROW_KEYS if field in row]
+        lines += [f"{pad}{'- ' if n == 0 else '  '}{field}: {scalar(row[field])}\n" for n, field in enumerate(fields)]
+    return lines
+
+
 def gate_block(indent: int, spec: dict, mode: str) -> list[str]:
     pad, child, key, item = (" " * (indent + n) for n in (0, 2, 4, 6))
     lines = [f"{pad}- name: {GATE_PLUGIN}\n"]
@@ -91,10 +101,14 @@ def gate_block(indent: int, spec: dict, mode: str) -> list[str]:
     if spec.get("fallback"):
         lines.append(f"{key}fallback: {scalar(spec['fallback'])}\n")
     if spec.get("fail_mode"):
-        lines.append(f"{key}fail_mode:\n")
-        for row in spec["fail_mode"]:
-            fields = [field for field in ROW_KEYS if field in row]
-            lines += [f"{key}{'- ' if n == 0 else '  '}{field}: {scalar(row[field])}\n" for n, field in enumerate(fields)]
+        lines += row_lines(key, spec["fail_mode"])
+    if spec.get("sources"):
+        lines.append(f"{key}sources:\n")
+        for source, slice_ in spec["sources"].items():
+            lines.append(f"{key}  {scalar(source)}:\n")
+            lines += [f"{key}    {field}: {scalar(slice_[field])}\n" for field in SETTING_KEYS if field in slice_]
+            if slice_.get("fail_mode"):
+                lines += row_lines(f"{key}    ", slice_["fail_mode"])
     if spec.get("pass_hosts"):
         lines.append(f"{key}pass_hosts:\n")
         lines += [f"{key}- {scalar(host)}\n" for host in spec["pass_hosts"]]
@@ -151,6 +165,14 @@ def rows_by_destination(rows) -> dict:
             for row in rows or []}
 
 
+def slices_by_source(sources) -> dict:
+    """sources slices keyed by source, each with its defaults and its rows keyed by
+    destination as ``rows_by_destination`` does."""
+    return {str(source): {**{key: slice_[key] for key in SETTING_KEYS if key in slice_},
+                          "fail_mode": rows_by_destination(slice_.get("fail_mode"))}
+            for source, slice_ in (sources or {}).items()}
+
+
 def pipeline_problems(document: dict, expected: dict, otel_endpoint: str, namespace_file: str,
                       managed: tuple[str, ...], spec: dict, mode: str) -> list[str]:
     """Every way a sidecar's /v1/pipeline differs from the gated pipeline."""
@@ -185,6 +207,14 @@ def pipeline_problems(document: dict, expected: dict, otel_endpoint: str, namesp
         problems.append("gate fallback differs")
     if rows_by_destination(config.get("fail_mode")) != rows_by_destination(spec.get("fail_mode")):
         problems.append("gate fail_mode rows differ")
+    live_sources, want_sources = config.get("sources") or {}, spec.get("sources") or {}
+    # /v1/pipeline masks a map key named like a secret's (a source ending in key, token,
+    # secret, password...): such a slice is compared by its presence only.
+    masked = {source for source, slice_ in live_sources.items() if not isinstance(slice_, dict)}
+    if not masked <= set(want_sources) or slices_by_source(
+            {s: v for s, v in live_sources.items() if s not in masked}) != slices_by_source(
+            {s: v for s, v in want_sources.items() if s not in masked}):
+        problems.append("gate sources slices differ")
     if not config.get("verdict_secret"):
         problems.append("gate has no verdict secret")
     if (gate.get("onError") == "observe") != (mode == "observe"):
@@ -204,9 +234,9 @@ def pipeline_valid_command(args: argparse.Namespace) -> int:
 
 def read_command(args: argparse.Namespace) -> int:
     """The gate entry of a runtime ConfigMap as {"mode", "pass_hosts", "wait_ms", "fallback",
-    "fail_mode_rows"}, {} when none; wait_ms and fallback are None when the entry has no such
-    key. Each key is read at the indentation of the entry's config keys, so a row's wait or
-    fallback is not the gate's."""
+    "fail_mode_rows", "sources"}, {} when none; wait_ms and fallback are None when the entry
+    has no such key; sources counts the slices. Each key is read at the indentation of the
+    entry's config keys, so a row's or a slice's wait or fallback is not the gate's."""
     reconcile = load_reconcile(args.kit_dir)
     config = (json.load(sys.stdin).get("data") or {}).get("config.yaml") or ""
     lines = config.splitlines(keepends=True)
@@ -222,11 +252,13 @@ def read_command(args: argparse.Namespace) -> int:
         wait_ms = re.search(rf"^{k}wait_ms:\s*(\d+)\s*$", text, re.M)
         fallback = re.search(rf"^{k}fallback:\s*(\S+)\s*$", text, re.M)
         rows = re.search(rf"^{k}fail_mode:\n((?:{k}(?:- |  ).*\n)*)", text, re.M)
+        sources = re.search(rf"^{k}sources:\n((?:{k}  .*\n)*)", text, re.M)
         json.dump({"mode": "observe" if re.search(r"on_error:\s*observe", text) else "enforce",
                    "pass_hosts": [h.split("- ", 1)[1].strip().strip("'") for h in hosts.group(1).splitlines()] if hosts else [],
                    "wait_ms": int(wait_ms.group(1)) if wait_ms else None,
                    "fallback": fallback.group(1).strip("'\"") if fallback else None,
-                   "fail_mode_rows": len(re.findall(rf"^{k}- ", rows.group(1), re.M)) if rows else 0},
+                   "fail_mode_rows": len(re.findall(rf"^{k}- ", rows.group(1), re.M)) if rows else 0,
+                   "sources": len(re.findall(rf"^{k}  \S", sources.group(1), re.M)) if sources else 0},
                   sys.stdout)
         return 0
     json.dump({}, sys.stdout)
@@ -293,7 +325,7 @@ def main() -> int:
     for name, func in (("apply", apply_command), ("pipeline-valid", pipeline_valid_command)):
         p = sub.add_parser(name)
         p.add_argument("--kit-dir", required=True)
-        p.add_argument("--spec", required=True, help="JSON: verdict_url, verdict_secret, pass_hosts, wait_ms, fallback and fail_mode (optional)")
+        p.add_argument("--spec", required=True, help="JSON: verdict_url, verdict_secret, pass_hosts, wait_ms, fallback, fail_mode and sources (optional)")
         p.add_argument("--mode", choices=MODES, required=True)
         p.add_argument("--otel-endpoint", required=True)
         if name == "pipeline-valid":
