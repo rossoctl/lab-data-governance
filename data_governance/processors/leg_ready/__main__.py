@@ -172,6 +172,15 @@ def main() -> int:
                 f"consumer:{driver.PROCESSOR_NAME}", dsn, stop=stop_event
             ) as lock:
                 log.info("sole-consumer lock held")
+                # Priority decision (dg_priority_decision): an interaction a Sentry
+                # gate waits on is computed out of seq order, in a turn shared
+                # with the cursor arm. LEG_READY_PRIORITY_DECISION=off leaves the cursor
+                # arm alone.
+                if observer is not None and os.environ.get("LEG_READY_PRIORITY_DECISION", "on").lower() not in ("off", "0", "false"):
+                    from . import priority_decision
+
+                    priority_decision.start(observer, stop_event, dsn, guard=lock.check)
+                    log.info("priority decision enabled (set LEG_READY_PRIORITY_DECISION=off to disable)")
                 driver.run(stop_event, dsn, observer=observer, guard=lock.check)
         except db.LockWaitStopped:
             log.info("stopped while waiting for the sole-consumer lock")

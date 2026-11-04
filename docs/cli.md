@@ -24,7 +24,10 @@ Use `--no-build` only when the required images are already loaded. Use
 `--reuse-classification` when the classification image is in the local container
 cache: the script builds and loads the shared receiver/UI image, then loads the
 cached classification image into Kind without rebuilding its model or fetching
-git-LFS weights. The options cannot be combined.
+git-LFS weights. The verdict service runs from that image too: the script refuses
+an image built before the service exists, and an older one runs older verdict code,
+so rebuild it after changing `data_governance/risk/api/`. The options cannot be
+combined.
 
 `dg.sh component uninstall` reverts the collector tee and removes the component.
 It deletes the namespace and PVC by default; `--keep-data` preserves the PVC.

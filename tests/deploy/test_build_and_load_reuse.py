@@ -11,13 +11,14 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "deploy" / "build-and-load.sh"
 
 
-def run_with_fake_images(tmp_path: Path, *, cached: bool) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+def run_with_fake_images(tmp_path: Path, *, cached: bool, has_verdict: bool = True) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "commands.log"
     scripts = {
         "podman": r'''printf 'podman %s\n' "$*" >> "$TRACE_LOG"
 if [[ "$1 $2" == 'image inspect' && "$CACHE_IMAGE_PRESENT" == 0 ]]; then exit 1; fi
+if [[ "$1" == 'run' && "$CACHE_HAS_VERDICT" == 0 ]]; then exit 1; fi
 exit 0
 ''',
         "kind": r'''printf 'kind %s\n' "$*" >> "$TRACE_LOG"
@@ -39,6 +40,7 @@ exit 0
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "TRACE_LOG": str(log),
         "CACHE_IMAGE_PRESENT": "1" if cached else "0",
+        "CACHE_HAS_VERDICT": "1" if has_verdict else "0",
         "CONTAINER_TOOL": "podman",
         "KIND_CLUSTER": "rossoctl",
     }
@@ -69,6 +71,14 @@ def test_reuse_classification_builds_shared_image_but_only_loads_cached_model(
         "kind load docker-image docker.io/data-governance/classification:latest --name rossoctl" in call
         for call in calls
     )
+
+
+def test_reuse_classification_refuses_a_cached_image_without_the_verdict_service(tmp_path: Path) -> None:
+    result, calls = run_with_fake_images(tmp_path, cached=True, has_verdict=False)
+
+    assert result.returncode == 2
+    assert "verdict service" in result.stderr
+    assert not any(call.startswith("podman build ") for call in calls)
 
 
 def test_reuse_classification_fails_before_build_when_cache_is_missing(tmp_path: Path) -> None:

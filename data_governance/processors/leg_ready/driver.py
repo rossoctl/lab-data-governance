@@ -66,11 +66,13 @@ Run as ``python -m data_governance.processors.leg_ready``.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from typing import Any
 
 from data_governance import db
 from data_governance.processors import _driver
@@ -201,6 +203,95 @@ SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
 """
 
 
+# The same two predicates for one named leg, for priority decision (:mod:`.priority_decision`),
+# which asks about one interaction out of seq order and must judge readiness by
+# exactly this stream's rule. Same columns as the fetch, so the same Leg.
+_ONE_LEG_SQL = """
+SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
+       (l.payload_hash IS NULL OR pc.content_hash IS NOT NULL) AS ready
+  FROM interaction_legs l
+  LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
+ WHERE l.interaction_id = %s AND l.leg_type = %s
+"""
+
+_ONE_LEG_WITH_LABELS_SQL = """
+SELECT l.interaction_id, l.leg_type::text, l.payload_hash, l.seq,
+       (l.payload_hash IS NULL
+        OR (pc.content_hash IS NOT NULL AND m.payload_hash = l.payload_hash)) AS ready
+  FROM interaction_legs l
+  LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
+  LEFT JOIN leg_inherited_labels m
+         ON m.interaction_id = l.interaction_id AND m.leg_type = l.leg_type
+ WHERE l.interaction_id = %s AND l.leg_type = %s
+"""
+
+
+def one_leg(tx: db.Transaction, interaction_id: str, leg_type: str) -> "Leg | None":
+    """One leg with its readiness by this stream's predicate (with or without the
+    label-lineage arm, as ``RISK_INHERITED_LABELS`` says); ``None`` when the leg
+    does not exist yet."""
+    row = tx.fetch_one(
+        _ONE_LEG_WITH_LABELS_SQL if _labels_on() else _ONE_LEG_SQL,
+        (interaction_id, leg_type),
+    )
+    if row is None:
+        return None
+    return Leg(interaction_id=row[0], leg_type=row[1], payload_hash=row[2],
+               seq=int(row[3]), ready=bool(row[4]))
+
+
+class Turns:
+    """One risk computation at a time in this process; a waiting priority decision first.
+
+    The engine computes a record from evidence it read before its write
+    transaction, so two computations of one interaction side by side can land
+    the older one last — the reason this consumer is a sole consumer. The
+    priority decision arm (:mod:`.priority_decision`) computes on its own thread, so every
+    computation here, cursor arm, recompute arm and priority decision arm, runs inside one
+    turn: the process stays the tables' one serial writer, and a gate's
+    exchange waits behind at most the one leg being computed."""
+
+    def __init__(self) -> None:
+        self._cv = threading.Condition()
+        self._busy = False
+        self._priority_waiting = 0
+
+    @contextlib.contextmanager
+    def cursor(self) -> Iterator[None]:
+        with self._cv:
+            while self._busy or self._priority_waiting:
+                self._cv.wait()
+            self._busy = True
+        try:
+            yield
+        finally:
+            self._release()
+
+    @contextlib.contextmanager
+    def priority_decision(self) -> Iterator[None]:
+        with self._cv:
+            self._priority_waiting += 1
+            try:
+                while self._busy:
+                    self._cv.wait()
+            finally:
+                self._priority_waiting -= 1
+            self._busy = True
+        try:
+            yield
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        with self._cv:
+            self._busy = False
+            self._cv.notify_all()
+
+
+#: The process's turns (see :class:`Turns`).
+TURNS = Turns()
+
+
 _HELD_ON_LABELS_SQL = """
 SELECT pc.content_hash IS NOT NULL, m.payload_hash
   FROM interaction_legs l
@@ -311,7 +402,7 @@ def _drain_spec(
     at its next wake, and a drain that outlives the lock stops at the next leg
     without another OPA call. The guard alone cannot fence a write (it runs on
     another connection), so each leg's transaction also advances the cursor
-    only from the value this drain read (:func:`_advance_from`): a leg another
+    only from the value this drain read (:func:`advance_from`): a leg another
     consumer already delivered rolls back and raises
     :class:`~data_governance.db.LockLost`.
     """
@@ -353,23 +444,26 @@ def _drain_prefix(
         by_seq = {leg.seq: leg for leg in batch}
         for item in result.delivered:
             leg = by_seq[item.seq]
-            if guard is not None:
-                guard()
-            # Phase 1 — observer compute, no transaction held.
-            try:
-                write = observer(leg) if observer is not None else None
-            except LegDeferred as exc:
-                log.warning(
-                    "leg seq=%d interaction_id=%s deferred by observer (%s); "
-                    "holding cursor at %d, retrying on next wake",
-                    leg.seq, leg.interaction_id, exc.__cause__ or exc, cursor,
-                )
-                return cursor
-            # Phase 2 — the cursor advance + the observer's write, one txn. The
-            # advance is first and conditional: it is the fence.
-            with db.transaction() as tx:
-                _advance_from(tx, spec.processor_name, cursor, leg.seq)
-                process_leg(tx, leg, write)
+            with TURNS.cursor():
+                if guard is not None:
+                    guard()
+                with db.transaction() as tx:
+                    _seq, stamp = read_stamp(tx, spec.processor_name)
+                # Phase 1 — observer compute, no transaction held.
+                try:
+                    write = observer(leg) if observer is not None else None
+                except LegDeferred as exc:
+                    log.warning(
+                        "leg seq=%d interaction_id=%s deferred by observer (%s); "
+                        "holding cursor at %d, retrying on next wake",
+                        leg.seq, leg.interaction_id, exc.__cause__ or exc, cursor,
+                    )
+                    return cursor
+                # Phase 2 — the cursor advance + the observer's write, one txn. The
+                # advance is first and conditional: it is the fence.
+                with db.transaction() as tx:
+                    advance_from(tx, spec.processor_name, cursor, leg.seq, stamp)
+                    process_leg(tx, leg, write)
             cursor = leg.seq
 
         # If the ready prefix stopped short of the whole batch, a leg is held —
@@ -429,7 +523,7 @@ def _drain_recompute_requests(
     many were recomputed.
 
     The write is fenced like the cursor arm's: its transaction first holds the
-    cursor row at the value this drain read (:func:`_advance_from` from the cursor
+    cursor row at the value this drain read (:func:`advance_from` from the cursor
     to itself, so a replacement that moved it makes this drain stop with
     :class:`~data_governance.db.LockLost`), then claims the request by deleting it.
     A request another consumer already took, or that was re-queued meanwhile,
@@ -440,34 +534,54 @@ def _drain_recompute_requests(
         rows = tx.fetch_all(_RECOMPUTE_SQL, (cursor, limit))
     done = 0
     for interaction_id, requested_at, leg_type, payload_hash, seq in rows:
-        if guard is not None:
-            guard()
         leg = Leg(interaction_id=interaction_id, leg_type=leg_type, payload_hash=payload_hash,
                   seq=int(seq), ready=True)
-        try:
-            write = observer(leg)
-        except LegDeferred as exc:
-            log.warning("recompute of interaction_id=%s deferred by observer (%s); retrying on next wake",
-                        interaction_id, exc.__cause__ or exc)
-            break
-        with db.transaction() as tx:
-            _advance_from(tx, PROCESSOR_NAME, cursor, cursor)
-            claimed = tx.fetch_one(
-                "DELETE FROM risk_recompute_requests WHERE interaction_id = %s AND requested_at = %s "
-                "RETURNING 1", (interaction_id, requested_at))
-            if claimed is None:
-                continue
-            if write is not None:
-                write(tx)
+        with TURNS.cursor():
+            if guard is not None:
+                guard()
+            with db.transaction() as tx:
+                _seq, stamp = read_stamp(tx, PROCESSOR_NAME)
+            try:
+                write = observer(leg)
+            except LegDeferred as exc:
+                log.warning("recompute of interaction_id=%s deferred by observer (%s); retrying on next wake",
+                            interaction_id, exc.__cause__ or exc)
+                break
+            with db.transaction() as tx:
+                advance_from(tx, PROCESSOR_NAME, cursor, cursor, stamp)
+                claimed = tx.fetch_one(
+                    "DELETE FROM risk_recompute_requests WHERE interaction_id = %s AND requested_at = %s "
+                    "RETURNING 1", (interaction_id, requested_at))
+                if claimed is None:
+                    continue
+                if write is not None:
+                    write(tx)
         done += 1
     if done:
         log.info("recomputed %d interaction(s) whose inherited labels changed", done)
     return done
 
 
-def _advance_from(tx: db.Transaction, processor_name: str, expected: int, seq: int) -> None:
-    """Advance the durable cursor from *expected* to *seq*, or raise
-    :class:`~data_governance.db.LockLost` if it no longer reads *expected*.
+def read_stamp(tx: db.Transaction, processor_name: str) -> tuple[int, Any]:
+    """The cursor row's seq and stamp, read inside the turn, before the computation
+    that :func:`advance_from` fences."""
+    tx.execute(
+        "INSERT INTO processor_state (processor_name, last_processed_seq, updated_at) "
+        "VALUES (%s, 0, now()) ON CONFLICT (processor_name) DO NOTHING",
+        (processor_name,),
+    )
+    row = tx.fetch_one(
+        "SELECT last_processed_seq, updated_at FROM processor_state WHERE processor_name = %s",
+        (processor_name,),
+    )
+    return int(row[0]), row[1]
+
+
+def advance_from(tx: db.Transaction, processor_name: str, expected: int, seq: int, stamp: Any) -> None:
+    """Advance the durable cursor from *expected* to *seq* and restamp the row, or
+    raise :class:`~data_governance.db.LockLost` if it no longer reads *expected* and
+    *stamp*: every leg-ready write stamps it, so that is any other write since the
+    computation started, including one that left the cursor where it was.
 
     The sole-consumer lock is checked before each leg, but that check and this
     transaction run on different connections: a consumer that stalls between
@@ -477,18 +591,13 @@ def _advance_from(tx: db.Transaction, processor_name: str, expected: int, seq: i
     cursor moved and rolls back its whole leg — record included — instead of
     landing an older computation as the newest version and moving the cursor
     backwards."""
-    tx.execute(
-        "INSERT INTO processor_state (processor_name, last_processed_seq, updated_at) "
-        "VALUES (%s, 0, now()) ON CONFLICT (processor_name) DO NOTHING",
-        (processor_name,),
-    )
     if tx.fetch_one(
-        "UPDATE processor_state SET last_processed_seq = %s, updated_at = now() "
-        "WHERE processor_name = %s AND last_processed_seq = %s RETURNING 1",
-        (seq, processor_name, expected),
+        "UPDATE processor_state SET last_processed_seq = %s, updated_at = clock_timestamp() "
+        "WHERE processor_name = %s AND last_processed_seq = %s AND updated_at = %s RETURNING 1",
+        (seq, processor_name, expected, stamp),
     ) is None:
         raise db.LockLost(
-            f"{processor_name} cursor moved past {expected}: another consumer delivered"
+            f"{processor_name} cursor row moved from seq {expected}: another writer"
         )
 
 

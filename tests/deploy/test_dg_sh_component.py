@@ -27,6 +27,7 @@ rest of ``tests/deploy/`` takes. The fakes record their argv so we assert both
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -108,6 +109,15 @@ esac
 if [[ "{GET_FAILS}" == "1" && "$1" == "get" ]]; then
   printf '%s\n' "The connection to the server 127.0.0.1:6443 was refused" >&2
   exit 1
+fi
+if [[ "$*" == *"get secret dg-verdict-secret"* ]]; then
+  if [[ -f "$KUBECTL_LOG.secret" ]]; then echo secret/dg-verdict-secret; exit 0; fi
+  echo 'Error from server (NotFound): secrets "dg-verdict-secret" not found' >&2
+  exit 1
+fi
+if [[ "$*" == *"create secret generic dg-verdict-secret"* ]]; then
+  cat > "$KUBECTL_LOG.secret"
+  exit 0
 fi
 # Collector-config probe: dg.sh inspects the collector ConfigMap to decide
 # whether the tee is wired. When TEE_WIRED=1 echo a config carrying the
@@ -278,6 +288,21 @@ def test_component_install_drives_full_pipeline(sandbox) -> None:
     # rollout restart + status of the load-bearing deployments.
     assert "rollout restart" in kubectl, "install must rollout restart"
     assert "rollout status" in kubectl, "install must wait via rollout status"
+
+
+def test_component_install_creates_the_verdict_secret_once(sandbox) -> None:
+    """45-verdict.yaml does not start without it; the value never reaches argv."""
+    assert sandbox.run("component", "install").returncode == 0
+    stored = sandbox.log.with_name(sandbox.log.name + ".secret")
+    value = stored.read_text()
+    assert re.fullmatch(r"[0-9a-f]{64}", value), "64 hex digits"
+    calls = sandbox.kubectl_calls()
+    assert [c for c in calls if "create secret generic dg-verdict-secret" in c], calls
+    assert not [c for c in calls if value in c], "the value travels on stdin only"
+
+    assert sandbox.run("component", "install").returncode == 0
+    assert stored.read_text() == value, "created once, never rotated"
+    assert len([c for c in sandbox.kubectl_calls() if "create secret generic" in c]) == 1
 
 
 def test_component_install_rollout_targets_every_built_image(sandbox) -> None:

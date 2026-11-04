@@ -12,6 +12,7 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `40-ui.yaml`                  | `Service` + `Deployment` for the UI backend                 |
 | `50-networkpolicy.yaml`       | `NetworkPolicy` for receiver, UI, Postgres, and OPA ingress |
 | `60-ui-httproute.yaml`        | `HTTPRoute` + `ReferenceGrant` exposing the UI on the rossoctl shared Gateway |
+| `45-verdict.yaml`             | `ServiceAccount` + `Service` + `Deployment` + `NetworkPolicy` for the verdict service |
 | `70-interactions.yaml`        | `Deployment` for the P-interactions processor (no Service)  |
 | `80-classification.yaml`      | `Deployment` for the P-classification processor (no Service) |
 | `85-leg-ready.yaml`           | `Deployment` for the leg-ready consumer + risk engine (no Service) |
@@ -47,7 +48,8 @@ idempotent (pass `--no-build` when the images are already loaded), and it
 performs the load-bearing `rollout restart` for you.
 Pass `--reuse-classification` to build/load the shared image while loading an
 already cached classification image into a fresh Kind cluster without rebuilding
-or pushing it. The script fails before building if that cached image is absent.
+or pushing it. The script fails before building if that cached image is absent or
+holds no verdict service, which runs from it; rebuild it after changing that code.
 
 The design and its boundary decisions live in
 [`../../docs/cli.md`](../../docs/cli.md),
@@ -170,6 +172,12 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   reached it through label lineage, makes a leg ready only once label lineage
   has derived it (a stopped label-lineage processor holds the stream, with a
   WARNING per wake once one leg has waited 30 s), and drains `risk_recompute_requests`.
+- **Verdict service Deployment.** **Two replicas**, `maxUnavailable:0`, running
+  `python -m data_governance.risk.api.verdict_app` from the classification image.
+  What a Sentry gate asks before an outbound request leaves
+  ([docs/verdict-service.md](../../docs/verdict-service.md)). Needs Secret
+  `dg-verdict-secret` (`dg.sh component install` creates it when absent); its
+  ingress admits namespaces labelled `rossoctl-enabled=true` to this port.
 - **Trace-risk-trigger Deployment.** **Single replica** running
   `python -m data_governance.processors.risk.trace_trigger`, `maxSurge:0`.
   Drains `interaction_risk_records` by `seq` (migration 0019) and recomputes
@@ -187,7 +195,7 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   the `opa-policy` ConfigMap, which **is not in these manifests**: run
   `deploy/create-opa-configmap.sh` (it compiles the rule catalog), or the
   OPA pod stays in `ContainerCreating` and the leg-ready stream holds.
-- **NetworkPolicy.** Four policies, one per serving workload. Receiver and UI
+- **NetworkPolicy.** Five policies, one per serving workload. Receiver and UI
   ingress is restricted to the upstream platform namespace, matched by
   the default `kubernetes.io/metadata.name` label every namespace gets
   (`rossoctl-system`, with `kagenti-system`/`kagenti` kept for
@@ -196,7 +204,8 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   leg-ready pod: its REST API is unauthenticated and can replace or delete
   the loaded policy. PROJECT.md §7 frames v1 as
   unauthenticated cluster-internal: the NetworkPolicy IS the v1
-  security boundary.
+  security boundary. The verdict service's policy admits workload
+  namespaces (`rossoctl-enabled=true`), so that port alone also checks a bearer.
 
 ## Prerequisite: build the image and load it into Kind
 
@@ -244,6 +253,8 @@ After build + load, apply the manifests:
 
 ```sh
 kubectl apply -f deploy/k8s/
+kubectl -n data-governance get secret dg-verdict-secret >/dev/null 2>&1 || \
+  kubectl -n data-governance create secret generic dg-verdict-secret --from-literal=secret="$(openssl rand -hex 32)"
 ./deploy/create-opa-configmap.sh    # the compiled policy OPA loads
 ```
 
@@ -282,7 +293,7 @@ kubectl -n data-governance rollout restart \
   deployment/data-governance-receiver deployment/data-governance-ui \
   deployment/data-governance-interactions deployment/data-governance-classification \
   deployment/data-governance-data-lineage deployment/data-governance-label-lineage \
-  deployment/data-governance-leg-ready \
+  deployment/data-governance-leg-ready deployment/data-governance-verdict \
   deployment/data-governance-risk-trace-trigger deployment/data-governance-risk-alerts
 kubectl -n data-governance rollout status deployment/data-governance-receiver --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-ui --timeout=120s
@@ -291,6 +302,7 @@ kubectl -n data-governance rollout status deployment/data-governance-classificat
 kubectl -n data-governance rollout status deployment/data-governance-data-lineage --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-label-lineage --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-leg-ready --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-verdict --timeout=300s
 kubectl -n data-governance rollout status deployment/data-governance-risk-trace-trigger --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-risk-alerts --timeout=120s
 ```
@@ -406,7 +418,8 @@ NetworkPolicy boundary (PROJECT.md §7). For local dev access, no
 The "OTLP span lands in spans + surfaces in UI" acceptance criterion is
 checked manually against a fresh cluster:
 
-1. `kubectl apply -f deploy/k8s/`
+1. `kubectl apply -f deploy/k8s/`, and create Secret `dg-verdict-secret` as above
+   (the verdict pods wait for it; the receiver and UI do not).
 2. Wait for `data-governance-receiver` and `data-governance-ui` pods to
    reach Ready.
 3. From a pod inside the platform namespace, send an OTLP span to
