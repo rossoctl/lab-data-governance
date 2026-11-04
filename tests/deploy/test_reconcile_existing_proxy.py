@@ -1,4 +1,4 @@
-"""Contract tests for the Rossoctl-owned proxy pipeline reconciler (#256)."""
+"""Contract tests for the namespace AuthBridge pipeline reconciler (#256, #326)."""
 
 from __future__ import annotations
 
@@ -6,40 +6,42 @@ import json
 import subprocess
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RECONCILER = REPO_ROOT / "deploy" / "lineage-attach" / "reconcile-existing-proxy.py"
 
 
+OTEL_ENDPOINT = "otel-collector.rossoctl-system.svc.cluster.local:4317"
+
+# The namespace ConfigMap as the Rossoctl chart emits it.
+CHART_CONFIG = """
+pipeline:
+  inbound:
+    plugins:
+      - name: jwt-validation
+        config:
+          issuer: "https://issuer.example"
+  outbound:
+    plugins:
+      - name: token-exchange
+        config:
+          default_policy: "passthrough"
+"""
+
+
 def _run_render(
-    config: str,
-    *,
-    forward_proxy_addr: str = ":8084",
-    reverse_proxy_addr: str = ":8080",
-    reverse_proxy_backend: str = "http://127.0.0.1:8081",
+    config: str, *, otel_endpoint: str = OTEL_ENDPOINT
 ) -> subprocess.CompletedProcess[str]:
     document = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
-        "metadata": {"name": "authbridge-config-travel-advisor"},
+        "metadata": {"name": "authbridge-runtime-config"},
         "data": {"config.yaml": config, "owned-by-operator": "keep-me"},
     }
     return subprocess.run(
-        [
-            "python3",
-            str(RECONCILER),
-            "render",
-            "--self-id",
-            "travel-advisor",
-            "--otel-endpoint",
-            "otel-collector.rossoctl-system.svc.cluster.local:4317",
-            "--forward-proxy-addr",
-            forward_proxy_addr,
-            "--reverse-proxy-addr",
-            reverse_proxy_addr,
-            "--reverse-proxy-backend",
-            reverse_proxy_backend,
-        ],
+        ["python3", str(RECONCILER), "render", "--otel-endpoint", otel_endpoint],
         input=json.dumps(document),
         capture_output=True,
         text=True,
@@ -47,13 +49,15 @@ def _run_render(
     )
 
 
+def _rendered_config(config: str) -> str:
+    result = _run_render(config)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)["data"]["config.yaml"]
+
+
 def test_render_preserves_auth_and_reconciles_both_directions() -> None:
     result = _run_render(
-        """listener:
-  forward_proxy_addr: :8084
-  reverse_proxy_addr: :8080
-  reverse_proxy_backend: http://127.0.0.1:8081
-mode: proxy-sidecar
+        """mode: proxy-sidecar
 pipeline:
   inbound:
     plugins:
@@ -80,29 +84,15 @@ spiffe:
     assert body.count("name: mcp-parser") == 2
     assert body.count("name: inference-parser") == 2
     assert body.count("name: lineage-telemetry") == 2
-    assert body.count('self_id: "travel-advisor"') == 2
+    assert "self_id" not in body
+    assert body.count(f"otel_endpoint: {OTEL_ENDPOINT}\n") == 2
     assert body.count(
-        'namespace_file: "/var/run/secrets/kubernetes.io/serviceaccount/namespace"'
+        "namespace_file: /var/run/secrets/kubernetes.io/serviceaccount/namespace\n"
     ) == 2
-    assert "reverse_proxy_addr: :8080" in body
-    assert "forward_proxy_addr: :8084" in body
+    assert "spiffe:\n  socket: unix:///spiffe-workload-api/spire-agent.sock\n" in body
 
     rerun = subprocess.run(
-        [
-            "python3",
-            str(RECONCILER),
-            "render",
-            "--self-id",
-            "travel-advisor",
-            "--otel-endpoint",
-            "otel-collector.rossoctl-system.svc.cluster.local:4317",
-            "--forward-proxy-addr",
-            ":8084",
-            "--reverse-proxy-addr",
-            ":8080",
-            "--reverse-proxy-backend",
-            "http://127.0.0.1:8081",
-        ],
+        ["python3", str(RECONCILER), "render", "--otel-endpoint", OTEL_ENDPOINT],
         input=result.stdout,
         capture_output=True,
         text=True,
@@ -112,76 +102,67 @@ spiffe:
     assert json.loads(rerun.stdout) == rendered
 
 
-def test_render_refuses_non_proxy_or_incomplete_listener() -> None:
+def test_render_survives_a_pyyaml_round_trip() -> None:
+    # Another writer (an app deploy script) re-dumps the namespace ConfigMap
+    # with PyYAML; the canonical bytes must come back unchanged.
+    redumped = yaml.safe_dump(yaml.safe_load(_rendered_config(CHART_CONFIG)), sort_keys=False)
+    assert _rendered_config(redumped) == redumped
+    lineage = yaml.safe_load(redumped)["pipeline"]["outbound"]["plugins"][-1]
+    assert lineage == {
+        "name": "lineage-telemetry",
+        "config": {
+            "otel_endpoint": OTEL_ENDPOINT,
+            "capture_io": False,
+            "namespace_file": "/var/run/secrets/kubernetes.io/serviceaccount/namespace",
+        },
+    }
+
+
+def test_render_appends_after_a_last_line_without_newline() -> None:
+    # A chart's `config.yaml: |-` block strips the final newline.
+    body = _rendered_config(CHART_CONFIG.rstrip("\n"))
+    plugins = yaml.safe_load(body)["pipeline"]["outbound"]["plugins"]
+    assert [plugin["name"] for plugin in plugins] == [
+        "token-exchange", "a2a-parser", "mcp-parser", "inference-parser", "lineage-telemetry",
+    ]
+    assert plugins[0]["config"] == {"default_policy": "passthrough"}
+
+
+def test_render_refuses_a_config_without_both_pipeline_directions() -> None:
     for config in (
-        "mode: envoy-sidecar\npipeline: {}\n",
-        "mode: proxy-sidecar\npipeline: {}\n",
+        "mode: proxy-sidecar\n",
+        "pipeline: {}\n",
+        "pipeline:\n  inbound:\n    plugins: []\n",
     ):
         result = _run_render(config)
         assert result.returncode == 2
         assert "error:" in result.stderr
 
 
-def test_render_repairs_listener_drift() -> None:
+def test_render_refuses_a_plugin_item_the_pipeline_contract_cannot_name() -> None:
     result = _run_render(
-        """listener:
-  forward_proxy_addr: :9999
-  reverse_proxy_addr: :9998
-  reverse_proxy_backend: http://127.0.0.1:9997
-mode: proxy-sidecar
-pipeline:
+        """pipeline:
   inbound:
     plugins:
-      - name: jwt-validation
+      - {name: jwt-validation}
   outbound:
     plugins:
       - name: token-exchange
 """
     )
-
-    assert result.returncode == 0, result.stderr
-    body = json.loads(result.stdout)["data"]["config.yaml"]
-    assert "forward_proxy_addr: :8084" in body
-    assert "reverse_proxy_addr: :8080" in body
-    assert "reverse_proxy_backend: http://127.0.0.1:8081" in body
-    assert ":999" not in body
+    assert result.returncode == 2
+    assert "unnamed plugin in pipeline.inbound" in result.stderr
 
 
-def test_render_uses_the_live_tool_listener_contract() -> None:
-    result = _run_render(
-        """listener:
-  forward_proxy_addr: :9999
-  reverse_proxy_addr: :9998
-  reverse_proxy_backend: http://127.0.0.1:9997
-mode: proxy-sidecar
-pipeline:
-  inbound:
-    plugins:
-      - name: jwt-validation
-  outbound:
-    plugins:
-      - name: token-exchange
-""",
-        forward_proxy_addr=":8081",
-        reverse_proxy_addr=":8000",
-        reverse_proxy_backend="http://127.0.0.1:8001",
-    )
-
-    assert result.returncode == 0, result.stderr
-    body = json.loads(result.stdout)["data"]["config.yaml"]
-    assert "forward_proxy_addr: :8081" in body
-    assert "reverse_proxy_addr: :8000" in body
-    assert "reverse_proxy_backend: http://127.0.0.1:8001" in body
+def test_render_refuses_an_endpoint_that_is_not_a_plain_scalar() -> None:
+    result = _run_render(CHART_CONFIG, otel_endpoint="collector:4317 # comment")
+    assert result.returncode == 2
+    assert "not a plain host:port or URL" in result.stderr
 
 
 def test_pipeline_validation_requires_exact_reconciled_plugin_sequences() -> None:
     rendered = _run_render(
-        """listener:
-  forward_proxy_addr: :8084
-  reverse_proxy_addr: :8080
-  reverse_proxy_backend: http://127.0.0.1:8081
-mode: proxy-sidecar
-pipeline:
+        """pipeline:
   inbound:
     plugins:
       - name: jwt-validation
@@ -216,13 +197,11 @@ pipeline:
         live[direction][-1]["config"] = {
             "otel_endpoint": "otel-collector.rossoctl-system.svc.cluster.local:4317",
             "capture_io": False,
-            "self_id": "travel-advisor",
             "namespace_file": "/var/run/secrets/kubernetes.io/serviceaccount/namespace",
         }
 
     command = [
         "python3", str(RECONCILER), "pipeline-valid",
-        "--self-id", "travel-advisor",
         "--otel-endpoint", "otel-collector.rossoctl-system.svc.cluster.local:4317",
         "--expected", contract.stdout,
     ]

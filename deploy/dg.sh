@@ -22,6 +22,9 @@
 #   dg.sh component  install [--no-build|--reuse-classification]
 #   dg.sh namespaces [list]
 #   dg.sh namespace  <ns> [instrument|status] [<entity>]
+#   dg.sh namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]... [--wait-ms <n>] [--fallback deny|allow] [--allow-open-default]
+#   dg.sh namespace  <ns> fail-mode set <file>|show|validate <file>
+#   dg.sh namespace  <ns> gate-report [--since <time>]
 #
 # Fail-loud posture: every preflight and every unresolved input is a loud,
 # non-zero exit — never a silent no-op.
@@ -101,6 +104,9 @@ Usage:
   ${PROG} component  install [--no-build|--reuse-classification]
   ${PROG} namespaces [list]
   ${PROG} namespace  <ns> [instrument|status] [<entity>]
+  ${PROG} namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]... [--wait-ms <n>] [--fallback deny|allow] [--allow-open-default]
+  ${PROG} namespace  <ns> fail-mode set <file>|show|validate <file>
+  ${PROG} namespace  <ns> gate-report [--since <time>]
 EOF
 }
 
@@ -801,6 +807,16 @@ namespace_status() {
         return 0
     fi
 
+    # Read once: every pod admission renders this ConfigMap's pipeline.
+    local runtime_json runtime_reason=""
+    if ! runtime_json="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json 2>/dev/null)"; then
+        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} could not be read"
+    elif ! adopt_namespace_gate "${ns}" "${runtime_json}" status; then
+        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} carries a Sentry gate, and the verdict Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} cannot be read, or the fail-mode document ${ns}/${DG_FAIL_MODE_CONFIGMAP} cannot be read or is not valid (its problems are above; 'dg.sh namespace ${ns} fail-mode show' prints it, 'fail-mode validate <file>' checks a fixed one)"
+    elif ! configmap_is_canonical "${runtime_json}"; then
+        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} differs from the canonical lineage pipeline; run 'dg.sh namespace ${ns} instrument${DG_GATE_MODE:+ --${DG_GATE_MODE}}'"
+    fi
+
     local name json deployment_json type cm cm_data lineage
     while IFS= read -r name; do
         [[ -n "${name}" ]] || continue
@@ -847,7 +863,7 @@ namespace_status() {
             lineage="no (lineage-telemetry not wired)"
         fi
         if deployment_is_trusted "${deployment_json}" && [[ "${type}" == "proxy" ]]; then
-            local live="yes" reason="live" pod_json pod_name cm_json app_name
+            local live="yes" reason="live" pod_json pod_name app_name
             pod_json="$(get_pod_json_soft "${ns}" "${name}" || true)"
             if ! deployment_activation_valid "${deployment_json}"; then
                 live="no"; reason="application shim or LINEAGE_PROPAGATE missing"
@@ -861,15 +877,12 @@ namespace_status() {
                 live="no"; reason="running application failed two-shim attestation"
             elif [[ -z "${cm}" ]]; then
                 live="no"; reason="mounted ConfigMap unresolved"
+            elif [[ -n "${runtime_reason}" ]]; then
+                live="no"; reason="${runtime_reason}"
             else
-                cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json 2>/dev/null || true)"
-                if ! configmap_is_canonical "${cm_json}" "${name}" "${pod_json}"; then
-                    live="no"; reason="mounted ConfigMap drifted"
-                else
-                    pod_name="$(pod_name_of "${pod_json}")"
-                    if ! live_pipeline_is_canonical "${ns}" "${pod_name}" "${name}" "${cm_json}"; then
-                        live="no"; reason="live pipeline has not converged"
-                    fi
+                pod_name="$(pod_name_of "${pod_json}")"
+                if ! live_pipeline_is_canonical "${ns}" "${pod_name}" "${runtime_json}"; then
+                    live="no"; reason="live pipeline has not converged"
                 fi
             fi
             printf '%s\tsidecar=present\ttype=%s\tlineage=%s\tlive=%s (%s)\n' \
@@ -892,6 +905,12 @@ namespace_status() {
 # own OTEL_ENDPOINT default too, so passing it is a no-op belt-and-braces that
 # also documents the destination in the kit-invocation log.
 DG_OTEL_ENDPOINT="otel-collector.rossoctl-system.svc.cluster.local:4317"
+
+# Rossoctl admission rebuilds each sidecar's authbridge-config-<name> from this
+# namespace ConfigMap on every pod admission (roll, pod delete, scale-up), so the
+# lineage pipeline is written here; written into the per-workload ConfigMap it
+# would be lost at the next admission (#326).
+DG_RUNTIME_CONFIGMAP="authbridge-runtime-config"
 
 # The Kind cluster the shim bake `kind load`s the -otel image into. The kit's
 # container-runtime.sh reads KIND_CLUSTER_NAME (default `rossoctl`), but dg.sh
@@ -1078,16 +1097,14 @@ proxy_environment_valid() {
     proxy_listener_contract "$1" >/dev/null
 }
 
-render_existing_proxy_config() {
-    local cm_json="$1" self_id="$2" pod_json="$3"
-    local contract forward_addr reverse_addr reverse_backend
-    contract="$(proxy_listener_contract "${pod_json}")" || return 1
-    IFS=$'\t' read -r forward_addr reverse_addr reverse_backend <<< "${contract}"
+render_runtime_config() {
+    local cm_json="$1"
+    if [[ -n "${DG_GATE_MODE}" ]]; then
+        render_gated_runtime_config "${cm_json}"
+        return
+    fi
     printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render \
-        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
-        --forward-proxy-addr "${forward_addr}" \
-        --reverse-proxy-addr "${reverse_addr}" \
-        --reverse-proxy-backend "${reverse_backend}"
+        --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}"
 }
 
 deployment_activation_valid() {
@@ -1140,14 +1157,17 @@ sys.exit(0 if ready and containers.get("authbridge-proxy") is True else 1)
 }
 
 configmap_is_canonical() {
-    local cm_json="$1" self_id="$2" pod_json="$3" rendered
-    rendered="$(render_existing_proxy_config "${cm_json}" "${self_id}" "${pod_json}" 2>/dev/null)" \
+    local cm_json="$1" rendered
+    rendered="$(render_runtime_config "${cm_json}" 2>/dev/null)" \
         || return 1
-    python3 -c '
+    # Both documents on stdin, never on a command line: a gated one carries the secret.
+    { printf '%s\n' "${cm_json}"; printf '%s' "${rendered}"; } | python3 -c '
 import json, sys
-current, rendered = (json.loads(value) for value in sys.argv[1:])
+text, decoder = sys.stdin.read(), json.JSONDecoder()
+current, end = decoder.raw_decode(text)
+rendered, _ = decoder.raw_decode(text[end:].lstrip())
 sys.exit(0 if current.get("data", {}).get("config.yaml") == rendered.get("data", {}).get("config.yaml") else 1)
-' "${cm_json}" "${rendered}"
+'
 }
 
 proxy_catalog_has_lineage() {
@@ -1160,27 +1180,31 @@ proxy_catalog_has_lineage() {
 }
 
 live_pipeline_is_canonical() {
-    local ns="$1" pod="$2" self_id="$3" cm_json="$4" body expected status
+    local ns="$1" pod="$2" cm_json="$3" body expected status
     status=0
     body="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
         wget -qO- http://127.0.0.1:9094/v1/pipeline 2>/dev/null)" || status=$?
     [[ "${status}" -eq 0 && -n "${body}" ]] || return 1
     expected="$(printf '%s' "${cm_json}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-contract 2>/dev/null)" \
         || return 1
+    if [[ -n "${DG_GATE_MODE}" ]]; then
+        gated_pipeline_valid "${body}" "${expected}"
+        return
+    fi
     printf '%s' "${body}" | python3 "${KIT_DIR}/reconcile-existing-proxy.py" pipeline-valid \
-        --self-id "${self_id}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
         --expected "${expected}"
 }
 
 # resolve_admitted_proxy <ns> <entity> <preflight|post-rollout> <snapshot-var>:
 # validate the selected Running pod's admitted proxy and mounted ConfigMap,
-# then fill the caller's associative array with pod, pod_name, and cm_json.
+# then fill the caller's associative array with pod_name.
 # Both phases need the same platform-owned contract; the phase only changes the
 # diagnostic and whether we can promise that no workload was mutated.
 resolve_admitted_proxy() {
     local ns="$1" entity="$2" phase="$3"
     local -n snapshot="$4"
-    local note="" pod type pod_name cm cm_json
+    local note="" pod type pod_name cm
     case "${phase}" in
         preflight) note=" Mutating nothing." ;;
         post-rollout) ;;
@@ -1201,12 +1225,34 @@ resolve_admitted_proxy() {
     cm="$(sidecar_config_cm "${pod}")"
     [[ -n "${cm}" ]] \
         || die "instrument: '${entity}' has no mounted AuthBridge ConfigMap during ${phase}.${note}"
-    cm_json="$(kubectl -n "${ns}" get configmap "${cm}" -o json)" \
-        || die "instrument: could not read ConfigMap '${cm}' for '${entity}' during ${phase}.${note}"
 
-    snapshot[pod]="${pod}"
     snapshot[pod_name]="${pod_name}"
-    snapshot[cm_json]="${cm_json}"
+}
+
+# agentruntimes_allow_lineage <ns> <names> <write yes|no>: refuse, mutating
+# nothing, when a selected workload's AgentRuntime sets pluginPreset (admission
+# then renders a fixed plugin list without lineage-telemetry), or when a run that
+# writes the namespace ConfigMap would also reach an AgentRuntime target it does
+# not preflight (a StatefulSet, a Sandbox, an unselected Deployment).
+agentruntimes_allow_lineage() {
+    local ns="$1" names="$2" write="$3" runtimes refusal
+    runtimes="$(kubectl -n "${ns}" get agentruntimes -o json)" \
+        || die "instrument: failed to read AgentRuntimes in namespace '${ns}' (kubectl get failed; see the kubectl error above). Mutating nothing."
+    refusal="$(printf '%s' "${runtimes}" | python3 -c '
+import json, sys
+names, write = set(sys.argv[1].split()), sys.argv[2] == "yes"
+for item in json.load(sys.stdin).get("items") or []:
+    spec = item.get("spec") or {}
+    target = spec.get("targetRef") or {}
+    kind, name = target.get("kind") or "Deployment", target.get("name")
+    if name in names and spec.get("pluginPreset"):
+        print("%s sets pluginPreset %r, which renders a fixed plugin list without lineage-telemetry" % (name, spec["pluginPreset"]))
+        break
+    if write and (kind != "Deployment" or name not in names):
+        print("%s/%s has an AgentRuntime this run does not preflight, so a pod admitted for it would run the namespace lineage pipeline unchecked" % (kind, name))
+        break
+' "${names}" "${write}")"
+    [[ -z "${refusal}" ]] || die "instrument: ${refusal}. Mutating nothing."
 }
 
 preflight_trusted_proxies() {
@@ -1225,8 +1271,8 @@ preflight_trusted_proxies() {
         resolve_admitted_proxy "${ns}" "${entity}" preflight proxy
         proxy_catalog_has_lineage "${ns}" "${proxy[pod_name]}" \
             || die "instrument: '${entity}'s AuthBridge image does not advertise the a2a-parser, mcp-parser, inference-parser, and lineage-telemetry plugins. Deploy a lineage-capable Cortex proxy image first; mutating nothing."
-        render_existing_proxy_config "${proxy[cm_json]}" "${entity}" "${proxy[pod]}" >/dev/null \
-            || die "instrument: '${entity}'s existing proxy ConfigMap is outside the safe #256 reconciliation envelope. Mutating nothing."
+        [[ -z "${DG_GATE_MODE}" ]] || proxy_catalog_has_gate "${ns}" "${proxy[pod_name]}" \
+            || die "instrument --${DG_GATE_MODE}: '${entity}'s AuthBridge image has no sentry-gate that takes ${DG_GATE_KEYS// /, }. Deploy a Cortex proxy image with it first; mutating nothing."
 
         app="$(app_container_of "${dep}")"
         [[ -n "${app}" ]] || die "instrument: '${entity}' must have exactly one application container. Mutating nothing."
@@ -1257,7 +1303,7 @@ preflight_trusted_proxies() {
     rm -f "${cache_file}"
 }
 
-instrument_existing_proxy() {
+roll_onto_shim() {
     local ns="$1" entity="$2" app="$3" shim="$4"
     local patch
     patch="$(python3 -c '
@@ -1270,26 +1316,40 @@ print(json.dumps({"spec":{"template":{"spec":{"containers":[{"name":name,"image"
         || die "instrument: failed to patch the application container for '${entity}'"
     kubectl -n "${ns}" rollout status "deployment/${entity}" --timeout=180s \
         || die "instrument: rollout of '${entity}' did not become ready"
+}
 
+# roll_onto_namespace_lineage <ns> <entity> <runtime-cm-json>: roll the workload
+# unless its pod already runs the namespace pipeline, then verify the newly
+# admitted pod's live pipeline against it.
+roll_onto_namespace_lineage() {
+    local ns="$1" entity="$2" runtime_json="$3"
     local -A proxy=()
-    local amended
+    # Rossoctl may roll the workload to stamp the namespace ConfigMap's new
+    # hash, before or after our own roll: wait out a rollout in flight here, and
+    # read the current pod on each verify attempt below.
+    kubectl -n "${ns}" rollout status "deployment/${entity}" --timeout=180s \
+        || die "instrument: rollout of '${entity}' did not become ready"
     resolve_admitted_proxy "${ns}" "${entity}" post-rollout proxy
-    amended="$(render_existing_proxy_config "${proxy[cm_json]}" "${entity}" "${proxy[pod]}")" \
-        || die "instrument: failed to reconcile '${entity}'s post-rollout proxy pipeline"
-    printf '%s' "${amended}" | kubectl apply -f - \
-        || die "instrument: failed to apply '${entity}'s reconciled proxy ConfigMap"
+    if live_pipeline_is_canonical "${ns}" "${proxy[pod_name]}" "${runtime_json}"; then
+        err ">> instrument: '${entity}' already runs the namespace lineage pipeline (no rollout)."
+        return 0
+    fi
+    err ">> instrument: rolling '${entity}' so admission renders the ${ns}/${DG_RUNTIME_CONFIGMAP} lineage pipeline"
+    kubectl -n "${ns}" rollout restart "deployment/${entity}" \
+        || die "instrument: failed to roll '${entity}'"
+    kubectl -n "${ns}" rollout status "deployment/${entity}" --timeout=180s \
+        || die "instrument: rollout of '${entity}' did not become ready"
 
-    # A projected ConfigMap can take up to the kubelet sync period plus cache
-    # propagation (commonly around two minutes) to reach the mounted file.
-    local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-90}"
+    local attempt max_attempts="${DG_PIPELINE_VERIFY_ATTEMPTS:-90}" pod_json
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        if live_pipeline_is_canonical "${ns}" "${proxy[pod_name]}" "${entity}" "${amended}"; then
-            err ">> instrument: '${entity}' lineage pipeline hot-reloaded and is live (no second rollout)."
+        pod_json="$(get_pod_json "${ns}" "${entity}")"
+        if live_pipeline_is_canonical "${ns}" "$(pod_name_of "${pod_json}")" "${runtime_json}"; then
+            err ">> instrument: '${entity}' admitted with the namespace lineage pipeline and is live."
             return 0
         fi
         sleep 2
     done
-    die "instrument: '${entity}' ConfigMap was reconciled but /v1/pipeline did not converge after hot reload; no second rollout was performed"
+    die "instrument: '${entity}' rolled, but /v1/pipeline does not report the ${ns}/${DG_RUNTIME_CONFIGMAP} lineage pipeline. Re-run 'dg.sh namespace ${ns} instrument${DG_GATE_MODE:+ --${DG_GATE_MODE}}' to continue; 'status' shows which workloads are live."
 }
 
 
@@ -1319,18 +1379,399 @@ namespace_instrument() {
         return 0
     fi
 
+    # With a gate, the secret and the pass list are read first: an empty secret
+    # refuses the run before anything is written.
+    if [[ -n "${DG_GATE_MODE}" ]]; then
+        [[ -z "${entity}" ]] || die "instrument --${DG_GATE_MODE}: the gate is a namespace setting; run it without <entity>. Mutating nothing."
+        keep_namespace_gate_settings "${ns}"
+        load_fail_mode_rows "${ns}" \
+            || die "instrument --${DG_GATE_MODE}: ${ns}/${DG_FAIL_MODE_CONFIGMAP} is not a valid fail-mode document (above); check a fixed one with 'dg.sh namespace ${ns} fail-mode validate <file>', then 'fail-mode set <file>'. Mutating nothing."
+        if fail_mode_rows_allow "${DG_GATE_FAIL_MODE}" && [[ "${DG_GATE_ALLOW_OPEN_DEFAULT}" != "1" ]]; then
+            die "instrument --${DG_GATE_MODE}: ${ns}/${DG_FAIL_MODE_CONFIGMAP} has a row with fallback allow, which lets every request it covers leave unjudged while the verdict service is slow or down; pass --allow-open-default to accept that. Mutating nothing."
+        fi
+        err ">> instrument --${DG_GATE_MODE}: fail_mode rows from ${ns}/${DG_FAIL_MODE_CONFIGMAP}: $(fail_mode_count "${DG_GATE_FAIL_MODE}" fail_mode), sources: $(fail_mode_count "${DG_GATE_FAIL_MODE}" sources), revision: ${DG_GATE_FAIL_MODE_REVISION:-none}"
+        build_gate_spec
+    fi
+
+    # The namespace ConfigMap reaches every sidecar in <ns> at its next pod
+    # admission, so only a namespace-wide run, which preflights every trusted
+    # agent/tool, may change it.
+    local runtime_json rendered write="yes"
+    runtime_json="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json)" \
+        || die "instrument: could not read ${ns}/${DG_RUNTIME_CONFIGMAP}, which Rossoctl renders every sidecar config from. Mutating nothing."
+    adopt_namespace_gate "${ns}" "${runtime_json}" instrument
+    rendered="$(render_runtime_config "${runtime_json}")" \
+        || die "instrument: ${ns}/${DG_RUNTIME_CONFIGMAP} is outside the safe reconciliation envelope. Mutating nothing."
+    configmap_is_canonical "${runtime_json}" && write="no"
+    if [[ -n "${entity}" && "${write}" == "yes" ]]; then
+        die "instrument: ${ns}/${DG_RUNTIME_CONFIGMAP} differs from the canonical lineage pipeline, and writing it reaches every agent/tool in '${ns}'. Run 'dg.sh namespace ${ns} instrument' first. Mutating nothing."
+    fi
+    agentruntimes_allow_lineage "${ns}" "${names}" "${write}"
+
     # All checks and shim builds finish before the first workload mutation.
     # The trusted-label check here remains defense in depth.
     local plan_file name app shim
     plan_file="$(mktemp)"
     preflight_trusted_proxies "${ns}" "${names}" "${plan_file}"
+
+    # Rossoctl may roll every workload in <ns> when the namespace ConfigMap
+    # changes, so every application propagates trace context before it does.
     while IFS=$'\t' read -r name app shim; do
         [[ -n "${name}" ]] || continue
-        instrument_existing_proxy "${ns}" "${name}" "${app}" "${shim}"
+        roll_onto_shim "${ns}" "${name}" "${app}" "${shim}"
+    done < "${plan_file}"
+    # replace carries the read's resourceVersion: a write by anyone else since
+    # then fails it instead of being reverted.
+    if [[ "${write}" == "yes" ]]; then
+        err ">> instrument: writing the lineage pipeline into ${ns}/${DG_RUNTIME_CONFIGMAP}"
+        printf '%s' "${rendered}" | kubectl replace -f - \
+            || die "instrument: failed to write ${ns}/${DG_RUNTIME_CONFIGMAP} (changed since it was read? re-run); applications are on the shim, no workload was rolled onto lineage"
+    fi
+    while IFS=$'\t' read -r name app shim; do
+        [[ -n "${name}" ]] || continue
+        roll_onto_namespace_lineage "${ns}" "${name}" "${rendered}"
     done < "${plan_file}"
     rm -f "${plan_file}"
 
     err ">> instrument: done for trusted proxy namespace '${ns}'."
+}
+
+# ---------------------------------------------------------------------------
+# The Sentry gate: instrument --enforce|--observe (#342). instrument renders the
+# verdict URL, the shared secret, the pass list, the wait and the fallback (when given) and the
+# rows and per-source slices of the namespace's fail-mode document (dg-fail-mode, when
+# present) into the gate's entry of authbridge-runtime-config, after lineage-telemetry,
+# beside lineage's capture_io on and export_delay_ms 10.
+# ---------------------------------------------------------------------------
+
+DG_VERDICT_URL="${DG_VERDICT_URL:-http://data-governance-verdict.${DG_NAMESPACE}.svc:8080/enforce/v1}"
+GATE_CONFIG_TOOL="${SCRIPT_DIR}/gate_config.py"
+FAIL_MODE_TOOL="${SCRIPT_DIR}/fail_mode.py"
+# The fail-mode document, a human's, in the app namespace: key `table`, kept verbatim.
+DG_FAIL_MODE_CONFIGMAP="dg-fail-mode"
+# The config keys instrument writes into the gate's entry; an image whose gate
+# lacks one would refuse the whole config.
+DG_GATE_KEYS="verdict_url verdict_secret pass_hosts fallback fail_mode sources fail_mode_revision"
+# enforce | observe while instrument runs with a gate; empty otherwise.
+DG_GATE_MODE=""
+DG_GATE_SPEC_FILE=""
+DG_GATE_PASS_HOSTS=()
+# deny | allow when --fallback is given or the namespace's gate carries one;
+# empty: no fallback key is written and the gate's own default (deny) holds.
+DG_GATE_FALLBACK=""
+DG_GATE_ALLOW_OPEN_DEFAULT=0
+# 1..3000 when --wait-ms is given or the namespace's gate carries one; empty: no
+# wait_ms key is written and the gate's own default (2000) holds.
+DG_GATE_WAIT_MS=""
+# The gate's fail_mode rows and sources slices as JSON ({"fail_mode": [...], "sources"?: {...}}),
+# rendered from dg-fail-mode; empty when it does not exist.
+DG_GATE_FAIL_MODE=""
+# The revision of the dg-fail-mode document (fail_mode.py revision: the sha256 of its bytes),
+# rendered as the gate's fail_mode_revision; empty when there is no document.
+DG_GATE_FAIL_MODE_REVISION=""
+
+# verdict_secret_value: the verdict service's bearer from its Secret; a loud die
+# when it cannot be read. Never printed by dg.sh.
+verdict_secret_value() {
+    local out
+    out="$(kubectl -n "${DG_NAMESPACE}" get secret "${DG_VERDICT_SECRET}" -o 'jsonpath={.data.secret}')" \
+        || die "could not read Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET}, the verdict service's bearer (dg.sh component install creates it)"
+    # Stripped as the verdict service strips it: a hand-made Secret's trailing newline would
+    # otherwise reach the gate, which refuses a secret with whitespace.
+    printf '%s' "${out}" | python3 -c 'import base64, sys; sys.stdout.write(base64.b64decode(sys.stdin.read().strip()).decode().strip())'
+}
+
+# build_gate_spec: read the secret and write the gate's spec (verdict URL,
+# secret, wait and fallback when set, fail_mode rows and sources slices when any, the document's
+# revision when there is a document, pass list) to DG_GATE_SPEC_FILE. Refuses an empty
+# secret before anything is written.
+build_gate_spec() {
+    local secret
+    secret="$(verdict_secret_value)"
+    [[ -n "${secret}" ]] || die "instrument --${DG_GATE_MODE}: ${DG_NAMESPACE}/${DG_VERDICT_SECRET} is empty. Mutating nothing."
+    DG_GATE_SPEC_FILE="$(mktemp)"
+    # The spec holds the secret: removed however the run ends.
+    trap 'rm -f "${DG_GATE_SPEC_FILE:-}"' EXIT
+    printf '%s' "${secret}" | python3 -c '
+import json, sys
+url, path, wait_ms, fallback, rendered, revision = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], json.loads(sys.argv[5] or "{}"), sys.argv[6]
+spec = {"verdict_url": url, "verdict_secret": sys.stdin.read(), "pass_hosts": sys.argv[7:]}
+if wait_ms:
+    spec["wait_ms"] = int(wait_ms)
+if fallback:
+    spec["fallback"] = fallback
+for key in ("fail_mode", "sources"):
+    if rendered.get(key):
+        spec[key] = rendered[key]
+if revision:
+    spec["fail_mode_revision"] = revision
+open(path, "w").write(json.dumps(spec))
+' "${DG_VERDICT_URL}" "${DG_GATE_SPEC_FILE}" "${DG_GATE_WAIT_MS}" "${DG_GATE_FALLBACK}" "${DG_GATE_FAIL_MODE}" "${DG_GATE_FAIL_MODE_REVISION}" "${DG_GATE_PASS_HOSTS[@]+"${DG_GATE_PASS_HOSTS[@]}"}"
+    err ">> instrument --${DG_GATE_MODE}: verdict_url ${DG_VERDICT_URL}"
+}
+
+render_gated_runtime_config() {
+    local cm_json="$1"
+    printf '%s' "${cm_json}" \
+        | python3 "${KIT_DIR}/reconcile-existing-proxy.py" render --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" \
+        | python3 "${GATE_CONFIG_TOOL}" apply --kit-dir "${KIT_DIR}" --spec "${DG_GATE_SPEC_FILE}" \
+            --mode "${DG_GATE_MODE}" --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}"
+}
+
+gated_pipeline_valid() {
+    local body="$1" expected="$2"
+    printf '%s' "${body}" | python3 "${GATE_CONFIG_TOOL}" pipeline-valid --kit-dir "${KIT_DIR}" \
+        --spec "${DG_GATE_SPEC_FILE}" --mode "${DG_GATE_MODE}" \
+        --otel-endpoint "${OTEL_ENDPOINT:-${DG_OTEL_ENDPOINT}}" --expected "${expected}" 2>/dev/null
+}
+
+# proxy_catalog_has_gate <ns> <pod>: the sidecar's catalog has a sentry-gate
+# whose config takes every key instrument writes (DG_GATE_KEYS).
+proxy_catalog_has_gate() {
+    local ns="$1" pod="$2" catalog
+    catalog="$(kubectl -n "${ns}" exec "${pod}" -c authbridge-proxy -- \
+        wget -qO- http://127.0.0.1:9094/v1/plugins 2>/dev/null)" || return 1
+    printf '%s' "${catalog}" | python3 -c '
+import json, sys
+gate = next((p for p in json.load(sys.stdin).get("plugins") or [] if p.get("name") == "sentry-gate"), None)
+fields = {f.get("name") for f in (gate or {}).get("fields") or []}
+sys.exit(0 if set(sys.argv[1].split()) <= fields else 1)' "${DG_GATE_KEYS}"
+}
+
+# read_namespace_gate <runtime-json>: the gate entry of the namespace source as
+# {"mode", "pass_hosts", "wait_ms", "fallback", "fail_mode_rows", "sources", "fail_mode_revision"}
+# (wait_ms, fallback and fail_mode_revision null when absent), {} when it carries none.
+read_namespace_gate() {
+    printf '%s' "$1" | python3 "${GATE_CONFIG_TOOL}" read --kit-dir "${KIT_DIR}" 2>/dev/null || printf '{}'
+}
+
+# gate_pass_hosts <gate-json>: its pass list, one host per line.
+gate_pass_hosts() {
+    python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["pass_hosts"]))' "$1" | sed '/^$/d'
+}
+
+# gate_wait_ms <gate-json>: its wait_ms, empty when the entry has none.
+gate_wait_ms() {
+    python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("wait_ms") or "")' "$1"
+}
+
+# gate_fallback <gate-json>: its fallback, empty when the entry has none.
+gate_fallback() {
+    python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("fallback") or "")' "$1"
+}
+
+# fail_mode_configmap_json <ns>: the dg-fail-mode ConfigMap as JSON, {} when it does
+# not exist, a loud die on any other read failure.
+fail_mode_configmap_json() {
+    local ns="$1" out status=0 errfile msg
+    errfile="$(mktemp)"
+    out="$(kubectl -n "${ns}" get configmap "${DG_FAIL_MODE_CONFIGMAP}" -o json 2>"${errfile}")" || status=$?
+    msg="$(cat "${errfile}")"
+    rm -f "${errfile}"
+    if [[ "${status}" -eq 0 ]]; then
+        printf '%s' "${out}"
+    elif [[ "${msg}" == *NotFound* ]]; then
+        printf '{}'
+    else
+        die "could not read ${ns}/${DG_FAIL_MODE_CONFIGMAP}: ${msg}"
+    fi
+}
+
+# fail_mode_table <configmap-json>: the document (key `table`) on stdout, verbatim, as
+# the UTF-8 bytes `set` read from the file; exit 1 when the ConfigMap has no such key.
+fail_mode_table() {
+    printf '%s' "$1" | python3 -c '
+import json, sys
+table = (json.load(sys.stdin).get("data") or {}).get("table")
+if table is None:
+    sys.exit(sys.argv[1] + ": no table key")
+sys.stdout.buffer.write(table.encode("utf-8"))' "${DG_FAIL_MODE_CONFIGMAP}"
+}
+
+# load_fail_mode_rows <ns>: DG_GATE_FAIL_MODE = the gate's rows and slices rendered from
+# dg-fail-mode and DG_GATE_FAIL_MODE_REVISION = its revision, both empty when it does not
+# exist. Returns 1, the problems on stderr, when the document is not valid.
+load_fail_mode_rows() {
+    local ns="$1" cm
+    DG_GATE_FAIL_MODE=""
+    DG_GATE_FAIL_MODE_REVISION=""
+    cm="$(fail_mode_configmap_json "${ns}")" || exit 1
+    [[ "${cm}" != "{}" ]] || return 0
+    DG_GATE_FAIL_MODE="$(fail_mode_table "${cm}" | python3 "${FAIL_MODE_TOOL}" render)" || return 1
+    DG_GATE_FAIL_MODE_REVISION="$(fail_mode_table "${cm}" | python3 "${FAIL_MODE_TOOL}" revision -)" || return 1
+}
+
+# fail_mode_count <rendered-json> fail_mode|sources: how many fail_mode rows, or sources slices.
+fail_mode_count() {
+    python3 -c 'import json, sys; print(len(json.loads(sys.argv[1] or "{}").get(sys.argv[2]) or ()))' "$1" "$2"
+}
+
+# fail_mode_rows_allow <rendered-json>: whether any fallback the document sets is allow: a
+# fail_mode row's, a slice's default or a slice row's. The document goes on stdin (a large
+# one is past the argument limit), and a check that cannot run dies: it must never read as
+# "no allow row".
+fail_mode_rows_allow() {
+    local status=0
+    printf '%s' "$1" | python3 -c '
+import json, sys
+rendered = json.loads(sys.stdin.read() or "{}")
+settings = list(rendered.get("fail_mode") or [])
+for slice_ in (rendered.get("sources") or {}).values():
+    settings += [slice_, *(slice_.get("fail_mode") or [])]
+sys.exit(0 if any(s.get("fallback") == "allow" for s in settings) else 1)' || status=$?
+    [[ "${status}" -le 1 ]] || die "instrument --${DG_GATE_MODE}: could not check the fail-mode document for allow rows (exit ${status}). Mutating nothing."
+    return "${status}"
+}
+
+# adopt_namespace_gate <ns> <runtime-json> <instrument|status>: a run without
+# --enforce|--observe on a namespace whose source carries the gate. instrument refuses:
+# the lineage reconciler appends lineage after every entry it does not manage, so a
+# plain run would put the gate before lineage, with capture off. status reads the
+# gate's mode, pass list, wait, fallback, fail_mode row count, sources count and revision (its first 12
+# characters), prints them, and checks the
+# source against the gated render in that mode with that pass list, wait and fallback, and the
+# rows of the namespace's dg-fail-mode (so a document set but not yet instrumented shows
+# as a drifted source).
+adopt_namespace_gate() {
+    local ns="$1" runtime_json="$2" verb="$3" gate mode
+    [[ -z "${DG_GATE_MODE}" ]] || return 0
+    gate="$(read_namespace_gate "${runtime_json}")"
+    [[ "${gate}" != "{}" ]] || return 0
+    mode="$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["mode"])' "${gate}")"
+    if [[ "${verb}" == "instrument" ]]; then
+        die "instrument: ${ns}/${DG_RUNTIME_CONFIGMAP} carries the Sentry gate (${mode}); run 'dg.sh namespace ${ns} instrument --${mode}', which keeps lineage before the gate and the gate's pass list. Mutating nothing."
+    fi
+    DG_GATE_MODE="${mode}"
+    mapfile -t DG_GATE_PASS_HOSTS < <(gate_pass_hosts "${gate}")
+    DG_GATE_WAIT_MS="$(gate_wait_ms "${gate}")"
+    DG_GATE_FALLBACK="$(gate_fallback "${gate}")"
+    printf 'namespace %s: sentry-gate mode=%s pass_hosts=%s wait_ms=%s fallback=%s fail_mode_rows=%s sources=%s revision=%s\n' "${ns}" "${mode}" \
+        "$(IFS=,; printf '%s' "${DG_GATE_PASS_HOSTS[*]:-(none)}")" "${DG_GATE_WAIT_MS:-2000}" "${DG_GATE_FALLBACK:-deny}" \
+        "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("fail_mode_rows", 0))' "${gate}")" \
+        "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("sources", 0))' "${gate}")" \
+        "$(python3 -c 'import json, sys; print((json.loads(sys.argv[1]).get("fail_mode_revision") or "none")[:12])' "${gate}")"
+    load_fail_mode_rows "${ns}" || return 1
+    ( build_gate_spec ) >/dev/null 2>&1 || { err "status: the verdict Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} cannot be read"; return 1; }
+    build_gate_spec 2>/dev/null
+}
+
+# keep_namespace_gate_settings <ns>: --enforce|--observe without --pass-host keeps the pass
+# list the namespace's gate already carries, without --wait-ms its wait and without
+# --fallback its fallback, so re-running the command status advises changes none of them;
+# --pass-host, --wait-ms or --fallback given replaces it.
+keep_namespace_gate_settings() {
+    local ns="$1" runtime gate
+    [[ ${#DG_GATE_PASS_HOSTS[@]} -eq 0 || -z "${DG_GATE_WAIT_MS}" || -z "${DG_GATE_FALLBACK}" ]] || return 0
+    runtime="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json 2>/dev/null)" || return 0
+    gate="$(read_namespace_gate "${runtime}")"
+    [[ "${gate}" != "{}" ]] || return 0
+    if [[ ${#DG_GATE_PASS_HOSTS[@]} -eq 0 ]]; then
+        mapfile -t DG_GATE_PASS_HOSTS < <(gate_pass_hosts "${gate}")
+        err ">> instrument --${DG_GATE_MODE}: pass list kept from the namespace's gate: ${DG_GATE_PASS_HOSTS[*]:-(none)} (--pass-host replaces it)"
+    fi
+    if [[ -z "${DG_GATE_WAIT_MS}" ]]; then
+        DG_GATE_WAIT_MS="$(gate_wait_ms "${gate}")"
+        [[ -z "${DG_GATE_WAIT_MS}" ]] \
+            || err ">> instrument --${DG_GATE_MODE}: wait_ms kept from the namespace's gate: ${DG_GATE_WAIT_MS} (--wait-ms replaces it)"
+    fi
+    if [[ -z "${DG_GATE_FALLBACK}" ]]; then
+        DG_GATE_FALLBACK="$(gate_fallback "${gate}")"
+        [[ -z "${DG_GATE_FALLBACK}" ]] \
+            || err ">> instrument --${DG_GATE_MODE}: fallback kept from the namespace's gate: ${DG_GATE_FALLBACK} (--fallback replaces it)"
+    fi
+}
+
+# namespace_fail_mode <ns> set <file>|show|validate <file>: the namespace's
+# fail-mode document. validate reads only the file; set validates it and
+# writes it verbatim as key `table` of ConfigMap dg-fail-mode; show prints that document.
+# set and show print its revision (fail_mode.py revision) on stderr, the one instrument
+# gives the gates.
+namespace_fail_mode() {
+    local ns="$1" action="${2:-}" file="${3:-}"
+    [[ $# -le 3 ]] || usage_error "fail-mode: unknown argument '$4'"
+    command -v python3 >/dev/null 2>&1 || die "'python3' is required for fail-mode; install it"
+    case "${action}" in
+        validate)
+            [[ -n "${file}" ]] || usage_error "fail-mode validate: a <file> is required"
+            python3 "${FAIL_MODE_TOOL}" validate "${file}" \
+                || die "fail-mode validate: '${file}' is not a valid fail-mode document (above)"
+            ;;
+        set)
+            [[ -n "${file}" ]] || usage_error "fail-mode set: a <file> is required"
+            python3 "${FAIL_MODE_TOOL}" validate "${file}" >/dev/null \
+                || die "fail-mode set: '${file}' is not a valid fail-mode document (above); ${ns}/${DG_FAIL_MODE_CONFIGMAP} is unchanged"
+            require_kubectl
+            python3 -c '
+import json, sys
+ns, name, path = sys.argv[1:4]
+table = open(path, encoding="utf-8", newline="").read()
+print(json.dumps({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": name, "namespace": ns},
+                  "data": {"table": table}}))' "${ns}" "${DG_FAIL_MODE_CONFIGMAP}" "${file}" \
+                | kubectl apply -f - >/dev/null \
+                || die "fail-mode set: failed to write ${ns}/${DG_FAIL_MODE_CONFIGMAP}"
+            err ">> fail-mode set: ${ns}/${DG_FAIL_MODE_CONFIGMAP} written, revision $(python3 "${FAIL_MODE_TOOL}" revision "${file}"); the gates take it at the next 'dg.sh namespace ${ns} instrument' with the namespace's own --enforce or --observe, which rolls the pods"
+            ;;
+        show)
+            [[ -z "${file}" ]] || usage_error "fail-mode show: takes no argument"
+            require_kubectl
+            local cm
+            cm="$(fail_mode_configmap_json "${ns}")" || exit 1
+            if [[ "${cm}" == "{}" ]]; then
+                err "fail-mode show: ${ns} has no ${DG_FAIL_MODE_CONFIGMAP}; the gate's wait and fallback hold for every destination"
+                return 0
+            fi
+            fail_mode_table "${cm}" || die "fail-mode show: ${ns}/${DG_FAIL_MODE_CONFIGMAP} holds no document"
+            err "fail-mode show: revision $(fail_mode_table "${cm}" | python3 "${FAIL_MODE_TOOL}" revision -)"
+            ;;
+        *)
+            usage_error "fail-mode: give set <file>, show or validate <file>"
+            ;;
+    esac
+}
+
+# --- namespace <ns> gate-report [--since <time>] ---------------------------
+
+GATE_REPORT_TOOL="${SCRIPT_DIR}/gate_report.py"
+
+# namespace_gate_report <ns> [<since>]: what the namespace's gates did with the requests
+# that got no verdict, per source workload and destination, read from each sidecar's
+# session API (gate_report.py). Read-only. A sidecar keeps its records in its process,
+# so a roll empties them: read a window before the roll that ends it.
+namespace_gate_report() {
+    local ns="$1" since="${2:-}"
+    require_kubectl
+    command -v python3 >/dev/null 2>&1 || die "'python3' is required for gate-report; install it"
+    local names runtime_json gate targets name pod_json pods pod status=0
+    names="$(enumerate_entities "${ns}" status)"
+    runtime_json="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json)" \
+        || die "gate-report: could not read ${ns}/${DG_RUNTIME_CONFIGMAP}"
+    gate="$(read_namespace_gate "${runtime_json}")"
+    [[ "${gate}" != "{}" ]] \
+        || die "gate-report: '${ns}' runs no Sentry gate; 'dg.sh namespace ${ns} instrument --observe' (or --enforce) puts it in"
+    targets="$(mktemp)"
+    # Every Running pod of a workload, not one: each replica's sidecar keeps its own records.
+    while IFS= read -r name; do
+        [[ -n "${name}" ]] || continue
+        pods=""
+        if pod_json="$(get_pod_json_soft "${ns}" "${name}")"; then
+            pods="$(printf '%s' "${pod_json}" | python3 -c '
+import json, sys
+for item in json.load(sys.stdin).get("items") or []:
+    print(item.get("metadata", {}).get("name", ""))
+')"
+        fi
+        if [[ -z "${pods}" ]]; then
+            printf '%s\t\n' "${name}" >> "${targets}"
+            continue
+        fi
+        while IFS= read -r pod; do
+            if [[ -n "${pod}" ]]; then printf '%s\t%s\n' "${name}" "${pod}" >> "${targets}"; fi
+        done <<< "${pods}"
+    done <<< "${names}"
+    python3 "${GATE_REPORT_TOOL}" --namespace "${ns}" --targets "${targets}" --gate "${gate}" \
+        ${since:+--since "${since}"} || status=$?
+    rm -f "${targets}"
+    [[ "${status}" -eq 0 ]] || die "gate-report: failed (above)"
 }
 
 # --- namespace <ns> [instrument|status] [<entity>] -------------------------
@@ -1343,7 +1784,60 @@ cmd_namespace() {
 
     case "${action}" in
         instrument)
+            shift 2
+            entity=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --enforce|--observe)
+                        [[ -z "${DG_GATE_MODE}" ]] || usage_error "instrument: give one of --enforce, --observe"
+                        DG_GATE_MODE="${1#--}" ;;
+                    --pass-host)
+                        [[ $# -ge 2 && -n "$2" ]] || usage_error "instrument: --pass-host needs a host glob"
+                        # A glob the gate refuses would make every sidecar refuse its config.
+                        local pass_problem
+                        pass_problem="$(python3 "${GATE_CONFIG_TOOL}" pass-host-problem -- "$2")" \
+                            || usage_error "instrument: --pass-host '$2' is a glob the gate refuses: ${pass_problem}"
+                        DG_GATE_PASS_HOSTS+=("$2"); shift ;;
+                    --wait-ms)
+                        [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]{0,3}$ && "$2" -le 3000 ]] \
+                            || usage_error "instrument: --wait-ms takes a whole number of milliseconds, 1..3000"
+                        DG_GATE_WAIT_MS="$2"; shift ;;
+                    --fallback)
+                        [[ $# -ge 2 && ( "$2" == "deny" || "$2" == "allow" ) ]] \
+                            || usage_error "instrument: --fallback takes deny or allow"
+                        DG_GATE_FALLBACK="$2"; shift ;;
+                    --allow-open-default) DG_GATE_ALLOW_OPEN_DEFAULT=1 ;;
+                    --*) usage_error "instrument: unknown option '$1'" ;;
+                    *) [[ -z "${entity}" ]] || usage_error "instrument: one <entity> at most"; entity="$1" ;;
+                esac
+                shift
+            done
+            if [[ -z "${DG_GATE_MODE}" && ( ${#DG_GATE_PASS_HOSTS[@]} -gt 0 || -n "${DG_GATE_WAIT_MS}" \
+                    || -n "${DG_GATE_FALLBACK}" || "${DG_GATE_ALLOW_OPEN_DEFAULT}" == "1" ) ]]; then
+                usage_error "instrument: --pass-host, --wait-ms, --fallback and --allow-open-default apply to --enforce and --observe only"
+            fi
+            if [[ "${DG_GATE_FALLBACK}" == "allow" && "${DG_GATE_ALLOW_OPEN_DEFAULT}" != "1" ]]; then
+                die "instrument --${DG_GATE_MODE}: --fallback allow lets every request the pass list does not name leave unjudged while the verdict service is slow or down; pass --allow-open-default to accept that. Mutating nothing."
+            fi
             namespace_instrument "${ns}" "${entity}"
+            ;;
+        fail-mode)
+            namespace_fail_mode "${ns}" "${@:3}"
+            ;;
+        gate-report)
+            shift 2
+            local since=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --since)
+                        [[ $# -ge 2 && -n "$2" ]] \
+                            || usage_error "gate-report: --since takes a time (RFC 3339 UTC, or 90m, 1h, 30s back from now)"
+                        since="$2"; shift ;;
+                    *) usage_error "gate-report: unknown argument '$1'" ;;
+                esac
+                shift
+            done
+            namespace_gate_report "${ns}" "${since}"
             ;;
         status)
             namespace_status "${ns}" "${entity}"

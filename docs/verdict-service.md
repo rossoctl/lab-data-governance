@@ -49,7 +49,12 @@ tell. Plain HTTP carries the whole text body.
 
 Errors: 400 (`bad_key`, `bad_wait_ms`, `wait_ms_too_large`), 401 `unauthorized`, 503 `verdict_busy` (the per-process
 waiter cap, never a queue), 500 `verdict_unavailable` (the database did not answer, within the manifest's
-`DB_POOL_TIMEOUT` of 3 s). The gate treats anything else as no verdict.
+`DB_POOL_TIMEOUT` of 3 s). The gate treats anything else as no verdict. A `pending` or `verdict_busy` answer, a 5xx, a
+`decided` answer naming no verdict and no answer at all are a slow or dead service, which the gate's `fallback` decides (`deny` by default, set by `instrument
+--fallback`, and per destination host, per source workload or per pair by a row of the namespace's fail-mode
+document, which can also set the wait,
+[cli.md](cli.md#the-fail-mode-document)); a 3xx or 4xx, a certificate the gate does not trust and an answer that is not a verdict stay refused as
+setup faults.
 
 ## Who may ask
 
@@ -60,7 +65,9 @@ secret identifies a gated sidecar, not a workload (issue #343). So the secret al
 whatever the classifier did not flag.
 
 A gate reads the value from its own config or a mounted file (`verdict_secret`, `verdict_secret_file`), so it has to be
-copied into each gated namespace; nothing here does that. `dg.sh component uninstall` without `--keep-data` deletes the
+copied into each gated namespace: `dg.sh namespace <ns> instrument --enforce` (or `--observe`) writes it into the
+namespace's `authbridge-runtime-config` ([cli.md](cli.md#the-sentry-gate)), where whoever can read ConfigMaps in that
+namespace can read it. `dg.sh component uninstall` without `--keep-data` deletes the
 Secret and the next install draws a new value, after which gates holding the old one get 401 and refuse.
 
 ## How the wait is short
@@ -81,8 +88,8 @@ Three things keep the answer inside the time the gate holds the request:
   the leg.
 
 The sidecar must export its request span well inside `wait_ms`, which is lineage's `export_delay_ms`: the service can
-answer only once it has the span, and that setting's default of 5000 ms is past any wait. A gate's `verdict_url` ends in
-`/enforce/v1`.
+answer only once it has the span, and that setting's default of 5000 ms is past any wait; `instrument --enforce` sets it
+to 10. A gate's `verdict_url` ends in `/enforce/v1`.
 
 Classification cost grows with the body. Measured with the real model at a 2-CPU limit: 4 KB 1.2 s, 16 KB 3.9 s,
 64 KB 16.7 s, 256 KB 70 s, and 512 KB killed the pod at its 3 GiB limit. So at the default `max_payload_bytes` one payload
