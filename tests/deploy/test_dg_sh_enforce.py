@@ -27,10 +27,11 @@ SECRET = "0123abcd" * 8
 _WRAPPER = r"""#!/usr/bin/env bash
 if [[ "$*" == *"exec"* && "$*" == *"/v1/plugins"* ]]; then
   [[ -n "${KUBECTL_LOG:-}" ]] && printf '%s\n' "$*" >> "$KUBECTL_LOG"
-  gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"pass_single_label"},{"name":"wait_ms"},{"name":"deny_on"},{"name":"verdict_secret"},{"name":"verdict_secret_file"}]}'
+  gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"pass_single_label"},{"name":"wait_ms"},{"name":"deny_on"},{"name":"verdict_secret"},{"name":"verdict_secret_file"},{"name":"fallback"}]}'
   case "${GATE_CATALOG:-full}" in
     none) gate="" ;;
-    no-secret) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"}]}' ;;
+    no-secret) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"fallback"}]}' ;;
+    no-fallback) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"verdict_secret"}]}' ;;
   esac
   printf '%s' '{"plugins":[{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry"}'"$gate"']}'
   exit 0
@@ -217,6 +218,128 @@ def test_a_re_run_without_pass_host_keeps_the_namespace_pass_list(gated) -> None
     assert plugin(written(gated), "outbound", "sentry-gate")["config"]["pass_hosts"] == ["c.example"]
 
 
+# --- the fallback: --fallback deny|allow ------------------------------------------------------
+
+
+def test_fallback_allow_needs_allow_open_default(gated) -> None:
+    """D1: --fallback allow without --allow-open-default refuses before any write and says why; with it,
+    fallback: allow lands in the gate's block; without --fallback the block has no fallback key."""
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--fallback", "allow")
+    assert result.returncode != 0
+    assert "unjudged while the verdict service is slow or down" in result.stderr
+    assert "--allow-open-default" in result.stderr and "Mutating nothing" in result.stderr
+    assert mutations(gated) == []
+    assert not (gated.fixdir / "cm-authbridge-runtime-config-wired.json").exists()
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--fallback", "allow",
+                       "--allow-open-default")
+    assert result.returncode == 0, result.stderr
+    assert plugin(written(gated), "outbound", "sentry-gate")["config"]["fallback"] == "allow"
+
+
+def test_no_fallback_flag_writes_no_fallback_key(gated) -> None:
+    """Without --fallback on an ungated namespace the gate's block has no fallback key: the gate's default, deny."""
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--allow-open-default")
+    assert result.returncode == 0, result.stderr
+    assert "fallback" not in plugin(written(gated), "outbound", "sentry-gate")["config"]
+    assert "fallback kept" not in result.stderr
+
+
+def test_fallback_deny_is_written(gated) -> None:
+    """--fallback deny needs no other flag and writes fallback: deny into the gate's block."""
+    result = gated.run("namespace", "travel-advisor", "instrument", "--observe", "--fallback", "deny")
+    assert result.returncode == 0, result.stderr
+    gate = plugin(written(gated), "outbound", "sentry-gate")
+    assert gate["config"]["fallback"] == "deny" and gate["on_error"] == "observe"
+
+
+def test_a_re_run_without_fallback_keeps_the_namespace_fallback(gated) -> None:
+    """A re-run without --fallback keeps the gate's fallback and says so; status prints it; --fallback replaces it."""
+    gated.set_namespace({"travel-advisor": RUNNING})
+    assert gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--fallback", "allow",
+                     "--allow-open-default").returncode == 0
+    _adopt_written(gated)
+    status = gated.run("namespace", "travel-advisor", "status")
+    assert "sentry-gate mode=enforce pass_hosts=(none) wait_ms=2000 fallback=allow" in status.stdout, status.stdout
+    assert "live=yes" in status.stdout, status.stdout
+    result = gated.run("namespace", "travel-advisor", "instrument", "--observe")  # a mode change rewrites the source
+    assert result.returncode == 0, result.stderr
+    assert "fallback kept from the namespace's gate: allow (--fallback replaces it)" in result.stderr
+    assert plugin(written(gated), "outbound", "sentry-gate")["config"]["fallback"] == "allow"
+    _adopt_written(gated)
+    result = gated.run("namespace", "travel-advisor", "instrument", "--observe", "--fallback", "deny")
+    assert result.returncode == 0, result.stderr
+    assert plugin(written(gated), "outbound", "sentry-gate")["config"]["fallback"] == "deny"
+
+
+def test_a_workload_on_another_fallback_is_rolled(gated) -> None:
+    """With the source at fallback: deny, a pod still running fallback: allow is not on the gated pipeline: it is rolled."""
+    gated.set_namespace({"travel-advisor": RUNNING})
+    assert gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--fallback", "deny").returncode == 0
+    _adopt_written(gated)
+    stale = json.loads((gated.fixdir / "cm-authbridge-runtime-config.json").read_text())
+    stale["data"]["config.yaml"] = stale["data"]["config.yaml"].replace("fallback: deny", "fallback: allow")
+    (gated.fixdir / "pod-cm-travel-advisor.json").write_text(json.dumps(stale))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode == 0, result.stderr
+    assert not any(c.startswith(("replace", "apply")) for c in gated.kubectl_calls())
+    assert any("deployment/travel-advisor" in c for c in restarts(gated))
+
+
+# --- the wait: --wait-ms <n> ----------------------------------------------------------------
+
+
+def test_wait_ms_is_written_before_the_fallback(gated) -> None:
+    """--wait-ms writes wait_ms into the gate's block, as a number, before fallback."""
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--wait-ms", "500", "--fallback", "deny")
+    assert result.returncode == 0, result.stderr
+    config = plugin(written(gated), "outbound", "sentry-gate")["config"]
+    assert config["wait_ms"] == 500
+    assert list(config) == ["verdict_url", "verdict_secret", "wait_ms", "fallback"]
+
+
+def test_no_wait_ms_flag_writes_no_wait_ms_key(gated) -> None:
+    """Without --wait-ms on an ungated namespace the gate's block has no wait_ms key: the gate's default, 2000."""
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode == 0, result.stderr
+    assert "wait_ms" not in plugin(written(gated), "outbound", "sentry-gate")["config"]
+    assert "wait_ms kept" not in result.stderr
+
+
+def test_a_re_run_without_wait_ms_keeps_the_namespace_wait(gated) -> None:
+    """A re-run without --wait-ms keeps the gate's wait_ms and says so; status prints it; --wait-ms replaces it."""
+    gated.set_namespace({"travel-advisor": RUNNING})
+    assert gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--wait-ms", "500").returncode == 0
+    _adopt_written(gated)
+    status = gated.run("namespace", "travel-advisor", "status")
+    assert "sentry-gate mode=enforce pass_hosts=(none) wait_ms=500 fallback=deny" in status.stdout, status.stdout
+    assert "live=yes" in status.stdout, status.stdout
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode == 0, result.stderr
+    assert "wait_ms kept from the namespace's gate: 500 (--wait-ms replaces it)" in result.stderr
+    assert not any(c.startswith(("replace", "apply")) or "rollout restart" in c for c in gated.kubectl_calls())
+    result = gated.run("namespace", "travel-advisor", "instrument", "--observe")  # a mode change rewrites the source
+    assert result.returncode == 0, result.stderr
+    assert plugin(written(gated), "outbound", "sentry-gate")["config"]["wait_ms"] == 500
+    _adopt_written(gated)
+    result = gated.run("namespace", "travel-advisor", "instrument", "--observe", "--wait-ms", "2000")
+    assert result.returncode == 0, result.stderr
+    assert plugin(written(gated), "outbound", "sentry-gate")["config"]["wait_ms"] == 2000
+
+
+def test_a_workload_on_another_wait_is_rolled(gated) -> None:
+    """With the source at wait_ms: 500, a pod still running wait_ms: 2000 is not on the gated pipeline: it is rolled."""
+    gated.set_namespace({"travel-advisor": RUNNING})
+    assert gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--wait-ms", "500").returncode == 0
+    _adopt_written(gated)
+    stale = json.loads((gated.fixdir / "cm-authbridge-runtime-config.json").read_text())
+    stale["data"]["config.yaml"] = stale["data"]["config.yaml"].replace("wait_ms: 500", "wait_ms: 2000")
+    (gated.fixdir / "pod-cm-travel-advisor.json").write_text(json.dumps(stale))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode == 0, result.stderr
+    assert not any(c.startswith(("replace", "apply")) for c in gated.kubectl_calls())
+    assert any("deployment/travel-advisor" in c for c in restarts(gated))
+
+
 # --- refusals: nothing written ----------------------------------------------------------------
 
 
@@ -231,13 +354,13 @@ def test_a_plain_instrument_on_a_gated_namespace_refuses(gated) -> None:
         assert mutations(gated) == []
 
 
-@pytest.mark.parametrize("catalog", ["none", "no-secret"])
+@pytest.mark.parametrize("catalog", ["none", "no-secret", "no-fallback"])
 def test_an_image_whose_gate_cannot_take_the_config_refuses_before_any_write(gated, catalog) -> None:
-    """An image with no sentry-gate, or one lacking a key instrument writes (verdict_secret), is refused before any write."""
+    """An image with no sentry-gate, or one lacking a key instrument writes (verdict_secret, fallback), is refused before any write."""
     gated.set_flag(GATE_CATALOG=catalog)
     result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
     assert result.returncode != 0
-    assert "verdict_url, verdict_secret, pass_hosts" in result.stderr and "mutating nothing" in result.stderr
+    assert "verdict_url, verdict_secret, pass_hosts, fallback" in result.stderr and "mutating nothing" in result.stderr
     assert mutations(gated) == []
 
 
@@ -274,15 +397,26 @@ def test_the_gate_is_a_namespace_setting(gated) -> None:
 
 
 @pytest.mark.parametrize(("args", "message"), [
-    (("--pass-host", "x.example"), "applies to --enforce and --observe only"),
+    (("--pass-host", "x.example"), "apply to --enforce and --observe only"),
     (("--enforce", "--pass-host", ""), "needs a host glob"),
     (("--enforce", "--observe"), "give one of --enforce, --observe"),
     (("--enforce", "--pass-host", "["), "a glob the gate refuses"),
     (("--enforce", "--pass-host", " "), "a glob the gate refuses: an empty glob"),
     (("--enforce", "--pass-host", "x\\"), "a glob the gate refuses: a trailing"),
+    (("--enforce", "--fallback", "open"), "--fallback takes deny or allow"),
+    (("--enforce", "--fallback", "Allow"), "--fallback takes deny or allow"),
+    (("--enforce", "--fallback"), "--fallback takes deny or allow"),
+    (("--fallback", "deny"), "apply to --enforce and --observe only"),
+    (("--enforce", "--wait-ms", "0"), "--wait-ms takes a whole number of milliseconds, 1..3000"),
+    (("--enforce", "--wait-ms", "3001"), "--wait-ms takes a whole number of milliseconds, 1..3000"),
+    (("--enforce", "--wait-ms", "abc"), "--wait-ms takes a whole number of milliseconds, 1..3000"),
+    (("--enforce", "--wait-ms"), "--wait-ms takes a whole number of milliseconds, 1..3000"),
+    (("--wait-ms", "500"), "apply to --enforce and --observe only"),
+    (("--allow-open-default",), "apply to --enforce and --observe only"),
 ])
 def test_gate_flags_are_checked(gated, args, message) -> None:
-    """--pass-host needs a mode and a non-empty glob; --enforce and --observe exclude each other."""
+    """--pass-host needs a mode and a non-empty glob; --enforce and --observe exclude each other;
+    --wait-ms takes 1..3000 and --fallback deny or allow, and they and --allow-open-default need a mode."""
     result = gated.run("namespace", "travel-advisor", "instrument", *args)
     assert result.returncode == 2 and message in result.stderr
     assert mutations(gated) == []
@@ -318,7 +452,7 @@ def test_status_reads_the_gate(gated) -> None:
     _adopt_written(gated)
     result = gated.run("namespace", "travel-advisor", "status")
     assert result.returncode == 0, result.stderr
-    assert "namespace travel-advisor: sentry-gate mode=observe pass_hosts=h.example,k.example" in result.stdout
+    assert "namespace travel-advisor: sentry-gate mode=observe pass_hosts=h.example,k.example wait_ms=2000 fallback=deny" in result.stdout
     line = next(l for l in result.stdout.splitlines() if l.startswith("travel-advisor"))
     assert "live=yes" in line, line
     # A source that no longer matches the gated render: the advice keeps the gate's mode.
@@ -389,6 +523,7 @@ def _live(**changes) -> tuple[dict, dict]:
     {}, {"outbound.sentry-gate.pass_hosts": []}, {"outbound.sentry-gate.verdict_url": "http://x"},
     {"outbound.sentry-gate.verdict_secret": ""}, {"outbound.lineage-telemetry.capture_io": False},
     {"inbound.lineage-telemetry.export_delay_ms": 5000}, {"outbound.lineage-telemetry.otel_endpoint": "x:1"},
+    {"outbound.sentry-gate.fallback": "allow"}, {"outbound.sentry-gate.wait_ms": 500},
 ])
 def test_the_live_check_compares_every_field(change) -> None:
     """The /v1/pipeline check fails on any one changed gate or lineage field, and on the wrong mode."""
@@ -407,3 +542,38 @@ def test_the_live_check_wants_the_gate_after_lineage() -> None:
     expected = {d: [p["name"] for p in doc[d]] for d in ("inbound", "outbound")}
     problems = gate_config.pipeline_problems(doc, expected, ENDPOINT, KIT.NAMESPACE_FILE, KIT.MANAGED_PLUGINS, SPEC, "enforce")
     assert "outbound: the gate is not after lineage-telemetry" in problems
+
+
+@pytest.mark.parametrize(("want", "live", "same"), [
+    (None, "deny", True), ("deny", None, True), ("allow", None, False), ("allow", "deny", False), ("allow", "allow", True),
+])
+def test_the_live_check_reads_an_absent_fallback_as_deny(want, live, same) -> None:
+    """The live check compares fallback with absent = deny on both sides."""
+    doc, expected = _live() if live is None else _live(**{"outbound.sentry-gate.fallback": live})
+    spec = dict(SPEC, fallback=want) if want else SPEC
+    problems = gate_config.pipeline_problems(doc, expected, ENDPOINT, KIT.NAMESPACE_FILE, KIT.MANAGED_PLUGINS, spec, "enforce")
+    assert (problems == []) == same, problems
+
+
+@pytest.mark.parametrize(("want", "live", "same"), [
+    (None, 2000, True), (2000, None, True), (500, None, False), (500, 2000, False), (500, 500, True),
+])
+def test_the_live_check_reads_an_absent_wait_ms_as_2000(want, live, same) -> None:
+    """The live check compares wait_ms with absent = 2000 on both sides."""
+    doc, expected = _live() if live is None else _live(**{"outbound.sentry-gate.wait_ms": live})
+    spec = dict(SPEC, wait_ms=want) if want else SPEC
+    problems = gate_config.pipeline_problems(doc, expected, ENDPOINT, KIT.NAMESPACE_FILE, KIT.MANAGED_PLUGINS, spec, "enforce")
+    assert (problems == []) == same, problems
+
+
+def test_read_takes_the_gate_s_wait_ms(tmp_path) -> None:
+    """read returns the gate's own wait_ms as a number."""
+    import subprocess
+
+    lines = gate_config.gate_block(4, dict(SPEC, wait_ms=500, fallback="deny"), "enforce")
+    config = "pipeline:\n  inbound:\n    plugins:\n    - name: jwt-validation\n  outbound:\n    plugins:\n" + "".join(lines)
+    result = subprocess.run([sys.executable, str(REPO_ROOT / "deploy" / "gate_config.py"), "read", "--kit-dir",
+                             str(REPO_ROOT / "deploy" / "lineage-attach")], input=json.dumps({"data": {"config.yaml": config}}),
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["wait_ms"] == 500 and json.loads(result.stdout)["fallback"] == "deny"
