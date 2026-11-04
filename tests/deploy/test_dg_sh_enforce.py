@@ -27,12 +27,13 @@ SECRET = "0123abcd" * 8
 _WRAPPER = r"""#!/usr/bin/env bash
 if [[ "$*" == *"exec"* && "$*" == *"/v1/plugins"* ]]; then
   [[ -n "${KUBECTL_LOG:-}" ]] && printf '%s\n' "$*" >> "$KUBECTL_LOG"
-  gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"pass_single_label"},{"name":"wait_ms"},{"name":"deny_on"},{"name":"verdict_secret"},{"name":"verdict_secret_file"},{"name":"fallback"},{"name":"fail_mode"}]}'
+  gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"pass_single_label"},{"name":"wait_ms"},{"name":"deny_on"},{"name":"verdict_secret"},{"name":"verdict_secret_file"},{"name":"fallback"},{"name":"fail_mode"},{"name":"sources"}]}'
   case "${GATE_CATALOG:-full}" in
     none) gate="" ;;
-    no-secret) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"fallback"},{"name":"fail_mode"}]}' ;;
-    no-fallback) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"verdict_secret"},{"name":"fail_mode"}]}' ;;
-    no-fail-mode) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"verdict_secret"},{"name":"fallback"}]}' ;;
+    no-secret) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"fallback"},{"name":"fail_mode"},{"name":"sources"}]}' ;;
+    no-fallback) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"verdict_secret"},{"name":"fail_mode"},{"name":"sources"}]}' ;;
+    no-fail-mode) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"verdict_secret"},{"name":"fallback"},{"name":"sources"}]}' ;;
+    no-sources) gate=',{"name":"sentry-gate","fields":[{"name":"verdict_url"},{"name":"pass_hosts"},{"name":"wait_ms"},{"name":"verdict_secret"},{"name":"fallback"},{"name":"fail_mode"}]}' ;;
   esac
   printf '%s' '{"plugins":[{"name":"a2a-parser"},{"name":"mcp-parser"},{"name":"inference-parser"},{"name":"lineage-telemetry"}'"$gate"']}'
   exit 0
@@ -355,14 +356,14 @@ def test_a_plain_instrument_on_a_gated_namespace_refuses(gated) -> None:
         assert mutations(gated) == []
 
 
-@pytest.mark.parametrize("catalog", ["none", "no-secret", "no-fallback", "no-fail-mode"])
+@pytest.mark.parametrize("catalog", ["none", "no-secret", "no-fallback", "no-fail-mode", "no-sources"])
 def test_an_image_whose_gate_cannot_take_the_config_refuses_before_any_write(gated, catalog) -> None:
-    """D7 (no-fail-mode): an image with no sentry-gate, or one lacking a key instrument writes (verdict_secret,
-    fallback, fail_mode), is refused before any write."""
+    """D7 (no-fail-mode), D13 (no-sources): an image with no sentry-gate, or one lacking a key instrument writes
+    (verdict_secret, fallback, fail_mode, sources), is refused before any write."""
     gated.set_flag(GATE_CATALOG=catalog)
     result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
     assert result.returncode != 0
-    assert "verdict_url, verdict_secret, pass_hosts, fallback, fail_mode" in result.stderr and "mutating nothing" in result.stderr
+    assert "verdict_url, verdict_secret, pass_hosts, fallback, fail_mode, sources" in result.stderr and "mutating nothing" in result.stderr
     assert mutations(gated) == []
 
 
@@ -575,7 +576,7 @@ def test_a_pod_on_other_rows_is_rolled_and_status_counts_the_rows(gated) -> None
     assert gated.run("namespace", "travel-advisor", "instrument", "--enforce").returncode == 0
     _adopt_written(gated)
     status = gated.run("namespace", "travel-advisor", "status")
-    assert "sentry-gate mode=enforce pass_hosts=(none) wait_ms=2000 fallback=deny fail_mode_rows=2" in status.stdout, status.stdout
+    assert "sentry-gate mode=enforce pass_hosts=(none) wait_ms=2000 fallback=deny fail_mode_rows=2 sources=0" in status.stdout, status.stdout
     assert "live=yes" in status.stdout, status.stdout
     stale = json.loads((gated.fixdir / "cm-authbridge-runtime-config.json").read_text())
     stale["data"]["config.yaml"] = stale["data"]["config.yaml"].replace("wait_ms: 100", "wait_ms: 200")
@@ -594,6 +595,118 @@ def test_a_pod_on_other_rows_is_rolled_and_status_counts_the_rows(gated) -> None
     assert mutations(gated) == []
 
 
+# --- slices per source: rows naming a source --------------------------------------------------
+
+SLICED = (
+    {"source": "desk", "wait_ms": 1234},
+    {"destination": "peer.example", "wait_ms": 100},
+    {"source": "desk", "destination": "peer.example", "fallback": "deny"},
+    {"destination": "slow.example", "fallback": "deny", "wait_ms": 3000},
+)
+
+
+def gate_text(box) -> str:
+    """The gate's entry in the written source, as text: from its name line to the end of the outbound chain."""
+    config = json.loads((box.fixdir / "cm-authbridge-runtime-config-wired.json").read_text())["data"]["config.yaml"]
+    return "    - name: sentry-gate\n" + config.split("    - name: sentry-gate\n", 1)[1]
+
+
+def test_instrument_renders_the_slices_after_the_rows(gated) -> None:
+    """D11: a document with a source row, two destination rows and a pair renders the destination rows as fail_mode
+    and one slice under sources, after fail_mode: defaults from the source row, rows the pair over the destination row
+    and the second destination as is; status reads one source."""
+    fail_mode_cm(gated, document(*SLICED))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--fallback", "deny")
+    assert result.returncode == 0, result.stderr
+    assert "fail_mode rows from travel-advisor/dg-fail-mode: 2, sources: 1" in result.stderr
+    config = plugin(written(gated), "outbound", "sentry-gate")["config"]
+    assert list(config) == ["verdict_url", "verdict_secret", "fallback", "fail_mode", "sources"]
+    assert config["fail_mode"] == [SLICED[1], SLICED[3]]
+    assert config["sources"] == {"desk": {"wait_ms": 1234, "fail_mode": [
+        {"destination": "peer.example", "wait_ms": 100, "fallback": "deny"},
+        {"destination": "slow.example", "wait_ms": 3000, "fallback": "deny"}]}}
+    assert gate_text(gated).endswith(
+        "        fail_mode:\n"
+        "        - destination: peer.example\n"
+        "          wait_ms: 100\n"
+        "        - destination: slow.example\n"
+        "          wait_ms: 3000\n"
+        "          fallback: deny\n"
+        "        sources:\n"
+        "          desk:\n"
+        "            wait_ms: 1234\n"
+        "            fail_mode:\n"
+        "            - destination: peer.example\n"
+        "              wait_ms: 100\n"
+        "              fallback: deny\n"
+        "            - destination: slow.example\n"
+        "              wait_ms: 3000\n"
+        "              fallback: deny\n"), gate_text(gated)
+
+
+def test_a_document_with_no_source_rows_renders_the_3a_block(gated) -> None:
+    """D11: with no row naming a source the gate's entry is commit 3a's, byte for byte: no sources key."""
+    fail_mode_cm(gated, document(*ROWS))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--fallback", "deny")
+    assert result.returncode == 0, result.stderr
+    assert "fail_mode rows from travel-advisor/dg-fail-mode: 2, sources: 0" in result.stderr
+    assert gate_text(gated) == (
+        "    - name: sentry-gate\n"
+        "      config:\n"
+        "        verdict_url: http://data-governance-verdict.data-governance.svc:8080/enforce/v1\n"
+        f"        verdict_secret: {SECRET}\n"
+        "        fallback: deny\n"
+        "        fail_mode:\n"
+        "        - destination: peer.example\n"
+        "          wait_ms: 100\n"
+        "        - destination: slow.example\n"
+        "          wait_ms: 3000\n"
+        "          fallback: deny\n"), gate_text(gated)
+
+
+@pytest.mark.parametrize("rows", [
+    ({"source": "desk", "fallback": "allow"},),
+    ({"destination": "peer.example", "wait_ms": 100}, {"source": "desk", "destination": "peer.example", "fallback": "allow"}),
+], ids=["slice-default", "slice-row"])
+def test_a_slice_with_allow_needs_allow_open_default(gated, rows) -> None:
+    """D11: an allow in a slice's defaults or in a slice row refuses instrument before any write unless
+    --allow-open-default is given; with it the allow is in the slice."""
+    fail_mode_cm(gated, document(*rows))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode != 0
+    assert "has a row with fallback allow" in result.stderr and "--allow-open-default" in result.stderr
+    assert mutations(gated) == []
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce", "--allow-open-default")
+    assert result.returncode == 0, result.stderr
+    assert "allow" in json.dumps(plugin(written(gated), "outbound", "sentry-gate")["config"]["sources"]["desk"])
+
+
+def test_a_pod_on_other_slices_is_rolled_and_status_counts_the_sources(gated) -> None:
+    """D12: status prints sources=1 and live=yes; a pod running another slice default is rolled with nothing written;
+    a slice set in the document but not yet instrumented shows as a drifted source."""
+    gated.set_namespace({"travel-advisor": RUNNING})
+    fail_mode_cm(gated, document(*SLICED))
+    assert gated.run("namespace", "travel-advisor", "instrument", "--enforce").returncode == 0
+    _adopt_written(gated)
+    status = gated.run("namespace", "travel-advisor", "status")
+    assert "fail_mode_rows=2 sources=1" in status.stdout and "live=yes" in status.stdout, status.stdout
+    stale = json.loads((gated.fixdir / "cm-authbridge-runtime-config.json").read_text())
+    stale["data"]["config.yaml"] = stale["data"]["config.yaml"].replace("wait_ms: 1234", "wait_ms: 1235")
+    (gated.fixdir / "pod-cm-travel-advisor.json").write_text(json.dumps(stale))
+    result = gated.run("namespace", "travel-advisor", "instrument", "--enforce")
+    assert result.returncode == 0, result.stderr
+    assert not any(c.startswith(("replace", "apply")) for c in gated.kubectl_calls())
+    assert any("deployment/travel-advisor" in c for c in restarts(gated))
+    for f in gated.fixdir.glob("restarted-*"):
+        f.unlink()
+    (gated.fixdir / "pod-cm-travel-advisor.json").unlink()
+    gated.log.unlink()
+    fail_mode_cm(gated, document(*SLICED, {"source": "booking", "wait_ms": 5}))
+    status = gated.run("namespace", "travel-advisor", "status")
+    assert "sources=1" in status.stdout and "instrument --enforce" in status.stdout, status.stdout
+    assert mutations(gated) == []
+
+
 # --- status ---------------------------------------------------------------------------------
 
 
@@ -605,7 +718,7 @@ def test_status_reads_the_gate(gated) -> None:
     _adopt_written(gated)
     result = gated.run("namespace", "travel-advisor", "status")
     assert result.returncode == 0, result.stderr
-    assert "namespace travel-advisor: sentry-gate mode=observe pass_hosts=h.example,k.example wait_ms=2000 fallback=deny fail_mode_rows=0" in result.stdout
+    assert "namespace travel-advisor: sentry-gate mode=observe pass_hosts=h.example,k.example wait_ms=2000 fallback=deny fail_mode_rows=0 sources=0" in result.stdout
     line = next(l for l in result.stdout.splitlines() if l.startswith("travel-advisor"))
     assert "live=yes" in line, line
     # A source that no longer matches the gated render: the advice keeps the gate's mode.
@@ -700,18 +813,59 @@ def test_the_live_check_compares_the_rows_as_a_set_by_destination() -> None:
         assert (problems == []) == same, (live, problems)
 
 
+def test_a_slice_the_pipeline_endpoint_masks_is_compared_by_presence() -> None:
+    """/v1/pipeline masks a key named like a secret's, so a source such as chaos-monkey comes back as a string: it
+    matches when the spec has that source, and the other slices are still compared."""
+    sources = {"chaos-monkey": {"fallback": "allow"}, "desk": {"wait_ms": 100}}
+    spec = dict(SPEC, sources=sources)
+    for live, same in (({"chaos-monkey": "[REDACTED]", "desk": {"wait_ms": 100}}, True),
+                       ({"chaos-monkey": "[REDACTED]", "desk": {"wait_ms": 200}}, False),
+                       ({"auth-token": "[REDACTED]", "chaos-monkey": "[REDACTED]", "desk": {"wait_ms": 100}}, False),
+                       ({"desk": {"wait_ms": 100}}, False)):
+        doc, expected = _live(**{"outbound.sentry-gate.sources": live})
+        problems = gate_config.pipeline_problems(doc, expected, ENDPOINT, KIT.NAMESPACE_FILE, KIT.MANAGED_PLUGINS, spec, "enforce")
+        assert (problems == []) == same, (live, problems)
+
+
+def test_the_live_check_compares_the_slices_by_source() -> None:
+    """D12: slices in another order, or a slice's rows in another order or destination case, are the same; a changed
+    slice default, a changed or missing slice row, a missing or an extra slice differ."""
+    desk = {"wait_ms": 100, "fail_mode": [{"destination": "a.example", "fallback": "allow"}, {"destination": "b.example", "wait_ms": 5}]}
+    sources = {"desk": desk, "booking": {"fallback": "deny"}}
+    spec = dict(SPEC, sources=sources)
+    for live, same in (
+            (sources, True),
+            ({"booking": sources["booking"], "desk": desk}, True),
+            ({"desk": dict(desk, fail_mode=[desk["fail_mode"][1], dict(desk["fail_mode"][0], destination="A.Example")]),
+              "booking": sources["booking"]}, True),
+            ({"desk": dict(desk, wait_ms=200), "booking": sources["booking"]}, False),
+            ({"desk": {"wait_ms": 100, "fail_mode": desk["fail_mode"][:1]}, "booking": sources["booking"]}, False),
+            ({"desk": dict(desk, fail_mode=[dict(desk["fail_mode"][0], fallback="deny"), desk["fail_mode"][1]]),
+              "booking": sources["booking"]}, False),
+            ({"desk": desk}, False),
+            (dict(sources, other={"wait_ms": 1}), False),
+            (None, False)):
+        doc, expected = _live() if live is None else _live(**{"outbound.sentry-gate.sources": live})
+        problems = gate_config.pipeline_problems(doc, expected, ENDPOINT, KIT.NAMESPACE_FILE, KIT.MANAGED_PLUGINS, spec, "enforce")
+        assert (problems == []) == same, (live, problems)
+        assert same or "gate sources slices differ" in problems
+
+
 def test_read_takes_the_gate_keys_not_a_row_s(tmp_path) -> None:
-    """read counts the fail_mode rows, and a row's wait_ms or fallback is not read as the gate's."""
+    """read counts the fail_mode rows and the sources slices, and a row's or a slice's wait_ms or fallback is not read as the gate's."""
     import subprocess
 
     lines = gate_config.gate_block(4, dict(SPEC, fail_mode=[{"destination": "a.example", "fallback": "allow"},
-                                                             {"destination": "b.example", "wait_ms": 5}]), "enforce")
+                                                             {"destination": "b.example", "wait_ms": 5}],
+                                           sources={"desk": {"fallback": "allow", "fail_mode": [{"destination": "c.example", "wait_ms": 1}]},
+                                                    "booking": {"wait_ms": 9}}), "enforce")
     config = "pipeline:\n  inbound:\n    plugins:\n    - name: jwt-validation\n  outbound:\n    plugins:\n" + "".join(lines)
     result = subprocess.run([sys.executable, str(REPO_ROOT / "deploy" / "gate_config.py"), "read", "--kit-dir",
                              str(REPO_ROOT / "deploy" / "lineage-attach")], input=json.dumps({"data": {"config.yaml": config}}),
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"mode": "enforce", "pass_hosts": ["h.example"], "wait_ms": None, "fallback": None, "fail_mode_rows": 2}
+    assert json.loads(result.stdout) == {"mode": "enforce", "pass_hosts": ["h.example"], "wait_ms": None, "fallback": None, "fail_mode_rows": 2,
+                                         "sources": 2}
 
 
 def test_the_live_check_wants_the_gate_after_lineage() -> None:

@@ -1385,9 +1385,9 @@ namespace_instrument() {
         load_fail_mode_rows "${ns}" \
             || die "instrument --${DG_GATE_MODE}: ${ns}/${DG_FAIL_MODE_CONFIGMAP} is not a valid fail-mode document (above); check a fixed one with 'dg.sh namespace ${ns} fail-mode validate <file>', then 'fail-mode set <file>'. Mutating nothing."
         if fail_mode_rows_allow "${DG_GATE_FAIL_MODE}" && [[ "${DG_GATE_ALLOW_OPEN_DEFAULT}" != "1" ]]; then
-            die "instrument --${DG_GATE_MODE}: ${ns}/${DG_FAIL_MODE_CONFIGMAP} has a row with fallback allow, which lets every request to its destination leave unjudged while the verdict service is slow or down; pass --allow-open-default to accept that. Mutating nothing."
+            die "instrument --${DG_GATE_MODE}: ${ns}/${DG_FAIL_MODE_CONFIGMAP} has a row with fallback allow, which lets every request it covers leave unjudged while the verdict service is slow or down; pass --allow-open-default to accept that. Mutating nothing."
         fi
-        err ">> instrument --${DG_GATE_MODE}: fail_mode rows from ${ns}/${DG_FAIL_MODE_CONFIGMAP}: $(fail_mode_row_count "${DG_GATE_FAIL_MODE}")"
+        err ">> instrument --${DG_GATE_MODE}: fail_mode rows from ${ns}/${DG_FAIL_MODE_CONFIGMAP}: $(fail_mode_count "${DG_GATE_FAIL_MODE}" fail_mode), sources: $(fail_mode_count "${DG_GATE_FAIL_MODE}" sources)"
         build_gate_spec
     fi
 
@@ -1437,9 +1437,9 @@ namespace_instrument() {
 # ---------------------------------------------------------------------------
 # The Sentry gate: instrument --enforce|--observe (#342). instrument renders the
 # verdict URL, the shared secret, the pass list, the wait and the fallback (when given) and the
-# rows of the namespace's fail-mode document (dg-fail-mode, when present) into the
-# gate's entry of authbridge-runtime-config, after lineage-telemetry, beside lineage's
-# capture_io on and export_delay_ms 10.
+# rows and per-source slices of the namespace's fail-mode document (dg-fail-mode, when
+# present) into the gate's entry of authbridge-runtime-config, after lineage-telemetry,
+# beside lineage's capture_io on and export_delay_ms 10.
 # ---------------------------------------------------------------------------
 
 DG_VERDICT_URL="${DG_VERDICT_URL:-http://data-governance-verdict.${DG_NAMESPACE}.svc:8080/enforce/v1}"
@@ -1449,7 +1449,7 @@ FAIL_MODE_TOOL="${SCRIPT_DIR}/fail_mode.py"
 DG_FAIL_MODE_CONFIGMAP="dg-fail-mode"
 # The config keys instrument writes into the gate's entry; an image whose gate
 # lacks one would refuse the whole config.
-DG_GATE_KEYS="verdict_url verdict_secret pass_hosts fallback fail_mode"
+DG_GATE_KEYS="verdict_url verdict_secret pass_hosts fallback fail_mode sources"
 # enforce | observe while instrument runs with a gate; empty otherwise.
 DG_GATE_MODE=""
 DG_GATE_SPEC_FILE=""
@@ -1461,7 +1461,8 @@ DG_GATE_ALLOW_OPEN_DEFAULT=0
 # 1..3000 when --wait-ms is given or the namespace's gate carries one; empty: no
 # wait_ms key is written and the gate's own default (2000) holds.
 DG_GATE_WAIT_MS=""
-# The gate's fail_mode rows as JSON, rendered from dg-fail-mode; empty when it does not exist.
+# The gate's fail_mode rows and sources slices as JSON ({"fail_mode": [...], "sources"?: {...}}),
+# rendered from dg-fail-mode; empty when it does not exist.
 DG_GATE_FAIL_MODE=""
 
 # verdict_secret_value: the verdict service's bearer from its Secret; a loud die
@@ -1476,7 +1477,7 @@ verdict_secret_value() {
 }
 
 # build_gate_spec: read the secret and write the gate's spec (verdict URL,
-# secret, wait and fallback when set, fail_mode rows when any, pass list) to DG_GATE_SPEC_FILE. Refuses an empty secret before
+# secret, wait and fallback when set, fail_mode rows and sources slices when any, pass list) to DG_GATE_SPEC_FILE. Refuses an empty secret before
 # anything is written.
 build_gate_spec() {
     local secret
@@ -1487,14 +1488,15 @@ build_gate_spec() {
     trap 'rm -f "${DG_GATE_SPEC_FILE:-}"' EXIT
     printf '%s' "${secret}" | python3 -c '
 import json, sys
-url, path, wait_ms, fallback, rows = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+url, path, wait_ms, fallback, rendered = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], json.loads(sys.argv[5] or "{}")
 spec = {"verdict_url": url, "verdict_secret": sys.stdin.read(), "pass_hosts": sys.argv[6:]}
 if wait_ms:
     spec["wait_ms"] = int(wait_ms)
 if fallback:
     spec["fallback"] = fallback
-if rows and json.loads(rows):
-    spec["fail_mode"] = json.loads(rows)
+for key in ("fail_mode", "sources"):
+    if rendered.get(key):
+        spec[key] = rendered[key]
 open(path, "w").write(json.dumps(spec))
 ' "${DG_VERDICT_URL}" "${DG_GATE_SPEC_FILE}" "${DG_GATE_WAIT_MS}" "${DG_GATE_FALLBACK}" "${DG_GATE_FAIL_MODE}" "${DG_GATE_PASS_HOSTS[@]+"${DG_GATE_PASS_HOSTS[@]}"}"
     err ">> instrument --${DG_GATE_MODE}: verdict_url ${DG_VERDICT_URL}"
@@ -1529,8 +1531,8 @@ sys.exit(0 if set(sys.argv[1].split()) <= fields else 1)' "${DG_GATE_KEYS}"
 }
 
 # read_namespace_gate <runtime-json>: the gate entry of the namespace source as
-# {"mode", "pass_hosts", "wait_ms", "fallback"} (wait_ms and fallback null when absent), {} when
-# it carries none.
+# {"mode", "pass_hosts", "wait_ms", "fallback", "fail_mode_rows", "sources"} (wait_ms and
+# fallback null when absent), {} when it carries none.
 read_namespace_gate() {
     printf '%s' "$1" | python3 "${GATE_CONFIG_TOOL}" read --kit-dir "${KIT_DIR}" 2>/dev/null || printf '{}'
 }
@@ -1578,7 +1580,7 @@ if table is None:
 sys.stdout.write(table)' "${DG_FAIL_MODE_CONFIGMAP}"
 }
 
-# load_fail_mode_rows <ns>: DG_GATE_FAIL_MODE = the gate's rows rendered from
+# load_fail_mode_rows <ns>: DG_GATE_FAIL_MODE = the gate's rows and slices rendered from
 # dg-fail-mode, empty when it does not exist. Returns 1, the problems on stderr, when
 # the document is not valid.
 load_fail_mode_rows() {
@@ -1589,17 +1591,24 @@ load_fail_mode_rows() {
     DG_GATE_FAIL_MODE="$(fail_mode_table "${cm}" | python3 "${FAIL_MODE_TOOL}" render)" || return 1
 }
 
-fail_mode_row_count() {
-    python3 -c 'import json, sys; print(len(json.loads(sys.argv[1] or "[]")))' "$1"
+# fail_mode_count <rendered-json> fail_mode|sources: how many fail_mode rows, or sources slices.
+fail_mode_count() {
+    python3 -c 'import json, sys; print(len(json.loads(sys.argv[1] or "{}").get(sys.argv[2]) or ()))' "$1" "$2"
 }
 
-# fail_mode_rows_allow <rows-json>: whether any row's fallback is allow. The rows go on
-# stdin (a large document is past the argument limit), and a check that cannot run dies:
-# it must never read as "no allow row".
+# fail_mode_rows_allow <rendered-json>: whether any fallback the document sets is allow: a
+# fail_mode row's, a slice's default or a slice row's. The document goes on stdin (a large
+# one is past the argument limit), and a check that cannot run dies: it must never read as
+# "no allow row".
 fail_mode_rows_allow() {
     local status=0
-    printf '%s' "$1" | python3 -c 'import json, sys; sys.exit(0 if any(r.get("fallback") == "allow" for r in json.loads(sys.stdin.read() or "[]")) else 1)' \
-        || status=$?
+    printf '%s' "$1" | python3 -c '
+import json, sys
+rendered = json.loads(sys.stdin.read() or "{}")
+settings = list(rendered.get("fail_mode") or [])
+for slice_ in (rendered.get("sources") or {}).values():
+    settings += [slice_, *(slice_.get("fail_mode") or [])]
+sys.exit(0 if any(s.get("fallback") == "allow" for s in settings) else 1)' || status=$?
     [[ "${status}" -le 1 ]] || die "instrument --${DG_GATE_MODE}: could not check the fail-mode document for allow rows (exit ${status}). Mutating nothing."
     return "${status}"
 }
@@ -1608,7 +1617,7 @@ fail_mode_rows_allow() {
 # --enforce|--observe on a namespace whose source carries the gate. instrument refuses:
 # the lineage reconciler appends lineage after every entry it does not manage, so a
 # plain run would put the gate before lineage, with capture off. status reads the
-# gate's mode, pass list, wait, fallback and fail_mode row count, prints them, and checks the
+# gate's mode, pass list, wait, fallback, fail_mode row count and sources count, prints them, and checks the
 # source against the gated render in that mode with that pass list, wait and fallback, and the
 # rows of the namespace's dg-fail-mode (so a document set but not yet instrumented shows
 # as a drifted source).
@@ -1625,9 +1634,10 @@ adopt_namespace_gate() {
     mapfile -t DG_GATE_PASS_HOSTS < <(gate_pass_hosts "${gate}")
     DG_GATE_WAIT_MS="$(gate_wait_ms "${gate}")"
     DG_GATE_FALLBACK="$(gate_fallback "${gate}")"
-    printf 'namespace %s: sentry-gate mode=%s pass_hosts=%s wait_ms=%s fallback=%s fail_mode_rows=%s\n' "${ns}" "${mode}" \
+    printf 'namespace %s: sentry-gate mode=%s pass_hosts=%s wait_ms=%s fallback=%s fail_mode_rows=%s sources=%s\n' "${ns}" "${mode}" \
         "$(IFS=,; printf '%s' "${DG_GATE_PASS_HOSTS[*]:-(none)}")" "${DG_GATE_WAIT_MS:-2000}" "${DG_GATE_FALLBACK:-deny}" \
-        "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("fail_mode_rows", 0))' "${gate}")"
+        "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("fail_mode_rows", 0))' "${gate}")" \
+        "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("sources", 0))' "${gate}")"
     load_fail_mode_rows "${ns}" || return 1
     ( build_gate_spec ) >/dev/null 2>&1 || { err "status: the verdict Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} cannot be read"; return 1; }
     build_gate_spec 2>/dev/null
