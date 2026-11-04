@@ -33,7 +33,9 @@ gate's entry (``gate_config.py``): the destination rows as ``fail_mode``, and pe
 slice under ``sources`` whose defaults are the source row's keys and whose rows are, for
 each destination with a destination row or a pair row of that source, the pair's keys over
 the destination row's keys. The gate fills a slice row's missing key from the slice's
-defaults, and those from its own top-level keys.
+defaults, and those from its own top-level keys. It also writes the document's revision as
+``fail_mode_revision``, which the gate records with every request that got no verdict, so a
+record names the document that decided it.
 
 Subcommands:
 
@@ -41,6 +43,8 @@ Subcommands:
 - ``render``: the document on stdin; ``{"fail_mode": [...], "sources": {...}}`` as JSON on
   stdout (``sources`` left out when no row names a source); exit 1 with the problems when
   it is not valid.
+- ``revision <file>``: the document's revision, the sha256 of its bytes as ``set`` keeps them
+  (verbatim: no newline or whitespace is normalised), in lowercase hex; ``-`` reads stdin.
 
 Standard library only, as ``dg.sh`` is a standalone cluster-management script.
 """
@@ -48,6 +52,7 @@ Standard library only, as ``dg.sh`` is a standalone cluster-management script.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -179,6 +184,11 @@ def render(text: str) -> dict:
     return out
 
 
+def revision(data: bytes) -> str:
+    """The revision of a document: the sha256 of its bytes, lowercase hex."""
+    return hashlib.sha256(data).hexdigest()
+
+
 def validate_command(args: argparse.Namespace) -> int:
     try:
         text = Path(args.file).read_text(encoding="utf-8")
@@ -207,6 +217,16 @@ def render_command(_args: argparse.Namespace) -> int:
     return 0
 
 
+def revision_command(args: argparse.Namespace) -> int:
+    try:
+        data = sys.stdin.buffer.read() if args.file == "-" else Path(args.file).read_bytes()
+    except OSError as error:
+        print(f"{args.file}: cannot be read ({error})", file=sys.stderr)
+        return 1
+    print(revision(data))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -214,6 +234,9 @@ def main() -> int:
     validate.add_argument("file")
     validate.set_defaults(func=validate_command)
     sub.add_parser("render").set_defaults(func=render_command)
+    revision_ = sub.add_parser("revision")
+    revision_.add_argument("file")
+    revision_.set_defaults(func=revision_command)
     args = parser.parse_args()
     return args.func(args)
 

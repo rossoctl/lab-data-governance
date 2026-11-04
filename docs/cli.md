@@ -13,6 +13,7 @@ dg.sh namespaces [list]
 dg.sh namespace  <ns> [instrument|status] [<entity>]
 dg.sh namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]... [--wait-ms <n>] [--fallback deny|allow] [--allow-open-default]
 dg.sh namespace  <ns> fail-mode set <file>|show|validate <file>
+dg.sh namespace  <ns> gate-report [--since <time>]
 ```
 
 There are no global options. The shim and existing-proxy reconciliation assets
@@ -145,6 +146,7 @@ with these keys:
 | `fallback` | `--fallback deny` or `allow`: what a request gets when a slow or dead verdict service gives no verdict (`deny` refuses it with a 503, `allow` delivers it unjudged); left out without `--fallback`, which is the gate's default, `deny` |
 | `fail_mode` | the destination rows of the namespace's fail-mode document ([below](#the-fail-mode-document)), each with only the keys it has; left out when there is no document or it has none |
 | `sources` | one slice per source workload the document names: its defaults and its rows ([below](#the-fail-mode-document)); left out when no row names a source |
+| `fail_mode_revision` | the [revision](#the-revision) of the namespace's fail-mode document, which the gate writes into the record of every request that got no verdict; left out when there is no document |
 
 Every other gate key keeps the gate's default (`deny_on` `[block]`, `pass_single_label`
 true, so a cluster short name always passes). An existing `sentry-gate` entry anywhere in the source is
@@ -161,7 +163,7 @@ needs the flag the same way, on every run while the document holds that row.
 Then each workload's live `/v1/pipeline` is checked against the gated pipeline (lineage before the gate,
 the lineage values above, the gate's URL, pass list, wait, fallback, `fail_mode` rows (as a set by destination),
 `sources` slices (by source, each slice's rows as a set by destination; a slice `/v1/pipeline` masks, for a source
-named like a secret's key such as `chaos-monkey`, by its presence) and mode, a secret present; a
+named like a secret's key such as `chaos-monkey`, by its presence), `fail_mode_revision` and mode, a secret present; a
 `wait_ms` absent counts as 2000, a `fallback` absent as `deny`), and each one not on it
 is rolled and verified. A second run with the same flags writes nothing and rolls nothing.
 
@@ -170,18 +172,19 @@ observe`): the gate asks and waits as when enforcing, and every refusal it would
 made. `--enforce` on an observing namespace switches it back.
 
 It refuses, mutating nothing, when a sidecar's image has no `sentry-gate` that takes `verdict_url`,
-`verdict_secret`, `pass_hosts`, `fallback`, `fail_mode` and `sources` (read from the image's `/v1/plugins`), when the
+`verdict_secret`, `pass_hosts`, `fallback`, `fail_mode`, `sources` and `fail_mode_revision` (read from the image's `/v1/plugins`), when the
 namespace's fail-mode document is not valid (it names `fail-mode validate`), when the verdict Secret is empty,
 and when an `<entity>` is named: the gate is a namespace setting. `instrument` without `--enforce` or
 `--observe` refuses on a namespace whose source carries the gate, mutating nothing, and names the run that
 keeps it: the lineage reconciler appends lineage after every entry it does not manage, so it would put the
 gate before lineage. No verb removes the gate.
 
-`status` on a gated namespace prints the gate's mode, pass list, wait, fallback and the number of its
-`fail_mode` rows and of its `sources` slices (`namespace <ns>: sentry-gate mode=enforce
-pass_hosts=a.example,b.example wait_ms=2000 fallback=deny fail_mode_rows=2 sources=1`, `2000` and `deny` too when
-the entry has none) and checks the source and each live pipeline against the gated pipeline in that mode, with that
-pass list, wait and fallback and the rows and slices of the namespace's fail-mode document; when the source has drifted, also after a `fail-mode set` not yet applied, it
+`status` on a gated namespace prints the gate's mode, pass list, wait, fallback, the number of its
+`fail_mode` rows and of its `sources` slices, and the first 12 characters of its revision (`namespace <ns>:
+sentry-gate mode=enforce pass_hosts=a.example,b.example wait_ms=2000 fallback=deny fail_mode_rows=2 sources=1
+revision=9f86d081884c`, `2000` and `deny` too when the entry has none, `revision=none` when it has no revision)
+and checks the source and each live pipeline against the gated pipeline in that mode, with that pass list,
+wait and fallback and the rows and slices of the namespace's fail-mode document; when the source has drifted, also after a `fail-mode set` not yet applied, it
 advises the run with the namespace's own `--enforce` or `--observe`.
 
 The secret is copied, not referenced: whoever can read ConfigMaps in a gated namespace can read it, and
@@ -260,6 +263,67 @@ to `dg-fail-mode`. `fail-mode show` prints the namespace's document, or says the
 The gates take a document at the next `instrument --enforce` (or `--observe`), which renders its rows and
 slices into the gate's entry; that run, not `set`, rolls the pods. Deleting `dg-fail-mode` with `kubectl` and re-running `instrument`
 removes the rows and slices.
+
+#### The revision
+
+A document's revision is the sha256 of its bytes, as `set` keeps them (nothing normalised: a changed
+line ending or trailing space is another revision), in lowercase hex. `fail-mode set` prints it, `fail-mode
+show` prints it on stderr, and `python3 deploy/fail_mode.py revision <file>` gives it for a file before it is
+set. `instrument` writes it into the gate's entry as `fail_mode_revision`, after `sources`, and the gate
+writes it into the record of every request that got no verdict (a fallback, a marked body, a fault), so a
+record read after the document changed still names the document that decided it. A pod on another revision
+is rolled like a pod on other rows, and a document set but not yet instrumented shows in `status` as drift.
+
+## The gate's report
+
+```sh
+./deploy/dg.sh namespace <ns> gate-report [--since <time>]
+```
+
+`gate-report` reads, read-only, every sidecar's session API (`kubectl exec <pod> -c authbridge-proxy --
+wget 127.0.0.1:9094/v1/sessions`, paging back to the window's start) and counts what the namespace's gates
+did with the requests that got no verdict, per source workload and destination:
+
+| column | records |
+|---|---|
+| `refused` | `fallback_deny`, and the faults refused whatever the fallback (`verdict_unauthorized`, `verdict_error`, `verdict_empty`, `no_lineage_stamp`, `no_exchange_key`) |
+| `fallback_allow` | delivered unjudged on the fallback |
+| `would_refuse` | the refusals of either kind, and of a marked body, recorded under `--observe` (the framework marks them shadow): what `--enforce` would have refused |
+| `body_cut`, `body_not_captured` | a body lineage marked, refused whatever the fallback, by its mark |
+
+The source is the `self_id` lineage wrote into its record of the same request, the name a fail-mode row's
+`source` matches (the gate's record names none), else the workload whose sidecar the record was read from; the
+destination is the request's host, port stripped, case-folded and without a trailing dot, as the gate matches a row. Below the table
+are the refusals by reason (a marked body under its cause and its mark, `shadow` for an observed one), and the
+revisions the records name, beside the namespace's current one, also on the header line. A refusal by a
+verdict is not counted here; it is the verdict service's.
+
+`--since` takes an RFC 3339 time or a span back from now (`90m`, `1h`, `30s`); without it the window is
+everything the sidecars hold. A sidecar keeps its records in its process, so a roll empties them: read a
+window before the roll that ends it, `instrument` included. It also keeps only its most recently active sessions
+(100 by default), so the records of an older session are gone even inside the window. A sample, with every kind of record in it:
+
+```text
+gate-report namespace=desk since=all held until=2026-11-04T13:00:00Z mode=enforce revision=9f86d081884c
+sidecar booking pod=booking-7f9c-abc12 read=yes events=40 no_verdict_records=0
+sidecar desk pod=desk-5d4b-xk2p9 read=yes events=212 no_verdict_records=7
+source  destination        refused  fallback_allow  would_refuse  body_cut  body_not_captured
+desk    partner.example    1        1               1             1         0
+desk    slow-tool.example  1        0               1             0         1
+by reason:
+  desk  partner.example    fallback_deny shadow             1
+  desk  partner.example    no_lineage_stamp                 1
+  desk  partner.example    verdict_error body_cut           1
+  desk  slow-tool.example  fallback_deny                    1
+  desk  slow-tool.example  verdict_busy body_not_captured   1
+  desk  slow-tool.example  verdict_pending body_cut shadow  1
+revisions seen: 1a2b3c4d5e6f 2, 9f86d081884c 5 (current 9f86d081884c)
+```
+
+Each Running pod of a workload is read, so a workload with replicas has a `sidecar` line per pod and its counts
+are their sum. A workload with no Running pod, or a pod whose session API cannot be read, is named `read=no` with the reason and the
+rest are still read; when no sidecar can be read, the report says so and fails. A namespace with no gate in its
+source is refused.
 
 ## Typical flow
 

@@ -155,3 +155,31 @@ def test_a_missing_file_is_refused(tmp_path) -> None:
     """D2: validate on a file that cannot be read exits 1."""
     result = run("validate", str(tmp_path / "nope.json"))
     assert result.returncode == 1 and "cannot be read" in result.stderr
+
+
+# D15: the revision is the sha256 of the document's bytes, as set keeps them.
+CRLF = b'{"rows": [ {"destination": "Peer.example",\r\n "wait_ms": 100} ]}  \r\n\r\n'
+
+
+def test_the_revision_is_the_sha256_of_the_bytes(tmp_path) -> None:
+    """D15: revision <file> prints hashlib's sha256 of the file's bytes, \\r\\n and trailing whitespace included (no
+    normalising); - reads the same bytes from stdin; a one-byte change gives another revision."""
+    import hashlib
+
+    doc = tmp_path / "doc.json"
+    doc.write_bytes(CRLF)
+    result = run("revision", str(doc))
+    assert result.returncode == 0 and result.stderr == "", result.stderr
+    assert result.stdout == hashlib.sha256(CRLF).hexdigest() + "\n"
+    assert result.stdout != hashlib.sha256(CRLF.replace(b"\r\n", b"\n")).hexdigest() + "\n"
+    piped = subprocess.run([sys.executable, str(SCRIPT), "revision", "-"], input=CRLF, capture_output=True, timeout=30)
+    assert piped.returncode == 0 and piped.stdout.decode() == result.stdout
+    doc.write_bytes(CRLF.replace(b"100", b"101"))
+    changed = run("revision", str(doc))
+    assert changed.returncode == 0 and changed.stdout != result.stdout and len(changed.stdout.strip()) == 64
+
+
+def test_the_revision_of_a_missing_file_is_refused(tmp_path) -> None:
+    """D15: revision on a file that cannot be read exits 1."""
+    result = run("revision", str(tmp_path / "nope.json"))
+    assert result.returncode == 1 and "cannot be read" in result.stderr and result.stdout == ""
