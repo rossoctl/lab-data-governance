@@ -928,6 +928,19 @@ and `error_count`. Computed at query time alongside the **Listing root**;
 present on both the `GET /api/traces` collection rows and the
 `GET /api/traces/{tid}` singular. Backed by the `TraceCounts` retrieval type.
 
+**OPA verdict**:
+The Allow or Block policy answer for a held outbound request, calculated by
+the AuthBridge OPA plugin using DG facts and request context. It may be absent
+if the required facts were unavailable before the request's deadline.
+_Avoid_: treating a verdict as proof that the proxy forwarded or rejected the
+request.
+
+**Effective proxy outcome**:
+The observed forwarding or rejection result for a held outbound request,
+including local rejection when required facts are unavailable. It can differ
+from the **OPA verdict** if policy evaluation or proxy processing fails.
+_Avoid_: using an **OPA verdict** as a substitute for the applied outcome.
+
 ## Relationships
 
 - A **Trace** contains one or more **Spans**, all sharing its `trace_id`.
