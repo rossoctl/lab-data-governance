@@ -102,6 +102,11 @@ function severityRank(level: string): number {
  * If the risk model ever gains a genuine per-entity level, that should
  * replace this roll-up rather than sit beside it.
  */
+/** `true` when `level` is as severe as `min` or more (`'unknown'` ranks last). */
+export function isAtLeastRiskLevel(level: string, min: string): boolean {
+  return severityRank(level) <= severityRank(min);
+}
+
 export function moreSevereRiskLevel(a: string, b: string): string {
   // Lower index = more severe, so the smaller rank wins; a tie (both
   // unranked, or the same level twice) keeps `a`.
