@@ -23,6 +23,7 @@
 #   dg.sh namespaces [list]
 #   dg.sh namespace  <ns> [instrument|status] [<entity>]
 #   dg.sh namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]... [--wait-ms <n>] [--fallback deny|allow] [--allow-open-default]
+#   dg.sh namespace  <ns> fail-mode set <file>|show|validate <file>
 #
 # Fail-loud posture: every preflight and every unresolved input is a loud,
 # non-zero exit — never a silent no-op.
@@ -103,6 +104,7 @@ Usage:
   ${PROG} namespaces [list]
   ${PROG} namespace  <ns> [instrument|status] [<entity>]
   ${PROG} namespace  <ns> instrument --enforce|--observe [--pass-host <glob>]... [--wait-ms <n>] [--fallback deny|allow] [--allow-open-default]
+  ${PROG} namespace  <ns> fail-mode set <file>|show|validate <file>
 EOF
 }
 
@@ -808,7 +810,7 @@ namespace_status() {
     if ! runtime_json="$(kubectl -n "${ns}" get configmap "${DG_RUNTIME_CONFIGMAP}" -o json 2>/dev/null)"; then
         runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} could not be read"
     elif ! adopt_namespace_gate "${ns}" "${runtime_json}" status; then
-        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} carries a Sentry gate, and the verdict Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} cannot be read"
+        runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} carries a Sentry gate, and the verdict Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} cannot be read, or the fail-mode document ${ns}/${DG_FAIL_MODE_CONFIGMAP} cannot be read or is not valid (its problems are above; 'dg.sh namespace ${ns} fail-mode show' prints it, 'fail-mode validate <file>' checks a fixed one)"
     elif ! configmap_is_canonical "${runtime_json}"; then
         runtime_reason="namespace ${DG_RUNTIME_CONFIGMAP} differs from the canonical lineage pipeline; run 'dg.sh namespace ${ns} instrument${DG_GATE_MODE:+ --${DG_GATE_MODE}}'"
     fi
@@ -1380,6 +1382,12 @@ namespace_instrument() {
     if [[ -n "${DG_GATE_MODE}" ]]; then
         [[ -z "${entity}" ]] || die "instrument --${DG_GATE_MODE}: the gate is a namespace setting; run it without <entity>. Mutating nothing."
         keep_namespace_gate_settings "${ns}"
+        load_fail_mode_rows "${ns}" \
+            || die "instrument --${DG_GATE_MODE}: ${ns}/${DG_FAIL_MODE_CONFIGMAP} is not a valid fail-mode document (above); check a fixed one with 'dg.sh namespace ${ns} fail-mode validate <file>', then 'fail-mode set <file>'. Mutating nothing."
+        if fail_mode_rows_allow "${DG_GATE_FAIL_MODE}" && [[ "${DG_GATE_ALLOW_OPEN_DEFAULT}" != "1" ]]; then
+            die "instrument --${DG_GATE_MODE}: ${ns}/${DG_FAIL_MODE_CONFIGMAP} has a row with fallback allow, which lets every request to its destination leave unjudged while the verdict service is slow or down; pass --allow-open-default to accept that. Mutating nothing."
+        fi
+        err ">> instrument --${DG_GATE_MODE}: fail_mode rows from ${ns}/${DG_FAIL_MODE_CONFIGMAP}: $(fail_mode_row_count "${DG_GATE_FAIL_MODE}")"
         build_gate_spec
     fi
 
@@ -1428,16 +1436,20 @@ namespace_instrument() {
 
 # ---------------------------------------------------------------------------
 # The Sentry gate: instrument --enforce|--observe (#342). instrument renders the
-# verdict URL, the shared secret, the pass list, the wait and the fallback (when given) into
-# the gate's entry of authbridge-runtime-config, after lineage-telemetry, beside lineage's
+# verdict URL, the shared secret, the pass list, the wait and the fallback (when given) and the
+# rows of the namespace's fail-mode document (dg-fail-mode, when present) into the
+# gate's entry of authbridge-runtime-config, after lineage-telemetry, beside lineage's
 # capture_io on and export_delay_ms 10.
 # ---------------------------------------------------------------------------
 
 DG_VERDICT_URL="${DG_VERDICT_URL:-http://data-governance-verdict.${DG_NAMESPACE}.svc:8080/enforce/v1}"
 GATE_CONFIG_TOOL="${SCRIPT_DIR}/gate_config.py"
+FAIL_MODE_TOOL="${SCRIPT_DIR}/fail_mode.py"
+# The fail-mode document, a human's, in the app namespace: key `table`, kept verbatim.
+DG_FAIL_MODE_CONFIGMAP="dg-fail-mode"
 # The config keys instrument writes into the gate's entry; an image whose gate
 # lacks one would refuse the whole config.
-DG_GATE_KEYS="verdict_url verdict_secret pass_hosts fallback"
+DG_GATE_KEYS="verdict_url verdict_secret pass_hosts fallback fail_mode"
 # enforce | observe while instrument runs with a gate; empty otherwise.
 DG_GATE_MODE=""
 DG_GATE_SPEC_FILE=""
@@ -1449,6 +1461,8 @@ DG_GATE_ALLOW_OPEN_DEFAULT=0
 # 1..3000 when --wait-ms is given or the namespace's gate carries one; empty: no
 # wait_ms key is written and the gate's own default (2000) holds.
 DG_GATE_WAIT_MS=""
+# The gate's fail_mode rows as JSON, rendered from dg-fail-mode; empty when it does not exist.
+DG_GATE_FAIL_MODE=""
 
 # verdict_secret_value: the verdict service's bearer from its Secret; a loud die
 # when it cannot be read. Never printed by dg.sh.
@@ -1462,7 +1476,7 @@ verdict_secret_value() {
 }
 
 # build_gate_spec: read the secret and write the gate's spec (verdict URL,
-# secret, wait and fallback when set, pass list) to DG_GATE_SPEC_FILE. Refuses an empty secret before
+# secret, wait and fallback when set, fail_mode rows when any, pass list) to DG_GATE_SPEC_FILE. Refuses an empty secret before
 # anything is written.
 build_gate_spec() {
     local secret
@@ -1473,14 +1487,16 @@ build_gate_spec() {
     trap 'rm -f "${DG_GATE_SPEC_FILE:-}"' EXIT
     printf '%s' "${secret}" | python3 -c '
 import json, sys
-url, path, wait_ms, fallback = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-spec = {"verdict_url": url, "verdict_secret": sys.stdin.read(), "pass_hosts": sys.argv[5:]}
+url, path, wait_ms, fallback, rows = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+spec = {"verdict_url": url, "verdict_secret": sys.stdin.read(), "pass_hosts": sys.argv[6:]}
 if wait_ms:
     spec["wait_ms"] = int(wait_ms)
 if fallback:
     spec["fallback"] = fallback
+if rows and json.loads(rows):
+    spec["fail_mode"] = json.loads(rows)
 open(path, "w").write(json.dumps(spec))
-' "${DG_VERDICT_URL}" "${DG_GATE_SPEC_FILE}" "${DG_GATE_WAIT_MS}" "${DG_GATE_FALLBACK}" "${DG_GATE_PASS_HOSTS[@]+"${DG_GATE_PASS_HOSTS[@]}"}"
+' "${DG_VERDICT_URL}" "${DG_GATE_SPEC_FILE}" "${DG_GATE_WAIT_MS}" "${DG_GATE_FALLBACK}" "${DG_GATE_FAIL_MODE}" "${DG_GATE_PASS_HOSTS[@]+"${DG_GATE_PASS_HOSTS[@]}"}"
     err ">> instrument --${DG_GATE_MODE}: verdict_url ${DG_VERDICT_URL}"
 }
 
@@ -1534,12 +1550,68 @@ gate_fallback() {
     python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("fallback") or "")' "$1"
 }
 
+# fail_mode_configmap_json <ns>: the dg-fail-mode ConfigMap as JSON, {} when it does
+# not exist, a loud die on any other read failure.
+fail_mode_configmap_json() {
+    local ns="$1" out status=0 errfile msg
+    errfile="$(mktemp)"
+    out="$(kubectl -n "${ns}" get configmap "${DG_FAIL_MODE_CONFIGMAP}" -o json 2>"${errfile}")" || status=$?
+    msg="$(cat "${errfile}")"
+    rm -f "${errfile}"
+    if [[ "${status}" -eq 0 ]]; then
+        printf '%s' "${out}"
+    elif [[ "${msg}" == *NotFound* ]]; then
+        printf '{}'
+    else
+        die "could not read ${ns}/${DG_FAIL_MODE_CONFIGMAP}: ${msg}"
+    fi
+}
+
+# fail_mode_table <configmap-json>: the document (key `table`) on stdout, verbatim;
+# exit 1 when the ConfigMap has no such key.
+fail_mode_table() {
+    printf '%s' "$1" | python3 -c '
+import json, sys
+table = (json.load(sys.stdin).get("data") or {}).get("table")
+if table is None:
+    sys.exit(sys.argv[1] + ": no table key")
+sys.stdout.write(table)' "${DG_FAIL_MODE_CONFIGMAP}"
+}
+
+# load_fail_mode_rows <ns>: DG_GATE_FAIL_MODE = the gate's rows rendered from
+# dg-fail-mode, empty when it does not exist. Returns 1, the problems on stderr, when
+# the document is not valid.
+load_fail_mode_rows() {
+    local ns="$1" cm
+    DG_GATE_FAIL_MODE=""
+    cm="$(fail_mode_configmap_json "${ns}")" || exit 1
+    [[ "${cm}" != "{}" ]] || return 0
+    DG_GATE_FAIL_MODE="$(fail_mode_table "${cm}" | python3 "${FAIL_MODE_TOOL}" render)" || return 1
+}
+
+fail_mode_row_count() {
+    python3 -c 'import json, sys; print(len(json.loads(sys.argv[1] or "[]")))' "$1"
+}
+
+# fail_mode_rows_allow <rows-json>: whether any row's fallback is allow. The rows go on
+# stdin (a large document is past the argument limit), and a check that cannot run dies:
+# it must never read as "no allow row".
+fail_mode_rows_allow() {
+    local status=0
+    printf '%s' "$1" | python3 -c 'import json, sys; sys.exit(0 if any(r.get("fallback") == "allow" for r in json.loads(sys.stdin.read() or "[]")) else 1)' \
+        || status=$?
+    [[ "${status}" -le 1 ]] || die "instrument --${DG_GATE_MODE}: could not check the fail-mode document for allow rows (exit ${status}). Mutating nothing."
+    return "${status}"
+}
+
 # adopt_namespace_gate <ns> <runtime-json> <instrument|status>: a run without
 # --enforce|--observe on a namespace whose source carries the gate. instrument refuses:
 # the lineage reconciler appends lineage after every entry it does not manage, so a
 # plain run would put the gate before lineage, with capture off. status reads the
-# gate's mode, pass list, wait and fallback, prints them, and checks the source against
-# the gated render in that mode with that pass list, wait and fallback.
+# gate's mode, pass list, wait, fallback and fail_mode row count, prints them, and checks the
+# source against the gated render in that mode with that pass list, wait and fallback, and the
+# rows of the namespace's dg-fail-mode (so a document set but not yet instrumented shows
+# as a drifted source).
 adopt_namespace_gate() {
     local ns="$1" runtime_json="$2" verb="$3" gate mode
     [[ -z "${DG_GATE_MODE}" ]] || return 0
@@ -1553,8 +1625,10 @@ adopt_namespace_gate() {
     mapfile -t DG_GATE_PASS_HOSTS < <(gate_pass_hosts "${gate}")
     DG_GATE_WAIT_MS="$(gate_wait_ms "${gate}")"
     DG_GATE_FALLBACK="$(gate_fallback "${gate}")"
-    printf 'namespace %s: sentry-gate mode=%s pass_hosts=%s wait_ms=%s fallback=%s\n' "${ns}" "${mode}" \
-        "$(IFS=,; printf '%s' "${DG_GATE_PASS_HOSTS[*]:-(none)}")" "${DG_GATE_WAIT_MS:-2000}" "${DG_GATE_FALLBACK:-deny}"
+    printf 'namespace %s: sentry-gate mode=%s pass_hosts=%s wait_ms=%s fallback=%s fail_mode_rows=%s\n' "${ns}" "${mode}" \
+        "$(IFS=,; printf '%s' "${DG_GATE_PASS_HOSTS[*]:-(none)}")" "${DG_GATE_WAIT_MS:-2000}" "${DG_GATE_FALLBACK:-deny}" \
+        "$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("fail_mode_rows", 0))' "${gate}")"
+    load_fail_mode_rows "${ns}" || return 1
     ( build_gate_spec ) >/dev/null 2>&1 || { err "status: the verdict Secret ${DG_NAMESPACE}/${DG_VERDICT_SECRET} cannot be read"; return 1; }
     build_gate_spec 2>/dev/null
 }
@@ -1583,6 +1657,51 @@ keep_namespace_gate_settings() {
         [[ -z "${DG_GATE_FALLBACK}" ]] \
             || err ">> instrument --${DG_GATE_MODE}: fallback kept from the namespace's gate: ${DG_GATE_FALLBACK} (--fallback replaces it)"
     fi
+}
+
+# namespace_fail_mode <ns> set <file>|show|validate <file>: the namespace's fail-mode
+# document. validate reads only the file; set validates it and writes it verbatim as
+# key `table` of ConfigMap dg-fail-mode; show prints that document.
+namespace_fail_mode() {
+    local ns="$1" action="${2:-}" file="${3:-}"
+    [[ $# -le 3 ]] || usage_error "fail-mode: unknown argument '$4'"
+    command -v python3 >/dev/null 2>&1 || die "'python3' is required for fail-mode; install it"
+    case "${action}" in
+        validate)
+            [[ -n "${file}" ]] || usage_error "fail-mode validate: a <file> is required"
+            python3 "${FAIL_MODE_TOOL}" validate "${file}" \
+                || die "fail-mode validate: '${file}' is not a valid fail-mode document (above)"
+            ;;
+        set)
+            [[ -n "${file}" ]] || usage_error "fail-mode set: a <file> is required"
+            python3 "${FAIL_MODE_TOOL}" validate "${file}" >/dev/null \
+                || die "fail-mode set: '${file}' is not a valid fail-mode document (above); ${ns}/${DG_FAIL_MODE_CONFIGMAP} is unchanged"
+            require_kubectl
+            python3 -c '
+import json, sys
+ns, name, path = sys.argv[1:4]
+table = open(path, encoding="utf-8", newline="").read()
+print(json.dumps({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": name, "namespace": ns},
+                  "data": {"table": table}}))' "${ns}" "${DG_FAIL_MODE_CONFIGMAP}" "${file}" \
+                | kubectl apply -f - >/dev/null \
+                || die "fail-mode set: failed to write ${ns}/${DG_FAIL_MODE_CONFIGMAP}"
+            err ">> fail-mode set: ${ns}/${DG_FAIL_MODE_CONFIGMAP} written; the gates take it at the next 'dg.sh namespace ${ns} instrument' with the namespace's own --enforce or --observe, which rolls the pods"
+            ;;
+        show)
+            [[ -z "${file}" ]] || usage_error "fail-mode show: takes no argument"
+            require_kubectl
+            local cm
+            cm="$(fail_mode_configmap_json "${ns}")" || exit 1
+            if [[ "${cm}" == "{}" ]]; then
+                err "fail-mode show: ${ns} has no ${DG_FAIL_MODE_CONFIGMAP}; the gate's wait and fallback hold for every destination"
+                return 0
+            fi
+            fail_mode_table "${cm}" || die "fail-mode show: ${ns}/${DG_FAIL_MODE_CONFIGMAP} holds no document"
+            ;;
+        *)
+            usage_error "fail-mode: give set <file>, show or validate <file>"
+            ;;
+    esac
 }
 
 # --- namespace <ns> [instrument|status] [<entity>] -------------------------
@@ -1631,6 +1750,9 @@ cmd_namespace() {
                 die "instrument --${DG_GATE_MODE}: --fallback allow lets every request the pass list does not name leave unjudged while the verdict service is slow or down; pass --allow-open-default to accept that. Mutating nothing."
             fi
             namespace_instrument "${ns}" "${entity}"
+            ;;
+        fail-mode)
+            namespace_fail_mode "${ns}" "${@:3}"
             ;;
         status)
             namespace_status "${ns}" "${entity}"
