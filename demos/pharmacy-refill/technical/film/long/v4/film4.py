@@ -1,4 +1,4 @@
-"""film4.py — the technical film (v4.4): the 2:35 pitch as it is (its picture, film/pitch-2m35/master/sentry_pitch_demo.mp4,
+"""film4.py — the technical film (v4.5): the 2:35 pitch as it is (its picture, film/pitch-2m35/master/sentry_pitch_demo.mp4,
 from lab-dg demo/pharmacy-refill-pitch; pins.yaml) with nine
 technical sections spliced into its pauses (v4/narration.yaml). Each section is a steps.js stage: the
 camera pushes from the pitch's frame at the cut through a door in it, through Sentry's real pages and our panels (rings
@@ -55,6 +55,26 @@ FULL = [0, 0, 1920, 1080]
 
 def boxes(d: str) -> dict:
     return json.loads((TAKE / d / "boxes.json").read_text())
+
+
+def grades() -> str:
+    """I9 L3's chip: the grades the take's dashboard shows (counts.json DC…DL), and a stop when L3's line names a grade
+    the take does not show or leaves out one it does (the words follow the run)."""
+    have = {g: COUNTS.get(k, 0) for g, k in (("critical", "DC"), ("high", "DH"), ("medium", "DM"), ("low", "DL"))}
+    said = yaml.safe_load((V4 / "narration.yaml").read_text())["I9"]["L3"]
+    off = [g for g, k in (("critical", "DC"), ("high", "DH"), ("medium", "DM"), ("low", "DL")) if (have[g] > 0) != (f"{{{k}}}" in said)]
+    if COUNTS and off:
+        raise SystemExit(f"I9 L3: the line and the take's dashboard disagree on {', '.join(off)} (counts.json {have}); "
+                         "name in narration.yaml exactly the grades the take shows, then voice L3 again")
+    return " · ".join([g for g, n in have.items() if n] + ["none"])
+
+
+def lower_alerts(db: dict) -> list:
+    """The dashboard's alert rows below the critical ones; I9 L6 speaks of them, so a take without any stops here."""
+    if not db.get("alertLower"):
+        raise SystemExit("I9 L6: the dashboard shows no lower-severity alert rows in this take (boxes.json alertLower); "
+                         "the line must not be spoken over it: record a take whose travel sessions produce them")
+    return db["alertsLower"]
 
 
 def grow(b: list, pad: int = 10) -> list:
@@ -201,9 +221,11 @@ def section(name: str) -> tuple[dict, list[tuple[str, dict]]]:
         db = boxes("shots/dash")
         steps = [("L1", {"img": S("panels/out", "grid"), "notag": True, "ring": grow(g["grid"], 8), "hold": 5.5}),
                  ("L2", {"img": S("shots/dash", "page"), "cam": FULL, "ring": grow(db["tiles"], 6), "label": "The risk dashboard", "sub": "two apps · one policy", "side": "below"}),
-                 ("L3", {"img": S("shots/dash", "page"), "cam": panel(db["bar"]), "ring": grow(db["bar"], 6), "label": "Every exchange, graded", "sub": "critical · high · medium · none", "side": "below"}),
+                 ("L3", {"img": S("shots/dash", "page"), "cam": panel(db["bar"]), "ring": grow(db["bar"], 6), "label": "Every exchange, graded", "sub": grades(), "side": "below"}),
                  ("L4", {"img": S("shots/dash", "page"), "cam": panel(db["rules"]), "ring": grow(db["rules"], 6), "label": "The rules behind them", "side": "below", "hold": 4.0}),
-                 ("L5", {"img": S("shots/dash", "page"), "cam": panel(db["alerts"]), "ring": grow(db["alerts"], 6), "tone": "red", "label": "The three sessions we followed", "sub": "critical · at the top", "side": "left"})]
+                 ("L5", {"img": S("shots/dash", "page"), "cam": panel(db["alerts"]), "ring": grow(db["alerts"], 6), "tone": "red", "label": "The three sessions we followed", "sub": "critical · at the top", "side": "left"}),
+                 # L6 says the alerts list lower-severity traces too: the take must show such rows (the words follow the run)
+                 ("L6", {"img": S("shots/dash", "page"), "cam": panel(db["alerts"]), "ring": grow(lower_alerts(db), 6), "label": "Lower severity", "sub": "listed for follow-up", "side": "left"})]
     return spec, steps
 
 

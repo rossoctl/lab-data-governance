@@ -1,4 +1,4 @@
-"""compare.py <take> [<film name>] [--to v4.4] [--to-film film-v4.4] — what differs between a take's film and film v4.4's (or another take's):
+"""compare.py <take> [<film name>] [--to v4.5] [--to-film film-v4.5] — what differs between a take's film and film v4.5's (or another take's):
 the counts and verdicts the narration reads, every spoken line that changed, each section's length, the film's length,
 and the review's numbers. Read-only; prints Markdown.
 
@@ -12,7 +12,7 @@ import sys
 
 PKG = pathlib.Path(__file__).resolve().parents[1]
 opt = lambda k, d: sys.argv[sys.argv.index(k) + 1] if k in sys.argv else d
-ref, ref_name = opt("--to", "v4.4"), opt("--to-film", "film-v4.4")
+ref, ref_name = opt("--to", "v4.5"), opt("--to-film", "film-v4.5")
 args = [a for i, a in enumerate(sys.argv[1:], 1) if not a.startswith("--") and sys.argv[i - 1] not in ("--to", "--to-film")]
 take, name = PKG / "film/takes" / args[0], (args[1] if len(args) > 1 else "film")
 base = PKG / "film/takes" / ref

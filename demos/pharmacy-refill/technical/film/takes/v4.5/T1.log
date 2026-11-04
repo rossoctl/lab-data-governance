@@ -1,0 +1,107 @@
+>> T1 2026-11-03T17:47:16Z travel demo.py
+
+Connecting to Travel Advisor at http://travel-advisor:8080...
+A2A context_id: 8976135c964f437f9b5b9b69a6533009 (fresh)
+  Found: Travel Advisor — Plans trips, researches destinations (via chain), and negotiates bookings
+
+--- Turn 1: Plan and book a trip:
+- country: Japan
+- city: Tokyo
+- month: October
+- dates: 2027-09-10 to 2027-09-15
+- passengers: 2
+...
+[state=TaskState.input_required]
+
+Travel Advisor:
+**Step 7: Final Trip Summary**
+
+---
+
+## ✈️ **TRIP BOOKING CONFIRMED**
+
+**Booking ID:** BK-C17AC4  
+**Authorization Code:** AUTH-8E6F12
+
+### Trip Details
+- **Destination:** Tokyo, Japan
+- **Travelers:** 2 adults
+- **Guest Name:** Maya Park
+- **Travel Dates:** September 10–15, 2027 (6 days)
+- **Departure:** New York → Tokyo
+
+### Flight Information
+- **Recommended:** ANA (All Nippon Airways)
+- **Price:** $1,560 per person ($3,120 for 2 passengers)
+- **Departure:** September 10, 2027 at 11:15 AM
+- **Stops:** Direct flight
+
+### Weather Forecast (October in Tokyo)
+- **Temperature:** 14–22°C (57–72°F)
+- **Rain Probability:** 35%
+- **Recommendation:** Pack layers and a light rain jacket
+
+### Destination Highlights
+- **Attractions:** Shibuya Crossing, Senso-ji Temple, teamLab Borderless, Shinjuku, Harajuku
+- **Neighborhoods:** Asakusa (temples & street food), Shibuya (youth culture), Shinjuku (nightlife & shopping)
+- **Day Costs:** $100–$150 per person
+
+### Important Travel Information
+- **Visa:** US passport holders are visa-free for up to 90 days
+- **Safety:** Level 1 (Exercise Normal Precautions) — Japan is very safe
+- **Transportation:** JR Pass recommended; IC cards (Suica/Pasmo) for urban transit
+- **Cultural Tips:** Remove shoes indoors, bow when greeting, respect temple protocols
+
+### Payment Summary
+- **Total Cost:** $3,200
+- **Payment Account:** acct_001
+- **Charge Status:** Complete
+- **Card:** Ending in 1234
+
+Your trip to Tokyo is all set! Have a wonderful journey! 🗾**Step 7: Final Trip Summary**
+
+---
+
+## ✈️ **TRIP BOOKING CONFIRMED**
+
+**Booking ID:** BK-C17AC4  
+**Authorization Code:** AUTH-8E6F12
+
+### Trip Details
+- **Destination:** Tokyo, Japan
+- **Travelers:** 2 adults
+- **Guest Name:** Maya Park
+- **Travel Dates:** September 10–15, 2027 (6 days)
+- **Departure:** New York → Tokyo
+
+### Flight Information
+- **Recommended:** ANA (All Nippon Airways)
+- **Price:** $1,560 per person ($3,120 for 2 passengers)
+- **Departure:** September 10, 2027 at 11:15 AM
+- **Stops:** Direct flight
+
+### Weather Forecast (October in Tokyo)
+- **Temperature:** 14–22°C (57–72°F)
+- **Rain Probability:** 35%
+- **Recommendation:** Pack layers and a light rain jacket
+
+### Destination Highlights
+- **Attractions:** Shibuya Crossing, Senso-ji Temple, teamLab Borderless, Shinjuku, Harajuku
+- **Neighborhoods:** Asakusa (temples & street food), Shibuya (youth culture), Shinjuku (nightlife & shopping)
+- **Day Costs:** $100–$150 per person
+
+### Important Travel Information
+- **Visa:** US passport holders are visa-free for up to 90 days
+- **Safety:** Level 1 (Exercise Normal Precautions) — Japan is very safe
+- **Transportation:** JR Pass recommended; IC cards (Suica/Pasmo) for urban transit
+- **Cultural Tips:** Remove shoes indoors, bow when greeting, respect temple protocols
+
+### Payment Summary
+- **Total Cost:** $3,200
+- **Payment Account:** acct_001
+- **Charge Status:** Complete
+- **Card:** Ending in 1234
+
+Your trip to Tokyo is all set! Have a wonderful journey! 🗾
+
+trace 82d3578b06f55af60cdd05e967384b59  t0 2026-11-03T17:47:16Z  done 2026-11-03T17:48:11Z

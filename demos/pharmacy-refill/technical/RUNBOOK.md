@@ -1,6 +1,6 @@
 # RUNBOOK — reproduce the technical film, from nothing
 
-The film (`final/sentry-technical-film-v4.4.mp4`, 9:43) is the 2:35 pitch of the pharmacy-refill demo, as made, with
+The film (`final/sentry-technical-film-v4.5.mp4`, 9:47) is the 2:35 pitch of the pharmacy-refill demo, as made, with
 nine "under the hood" sections spliced into its pauses: Sentry's real pages from a live run, the policy's rules on
 Sentry's own pages, the exact input Sentry sends OPA, the number tracked hop by hop, the verdicts, the risk dashboard. Every screen in a section comes from a take
 on a real cluster. This runbook takes a Mac (or a RHEL 9 Linux host, § 0) from nothing to that film, rebuilt from a take of its own.
@@ -26,7 +26,7 @@ exception is the demo app's own `fills` table, emptied before each refill of a t
 ## 0. The machine
 
 From git (this folder in lab-data-governance) you have the text; the binary parts (the voice cache, the music, the
-v4.4 take's recording, stills, cards and rendered sections, the pitch and the finished film) come in one zip, pinned in
+v4.5 take's recording, stills, cards and rendered sections, the pitch and the finished film) come in one zip, pinned in
 `pins.yaml` → media. Download it from the link there (Box: sign in), then
 `setup/sentry-film.sh media <the zip>` (it checks the sha256 and never overwrites a file you have). From the zip itself
 you already have everything; its text is a snapshot of the day it was made, and the git folder holds the current text.
@@ -40,7 +40,7 @@ setup/sentry-film.sh check          # read-only: every tool, version, memory, di
 
 | item | why | install |
 |---|---|---|
-| macOS on Apple Silicon, or Linux x86_64 with rootless podman | macOS is proven; Linux was run once (below) | Linux: see “On Linux” below |
+| macOS on Apple Silicon, or Linux x86_64 with rootless podman | both proven: macOS, and Linux (RHEL 9) for takes v4.4 and v4.5 (below) | Linux: see “On Linux” below |
 | podman + a running machine, ≥ 9.5 GiB free for this cluster (more if other kind clusters run on it), ≥ 40 GB free disk in it | the cluster's node runs in it; Sentry's classifier image needs ~35 GB to build | `brew install podman && podman machine init --cpus 8 --memory 16384 --disk-size 200 && podman machine start` (a machine you have: `podman machine stop && podman machine set --memory … --disk-size … && podman machine start`; it stops every cluster on it for a minute, and a disk only grows) |
 | kind, kubectl, helm, git, git-lfs, curl | the cluster and the platform installer | `brew install kind kubectl helm git git-lfs && git lfs install` |
 | uv | Sentry's Python env for the OPA panels (§ 6) | `brew install uv` |
@@ -80,6 +80,9 @@ five verdicts match v4.2's and so do the counts, but for one (104 exchanges judg
 the live graph runs slower on CPU (I2 57 s vs 43 s). What it does not show yet: `up` took four passes there while
 these Linux fixes were made, so the fixes have not yet run in one pass on a fresh host. v4.4 used that host again with a new cluster:
 `up` took five passes while the two-app fixes of § 3 and § 9 were made; after them, the two apps from deployment to `doctor` ran in one pass.
+v4.5 ran the whole package there from an empty machine (no cluster, an empty image store) with no hand step and no failed step: `up`
+2 h 13 min (most of it building Sentry's images; paused once on purpose, between `cli` and `sentry`, while its pin was pushed), the take 50 min, `check` all five verdicts, the film without the Gemini pass;
+the Gemini review then ran on a Mac (the server keeps no keys).
 
 The travel app (the second app, only the dashboard shows it) calls its model through the organization's LLM gateway, as its manifest pins it, so
 `setup/sentry-film.sh travel` needs that gateway reachable and `LLM_API_KEY` in the environment; it stops and says so otherwise. The pharmacy uses local ollama. Without
@@ -90,7 +93,7 @@ What runs without the keys:
 | | no key | needs `ELEVENLABS_API_KEY` | needs `GEMINI_API_KEY` |
 |---|---|---|---|
 | setup, take, check, stills, panels, cards | yes | | |
-| a section whose words are as in v4.4 | yes (the voice cache `film/long/tts11/` holds its lines) | | |
+| a section whose words are as in v4.5 | yes (the voice cache `film/long/tts11/` holds its lines) | | |
 | a line whose words change (an edit, or a count that differs in a new take) | | yes: it stops and names the line (no key on this machine: voice that line where the key is, from this package's own `narration.yaml`, and copy only its wav into `film/long/tts11/` under the name the stop prints) | |
 | the music | yes (the four pieces in `film/long/v4/music/` stretch to the new lengths; past ~10 % it is audible, so compose that piece again) | new pieces only | |
 | the review | words heard, frozen frames, loudness | | the claims check and the watch pass (~$0.45 a film) |
@@ -208,11 +211,11 @@ take/film.sh check my-take
 If one differs, **stop: the words follow the run, never the reverse.** Find out why (`take/take.sh verdicts <trace>`
 lists every exchange with its risk, rules and carried-in labels). The usual cause is a broken rule of § 4: a refill
 inside another's window, a key switch without relineage, another conversation. Record a new take. Counts may differ
-from v4.4's (A was 29 interactions there); the narration reads them from the take's `counts.json`.
+from v4.5's (A was 29 interactions there); the narration reads them from the take's `counts.json`.
 
 The dashboard counts everything in its 24-hour window, so one take must be alone there: `film.sh stills` stops unless it shows
 the take's 3 critical exchanges. After a failed take, `take/take.sh forget <the new take's start, UTC>` drops the earlier risk
-records. And read I9 L3 against the new `counts.json`: it names the grades the run shows (v4.4: high and medium; no low).
+records. I9 L3 names the grades the run shows (v4.5: high, medium and low; v4.4 had no low): `film4.py` writes its label from `counts.json` and stops when the line names a grade the take lacks or leaves one out; then edit L3 in `narration.yaml` and voice it again.
 
 ## 6. Build the film
 
@@ -239,18 +242,18 @@ take/film.sh all my-take             # check → live → ids → counts → fac
 take lacks that needs no cluster (the live frames from `rec/A.webm`, the repainted pitch and its door frames from
 `cards/`). A take's rendered sections stay in `out/`, so after a change only the changed sections are rendered again. The ones that read Sentry need the take's cluster up; the
 rest work on the take folder alone, so a take can be rebuilt on any machine with the package. The shipped take
-`film/takes/v4.4/` is the one film v4.4 was made from: `take/film.sh stage v4.4 && take/film.sh join v4.4 film-v4.4`
-rebuilds v4.4 with no cluster at all (an encoder on a machine with another core count may differ in the last pixels). The stages load their fonts from Google Fonts, so a render needs the network.
+`film/takes/v4.5/` is the one film v4.5 was made from: `take/film.sh stage v4.5 && take/film.sh join v4.5 film-v4.5`
+rebuilds v4.5 with no cluster at all (byte for byte on the same machine; on another machine or ffmpeg version the film differs in the last pixels and the audio's last bits, and a cut may land a frame or two apart: v4.5, rendered on Linux with ffmpeg 7.0.2 and joined again on a Mac with 8.1.1 from this zip, gave the same plan, length and subtitles, picture 41 dB on average, audio correlation 0.9999). The stages load their fonts from Google Fonts, so a render needs the network.
 
 ## 7. Review, look, list the differences
 
-1. `film/takes/<take>/review/<film>/REPORT.md`: word error rate of the heard voice against the script (v4.4: see `final/`), frozen
+1. `film/takes/<take>/review/<film>/REPORT.md`: word error rate of the heard voice against the script (v4.5: see `final/`), frozen
    frames, loudness (-16 LUFS integrated), every line against the facts, and Gemini's findings. Findings are leads:
    check each against the frame before acting.
 2. **Look at the frames.** Open the film at each section (the plan's `cuts` and `sections` give the times) and check
    that every ring sits on what its label names. A different take moves Sentry's graph: each hop's box in I6 comes
    from the graph (`shots/level2/boxes.json`), so check them one by one.
-3. **List every difference from v4.4**: counts (`counts.json` vs `film/takes/v4.4/counts.json`), lines whose words
+3. **List every difference from v4.5**: counts (`counts.json` vs `film/takes/v4.5/counts.json`), lines whose words
    changed (`film.plan.json` "script"), length, the frames that look different, the review's numbers.
    A slower model (ollama on CPU) makes run A longer, and I2's live graph plays all of it at ×7: the film grows by
    (A's length − ~52 s) / 7 (a Linux CPU take: I2 57 s vs 43 s, film 9:31 vs 9:17). `LIVE_SPEED=` sets the factor.
@@ -271,7 +274,7 @@ rebuilds v4.4 with no cluster at all (an encoder on a machine with another core 
 | the pitch's own pictures (the tap's outline) | `film/long/v4/fixes/tap_ring.py` | `take/film.sh cards <take>`, then `join` |
 | the risk dashboard's section | I9 in `narration.yaml` and `film4.section()`; its boxes: `mode=dash` in `shots.js`; its counts (`DJ`, `DC`, `DH`, `DM`, `DL`): `counts4.py` | `stills`, `counts`, then `words <take> I9` |
 | the review | `film/long/review.py`; its truth file `take/take-facts.template.yaml`; its brief `film/long/v4/review-prompt-onevoice.md` | `take/film.sh facts <take> && take/film.sh review <take>` |
-| a changes reel for a reviewer | `film/long/v4/reel/pairs.py` (which lines changed, in words or picture, and their notes; v4.3 → v4.4 shipped), `reel.py` (cuts and cards) | `$PYTHON film/long/v4/reel/pairs.py before.plan.json after.plan.json > pairs.json && $PYTHON film/long/v4/reel/reel.py before.mp4 after.mp4 reel.mp4 pairs.json` (v4.3's film is in the v4.3 zip) |
+| a changes reel for a reviewer | `film/long/v4/reel/pairs.py` (which lines changed, in words or picture, and their notes; v4.4 → v4.5 shipped), `reel.py` (cuts and cards) | `$PYTHON film/long/v4/reel/pairs.py before.plan.json after.plan.json > pairs.json && $PYTHON film/long/v4/reel/reel.py before.mp4 after.mp4 reel.mp4 pairs.json` (v4.4's film is in the v4.4 zip) |
 | the story (order, a new section) | `film4.CUT`/`DOOR`/`section()` + `narration.yaml` + `score.PIECES`; the pitch's words are not changed | a new take only if a new screen is needed |
 
 A fact said in words often sits in more than one place: the policy's size is in `narration.yaml` (I4 L1), in the on-screen

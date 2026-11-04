@@ -123,12 +123,15 @@ const PORT = process.env.HTTP_PORT || '8080', DG = `http://dg.localtest.me:${POR
     await open(A.n2, A.n2rep); boxes.n2 = await pair(/^export-dispense-batch$/, /^demand-forec/); await center(pre()); boxes.n2Payload = await bb(pre()); await shot('n2-payload');
     await allow('n2-allow');
   }
-  if (A.mode === 'dash') {   // Sentry's risk dashboard over the take's day: the tiles, the distribution, the top rules, the alerts' critical rows
+  if (A.mode === 'dash') {   // Sentry's risk dashboard over the take's day: the tiles, the distribution, the top rules, the alerts' critical rows and the rows below them
     await p.goto(`${DG}/ui/risk?window=24h`, { waitUntil: 'domcontentloaded' }); await p.waitForTimeout(6000);
     const card = t => p.getByText(t, { exact: true }).first().locator('xpath=ancestor::*[contains(concat(" ",@class," ")," pf-v5-c-card ")][1]');
     boxes.tiles = await union(card('Agents'), card('Rules triggered')); boxes.bar = await bb(card('Risk Distribution')); boxes.rules = await bb(card('Top rules'));
     const al = card('Alerts'); const rows = al.locator('tbody tr').filter({ hasText: 'critical' }); const n = await rows.count();
-    boxes.alerts = n ? await union(rows.first(), rows.last()) : await bb(al); boxes.alertCritical = n; await shot('page');
+    boxes.alerts = n ? await union(rows.first(), rows.last()) : await bb(al); boxes.alertCritical = n;
+    // the rows below them: traces whose top rule is high, medium or low (Sentry recommends escalate or allow, never block)
+    const lower = al.locator('tbody tr:visible').filter({ has: p.locator('td').filter({ hasText: /^\s*(high|medium|low)\s*$/ }) }); const m = await lower.count();   // the level cell alone: a row's text runs its cells together ("highescalate")
+    if (m) boxes.alertsLower = await union(lower.first(), lower.last()); boxes.alertLower = m; await shot('page');
   }
   fs.writeFileSync(path.join(out, 'boxes.json'), JSON.stringify(boxes, null, 1)); console.log(JSON.stringify(boxes));
   await b.close();

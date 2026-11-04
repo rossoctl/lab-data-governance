@@ -68,6 +68,7 @@ I8:   # after "…sending the vendor only what it needs, Sentry lets it through.
 I9:   # after "…within a session and across session boundaries." — this run, in Sentry's own verdicts
   L1: "Every verdict in this film is Sentry's own, from one run on Kubernetes: {S} sessions, {J} exchanges judged, {F} flagged."
   L2: "Sentry watches every app in the cluster, and its risk dashboard shows the whole picture. Here is the pharmacy, beside a travel booking app, under the same policy."
-  L3: "Of {DJ} exchanges, {DC} are critical. {DH} are high and {DM} medium: card and financial data moving inside the travel app. Worth reviewing, not an emergency."
+  L3: "Of {DJ} exchanges, {DC} are critical. {DH} are high, {DM} medium and {DL} low: card and financial data moving inside the travel app. Worth reviewing, not an emergency."
   L4: "These are the rules behind those numbers."
   L5: "At the top: the sessions that sent Rosa's number to the forecaster, the three we just followed."
+  L6: "Below them, lower-severity traces, listed for follow-up."

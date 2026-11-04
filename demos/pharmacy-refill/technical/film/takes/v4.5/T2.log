@@ -1,0 +1,95 @@
+>> T2 2026-11-03T17:48:11Z travel demo.py
+
+Connecting to Travel Advisor at http://travel-advisor:8080...
+A2A context_id: 3381b039629e4d3f9ae1303538f5d0f9 (fresh)
+  Found: Travel Advisor — Plans trips, researches destinations (via chain), and negotiates bookings
+
+--- Turn 1: Plan and book a trip:
+- country: Japan
+- city: Tokyo
+- month: October
+- dates: 2027-09-10 to 2027-09-15
+- passengers: 2
+...
+[state=TaskState.input_required]
+
+Travel Advisor:
+**Step 7: Final Trip Summary**
+
+---
+
+## ✈️ **TRIP BOOKING CONFIRMED**
+
+**Booking ID:** BK-080065  
+**Authorization Code:** AUTH-8E6F12
+
+### Trip Details
+- **Destination:** Tokyo, Japan
+- **Travelers:** 2 adults
+- **Guest Name:** Maya Park
+- **Travel Dates:** September 10–15, 2027 (6 days)
+- **Departure:** New York → Tokyo
+- **Flight Date:** September 10, 2027
+
+### Weather Forecast
+- **October in Tokyo:** Mild temperatures (14–22°C), 35% rain probability
+- **Packing Tip:** Bring layers and a light rain jacket
+
+### Highlights & Attractions
+- **Tokyo:** Shibuya Crossing, Senso-ji Temple, teamLab Borderless digital art museum
+- **Neighborhoods:** Shinjuku, Harajuku, Asakusa
+- **Day Trips:** Mount Fuji, Hakone hot springs
+
+### Travel Information
+- **Visa:** US passport holders enjoy 90-day visa-free entry
+- **Safety:** Level 1 (Exercise Normal Precautions) — Japan is very safe
+- **Transportation:** JR Pass recommended for unlimited rail travel; IC cards (Suica/Pasmo) for urban transit
+- **Cultural Tips:** Remove shoes indoors, bow when greeting, respect temple protocols
+
+### Booking Summary
+- **Total Cost:** $3,200
+- **Payment Account:** acct_001
+- **Charge Status:** Complete
+- **Card:** Ending in 1234
+
+Your Tokyo adventure is booked and ready! Have a wonderful trip! 🗾**Step 7: Final Trip Summary**
+
+---
+
+## ✈️ **TRIP BOOKING CONFIRMED**
+
+**Booking ID:** BK-080065  
+**Authorization Code:** AUTH-8E6F12
+
+### Trip Details
+- **Destination:** Tokyo, Japan
+- **Travelers:** 2 adults
+- **Guest Name:** Maya Park
+- **Travel Dates:** September 10–15, 2027 (6 days)
+- **Departure:** New York → Tokyo
+- **Flight Date:** September 10, 2027
+
+### Weather Forecast
+- **October in Tokyo:** Mild temperatures (14–22°C), 35% rain probability
+- **Packing Tip:** Bring layers and a light rain jacket
+
+### Highlights & Attractions
+- **Tokyo:** Shibuya Crossing, Senso-ji Temple, teamLab Borderless digital art museum
+- **Neighborhoods:** Shinjuku, Harajuku, Asakusa
+- **Day Trips:** Mount Fuji, Hakone hot springs
+
+### Travel Information
+- **Visa:** US passport holders enjoy 90-day visa-free entry
+- **Safety:** Level 1 (Exercise Normal Precautions) — Japan is very safe
+- **Transportation:** JR Pass recommended for unlimited rail travel; IC cards (Suica/Pasmo) for urban transit
+- **Cultural Tips:** Remove shoes indoors, bow when greeting, respect temple protocols
+
+### Booking Summary
+- **Total Cost:** $3,200
+- **Payment Account:** acct_001
+- **Charge Status:** Complete
+- **Card:** Ending in 1234
+
+Your Tokyo adventure is booked and ready! Have a wonderful trip! 🗾
+
+trace 342aab4bf42881222c141d55d4dc1837  t0 2026-11-03T17:48:11Z  done 2026-11-03T17:48:42Z

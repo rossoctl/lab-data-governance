@@ -1,0 +1,67 @@
+[
+ [
+  "card",
+  "v4.4 → v4.5",
+  "two notes on the risk dashboard\nthe rules' order · the lower-severity alerts · and this take's counts",
+  4
+ ],
+ [
+  "card",
+  "The counts",
+  "a new take: the dashboard's numbers are this run's\nit shows low exchanges too, and the line names them",
+  4
+ ],
+ [
+  "before",
+  553.12,
+  562.12,
+  "BEFORE · v4.4 · 9:13",
+  "“12 are high and 10 medium”"
+ ],
+ [
+  "after",
+  551.95,
+  560.95,
+  "AFTER · v4.5 · 9:12",
+  "“12 are high, 11 medium and 2 low”"
+ ],
+ [
+  "card",
+  "Top rules",
+  "Sentry listed them by a count it does not show: low first\nnow by severity, then traces, as the Rules page in I4",
+  4
+ ],
+ [
+  "before",
+  565.24,
+  569.44,
+  "BEFORE · v4.4 · 9:25",
+  "low → critical"
+ ],
+ [
+  "after",
+  565.22,
+  569.42,
+  "AFTER · v4.5 · 9:25",
+  "critical → low"
+ ],
+ [
+  "card",
+  "The alerts",
+  "below the three critical sessions, the lower-severity traces\nlisted for follow-up",
+  4
+ ],
+ [
+  "after",
+  569.22,
+  579.44,
+  "NEW · v4.5 · 9:35",
+  "“Below them, lower-severity traces, listed for follow-up.”"
+ ],
+ [
+  "card",
+  "The take",
+  "recorded anew from an empty machine by the package's runbook · the same five verdicts\n9:43 → 9:47",
+  4
+ ]
+]

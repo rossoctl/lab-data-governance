@@ -5,7 +5,7 @@
 #
 #   setup/sentry-film.sh check        this machine: tools, versions, memory, disk, ports, keys, repo access   (read-only)
 #   setup/sentry-film.sh plan         this cluster: what is there, and what `up` would do                     (read-only)
-#   setup/sentry-film.sh media <zip>  a git checkout only: the binary parts (voice, music, the v4.4 take's media), from the
+#   setup/sentry-film.sh media <zip>  a git checkout only: the binary parts (voice, music, the v4.5 take's media), from the
 #                                     pinned zip (pins.yaml → media); files already here are never overwritten
 #   setup/sentry-film.sh sources      the three checkouts at their pins (clone, or fetch + check out)
 #   setup/sentry-film.sh cluster      the kind cluster + the agent platform: create, or complete what is missing  ~25 min
@@ -68,7 +68,7 @@ need() {   # need <command> <what it is for> <how to install>
 }
 step_check() {
   say "this machine ($(uname -sm)), settings from $ENVF"
-  [ "$OS" = Darwin ] || note "only macOS (Apple Silicon) is proven; Linux (RHEL 9, rootless podman) was run once (RUNBOOK § 0, “On Linux”); Docker Desktop does not work (the app's deploy.sh is podman-only)"
+  [ "$OS" = Darwin ] || note "Linux (RHEL 9, rootless podman): proven by takes v4.4 and v4.5; read RUNBOOK § 0, “On Linux”; Docker Desktop does not work (the app's deploy.sh is podman-only)"
   [ "$OS" = Darwin ] && need brew "installs the rest" "https://brew.sh"
   need podman "the container engine and the kind node's host" "$(hint "brew install podman && podman machine init --cpus 8 --memory 16384 --disk-size 200 && podman machine start" "sudo dnf install -y podman")"
   need kind "the Kubernetes cluster" "$(hint "brew install kind" "curl -fsSLo kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 && sudo install kind /usr/local/bin/")"
@@ -165,7 +165,7 @@ PY
     || note "LLM_API_KEY not set: setup stops at the travel app; a film from the shipped take needs no cluster and no such key"
   [ -n "${GEMINI_API_KEY:-}" ] && ok "GEMINI_API_KEY set (the film review's model pass)" \
     || note "GEMINI_API_KEY not set: review.py runs every check but the Gemini pass"
-  if [ -n "$(ls "$PKG/film/long/tts11" 2>/dev/null)" ]; then ok "the media parts are here (voice cache, music, the v4.4 take)"
+  if [ -n "$(ls "$PKG/film/long/tts11" 2>/dev/null)" ]; then ok "the media parts are here (voice cache, music, the v4.5 take)"
   else bad "the media parts are missing (a git checkout carries the text only)" "download $(pin media file) from $(pin media url), then: setup/sentry-film.sh media <that zip>"; fi
   [ "$FAILS" = 0 ] && say "check passed" || die "$FAILS item(s) above" "fix them, then run check again"
 }

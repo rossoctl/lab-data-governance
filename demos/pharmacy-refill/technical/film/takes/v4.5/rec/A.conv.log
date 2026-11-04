@@ -1,0 +1,5 @@
+>> A 2026-11-03T17:00:07Z demo.py refill rosa
+context_id: 8654c0668b714d41a49c4c3d8adef991
+> Hi, this is Rosa Delgado, date of birth 1958-03-22. I'd like a refill of my Metformin 500 mg tablets, delivered to my home please.
+< Your refill of Metformin 500 mg tablets has been approved and is on its way. It will arrive at your address, 1180 Valencia St, San Francisco, CA 94110, by tomorrow at 6 pm.
+trace df902ff5410c9641d45d4bcbcf0626de  t0 2026-11-03T17:00:07Z  done 2026-11-03T17:02:47Z

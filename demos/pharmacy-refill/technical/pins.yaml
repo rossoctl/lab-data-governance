@@ -1,4 +1,4 @@
-# pins.yaml — the exact code, film and settings the technical film (v4.4) is built on. setup/sentry-film.sh reads this
+# pins.yaml — the exact code, film and settings the technical film (v4.5) is built on. setup/sentry-film.sh reads this
 # file; it checks out these commits, refuses a checkout with local changes, and says so when a cluster runs another
 # version. Moving a pin means a new take, and every verdict and count the narration says checked against it
 # (RUNBOOK.md § 6).
@@ -14,11 +14,13 @@ rossoctl_cli:                   # the platform's CLI; the app's deploy.sh import
   asset: rossoctl-v0.1.5-beta.1-Darwin-arm64.tar.gz      # also Darwin-x86_64, Linux-arm64, Linux-x86_64
 lab-data-governance:            # Sentry: receiver, classifier, data lineage, risk (OPA), the web console
   repo: https://github.com/rossoctl/lab-data-governance
-  sha: 335fc64e42dd4d0c1d4f0588e3e63c83f16954ec
+  sha: b720d742d7661a12076a68cc372437af60f4b4c4
   branch: lineage/exact-match-cross-conversation-dev
   note: >-
     208858f (data lineage across conversations, migration 0025) + 335fc64 (the RISK_INHERITED_LABELS_CROSS_CONVERSATIONS
-    switch) on risk 71b945d. Not merged into risk; its tree = 087b8d1, the local build the v4.2 take ran. Built with
+    switch) on risk 71b945d, + b720d74 (v4.5: the dashboard's Top rules ranked by severity, then traces; = risk #347's
+    42b0a13, merged into risk as 539dc3b). The branch itself is not merged into risk (335fc64's tree = 087b8d1, the
+    local build the v4.2 take ran). Built with
     setup/files/uv.lock (the repo ignores its lockfile).
 agent-examples-snp:             # the pharmacy app (apps/pharmacy_refills) and its proxy-mode deploy.sh
   repo: https://github.com/s-and-p-team/agent-examples-snp
@@ -35,11 +37,11 @@ pitch:                          # the 2:35 pitch film the technical film is buil
   path: demos/pharmacy-refill/pitch/sentry_pitch_demo.mp4
   url: https://media.githubusercontent.com/media/rossoctl/lab-data-governance/e157e9e1a78457d73243cf83c74ac0e8f16b75fa/demos/pharmacy-refill/pitch/sentry_pitch_demo.mp4
   sha256: afe40c3b57e7fb5a6ac92bf1ed4cb5229eb9c4a1124aca3e185a7d2eb2246b0b
-media:                          # the binary parts git does not carry: the voice cache, the music, the v4.4 take's recording,
+media:                          # the binary parts git does not carry: the voice cache, the music, the v4.5 take's recording,
                                 # stills, cards, rendered sections, the pitch film and the finished film (setup/sentry-film.sh media)
-  file: sentry-technical-film-v4.4-full.zip
+  file: sentry-technical-film-v4.5-full.zip
   url: https://ibm.box.com/s/ckv7aj1a6hre6h679itib0zahmh2mxmy   # the Box folder "Sentry technical film" (sign in); the zip is in it
-  sha256: ea3df62578944150e979865b14a3e2ee7b25160305722a67688dea5be87dcb28
+  sha256: fbbac45809401c1c76fdaaa154e153a08c4bde2b8fbfea48dc637b61e5c77ab1
 sidecar: the platform's proxy sidecar as its operator pins it (authbridge v0.7.0-alpha.10 at the platform pin)
 model:
   agents: qwen2.5:7b through ollama on the host (host.containers.internal:11434)

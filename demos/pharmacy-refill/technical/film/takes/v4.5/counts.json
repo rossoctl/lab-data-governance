@@ -1,0 +1,63 @@
+{
+ "N": 29,
+ "M": 8,
+ "J": 105,
+ "F": 3,
+ "T": 21,
+ "S": 5,
+ "DJ": 254,
+ "DC": 3,
+ "DH": 12,
+ "DM": 11,
+ "DL": 2,
+ "runs": {
+  "A": {
+   "trace": "df902ff5410c9641d45d4bcbcf0626de",
+   "caller": "report-dispense",
+   "level": "critical",
+   "enforcement": "block",
+   "rules": [
+    "DG-001",
+    "DG-002",
+    "DG-004"
+   ]
+  },
+  "B": {
+   "trace": "b85898b0833d59ae680ba32f7d99c8ef",
+   "caller": "report-dispense",
+   "level": "critical",
+   "enforcement": "block",
+   "rules": [
+    "DG-001",
+    "DG-002",
+    "DG-004"
+   ]
+  },
+  "N1": {
+   "trace": "866692741748e4534ae77a304f736867",
+   "caller": "export-dispense-batch",
+   "level": "critical",
+   "enforcement": "block",
+   "rules": [
+    "DG-001",
+    "DG-002",
+    "DG-004"
+   ]
+  },
+  "C": {
+   "trace": "44a8dcaa9243811878d13ad7378d15fe",
+   "caller": "report-dispense",
+   "level": "none",
+   "enforcement": "allow",
+   "rules": []
+  },
+  "N2": {
+   "trace": "876b73703c93a7d032b51f156e49c8a8",
+   "caller": "export-dispense-batch",
+   "level": "none",
+   "enforcement": "allow",
+   "rules": []
+  }
+ },
+ "ff": "▶▶ ×7"
+}

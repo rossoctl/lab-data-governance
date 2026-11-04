@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# film.sh <step> [take] — the film from a take (film/takes/<take>, default v4.4: the take film v4.4 was made from).
+# film.sh <step> [take] — the film from a take (film/takes/<take>, default v4.5: the take film v4.5 was made from).
 # Steps that read Sentry need the take's cluster up (film.env); the rest work on the take folder alone.
 #
 #   film.sh check  <take>   the five verdicts against the film's; stops when one differs (the words follow the run)   [cluster]
@@ -21,13 +21,13 @@ set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd); PKG=$(cd "$HERE/.." && pwd); LONG=$PKG/film/long
 [ -f "${FILM_ENV:-$PKG/film.env}" ] || { echo "no ${FILM_ENV:-$PKG/film.env} yet: cp $PKG/film.env.example $PKG/film.env, then read it" >&2; exit 2; }
 set -a; . "${FILM_ENV:-$PKG/film.env}"; set +a
-step=${1:-}; NAME=${2:-v4.4}; shift 2 2>/dev/null || shift $#
+step=${1:-}; NAME=${2:-v4.5}; shift 2 2>/dev/null || shift $#
 case "$NAME" in /*) TAKE=$NAME ;; *) TAKE=$PKG/film/takes/$NAME ;; esac
 [ -d "$TAKE" ] || { echo "no take at $TAKE (take/sequence.sh <name> records one)" >&2; exit 1; }
 export FILM_TAKE=$TAKE NODE_PATH=$PKG/node_modules HTTP_PORT KUBECONFIG
 PY=${PYTHON:-python3.11}
 say() { printf '>> %s\n' "$*"; }
-id() { python3 -c 'import json,sys,functools; print(functools.reduce(lambda d, k: d[k], sys.argv[2:], json.load(open(sys.argv[1]))))' "$TAKE/ids.json" "$@"; }
+id() { [ -s "$TAKE/ids.json" ] || { echo "no $TAKE/ids.json yet: run take/film.sh ids $NAME first (take/film.sh all runs every step in order)" >&2; exit 1; }; python3 -c 'import json,sys,functools; print(functools.reduce(lambda d, k: d[k], sys.argv[2:], json.load(open(sys.argv[1]))))' "$TAKE/ids.json" "$@"; }
 
 do_check() {
   say "the five verdicts on the call to the demand forecaster, against the film's"

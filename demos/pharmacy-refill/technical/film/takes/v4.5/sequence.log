@@ -1,0 +1,277 @@
+>> 2026-11-03T16:58:21Z take v4.5 on cluster sentry-film
+>> cluster sentry-film (kind-sentry-film in /home/vpcuser/.kube/sentry-film.kubeconfig), gateway :8080
+   ok    cluster answers
+   ok    agent platform complete
+   ok    platform UI without a login (its catalogs are shot)
+   ok    Sentry's console at http://dg.localtest.me:8080/ui/traces
+   ok    Sentry pods at b720d742d
+   ok    the platform's collector forwards to Sentry
+   ok    RISK_INHERITED_LABELS=on
+   ok    RISK_INHERITED_LABELS_CROSS_CONVERSATIONS=on
+   ok    LABEL_CROSS_TRACE_WINDOW_HOURS=0.25
+   ok    console memory 1Gi
+   ok    OPA's policy: DG-001 DG-002 DG-004 DG-011 DG-012 DG-013
+   ok    pharmacy runs the pinned code
+   ok    pharmacy pods ready
+   ok    the travel app's store has its tables
+   ok    the pharmacy's agents run their own image tag
+   ok    the pharmacy's store has its tables
+   ok    travel app: lineage + capture on 12
+   ok    lineage + capture on 13 agents and tools
+   ok    restore copies for take.sh relineage
+   ok    the cluster reaches ollama on this host (probed from the records pod: no sidecar, so no trace)
+   ok    no pharmacy conversation yet
+>> ready
+>> 2026-11-03T16:58:35Z reset fills
+TRUNCATE TABLE
+>> 2026-11-03T16:58:35Z key full report-dispense
+report-dispense: DEMAND_KEY=full lineage 2x capture 2x live=1
+export-dispense-batch: DEMAND_KEY already mrn (no roll)
+1.4 seg 
+2.9 conv-start A
+>> A 2026-11-03T17:00:07Z demo.py refill rosa
+9.0 trace df902ff5410c9641d45d4bcbcf0626de
+13.2 seg 
+context_id: 8654c0668b714d41a49c4c3d8adef991
+> Hi, this is Rosa Delgado, date of birth 1958-03-22. I'd like a refill of my Metformin 500 mg tablets, delivered to my home please.
+< Your refill of Metformin 500 mg tablets has been approved and is on its way. It will arrive at your address, 1180 Valencia St, San Francisco, CA 94110, by tomorrow at 6 pm.
+trace df902ff5410c9641d45d4bcbcf0626de  t0 2026-11-03T17:00:07Z  done 2026-11-03T17:02:47Z
+163.3 conv-exit 0
+227.1 seg 
+>> 2026-11-03T17:04:05Z reset fills
+TRUNCATE TABLE
+>> 2026-11-03T17:04:05Z key mrn report-dispense
+report-dispense: DEMAND_KEY=mrn lineage 2x capture 2x live=1
+>> 2026-11-03T17:05:56Z waiting until 2026-11-03T17:18:17Z (741 s)
+>> 2026-11-03T17:18:21Z at 17:18:17
+>> B 2026-11-03T17:18:21Z demo.py refill rosa
+context_id: ad286fcbf93f4c1797bb0a7ec0b90d02
+> Hi, this is Rosa Delgado, date of birth 1958-03-22. I'd like a refill of my Metformin 500 mg tablets, delivered to my home please.
+< Your refill of Metformin 500 mg tablets has been approved and is on its way. It will arrive at your address, 1180 Valencia St, San Francisco, CA 94110, by tomorrow at 6 pm.
+trace b85898b0833d59ae680ba32f7d99c8ef  t0 2026-11-03T17:18:21Z  done 2026-11-03T17:20:39Z
+>> N1 2026-11-03T17:23:59Z demo.py nightly
+context_id: cce32b64593f4ebca19e4ba282cde282
+> Run the nightly jobs.
+< Nightly jobs done: 1 reminders sent, 1 dispenses exported.
+trace 866692741748e4534ae77a304f736867  t0 2026-11-03T17:23:59Z  done 2026-11-03T17:24:34Z
+>> 2026-11-03T17:24:34Z reset fills
+TRUNCATE TABLE
+>> 2026-11-03T17:24:34Z key none report-dispense export-dispense-batch
+report-dispense: DEMAND_KEY=none lineage 2x capture 2x live=1
+export-dispense-batch: DEMAND_KEY=none lineage 2x capture 2x live=1
+>> 2026-11-03T17:26:03Z waiting until 2026-11-03T17:40:04Z (841 s)
+>> 2026-11-03T17:40:04Z at 17:40:04
+>> C 2026-11-03T17:40:04Z demo.py refill rosa
+context_id: 1e01a7a063d34f72a93d9345d3e2114e
+> Hi, this is Rosa Delgado, date of birth 1958-03-22. I'd like a refill of my Metformin 500 mg tablets, delivered to my home please.
+< Your refill of Metformin 500 mg tablets has been approved and is on its way. It will arrive at your address, 1180 Valencia St, San Francisco, CA 94110, by tomorrow at 6 pm.
+trace 44a8dcaa9243811878d13ad7378d15fe  t0 2026-11-03T17:40:04Z  done 2026-11-03T17:42:22Z
+>> N2 2026-11-03T17:45:42Z demo.py nightly
+context_id: 70ced6ff353346bb95e3fedf4f1bb956
+> Run the nightly jobs.
+< Nightly jobs done: 1 reminders sent, 1 dispenses exported.
+trace 876b73703c93a7d032b51f156e49c8a8  t0 2026-11-03T17:45:42Z  done 2026-11-03T17:46:16Z
+>> T1 2026-11-03T17:47:16Z travel demo.py
+
+Connecting to Travel Advisor at http://travel-advisor:8080...
+A2A context_id: 8976135c964f437f9b5b9b69a6533009 (fresh)
+  Found: Travel Advisor — Plans trips, researches destinations (via chain), and negotiates bookings
+
+--- Turn 1: Plan and book a trip:
+- country: Japan
+- city: Tokyo
+- month: October
+- dates: 2027-09-10 to 2027-09-15
+- passengers: 2
+...
+[state=TaskState.input_required]
+
+Travel Advisor:
+**Step 7: Final Trip Summary**
+
+---
+
+## ✈️ **TRIP BOOKING CONFIRMED**
+
+**Booking ID:** BK-C17AC4  
+**Authorization Code:** AUTH-8E6F12
+
+### Trip Details
+- **Destination:** Tokyo, Japan
+- **Travelers:** 2 adults
+- **Guest Name:** Maya Park
+- **Travel Dates:** September 10–15, 2027 (6 days)
+- **Departure:** New York → Tokyo
+
+### Flight Information
+- **Recommended:** ANA (All Nippon Airways)
+- **Price:** $1,560 per person ($3,120 for 2 passengers)
+- **Departure:** September 10, 2027 at 11:15 AM
+- **Stops:** Direct flight
+
+### Weather Forecast (October in Tokyo)
+- **Temperature:** 14–22°C (57–72°F)
+- **Rain Probability:** 35%
+- **Recommendation:** Pack layers and a light rain jacket
+
+### Destination Highlights
+- **Attractions:** Shibuya Crossing, Senso-ji Temple, teamLab Borderless, Shinjuku, Harajuku
+- **Neighborhoods:** Asakusa (temples & street food), Shibuya (youth culture), Shinjuku (nightlife & shopping)
+- **Day Costs:** $100–$150 per person
+
+### Important Travel Information
+- **Visa:** US passport holders are visa-free for up to 90 days
+- **Safety:** Level 1 (Exercise Normal Precautions) — Japan is very safe
+- **Transportation:** JR Pass recommended; IC cards (Suica/Pasmo) for urban transit
+- **Cultural Tips:** Remove shoes indoors, bow when greeting, respect temple protocols
+
+### Payment Summary
+- **Total Cost:** $3,200
+- **Payment Account:** acct_001
+- **Charge Status:** Complete
+- **Card:** Ending in 1234
+
+Your trip to Tokyo is all set! Have a wonderful journey! 🗾**Step 7: Final Trip Summary**
+
+---
+
+## ✈️ **TRIP BOOKING CONFIRMED**
+
+**Booking ID:** BK-C17AC4  
+**Authorization Code:** AUTH-8E6F12
+
+### Trip Details
+- **Destination:** Tokyo, Japan
+- **Travelers:** 2 adults
+- **Guest Name:** Maya Park
+- **Travel Dates:** September 10–15, 2027 (6 days)
+- **Departure:** New York → Tokyo
+
+### Flight Information
+- **Recommended:** ANA (All Nippon Airways)
+- **Price:** $1,560 per person ($3,120 for 2 passengers)
+- **Departure:** September 10, 2027 at 11:15 AM
+- **Stops:** Direct flight
+
+### Weather Forecast (October in Tokyo)
+- **Temperature:** 14–22°C (57–72°F)
+- **Rain Probability:** 35%
+- **Recommendation:** Pack layers and a light rain jacket
+
+### Destination Highlights
+- **Attractions:** Shibuya Crossing, Senso-ji Temple, teamLab Borderless, Shinjuku, Harajuku
+- **Neighborhoods:** Asakusa (temples & street food), Shibuya (youth culture), Shinjuku (nightlife & shopping)
+- **Day Costs:** $100–$150 per person
+
+### Important Travel Information
+- **Visa:** US passport holders are visa-free for up to 90 days
+- **Safety:** Level 1 (Exercise Normal Precautions) — Japan is very safe
+- **Transportation:** JR Pass recommended; IC cards (Suica/Pasmo) for urban transit
+- **Cultural Tips:** Remove shoes indoors, bow when greeting, respect temple protocols
+
+### Payment Summary
+- **Total Cost:** $3,200
+- **Payment Account:** acct_001
+- **Charge Status:** Complete
+- **Card:** Ending in 1234
+
+Your trip to Tokyo is all set! Have a wonderful journey! 🗾
+
+trace 82d3578b06f55af60cdd05e967384b59  t0 2026-11-03T17:47:16Z  done 2026-11-03T17:48:11Z
+>> T2 2026-11-03T17:48:11Z travel demo.py
+
+Connecting to Travel Advisor at http://travel-advisor:8080...
+A2A context_id: 3381b039629e4d3f9ae1303538f5d0f9 (fresh)
+  Found: Travel Advisor — Plans trips, researches destinations (via chain), and negotiates bookings
+
+--- Turn 1: Plan and book a trip:
+- country: Japan
+- city: Tokyo
+- month: October
+- dates: 2027-09-10 to 2027-09-15
+- passengers: 2
+...
+[state=TaskState.input_required]
+
+Travel Advisor:
+**Step 7: Final Trip Summary**
+
+---
+
+## ✈️ **TRIP BOOKING CONFIRMED**
+
+**Booking ID:** BK-080065  
+**Authorization Code:** AUTH-8E6F12
+
+### Trip Details
+- **Destination:** Tokyo, Japan
+- **Travelers:** 2 adults
+- **Guest Name:** Maya Park
+- **Travel Dates:** September 10–15, 2027 (6 days)
+- **Departure:** New York → Tokyo
+- **Flight Date:** September 10, 2027
+
+### Weather Forecast
+- **October in Tokyo:** Mild temperatures (14–22°C), 35% rain probability
+- **Packing Tip:** Bring layers and a light rain jacket
+
+### Highlights & Attractions
+- **Tokyo:** Shibuya Crossing, Senso-ji Temple, teamLab Borderless digital art museum
+- **Neighborhoods:** Shinjuku, Harajuku, Asakusa
+- **Day Trips:** Mount Fuji, Hakone hot springs
+
+### Travel Information
+- **Visa:** US passport holders enjoy 90-day visa-free entry
+- **Safety:** Level 1 (Exercise Normal Precautions) — Japan is very safe
+- **Transportation:** JR Pass recommended for unlimited rail travel; IC cards (Suica/Pasmo) for urban transit
+- **Cultural Tips:** Remove shoes indoors, bow when greeting, respect temple protocols
+
+### Booking Summary
+- **Total Cost:** $3,200
+- **Payment Account:** acct_001
+- **Charge Status:** Complete
+- **Card:** Ending in 1234
+
+Your Tokyo adventure is booked and ready! Have a wonderful trip! 🗾**Step 7: Final Trip Summary**
+
+---
+
+## ✈️ **TRIP BOOKING CONFIRMED**
+
+**Booking ID:** BK-080065  
+**Authorization Code:** AUTH-8E6F12
+
+### Trip Details
+- **Destination:** Tokyo, Japan
+- **Travelers:** 2 adults
+- **Guest Name:** Maya Park
+- **Travel Dates:** September 10–15, 2027 (6 days)
+- **Departure:** New York → Tokyo
+- **Flight Date:** September 10, 2027
+
+### Weather Forecast
+- **October in Tokyo:** Mild temperatures (14–22°C), 35% rain probability
+- **Packing Tip:** Bring layers and a light rain jacket
+
+### Highlights & Attractions
+- **Tokyo:** Shibuya Crossing, Senso-ji Temple, teamLab Borderless digital art museum
+- **Neighborhoods:** Shinjuku, Harajuku, Asakusa
+- **Day Trips:** Mount Fuji, Hakone hot springs
+
+### Travel Information
+- **Visa:** US passport holders enjoy 90-day visa-free entry
+- **Safety:** Level 1 (Exercise Normal Precautions) — Japan is very safe
+- **Transportation:** JR Pass recommended for unlimited rail travel; IC cards (Suica/Pasmo) for urban transit
+- **Cultural Tips:** Remove shoes indoors, bow when greeting, respect temple protocols
+
+### Booking Summary
+- **Total Cost:** $3,200
+- **Payment Account:** acct_001
+- **Charge Status:** Complete
+- **Card:** Ending in 1234
+
+Your Tokyo adventure is booked and ready! Have a wonderful trip! 🗾
+
+trace 342aab4bf42881222c141d55d4dc1837  t0 2026-11-03T17:48:11Z  done 2026-11-03T17:48:42Z
+>> 2026-11-03T17:48:42Z take done: /home/vpcuser/film-v45/unz/sentry-technical-film/film/takes/v4.5
+next: take/film.sh check v4.5
