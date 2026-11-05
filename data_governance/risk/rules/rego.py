@@ -75,11 +75,20 @@ _SCHEMA_PATH = Path(__file__).parent / "schema" / "policy.schema.json"
 _VALID_MODES = ("first_fires", "most_restrictive")
 
 # Rule fields this compiler does not know how to translate into a Rego
-# predicate. Both are deeply nested structures with no rule in the shipped
-# catalog using them and no field in opa_input.schema.json supplying them
-# today — compiling a rule that carries either would silently emit a rule
-# that can never fire, which is worse than refusing outright.
+# predicate. Both need specialized matching semantics, and today's engine
+# supplies no runtime values for them. Refuse them rather than discard an
+# authored constraint.
 _UNSUPPORTED_RULE_FIELDS = ("data_lineage", "scope")
+
+_SCALAR_RULE_FIELDS = (
+    "event_type", "declared_business_intent", "observed_business_intent",
+    "observed_business_intent_description", "declared_operational_intent",
+    "observed_operational_intent",
+)
+
+_RULE_METADATA_FIELDS = (
+    "rule_id", "rule_name", "rule_categories", "rule_sources", "rule_decision",
+)
 
 
 def _lit(value: Any) -> str:
@@ -122,21 +131,71 @@ def _set_subset_clause(input_field: str, required: list[Any]) -> str:
     )
 
 
+def _check_supported_fields(
+    rule_id: str, constraints: dict[str, Any], supported: set[str],
+) -> None:
+    """Do not silently widen a rule, including callers using validate=False."""
+    for field in constraints:
+        if field not in supported:
+            raise NotImplementedError(
+                f"rule {rule_id!r} carries {field!r}, which this "
+                "compiler does not yet translate to a Rego predicate"
+            )
+
+
+def _object_field_clauses(
+    rule_id: str,
+    var: str,
+    constraints: dict[str, Any],
+    *,
+    scalar_fields: tuple[str, ...],
+    subset_fields: dict[str, str],
+) -> list[str]:
+    """All sparse scalar/list constraints on one bound input object.
+
+    Scalars compare exactly; primitive lists require every authored value.
+    Every field must have a translation, so additions cannot disappear.
+    """
+    _check_supported_fields(rule_id, constraints, set(scalar_fields) | set(subset_fields))
+    lines = [
+        f"{var}.{field} == {_lit(constraints[field])}"
+        for field in scalar_fields if field in constraints
+    ]
+    for field, loop_var in subset_fields.items():
+        if field in constraints:
+            lines.append(
+                f"every {loop_var} in {_lit(constraints[field])} "
+                f"{{ {loop_var} in {var}.{field} }}"
+            )
+    return lines
+
+
 def _data_item_clause(rule_id: str, item: dict[str, Any], index: int) -> str:
     """One ``data_items[]`` entry: matched if *some* input data item
     satisfies every field the rule specifies on this entry."""
     var = _rule_var(rule_id, "item", index)
     lines = [f"some {var} in flow.data_items"]
-    if "classification_level" in item:
-        lines.append(f"{var}.classification_level == {_lit(item['classification_level'])}")
-    if "primary_domain" in item:
-        lines.append(f"{var}.primary_domain == {_lit(item['primary_domain'])}")
-    if "regulatory_tags" in item:
-        tags = _lit(item["regulatory_tags"])
-        lines.append(f"every t in {tags} {{ t in {var}.regulatory_tags }}")
-    if "list_of_entities" in item:
-        entities = _lit(item["list_of_entities"])
-        lines.append(f"every e in {entities} {{ e in {var}.list_of_entities }}")
+    lines.extend(_object_field_clauses(
+        rule_id, var, {field: value for field, value in item.items() if field != "entities"},
+        scalar_fields=("classification_level", "primary_domain", "text"),
+        subset_fields={
+            "regulatory_tags": "t", "list_of_entities": "e",
+            "list_of_domains": "d", "identity_bundles": "b",
+        },
+    ))
+    for entity_index, entity in enumerate(item.get("entities", [])):
+        # Include the parent item index: entities in distinct item predicates
+        # must not accidentally share one existential variable.
+        entity_var = _rule_var(rule_id, f"item_{index}_entity", entity_index)
+        lines.append(f"some {entity_var} in {var}.entities")
+        lines.extend(_object_field_clauses(
+            rule_id, entity_var, entity,
+            scalar_fields=(
+                "entity_type", "start", "end", "text", "domain", "category",
+                "data_type", "classification_level", "confidence",
+            ),
+            subset_fields={"regulatory_tags": "t", "data_state": "s"},
+        ))
     return "\n    ".join(lines)
 
 
@@ -147,14 +206,14 @@ def _data_destination_clause(
     destination satisfies every field the rule specifies on this entry."""
     var = _rule_var(rule_id, "dest", index)
     lines = [f"some {var} in flow.data_destinations"]
-    if "data_destination_categories" in destination:
-        cats = _lit(destination["data_destination_categories"])
-        lines.append(f"every c in {cats} {{ c in {var}.data_destination_categories }}")
-    if "data_destination_trust_level" in destination:
-        lines.append(
-            f"{var}.data_destination_trust_level "
-            f"== {_lit(destination['data_destination_trust_level'])}"
-        )
+    lines.extend(_object_field_clauses(
+        rule_id, var, destination,
+        scalar_fields=(
+            "data_destination_name", "data_destination_url",
+            "data_destination_trust_level", "data_destination_trust_level_category",
+        ),
+        subset_fields={"data_destination_categories": "c", "data_destination_types": "t"},
+    ))
     return "\n    ".join(lines)
 
 
@@ -162,23 +221,27 @@ def _data_source_clause(rule_id: str, source: dict[str, Any], index: int) -> str
     """Mirror of :func:`_data_destination_clause` for ``data_sources[]``."""
     var = _rule_var(rule_id, "src", index)
     lines = [f"some {var} in flow.data_sources"]
-    if "data_source_categories" in source:
-        cats = _lit(source["data_source_categories"])
-        lines.append(f"every c in {cats} {{ c in {var}.data_source_categories }}")
+    lines.extend(_object_field_clauses(
+        rule_id, var, source,
+        scalar_fields=("data_source_name", "data_source_url"),
+        subset_fields={"data_source_categories": "c", "data_source_types": "t"},
+    ))
     return "\n    ".join(lines)
 
 
 def _processing_agent_clause(rule_id: str, agent: dict[str, Any], index: int) -> str:
     var = _rule_var(rule_id, "agent", index)
     lines = [f"some {var} in flow.processing_agents"]
-    if "agent_name" in agent:
-        lines.append(f"{var}.agent_name == {_lit(agent['agent_name'])}")
-    if "agent_trust_level" in agent:
-        lines.append(f"{var}.agent_trust_level == {_lit(agent['agent_trust_level'])}")
+    lines.extend(_object_field_clauses(
+        rule_id, var, agent,
+        scalar_fields=("agent_name", "agent_trust_level", "agent_trust_level_category"),
+        subset_fields={},
+    ))
     return "\n    ".join(lines)
 
 
-def _accessing_user_clause(user: dict[str, Any]) -> list[str]:
+def _accessing_user_clause(rule_id: str, user: dict[str, Any]) -> list[str]:
+    _check_supported_fields(rule_id, user, {"username", "user_roles"})
     clauses = []
     if "username" in user:
         clauses.append(_scalar_clause("accessing_user.username", user["username"]))
@@ -199,10 +262,19 @@ def _rule_predicate_clauses(rule: dict[str, Any]) -> list[str]:
                 f"compiler does not yet translate to a Rego predicate"
             )
 
+    _check_supported_fields(
+        rule["rule_id"], rule,
+        set(_RULE_METADATA_FIELDS) | set(_SCALAR_RULE_FIELDS) | {
+            "data_count", "requested_actions", "accessing_user", "data_items",
+            "data_destinations", "data_sources", "processing_agents",
+        },
+    )
+
     clauses: list[str] = []
 
-    if "event_type" in rule:
-        clauses.append(_scalar_clause("event_type", rule["event_type"]))
+    for field in _SCALAR_RULE_FIELDS:
+        if field in rule:
+            clauses.append(_scalar_clause(field, rule[field]))
 
     if "data_count" in rule:
         clauses.append(f"flow.data_count >= {_lit(rule['data_count'])}")
@@ -211,7 +283,7 @@ def _rule_predicate_clauses(rule: dict[str, Any]) -> list[str]:
         clauses.append(_set_subset_clause("requested_actions", rule["requested_actions"]))
 
     if "accessing_user" in rule:
-        clauses.extend(_accessing_user_clause(rule["accessing_user"]))
+        clauses.extend(_accessing_user_clause(rule["rule_id"], rule["accessing_user"]))
 
     rule_id = rule["rule_id"]
 
@@ -377,9 +449,11 @@ def compile_policy(
     (and, under ``validate=True``, is already rejected earlier by the schema
     check).
 
-    Raises ``NotImplementedError`` if any rule carries ``data_lineage`` or
-    ``scope`` (see the module docstring), and ``ValueError`` for an
-    unrecognized combining mode.
+    All scalar and list predicates are compiled, including nested entities.
+    Rule names, categories, sources and decisions are metadata. Raises
+    ``NotImplementedError`` for ``data_lineage``, ``scope``, or an unknown
+    predicate at any supported depth, even when validation is skipped; and
+    ``ValueError`` for an unrecognized combining mode.
     """
     if validate:
         with _SCHEMA_PATH.open(encoding="utf-8") as f:

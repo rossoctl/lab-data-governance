@@ -6,8 +6,8 @@ triggered_rules contains "DG-001" if {
     some _DG_001_item_0 in flow.data_items
     every t in ["PII"] { t in _DG_001_item_0.regulatory_tags }
     some _DG_001_dest_0 in flow.data_destinations
-    every c in ["external"] { c in _DG_001_dest_0.data_destination_categories }
     _DG_001_dest_0.data_destination_trust_level == "UNTRUSTED_EXTERNAL"
+    every c in ["external"] { c in _DG_001_dest_0.data_destination_categories }
 }
 
 triggered_rules contains "DG-002" if {
@@ -16,8 +16,8 @@ triggered_rules contains "DG-002" if {
     some _DG_002_item_0 in flow.data_items
     every t in ["PHI"] { t in _DG_002_item_0.regulatory_tags }
     some _DG_002_dest_0 in flow.data_destinations
-    every c in ["external"] { c in _DG_002_dest_0.data_destination_categories }
     _DG_002_dest_0.data_destination_trust_level == "UNTRUSTED_EXTERNAL"
+    every c in ["external"] { c in _DG_002_dest_0.data_destination_categories }
 }
 
 triggered_rules contains "DG-004" if {
@@ -26,8 +26,8 @@ triggered_rules contains "DG-004" if {
     some _DG_004_item_0 in flow.data_items
     _DG_004_item_0.classification_level == "RESTRICTED"
     some _DG_004_dest_0 in flow.data_destinations
-    every c in ["external"] { c in _DG_004_dest_0.data_destination_categories }
     _DG_004_dest_0.data_destination_trust_level == "UNTRUSTED_EXTERNAL"
+    every c in ["external"] { c in _DG_004_dest_0.data_destination_categories }
 }
 
 _rule_decisions := {"DG-001": {"risk_level": "critical", "enforcement_type": "block", "allowed_actions": ["redact"], "explanation": "PII detected in payload sent to UNTRUSTED_EXTERNAL destination. Data exfiltration risk.", "confidence": 0.95}, "DG-002": {"risk_level": "critical", "enforcement_type": "block", "allowed_actions": [], "explanation": "PHI (Protected Health Information) detected in payload sent to UNTRUSTED_EXTERNAL destination. HIPAA violation.", "confidence": 0.95}, "DG-004": {"risk_level": "critical", "enforcement_type": "block", "allowed_actions": [], "explanation": "RESTRICTED document detected in external sharing event to UNTRUSTED_EXTERNAL destination. Sharing prohibited.", "confidence": 0.95}}

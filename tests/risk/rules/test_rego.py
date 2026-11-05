@@ -239,6 +239,20 @@ def test_data_lineage_and_scope_raise_not_implemented(field: str):
         _compile(policy)
 
 
+@pytest.mark.parametrize("predicates", [
+    {"future_guard": "value"},
+    {"data_items": [{"future_guard": "value"}]},
+    {"data_items": [{"entities": [{"future_guard": "value"}]}]},
+    {"data_destinations": [{"future_guard": "value"}]},
+    {"data_sources": [{"future_guard": "value"}]},
+    {"processing_agents": [{"agent_name": "a", "future_guard": "value"}]},
+    {"accessing_user": {"username": "u", "future_guard": "value"}},
+])
+def test_unknown_predicates_are_rejected_even_when_schema_validation_is_skipped(predicates):
+    with pytest.raises(NotImplementedError, match="future_guard"):
+        _compile(_policy([_rule("R-1", **predicates)]))
+
+
 # --- fallback rule -------------------------------------------------------
 
 
