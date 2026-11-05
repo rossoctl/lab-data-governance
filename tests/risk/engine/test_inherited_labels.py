@@ -129,6 +129,21 @@ def test_on_the_labels_move_the_fingerprint_and_join_the_record() -> None:
     assert "inherited" not in summary["response"]
 
 
+@pytest.mark.parametrize("changed", [
+    {"entity_type": "PHONE"},
+    {"matched_text": "another value"},
+    {"matched_start": 21, "matched_end": 32},
+])
+def test_changed_inherited_entity_details_move_the_fingerprint(changed) -> None:
+    before = labels.Inherited(mode="on", by_leg={"request": [_edge()]})
+    after = labels.Inherited(mode="on", by_leg={"request": [_edge(**changed)]})
+    assert labels.summary(before.forwarded("request")) == labels.summary(after.forwarded("request"))
+    before_input, before_fp, _ = _artefacts(_evidence(before))
+    after_input, after_fp, _ = _artefacts(_evidence(after))
+    assert before_input != after_input
+    assert before_fp != after_fp
+
+
 @pytest.mark.parametrize("edge", [
     _edge(origin_trace_id="another-trace"),  # an origin in another conversation
     _edge(match_kind="fragment"),            # anything but a whole value

@@ -249,6 +249,33 @@ def test_fingerprint_changes_when_classification_summary_changes():
     assert fp1 != fp2
 
 
+@pytest.mark.parametrize("changed", [
+    {"entity_type": "PHONE"},
+    {"text": "different value"},
+    {"start": 1},
+    {"end": 12},
+    {"domain": "person"},
+    {"category": "person.govID"},
+    {"regulatory_tags": ["PCI"]},
+    {"identifier_type": "OPID"},
+    {"sensitivity_level": "CONFIDENTIAL"},
+])
+def test_fingerprint_changes_when_finding_details_change_but_summary_does_not(changed):
+    legs = [_leg("request")]
+    before = {"request": _verdict(findings=[_finding()])}
+    after = {"request": _verdict(findings=[_finding(**changed)])}
+    assert utils.classification_summary(before) == utils.classification_summary(after)
+    assert utils.fingerprint(legs, before) != utils.fingerprint(legs, after)
+
+
+@pytest.mark.parametrize("classification", [_verdict(), utils.PENDING])
+def test_fingerprint_changes_when_payload_identity_changes(classification):
+    classifications = {"request": classification}
+    assert utils.fingerprint([_leg("request", payload_hash="h1")], classifications) != (
+        utils.fingerprint([_leg("request", payload_hash="h2")], classifications)
+    )
+
+
 def test_fingerprint_returns_a_string():
     assert isinstance(utils.fingerprint([], {}), str)
 

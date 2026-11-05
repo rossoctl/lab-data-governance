@@ -273,22 +273,13 @@ def test_changed_principal_changes_the_fingerprint() -> None:
     assert utils.fingerprint(legs, {}, a) != utils.fingerprint(legs, {}, b)
 
 
-def test_absent_anchor_keeps_legacy_fingerprint_stable() -> None:
-    """anchor=None (and an all-None anchor) fingerprint byte-identically to
-    the pre-#163 form, so existing cached decisions for anchor-less evidence
-    stay valid — no spurious OPA re-evaluation on deploy."""
+def test_empty_anchor_has_the_same_fingerprint_as_an_absent_anchor() -> None:
+    """The representation of missing anchor facts does not change evidence."""
     legs = [utils.LegEvidence(leg_type="request", payload_hash="h1")]
     classifications = {"request": utils.NO_PAYLOAD}
-    legacy = json.dumps(
-        {
-            "legs_evidenced": utils.legs_evidenced(legs),
-            "classification_summary": utils.classification_summary(classifications),
-        },
-        sort_keys=True,
-        default=str,
+    assert utils.fingerprint(legs, classifications) == utils.fingerprint(
+        legs, classifications, utils.AnchorFacts(),
     )
-    assert utils.fingerprint(legs, classifications) == legacy
-    assert utils.fingerprint(legs, classifications, utils.AnchorFacts()) == legacy
 
 
 # --- gather_evidence reads the anchor span -----------------------------------

@@ -29,16 +29,21 @@ run explicitly with ``-m opa`` (podman/docker must be up — see
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
 
 import httpx
+import psycopg
 import pytest
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
+from psycopg.types.json import Jsonb
 
+from data_governance import retrieval
 from data_governance.risk.config import OPA_DECISION_PATH
+from data_governance.risk.engine.compute import compute_interaction_risk
 from data_governance.risk.engine.opa import OpaClient
 from data_governance.risk.rules import catalog
 from data_governance.risk.rules.rego import compile_policy
@@ -107,6 +112,73 @@ def _evaluate(opa_base_url: str, opa_input: dict[str, Any]):
             http_client=http_client, decision_path=OPA_DECISION_PATH, max_retries=0
         )
         return client.evaluate(interaction_id="test-interaction", opa_input=opa_input)
+
+
+@pytest.mark.parametrize("replace_payload", [True, False], ids=["new-payload", "corrected-findings"])
+def test_changed_finding_types_refresh_the_engine_decision(
+    configured_db, opa_client, replace_payload,
+):
+    """A stable SSN policy must see new findings even when the verdict's
+    document summary is unchanged, then reuse genuinely unchanged evidence."""
+    policy = copy.deepcopy(catalog.load_rules_source())
+    rule = policy["rules"][0]
+    rule.pop("event_type")
+    rule.pop("data_destinations")
+    rule["data_items"] = [{"list_of_entities": ["SSN"]}]
+    policy["rules"] = [rule]
+    response = _put_policy(opa_client, compile_policy(policy))
+    assert response.status_code == 200, response.text
+    with psycopg.connect(configured_db) as conn:
+        conn.execute(
+            "INSERT INTO interactions (id, trace_id, caller_entity_id, "
+            "callee_entity_id, summary) VALUES ('cache-ix', 'cache-trace', 'a', 'b', 'call')",
+        )
+        conn.execute(
+            "INSERT INTO interaction_legs (interaction_id, leg_type, payload_hash) "
+            "VALUES ('cache-ix', 'request', 'phone-hash')",
+        )
+        for content_hash, entity_type in [("phone-hash", "PHONE"), ("ssn-hash", "SSN")]:
+            conn.execute(
+                "INSERT INTO payload_classifications (content_hash, sensitivity_level, "
+                "regulatory_tags, contains_identity_bundle, is_personalized, primary_domain, "
+                "findings, model_version) VALUES (%s, 'CONFIDENTIAL', ARRAY['PII'], "
+                "false, false, 'person', %s, 1)",
+                (content_hash, Jsonb([{"entity_type": entity_type}])),
+            )
+
+    calls = []
+    opa_client.event_hooks["request"].append(
+        lambda request: calls.append(request) if request.url.path == OPA_DECISION_PATH else None,
+    )
+    opa = OpaClient(http_client=opa_client, decision_path=OPA_DECISION_PATH, max_retries=0)
+    compute_interaction_risk("cache-ix", opa_client=opa)
+    previous = retrieval.get_interaction_risk("cache-ix")
+    assert previous.risk_level == "none"
+    compute_interaction_risk("cache-ix", opa_client=opa)
+    assert len(calls) == 1
+
+    with psycopg.connect(configured_db) as conn:
+        if replace_payload:
+            conn.execute(
+                "UPDATE interaction_legs SET payload_hash = 'ssn-hash' "
+                "WHERE interaction_id = 'cache-ix'",
+            )
+        else:
+            conn.execute(
+                "UPDATE payload_classifications SET findings = %s "
+                "WHERE content_hash = 'phone-hash'",
+                (Jsonb([{"entity_type": "SSN"}]),),
+            )
+    compute_interaction_risk("cache-ix", opa_client=opa)
+    current = retrieval.get_interaction_risk("cache-ix")
+    assert current.risk_level == "critical"
+    assert current.triggered_rule_ids == ["DG-001"]
+    assert current.version == 2
+    assert current.classification_summary == previous.classification_summary
+    assert len(calls) == 2
+    compute_interaction_risk("cache-ix", opa_client=opa)
+    assert retrieval.get_interaction_risk("cache-ix").version == 2
+    assert len(calls) == 2
 
 
 # --- PII / shipped-catalog-shaped scenario ------------------------------

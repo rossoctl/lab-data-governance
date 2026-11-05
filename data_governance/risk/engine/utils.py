@@ -564,21 +564,16 @@ def _normalize_for_fingerprint(
     anchor: AnchorFacts | None = None,
     inherited: labels.Inherited | None = None,
 ) -> dict[str, Any]:
-    # Forwarded inherited labels ride inside the classification summary (keyed
-    # only on a leg they reached), so a label landing after a decision changes
-    # the fingerprint and OPA is asked again.
+    # Retain record metadata as well as the rule input added by fingerprint().
+    # Aggregate summaries alone cannot distinguish finding types or details.
     normalized: dict[str, Any] = {
         "legs_evidenced": legs_evidenced(legs),
+        "payload_hashes": {leg.leg_type: leg.payload_hash for leg in legs},
         "classification_summary": classification_summary(classifications, inherited),
     }
-    # The anchor's RAW facts join the fingerprint (issue #163): a changed
-    # destination/principal must re-trigger OPA, or the cached decision would
-    # keep answering for evidence it never saw. Raw facts, not the derived
-    # categories — the whitelist is configuration, not evidence, and a config
-    # change re-evaluating every cached decision is the same
-    # policy-changed-with-unchanged-evidence gap PR #160 already records as
-    # deferred (FR-DAS-012 condition 3). Keyed only when any fact exists, so
-    # pre-existing fingerprints of anchor-less evidence stay valid.
+    # Raw anchor facts complement the derived input: a changed observed fact
+    # still invalidates the decision even when today's input mapping collapses
+    # it to the same category. An empty anchor remains equivalent to no anchor.
     if anchor is not None:
         facts = _facts_dict(anchor)
         if facts:
@@ -596,16 +591,29 @@ def fingerprint(
     callee_entity_id: str | None = None,
 ) -> str:
     """A canonical fingerprint string over the evidence that feeds one
-    interaction risk computation — the legs, their classifications, and the
-    anchor span's wire facts (issue #163), and the endpoints passed to OPA.
+    interaction risk computation: payload identity, classification metadata,
+    raw anchor facts, and the complete runtime input passed to OPA. Reuse the
+    input builder so finding details and inherited entities cannot drift from
+    what the policy actually evaluates.
 
     Used to detect whether evidence actually changed since the last OPA call
     (FR-DAS-014 idempotency): compare this against the fingerprint stored
     alongside the latest policy decision, not raw field-by-field comparison
     (DB round-trips return ``Decimal``/``list``/``dict`` types that mismatch
-    freshly-computed Python values).
+    freshly-computed Python values). Older summary-only fingerprints refresh
+    once on the next computation. Policy contents are not fingerprinted;
+    policy-only changes with unchanged input still need a separate trigger.
     """
     normalized = _normalize_for_fingerprint(legs, classifications, anchor, inherited)
+    normalized["opa_input"] = build_opa_input(
+        legs=legs,
+        span_ids=[],
+        classifications=classifications,
+        caller_entity_id=caller_entity_id,
+        callee_entity_id=callee_entity_id,
+        anchor=anchor,
+        inherited=inherited,
+    )
     if caller_entity_id is not None or callee_entity_id is not None:
         normalized["processing_agents"] = {
             "caller_entity_id": caller_entity_id,
