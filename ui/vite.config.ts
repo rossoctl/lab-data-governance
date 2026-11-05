@@ -44,10 +44,16 @@ export default defineConfig({
   },
   server: {
     port: 3000,
-    // In dev, proxy /api to the backend so the same-origin fetches the SPA
-    // issues in production also work against `npm run dev`.
+    // In dev, proxy /api (and /risk — the risk backend's routes are
+    // registered at the app root, not under /api) to the backend so the
+    // same-origin fetches the SPA issues in production also work against
+    // `npm run dev`.
     proxy: {
       '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/risk': {
         target: 'http://localhost:8080',
         changeOrigin: true,
       },

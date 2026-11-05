@@ -17,11 +17,14 @@ data_governance/
     interactions/     # derives interactions from the spans stream
     classification/   # classifies payloads (content-addressed)
     data_lineage/     # derives data-lineage edges
+  risk/               # risk engine, OPA rule catalog, /risk/* API — see
+                       # data_governance/risk/README.md
 tests/
   db/
     test_db.py        # Layer 1 tests against real Postgres
     test_migrations.py # Baseline migration + migrate CLI tests
 docs/                 # PROJECT.md, ADRs, this file
+demos/                # scripted demos on a running cluster: runbook + tools per demo
 alembic.ini
 pyproject.toml
 ```
@@ -37,6 +40,8 @@ pyproject.toml
   and adding it speculatively widens the surface.
 - **Migrations: Alembic without SQLAlchemy ORM** (per ADR-0002). Raw SQL via
   `op.execute(...)`. The schema is the source of truth, not Python models.
+  For deployments created from the main or risk branch, follow the
+  [combined-schema upgrade procedure](migrations-main-risk.md).
 - **Tests: pytest + testcontainers-python.** Each test session starts a
   throwaway Postgres container; tests get a fresh database per test. No mocking
   of Postgres — that is the whole point of the layered design (Layer 1's job is

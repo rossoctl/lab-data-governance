@@ -45,10 +45,15 @@ def test_classify_never_reads_a_body():
     assert _content_kinds(k) == ("llm_chat_prompt", "llm_completion")
 
 
-def test_unknown_protocol_falls_back_to_http():
-    k = classify_attrs(_attrs("outbound", "grpc-something"))
-    assert k.callee_kind == "service"
-    assert _content_kinds(k) == (None, None)
+def test_classify_http_rows_name_the_raw_bodies():
+    """Plain http (no parser claimed the exchange) carries its raw bodies as
+    the payload (contract v1.8 §5), so its legs get content kinds like every
+    other protocol — before #309 the rows said (None, None) and the processor
+    dropped a captured body on the floor."""
+    for direction in ("inbound", "outbound"):
+        k = classify_attrs(_attrs(direction, "http"))
+        assert _content_kinds(k) == ("http_request_body", "http_response_body"), direction
+    assert classify_attrs(_attrs("outbound", "http")).callee_kind == "service"
 
 
 def test_classify_mcp_method_overrides_content_kinds_only():
@@ -101,10 +106,10 @@ def test_classify_bodyless_http_on_mcp_endpoint_is_lifecycle():
         assert k.callee_kind == "service", path
     # a body present → not plumbing → plain http kinds
     k = classify_attrs(_attrs("outbound", "http", **{"url.path": "/mcp", "input.value": "{}"}))
-    assert _content_kinds(k) == (None, None)
+    assert _content_kinds(k) == ("http_request_body", "http_response_body")
     # other bodyless http paths are untouched
     k = classify_attrs(_attrs("outbound", "http", **{"url.path": "/api/things"}))
-    assert _content_kinds(k) == (None, None)
+    assert _content_kinds(k) == ("http_request_body", "http_response_body")
 
 
 # --- the vocabulary -----------------------------------------------------------
@@ -121,6 +126,7 @@ def test_content_kinds_is_the_closed_emitted_vocabulary():
         "llm_chat_prompt", "llm_completion",
         "mcp_lifecycle_request", "mcp_lifecycle_result",
         "tool_discovery_request", "tool_discovery_result",
+        "http_request_body", "http_response_body",
     }
 
 
@@ -134,3 +140,19 @@ def test_missing_or_garbled_direction_raises():
     for bad in ({}, _attrs("", "a2a"), _attrs("both", "a2a"), _attrs("Inbound ", "a2a")):
         with pytest.raises(ValueError):
             classify_attrs(bad)
+
+
+def test_missing_or_unknown_protocol_raises():
+    """lineage.protocol is a closed vocabulary on both spans (contract §4).
+    Before #309 anything else fell back to the http row — harmless while that
+    row had no content kinds, a mislabel once it does: a future protocol's
+    bodies would land as http_request_body."""
+    import pytest
+
+    for bad in (_attrs("outbound", ""), _attrs("outbound", "grpc-something"), _attrs("outbound", "HTTP ")):
+        with pytest.raises(ValueError):
+            classify_attrs(bad)
+    attrs = _attrs("outbound", "a2a")
+    del attrs["lineage.protocol"]
+    with pytest.raises(ValueError):
+        classify_attrs(attrs)

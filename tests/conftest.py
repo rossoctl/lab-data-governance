@@ -37,6 +37,9 @@ os.environ.setdefault("DOCKER_HOST", f"unix:///run/user/{_uid}/podman/podman.soc
 # testcontainers' ryuk reaper needs privileged container creation; disable on
 # rootless podman where it tends to fail.
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
+# The rule catalog path is read at import time (data_governance.risk.config);
+# the suite serves the packaged catalog whatever the invoking shell exports.
+os.environ.pop("RISK_RULES_SOURCE", None)
 
 
 @pytest.fixture(scope="session")

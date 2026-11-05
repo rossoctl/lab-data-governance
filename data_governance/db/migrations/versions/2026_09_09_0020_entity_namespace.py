@@ -24,13 +24,13 @@ the reset in ``docs/CUTOVER-two-span.md`` (truncate the derived tables, reset
 the cursor, replay). That is an operator decision about history, stated here so
 nobody expects a migration or a replay to unify the two.
 
-**Numbered 0020, on 0015.** Main's chain ends at 0015; the ``risk`` branch, whose
-revisions are stamped in a live ``alembic_version``, already carries its own
-0016–0019. Two revisions off one parent are two heads and refuse ``upgrade head``
-whichever number this one carries, so the merge must re-parent one of them — and
-it must be this one, unshipped, not the ones a live database points at. Naming it
-0020 now makes that merge a one-line ``down_revision`` edit with no file, test or
-pin churn (the deploy branch already runs it that way, on 0019).
+**Preserve the shipped parent, 0015.** This revision shipped on main before the
+risk branch was merged. Re-parenting it onto risk's 0019 would tell a database
+already at main's 0022 or 0026 that the risk-table migrations had been applied,
+even though their tables do not exist. Risk's branch therefore joins this branch
+at 0023, after both 0019 and 0022; 0027 joins the resulting heads. Historical risk
+databases stamped at this shared revision need the compatibility procedure in
+``docs/migrations-main-risk.md`` before upgrading.
 
 **Not part of the UNIQUE constraint.** Identity stays a single string
 (``natural_key``) hashed by one formula (``procedure._entity_id``); a composite

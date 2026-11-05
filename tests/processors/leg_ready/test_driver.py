@@ -254,6 +254,57 @@ def test_leg_delivered_exactly_once_across_restart(configured_db: str) -> None:
     assert sink2.delivered == [(s2, "request")], "no duplicate, no miss"
 
 
+def test_a_lock_lost_mid_drain_commits_no_further_leg(configured_db: str) -> None:
+    """The sole-consumer guard fences every leg's write, not only the drain's
+    start: a holder whose lock dies part-way through a backlog must not keep
+    advancing the cursor beside the replacement that now holds it."""
+    seqs = [
+        _insert_leg(configured_db, interaction_id=f"g{i}", leg_type="request", payload_hash=None)
+        for i in range(4)
+    ]
+    checks = 0
+
+    def guard() -> None:  # the lock is lost after the first leg's write
+        nonlocal checks
+        checks += 1
+        if checks > 2:
+            raise db.LockLost("lock session gone")
+
+    with pytest.raises(db.LockLost):
+        driver.drain(0, observer=_Sink(), guard=guard)
+    assert _cursor(configured_db) == seqs[0]
+
+
+def test_a_leg_another_consumer_delivered_meanwhile_writes_nothing(configured_db: str) -> None:
+    """The lock check and the leg's transaction run on different connections,
+    so a consumer can pass the check, stall, and lose the lock while a
+    replacement delivers the same leg. Its transaction must then roll back —
+    its write included — rather than land an older computation and move the
+    cursor backwards."""
+    seq = _insert_leg(configured_db, interaction_id="cas", leg_type="request", payload_hash=None)
+    with psycopg.connect(configured_db) as conn:
+        conn.execute("CREATE TABLE test_writes (seq bigint)")
+        conn.commit()
+
+    def observer(leg):
+        # While this consumer computes, a replacement delivers the leg.
+        with psycopg.connect(configured_db) as conn:
+            conn.execute(
+                "INSERT INTO processor_state (processor_name, last_processed_seq, updated_at) "
+                "VALUES (%s, %s, now()) ON CONFLICT (processor_name) DO UPDATE "
+                "SET last_processed_seq = EXCLUDED.last_processed_seq",
+                (driver.PROCESSOR_NAME, leg.seq),
+            )
+        return lambda tx: tx.execute("INSERT INTO test_writes VALUES (%s)", (leg.seq,))
+
+    with pytest.raises(db.LockLost):
+        driver.drain(0, observer=observer)
+    with psycopg.connect(configured_db) as conn:
+        (writes,) = conn.execute("SELECT count(*) FROM test_writes").fetchone()
+    assert writes == 0
+    assert _cursor(configured_db) == seq
+
+
 def test_restart_after_full_drain_delivers_nothing(configured_db: str) -> None:
     """After a full drain, a restart re-reading the durable cursor with no new
     ready legs delivers nothing (the cursor is the complete delivery record)."""

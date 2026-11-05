@@ -82,10 +82,14 @@ def test_revision_is_in_the_chain(migrated_dsn: str) -> None:
 def test_0015_is_applied_in_the_chain(migrated_dsn: str) -> None:
     """A fresh migrate applies this revision (it is reachable in the chain).
 
-    The assertion is deliberately only reachability. Per the convention this
-    repo follows, the head assertion lives in one place in
-    ``test_classifications_migration.py``. Later revisions do not change this
-    rename's reachability contract.
+    This revision was head at the time this test was written, but the
+    assertion here is deliberately only reachability. Per the convention this
+    repo already follows, the head assertion travels with whichever revision
+    is head and lives in exactly ONE place, so a new revision moves one line
+    — that place is now ``test_latest_migration.py::test_head_is_0017``
+    (moved there when merging in the risk-computation branch pushed head past
+    this revision). Keeping this test to reachability means a later revision
+    landing on top does not have to edit this file at all.
 
     Renumbered from 0013 to 0015 when the lineage chain was re-parented onto
     ``main``'s 0011_drop_leg_original_seq to make the chain linear (which also

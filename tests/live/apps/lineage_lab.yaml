@@ -1,0 +1,60 @@
+# lineage_lab — the controlled app (agent-examples-snp apps/lineage_lab): three plan
+# interpreters, two transformation tools, one store tool over Postgres, a partner that
+# is external under a dotted Host and internal by its Service name, the LLM. The
+# request carries the call tree, so there are NO known gaps to declare: every hop
+# is the plan's, every session is per turn unless a plan says pod_lifetime.
+app: lineage_lab
+namespace: lineage-lab
+entry: demo-client
+
+workloads:
+  agents: [demo-client, lab-a, lab-b, lab-c]
+  tools: [lab-store, lab-tool-x, lab-tool-y]
+
+llm: {host: "host.containers.internal:11434", model: "qwen2.5:7b"}
+
+# The partner is one Service with two names: the sidecar names it by the Host it
+# saw. Both are bare callees (no sidecar); the body is MCP-shaped, so the
+# contract's table makes the callee a tool.
+services: [{name: lab-partner, kind: tool}, {name: api.partner.example, kind: tool}]
+
+edges:
+  - [demo-client, lab-a, a2a]
+  - [lab-a, lab-b, a2a]
+  - [lab-a, lab-c, a2a]
+  - [lab-a, lab-store, mcp]
+  - [lab-a, lab-tool-x, mcp]
+  - [lab-a, lab-tool-y, mcp]
+  - [lab-b, lab-store, mcp]
+  - [lab-b, lab-tool-y, mcp]
+  - [lab-c, lab-store, mcp]
+  - [lab-c, lab-tool-y, mcp]
+  - [lab-a, lab-partner, mcp]            # MCP-shaped http: the parser labels it mcp
+  - [lab-a, api.partner.example, mcp]
+  - [lab-b, lab-partner, mcp]
+  - [lab-b, api.partner.example, mcp]
+  - [lab-c, lab-partner, mcp]
+  - [lab-c, api.partner.example, mcp]
+  - [lab-a, llm, inference]
+  - [lab-b, llm, inference]
+  - [lab-c, llm, inference]
+
+unobservable:
+  - {who: lab-store, what: postgres SELECT/INSERT on lab.records, port: 5432}
+
+# The turn is whatever the plan says; the per-scenario expectation comes from
+# tests/live/lab_expect.py. The entry edge is the only turn-level constant.
+turn:
+  deterministic:
+    - [demo-client, lab-a, a2a]
+  edges:
+    - [demo-client, lab-a, a2a]
+
+# No known gaps: a gap here is a finding.
+known_gap: []
+
+# Preflight: workloads that run the plain (un-shimmed) app image, and the
+# agents whose LLM env is pinned.
+preflight:
+  plain_image_workloads: [lab-partner]
+  llm_env_agents: [lab-a, lab-b, lab-c]

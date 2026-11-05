@@ -23,8 +23,8 @@
  * WHAT CHANGED, AND WHY THIS REPLACES THE CLIENT-SIDE ROLL-UP.
  *
  * `lineageGraph.ts` computed "the direct sources of the selected entity" from the
- * per-leg `byLeg` map, one hop, and REFUSED to walk transitively — because "a
- * transitive claim the backend never derived would be the UI inventing lineage".
+ * former per-leg data-lineage map, one hop, and REFUSED to walk transitively —
+ * because "a transitive claim the backend never derived would be the UI inventing lineage".
  * That reasoning was correct, and ADR-0028 D15 records that it is exactly what the
  * server now removes: **the backend derives the multi-hop claim, so it is
  * citable.** This module therefore renders a SERVED answer rather than composing
@@ -192,9 +192,9 @@ const NO_SOURCES: SourceHighlight = {
  *
  * `summary` is `undefined` while the read is in flight or after it failed; both
  * yield the empty highlight, and NEITHER may be rendered as "this trace has no
- * data sources" — the view distinguishes them by the query's own state, which is
- * the same split `LineageState` makes (a failed read is not an empty answer). This
- * function cannot tell them apart and deliberately does not try.
+ * data sources" — the view distinguishes them by the query's own state, because a
+ * failed read is not an empty answer. This function cannot tell them apart and
+ * deliberately does not try.
  */
 export function deriveSourceHighlight({
   entities,
@@ -484,7 +484,7 @@ function emptyDirection(
  * The edge-id translation is the only arithmetic in this module and it is not a
  * guess: a traversed leg is `(interaction_id, leg_type)` and `lib/graph` keys an
  * edge as `` `${interactionId}:${legType}` `` — the same canonical leg grain
- * `flow.legLineageKey` uses. So the join is the identity, not a parse. A leg whose
+ * the reachability read uses. So the join is the identity, not a parse. A leg whose
  * edge the graph did not draw is skipped rather than invented; the graph's own
  * `dropped` notice already accounts for those interactions.
  */

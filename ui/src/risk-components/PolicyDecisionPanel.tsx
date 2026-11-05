@@ -1,0 +1,347 @@
+import { useState } from 'react';
+import { Link, useSearchParams, type To } from 'react-router-dom';
+import {
+  Button,
+  Card,
+  CardBody,
+  CardTitle,
+  DescriptionList,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  DescriptionListDescription,
+  Spinner,
+  Title,
+} from '@patternfly/react-core';
+import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
+import { RiskBadge } from './RiskBadge';
+import { EnforcementChip } from './EnforcementChip';
+import { joinOrNone } from '../lib/joinOrNone';
+import { SensitivityBadge } from '../components/SensitivityBadge';
+import { LabelLineageTable } from '../components/LabelLineageTable';
+import { useLabelTrack } from '../components/flow/labelTrack';
+import { namedByRules, trackedValueOf } from '../lib/labelTrack';
+import type { HopLinks } from '../lib/hopLinks';
+import { useLegLabels } from '../api/hooks';
+import { regulatoryTagsOf, classificationLevelsOf, carriedOfSummary } from '../lib/classificationSummary';
+import type { Entity } from '../lib/flow';
+import type { LegLabels, LineageHop } from '../types';
+import type { ForestInteraction, RuleListItem } from '../risk-api/types';
+
+/** The rule ids resolved through the catalog index, each rendered as a link. */
+function RuleLinks({ ruleIds, ruleIndex }: { ruleIds: readonly string[]; ruleIndex: ReadonlyMap<string, RuleListItem> | undefined }) {
+  if (ruleIds.length === 0) return <>none</>;
+  return (
+    <>
+      {ruleIds.map((id, i) => (
+        <span key={id}>
+          {i > 0 && ', '}
+          {/* A rule id missing from the index (catalog beyond one page, or a
+              stale/renamed id) still LINKS — the navigation always works —
+              just labelled with the bare id instead of its catalog name.
+              See `useRuleCatalogIndex`'s documented degrade. */}
+          <Link to={`/risk/rules/${id}`}>{ruleIndex?.get(id)?.rule_name ?? id}</Link>
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** This violation's triggered rules, resolved through the catalog index — `[]` for an id the index doesn't cover. */
+function triggeredRules(
+  ruleIds: readonly string[],
+  ruleIndex: ReadonlyMap<string, RuleListItem> | undefined,
+): RuleListItem[] {
+  return ruleIds.map((id) => ruleIndex?.get(id)).filter((r): r is RuleListItem => r !== undefined);
+}
+
+/** `entity_id -> kind`, resolved for whichever of the violation's caller/callee `entities` actually covers. */
+function entityKindsOf(violation: ForestInteraction, entities: readonly Entity[] | undefined): string[] {
+  const byId = new Map((entities ?? []).map((e) => [e.id, e.kind]));
+  const kinds = new Set<string>();
+  for (const id of [violation.caller_entity_id, violation.callee_entity_id]) {
+    if (id != null) kinds.add(byId.get(id) ?? 'unknown');
+  }
+  return [...kinds];
+}
+
+/**
+ * The panel for one **policy event** (issue #170): a
+ * `ForestInteraction` whose `risk.triggered_rule_ids` is non-empty (see
+ * `lib/riskForestAdapter.ts`'s `violationsOf`). Read-only, no mutation —
+ * this is a step-through disclosure of a decision the policy engine already
+ * made, not a form.
+ *
+ * Naming (issue #222): the rendered strings are "Policy event" and
+ * "Interaction" — the decided user-facing vocabulary. The internal
+ * identifiers still say "violation" (`violationsOf`, the `violation` prop,
+ * this component's own name, the `?violation=` URL param): #222 is a UI
+ * terminology decision about what the reader sees, and renaming the code
+ * surface would also break the shipped `?violation=` deep-link contract.
+ * The two are deliberately allowed to diverge; treat "violation" in this
+ * file's identifiers as a synonym for "policy event".
+ *
+ * `violation.risk` is guaranteed non-null by the caller (only a
+ * `violationsOf` result reaches this component), so it is read directly
+ * rather than re-guarded with an empty/loading branch here.
+ *
+ * `entities` is additional to the plan's original `{violation, ruleIndex}`
+ * signature: the "Entity types" row needs the caller/callee `kind`, which —
+ * like every other participant label in this view — is not on the risk
+ * record at all (`riskForestAdapter.ts`'s header) and comes from the entity
+ * list the flow views already read. Optional because a degraded (or still-loading) entities read must
+ * not block the panel — `entityKindsOf` falls back to `'unknown'` per id.
+ */
+export function PolicyDecisionPanel({
+  violation,
+  ruleIndex,
+  entities,
+}: {
+  violation: ForestInteraction;
+  ruleIndex: ReadonlyMap<string, RuleListItem> | undefined;
+  entities?: readonly Entity[];
+}) {
+  const risk = violation.risk;
+  // The values panel opens from the Carried in row and reads the labels then,
+  // not before (one read per interaction, the same cache entry the trace page
+  // fills; `live.ts` keeps it fresh under `leg-labels`). Declared before the
+  // guard below: a hook must run on every render.
+  const [valuesOpen, setValuesOpen] = useState(false);
+  if (risk == null) return null; // See doc comment: callers only pass a `violationsOf` result.
+
+  const rules = triggeredRules(risk.triggered_rule_ids, ruleIndex);
+  const reasons = rules.map((r) => r.explanation).filter((e): e is string => !!e);
+  const destinations = rules.flatMap((r) => r.data_destinations);
+  const destinationLabels = destinations.flatMap((d) => [
+    ...(d.data_destination_categories ?? []),
+    ...(d.data_destination_trust_level ? [d.data_destination_trust_level] : []),
+  ]);
+  const allowedActions = [...new Set(rules.flatMap((r) => r.allowed_actions))];
+  const carried = carriedOfSummary(risk.classification_summary);
+
+  return (
+    <Card data-testid="policy-decision-panel">
+      <CardTitle>Policy event</CardTitle>
+      <CardBody>
+        <DescriptionList isHorizontal>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Interaction</DescriptionListTerm>
+            <DescriptionListDescription>{violation.summary ?? 'none'}</DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Risk level</DescriptionListTerm>
+            <DescriptionListDescription>
+              <RiskBadge level={risk.risk_level} />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Enforcement</DescriptionListTerm>
+            <DescriptionListDescription>
+              {/* `'none'` when `enforcement_type` is null, per
+                  `RiskRuleDetailPage`'s existing fallback for the same field
+                  on a rule — one convention, two places it applies. */}
+              <EnforcementChip type={risk.enforcement_type ?? 'none'} />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Rules</DescriptionListTerm>
+            <DescriptionListDescription>
+              <RuleLinks ruleIds={risk.triggered_rule_ids} ruleIndex={ruleIndex} />
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Reason</DescriptionListTerm>
+            <DescriptionListDescription>{joinOrNone(reasons, ' ')}</DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Destination</DescriptionListTerm>
+            <DescriptionListDescription>{joinOrNone(destinationLabels)}</DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Entity types</DescriptionListTerm>
+            <DescriptionListDescription>{joinOrNone(entityKindsOf(violation, entities))}</DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Regulatory tags</DescriptionListTerm>
+            {/* This row says "none" for an unclassified interaction via
+                `joinOrNone`'s fallback — correct HERE, where the reader has
+                already drilled into one violation and a labelled row must
+                say something. The execution-flow graph's edge tag reads the
+                same `regulatoryTagsOf` but deliberately does NOT say "none"
+                for the same empty case — see `lib/classificationSummary.
+                edgeTagLabel`'s docstring for why a bare graph mark can't
+                make the same claim a labelled row can. */}
+            <DescriptionListDescription>{joinOrNone(regulatoryTagsOf(risk.classification_summary))}</DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Classification</DescriptionListTerm>
+            <DescriptionListDescription>{joinOrNone(classificationLevelsOf(risk.classification_summary))}</DescriptionListDescription>
+          </DescriptionListGroup>
+          {/* Labels the payload carried in from earlier in the trace (label
+              lineage). The two rows above stay the classifier's reading of
+              this payload. "Used in this decision" is what the record says:
+              the engine writes `inherited` only for labels it forwarded into
+              the OPA input. Which rule a label fired is not recorded, so the
+              row never says. No `inherited`, no row — never "none carried". */}
+          {carried && (
+            <DescriptionListGroup>
+              <DescriptionListTerm>Carried in</DescriptionListTerm>
+              <DescriptionListDescription>
+                {carried.level != null && <><SensitivityBadge level={carried.level} />{' '}</>}
+                {carried.tags.length > 0 && `${carried.tags.join(', ')} `}— used in this decision
+                {/* Opens the values on this payload with their lineage, below
+                    the list. A toggle, not a row of its own: it is a view of
+                    this row's labels, value by value. */}
+                <div>
+                  <Button
+                    variant="link"
+                    isInline
+                    onClick={() => setValuesOpen((v) => !v)}
+                    aria-expanded={valuesOpen}
+                    data-testid="toggle-values"
+                  >
+                    {valuesOpen ? 'Hide the values' : 'Show the values and where each came from'}
+                  </Button>
+                </div>
+              </DescriptionListDescription>
+            </DescriptionListGroup>
+          )}
+          <DescriptionListGroup>
+            <DescriptionListTerm>Allowed actions</DescriptionListTerm>
+            <DescriptionListDescription>{joinOrNone(allowedActions)}</DescriptionListDescription>
+          </DescriptionListGroup>
+        </DescriptionList>
+        {carried && valuesOpen && (
+          <ValuesOnPayload
+            traceId={violation.trace_id}
+            interactionId={violation.interaction_id}
+            rules={rules}
+          />
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+/** One rule's match criteria in words: what it looks for in the data items. */
+function dataItemCriteria(rule: RuleListItem): string {
+  const parts = rule.data_items.flatMap((d) => [
+    ...(d.regulatory_tags?.length ? [`tag ${d.regulatory_tags.join(' or ')}`] : []),
+    ...(d.classification_level ? [`level ${d.classification_level}`] : []),
+  ]);
+  return parts.length > 0 ? parts.join('; ') : 'any';
+}
+
+/** One rule's destination criteria in words. */
+function destinationCriteria(rule: RuleListItem): string {
+  const parts = rule.data_destinations.flatMap((d) => [
+    ...(d.data_destination_categories?.length ? [d.data_destination_categories.join(' or ')] : []),
+    ...(d.data_destination_trust_level ? [d.data_destination_trust_level] : []),
+  ]);
+  return parts.length > 0 ? parts.join(', ') : 'any';
+}
+
+/**
+ * The values on the decided interaction's payloads and where each came from
+ * (`LabelLineageTable`: origin, the previous hop, the chains on demand — the
+ * same view the trace page's Data lineage tab shows), under the fired rules'
+ * criteria. The reader sees which value carries the labels a rule names; nothing
+ * here says a value caused the decision — the engine records no such thing.
+ * A hop links to its interaction on this page (`?iid=`); a hop in another
+ * trace goes to that trace's flow view.
+ */
+function ValuesOnPayload({
+  traceId,
+  interactionId,
+  rules,
+}: {
+  traceId: string;
+  interactionId: string;
+  rules: RuleListItem[];
+}) {
+  const labelsQ = useLegLabels(traceId, interactionId);
+  const [params] = useSearchParams();
+  const track = useLabelTrack();
+  const links: HopLinks = {
+    sameTrace: (hop: LineageHop): To => {
+      const next = new URLSearchParams(params);
+      next.set('iid', hop.interaction_id);
+      return { search: next.toString() };
+    },
+  };
+  const legs: LegLabels[] = labelsQ.data
+    ? (['request', 'response'] as const).flatMap((t) => {
+        const leg = labelsQ.data.byLeg.get(t);
+        return leg ? [leg] : [];
+      })
+    : [];
+  // The decision-derived default for tracking on the graph:
+  // the carried-in values whose labels the fired rules name. The reader starts
+  // there and unticks or adds in the list below.
+  const named = legs.flatMap((leg) =>
+    leg.labels
+      .filter((l) => namedByRules(l, rules))
+      .map((l) => trackedValueOf(interactionId, leg, l))
+      .filter((v): v is NonNullable<typeof v> => v != null),
+  );
+  return (
+    <div data-testid="values-on-payload" style={{ marginTop: '1rem' }}>
+      <Title headingLevel="h4" size="md">
+        Values on this payload and where each came from
+      </Title>
+      {track.available && named.length > 0 && (
+        <div style={{ marginTop: '0.375rem', fontSize: '0.85rem' }}>
+          <Button variant="link" isInline onClick={() => track.replace([...track.tracked.values(), ...named])}>
+            Track on the graph the {named.length} {named.length === 1 ? 'value' : 'values'} whose labels the rules name
+          </Button>
+        </div>
+      )}
+      {rules.length > 0 && (
+        <Table aria-label="Fired rules and their criteria" variant="compact" style={{ marginTop: '0.5rem' }}>
+          <Thead>
+            <Tr>
+              <Th modifier="wrap">Rule</Th>
+              <Th modifier="wrap">Looks for</Th>
+              <Th modifier="wrap">Destination</Th>
+            </Tr>
+          </Thead>
+          <Tbody>
+            {rules.map((r) => (
+              <Tr key={r.rule_id}>
+                <Td dataLabel="Rule">
+                  <Link to={`/risk/rules/${r.rule_id}`}>{r.rule_id}</Link>
+                </Td>
+                <Td dataLabel="Looks for">{dataItemCriteria(r)}</Td>
+                <Td dataLabel="Destination">{destinationCriteria(r)}</Td>
+              </Tr>
+            ))}
+          </Tbody>
+        </Table>
+      )}
+      {labelsQ.isLoading ? (
+        <Spinner size="md" aria-label="Loading the values" />
+      ) : labelsQ.isError ? (
+        <div style={{ color: 'var(--dg-color-muted)' }}>The labels read failed.</div>
+      ) : labelsQ.data ? (
+        <>
+          {legs.length === 0 && <div style={{ marginTop: '0.5rem' }}>No labelled payload on this interaction.</div>}
+          {legs.map((leg) => (
+            <div key={leg.leg_type} style={{ marginTop: '0.75rem' }}>
+              <Title headingLevel="h5" size="md">
+                {leg.leg_type === 'request' ? 'Request' : 'Response'} #{leg.seq}
+              </Title>
+              <LabelLineageTable
+                leg={leg}
+                lineageStatus={labelsQ.data.lineageStatus}
+                traceId={traceId}
+                interactionId={interactionId}
+                links={links}
+              />
+            </div>
+          ))}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+export default PolicyDecisionPanel;

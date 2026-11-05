@@ -6,9 +6,11 @@ the classification facts (``docs/sidecar-wire-contract.md``, v1.5). This module
 is the ONLY sidecar-vocabulary code: a static table over ``(direction,
 protocol[, mcp.method])`` yielding caller/callee entity kinds and
 request/response content kinds. It never reads a body: a bodyless exchange
-(unparsed protocol, ``capture_io`` off, streamed response) still classifies to a
+(``capture_io`` off, a streamed response, a GET) still classifies to a
 complete, first-class interaction with NULL payload hashes ("Interactions are
-independent of payloads").
+independent of payloads"). Every protocol row names its content kinds, plain
+http included (``http_request_body`` / ``http_response_body``, issue #309): the
+kind is the leg's label and the body's presence is the capture's business.
 
 It is a leaf (stdlib-only) so both writers and readers share one meaning:
 
@@ -44,11 +46,11 @@ _KIND_TABLE: dict[tuple[str, str], tuple[str, str, str | None, str | None]] = {
     ("inbound", "a2a"): ("user", "agent", "agent_request", "agent_response"),
     ("inbound", "mcp"): ("user", "tool", "tool_call_arguments", "tool_call_result"),
     ("inbound", "inference"): ("user", "llm", "llm_chat_prompt", "llm_completion"),
-    ("inbound", "http"): ("user", "agent", None, None),
+    ("inbound", "http"): ("user", "agent", "http_request_body", "http_response_body"),
     ("outbound", "a2a"): ("agent", "agent", "agent_request", "agent_response"),
     ("outbound", "mcp"): ("agent", "tool", "tool_call_arguments", "tool_call_result"),
     ("outbound", "inference"): ("agent", "llm", "llm_chat_prompt", "llm_completion"),
-    ("outbound", "http"): ("agent", "service", None, None),
+    ("outbound", "http"): ("agent", "service", "http_request_body", "http_response_body"),
 }
 
 # The contract's optional third classify term — (direction, protocol[, mcp.method])
@@ -107,11 +109,14 @@ def classify_attrs(attributes: dict[str, Any] | None) -> Kinds:
     only — nothing is dropped at the data level, though the UI does hide
     lifecycle rows by default (with a visible "N hidden" count and reveal).
 
-    ``lineage.direction`` is contract-unconditional: a span without a valid
-    one raises rather than classifying — a fabricated default here would
-    silently diverge from the derivation's own ``_direction`` ("no mechanism
-    may guess", contract v1.3). Callers that may see non-sidecar spans guard
-    on attribute presence first (see retrieval's ``_kinds_from_anchor_attrs``).
+    ``lineage.direction`` and ``lineage.protocol`` are contract-unconditional
+    (on both spans, closed vocabularies): a span without a valid one raises
+    rather than classifying — a fabricated default here would silently diverge
+    from the derivation's own ``_direction`` ("no mechanism may guess",
+    contract v1.3), and an unknown protocol read as ``http`` would hand a
+    future protocol's bodies the http content kinds. Callers that may see
+    non-sidecar spans guard on attribute presence first (see retrieval's
+    ``_kinds_from_anchor_attrs``).
     """
     a = attributes or {}
     direction = str(a.get("lineage.direction") or "").lower()
@@ -120,8 +125,12 @@ def classify_attrs(attributes: dict[str, Any] | None) -> Kinds:
             f"lineage.direction is {direction!r}, want inbound|outbound — "
             "not a sidecar request span, or a producer contract violation"
         )
-    proto = str(a.get("lineage.protocol") or "http").lower()
-    protocol = proto if proto in ("a2a", "mcp", "inference") else "http"
+    protocol = str(a.get("lineage.protocol") or "").lower()
+    if protocol not in ("a2a", "mcp", "inference", "http"):
+        raise ValueError(
+            f"lineage.protocol is {protocol!r}, want a2a|mcp|inference|http — "
+            "not a sidecar request span, or a producer contract violation"
+        )
     caller_kind, callee_kind, req_ck, resp_ck = _KIND_TABLE[(direction, protocol)]
     if protocol == "mcp":
         override = _mcp_method_override(str(a.get("mcp.method") or ""))

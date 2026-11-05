@@ -1,4 +1,4 @@
-"""Per-trace writer lock shared by sidecar reconciliation and data lineage.
+"""Per-trace writer lock shared by reconciliation, lineage and trace risk.
 
 Two processors rewrite derived state for a whole trace in one transaction. The
 sidecar reconciler (:func:`interactions.sidecar.derive_trace`) deletes the trace's
@@ -13,18 +13,20 @@ lineage row, so the two must not interleave:
   DELETE locks rows in physical order and the reader locks them in key order, so
   either side can become a deadlock victim. Neither processor loop retries 40P01.
 
-So each of the two takes :func:`lock_trace` before it reads or writes anything of
-the trace, and holds it until commit. Whichever transaction gets the lock first
+Each writer, including label-lineage derivation and trace-risk aggregation, takes
+:func:`lock_trace` before it reads or writes anything of the trace and holds it
+until commit. Whichever transaction gets the lock first
 finishes with the trace before the other one reads it.
 
 Rules for a caller:
 
-- **Take it first, and for one trace only.** A transaction that waits for this lock
+- **Take it first.** A transaction that waits for this lock
   must hold no other lock that its holder could need. The lock is the first
   statement of each per-item transaction (``_driver.drain`` and the lineage dirty
   and stale arms each open one transaction per trace), so a waiter holds nothing.
-  A transaction that ever needed two traces would have to lock them in sorted
-  order, or two such transactions could deadlock on each other.
+  Label lineage's cursor arm can cover multiple traces: it acquires all trace
+  locks in sorted order before any queue, cursor or derived-row lock. Correction
+  arms acknowledge queues after derivation commits, holding no trace lock.
 - **Run at READ COMMITTED** (the pool default). Each later statement then takes its
   snapshot after the lock was granted, so it sees the other writer's committed
   changes. At REPEATABLE READ the snapshot would be taken by the lock statement

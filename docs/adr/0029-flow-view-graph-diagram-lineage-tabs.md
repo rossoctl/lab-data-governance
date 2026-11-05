@@ -24,6 +24,10 @@ from two ways to five, each view owning a **path segment**:
 `?legs` keeps exactly its two pre-existing values (`tree` | `flat`) — see *Why these
 are top-level views* for why the promotion stopped there.
 
+(2026-10-22: the Lineage view is hidden — its tab is off the bar, and `/lineage`,
+`?src` and the legacy `?legs=lineage` redirect still open it. The trace-level
+coverage banner shows only inside it.)
+
 This supersedes ADR-0020's Consequences section. ADR-0020's *reasoning* is addressed
 below rather than waved past: the redundancy and dependency-cost arguments were
 correct about what they judged, and what changed is the thing being judged.
@@ -153,6 +157,8 @@ migration path.
   pins carve-out, whose justification (transient, multi-set, many span ids) does not
   apply to a single-valued two-character choice. It is recorded here as a known debt
   rather than left as an unexplained comment in the component.
+  (2026-10-22: the per-leg Lineage section is removed; the third inner tab is the
+  label lineage view, titled Data lineage.)
 - **A jsdom `getBBox` stub returns.** ADR-0020 removed a `ResizeObserver` polyfill
   that existed solely so the graph could mount; `ui/src/test/setup.ts` now stubs
   `SVGElement.prototype.getBBox`, which jsdom does not implement at all, because

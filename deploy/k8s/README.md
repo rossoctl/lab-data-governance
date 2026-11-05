@@ -10,11 +10,16 @@ These manifests stand up the v1 deployment topology pinned by PROJECT.md
 | `20-postgres.yaml`            | `Service` + `StatefulSet` for Postgres                      |
 | `30-receiver.yaml`            | `Service` + `Deployment` for the OTLP receiver              |
 | `40-ui.yaml`                  | `Service` + `Deployment` for the UI backend                 |
-| `50-networkpolicy.yaml`       | `NetworkPolicy` for receiver, UI, and Postgres ingress      |
+| `50-networkpolicy.yaml`       | `NetworkPolicy` for receiver, UI, Postgres, and OPA ingress |
 | `60-ui-httproute.yaml`        | `HTTPRoute` + `ReferenceGrant` exposing the UI on the rossoctl shared Gateway |
 | `70-interactions.yaml`        | `Deployment` for the P-interactions processor (no Service)  |
 | `80-classification.yaml`      | `Deployment` for the P-classification processor (no Service) |
+| `85-leg-ready.yaml`           | `Deployment` for the leg-ready consumer + risk engine (no Service) |
 | `90-data-lineage.yaml`        | `Deployment` for the P-data-lineage processor (no Service)  |
+| `91-risk-trace-trigger.yaml`  | `Deployment` for the trace-risk-trigger processor (no Service) |
+| `92-risk-alerts.yaml`         | `Deployment` for the alerts processor (no Service) |
+| `93-label-lineage.yaml`       | `Deployment` for the P-label-lineage processor (no Service) |
+| `95-opa.yaml`                 | `Service` + `Deployment` for the OPA policy server; its policy ConfigMap comes from `deploy/create-opa-configmap.sh` |
 
 ## Primary entry point: `deploy/dg.sh`
 
@@ -143,12 +148,53 @@ See [ADR-0031](../../docs/adr/0031-non-reversible-namespace-lineage-activation.m
   `simple`, the trivial always-match matcher (ADR-0028): lineage is complete but
   full of maybes, and setting it explicitly makes that visible. Sized like the
   interactions processor (no model, no inference).
-- **NetworkPolicy.** Three policies, one per workload. Receiver and UI
+- **P-label-lineage processor Deployment.** **Single replica** running
+  `python -m data_governance.processors.label_lineage` on the shared image,
+  migrate init container, `maxSurge:0`; no Service, no ports, no metrics. It
+  drains `interaction_legs` readiness-gated on `dg_interaction_leg_ready` (a leg
+  is delivered once its payload is absent or classified), re-derives each
+  delivered trace and writes migration 0024's tables in the transaction that
+  advances its `label_lineage` cursor, then notifies the same channel.
+  `LABEL_MATCHER=exact` (the only finder; an unknown name exits 2). It reads no
+  risk configuration (`docs/label-lineage.md`).
+- **Leg-ready consumer Deployment (the risk engine).** **Single replica**
+  running `python -m data_governance.processors.leg_ready` on the shared
+  image, `maxSurge:0`. Delivers each ready interaction leg and, per leg,
+  recomputes the interaction's risk record: the OPA call happens outside any
+  transaction, and the record write commits with the cursor advance (issue
+  #158). With OPA unreachable or answering unusably, the stream **holds**
+  (WARNING per wake) rather than skipping legs;
+  `RISK_ENGINE_OBSERVER=off` runs the bare consumer without OPA.
+  `RISK_INTERNAL_URL_WHITELIST_PATTERNS` is load-bearing (see the manifest).
+  `RISK_INHERITED_LABELS` (default `off`): `on` hands each flow the labels that
+  reached it through label lineage, makes a leg ready only once label lineage
+  has derived it (a stopped label-lineage processor holds the stream, with a
+  WARNING per wake once one leg has waited 30 s), and drains `risk_recompute_requests`.
+- **Trace-risk-trigger Deployment.** **Single replica** running
+  `python -m data_governance.processors.risk.trace_trigger`, `maxSurge:0`.
+  Drains `interaction_risk_records` by `seq` (migration 0019) and recomputes
+  the trace's risk rollup once per new record. Pure DB, no OPA call.
+- **Alerts Deployment.** **Single replica** running
+  `python -m data_governance.processors.risk.alerts`, `maxSurge:0`. Drains
+  `trace_risk_records` by `seq` (migration 0023) and opens, counts or
+  supersedes the trace's alert per new record (issue #104). No OPA call; it
+  mounts the `opa-policy` ConfigMap to name rules in alert titles, and until
+  that ConfigMap exists a record that fired a rule stops the processor (it
+  restarts and retries). `RISK_ALERT_MIN_RISK_LEVEL` (default `low`) is the
+  alert floor.
+- **OPA Deployment + Service.** Stock `openpolicyagent/opa`, version-pinned,
+  serving `http://opa:8181` inside the namespace. It loads its policy from
+  the `opa-policy` ConfigMap, which **is not in these manifests**: run
+  `deploy/create-opa-configmap.sh` (it compiles the rule catalog), or the
+  OPA pod stays in `ContainerCreating` and the leg-ready stream holds.
+- **NetworkPolicy.** Four policies, one per serving workload. Receiver and UI
   ingress is restricted to the upstream platform namespace, matched by
   the default `kubernetes.io/metadata.name` label every namespace gets
   (`rossoctl-system`, with `kagenti-system`/`kagenti` kept for
   portability). Postgres ingress is restricted to the
-  `data-governance` namespace. PROJECT.md §7 frames v1 as
+  `data-governance` namespace. OPA ingress is restricted to the
+  leg-ready pod: its REST API is unauthenticated and can replace or delete
+  the loaded policy. PROJECT.md §7 frames v1 as
   unauthenticated cluster-internal: the NetworkPolicy IS the v1
   security boundary.
 
@@ -198,10 +244,15 @@ After build + load, apply the manifests:
 
 ```sh
 kubectl apply -f deploy/k8s/
+./deploy/create-opa-configmap.sh    # the compiled policy OPA loads
 ```
 
-Order matters only for the namespace; everything else is order-independent
-and will eventually settle.
+`dg.sh component install` does not run the ConfigMap step; run the script
+after it too. Order matters only for the namespace; everything else is
+order-independent and will eventually settle. After a rule-catalog change,
+re-run the script and
+`kubectl -n data-governance rollout restart deploy/opa`: OPA reads its
+policy once at startup.
 
 The receiver replicas crashloop until Postgres is reachable AND
 `alembic_version` matches the head revision compiled into the image. The
@@ -230,12 +281,18 @@ kubectl apply -f deploy/k8s/                                        # usually a 
 kubectl -n data-governance rollout restart \
   deployment/data-governance-receiver deployment/data-governance-ui \
   deployment/data-governance-interactions deployment/data-governance-classification \
-  deployment/data-governance-data-lineage
+  deployment/data-governance-data-lineage deployment/data-governance-label-lineage \
+  deployment/data-governance-leg-ready \
+  deployment/data-governance-risk-trace-trigger deployment/data-governance-risk-alerts
 kubectl -n data-governance rollout status deployment/data-governance-receiver --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-ui --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-interactions --timeout=120s
 kubectl -n data-governance rollout status deployment/data-governance-classification --timeout=180s
 kubectl -n data-governance rollout status deployment/data-governance-data-lineage --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-label-lineage --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-leg-ready --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-risk-trace-trigger --timeout=120s
+kubectl -n data-governance rollout status deployment/data-governance-risk-alerts --timeout=120s
 ```
 
 The `rollout restart` is the step that's easy to forget: the manifests
