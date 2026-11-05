@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from 'react';
+import { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useSearchParams, useNavigate, Navigate, Link } from 'react-router-dom';
 import {
   PageSection,
@@ -26,6 +26,7 @@ import { SpanTree, type SpanTreeHandle } from '../components/SpanTree';
 import { SpanDetailPanel } from '../components/SpanDetailPanel';
 import { FlowTables, type FlowSelection } from '../components/FlowTables';
 import { parseLegViewKey, parseLineageSource, type LegViewKey } from '../lib/flow';
+import { parseMinRiskLevel, type GraphFilter } from '../lib/graphFilter';
 import { HighlightLegend } from '../components/HighlightLegend';
 import { LiveModeLabel } from '../components/LiveModeLabel';
 import type { Span } from '../types';
@@ -191,6 +192,7 @@ export function TraceDetailPage() {
           else {
             next.delete('risk');
             next.delete('violation'); // the stepper's position means nothing with the layer off
+            next.delete('minRisk');
           }
           return next;
         },
@@ -496,6 +498,48 @@ export function TraceDetailPage() {
     [setSearchParams],
   );
 
+  // Graph filters follow the other interaction-view refinements through the
+  // URL. Read on every navigation so reload, shared links and Back restore them.
+  const filterEntity = searchParams.get('filterEntity') || null;
+  const minRiskParam = searchParams.get('minRisk');
+  const minRiskLevel = risk ? parseMinRiskLevel(minRiskParam) : null;
+  const graphFilter = useMemo<GraphFilter>(
+    () => ({ entityId: filterEntity, minRiskLevel }),
+    [filterEntity, minRiskLevel],
+  );
+  const handleGraphFilterChange = useCallback(
+    (filter: GraphFilter) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (filter.entityId) next.set('filterEntity', filter.entityId);
+          else next.delete('filterEntity');
+          const threshold = parseMinRiskLevel(filter.minRiskLevel);
+          if (prev.get('risk') === '1' && threshold != null) {
+            next.set('minRisk', threshold);
+          } else next.delete('minRisk');
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+  // A malformed deep link or a threshold without the Risk layer must not
+  // silently become a filter later when the layer is enabled.
+  useEffect(() => {
+    if (minRiskParam == null || minRiskLevel != null) return;
+    setSearchParams(
+      (prev) => {
+        if (prev.get('minRisk') !== minRiskParam) return prev;
+        const next = new URLSearchParams(prev);
+        next.delete('minRisk');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [minRiskParam, minRiskLevel, setSearchParams]);
+
   const lineageSource: string | null = parseLineageSource(searchParams.get('src'));
   const handleLineageSourceChange = useCallback(
     (source: string) => {
@@ -780,6 +824,8 @@ export function TraceDetailPage() {
               onViolationChange={handleViolationChange}
               edgesPerInteraction={edgesPerInteraction}
               onEdgesPerInteractionChange={handleEdgesPerInteractionChange}
+              graphFilter={graphFilter}
+              onGraphFilterChange={handleGraphFilterChange}
             />
           )}
         </div>

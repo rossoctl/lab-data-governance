@@ -285,6 +285,10 @@ export interface FlowTablesProps {
   edgesPerInteraction?: boolean;
   /** Fired when the edge mode is switched, so the parent can mirror `?edges`. */
   onEdgesPerInteractionChange?: (perInteraction: boolean) => void;
+  /** Graph filters controlled by the page's `?filterEntity` and `?minRisk` params. */
+  graphFilter?: GraphFilter;
+  /** Fired when a graph filter changes; the parent owns URL updates and reset. */
+  onGraphFilterChange?: (filter: GraphFilter) => void;
 }
 
 /**
@@ -343,6 +347,8 @@ export function FlowTables({
   onViolationChange,
   edgesPerInteraction = false,
   onEdgesPerInteractionChange,
+  graphFilter = NO_GRAPH_FILTER,
+  onGraphFilterChange,
 }: FlowTablesProps) {
   // One reading of the two, so a live re-read never shows (or hands the Lineage
   // tab) a half-updated trace — see `useEntitiesAndInteractions`.
@@ -407,23 +413,17 @@ export function FlowTables({
     if (!edgesPerInteraction) return h;
     return { ...h, edgeIds: [...new Set(h.edgeIds.map((id) => id.replace(/:response$/, ':request')))] };
   }, [trackHighlight, edgesPerInteraction]);
-  // The Execution Flow graph's filter and magnifier (issue #220). The count the
+  // The filter is URL-backed; the magnifier stays transient. The count the
   // filter bar shows is computed from the same inputs the graph filters.
-  const [graphFilter, setGraphFilter] = useState<GraphFilter>(NO_GRAPH_FILTER);
   const [magnifier, setMagnifier] = useState(false);
   const graphFilterShown = useMemo(
     () => filterTrace(entities, interactions, graphFilter, riskColours).interactions.length,
     [entities, interactions, graphFilter, riskColours],
   );
-  // A risk filter means nothing with the risk layer off.
-  useEffect(() => {
-    if (!risk) setGraphFilter((f) => (f.minRiskLevel == null ? f : { ...f, minRiskLevel: null }));
-  }, [risk]);
   // Tracking is per trace: a new trace starts with nothing tracked.
   useEffect(() => {
     setTracked(new Map());
     setPicker(null);
-    setGraphFilter(NO_GRAPH_FILTER);
   }, [traceId]);
   const closePicker = useCallback(() => setPicker(null), []);
   /**
@@ -1144,7 +1144,7 @@ export function FlowTables({
           <GraphFilterBar
             entities={entities}
             filter={graphFilter}
-            onFilterChange={setGraphFilter}
+            onFilterChange={(filter) => onGraphFilterChange?.(filter)}
             risk={risk}
             shown={graphFilterShown}
             total={interactions.length}

@@ -30,6 +30,14 @@ export interface GraphFilter {
 
 export const NO_GRAPH_FILTER: GraphFilter = { entityId: null, minRiskLevel: null };
 
+/** The supported minimum-risk thresholds, in the picker's display order. */
+export const MIN_RISK_LEVELS: readonly string[] = ['critical', 'high', 'medium', 'low'];
+
+/** An absent or unsupported URL threshold means no minimum-risk filter. */
+export function parseMinRiskLevel(value: string | null): string | null {
+  return value != null && MIN_RISK_LEVELS.includes(value) ? value : null;
+}
+
 export function isFilterActive(f: GraphFilter): boolean {
   return f.entityId != null || f.minRiskLevel != null;
 }

@@ -1,14 +1,6 @@
 import { Button, FormSelect, FormSelectOption, Switch } from '@patternfly/react-core';
 import type { Entity } from '../../lib/flow';
-import { isFilterActive, type GraphFilter } from '../../lib/graphFilter';
-
-/** The risk-level choices, most severe first; each keeps that level and above. */
-const RISK_CHOICES: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'critical', label: 'Critical' },
-  { value: 'high', label: 'High and above' },
-  { value: 'medium', label: 'Medium and above' },
-  { value: 'low', label: 'Low and above' },
-];
+import { isFilterActive, MIN_RISK_LEVELS, type GraphFilter } from '../../lib/graphFilter';
 
 const ANY = '';
 
@@ -59,8 +51,12 @@ export function GraphFilterBar({
           onChange={(_e, v) => onFilterChange({ ...filter, minRiskLevel: v === ANY ? null : v })}
         >
           <FormSelectOption value={ANY} label="Any risk level" />
-          {RISK_CHOICES.map((c) => (
-            <FormSelectOption key={c.value} value={c.value} label={c.label} />
+          {MIN_RISK_LEVELS.map((level) => (
+            <FormSelectOption
+              key={level}
+              value={level}
+              label={`${level[0].toUpperCase()}${level.slice(1)}${level === 'critical' ? '' : ' and above'}`}
+            />
           ))}
         </FormSelect>
       )}

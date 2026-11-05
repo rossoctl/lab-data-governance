@@ -138,3 +138,49 @@ test('the redirect replaces the old URL: Back leaves the trace page for the page
   await page.goBack();
   await expect(page).toHaveURL(/\/ui\/risk\/rules$/);
 });
+
+test('graph filters are restored by reload and Back, and Risk off only clears the risk filter', async ({ page }) => {
+  await stubApis(page);
+  await page.goto(`/ui/traces/${TID}/graph?risk=1`);
+  const entityFilter = page.getByRole('combobox', { name: 'Filter by entity' });
+  const riskFilter = page.getByRole('combobox', { name: 'Filter by risk level' });
+  await entityFilter.selectOption('e2');
+  await riskFilter.selectOption('critical');
+  await expect.poll(() => new URL(page.url()).searchParams.get('filterEntity')).toBe('e2');
+  await expect.poll(() => new URL(page.url()).searchParams.get('minRisk')).toBe('critical');
+  await expect(page.getByTestId('graph-filter-count')).toHaveText('Showing 2 of 3 interactions');
+
+  await page.reload();
+  await expect(entityFilter).toHaveValue('e2');
+  await expect(riskFilter).toHaveValue('critical');
+  await expect(page.getByTestId('graph-filter-count')).toHaveText('Showing 2 of 3 interactions');
+
+  await page.getByRole('tab', { name: 'Interaction diagram', exact: true }).click();
+  await expect(page).toHaveURL(/\/diagram\?/);
+  await page.goBack();
+  await expect(entityFilter).toHaveValue('e2');
+  await expect(riskFilter).toHaveValue('critical');
+
+  await page.locator('label[for="risk-layer"]').click();
+  await expect.poll(() => new URL(page.url()).searchParams.has('minRisk')).toBe(false);
+  await expect.poll(() => new URL(page.url()).searchParams.get('filterEntity')).toBe('e2');
+  await expect(entityFilter).toHaveValue('e2');
+  await expect(riskFilter).toHaveCount(0);
+  await expect(page.getByTestId('graph-filter-count')).toHaveText('Showing 2 of 3 interactions');
+
+  await page.getByRole('button', { name: 'Clear filter', exact: true }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.has('filterEntity')).toBe(false);
+  await expect(page.getByTestId('graph-filter-count')).toHaveCount(0);
+});
+
+for (const query of ['risk=1&minRisk=invalid', 'risk=1&minRisk=none', 'minRisk=critical']) {
+  test(`a graph link with ${query} removes the unusable threshold and keeps its entity filter`, async ({ page }) => {
+    await stubApis(page);
+    await page.goto(`/ui/traces/${TID}/graph?filterEntity=e2&${query}`);
+    await expect(page.getByRole('combobox', { name: 'Filter by entity' })).toHaveValue('e2');
+    await expect.poll(() => new URL(page.url()).searchParams.has('minRisk')).toBe(false);
+    await expect(page.getByTestId('graph-filter-count')).toHaveText('Showing 2 of 3 interactions');
+    if (!query.startsWith('risk=1')) await page.locator('label[for="risk-layer"]').click();
+    await expect(page.getByRole('combobox', { name: 'Filter by risk level' })).toHaveValue('');
+  });
+}

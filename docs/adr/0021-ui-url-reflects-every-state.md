@@ -33,6 +33,8 @@ resolve client-side).
 | `/ui/traces/{id}/flow?showInfra=1` | flow including infrastructure interactions (MCP lifecycle / tool discovery, by the sidecar `kinds` — ADR-0030) |
 | `/ui/traces/{id}/diagram` | interaction sequence diagram (ADR-0029) |
 | `/ui/traces/{id}/graph` | Execution Flow topology graph (ADR-0029) |
+| `/ui/traces/{id}/graph?filterEntity={entityId}` | graph restricted to call paths through that entity |
+| `/ui/traces/{id}/graph?risk=1&minRisk=<level>` | graph restricted to interactions at or above `critical high medium low`, with their ancestors |
 | `/ui/traces/{id}/lineage` | Execution Flow graph, lineage-highlighted (ADR-0029) |
 | `/ui/traces/{id}/lineage?src=<naturalKey>` | the data source being traced (ADR-0029) |
 | `/ui/traces/{id}/flow?legs=diagram\|graph\|lineage` | → redirect to the matching segment above, other params carried (ADR-0029) |
@@ -56,6 +58,10 @@ resolve client-side).
   the clean `/ui/traces`.
 - **`iid` and `eid` are mutually exclusive.** The flow view allows one selected
   row across both tables, so writing one selection param clears the other.
+- **Graph filters compose.** `filterEntity` and `minRisk` may both be present;
+  the minimum risk applies within the entity's paths. Clearing a filter deletes
+  its param. Unsupported minimum-risk values are removed. Turning the Risk
+  layer off removes `minRisk` while retaining `filterEntity`.
 
 ## Why
 
@@ -98,8 +104,10 @@ resolve client-side).
   URL-agnostic — the page owns the URL and drives them through their existing
   props (`onSelect`, `reveal`, and new `initialSelection` / `onSelectionChange`
   on the flow view).
-- Switching tabs drops the query string (a `?sel` from the tree is meaningless
-  in the flow view, and vice versa).
+- Switching between interaction views carries their refinements, including
+  graph filters. Crossing the span-tree boundary drops those refinements (a
+  `?sel` from the tree is meaningless in flow, and vice versa), while carrying
+  the shared Risk layer's `risk` and `violation` params.
 - No backend change: the Starlette `/ui/{path:path}` → `index.html` catch-all
   already serves the SPA shell for every `/ui/*` depth, so the deeper deep links
   (`/ui/traces/{id}/flow`, `/ui/traces?window=all`) reload without a 404.
