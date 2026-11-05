@@ -244,17 +244,21 @@ const SHAPE_TO_NODE_SHAPE: Record<EntityKindShape, NodeShape> = {
  * usable to a screen reader and to anyone reading at a glance — the same belt-and-
  * braces the Lineage legend applies with its "(double ring)".
  */
-const SHAPE_LEGEND_ROWS: ReadonlyArray<{ kind: string; label: string; shapeWord: string }> = (
-  [
-    // Kind → the words. Ordered agent, tool, llm, user: the order the issue lists them
-    // in, which is also roughly call order (a user calls an agent, which calls tools
-    // and models) rather than alphabetical.
-    { kind: 'agent', label: 'Agent', shapeWord: 'hexagon' },
-    { kind: 'tool', label: 'Tool', shapeWord: 'rectangle' },
-    { kind: 'llm', label: 'LLM', shapeWord: 'diamond' },
-    { kind: 'user', label: 'User', shapeWord: 'circle' },
-  ] as const
-).filter((row) => row.kind in KIND_SHAPE);
+const SHAPE_WORDS: Record<EntityKindShape, string> = {
+  hexagon: 'hexagon',
+  rect: 'rectangle',
+  rhombus: 'diamond',
+  circle: 'circle',
+  ellipse: 'ellipse',
+};
+
+// Keep the canonical map's order and derive the kind labels independently of
+// shape. The acronym keeps its spelling; future kinds get a readable label.
+const SHAPE_LEGEND_ROWS = Object.entries(KIND_SHAPE).map(([kind, shape]) => ({
+  kind,
+  label: kind === 'llm' ? 'LLM' : `${kind[0].toUpperCase()}${kind.slice(1).replace(/_/g, ' ')}`,
+  shapeWord: SHAPE_WORDS[shape],
+}));
 
 /**
  * The standing key to the node outlines, rendered on EVERY graph view.
