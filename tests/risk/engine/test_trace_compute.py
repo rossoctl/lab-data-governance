@@ -25,6 +25,7 @@ from decimal import Decimal
 import psycopg
 import pytest
 
+from data_governance import retrieval
 from data_governance.risk.engine.trace_compute import compute_trace_risk
 from tests.risk.engine.interleave import read_between_write_and_commit
 
@@ -268,6 +269,64 @@ def test_only_current_latest_version_interaction_risk_records_are_used(seeded: s
     _version, trace_risk_level, _enf, interaction_count, *_ = row
     assert trace_risk_level == "low"
     assert interaction_count == 1
+
+
+def test_trace_round_trip_does_not_resurrect_a_superseded_risk_record(seeded: str):
+    """Current is global per interaction, even when its latest record names
+    another trace. Both the forest and rollup must wait for new evidence."""
+    other_trace = "trace-tx-2"
+    with psycopg.connect(seeded) as conn:
+        _insert_risk_record(
+            conn, interaction_id="ix-tx-1", risk_level="critical",
+            enforcement_type="block", triggered_rule_ids=["DG-001"],
+        )
+    compute_trace_risk(_TID)
+    assert retrieval.get_trace_risk(_TID).trace_risk_level == "critical"
+
+    with psycopg.connect(seeded) as conn:
+        conn.execute(
+            "UPDATE interactions SET trace_id = %s WHERE id = %s",
+            (other_trace, "ix-tx-1"),
+        )
+        current_id = _insert_risk_record(
+            conn, interaction_id="ix-tx-1", trace_id=other_trace,
+            version=2, risk_level="none", policy_event_count=0,
+        )
+    compute_trace_risk(_TID)
+    compute_trace_risk(other_trace)
+    assert retrieval.get_trace_risk(_TID).interaction_count == 0
+    assert retrieval.get_trace_risk_detail(other_trace).interactions[0].risk.version == 2
+
+    with psycopg.connect(seeded) as conn:
+        conn.execute(
+            "UPDATE interactions SET trace_id = %s WHERE id = %s",
+            (_TID, "ix-tx-1"),
+        )
+    compute_trace_risk(_TID)
+    compute_trace_risk(other_trace)
+
+    current = retrieval.get_interaction_risk("ix-tx-1")
+    assert current.version == 2
+    assert current.trace_id == other_trace
+    assert str(current.interaction_risk_id) == current_id
+    forest = retrieval.get_trace_risk_detail(_TID)
+    assert len(forest.interactions) == 1
+    assert forest.interactions[0].risk is None
+    rollup = retrieval.get_trace_risk(_TID)
+    assert rollup.trace_risk_level == "none"
+    assert rollup.interaction_count == rollup.policy_event_count == 0
+    assert rollup.contributing_interaction_risk_ids == []
+    assert retrieval.get_trace_risk(other_trace).interaction_count == 0
+
+    # Once the interaction has a fresh record for its current trace, both
+    # reads include it; excluding the stale version does not exclude the key.
+    with psycopg.connect(seeded) as conn:
+        fresh_id = _insert_risk_record(
+            conn, interaction_id="ix-tx-1", version=3, risk_level="low",
+        )
+    compute_trace_risk(_TID)
+    assert retrieval.get_trace_risk_detail(_TID).interactions[0].risk.version == 3
+    assert retrieval.get_trace_risk(_TID).contributing_interaction_risk_ids == [fresh_id]
 
 
 # --- idempotency ------------------------------------------------------------------

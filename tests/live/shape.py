@@ -172,14 +172,21 @@ def current_records(dg, trace_id: str, *, live_only: bool = True) -> dict[str, d
     """Latest record per interaction of *trace_id*; by default only for
     interactions that still exist (the rollup's own "current" definition:
     a re-keyed interaction's records are ghosts)."""
-    join = "JOIN interactions i ON i.id = r.interaction_id" if live_only else ""
+    join = (
+        "JOIN interactions i ON i.id = r.interaction_id AND i.trace_id = r.trace_id"
+        if live_only else ""
+    )
     rows = dg.q(f"""
-        SELECT DISTINCT ON (r.interaction_id) r.interaction_id, r.interaction_risk_id::text,
+        WITH current AS (
+            SELECT DISTINCT ON (interaction_id) * FROM interaction_risk_records
+            ORDER BY interaction_id, version DESC
+        )
+        SELECT r.interaction_id, r.interaction_risk_id::text,
                r.version, r.risk_level, r.enforcement_type, r.triggered_rule_ids,
                r.legs_evidenced, r.classification_summary, r.opa_policy_versions_used,
                r.overall_confidence, r.trace_id
-        FROM interaction_risk_records r {join} WHERE r.trace_id = %s
-        ORDER BY r.interaction_id, r.version DESC""", (trace_id,))
+        FROM current r {join} WHERE r.trace_id = %s
+        ORDER BY r.interaction_id""", (trace_id,))
     return {
         r[0]: {"id": r[1], "version": r[2], "risk_level": r[3], "enforcement_type": r[4],
                "rules": sorted(r[5]), "legs": list(r[6]), "summary": r[7],

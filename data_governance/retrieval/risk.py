@@ -915,10 +915,13 @@ def get_trace_risk_detail(trace_id: str) -> TraceRiskDetail | None:
             (trace_id,),
         )
 
+        # Trace membership is a versioned fact: reduce globally before filtering.
+        # The forest assembly below attaches records only to live interactions.
         risk_rows = tx.fetch_all(
+            f"WITH current AS ("
             f"SELECT DISTINCT ON (interaction_id) {_SELECT_COLS} "
-            f"FROM interaction_risk_records WHERE trace_id = %s "
-            f"ORDER BY interaction_id, version DESC",
+            f"FROM interaction_risk_records ORDER BY interaction_id, version DESC"
+            f") SELECT {_SELECT_COLS} FROM current WHERE trace_id = %s",
             (trace_id,),
         )
 

@@ -57,9 +57,11 @@ __all__ = ["compute_trace_risk"]
 # Serializes the recomputes of one trace until the enclosing transaction ends.
 _LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
 
-# "Current" = the latest version per interaction_id within this trace_id,
-# for interactions that still EXIST. DISTINCT ON (interaction_id) ... ORDER BY
-# interaction_id, version DESC picks exactly that row per interaction,
+# "Current" = the global latest version per interaction_id, then restricted
+# to this trace and interactions that still EXIST. Trace membership can change
+# between versions, so applying it before DISTINCT ON resurrects old records.
+# DISTINCT ON (interaction_id) ... ORDER BY interaction_id, version DESC
+# picks exactly that row per interaction,
 # mirroring the *_latest_idx query shape used everywhere else in this package
 # for "latest version for this key."
 #
@@ -75,14 +77,22 @@ _LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
 # new traces on moves and the old trace on deletion, so the filter takes effect
 # through correction replay even when no replacement risk record is inserted.
 _CURRENT_INTERACTION_RISK_SQL = """
-SELECT DISTINCT ON (r.interaction_id)
+WITH current AS (
+    SELECT DISTINCT ON (interaction_id)
+        interaction_id, trace_id, interaction_risk_id, risk_level,
+        enforcement_type, policy_event_count, triggered_rule_ids,
+        caller_entity_id, callee_entity_id, overall_confidence
+    FROM interaction_risk_records
+    ORDER BY interaction_id, version DESC
+)
+SELECT
     r.interaction_risk_id, r.risk_level, r.enforcement_type,
     r.policy_event_count, r.triggered_rule_ids, r.caller_entity_id,
     r.callee_entity_id, r.overall_confidence
-FROM interaction_risk_records r
+FROM current r
 JOIN interactions i ON i.id = r.interaction_id AND i.trace_id = r.trace_id
 WHERE r.trace_id = %s
-ORDER BY r.interaction_id, r.version DESC
+ORDER BY r.interaction_id
 """
 
 _LATEST_TRACE_RECORD_SQL = (
