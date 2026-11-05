@@ -73,6 +73,10 @@ to attribute to) but still counted (with ``rule_name``/``risk_level`` both
 ``None``) for top-rules, since a caller may still want frequency-by-id even
 for an unrecognized rule.
 
+Risk-by-category counts policy events (interactions), once per category for
+each interaction. Several fired rules in the same category contribute one
+event; one event in several categories contributes once to each category.
+
 **Top traces (FR-DAS-053)** intentionally does not reuse
 :func:`data_governance.retrieval.risk.list_trace_risk` — that function's
 ``SORT_RISK_LEVEL_DESC`` breaks ties by ``computed_at DESC, trace_id ASC``,
@@ -567,6 +571,7 @@ def get_top_traces(
 def get_risk_by_category(
     *, time_from: dt.datetime | None = None, time_to: dt.datetime | None = None
 ) -> list[CategoryCount]:
+    """Count current policy events once per interaction and rule category."""
     with db.transaction() as tx:
         if not _risk_tables_exist(tx):
             return []
@@ -574,24 +579,28 @@ def get_risk_by_category(
         where, params = _window_predicate(time_from, time_to)
         sql = (
             f"WITH {_CURRENT_INTERACTIONS_CTE} "
-            f"SELECT unnest(triggered_rule_ids) AS rule_id "
+            f"SELECT interaction_id, unnest(triggered_rule_ids) AS rule_id "
             f"FROM current_interactions{where}"
         )
         rows = tx.fetch_all(sql, params)
 
-    rule_ids = [rule_id for (rule_id,) in rows]
+    rule_ids = {rule_id for _interaction_id, rule_id in rows}
     rules_by_id = {
         rule_id: rule
-        for rule_id in set(rule_ids)
+        for rule_id in rule_ids
         if (rule := catalog.get_rule(rule_id)) is not None
     }
 
-    counts: dict[str, int] = {}
-    for rule_id in rule_ids:
+    categories_by_interaction: dict[str, set[str]] = {}
+    for interaction_id, rule_id in rows:
         rule = rules_by_id.get(rule_id)
         if rule is None:
             continue
-        for category in rule["categories"]:
+        categories_by_interaction.setdefault(interaction_id, set()).update(rule["categories"])
+
+    counts: dict[str, int] = {}
+    for categories in categories_by_interaction.values():
+        for category in categories:
             counts[category] = counts.get(category, 0) + 1
 
     return [

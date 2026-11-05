@@ -567,29 +567,27 @@ def test_top_traces_empty_when_no_records(configured_db):
 def test_risk_by_category_counts_policy_events_per_category(
     configured_db, insert_interaction_risk, varied_catalog
 ):
-    # FX-CRIT-BLOCK -> [pii_exposure, data_leakage]; FX-LOW-ALLOW -> [data_leakage]
+    # Each interaction reaches both categories; repeated rules within one
+    # category must not collapse separate interactions or count either twice.
     insert_interaction_risk(
-        interaction_id="ix-1", triggered_rule_ids=["FX-CRIT-BLOCK"], computed_at=NOW
+        interaction_id="ix-1", triggered_rule_ids=["FX-CRIT-BLOCK", "FX-MED-ESC"], computed_at=NOW
     )
     insert_interaction_risk(
-        interaction_id="ix-2", triggered_rule_ids=["FX-LOW-ALLOW"], computed_at=NOW
+        interaction_id="ix-2", triggered_rule_ids=["FX-LOW-ALLOW", "FX-MED-ESC"], computed_at=NOW
     )
 
     time_from, time_to = _window()
     items = metrics.get_risk_by_category(time_from=time_from, time_to=time_to)
 
     by_category = {item.category: item.count for item in items}
-    assert by_category["pii_exposure"] == 1
+    assert by_category["pii_exposure"] == 2
     assert by_category["data_leakage"] == 2
 
 
-def test_risk_by_category_one_interaction_multiple_rules_same_category_counts_once_per_rule(
+def test_risk_by_category_one_interaction_multiple_rules_same_category_counts_once(
     configured_db, insert_interaction_risk, varied_catalog
 ):
-    # One interaction triggering two rules that share a category counts the
-    # policy event once per triggering rule (FR-DAS-054 counts policy events,
-    # and each triggered rule is itself a policy event contribution), not
-    # deduplicated by category per interaction.
+    # A policy event is one interaction, regardless of how many rules fire.
     insert_interaction_risk(
         interaction_id="ix-1",
         triggered_rule_ids=["FX-CRIT-BLOCK", "FX-MED-ESC"],
@@ -601,8 +599,50 @@ def test_risk_by_category_one_interaction_multiple_rules_same_category_counts_on
 
     by_category = {item.category: item.count for item in items}
     # both rules touch pii_exposure
-    assert by_category["pii_exposure"] == 2
+    assert by_category["pii_exposure"] == 1
     assert by_category["data_leakage"] == 1
+
+
+def test_risk_by_category_shipped_rules_count_one_exfiltration_event(
+    configured_db, insert_interaction_risk,
+):
+    insert_interaction_risk(
+        interaction_id="ix-stock", triggered_rule_ids=["DG-001", "DG-004"],
+        risk_level="critical", computed_at=NOW,
+    )
+    time_from, time_to = _window()
+    counts = {
+        item.category: item.count
+        for item in metrics.get_risk_by_category(time_from=time_from, time_to=time_to)
+    }
+    assert counts["data_exfiltration"] == 1
+    assert metrics.get_risk_distribution(time_from=time_from, time_to=time_to).total == 1
+
+
+def test_risk_by_category_deduplicates_only_current_events_in_the_window(
+    configured_db, insert_interaction_risk, varied_catalog,
+):
+    shared_rules = ["FX-CRIT-BLOCK", "FX-MED-ESC"]
+    insert_interaction_risk(
+        interaction_id="ix-superseded", version=1,
+        triggered_rule_ids=shared_rules, computed_at=NOW,
+    )
+    insert_interaction_risk(
+        interaction_id="ix-superseded", version=2,
+        triggered_rule_ids=["FX-LOW-ALLOW"], computed_at=LONG_AGO,
+    )
+    insert_interaction_risk(
+        interaction_id="ix-old", triggered_rule_ids=shared_rules, computed_at=LONG_AGO,
+    )
+    insert_interaction_risk(
+        interaction_id="ix-current", triggered_rule_ids=shared_rules, computed_at=NOW,
+    )
+    time_from, time_to = _window()
+    counts = {
+        item.category: item.count
+        for item in metrics.get_risk_by_category(time_from=time_from, time_to=time_to)
+    }
+    assert counts == {"pii_exposure": 1, "data_leakage": 1}
 
 
 def test_risk_by_category_rule_with_no_categories_contributes_nothing(
