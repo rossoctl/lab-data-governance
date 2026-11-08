@@ -1,14 +1,17 @@
-"""AC-DAS-012: ``get_trace_risk_detail`` stays fast and size-independent.
+"""AC-DAS-012: trace risk queries scope work to the requested trace.
 
-Two complementary checks:
+Three complementary checks:
 
 - Wall-clock latency stays under 500ms on a trace large enough that a naive
   per-interaction query pattern would blow well past that budget.
 - The number of statements issued is the same for a 5-interaction trace and
   a 50-interaction trace — the load-bearing N+1 guard. A latency assertion
   alone can pass on a fast local Postgres even with an N+1 pattern; the
-  query-count invariant is what actually pins "bounded by count, not by
-  size" (see ``get_trace_risk_detail``'s docstring: 6 queries, always).
+  query-count invariant pins a bounded number of statements (see
+  ``get_trace_risk_detail``'s docstring: 6 queries, always).
+- Actual risk-version scans stay within the requested live interaction
+  histories despite substantial unrelated history, for both forest and
+  trace-rollup queries.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import psycopg
 import pytest
 
 from data_governance import db, retrieval
+from data_governance.risk.engine.trace_compute import compute_trace_risk
 
 _TID = "trace-perf-1"
 
@@ -148,3 +152,58 @@ def test_trace_detail_query_count_is_independent_of_trace_size(
 
     assert small_count == large_count
     assert small_count <= 7
+
+
+def _risk_rows_examined(plan):
+    own = 0
+    if plan.get("Relation Name") == "interaction_risk_records":
+        own = (plan.get("Actual Rows", 0) + plan.get("Rows Removed by Filter", 0)
+               + plan.get("Rows Removed by Index Recheck", 0)) * plan.get("Actual Loops", 1)
+    return own + sum(_risk_rows_examined(child) for child in plan.get("Plans", []))
+
+
+@pytest.mark.parametrize("operation", ["forest", "rollup"])
+def test_small_trace_does_not_scan_unrelated_risk_history(seed_trace, monkeypatch, operation):
+    trace_id = "zz-perf-focus"
+    seed_trace(trace_id, 5)  # ten eligible versions: five current live IDs
+    with db.transaction() as tx:
+        tx.execute("""
+            INSERT INTO interactions (id, trace_id, caller_entity_id, callee_entity_id, summary)
+            SELECT '000-unrelated-' || n, 'unrelated-perf', 'noise-caller', 'noise-callee', 'synthetic'
+            FROM generate_series(1, 20000) AS n
+        """)
+        tx.execute("""
+            INSERT INTO interaction_risk_records
+                (interaction_id, trace_id, caller_entity_id, callee_entity_id,
+                 version, computed_at, risk_level, policy_event_count)
+            SELECT i.id, i.trace_id, i.caller_entity_id, i.callee_entity_id, v, now(), 'low', 0
+            FROM interactions i CROSS JOIN generate_series(1, 3) AS v
+            WHERE i.trace_id = 'unrelated-perf'
+        """)
+        tx.execute("ANALYZE interactions")
+        tx.execute("ANALYZE interaction_risk_records")
+
+    queries = []
+    original = db.Transaction.fetch_all
+
+    def capture(self, sql, params=None):
+        if "interaction_risk_records" in sql:
+            queries.append((sql, params))
+        return original(self, sql, params)
+
+    monkeypatch.setattr(db.Transaction, "fetch_all", capture)
+    if operation == "forest":
+        detail = retrieval.get_trace_risk_detail(trace_id)
+        assert len(detail.interactions) == 5
+        assert all(ix.risk.version == 2 for ix in detail.interactions)
+    else:
+        compute_trace_risk(trace_id)
+        assert retrieval.get_trace_risk(trace_id).interaction_count == 5
+    assert len(queries) == 1
+    sql, params = queries[0]
+    with db.transaction() as tx:
+        explain = tx.fetch_one("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, params)[0]
+    # Query counts alone cannot catch a global history scan. Count actual
+    # work without pinning a particular index, scan strategy, or local timing.
+    scanned = _risk_rows_examined(explain[0]["Plan"])
+    assert scanned <= 10, f"{operation} examined {scanned} risk versions for ten eligible versions"

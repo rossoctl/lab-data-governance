@@ -57,15 +57,16 @@ __all__ = ["compute_trace_risk"]
 # Serializes the recomputes of one trace until the enclosing transaction ends.
 _LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
 
-# "Current" = the global latest version per interaction_id, then restricted
-# to this trace and interactions that still EXIST. Trace membership can change
-# between versions, so applying it before DISTINCT ON resurrects old records.
+# "Current" = the latest version per interaction_id across all trace versions.
+# Restrict candidate IDs using their LIVE trace membership to avoid scanning
+# unrelated histories. Keep every version for those IDs: filtering stored
+# record trace_id before DISTINCT ON would resurrect superseded records.
 # DISTINCT ON (interaction_id) ... ORDER BY interaction_id, version DESC
 # picks exactly that row per interaction,
 # mirroring the *_latest_idx query shape used everywhere else in this package
 # for "latest version for this key."
 #
-# The INNER JOIN against `interactions` is load-bearing (observed live): the
+# The live-ID restriction and membership JOIN matter (observed live): the
 # sidecar lineage derivation rewrites a trace's interactions wholesale as
 # spans arrive, and an exchange can be re-keyed mid-derivation — leaving
 # immutable risk records for interaction ids that no longer exist. Those
@@ -83,6 +84,9 @@ WITH current AS (
         enforcement_type, policy_event_count, triggered_rule_ids,
         caller_entity_id, callee_entity_id, overall_confidence
     FROM interaction_risk_records
+    WHERE interaction_id IN (
+        SELECT id FROM interactions WHERE trace_id = %s
+    )
     ORDER BY interaction_id, version DESC
 )
 SELECT
@@ -123,7 +127,7 @@ SELECT %(trace_id)s,
 
 
 def _fetch_current_records(tx: db.Transaction, trace_id: str) -> list[CurrentInteractionRisk]:
-    rows = tx.fetch_all(_CURRENT_INTERACTION_RISK_SQL, (trace_id,))
+    rows = tx.fetch_all(_CURRENT_INTERACTION_RISK_SQL, (trace_id, trace_id))
     return [
         CurrentInteractionRisk(
             interaction_risk_id=str(interaction_risk_id),

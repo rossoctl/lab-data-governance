@@ -873,8 +873,9 @@ def get_trace_risk_detail(trace_id: str) -> TraceRiskDetail | None:
     record for ``trace_id`` — including when interactions exist but the
     record does not, and before migration 0016 has run. Issues exactly 6
     queries (after the short-circuiting record lookup, the forest queries
-    still run bounded-by-count, not per-interaction), so wall-clock and query
-    count are independent of trace size (AC-DAS-012).
+    still use a bounded number of statements, not per-interaction queries),
+    so query count is independent of trace size (AC-DAS-012). Risk history
+    reduction is scoped to the trace's current live interaction IDs.
 
     ``trace_risk.interaction_count`` (a snapshot taken at ``computed_at``)
     and ``len(interactions)`` (read now) are surfaced without reconciliation
@@ -915,14 +916,17 @@ def get_trace_risk_detail(trace_id: str) -> TraceRiskDetail | None:
             (trace_id,),
         )
 
-        # Trace membership is a versioned fact: reduce globally before filtering.
-        # The forest assembly below attaches records only to live interactions.
+        # Scope candidate IDs by live membership, keeping all their versions.
+        # Apply stored trace membership after reduction so round trips cannot
+        # revive a superseded record. Forest assembly uses the same live IDs.
         risk_rows = tx.fetch_all(
             f"WITH current AS ("
             f"SELECT DISTINCT ON (interaction_id) {_SELECT_COLS} "
-            f"FROM interaction_risk_records ORDER BY interaction_id, version DESC"
+            f"FROM interaction_risk_records "
+            f"WHERE interaction_id IN (SELECT id FROM interactions WHERE trace_id = %s) "
+            f"ORDER BY interaction_id, version DESC"
             f") SELECT {_SELECT_COLS} FROM current WHERE trace_id = %s",
-            (trace_id,),
+            (trace_id, trace_id),
         )
 
     legs_by_interaction: dict[str, list[ForestLegView]] = {}

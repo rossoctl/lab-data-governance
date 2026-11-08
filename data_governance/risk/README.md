@@ -123,6 +123,11 @@ flowchart TB
    trace's current interaction risk records, aggregates them
    (`trace_aggregate.py`), and writes a new `trace_risk_records` version —
    again, only if it differs from the latest.
+   Both the rollup and forest queries first restrict candidate interaction
+   IDs using live trace membership, then choose the latest risk version
+   across all stored traces for each ID, and finally filter that record's
+   trace. This bounds work to the requested trace while preventing an
+   A→B→A correction from reviving an old A record superseded in B.
 6a. **Alerts.** Every `trace_risk_records` insert fires
    `pg_notify(dg_trace_risk_written, ...)` (migration 0023). The
    `risk.alerts` processor drains that stream by `seq` and, per record
