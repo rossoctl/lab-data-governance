@@ -136,6 +136,17 @@ compiles the catalog into a Rego module (one `triggered_rules contains
 "<rule_id>"` block per rule, plus a `policy_decision` rule implementing the
 catalog's combining semantics — `first_fires` or `most_restrictive`).
 
+Compilation rejects predicates that the current risk engine cannot supply,
+even when the wider policy schema permits them: destination trust categories
+and source/destination types, the five intent fields, item-level `text`,
+entity `confidence` and `data_state`, agent trust fields, `data_count`,
+`data_lineage`, `scope`, and nonempty `accessing_user.user_roles`. The adapter
+has no role facts and emits the schema-required roles key as `[]`; an empty
+role constraint is permitted. Errors identify the rule and predicate before
+a bundle can be published. These capabilities need truthful runtime sources
+before policies may constrain them; missing facts in an individual supported
+predicate still remain unknown.
+
 To ship a catalog change to a running cluster:
 
 ```sh

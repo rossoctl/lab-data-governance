@@ -89,11 +89,6 @@ def test_event_type_emits_an_equality_clause():
     assert 'flow.event_type == "external_sharing"' in rego
 
 
-def test_data_count_emits_a_threshold_clause():
-    rego = _compile(_policy([_rule("R-1", data_count=5)]))
-    assert "flow.data_count >= 5" in rego
-
-
 def test_requested_actions_emits_a_subset_clause():
     rego = _compile(_policy([_rule("R-1", requested_actions=["send", "write"])]))
     assert "flow.requested_actions" in rego
@@ -108,12 +103,12 @@ def test_accessing_user_username_emits_an_equality_clause():
     assert 'flow.accessing_user.username == "alice"' in rego
 
 
-def test_accessing_user_roles_emits_a_subset_clause():
+def test_empty_accessing_user_roles_constraint_emits_a_subset_clause():
     rego = _compile(
-        _policy([_rule("R-1", accessing_user={"user_roles": ["admin"]})])
+        _policy([_rule("R-1", accessing_user={"user_roles": []})])
     )
     assert "flow.accessing_user.user_roles" in rego
-    assert '["admin"]' in rego
+    assert "every r in []" in rego
 
 
 def test_data_items_classification_level_emits_an_equality_clause():
@@ -203,13 +198,6 @@ def test_processing_agents_name_emits_an_equality_clause():
     )
     assert "flow.processing_agents" in rego
     assert '.agent_name == "tool-x"' in rego
-
-
-def test_processing_agents_trust_level_emits_an_equality_clause():
-    rego = _compile(
-        _policy([_rule("R-1", processing_agents=[{"agent_trust_level": "TRUSTED"}])])
-    )
-    assert '.agent_trust_level == "TRUSTED"' in rego
 
 
 # --- negative control: absent fields emit no clause --------------------------

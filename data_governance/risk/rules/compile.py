@@ -48,6 +48,8 @@ def compile_bundle(path: str | os.PathLike[str] | None = None) -> str:
     a staging catalog can never reach the cluster by a route production
     rules do not take. Raises ``FileNotFoundError`` for a missing file and
     ``jsonschema.ValidationError`` for a document that does not conform.
+    ``NotImplementedError`` identifies a rule predicate the current runtime
+    cannot supply, before any bundle is returned for publication.
     """
     if path is None:
         return _shipped_bundle()

@@ -7,6 +7,8 @@ import copy
 import pytest
 
 from data_governance.risk.config import OPA_DECISION_PATH
+from data_governance.processors.classification.verdict import Verdict
+from data_governance.risk.engine import utils
 from data_governance.risk.engine.opa import OpaClient
 from data_governance.risk.rules import catalog
 from data_governance.risk.rules.rego import FALLBACK_RULE_ID, compile_policy
@@ -57,15 +59,10 @@ def test_destination_name_and_url_must_match_the_same_destination(opa_client):
 
 
 @pytest.mark.parametrize("axis,field,wanted,other", [
-    ("data_destinations", "data_destination_types", ["external_api"], ["internal_api"]),
-    ("data_destinations", "data_destination_trust_level_category", "UNTRUSTED", "TRUSTED"),
     ("data_sources", "data_source_name", "records", "other-records"),
     ("data_sources", "data_source_url", "https://records/private", "https://records/public"),
-    ("data_sources", "data_source_types", ["database"], ["rest_api"]),
-    ("data_items", "text", "restricted content", "public content"),
     ("data_items", "list_of_domains", ["finance"], ["person"]),
     ("data_items", "identity_bundles", ["identity_bundle"], ["other_bundle"]),
-    ("processing_agents", "agent_trust_level_category", "UNTRUSTED", "TRUSTED"),
     ("entities", "entity_type", "SSN", "PHONE"),
     ("entities", "start", 0, 1),
     ("entities", "end", 11, 12),
@@ -75,8 +72,6 @@ def test_destination_name_and_url_must_match_the_same_destination(opa_client):
     ("entities", "regulatory_tags", ["PII"], ["PCI"]),
     ("entities", "data_type", "PID", "OPID"),
     ("entities", "classification_level", "RESTRICTED", "PUBLIC"),
-    ("entities", "confidence", 0.9, 0.5),
-    ("entities", "data_state", ["encrypted"], ["raw"]),
 ])
 def test_nested_predicates_reject_mismatched_or_missing_values(
     opa_client, axis, field, wanted, other,
@@ -99,16 +94,51 @@ def test_nested_predicates_reject_mismatched_or_missing_values(
         assert _fired(opa_client, flow({field: wanted + other})) == ["DG-001"]
 
 
-@pytest.mark.parametrize("field", [
-    "declared_business_intent", "observed_business_intent",
-    "observed_business_intent_description", "declared_operational_intent",
-    "observed_operational_intent",
+@pytest.mark.parametrize("predicates", [
+    {"event_type": "external_sharing"},
+    {"requested_actions": ["send"]},
+    {"data_destinations": [{
+        "data_destination_name": "outside.example.test",
+        "data_destination_url": "https://outside.example.test/data",
+        "data_destination_categories": ["external"],
+        "data_destination_trust_level": "UNTRUSTED_EXTERNAL",
+    }]},
+    {"data_sources": [{"data_source_name": "review-agent",
+                       "data_source_categories": ["internal"]}]},
+    {"processing_agents": [{"agent_name": "review-agent"}]},
+    {"accessing_user": {"username": "review-user", "user_roles": []}},
+    {"data_items": [{"entities": [{
+        "entity_type": "SSN", "start": 0, "end": 11, "text": "123-45-6789",
+        "domain": "finance", "category": "finance.data", "regulatory_tags": ["PII"],
+        "data_type": "PID", "classification_level": "RESTRICTED",
+    }]}]},
+    {"data_items": [{"classification_level": "RESTRICTED", "primary_domain": "finance",
+                     "regulatory_tags": ["PII"], "list_of_entities": ["SSN"],
+                     "list_of_domains": ["finance"], "identity_bundles": ["identity_bundle"]}]},
 ])
-def test_intent_strings_constrain_the_flow(opa_client, field):
-    _put_rule(opa_client, **{field: "approved-purpose"})
-    assert _fired(opa_client, {field: "different-purpose"}) == [FALLBACK_RULE_ID]
-    assert _fired(opa_client, {}) == [FALLBACK_RULE_ID]
-    assert _fired(opa_client, {field: "approved-purpose"}) == ["DG-001"]
+def test_supported_predicates_match_actual_runtime_input(opa_client, predicates):
+    _put_rule(opa_client, **predicates)
+    verdict = Verdict(
+        sensitivity_level="RESTRICTED", regulatory_tags=["PII"], contains_identity_bundle=True,
+        is_personalized=False, primary_domain="finance", model_version=1,
+        findings=[{
+            "entity_type": "SSN", "start": 0, "end": 11, "text": "123-45-6789",
+            "domain": "finance", "category": "finance.data", "regulatory_tags": ["PII"],
+            "identifier_type": "PID", "sensitivity_level": "RESTRICTED",
+        }],
+    )
+    payload = utils.build_opa_input(
+        legs=[utils.LegEvidence("request", "synthetic-request")], span_ids=[],
+        classifications={"request": verdict}, caller_entity_id="review-agent",
+        callee_entity_id="outside-service", internal_patterns=[],
+        anchor=utils.AnchorFacts(direction="outbound", self_id="review-agent",
+                                 peer_host="outside.example.test", url_scheme="https",
+                                 url_path="/data", principal_sub="review-user"),
+    )
+    opa = OpaClient(http_client=opa_client, decision_path=OPA_DECISION_PATH, max_retries=0)
+    decision = opa.evaluate(interaction_id="runtime-test", opa_input=payload)
+    assert decision.triggered_rules == ["DG-001"]
+    assert decision.enforcement_type == "block"
 
 
 def test_all_fields_of_one_entity_predicate_match_the_same_entity(opa_client):
