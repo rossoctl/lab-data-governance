@@ -15,6 +15,8 @@ whatever :class:`OpaClient`-shaped object it is given).
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import threading
 
 import psycopg
@@ -22,6 +24,9 @@ import pytest
 
 from data_governance import db
 from data_governance import retrieval
+from data_governance.processors.classification.verdict import Verdict
+from data_governance.risk.engine import compute, labels, utils
+from data_governance.risk.engine.evidence import Evidence
 from data_governance.risk.engine.compute import (
     compute_interaction_risk,
     prepare_interaction_risk,
@@ -189,6 +194,44 @@ def test_unchanged_evidence_does_not_call_opa_again(seeded: str):
     compute_interaction_risk(_IX_ID, opa_client=opa)
     assert len(opa.calls) == 1
     assert _policy_decision_versions(seeded) == [1]
+
+
+def test_cached_fingerprints_hide_text_and_refresh_on_detected_and_inherited_changes(seeded: str):
+    detected = "REVIEW_SYNTHETIC_DETECTED_VALUE"
+    inherited = "REVIEW_SYNTHETIC_INHERITED_VALUE"
+    finding = {"entity_type": "SSN", "text": detected, "sensitivity_level": "RESTRICTED"}
+    verdict = Verdict(sensitivity_level="RESTRICTED", regulatory_tags=["PII"],
+                      contains_identity_bundle=False, is_personalized=False,
+                      primary_domain=None, findings=[finding], model_version=1)
+    edge = labels.InheritedEdge(trace_id=_TID, entity_type="SSN", regulatory_tags=("PII",),
+                                sensitivity_level="RESTRICTED", match_kind="whole",
+                                matched_text=inherited)
+    evidence = Evidence(
+        interaction_id=_IX_ID, trace_id=_TID, caller_entity_id=_ENT_A, callee_entity_id=_ENT_B,
+        legs=[utils.LegEvidence("request", "same-payload")], span_ids=[],
+        classifications={"request": verdict},
+        inherited=labels.Inherited(mode="on", by_leg={"request": [edge]}),
+    )
+    changed_detected = dataclasses.replace(evidence, classifications={"request": dataclasses.replace(
+        verdict, findings=[{**finding, "text": detected + "_CHANGED"}],
+    )})
+    changed_inherited = dataclasses.replace(changed_detected, inherited=labels.Inherited(
+        mode="on", by_leg={"request": [dataclasses.replace(edge, matched_text=inherited + "_CHANGED")]},
+    ))
+    opa = _FakeOpaClient([_decision()])
+    for current in (evidence, evidence, changed_detected, changed_detected,
+                    changed_inherited, changed_inherited):
+        compute._get_or_refresh_decision(interaction_id=_IX_ID, opa_client=opa, evidence=current)
+    with psycopg.connect(seeded) as conn:
+        stored = conn.execute("SELECT evidence_fingerprint FROM interaction_policy_decisions "
+                              "WHERE interaction_id = %s ORDER BY version", (_IX_ID,)).fetchall()
+    assert all(detected not in value and inherited not in value for (value,) in stored)
+    assert all(len(value) == 64 for (value,) in stored)
+    assert len(stored) == len(opa.calls) == 3
+    assert _policy_decision_versions(seeded) == [1, 2, 3]
+    # Hash the complete input, rather than dropping policy-relevant text.
+    first_input = json.dumps(opa.calls[0]["opa_input"])
+    assert detected in first_input and inherited in first_input
 
 
 def test_corrected_endpoint_replaces_a_cached_decision_with_unchanged_payloads(seeded: str):

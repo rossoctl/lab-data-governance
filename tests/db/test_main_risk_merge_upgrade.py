@@ -8,6 +8,7 @@ schema. In particular, risk's old 0020 follows 0019, whereas main's follows 0015
 from __future__ import annotations
 
 import ast
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -102,7 +103,10 @@ def seed_evidence(dsn: str, *, risk: bool, payload_kind: bool = False) -> None:
             conn.execute(
                 "INSERT INTO interaction_policy_decisions (interaction_id, version, evaluated_at, "
                 "risk_level, evidence_fingerprint) "
-                "VALUES ('upgrade-ix', 1, '2026-01-01T00:00:02Z', 'high', 'kept-fingerprint')"
+                "VALUES ('upgrade-ix', 1, '2026-01-01T00:00:02Z', 'high', %s)",
+                # Merge preservation is independent of 0029's legacy-key
+                # backfill, which has its own historical-row regression.
+                (hashlib.sha256(b"kept-fingerprint").hexdigest(),),
             )
             conn.execute(
                 "INSERT INTO trace_risk_records (trace_id, version, computed_at, trace_risk_level, "

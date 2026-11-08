@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import hashlib
 import ipaddress
 import json
 import re
@@ -590,18 +591,24 @@ def fingerprint(
     caller_entity_id: str | None = None,
     callee_entity_id: str | None = None,
 ) -> str:
-    """A canonical fingerprint string over the evidence that feeds one
+    """A SHA-256 digest of the canonical evidence that feeds one
     interaction risk computation: payload identity, classification metadata,
     raw anchor facts, and the complete runtime input passed to OPA. Reuse the
     input builder so finding details and inherited entities cannot drift from
-    what the policy actually evaluates.
+    what the policy actually evaluates. Hash the serialized input so cached
+    fingerprints do not retain detected or inherited matched text verbatim.
+
+    Whitelist changes that alter derived endpoint categories, trust levels or
+    event types invalidate the digest even when raw anchor facts are unchanged.
+    Pattern changes producing the same input do not invalidate it.
 
     Used to detect whether evidence actually changed since the last OPA call
     (FR-DAS-014 idempotency): compare this against the fingerprint stored
     alongside the latest policy decision, not raw field-by-field comparison
     (DB round-trips return ``Decimal``/``list``/``dict`` types that mismatch
-    freshly-computed Python values). Older summary-only fingerprints refresh
-    once on the next computation. Policy contents are not fingerprinted;
+    freshly-computed Python values). Migration 0029 hashes previously stored
+    JSON bytes: full-input keys remain reusable; older summary-only keys
+    refresh once on the next computation. Policy contents are not fingerprinted;
     policy-only changes with unchanged input still need a separate trigger.
     """
     normalized = _normalize_for_fingerprint(legs, classifications, anchor, inherited)
@@ -619,4 +626,5 @@ def fingerprint(
             "caller_entity_id": caller_entity_id,
             "callee_entity_id": callee_entity_id,
         }
-    return json.dumps(normalized, sort_keys=True, default=str)
+    canonical = json.dumps(normalized, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

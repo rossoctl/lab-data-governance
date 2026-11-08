@@ -20,7 +20,7 @@ from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
 from data_governance.processors.classification.verdict import Verdict
-from data_governance.risk.engine import utils
+from data_governance.risk.engine import labels, utils
 from data_governance.risk.engine.utils import LegEvidence
 from data_governance.risk.rules import catalog
 
@@ -278,6 +278,35 @@ def test_fingerprint_changes_when_payload_identity_changes(classification):
 
 def test_fingerprint_returns_a_string():
     assert isinstance(utils.fingerprint([], {}), str)
+
+
+def test_fingerprint_is_a_digest_without_detected_or_inherited_text():
+    detected = "REVIEW_SYNTHETIC_DETECTED_VALUE"
+    inherited = "REVIEW_SYNTHETIC_INHERITED_VALUE"
+    forwarded = labels.Inherited(mode="on", by_leg={"request": [labels.InheritedEdge(
+        trace_id="review-trace", entity_type="SSN", regulatory_tags=("PII",),
+        sensitivity_level="RESTRICTED", match_kind="whole", matched_text=inherited,
+    )]})
+    value = utils.fingerprint(
+        [_leg("request")], {"request": _verdict(findings=[_finding(text=detected)])},
+        inherited=forwarded,
+    )
+    assert detected not in value and inherited not in value
+    assert len(value) == 64 and set(value) <= set("0123456789abcdef")
+
+
+def test_fingerprint_tracks_derived_whitelist_categories_not_pattern_spelling(monkeypatch):
+    anchor = utils.AnchorFacts(direction="outbound", self_id="review-agent",
+                               peer_host="outside.example.test", url_scheme="https")
+    legs = [_leg("request")]
+    monkeypatch.setattr(utils, "INTERNAL_URL_WHITELIST_PATTERNS", [])
+    external = utils.fingerprint(legs, {}, anchor)
+    monkeypatch.setattr(utils, "INTERNAL_URL_WHITELIST_PATTERNS", ["*.example.test"])
+    internal = utils.fingerprint(legs, {}, anchor)
+    monkeypatch.setattr(utils, "INTERNAL_URL_WHITELIST_PATTERNS", ["outside.example.test"])
+    equivalent_internal = utils.fingerprint(legs, {}, anchor)
+    assert external != internal
+    assert internal == equivalent_internal
 
 
 # --- build_opa_input ----------------------------------------------------------------

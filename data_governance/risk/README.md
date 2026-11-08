@@ -92,11 +92,22 @@ flowchart TB
    [`docs/sidecar-wire-contract.md`](../../docs/sidecar-wire-contract.md) §4
    for the attribute contract), and any payload classifications.
 3. **Decision reuse-or-refresh.** `risk/engine/compute.py` fingerprints the
-   evidence; if it matches the latest cached `interaction_policy_decisions`
+   evidence with SHA-256 over canonical JSON; if it matches the latest cached `interaction_policy_decisions`
    row, that decision is reused. Otherwise `risk/engine/utils.py` builds the
    OPA input and `risk/engine/opa.py` POSTs it to
    `RISK_OPA_BASE_URL + RISK_OPA_DECISION_PATH`, and the new decision is
    cached.
+   The digest covers payload identity, classification details, raw anchor
+   facts and the full OPA input, including detected and inherited entities.
+   Whitelist changes that alter derived categories, trust levels or event
+   types invalidate it even when the raw anchor is unchanged; different
+   patterns producing the same input leave it stable. Matched text reaches
+   OPA but is not retained verbatim in the cache key.
+   Migration 0029 hashes all historical fingerprint values and normalizes
+   legacy writes during rollout. Already hashed keys stay unchanged. A legacy
+   writer repeats OPA evaluations until upgraded because it still compares
+   JSON with the stored digest; digest writers reuse backfilled full-input
+   keys immediately, while old summary-only keys refresh once.
 4. **Risk record write.** The compiled policy's fallback decision reports the
    sentinel rule id `"0000"` (`FALLBACK_RULE_ID`) meaning "no catalog rule
    fired"; `compute.py` strips it before storing `triggered_rule_ids`, so it
