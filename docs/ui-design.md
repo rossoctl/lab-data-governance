@@ -306,6 +306,152 @@ Out-of-window rows: `.dg-row--out-of-window` class on `<tr>` (§6).
 
 ---
 
+## 10. Risk UI backbone (issue #165)
+
+The Risk UI is a second top-level section inside this same SPA (not a separate
+app), added by issue #165 to make the read-only `/risk/*` backend (metrics,
+interactions, traces, rules — issues #106/#107/#109/#111/#113) reachable. Only
+the client, routing shell, and shared presentational primitives ship in #165;
+#166–#168 build the actual dashboard/trace-detail/rules views on top. For the
+`/risk/*` backend itself — the risk engine, OPA integration, and API routes —
+see [`data_governance/risk/README.md`](../data_governance/risk/README.md).
+
+### Top-level nav
+
+A horizontal PatternFly `Nav` (`variant="horizontal"`) sits in the masthead,
+left of the version stamp, with two items: **Traces** and **Risk**. Each
+`NavItem` wraps a router `<Link>` as its child (rather than using `NavItem`'s
+own `to`/`href` prop) so navigation stays basename-aware — a bare `to="/risk"`
+renders a plain `<a href="/risk">` that drops the `/ui` basename on click.
+
+**Deviation from a literal tab strip:** the issue's mockup language suggested
+tabs, but `Nav`'s items render `role="link"`, not `role="tab"`. This was a
+deliberate choice — `TraceDetailPage`'s view
+switcher (span tree, flow, diagram, graph) already owns `role="tab"`, and most of `e2e/smoke.spec.ts` selects on
+it. A second `role="tab"` strip for section-switching would be ambiguous to
+assistive tech and to tests reaching for "the tab named X". `Nav` still
+inherits the same dark-theme tokens and adds no new color.
+
+The active section is derived from the URL via `navSectionFor(pathname)`
+(`src/lib/navSection.ts`): `/risk` or any `/risk/...` path is the `risk`
+section, everything else (including `/`) is `traces`. Exact-or-prefixed-by-`/`
+matching, not a bare `startsWith('/risk')`, so a hypothetical `/risky-business`
+route would not be wrongly claimed by the risk section.
+
+### Badge colors
+
+Two render-free color maps in `src/lib/`, mirroring the existing
+`entityKind.ts` pattern (`colorFor*(x: string)` — a permissive `string`
+parameter, not the narrowed union, so a value the server sends that isn't in
+the map still resolves via a fallback instead of failing to compile):
+
+| Map | File | Values | Fallback |
+|---|---|---|---|
+| Risk level | `riskLevel.ts` | `critical`→red, `high`→orange, `medium`→**gold**, `low`→green, `none`→**grey**, `unknown`→grey | `grey` |
+| Enforcement type | `riskEnforcement.ts` | all 13 `ENFORCEMENT_ORDER` values banded by severity across PF's 8 label colors | `grey` |
+
+**Deviations from the issue's literal color spec, both deliberate:**
+
+- **`medium` → `gold`, not yellow.** PatternFly 5's `Label` color union is
+  `blue | cyan | green | orange | purple | red | grey | gold` — there is no
+  `yellow`. `gold` is PF's closest token and is already this repo's warning
+  color (`RecentTracesPage`'s "Missing parent" badge, §5 above).
+- **`none` → `grey`, not green.** The issue's prose pairs `low` and `none`
+  both under green. Doing so here would make two of the five named risk
+  levels visually identical, undermining the acceptance criterion that levels
+  have "visually distinct colors" — read literally, distinct means distinct
+  from each other, not just from non-risk chrome. `grey` (PF's neutral/absent
+  token) reads as "nothing to flag" and keeps all five levels pairwise
+  distinct (verified by a test asserting `new Set([...5 colors]).size === 5`).
+
+`RiskBadge` and `EnforcementChip` (`src/risk-components/`) both render
+`<Label isCompact className="dg-ent-pill">` — reusing the existing
+`.dg-ent-pill` class (`global.css`, a generic 1px border + 2px radius, no
+entity-specific semantics) rather than adding a near-duplicate class.
+
+### Risk-distribution bar — single-row bar + separate legend (issue #255)
+
+`RiskDistributionBar` (dashboard, FR-DAS-050) renders the five severity levels
+as a horizontal stacked colour bar with a legend beneath it. The bar and the
+legend are **two separate rows**, not one label glued under each chunk.
+
+**The bar is always a single row, for any distribution.** An earlier version
+sized each column by `width: {pct}%` and pinned every non-zero segment to
+`min-width: 2.5rem` for legibility, inside a wrap-enabled flex row. For an
+uneven split — e.g. one critical trace against everything else (2.9% vs
+97.1%) — those `2.5rem` floors summed past 100% of the container, and the row,
+being allowed to wrap, broke onto a second line (the bug in #255).
+
+The bar row is now `nowrap`, sizing each chunk by `flex-basis: {pct}%` with
+`flex-shrink: 1` and `min-width: 0`, so the chunks always fit within 100% no
+matter how lopsided the split. A tiny non-zero chunk stays visible because the
+small `min-width` floor lives on the coloured **block** (the inner `div`), not
+the flex column — it overflows its own narrow column harmlessly rather than
+widening the column and forcing a wrap.
+
+**The legend is its own wrap-enabled row, decoupled from chunk widths.** The
+first #255 fix kept each label under its chunk and clipped it
+(`overflow: hidden`) so text width couldn't widen the column — but that hid
+the label of any chunk too narrow to hold it (the Critical entry vanished
+under a 2.9% chunk). The requirement is "legend under the corresponding part
+of the bar when there's room, otherwise laid out left-to-right in severity
+order so every entry stays visible." A separate legend row satisfies both: it
+is a wrap-enabled flex in severity order (critical → none), so entries read
+left-to-right and drop to the next line only when the card itself is too
+narrow — never clipped, never hidden. Each entry is content-sized, so its full
+`Level: count (pct%)` text always shows. In the common even-distribution case,
+both rows being severity-ordered, each legend entry still sits roughly beneath
+its chunk.
+
+**Only non-zero levels get a legend entry.** A level with a `0` count is
+omitted from the legend rather than shown as `Level: 0 (0%)` — e.g. a 30-day
+window with only critical and none records shows exactly those two entries,
+not five. The bar still renders all five chunks (a zero-count level is a
+zero-width, invisible chunk); it is only the legend that is filtered. An
+all-zero window therefore renders an empty legend row.
+
+### Shared components
+
+| Component | Purpose |
+|---|---|
+| `RiskBadge` | Colored `Label` for a risk level, via `colorForRiskLevel`. |
+| `EnforcementChip` | Colored `Label` for an enforcement type, via `colorForEnforcement`. |
+| `CursorPagination` | "Load more" button driven by `hasNextPage`/`isFetchingNextPage`/`onNextPage` — a direct `useInfiniteQuery` pass-through, forward-only (the backend's cursor has no reverse token, so no Previous button). |
+| `RiskViewShell` | A 4th shared component beyond the issue's named three — a loading/error/empty/content state machine (precedence `isLoading > isError > isEmpty > children`) that every risk page mounts into, so "empty and loading states render without throwing" is testable against something real rather than asserted about an unwired page. |
+
+### Client and data-fetching conventions
+
+`src/risk-api/client.ts` is a **separate client from `src/api/client.ts`**,
+not a wrapper around it — verified, not assumed: the risk backend's routes
+resolve at the app root (`/risk/...`), not under `/api`, and its error body is
+the richer FR-DAS-081 triple (`{error, detail, timestamp}`) versus `/api`'s
+plain text body. A source-inspection test pins that `client.ts` never imports
+from `../api/client`, mirroring an equivalent backend test for the same
+boundary.
+
+`src/risk-api/hooks.ts` is a scaffold, not a set of hooks — issue #165
+explicitly scopes out pre-built hooks for views nobody has built yet. It pins
+only what #166–#168 all need in common: a shared query-key root
+(`RISK_QUERY_KEY_ROOT = ['risk']`), a key builder (`riskQueryKey(...segments)`),
+and the shared page size (`RISK_PAGE_SIZE = 50`, read from the server's
+uniform `API_RISK_*_DEFAULT_LIMIT` rather than guessed). It will look
+near-empty in review; that emptiness is intentional.
+
+### Dev proxy
+
+`ui/vite.config.ts`'s dev-server proxy gained a `/risk` entry alongside the
+existing `/api` one (same target, same `changeOrigin`), so `npm run dev`
+reaches the risk backend the same way production's same-origin deployment
+does.
+
+### Note on `MVP/index.html`
+
+The issue references a `MVP/index.html` mockup for the risk palette; no such
+file exists in this repo. The colors above were derived from the issue's
+prose plus PatternFly's available `Label` tokens.
+
+---
+
 ## Acceptance criteria checklist
 
 - [x] Per-`kind` icon chosen for each of `INTERNAL`, `SERVER`, `CLIENT`,

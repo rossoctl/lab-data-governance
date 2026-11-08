@@ -126,3 +126,35 @@ spec:
       ports:
         - port: 5432
           protocol: TCP
+---
+# OPA policy server NetworkPolicy (95-opa.yaml, issue #162).
+#
+# OPA's REST API is unauthenticated and writable: any client that reaches
+# 8181 can replace or delete the loaded policy (PUT/DELETE /v1/policies), not
+# only ask for decisions. A deleted policy makes every decision come back
+# empty, which holds the leg-ready stream; a replaced one decides whatever
+# its author likes. The one legitimate client is the leg-ready consumer's
+# risk engine, so ingress admits that pod alone. Kubelet /health probes are
+# node traffic (see the receiver-policy header).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: data-governance-opa-ingress
+  namespace: data-governance
+  labels:
+    app.kubernetes.io/name: opa
+    app.kubernetes.io/part-of: data-governance
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opa
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: data-governance-leg-ready
+      ports:
+        - port: 8181
+          protocol: TCP

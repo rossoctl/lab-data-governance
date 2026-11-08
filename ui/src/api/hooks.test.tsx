@@ -77,7 +77,7 @@ describe('useDataLineage', () => {
     },
   };
 
-  it('fetches the trace-scoped data-lineage resource and keys the legs by (interaction_id, leg_type)', async () => {
+  it('fetches the trace-scoped data-lineage resource', async () => {
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       status: 200,
@@ -93,27 +93,8 @@ describe('useDataLineage', () => {
 
     const calledUrl = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
     expect(calledUrl).toBe('/api/traces/T/data-lineage');
-
-    // The hook unwraps `{legs:[...]}` into the per-leg map the flow view reads
-    // (ADR-0028 D5: the leg is the key, never the payload hash).
-    expect(result.current.data?.byLeg.get('i1:request')).toEqual(LEG.lineage);
-    // A leg present with lineage=null is a real "not yet computed" entry, and
-    // must stay distinguishable from an absent leg.
-    expect(result.current.data?.byLeg.has('i1:response')).toBe(true);
-    expect(result.current.data?.byLeg.get('i1:response')).toBeNull();
-    expect(result.current.data?.byLeg.has('i2:request')).toBe(false);
-  });
-
-  it('yields an empty map for the not-yet-migrated / no-interactions empty shape', async () => {
-    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ legs: [], status: null, stopped_at_seq: null }),
-    });
-
-    const { result } = renderHook(() => useDataLineage('T'), { wrapper: wrapper() });
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data?.byLeg.size).toBe(0);
+    // Only the trace's coverage is kept; the per-leg rows have no reader.
+    expect(result.current.data).toEqual({ status: 'complete', stoppedAtSeq: null });
   });
 
   it('does not fetch while disabled', async () => {

@@ -113,6 +113,12 @@ fi
 # the whole service.pipelines['traces/data_governance'] pipeline (if present).
 # Other exporters, processors, and pipelines are left untouched — this restores
 # the collector to its pre-patch state.
+#
+# NOTE: the heredoc below sits inside $( ... ). bash 3.2 — still /bin/bash on
+# macOS — lexes the whole substitution before the quoted heredoc takes effect,
+# so a lone apostrophe anywhere inside it opens a quote state that is never
+# closed, and the script fails to parse at EOF with the error reported far from
+# its cause. Keep the Python comments free of them.
 CHANGE_STATE="$(
     MODE="${MODE}" \
     RECEIVER_ENDPOINT="${RECEIVER_ENDPOINT}" \
@@ -138,7 +144,7 @@ exporters = cfg.setdefault("exporters", {})
 service = cfg.setdefault("service", {})
 pipelines = service.setdefault("pipelines", {})
 
-# Sanity: the dedicated pipeline reuses the collector's `otlp` receiver. If the
+# Sanity: the dedicated pipeline reuses the shared `otlp` receiver. If the
 # collector config is shaped unexpectedly (no otlp receiver at all), fail loudly
 # rather than wiring a pipeline with no input — but only in apply mode; revert
 # must always be able to clean up regardless of receiver shape.

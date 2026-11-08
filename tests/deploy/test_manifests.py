@@ -893,6 +893,7 @@ def test_container_env_placeholder_references_resolve_in_order(
         "data-governance-interactions",
         "data-governance-classification",
         "data-governance-data-lineage",
+        "data-governance-label-lineage",
     }
     seen_workloads: set[str] = set()
     for kind, name, path, pod_spec in _iter_pod_specs(docs):
@@ -924,3 +925,56 @@ def test_container_env_placeholder_references_resolve_in_order(
         "spellings in deploy/k8s/."
     )
     assert not failures, "env placeholder ordering violations:\n  " + "\n  ".join(failures)
+
+
+# ---------------------------------------------------------------------------
+# P-label-lineage (93-label-lineage.yaml) and the risk flag on leg-ready
+# ---------------------------------------------------------------------------
+
+
+def _env(deployment: dict) -> dict[str, str | None]:
+    (container,) = deployment["spec"]["template"]["spec"]["containers"]
+    return {e["name"]: e.get("value") for e in container.get("env") or []}
+
+
+@pytest.fixture(scope="module")
+def label_lineage_deployment(docs: list[dict]) -> dict:
+    (dep,) = _by_kind(docs, "Deployment", "data-governance-label-lineage")
+    return dep
+
+
+def test_label_lineage_is_one_replica_that_never_surges(label_lineage_deployment: dict) -> None:
+    spec = label_lineage_deployment["spec"]
+    assert spec["replicas"] == 1
+    assert spec["strategy"]["rollingUpdate"] == {"maxSurge": 0, "maxUnavailable": 1}
+
+
+def test_label_lineage_runs_its_entry_point_after_the_migrate_init_container(
+    label_lineage_deployment: dict,
+) -> None:
+    pod = label_lineage_deployment["spec"]["template"]["spec"]
+    (init,) = pod["initContainers"]
+    assert init["command"] == ["python", "-m", "data_governance.db.migrate"]
+    (container,) = pod["containers"]
+    assert container["image"] == "data-governance/receiver:latest"
+    assert container["command"] == ["python", "-m", "data_governance.processors.label_lineage"]
+    assert not container.get("ports") and "livenessProbe" not in container
+
+
+def test_label_lineage_states_the_exact_finder(label_lineage_deployment: dict) -> None:
+    from data_governance.label_lineage import find
+
+    matcher = _env(label_lineage_deployment)["LABEL_MATCHER"]
+    assert matcher == "exact" and find.get_finder(matcher) is find.exact
+
+
+def test_the_inherited_labels_flag_ships_off_on_leg_ready_only(
+    docs: list[dict], label_lineage_deployment: dict
+) -> None:
+    """Leg-ready alone decides what inherited labels do; label lineage reads no
+    risk configuration and always records changed summaries."""
+    from data_governance.risk.config import parse_inherited_labels
+
+    (leg_ready,) = _by_kind(docs, "Deployment", "data-governance-leg-ready")
+    assert parse_inherited_labels(_env(leg_ready)["RISK_INHERITED_LABELS"]) == "off"
+    assert not [name for name in _env(label_lineage_deployment) if name.startswith("RISK_")]

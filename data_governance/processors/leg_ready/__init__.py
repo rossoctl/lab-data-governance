@@ -28,7 +28,9 @@ classify) and P-interactions (after a flush that wrote legs) fire a payload-less
 periodic poll backstop. A missed or lost notification costs latency only, never
 correctness — the poll backstop still delivers, and readiness is re-derived from the
 durable tables (``interaction_legs`` ⋈ ``payload_classifications``) on every drain
-(ADR-0015).
+(ADR-0015). With ``RISK_INHERITED_LABELS=on`` readiness also needs label lineage's
+row for the leg at its current payload, and the label-lineage processor fires the
+same channel after each derivation (``docs/label-lineage.md``).
 
 There is no real downstream consumer yet (risk/lineage/PDP are future work), so this
 consumer's "processing" is a thin, real delivery: it hands each ready leg to an

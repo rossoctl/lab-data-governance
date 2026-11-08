@@ -1,14 +1,13 @@
+import type { ReactNode } from 'react';
 import { Button, Title } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
-import type { UseQueryResult } from '@tanstack/react-query';
 
 import type { PinStore } from '../../lib/pins';
-import type { TraceDataLineage } from '../../types';
 import { DetailList } from '../DetailList';
 import { RoleIcon } from '../RoleIcon';
 import { LegTabs, type Leg } from './LegTabs';
 import { SpanLink } from './SpanLink';
-import { lineageOfLeg, type Selection } from './selection';
+import type { Selection } from './selection';
 
 /**
  * The flow view's detail panel for the one selected row: caption + pin toggle +
@@ -23,20 +22,28 @@ import { lineageOfLeg, type Selection } from './selection';
  * something is selected: an empty float is just clutter.
  */
 export function FlowDetailPanel({
+  traceId,
   selection,
   pins,
-  lineageQ,
   onTogglePin,
   onClose,
   onNavigateToSpan,
+  layer,
 }: {
+  traceId: string;
   selection: Selection;
   pins: PinStore;
-  /** The one trace-scoped lineage read; each leg's block is keyed off it. */
-  lineageQ: Pick<UseQueryResult<TraceDataLineage>, 'data' | 'isError'>;
   onTogglePin: () => void;
   onClose: () => void;
   onNavigateToSpan?: (spanId: string) => void;
+  /**
+   * The risk layer's cards for this selection (the interaction's risk and, for
+   * a policy event, the stepper and the decision card), composed by `FlowTables`
+   * and rendered between the identity card and the leg tabs. Absent with the
+   * layer off, and the panel is as it was. A slot rather than typed props so
+   * this panel stays a renderer of the selection and knows nothing of risk.
+   */
+  layer?: ReactNode;
 }) {
   // The legs that actually carried a payload — built here rather than inline so
   // the middle card can be skipped when there are none (an entity selection, or
@@ -46,15 +53,15 @@ export function FlowDetailPanel({
   const legs: Leg[] = [
     selection.requestPayloadHash && {
       label: 'Request',
+      legType: 'request',
       hash: selection.requestPayloadHash,
       kind: selection.requestContentKind,
-      lineage: lineageOfLeg(lineageQ, selection, 'request'),
     },
     selection.responsePayloadHash && {
       label: 'Response',
+      legType: 'response',
       hash: selection.responsePayloadHash,
       kind: selection.responseContentKind,
-      lineage: lineageOfLeg(lineageQ, selection, 'response'),
     },
   ].filter((l): l is Leg => Boolean(l));
 
@@ -130,16 +137,21 @@ export function FlowDetailPanel({
         <DetailList pairs={selection.fields} />
       </div>
 
+      {layer}
+
       {/* One outer tab per leg that actually carried a payload, named by the leg
           ('Request' / 'Response') — there is no umbrella 'Payloads' heading,
           because the leg is what a reader navigates by and the payload is only
           one of the three facts under it. A leg with no payload hash contributes
           no tab at all, so a request-only interaction shows a single `Request`
-          tab (see LegTabs' note on why a lineage-only tab would misrepresent
-          such a leg). */}
+          tab (see LegTabs' note). */}
       {legs.length > 0 && (
         <div className="dg-detail-card">
-          <LegTabs legs={legs} />
+          <LegTabs
+            legs={legs}
+            traceId={traceId}
+            interactionId={selection.kind === 'interaction' ? selection.id : null}
+          />
         </div>
       )}
 

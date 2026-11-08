@@ -83,6 +83,21 @@ lock the same rows in different orders, so either processor can be chosen as a
 deadlock victim, and every re-derivation would rewrite a lock into every row of
 the trace.
 
-Risk processing on the unmerged `origin/risk` branch needs its own reconciliation
-change before a corrected parent or endpoint can be treated as current. It remains
-separate from this main-based implementation.
+Label lineage uses the same causal order, including recorded parents, while its
+ingestion cursor remains unchanged. Migration 0028 gives label lineage and risk
+their own durable correction queues: consuming data lineage's queue cannot hide a
+correction from either consumer. Label derivation and trace-risk aggregation take
+the shared trace lock before reading. Queue acknowledgments follow the derived
+write's commit and match its observed generation, so concurrent corrections survive
+without holding a trace lock while waiting on a producer's queue row.
+
+Interaction risk re-gathers corrected evidence after its ingestion cursor has
+advanced. Caller and callee IDs enter the policy evidence fingerprint because OPA
+uses them as processing agents; corrected trace, parent and endpoint metadata also
+participate in immutable-record idempotency. Structural corrections are processed
+with inherited labels off or on. With the flag off, any label-only obligation is
+retained; with it on, risk waits for current-trace/current-payload label rows and
+completion of label correction replay. Trace-risk replay removes deleted or moved
+interactions from the old trace's current rollup while retaining their immutable
+history. See [the upgrade procedure](../migrations-main-risk.md) for adopting the
+historical branch schemas and replaying existing derived state.

@@ -7,6 +7,7 @@ import {
   legDirection,
   parseLegViewKey,
   parseLineageSource,
+  requestLegsOnly,
 } from './flow';
 import type { Entity, Interaction } from './flow';
 
@@ -207,5 +208,22 @@ describe('durationMs', () => {
     );
     expect(durationMs(null, '2026-05-01T12:00:05.000Z')).toBeNull();
     expect(durationMs('2026-05-01T12:00:00.000Z', null)).toBeNull();
+  });
+});
+
+describe('requestLegsOnly', () => {
+  it('keeps each interaction with its request leg only, untouched otherwise, and leaves the input alone', () => {
+    const ix = {
+      id: 'i1', caller_entity_id: 'a', callee_entity_id: 'b', summary: 's', parent_interaction_id: null,
+      legs: [
+        { leg_type: 'request' as const, occurred_at: 't', payload_hash: null, error: false, seq: 1 },
+        { leg_type: 'response' as const, occurred_at: 't', payload_hash: null, error: false, seq: 2 },
+      ],
+      duration_seconds: 1, any_error: false, span_count: 1, anchor_count: 1,
+    };
+    const out = requestLegsOnly([ix]);
+    expect(out[0].legs.map((l) => l.leg_type)).toEqual(['request']);
+    expect(out[0].id).toBe('i1');
+    expect(ix.legs).toHaveLength(2);
   });
 });
