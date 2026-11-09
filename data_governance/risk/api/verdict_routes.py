@@ -29,12 +29,27 @@ emit (``capture_io`` off, not text, not whole, a parser that reduced it to nothi
 a value cut at ``max_payload_bytes`` ends ``…[truncated]``. So a record whose request
 body was not read whole answers ``state: unjudged``, with the record's verdict and a
 ``reason`` (``body_not_captured``, ``body_truncated``). A ``block`` on what was read
-still blocks, and the gate refuses anything else: it has no answer about the rest.
+still blocks; what to do with anything else is the gate's choice.
 No value and no size (a sidecar older than contract v1.8) counts as not captured.
 
 This reads what the sidecar reports, no further. For a2a, mcp and inference the value
 is the parser's reduction (contract §5): what a parser leaves out of it no record
 judges, and no span fact says it was left out, so such an exchange answers ``decided``.
+
+**What was caught.** An answer with a record carries ``rules``, the record's
+``triggered_rule_ids``, and ``labels``, the sorted distinct categories of the request
+payload's own findings (a finding's entity type when its category is empty). A
+``block`` also carries ``redacted_payload``: the classifier's own projection of the
+payload (:func:`~data_governance.processors.classification.projection.project`, whose
+text the findings' offsets index), each finding replaced by ``[<label>]``; overlapping
+findings merge into one placeholder naming the first. So for a tool call it is the
+canonical JSON of the arguments, not the agent's bytes, and for a body cut at
+``max_payload_bytes`` it is the cut text. It replaces findings and nothing else: what
+the classifier did not flag stays. It is all or nothing, and never fails the answer: a
+payload above :data:`REDACTED_MAX_BYTES` leaves the field out, and so does a finding that
+does not fit the text at its offsets, with a log line naming offsets only. These are read by a
+second query for the answered ids only, so a wake fetches no body for a waiter still
+waiting. The answer names the exchange by ``exchange_id``, the sidecar's own word for it.
 
 **Who may ask.** ``Authorization: Bearer <VERDICT_SECRET>`` (constant-time compare;
 401 otherwise); the process refuses to start without a secret
@@ -92,6 +107,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import BaseRoute, Route
 
 from data_governance import db
+from data_governance.processors.classification.projection import project
 from data_governance.processors.interactions.procedure import _interaction_id
 
 __all__ = ["PriorityClassifier", "Settings", "VerdictService", "routes", "verdict_handler"]
@@ -131,6 +147,11 @@ _LOG_KEY_CHARS = 64
 
 #: Wire contract §5's mark on a value cut at ``max_payload_bytes``.
 _TRUNCATED_SUFFIX = "…[truncated]"
+
+#: Largest ``redacted_payload`` an answer carries, JSON-encoded, and the largest stored
+#: payload fetched to make one. A gate reads 64 KiB of an answer; a block must never be
+#: lost to the size of its text.
+REDACTED_MAX_BYTES = 32 * 1024
 
 
 def _switch(env: Mapping[str, str], name: str, default: str) -> bool:
@@ -187,13 +208,13 @@ class Settings:
 # its request leg's payload state for priority classification, and what its request span says
 # about the body. The span is the exchange's own: its span id is the exchange id.
 _STATE_SQL = """
-SELECT w.id, r.version, r.enforcement_type, l.interaction_id IS NOT NULL, l.payload_hash,
+SELECT w.id, r.version, r.enforcement_type, r.triggered_rule_ids, l.interaction_id IS NOT NULL, l.payload_hash,
        p.content_hash IS NOT NULL, pc.content_hash IS NOT NULL,
        s.attributes->>'http.request.body.size',
        right(s.attributes->>'input.value', %s) = %s
   FROM unnest(%s::text[], %s::text[], %s::text[]) AS w(id, trace_id, exchange_id)
   LEFT JOIN LATERAL (
-        SELECT rr.version, rr.enforcement_type
+        SELECT rr.version, rr.enforcement_type, rr.triggered_rule_ids
           FROM interaction_risk_records rr
          WHERE rr.interaction_id = w.id
            AND ('request' = ANY(rr.legs_evidenced)
@@ -206,6 +227,16 @@ SELECT w.id, r.version, r.enforcement_type, l.interaction_id IS NOT NULL, l.payl
   LEFT JOIN interaction_payloads p ON p.content_hash = l.payload_hash
   LEFT JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
   LEFT JOIN spans s ON s.trace_id = w.trace_id AND s.span_id = w.exchange_id
+"""
+
+# What was caught, for the answered ids of one state read: the request payload's
+# findings, and its body for a block unless it is too large to fetch.
+_CAUGHT_SQL = """
+SELECT w.id, pc.findings, CASE WHEN w.verdict = 'block' AND p.byte_size <= %s THEN p.content END
+  FROM unnest(%s::text[], %s::text[]) AS w(id, verdict)
+  JOIN interaction_legs l ON l.interaction_id = w.id AND l.leg_type = 'request'
+  JOIN interaction_payloads p ON p.content_hash = l.payload_hash
+  JOIN payload_classifications pc ON pc.content_hash = l.payload_hash
 """
 
 
@@ -232,22 +263,98 @@ def _unread_body(has_leg: bool, payload_hash: str | None, body_size: str | None,
     return None
 
 
+def _label(finding: Any) -> str | None:
+    """A finding's name: its category, or its entity type when that is empty."""
+    if isinstance(finding, dict):
+        for key in ("category", "entity_type"):
+            value = finding.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _labels(findings: Any) -> list[str]:
+    """The sorted distinct names of *findings*; total over whatever the row holds."""
+    if not isinstance(findings, list):
+        return []
+    return sorted({name for finding in findings if (name := _label(finding))})
+
+
+class _Unrenderable(ValueError):
+    """Why a block has no redacted payload; the message names offsets, never text."""
+
+
+def _redact(content: Any, findings: Any) -> str:
+    """The projection of *content* with each finding replaced by ``[<label>]``.
+    Raises :class:`_Unrenderable` when a finding cannot be placed exactly."""
+    if not isinstance(findings, list):
+        raise _Unrenderable(f"findings are a {type(findings).__name__}, not a list")
+    text = project(content)
+    spans = []
+    for i, finding in enumerate(findings):
+        name = _label(finding)
+        if name is None:
+            raise _Unrenderable(f"finding {i} names no category or entity type")
+        start, end = finding.get("start"), finding.get("end")
+        if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(text):
+            raise _Unrenderable(f"finding {i}: span {start!r}..{end!r} is outside 0..{len(text)}")
+        if finding.get("text") != text[start:end]:
+            raise _Unrenderable(f"finding {i}: the text at {start}..{end} is not the finding's (drifted offset)")
+        spans.append((start, end, name))
+    merged: list[list] = []
+    for start, end, name in sorted(spans, key=lambda s: (s[0], -s[1])):
+        if merged and start < merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end, name])
+    for start, end, name in reversed(merged):
+        text = f"{text[:start]}[{name}]{text[end:]}"
+    size = len(json.dumps(text, ensure_ascii=False).encode())
+    if size > REDACTED_MAX_BYTES:
+        raise _Unrenderable(f"the text is {size} bytes encoded, above {REDACTED_MAX_BYTES}")
+    return text
+
+
+def _redacted_payload(interaction_id: str, content: Any, findings: Any) -> str | None:
+    """:func:`_redact`, or None and a log line. Never raises: this runs inside the
+    batched read every waiter shares."""
+    try:
+        return _redact(content, findings)
+    except _Unrenderable as exc:
+        reason = str(exc)
+    except Exception as exc:  # noqa: BLE001 — its message could quote the payload
+        reason = f"rendering failed ({type(exc).__name__})"
+    log.warning("verdict: no redacted payload for interaction %s: %s", interaction_id, reason)
+    return None
+
+
 def _read_states(keys: list[_Key], notify_undecided: bool = False) -> dict[str, _State]:
     """The state of every waited exchange in one read; with *notify_undecided*, name
     each undecided one on the priority decision channel in the same transaction."""
     ids, traces, exchanges = (list(column) for column in zip(*keys, strict=True))
     params = (len(_TRUNCATED_SUFFIX), _TRUNCATED_SUFFIX, ids, traces, exchanges)
+    exchange_of = {key[0]: key[2] for key in keys}
     states: dict[str, _State] = {}
     with db.transaction() as tx:
-        for (iid, version, enforcement, has_leg, payload_hash, payload_present, classified,
+        for (iid, version, enforcement, rules, has_leg, payload_hash, payload_present, classified,
              body_size, truncated) in tx.fetch_all(_STATE_SQL, params):
             record = None
             if version is not None:
-                record = {"state": "decided", "verdict": enforcement, "interaction_id": iid, "version": version}
+                record = {"state": "decided", "verdict": enforcement, "exchange_id": exchange_of[iid],
+                          "version": version, "rules": list(rules or []), "labels": []}
                 reason = _unread_body(has_leg, payload_hash, body_size, truncated)
                 if reason is not None:
                     record.update(state="unjudged", reason=reason)
             states[iid] = _State(record, payload_hash, bool(payload_present), bool(classified))
+        answered = {iid: state.record for iid, state in states.items() if state.record is not None}
+        if answered:
+            verdicts = [record["verdict"] for record in answered.values()]
+            for iid, findings, content in tx.fetch_all(_CAUGHT_SQL, (REDACTED_MAX_BYTES, list(answered), verdicts)):
+                answered[iid]["labels"] = _labels(findings)
+                if answered[iid]["verdict"] == "block":
+                    redacted = _redacted_payload(iid, content, findings) if content is not None else None
+                    if redacted is not None:
+                        answered[iid]["redacted_payload"] = redacted
         if notify_undecided:
             for iid, state in states.items():
                 if state.record is None:
@@ -418,7 +525,7 @@ class VerdictService:
             waited_ms = int((time.monotonic() - started) * 1000)
             if waiter.future.done():
                 return {**waiter.future.result(), "waited_ms": waited_ms}, waiter
-            return {"state": "pending", "interaction_id": interaction_id, "waited_ms": waited_ms}, waiter
+            return {"state": "pending", "exchange_id": key[2], "waited_ms": waited_ms}, waiter
         finally:
             peers = self._waiters.get(interaction_id)
             if peers is not None:
